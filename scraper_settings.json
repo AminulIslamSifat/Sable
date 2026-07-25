@@ -1,0 +1,7 @@
+{
+  "enabled": false,
+  "engine_type": "qwen",
+  "port": 9333,
+  "headless": false,
+  "show_thoughts": true
+}

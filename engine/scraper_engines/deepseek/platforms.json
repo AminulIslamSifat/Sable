@@ -1,0 +1,22 @@
+{
+    "active_platform": "deepseek",
+    "stealth_mode": true,
+    "use_obsidian": false,
+    "output_dir": "output",
+    "deepseek": {
+        "name": "DeepSeek",
+        "url": "https://chat.deepseek.com/",
+        "selectors": {
+            "input": "textarea[name='search']",
+            "send_btn": "div[role='button']:has(path[d^='M8.3125 0.981587'])",
+            "response": "div.ds-message",
+            "content": "div.ds-assistant-message-main-content",
+            "stop": "div[role='button']:has(path[d^='M2 4.88'])",
+            "thoughts": "div.ds-think-content",
+            "deepthink_toggle": "div.ds-toggle-button:has-text('DeepThink')"
+        },
+        "keys": {
+            "send": "Enter"
+        }
+    }
+}

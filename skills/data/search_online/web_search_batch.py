@@ -1,0 +1,698 @@
+#!/usr/bin/env python3
+"""Standalone batch web search.
+
+Run this file directly with a list of queries and it will search the web for
+one query at a time, using the same high-level behavior as the Odysseus
+project: provider selection, SearXNG-first search, freshness inference,
+fallbacks, and fetched page content in the output.
+
+Examples:
+
+    python3 web_search_batch.py "latest python release" "best local LLM"
+    python3 web_search_batch.py --queries-file queries.txt
+    cat queries.txt | python3 web_search_batch.py --stdin
+"""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import html
+import html.parser
+import json
+import os
+import re
+import sys
+import textwrap
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable
+
+from lxml import html as lxml_html
+
+APP_DIR = Path(__file__).parent.resolve()
+SETTINGS_FILE = APP_DIR / "settings.json"
+DEFAULT_SEARXNG_INSTANCE = "http://localhost:8080"
+GENERAL_ENGINES = os.environ.get("SEARXNG_GENERAL_ENGINES", "bing,mojeek,presearch")
+USER_AGENT = os.environ.get(
+    "WEB_FETCH_USER_AGENT",
+    (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+    ),
+)
+
+DAY_HINTS = ("today", "latest", "breaking", "this morning", "right now", "currently")
+WEEK_HINTS = ("this week", "past week", "recent news", "last few days")
+MONTH_HINTS = ("this month", "past month")
+
+
+@dataclass
+class SearchResult:
+    title: str
+    url: str
+    snippet: str = ""
+
+
+class TextExtractor(html.parser.HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self._chunks: list[str] = []
+        self._skip_depth = 0
+        self.title = ""
+        self._in_title = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"script", "style", "noscript"}:
+            self._skip_depth += 1
+        elif tag == "title":
+            self._in_title = True
+        elif tag in {"p", "br", "div", "li", "section", "article", "tr", "h1", "h2", "h3", "h4"}:
+            self._chunks.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in {"script", "style", "noscript"} and self._skip_depth:
+            self._skip_depth -= 1
+        elif tag == "title":
+            self._in_title = False
+
+    def handle_data(self, data):
+        if self._skip_depth:
+            return
+        text = data.strip()
+        if not text:
+            return
+        if self._in_title:
+            self.title += text
+        else:
+            self._chunks.append(text)
+
+    def get_text(self) -> str:
+        text = " ".join(self._chunks)
+        text = re.sub(r"[ \t\f\v]+", " ", text)
+        text = re.sub(r"\n\s*\n+", "\n\n", text)
+        return text.strip()
+
+
+NOISE_TAGS = {
+    "script",
+    "style",
+    "noscript",
+    "template",
+    "svg",
+    "canvas",
+    "iframe",
+    "form",
+    "button",
+    "input",
+    "select",
+    "textarea",
+    "nav",
+    "header",
+    "footer",
+    "aside",
+    "menu",
+    "dialog",
+}
+TEXT_BLOCK_TAGS = {"p", "br", "div", "li", "section", "article", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote"}
+NOISE_HINTS = (
+    "cookie",
+    "consent",
+    "banner",
+    "modal",
+    "popup",
+    "advert",
+    "ad-",
+    "sponsor",
+    "promo",
+    "toolbar",
+    "sidebar",
+    "nav",
+    "menu",
+    "footer",
+    "header",
+    "breadcrumb",
+    "subscribe",
+    "share",
+    "pagination",
+    "related",
+    "comment",
+    "reaction",
+    "filter",
+    "search",
+    "login",
+)
+
+
+def load_settings() -> dict[str, Any]:
+    defaults = {
+        "search_provider": "searxng",
+        "search_fallback_chain": ["duckduckgo"],
+        "search_url": "",
+        "search_result_count": 5,
+        "search_safesearch": "strict",
+    }
+    if not SETTINGS_FILE.exists():
+        return defaults
+    try:
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return defaults
+    if not isinstance(data, dict):
+        return defaults
+    defaults.update(data)
+    return defaults
+
+
+def infer_time_filter(query: str) -> str | None:
+    q_lc = (query or "").lower()
+    if any(kw in q_lc for kw in DAY_HINTS):
+        return "day"
+    if any(kw in q_lc for kw in WEEK_HINTS):
+        return "week"
+    if any(kw in q_lc for kw in MONTH_HINTS):
+        return "month"
+    return None
+
+
+def safesearch_value(level: str) -> str:
+    raw = (level or "strict").strip().lower()
+    mapping = {
+        "strict": "2",
+        "moderate": "1",
+        "off": "0",
+        "on": "2",
+        "high": "2",
+        "medium": "1",
+        "default": "1",
+        "none": "0",
+        "disabled": "0",
+    }
+    return mapping.get(raw, "2")
+
+
+def http_get(url: str, *, params: dict[str, Any] | None = None, timeout: int = 15) -> tuple[int, str, str]:
+    if params:
+        url = f"{url}?{urllib.parse.urlencode(params)}"
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        body = response.read()
+        content_type = response.headers.get_content_type()
+        charset = response.headers.get_content_charset() or "utf-8"
+        try:
+            text = body.decode(charset, errors="replace")
+        except Exception:
+            text = body.decode("utf-8", errors="replace")
+        return response.status, content_type, text
+
+
+def extract_visible_text(html_text: str) -> tuple[str, str]:
+    parser = TextExtractor()
+    try:
+        parser.feed(html_text)
+        parser.close()
+    except Exception:
+        pass
+    title = html.unescape(parser.title).strip()
+    text = html.unescape(parser.get_text()).strip()
+    return title, text
+
+
+def _clean_html_tree(tree) -> None:
+    for tag in NOISE_TAGS:
+        for element in tree.xpath(f".//{tag}"):
+            parent = element.getparent()
+            if parent is not None:
+                parent.remove(element)
+
+
+def _node_text_length(node) -> int:
+    text = " ".join(piece.strip() for piece in node.itertext() if piece and piece.strip())
+    return len(re.sub(r"\s+", " ", text).strip())
+
+
+def _node_noise_score(node) -> int:
+    combined = " ".join(
+        value.lower()
+        for value in (
+            node.get("id") or "",
+            node.get("class") or "",
+            node.get("role") or "",
+            node.tag or "",
+        )
+    )
+    return sum(1 for hint in NOISE_HINTS if hint in combined)
+
+
+def _node_penalty(node) -> int:
+    link_count = len(node.xpath(".//a"))
+    control_count = len(node.xpath(".//button|.//input|.//select|.//textarea|.//label|.//nav|.//aside|.//footer|.//header"))
+    return link_count * 8 + control_count * 25 + _node_noise_score(node) * 30
+
+
+def _score_node(node) -> tuple[int, int]:
+    text_len = _node_text_length(node)
+    if text_len <= 0:
+        return (0, 0)
+    score = text_len - _node_penalty(node)
+    if node.tag in {"main", "article"}:
+        score += 250
+    role = (node.get("role") or "").lower()
+    if role == "main":
+        score += 200
+    return (score, text_len)
+
+
+def _render_text_lines(node) -> str:
+    lines: list[str] = []
+
+    def append_line(value: str) -> None:
+        value = re.sub(r"\s+", " ", value).strip()
+        if value:
+            lines.append(value)
+
+    for element in node.iter():
+        if element.tag in {"script", "style", "noscript", "template"}:
+            continue
+        if element.tag == "br":
+            lines.append("")
+            continue
+        if element.tag in TEXT_BLOCK_TAGS:
+            text = " ".join(piece.strip() for piece in element.itertext() if piece and piece.strip())
+            append_line(text)
+
+    if not lines:
+        text = " ".join(piece.strip() for piece in node.itertext() if piece and piece.strip())
+        append_line(text)
+
+    cleaned: list[str] = []
+    previous_blank = False
+    for line in lines:
+        blank = not line.strip()
+        if blank:
+            if not previous_blank:
+                cleaned.append("")
+            previous_blank = True
+            continue
+        cleaned.append(line)
+        previous_blank = False
+    return "\n".join(cleaned).strip()
+
+
+def extract_main_content(html_text: str) -> tuple[str, str]:
+    try:
+        tree = lxml_html.fromstring(html_text)
+    except Exception:
+        return extract_visible_text(html_text)
+
+    title = ""
+    title_candidates = tree.xpath("//title/text()")
+    if title_candidates:
+        title = html.unescape("".join(title_candidates)).strip()
+
+    _clean_html_tree(tree)
+
+    candidates = []
+    candidates.extend(tree.xpath("//main|//article|//*[@role='main']"))
+    candidates.extend(tree.xpath("//section|//div|//td"))
+    candidates = [node for node in candidates if _node_text_length(node) >= 120]
+
+    best_node = max(candidates, key=_score_node, default=tree)
+    text = _render_text_lines(best_node)
+
+    if not title:
+        fallback_title = tree.xpath("//meta[@property='og:title']/@content | //meta[@name='title']/@content")
+        if fallback_title:
+            title = html.unescape(fallback_title[0]).strip()
+
+    if not text:
+        return extract_visible_text(html_text)
+    return title, text
+
+
+def truncate(text: str, limit: int = 3000) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n[...truncated]"
+
+
+def clean_query(query: str) -> str:
+    return " ".join((query or "").split()).strip()
+
+
+def read_queries_from_stream(text: str) -> list[str]:
+    queries: list[str] = []
+    for line in (text or "").splitlines():
+        item = line.strip()
+        if not item or item.startswith("#"):
+            continue
+        queries.append(item)
+    return queries
+
+
+def read_queries_from_file(path_text: str) -> list[str]:
+    if path_text == "-":
+        return read_queries_from_stream(sys.stdin.read())
+    path = Path(path_text)
+    if not path.exists():
+        raise FileNotFoundError(f"no such query file: {path_text!r}")
+    return read_queries_from_stream(path.read_text(encoding="utf-8"))
+
+
+def collect_queries(args) -> list[str]:
+    queries: list[str] = []
+    for item in args.queries or []:
+        item = clean_query(item)
+        if item:
+            queries.append(item)
+    if args.queries_file:
+        queries.extend(read_queries_from_file(args.queries_file))
+    if args.stdin:
+        queries.extend(read_queries_from_stream(sys.stdin.read()))
+    elif not queries and not sys.stdin.isatty():
+        queries.extend(read_queries_from_stream(sys.stdin.read()))
+    return [q for q in queries if q]
+
+
+def searxng_search(query: str, *, settings: dict[str, Any], max_results: int, time_filter: str | None) -> list[SearchResult]:
+    instance = (settings.get("search_url") or "").strip() or DEFAULT_SEARXNG_INSTANCE
+    params = {
+        "q": query,
+        "format": "json",
+        "language": "en",
+        "safesearch": safesearch_value(settings.get("search_safesearch", "strict")),
+    }
+    q_lc = query.lower()
+    news_hint = time_filter is not None or any(h in q_lc for h in ("news", "nyheter", "headlines", "breaking", "latest", "today", "idag"))
+    if news_hint:
+        params["categories"] = "news"
+        if time_filter in {"day", "week", "month", "year"}:
+            params["time_range"] = "week" if time_filter in {"day", "week"} else time_filter
+    else:
+        params["categories"] = "general"
+        if GENERAL_ENGINES:
+            params["engines"] = GENERAL_ENGINES
+
+    try:
+        status, content_type, body = http_get(f"{instance.rstrip('/')}/search", params=params, timeout=15)
+        if status >= 400:
+            raise RuntimeError(f"SearXNG returned HTTP {status}")
+        if content_type == "application/json" or body.lstrip().startswith("{"):
+            data = json.loads(body)
+            results = []
+            for row in (data.get("results") or [])[:max_results]:
+                url = str(row.get("url") or "").strip()
+                if not url:
+                    continue
+                results.append(SearchResult(
+                    title=str(row.get("title") or ""),
+                    url=url,
+                    snippet=str(row.get("content") or ""),
+                ))
+            if results:
+                return results
+            if news_hint:
+                fallback_params = {
+                    "q": query,
+                    "format": "json",
+                    "language": "en",
+                    "categories": "general",
+                    "safesearch": safesearch_value(settings.get("search_safesearch", "strict")),
+                }
+                if GENERAL_ENGINES:
+                    fallback_params["engines"] = GENERAL_ENGINES
+                _, _, fallback_body = http_get(f"{instance.rstrip('/')}/search", params=fallback_params, timeout=15)
+                fallback_data = json.loads(fallback_body)
+                for row in (fallback_data.get("results") or [])[:max_results]:
+                    url = str(row.get("url") or "").strip()
+                    if not url:
+                        continue
+                    results.append(SearchResult(
+                        title=str(row.get("title") or ""),
+                        url=url,
+                        snippet=str(row.get("content") or ""),
+                    ))
+                if results:
+                    return results
+        return searxng_search_html(query, instance=instance, max_results=max_results)
+    except Exception:
+        return searxng_search_html(query, instance=instance, max_results=max_results)
+
+
+def searxng_search_html(query: str, *, instance: str, max_results: int) -> list[SearchResult]:
+    try:
+        _, _, body = http_get(f"{instance.rstrip('/')}/search", params={"q": query, "safesearch": "2"}, timeout=15)
+    except Exception:
+        return []
+    results: list[SearchResult] = []
+
+    # SearXNG HTML pages usually have <article class="result"> blocks.
+    for article in re.finditer(r"<article[^>]*class=[\"'][^\"']*result[^\"']*[\"'][^>]*>(.*?)</article>", body, re.I | re.S):
+        block = article.group(1)
+        link = re.search(r"<h3[^>]*>\s*<a[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", block, re.I | re.S)
+        if not link:
+            continue
+        url = html.unescape(link.group(1)).strip()
+        title = re.sub(r"<.*?>", "", link.group(2), flags=re.S)
+        snippet_match = re.search(r"<p[^>]*class=[\"'][^\"']*content[^\"']*[\"'][^>]*>(.*?)</p>", block, re.I | re.S)
+        snippet = re.sub(r"<.*?>", "", snippet_match.group(1), flags=re.S) if snippet_match else ""
+        results.append(SearchResult(title=html.unescape(title).strip(), url=url, snippet=html.unescape(snippet).strip()))
+        if len(results) >= max_results:
+            break
+    return results
+
+
+def duckduckgo_search(query: str, *, max_results: int) -> list[SearchResult]:
+    url = "https://html.duckduckgo.com/html/"
+    try:
+        _, _, body = http_get(url, params={"q": query}, timeout=15)
+    except Exception:
+        return []
+    results: list[SearchResult] = []
+    for item in re.finditer(r'<a[^>]*class=["\']result__a["\'][^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', body, re.I | re.S):
+        raw_url = html.unescape(item.group(1)).strip()
+        title = re.sub(r"<.*?>", "", item.group(2), flags=re.S)
+        snippet_match = re.search(r'<a[^>]*class=["\']result__snippet["\'][^>]*>(.*?)</a>', body[item.end():], re.I | re.S)
+        snippet = re.sub(r"<.*?>", "", snippet_match.group(1), flags=re.S) if snippet_match else ""
+        results.append(SearchResult(title=html.unescape(title).strip(), url=raw_url, snippet=html.unescape(snippet).strip()))
+        if len(results) >= max_results:
+            break
+    return results
+
+
+def fetch_webpage_content(url: str, *, timeout: int = 10, max_chars: int = 5000) -> dict[str, Any]:
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read()
+            content_type = response.headers.get_content_type()
+            charset = response.headers.get_content_charset() or "utf-8"
+            try:
+                text = body.decode(charset, errors="replace")
+            except Exception:
+                text = body.decode("utf-8", errors="replace")
+            if content_type == "text/html" or "<html" in text[:2000].lower():
+                title, visible = extract_main_content(text)
+                if not title:
+                    m = re.search(r"<title[^>]*>(.*?)</title>", text, re.I | re.S)
+                    title = html.unescape(re.sub(r"<.*?>", "", m.group(1), flags=re.S)).strip() if m else ""
+                return {
+                    "success": True,
+                    "url": url,
+                    "title": title,
+                    "content": truncate(visible, max_chars),
+                }
+            return {
+                "success": True,
+                "url": url,
+                "title": "",
+                "content": truncate(text.strip(), max_chars),
+            }
+    except Exception as e:
+        return {"success": False, "url": url, "error": str(e), "content": "", "title": ""}
+
+
+def build_provider_chain(primary: str, settings: dict[str, Any]) -> list[str]:
+    chain = [primary]
+    user_chain = settings.get("search_fallback_chain") or []
+    if isinstance(user_chain, str):
+        user_chain = [piece.strip() for piece in user_chain.split(",") if piece.strip()]
+    fallbacks = user_chain if user_chain else ["duckduckgo"]
+    for provider in fallbacks:
+        if provider and provider != primary and provider not in chain and provider != "disabled":
+            chain.append(provider)
+    return chain
+
+
+def search_provider(query: str, *, settings: dict[str, Any], max_results: int, time_filter: str | None) -> tuple[str, list[SearchResult]]:
+    provider = (settings.get("search_provider") or "searxng").strip() or "searxng"
+    if provider == "disabled":
+        return "disabled", []
+
+    for candidate in build_provider_chain(provider, settings):
+        try:
+            if candidate == "searxng":
+                results = searxng_search(query, settings=settings, max_results=max_results, time_filter=time_filter)
+            elif candidate == "duckduckgo":
+                results = duckduckgo_search(query, max_results=max_results)
+            else:
+                results = []
+            if results:
+                return candidate, results
+        except Exception:
+            continue
+    return provider, []
+
+
+def rank_results(query: str, results: list[SearchResult]) -> list[SearchResult]:
+    terms = [term for term in re.findall(r"[a-z0-9]+", query.lower()) if len(term) > 2]
+    if not terms:
+        return results
+
+    def score(result: SearchResult) -> tuple[int, int]:
+        haystack = f"{result.title} {result.snippet}".lower()
+        matches = sum(1 for term in terms if term in haystack)
+        return (-matches, len(result.title))
+
+    return sorted(results, key=score)
+
+
+def comprehensive_web_search(query: str, *, max_pages: int = 5, time_filter: str | None = None) -> dict[str, Any]:
+    settings = load_settings()
+    provider_name, raw_results = search_provider(query, settings=settings, max_results=max(max_pages, int(settings.get("search_result_count") or 5)), time_filter=time_filter)
+    if not raw_results:
+        return {
+            "query": query,
+            "provider": provider_name,
+            "time_filter": time_filter,
+            "ok": False,
+            "error": "no search results",
+            "sources": [],
+            "context": f"No search results found for: {query}",
+        }
+
+    ranked = rank_results(query, raw_results)
+    sources = [{"url": item.url, "title": item.title} for item in ranked[:max_pages]]
+
+    fetched: list[dict[str, Any]] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, max_pages or 1)) as executor:
+        future_map = {
+            executor.submit(fetch_webpage_content, source["url"], timeout=10, max_chars=5000): source
+            for source in sources
+        }
+        for future in concurrent.futures.as_completed(future_map):
+            source = future_map[future]
+            try:
+                page = future.result()
+            except Exception as e:
+                fetched.append({"url": source["url"], "title": source["title"], "success": False, "error": str(e), "content": ""})
+                continue
+            if page.get("success") and page.get("content"):
+                fetched.append(page)
+
+    parts: list[str] = []
+    parts.append("```sources")
+    for idx, source in enumerate(sources, 1):
+        parts.append(f"[{idx}] {source['title']}")
+        parts.append(f"    {source['url']}")
+    parts.append("```")
+    parts.append("")
+    parts.append("=" * 70)
+    parts.append("WEB SEARCH RESULTS AND FETCHED CONTENT")
+    parts.append(f"Query: {query}")
+    parts.append(f"Provider: {provider_name}")
+    parts.append(f"Searched {len(ranked)} results, fetched {len(fetched)} pages")
+    parts.append("=" * 70)
+    parts.append("")
+    parts.append("SEARCH RESULTS SUMMARY:")
+    parts.append("-" * 50)
+    for idx, result in enumerate(ranked, 1):
+        parts.append(f"\n[{idx}] {result.title}")
+        parts.append(f"    URL: {result.url}")
+        if result.snippet:
+            parts.append(f"    Snippet: {truncate(result.snippet, 220)}")
+
+    if fetched:
+        parts.append("\n" + "=" * 70)
+        parts.append("FETCHED PAGE CONTENT:")
+        parts.append("-" * 50)
+        for idx, page in enumerate(fetched, 1):
+            title = page.get("title") or ""
+            parts.append(f"\n[CONTENT {idx}] From: {page.get('url', '')}")
+            if title:
+                parts.append(f"Title: {title}")
+            parts.append(truncate(page.get("content", ""), 2500))
+
+    return {
+        "query": query,
+        "provider": provider_name,
+        "time_filter": time_filter,
+        "ok": True,
+        "sources": sources,
+        "context": "\n".join(parts).strip(),
+    }
+
+
+def render_text(result: dict[str, Any]) -> str:
+    if not result.get("ok"):
+        return textwrap.dedent(
+            f"""
+            === Query: {result.get('query', '')} ===
+            Error: {result.get('error', 'unknown error')}
+            """
+        ).strip()
+    header = [
+        f"=== Query: {result['query']} ===",
+        f"Provider: {result.get('provider', '')}",
+        f"Time filter: {result.get('time_filter') or '(none)'}",
+        "",
+        result.get("context", ""),
+    ]
+    return "\n".join(header).strip()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Standalone batch web search")
+    p.add_argument("queries", nargs="*", help="One or more search queries")
+    p.add_argument("--queries-file", help="Read queries from a text file (one per line); use '-' for stdin")
+    p.add_argument("--stdin", action="store_true", help="Read queries from stdin, one per line")
+    p.add_argument("--max-pages", type=int, default=5, help="Maximum pages to fetch per query")
+    p.add_argument("--time-filter", choices=["day", "week", "month", "year"], help="Force a freshness filter")
+    p.add_argument("--json", action="store_true", help="Print JSON instead of text")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        queries = collect_queries(args)
+    except Exception as e:
+        sys.stderr.write(f"error: {e}\n")
+        return 1
+
+    if not queries:
+        sys.stderr.write("error: provide queries as arguments, --queries-file, or stdin\n")
+        return 1
+
+    items = [
+        comprehensive_web_search(query, max_pages=args.max_pages, time_filter=args.time_filter or infer_time_filter(query))
+        for query in queries
+    ]
+
+    if args.json:
+        json.dump({"count": len(items), "items": items}, sys.stdout, indent=2, ensure_ascii=False)
+        sys.stdout.write("\n")
+    else:
+        for index, item in enumerate(items, 1):
+            sys.stdout.write(render_text(item))
+            if index < len(items):
+                sys.stdout.write("\n\n")
+        sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

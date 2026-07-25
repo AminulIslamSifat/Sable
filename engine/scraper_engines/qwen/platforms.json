@@ -1,0 +1,20 @@
+{
+    "active_platform": "qwen",
+    "stealth_mode": true,
+    "use_obsidian": false,
+    "output_dir": "output",
+    "qwen": {
+        "name": "Qwen",
+        "url": "https://chat.qwen.ai/",
+        "selectors": {
+            "input": "textarea.message-input-textarea, textarea[placeholder='How can I help you today?']",
+            "send_btn": "div.message-input-right-button-send button.send-button",
+            "response": "div.response-message-content",
+            "content": "div.response-message-content",
+            "stop": "div.chat-prompt-send-button button.stop-button"
+        },
+        "keys": {
+            "send": "Enter"
+        }
+    }
+}

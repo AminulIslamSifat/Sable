@@ -1,0 +1,108 @@
+{
+  "semantic": [
+    {
+      "key": "Project Name",
+      "value": "Sable — an agentic chat platform with multi-engine support and autonomous agent capabilities"
+    },
+    {
+      "key": "Architecture",
+      "value": "Observer-based architecture supporting sequential command execution and platform switching between LLM engines"
+    },
+    {
+      "key": "Tech Stack",
+      "value": "Python backend (FastAPI), vanilla JS frontend, SQLite session storage, uv for dependency management"
+    },
+    {
+      "key": "Key Components",
+      "value": "GhostChat autonomous agent, Void Sentinel cloud storage sync, Brain memory system, skill registry with routing protocol"
+    },
+    {
+      "key": "User",
+      "value": "Sifat — CSE student from Rajshahi, Bangladesh. Prefers early returns, explicit typing, clean error handling. Uses Arch Linux + Hyprland."
+    },
+    {
+      "key": "New Chat Memory Consolidation",
+      "value": "Sable supports consolidating conversation memory when starting a new chat by reviewing the current conversation against existing Brain/Memory.json and saving only dense, non-persona, non-instruction facts."
+    },
+    {
+      "key": "Memory Format Best Practices",
+      "value": "LLM agent memory should be flattened (not nested), categorized into semantic/episodic/procedural types, rendered as plain text for prompt injection to save ~30% tokens, and filtered to only high-signal entries."
+    },
+    {
+      "key": "Consolidation Model Preference",
+      "value": "Sifat prefers using Qwen 3.7 Max in fast mode for memory consolidation tasks to avoid consuming expensive main model tokens."
+    },
+    {
+      "key": "Brain Memory Storage",
+      "value": "Sable's Brain settings panel, placed beside General, persists categorized memory (semantic/episodic/procedural) in Brain/Memory.json."
+    }
+  ],
+  "episodic": [
+    {
+      "key": "Memory System Added",
+      "value": "2026-07-24: Brain panel with categorized memory (semantic/episodic/procedural) integrated into settings and context sync"
+    },
+    {
+      "key": "Context Sync Upgrade",
+      "value": "2026-07-24: Memory injection moved from flat list to categorized markdown sections rendered after Maria.md in system prompt"
+    },
+    {
+      "key": "New Chat Consolidation Added",
+      "value": "2026-07-24: Added New Chat memory consolidation with toast feedback states for consolidating, saved N memories, and nothing new worth remembering."
+    },
+    {
+      "key": "Brain Panel Implementation",
+      "value": "2026-07-24: Built Brain settings panel with categorized memory UI, fixed frontend/backend format mismatch (flat array vs categorized dict), restored wiped seed data, and added full-text readability for long entries."
+    },
+    {
+      "key": "New Chat Consolidation Feedback",
+      "value": "2026-07-24: Added toast notifications for memory consolidation states (consolidating, saved N memories, nothing new) after user noted silent operation was unusable."
+    },
+    {
+      "key": "Background Consolidation UX",
+      "value": "2026-07-24: New Chat memory consolidation was made fire-and-forget so the chat opens immediately; consolidation completes in the background with toast feedback."
+    }
+  ],
+  "procedural": [
+    {
+      "key": "Adding Memory Entries",
+      "value": "Use POST /api/settings/memory with {memory: {...}} payload containing semantic/episodic/procedural arrays. Frontend Brain tab provides category tabs, add/delete/save UI."
+    },
+    {
+      "key": "Sync Context Flow",
+      "value": "session.py loads Maria.md then output_format.md then skills.md then injects Brain/Memory.json as formatted markdown sections then appends system directories"
+    },
+    {
+      "key": "Skill Routing",
+      "value": "Match request to trigger conditions not skill name, load instruction.md via get_file, never guess parameters. One skill per response."
+    },
+    {
+      "key": "Consolidation Prompt Templating",
+      "value": "Avoid Python str.format for consolidation prompts containing literal JSON braces; use safe substitution or escaped braces to prevent KeyError, 500 responses, and frontend JSON parse failures."
+    },
+    {
+      "key": "Frontend API Response Handling",
+      "value": "Sable frontend must check res.ok before calling res.json and surface toast feedback for memory consolidation results instead of silently failing."
+    },
+    {
+      "key": "Memory Consolidation Policy",
+      "value": "When consolidating memories, pass current memory and instruct the model to return only high-signal semantic, episodic, or procedural entries not already covered by persona, instructions, or existing memory."
+    },
+    {
+      "key": "Python Format String Safety",
+      "value": "Never use Python str.format() on prompts containing literal JSON braces; use safe substitution or escaped braces to prevent KeyError crashes that return HTML instead of JSON."
+    },
+    {
+      "key": "Frontend Error Handling",
+      "value": "Always check res.ok before calling res.json() in Sable frontend to properly surface backend errors instead of triggering JSON parse failures on HTML error responses."
+    },
+    {
+      "key": "Memory UI State Management",
+      "value": "When changing memory API response format, ensure frontend cache initialization matches new structure to prevent saving empty arrays over existing data."
+    },
+    {
+      "key": "Non-blocking Consolidation",
+      "value": "Do not await memory consolidation before opening a new Sable chat; trigger it as a background/fire-and-forget task and notify via toast when finished."
+    }
+  ]
+}

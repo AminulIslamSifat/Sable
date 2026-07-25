@@ -1,0 +1,372 @@
+"""FastAPI-friendly service layer for Sable chat engine."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from collections.abc import AsyncGenerator
+from typing import Any
+
+import httpx
+
+from engine.config import URL
+from engine.payloads import build_body
+from engine.session import BrowserManager, create_new_chat
+
+
+class ChatService:
+    """Wraps the existing Sable engine into an async, coroutine-safe API-friendly layer.
+
+    NOTE: BrowserManager and create_new_chat (session.py) are async (Playwright's
+    async API), so every method here that touches them is async too. Callers
+    (e.g. FastAPI route handlers) need `await service.foo()` and
+    `async for event in service.stream_events(...)` instead of the old sync calls.
+    """
+
+    def __init__(self, user_data_dir: str = "./browser-data") -> None:
+        self._browser = BrowserManager(user_data_dir=user_data_dir)
+        self._headers: dict[str, str] | None = None
+        self._lock = asyncio.Lock()
+
+    async def close(self) -> None:
+        async with self._lock:
+            await self._browser.close()
+            self._headers = None
+
+    async def restart_browser(self, headless: bool | None = None) -> None:
+        async with self._lock:
+            await self._browser.restart(headless=headless)
+            self._headers = None
+
+    @property
+    def browser_headless(self) -> bool:
+        return self._browser.headless
+
+    async def _ensure_headers(self) -> dict[str, str]:
+        async with self._lock:
+            if not self._headers:
+                self._headers = await self._browser.get_fresh_headers()
+            return self._headers
+
+    async def _refresh_headers(self) -> dict[str, str]:
+        async with self._lock:
+            self._headers = await self._browser.get_fresh_headers()
+            return self._headers
+
+    async def warmup(self) -> None:
+        async with self._lock:
+            try:
+                await self._browser.start()
+                if not self._headers:
+                    self._headers = await self._browser.get_fresh_headers()
+            except Exception as exc:
+                print(f"[WARN] Warmup failed: {type(exc).__name__}: {exc}")
+                self._headers = None
+
+    async def create_chat(self, model: str | None = None) -> str | None:
+        headers = await self._ensure_headers()
+        chat_id = await create_new_chat(headers, model=model)
+        if not chat_id:
+            headers = await self._refresh_headers()
+            chat_id = await create_new_chat(headers, model=model)
+        return chat_id
+
+    async def upload_image(self, image_path: str) -> dict[str, Any] | None:
+        return await self._browser.upload_image(image_path)
+
+    async def sync_context(self) -> bool:
+        return await self._browser.sync_context()
+
+    async def stream_events(
+        self,
+        message: str,
+        chat_id: str | None = None,
+        parent_id: str | None = None,
+        files: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        thinking_mode: str | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        try:
+            headers = await self._ensure_headers()
+            active_chat_id = chat_id
+
+            if not active_chat_id:
+                active_chat_id = await create_new_chat(headers, model=model)
+                if not active_chat_id:
+                    headers = await self._refresh_headers()
+                    active_chat_id = await create_new_chat(headers, model=model)
+
+            if not active_chat_id:
+                yield {"type": "error", "message": "Could not create chat session"}
+                return
+        except Exception as exc:
+            yield {"type": "error", "message": f"Session startup failed: {type(exc).__name__}: {exc}"}
+            return
+
+        yield {"type": "meta", "chat_id": active_chat_id, "parent_id": parent_id}
+        yield {"type": "status", "message": "calling_upstream"}
+
+        body = build_body(message, active_chat_id, parent_id, files=files, model=model, thinking_mode=thinking_mode)
+        params = {"chat_id": active_chat_id}
+
+        try:
+            async for event in self._stream_request(
+                headers=headers,
+                body=body,
+                params=params,
+                chat_id=active_chat_id,
+                parent_id=parent_id,
+                files=files,
+                is_retry=False,
+            ):
+                yield event
+        except httpx.ConnectError as exc:
+            yield {"type": "error", "message": f"Connection failed: {exc}"}
+        except httpx.ReadTimeout:
+            yield {"type": "error", "message": "Timed out waiting for response"}
+        except Exception as exc:
+            yield {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
+
+    async def _stream_request(
+        self,
+        headers: dict[str, str],
+        body: dict[str, Any],
+        params: dict[str, str],
+        chat_id: str,
+        parent_id: str | None,
+        files: list[dict[str, Any]] | None,
+        is_retry: bool,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        max_attempts = 3
+        last_error_msg: str | None = None
+
+        for attempt in range(1, max_attempts + 1):
+            new_parent_id = parent_id
+            chosen_response_id: str | None = None
+            got_content = False
+            status_code = 0
+            needs_refresh = False
+
+            try:
+                async with httpx.AsyncClient(timeout=120) as client:
+                    async with client.stream("POST", URL, headers=headers, json=body, params=params) as res:
+                        status_code = res.status_code
+                        print(f"[DEBUG] Upstream HTTP {res.status_code} (attempt {attempt}/{max_attempts})")
+                        yield {"type": "debug", "message": f"HTTP {res.status_code} (attempt {attempt}/{max_attempts})"}
+
+                        if res.status_code in (401, 403):
+                            await res.aread()
+                            needs_refresh = True
+                        elif res.status_code != 200:
+                            raw = (await res.aread()).decode(errors="replace")
+                            # Check if non-200 response is actually a rate-limit or API error
+                            try:
+                                err_data = json.loads(raw)
+                                if err_data.get("success") is False:
+                                    inner = err_data.get("data", {})
+                                    code = inner.get("code", "")
+                                    if code == "RateLimited":
+                                        hours = inner.get("num", "?")
+                                        details = inner.get("details", "Daily usage limit reached.")
+                                        yield {
+                                            "type": "rate_limited",
+                                            "message": details,
+                                            "hours": hours,
+                                            "template": inner.get("template", ""),
+                                        }
+                                        return
+                                    yield {
+                                        "type": "error",
+                                        "message": f"API error [{code}]: {inner.get('details', 'Unknown error')}",
+                                    }
+                                    return
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+                            last_error_msg = f"HTTP {res.status_code}: {raw[:500]}"
+                            continue
+                        else:
+                            buffer = ""
+                            async for chunk in res.aiter_bytes():
+                                if not chunk:
+                                    continue
+
+                                buffer += chunk.decode("utf-8", errors="replace")
+                                while "\n" in buffer:
+                                    line, buffer = buffer.split("\n", 1)
+                                    line = line.strip()
+
+                                    if not line.startswith("data: "):
+                                        # Check for non-SSE JSON error responses (e.g. rate limit)
+                                        if line:
+                                            try:
+                                                err_data = json.loads(line)
+                                                if err_data.get("success") is False:
+                                                    inner = err_data.get("data", {})
+                                                    code = inner.get("code", "")
+                                                    if code == "RateLimited":
+                                                        hours = inner.get("num", "?")
+                                                        details = inner.get("details", "Daily usage limit reached.")
+                                                        yield {
+                                                            "type": "rate_limited",
+                                                            "message": details,
+                                                            "hours": hours,
+                                                            "template": inner.get("template", ""),
+                                                        }
+                                                        return
+                                                    # Other API errors
+                                                    yield {
+                                                        "type": "error",
+                                                        "message": f"API error [{code}]: {inner.get('details', 'Unknown error')}",
+                                                    }
+                                                    return
+                                            except json.JSONDecodeError:
+                                                pass
+                                        continue
+
+                                    try:
+                                        data = json.loads(line[6:])
+                                    except json.JSONDecodeError:
+                                        continue
+
+                                    created = data.get("response.created")
+                                    if isinstance(created, dict):
+                                        response_id = created.get("response_id")
+                                        if isinstance(response_id, str):
+                                            if created.get("response_index") == "0" or chosen_response_id is None:
+                                                chosen_response_id = response_id
+                                                new_parent_id = response_id
+
+                                    choices = data.get("choices", [])
+                                    if not choices:
+                                        continue
+
+                                    response_id = data.get("response_id")
+                                    if isinstance(response_id, str):
+                                        if chosen_response_id is None:
+                                            chosen_response_id = response_id
+                                            new_parent_id = response_id
+                                        elif response_id != chosen_response_id:
+                                            continue
+
+                                    delta = choices[0].get("delta", {})
+                                    phase = delta.get("phase", "")
+                                    content = delta.get("content", "")
+                                    extra = delta.get("extra", {})
+
+                                    tool_calls = delta.get("tool_calls") or extra.get("tool_calls")
+                                    if tool_calls:
+                                        yield {"type": "tool_call", "data": tool_calls}
+
+                                    tool_results = delta.get("tool_results") or extra.get("tool_results")
+                                    if tool_results:
+                                        yield {"type": "tool_result", "data": tool_results}
+
+                                    if phase in ("thinking_summary", "thinking"):
+                                        thoughts = extra.get("summary_thought", {}).get("content", [])
+                                        text = "".join(thoughts) if thoughts else content
+                                        if text:
+                                            got_content = True
+                                            yield {"type": "thinking", "text": text}
+                                    elif phase == "answer" and content:
+                                        got_content = True
+                                        yield {"type": "answer", "text": content}
+                                    elif content:
+                                        got_content = True
+                                        yield {"type": "answer", "text": content}
+
+            except httpx.ConnectError as exc:
+                last_error_msg = f"Connection failed: {exc}"
+                continue
+            except httpx.ReadTimeout:
+                last_error_msg = "Timed out waiting for response"
+                continue
+            except Exception as exc:
+                last_error_msg = f"{type(exc).__name__}: {exc}"
+                continue
+
+            if got_content:
+                yield {"type": "done", "chat_id": chat_id, "parent_id": new_parent_id}
+                return
+
+            if needs_refresh:
+                last_error_msg = f"HTTP {status_code} — auth rejected"
+
+            if not got_content and not needs_refresh:
+                # Check if buffer has leftover non-SSE JSON (e.g. rate-limit on HTTP 200)
+                leftover = buffer.strip() if buffer else ""
+                if leftover:
+                    try:
+                        err_data = json.loads(leftover)
+                        if err_data.get("success") is False:
+                            inner = err_data.get("data", {})
+                            code = inner.get("code", "")
+                            if code == "RateLimited":
+                                hours = inner.get("num", "?")
+                                details = inner.get("details", "Daily usage limit reached.")
+                                yield {
+                                    "type": "rate_limited",
+                                    "message": details,
+                                    "hours": hours,
+                                    "template": inner.get("template", ""),
+                                }
+                                return
+                            yield {
+                                "type": "error",
+                                "message": f"API error [{code}]: {inner.get('details', 'Unknown error')}",
+                            }
+                            return
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                last_error_msg = f"Upstream returned HTTP {status_code} with zero content — WAF tokens may be stale or the session expired"
+
+            if attempt < max_attempts:
+                print(f"[WARN] Attempt {attempt} failed: {last_error_msg}. Refreshing headers and retrying...")
+                yield {"type": "status", "message": f"retrying_attempt_{attempt + 1}"}
+                yield {"type": "debug", "message": f"Attempt {attempt} failed: {last_error_msg}. Refreshing session."}
+                headers = await self._refresh_headers()
+                await asyncio.sleep(1 * attempt)
+                continue
+
+        yield {"type": "error", "message": f"Failed after {max_attempts} attempts: {last_error_msg}"}
+
+    async def chat(
+        self,
+        message: str,
+        chat_id: str | None = None,
+        parent_id: str | None = None,
+        files: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        thinking_mode: str | None = None,
+    ) -> dict[str, Any]:
+        thinking_parts: list[str] = []
+        answer_parts: list[str] = []
+        tool_events: list[dict[str, Any]] = []
+        final_chat_id = chat_id
+        final_parent_id = parent_id
+        error: str | None = None
+
+        async for event in self.stream_events(message, chat_id, parent_id, files, model=model, thinking_mode=thinking_mode):
+            event_type = event.get("type")
+
+            if event_type == "thinking":
+                thinking_parts.append(str(event.get("text", "")))
+            elif event_type == "answer":
+                answer_parts.append(str(event.get("text", "")))
+            elif event_type in ("tool_call", "tool_result"):
+                tool_events.append(event)
+            elif event_type == "meta":
+                final_chat_id = event.get("chat_id") or final_chat_id
+            elif event_type == "done":
+                final_chat_id = event.get("chat_id") or final_chat_id
+                final_parent_id = event.get("parent_id") or final_parent_id
+            elif event_type == "error":
+                error = str(event.get("message", "Unknown error"))
+
+        return {
+            "chat_id": final_chat_id,
+            "parent_id": final_parent_id,
+            "thinking": "".join(thinking_parts),
+            "answer": "".join(answer_parts),
+            "tool_events": tool_events,
+            "error": error,
+        }
