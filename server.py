@@ -666,6 +666,43 @@ _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY = (
     "[SYSTEM: Memory consolidation pass. You already have the full conversation above. Do NOT re-summarize it.]\n\n"
     "CURRENT MEMORY STORE:\n<<CURRENT_MEMORY>>\n\n"
     "TASK: Scan the conversation above. Extract facts worth remembering for future sessions.\n"
+    "Memory is now semantic-search backed, so granular entries are fine — prefer many specific entries over few broad ones.\n\n"
+    "WHAT TO CAPTURE:\n"
+    "- Architecture decisions, design patterns, project structure\n"
+    "- User preferences, workflows, tool configs, environment details\n"
+    "- Bugs found, fixes applied, workarounds discovered\n"
+    "- API behaviors, quirks, gotchas, version-specific notes\n"
+    "- File paths, command patterns, dependency relationships\n"
+    "- Anything that would save time or prevent confusion in a future session\n\n"
+    "AUTO-CLASSIFICATION:\n"
+    "- PROTECTED: Credentials, passwords, API keys, sudo configs, security-sensitive paths,\n"
+    "  identity info, anything that MUST NEVER be forgotten or accidentally deleted.\n"
+    "  Protected entries are immune to deletion — never include protected keys in the delete list.\n"
+    "- EPHEMERAL: Temporary workarounds, time-bound tasks, version-specific hacks,\n"
+    "  debugging notes for active issues, anything with a natural expiration.\n"
+    "  Ephemeral entries require an expires_at field (ISO 8601 datetime string).\n"
+    "- SEMANTIC/EPISODIC/PROCEDURAL: Everything else — classify normally.\n\n"
+    "RULES:\n"
+    "- Skip entries already present in the current memory store (check keys and values)\n"
+    "- Each entry should be self-contained and searchable by its key\n"
+    "- Keys should be short descriptive labels; values should be dense and specific\n"
+    "- Delete entries that are now outdated, superseded, or contradicted by new info\n"
+    "- NEVER delete protected entries — they are permanent regardless of staleness\n"
+    "- No maximum limit — capture everything genuinely useful\n"
+    "- Still skip pure greetings, trivial chat, and transient one-off tasks\n\n"
+    'OUTPUT: Raw JSON only, no markdown fences, no explanation.\n'
+    'Format: {\n'
+    '  "add": {\n'
+    '    "semantic": [{"key": "...", "value": "..."}],\n'
+    '    "episodic": [{"key": "...", "value": "..."}],\n'
+    '    "procedural": [{"key": "...", "value": "..."}],\n'
+    '    "protected": [{"key": "...", "value": "..."}],\n'
+    '    "ephemeral": [{"key": "...", "value": "...", "expires_at": "2026-08-15T00:00:00"}]\n'
+    '  },\n'
+    '  "delete": ["exact_key_string"]\n'
+    '}\n'
+    'Delete list must NEVER contain keys from the protected category.\n'
+    'If nothing qualifies, return exactly: {"add": {"semantic": [], "episodic": [], "procedural": [], "protected": [], "ephemeral": []}, "delete": []}'
 )
 
 _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE = (
@@ -812,13 +849,16 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(new_entries, dict):
         return {"status": "error", "detail": "Expected dict with add/delete keys"}
 
-    # Support both old format (flat categories) and new format (add/delete)
-    adds = new_entries.get("add", {})
-    deletes = new_entries.get("delete", [])
-    if not isinstance(adds, dict):
-        # Legacy flat format fallback
-        adds = {k: v for k, v in new_entries.items() if k in ("semantic", "episodic", "procedural")}
+    # Support both formats: {"add": {...}, "delete": [...]} and flat {"semantic": [...], ...}
+    if "add" in new_entries:
+        adds = new_entries["add"]
+        deletes = new_entries.get("delete", [])
+    else:
+        # Flat format: top-level keys ARE the categories
+        adds = {k: v for k, v in new_entries.items() if k in ("semantic", "episodic", "procedural", "protected", "ephemeral")}
         deletes = []
+    if not isinstance(adds, dict):
+        adds = {}
     if not isinstance(deletes, list):
         deletes = []
 
@@ -983,11 +1023,16 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(new_entries, dict):
         return {"status": "error", "detail": "Expected dict with add/delete keys"}
 
-    adds = new_entries.get("add", {})
-    deletes = new_entries.get("delete", [])
-    if not isinstance(adds, dict):
-        adds = {k: v for k, v in new_entries.items() if k in ("semantic", "episodic", "procedural")}
+    # Support both formats: {"add": {...}, "delete": [...]} and flat {"semantic": [...], ...}
+    if "add" in new_entries:
+        adds = new_entries["add"]
+        deletes = new_entries.get("delete", [])
+    else:
+        # Flat format: top-level keys ARE the categories
+        adds = {k: v for k, v in new_entries.items() if k in ("semantic", "episodic", "procedural", "protected", "ephemeral")}
         deletes = []
+    if not isinstance(adds, dict):
+        adds = {}
     if not isinstance(deletes, list):
         deletes = []
 

@@ -950,24 +950,7 @@ class GhostChat:
                     "4. always use skills over raw command when respective skill are available.\n"
                 )
 
-                # Inject relevant memories after quick_reminder
-                try:
-                    from engine.memory_search import get_searcher
-                    import json as _json
-                    _ms_settings_path = PROJECT_ROOT / "memory_search_settings.json"
-                    _ms_enabled = True
-                    _ms_top_k = 10
-                    if _ms_settings_path.exists():
-                        _ms_cfg = _json.loads(_ms_settings_path.read_text(encoding="utf-8"))
-                        _ms_enabled = _ms_cfg.get("enabled", True)
-                        _ms_top_k = _ms_cfg.get("top_k", 10)
-                    if _ms_enabled:
-                        _ms_results = get_searcher().search(message, top_k=_ms_top_k)
-                        _ms_block = get_searcher().format_for_prompt(_ms_results)
-                        if _ms_block:
-                            reminder = f"{reminder}\n{_ms_block}\n\n"
-                except Exception:
-                    pass
+                # Memory is injected centrally by server.py — do NOT duplicate here.
 
                 date_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 message = f"[{date_time}]\n{message}"

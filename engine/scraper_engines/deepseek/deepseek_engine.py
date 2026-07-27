@@ -454,12 +454,9 @@ class GhostChat:
                 elif not self.system_injected:
                     instructions = self._load_instructions()
                     markdown_instruction = "MOST IMPORTANT OF ALL\n START YOUR RESPONSE WITH ``` AND ENDS WITH ```, WRAP YOUR WHOLE RESPONSE WITH IT. DON'T USE ``` IN ANYWHERE ELSE IN YOUR RESPONSE."
-                    mem_block = _get_relevant_memories(message)
+                    # Memory is injected centrally by server.py — do NOT duplicate here.
                     if instructions:
-                        if mem_block:
-                            message = f"[SYSTEM INSTRUCTION]\n{instructions}\n\n{mem_block}\n\n{markdown_instruction}\n\n[USER MESSAGE]\n{message}"
-                        else:
-                            message = f"[SYSTEM INSTRUCTION]\n{instructions}\n\n{markdown_instruction}\n\n[USER MESSAGE]\n{message}"
+                        message = f"[SYSTEM INSTRUCTION]\n{instructions}\n\n{markdown_instruction}\n\n[USER MESSAGE]\n{message}"
                     self.system_injected = True
                 else:
                     # Prepend a short quick reminder to every next user message
@@ -469,12 +466,8 @@ class GhostChat:
                         "2. Use ~~~ for code blocks instead of ```, <execute_command> to run any command.\n"
                         "3. Always use approtiate tag to run command or use skills.\n\n"
                     )
-                    # Inject relevant memories after quick_reminder
-                    mem_block = _get_relevant_memories(message)
-                    if mem_block:
-                        message = f"{reminder}{mem_block}\n\n[USER MESSAGE]\n{message}"
-                    else:
-                        message = f"{reminder}[USER MESSAGE]\n{message}"
+                    # Memory is injected centrally by server.py — do NOT duplicate here.
+                    message = f"{reminder}[USER MESSAGE]\n{message}"
 
                 # Try clipboard paste first for all messages to bypass automation detection and keep Angular in sync!
                 filled = await self._paste_large_message(field, message)
