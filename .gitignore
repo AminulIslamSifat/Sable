@@ -30,6 +30,7 @@ uploads/
 !.env.example
 *.key
 *.pem
+.session_tokens.json
 
 # OS junk
 .DS_Store

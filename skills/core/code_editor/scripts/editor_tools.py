@@ -5,22 +5,32 @@ LLM coding agents, modeled on how Claude Code, Aider, and pi's coding
 agent avoid the failure modes of "have the model paste a whole file
 through a shell heredoc."
 
-v2 changes (see CHANGELOG at bottom of SKILL.md):
-  - Preserves the file's original line-ending style (CRLF vs LF) instead
-    of silently normalizing CRLF -> LF on every write.
-  - edit_file accepts a single edit OR a list of edits, applied
-    atomically: every edit is validated (unique match found) BEFORE any
-    of them are written, so a rename touching 5 spots either fully
-    succeeds or fails with zero changes made — never a half-applied file.
-  - New insert_file() for anchor-less insertion (e.g. "add this import
-    at line 3", "add this function right after this line") — edit_file
-    requires replacing existing text; insert_file adds new text without
-    needing to match-and-replace something.
-  - edit_file()'s return value includes a short unified-diff snippet so
-    the caller gets visual confirmation of exactly what changed, not
-    just "Edited 'x.py'".
-  - Backups are capped per-file (default 20, oldest pruned) so
-    .editor_tools_backups/ doesn't grow forever on a long agent session.
+v3 changes — redesigned around how real coding agents actually do this
+(Aider's SEARCH/REPLACE blocks, Anthropic's own str_replace_based_edit_tool,
+OpenAI Codex's apply_patch/V4A): none of them make a model hand-author
+JSON containing code. Raw code sits directly in the payload, never
+nested inside a hand-escaped JSON string.
+  - `edit` now reads plain SEARCH/REPLACE marker blocks (see
+    _parse_search_replace_blocks docstring) from stdin or --diff-file.
+    One heredoc, no JSON, no escaping — the exact failure mode that
+    kept breaking (newlines/quotes mangling a hand-typed JSON string)
+    is structurally impossible now, because old_str/new_str are never
+    inside a string literal. Multiple blocks in one call = atomic batch,
+    same guarantee as before (all validated before any write happens).
+  - --json-file is kept ONLY for programmatic/scripted callers that
+    already have a JSON array lying around; it is no longer the
+    documented default and the skill doc no longer teaches it first.
+  - JSON parsing (still available via --json-file) catches
+    json.JSONDecodeError specifically and reports the exact byte
+    offset with surrounding context and a concrete diagnosis, instead
+    of a bare "Internal error: Expecting ',' delimiter" with no context.
+  - insert keeps its v2 raw-file interface (--content-file plus
+    --at-line / --after-str / --after-file) — that command only ever
+    needed a single raw string, so --content-file already solved it;
+    no marker format needed there.
+  - Everything else is unchanged: CRLF/LF preservation, atomic
+    multi-edit validation, layered exact->normalized matching, capped
+    backups, unified-diff snippet in the return value.
 
 Design principles (see SKILL.md for full rationale):
   1. Files on disk are NEVER modified except through create_file(),
@@ -41,6 +51,11 @@ Design principles (see SKILL.md for full rationale):
   5. Every successful edit_file()/insert_file() call writes a
      timestamped backup before touching the real file, so a bad edit is
      always one copy away from reversible.
+  6. Raw code (old_str, new_str, insert content) should never have to
+     survive a hand-typed JSON escaping pass. JSON is available for
+     batch edits where it's genuinely useful, but every single-edit /
+     single-insert workflow has a raw-file (or raw-arg) path that never
+     touches a JSON parser.
 
 Exit codes for CLI use: 0 = success, 1 = user/model error (bad match,
 missing file, etc — safe to retry with corrected args), 2 = unexpected
@@ -375,7 +390,6 @@ def edit_file(path: str, edits, backup: bool = True) -> str:
 
 
 # --------------------------------------------------------------------------
-# --------------------------------------------------------------------------
 # insert — anchor-less insertion (new lines, not a replace)
 # --------------------------------------------------------------------------
 
@@ -425,6 +439,112 @@ def insert_file(path: str, content: str, at_line: int = None, after_str: str = N
 
 
 # --------------------------------------------------------------------------
+# SEARCH/REPLACE blocks — the PRIMARY edit format (v3). Same idea as
+# Aider's edit blocks / a git merge conflict: raw code sits directly in
+# the payload between sentinel lines, never inside a string literal, so
+# there is nothing to escape. One or more blocks per call; multiple
+# blocks are applied atomically as a batch (same guarantee edit_file()
+# already provides for a list of {old_str,new_str} dicts).
+# --------------------------------------------------------------------------
+
+_SEARCH_MARK = "<<<<<<< SEARCH"
+_DIVIDER_MARK = "======="
+_REPLACE_MARK = ">>>>>>> REPLACE"
+
+
+def _parse_search_replace_blocks(text: str):
+    """Parse text of the form:
+
+        <<<<<<< SEARCH
+        ...old text, verbatim, any quotes/newlines/backslashes...
+        =======
+        ...new text, verbatim...
+        >>>>>>> REPLACE
+
+    Repeat the three-marker group for additional blocks (batch edit,
+    applied atomically). Each marker must appear alone on its own line
+    (surrounding whitespace on that line is ignored). Returns a single
+    {"old_str","new_str"} dict for one block, or a list of them for
+    multiple blocks — either is accepted by edit_file().
+    """
+    lines = text.split("\n")
+    blocks = []
+    state = "outside"   # outside -> search -> replace -> outside ...
+    cur_old, cur_new = [], []
+    for line in lines:
+        stripped = line.strip()
+        if state == "outside":
+            if stripped == _SEARCH_MARK:
+                state, cur_old = "search", []
+            # stray text outside any block (commentary, blank lines) is ignored
+        elif state == "search":
+            if stripped == _DIVIDER_MARK:
+                state, cur_new = "replace", []
+            else:
+                cur_old.append(line)
+        elif state == "replace":
+            if stripped == _REPLACE_MARK:
+                blocks.append({"old_str": "\n".join(cur_old), "new_str": "\n".join(cur_new)})
+                state = "outside"
+            else:
+                cur_new.append(line)
+
+    if state != "outside":
+        raise ToolError(
+            "Unterminated SEARCH/REPLACE block: missing the closing "
+            f"'{_DIVIDER_MARK}' or '{_REPLACE_MARK}' marker line. Each block "
+            f"needs exactly these three lines, each alone on its own line, "
+            f"in order:\n{_SEARCH_MARK}\n<old text>\n{_DIVIDER_MARK}\n<new text>\n{_REPLACE_MARK}"
+        )
+    if not blocks:
+        raise ToolError(
+            f"No SEARCH/REPLACE blocks found. Expected at least one block "
+            f"delimited by '{_SEARCH_MARK}' / '{_DIVIDER_MARK}' / '{_REPLACE_MARK}', "
+            f"each marker alone on its own line."
+        )
+    return blocks if len(blocks) > 1 else blocks[0]
+
+
+# --------------------------------------------------------------------------
+# JSON payload loading — legacy/programmatic path only (--json-file).
+# Gives a real diagnosis instead of a bare parser exception, since the
+# most common cause is a hand-typed heredoc with a literal newline or
+# unescaped quote landing inside a JSON string value. Prefer
+# _parse_search_replace_blocks for anything a model is typing by hand.
+# --------------------------------------------------------------------------
+
+def _load_json_payload(raw_text: str, source_label: str):
+    try:
+        return json.loads(raw_text)
+    except json.JSONDecodeError as e:
+        pos = e.pos
+        window = 40
+        start = max(0, pos - window)
+        end = min(len(raw_text), pos + window)
+        excerpt = raw_text[start:end]
+        pointer_col = pos - start
+        pointer_line = " " * pointer_col + "^-- around here"
+        raise ToolError(
+            f"Malformed JSON from {source_label}: {e.msg} at line {e.lineno} "
+            f"column {e.colno} (char {pos}).\n"
+            f"This almost always means a literal newline, tab, or an "
+            f"unescaped \" or \\ landed inside a JSON string value instead "
+            f"of being written as \\n / \\\" / \\\\.\n"
+            f"--- context around the error ---\n{excerpt}\n{pointer_line}\n"
+            f"--- fix ---\n"
+            f"For a single edit, skip JSON entirely: write old_str to one "
+            f"raw file and new_str to another (plain heredocs, no escaping "
+            f"needed), then run:\n"
+            f"  editor_tools.py edit <path> --old-file <old.txt> --new-file <new.txt>\n"
+            f"For insert, use:\n"
+            f"  editor_tools.py insert <path> --content-file <new.txt> --at-line N\n"
+            f"  editor_tools.py insert <path> --content-file <new.txt> --after-str \"<anchor line>\"\n"
+            f"JSON is only needed for batch edits (a list of multiple "
+            f"old_str/new_str pairs applied atomically)."
+        ) from None
+
+
+# --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
 
@@ -445,14 +565,29 @@ def _cli():
     p_create.add_argument("--content-file", help="Read content from this file instead of stdin")
     p_create.add_argument("--overwrite", action="store_true")
 
-    p_edit = sub.add_parser("edit", help="Replace old_str with new_str. JSON: {old_str,new_str} or [{old_str,new_str}, ...]")
+    p_edit = sub.add_parser(
+        "edit",
+        help="Replace text using <<<<<<< SEARCH / ======= / >>>>>>> REPLACE block(s) on "
+             "stdin (default) or --diff-file. --json-file is legacy/programmatic only.",
+    )
     p_edit.add_argument("path")
-    p_edit.add_argument("--json-file", help="File containing the edit JSON")
+    p_edit.add_argument("--diff-file", help="File containing SEARCH/REPLACE block(s), instead of stdin")
+    p_edit.add_argument("--json-file", help="Legacy: file containing JSON edit payload (dict or list)")
     p_edit.add_argument("--no-backup", action="store_true")
 
-    p_insert = sub.add_parser("insert", help="Insert new content without replacing anything")
+    p_insert = sub.add_parser(
+        "insert",
+        help="Insert new content without replacing anything. Prefer --content-file plus "
+             "--at-line or --after-str (raw, no JSON).",
+    )
     p_insert.add_argument("path")
-    p_insert.add_argument("--json-file", help='File containing {"content": "...", "at_line": N} or {"content": "...", "after_str": "..."}')
+    p_insert.add_argument("--content-file", help="RAW file containing the content to insert (no JSON, no escaping)")
+    p_insert.add_argument("--at-line", type=int, default=None, help="Insert BEFORE this 1-indexed line number")
+    p_insert.add_argument("--after-str", default=None, help="Insert immediately after this unique anchor text")
+    p_insert.add_argument("--after-file", default=None,
+                           help="RAW file containing the anchor text, for anchors too long/awkward for a CLI arg")
+    p_insert.add_argument("--json-file", help='File containing {"content": "...", "at_line": N} or '
+                                               '{"content": "...", "after_str": "..."}')
     p_insert.add_argument("--no-backup", action="store_true")
 
     args = parser.parse_args()
@@ -472,22 +607,48 @@ def _cli():
         elif args.command == "edit":
             if args.json_file:
                 with open(args.json_file, "r", encoding="utf-8") as f:
-                    payload = json.load(f)
+                    payload = _load_json_payload(f.read(), f"--json-file '{args.json_file}'")
             else:
-                payload = json.load(sys.stdin)
+                if args.diff_file:
+                    with open(args.diff_file, "r", encoding="utf-8") as f:
+                        raw_text = f.read()
+                else:
+                    raw_text = sys.stdin.read()
+                payload = _parse_search_replace_blocks(raw_text)
             print(edit_file(args.path, payload, backup=not args.no_backup))
 
         elif args.command == "insert":
-            if args.json_file:
+            if args.content_file and (args.at_line is not None or args.after_str or args.after_file):
+                with open(args.content_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                after_str = args.after_str
+                if args.after_file:
+                    if after_str is not None:
+                        raise ToolError("pass only one of --after-str / --after-file")
+                    with open(args.after_file, "r", encoding="utf-8") as f:
+                        after_str = f.read()
+                print(insert_file(
+                    args.path, content,
+                    at_line=args.at_line, after_str=after_str,
+                    backup=not args.no_backup,
+                ))
+            elif args.json_file:
                 with open(args.json_file, "r", encoding="utf-8") as f:
-                    payload = json.load(f)
+                    payload = _load_json_payload(f.read(), f"--json-file '{args.json_file}'")
+                print(insert_file(
+                    args.path, payload["content"],
+                    at_line=payload.get("at_line"), after_str=payload.get("after_str"),
+                    backup=not args.no_backup,
+                ))
+            elif args.content_file:
+                raise ToolError("--content-file requires --at-line, --after-str, or --after-file")
             else:
-                payload = json.load(sys.stdin)
-            print(insert_file(
-                args.path, payload["content"],
-                at_line=payload.get("at_line"), after_str=payload.get("after_str"),
-                backup=not args.no_backup,
-            ))
+                payload = _load_json_payload(sys.stdin.read(), "stdin")
+                print(insert_file(
+                    args.path, payload["content"],
+                    at_line=payload.get("at_line"), after_str=payload.get("after_str"),
+                    backup=not args.no_backup,
+                ))
 
     except ToolError as e:
         print(f"Error: {e}", file=sys.stderr)

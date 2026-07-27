@@ -950,6 +950,25 @@ class GhostChat:
                     "4. always use skills over raw command when respective skill are available.\n"
                 )
 
+                # Inject relevant memories after quick_reminder
+                try:
+                    from engine.memory_search import get_searcher
+                    import json as _json
+                    _ms_settings_path = PROJECT_ROOT / "memory_search_settings.json"
+                    _ms_enabled = True
+                    _ms_top_k = 10
+                    if _ms_settings_path.exists():
+                        _ms_cfg = _json.loads(_ms_settings_path.read_text(encoding="utf-8"))
+                        _ms_enabled = _ms_cfg.get("enabled", True)
+                        _ms_top_k = _ms_cfg.get("top_k", 10)
+                    if _ms_enabled:
+                        _ms_results = get_searcher().search(message, top_k=_ms_top_k)
+                        _ms_block = get_searcher().format_for_prompt(_ms_results)
+                        if _ms_block:
+                            reminder = f"{reminder}\n{_ms_block}\n\n"
+                except Exception:
+                    pass
+
                 date_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 message = f"[{date_time}]\n{message}"
 
@@ -1563,42 +1582,7 @@ class GhostChat:
             except Exception as e:
                 console.print(f"[dim yellow]Warning loading Maria.md base: {e}[/dim yellow]")
         
-        # 2. Load the dynamic Memory.json and construct the memory block
-        memory_json_path = os.path.join(PROJECT_ROOT, "Brain", "Memory.json")
-        if os.path.exists(memory_json_path):
-            try:
-                import json
-                with open(memory_json_path, encoding="utf-8") as f:
-                    data = json.load(f)
-                
-                memories = data.get("memories", [])
-                if memories:
-                    # Group by tier
-                    grouped = {}
-                    for mem in memories:
-                        tier = mem.get("tier", "T2")
-                        content = mem.get("content", "").strip()
-                        if content:
-                            grouped.setdefault(tier, []).append(content)
-                    
-                    tier_headers = {
-                        "T1": "### 💙 Core Identity & System Configs",
-                        "T2": "### 🔨 Active Projects & Technical Context",
-                        "T3": "### 🃏 Casual Context & Ephemeral Banter",
-                    }
-                    
-                    memory_parts = ["# 📓 Maria's Memory Core"]
-                    
-                    # Sort tiers so T1 comes first, then T2, then T3, then others
-                    for tier in sorted(grouped.keys()):
-                        header = tier_headers.get(tier, f"### 📂 Tier {tier} Context")
-                        memory_parts.append(header)
-                        for content in grouped[tier]:
-                            memory_parts.append(f"*   {content}")
-                    
-                    parts.append("\n\n".join(memory_parts))
-            except Exception as e:
-                console.print(f"[dim yellow]Warning loading or parsing Memory.json: {e}[/dim yellow]")
+        # 2. Memory is now injected per-message via semantic search (see send_msg reminder block)
 
         # 3. Load other instruction paths (excluding Maria.md which we handled dynamically)
         for path in _INSTRUCTION_PATHS:

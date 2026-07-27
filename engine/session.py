@@ -302,42 +302,7 @@ class BrowserManager:
         if maria_path.exists():
             instructions += maria_path.read_text(encoding="utf-8") + "\n\n"
 
-        # Inject Brain/Memory.json content right after Maria.md
-        memory_path = Path(__file__).resolve().parent.parent / "Brain" / "Memory.json"
-        if memory_path.exists():
-            try:
-                import json as _json
-                mem_data = _json.loads(memory_path.read_text(encoding="utf-8"))
-                mem_sections = []
-                # Support both new categorized format and legacy flat list
-                if isinstance(mem_data, dict):
-                    category_labels = {"semantic": "Facts & Knowledge", "episodic": "Events & Experiences", "procedural": "Skills & Processes"}
-                    for cat_key, label in category_labels.items():
-                        entries = mem_data.get(cat_key, [])
-                        if entries:
-                            lines = [f"## {label}"]
-                            for e in entries:
-                                if isinstance(e, dict):
-                                    k = e.get("key", "")
-                                    v = e.get("value", "")
-                                    lines.append(f"- **{k}**: {v}" if k else f"- {v}")
-                                else:
-                                    lines.append(f"- {e}")
-                            mem_sections.append("\n".join(lines))
-                elif isinstance(mem_data, list) and mem_data:
-                    lines = []
-                    for entry in mem_data:
-                        if isinstance(entry, dict):
-                            k = entry.get("key", entry.get("topic", ""))
-                            v = entry.get("value", entry.get("content", str(entry)))
-                            lines.append(f"- {k}: {v}" if k else f"- {v}")
-                        else:
-                            lines.append(f"- {entry}")
-                    mem_sections.append("\n".join(lines))
-                if mem_sections:
-                    instructions += "# Memory\n" + "\n\n".join(mem_sections) + "\n\n"
-            except Exception:
-                pass
+        # Memory is now injected per-message via semantic search (see service.stream_events)
 
         # Load remaining instructions
         for fname in ["output_format.md", "skills.md"]:

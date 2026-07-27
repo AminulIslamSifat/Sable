@@ -175,16 +175,17 @@ class ScraperEngine:
 
     async def _cleanup_engine(self, *, kill_browser: bool = False) -> None:
         engine = self.engine
-        self.engine = None
         if engine is None:
             return
 
-        # By default just detach — leave the browser process alive so it can
-        # be reused when the user switches back to scraper mode.
+        # When not killing the browser, keep self.engine intact so the next
+        # toggle-on reuses the exact same connection. No new Chrome window.
         if not kill_browser:
             return
 
-        # Full teardown: reset chat tracking so next launch starts fresh.
+        # Full teardown: null out engine and reset chat tracking.
+        self.engine = None
+        self.loaded_path = None
         self.active_chat_id = None
 
         cleanup = getattr(engine, "cleanup", None)
@@ -322,11 +323,81 @@ class ScraperEngine:
         self.loaded_path = engine_path
         return engine
 
+    async def _is_browser_alive(self, engine: Any) -> bool:
+        """Quick CDP liveness probe — returns False if browser was closed externally."""
+        port = getattr(engine, "port", None)
+        if port is None:
+            return True  # no port to check, assume alive
+        import socket
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(1.0)
+                return s.connect_ex(("127.0.0.1", int(port))) == 0
+        except Exception:
+            return False
+
+    async def _probe_existing_session(self, settings: dict[str, Any]) -> bool:
+        """Check if a headed browser is already running on the configured CDP port.
+
+        Returns True if we successfully reconnected to it, False otherwise.
+        This avoids spawning a duplicate Chrome window after toggle off/on.
+        """
+        import socket
+        import urllib.request
+
+        port = settings.get("port", DEFAULT_SETTINGS["port"])
+        user_data_dir = str(BASE_DIR / "browser-scraper-data")
+
+        # Quick TCP check first
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(1.0)
+                if s.connect_ex(("127.0.0.1", port)) != 0:
+                    return False
+        except Exception:
+            return False
+
+        # Verify it's our headed session with matching profile
+        try:
+            url = f"http://127.0.0.1:{port}/json/version"
+            req = urllib.request.Request(url, headers={"User-Agent": "GhostChat"})
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                data = json.loads(resp.read().decode())
+            remote_profile = data.get("userDataDir", "") or data.get("profile-path", "")
+            import os
+            if os.path.realpath(remote_profile) != os.path.realpath(user_data_dir):
+                return False
+            cmd_line = data.get("BrowserCommandLine", "")
+            if "--headless" in cmd_line:
+                return False
+        except Exception:
+            return False
+
+        # Existing headed session found — reconnect without launching new Chrome
+        engine_type = settings.get("engine_type", DEFAULT_ENGINE_TYPE)
+        engine_path = _resolve_engine_path(engine_type)
+        try:
+            cls = self._load_engine_class(Path(engine_path))
+            engine = self._instantiate_engine(cls, settings)
+            try:
+                engine.user_data_dir = user_data_dir
+            except Exception:
+                pass
+            await engine.connect()
+            self.engine = engine
+            self.loaded_path = engine_path
+            logger.info("Reconnected to existing headed browser on port %d", port)
+            return True
+        except Exception as exc:
+            logger.warning("Failed to reconnect to existing session: %s", exc)
+            return False
+
     async def prelaunch(self) -> dict[str, Any]:
         """Pre-launch the browser when scraper mode is enabled.
 
         Called from the API so the headed browser opens immediately
         instead of waiting for the first message.
+        Reuses an existing headed session if one is already running.
         """
         settings = _load_settings()
         if not settings.get("enabled"):
@@ -334,6 +405,14 @@ class ScraperEngine:
 
         try:
             async with self._lock:
+                # Skip re-launch if engine is already alive with same config
+                engine_type = settings.get("engine_type", DEFAULT_ENGINE_TYPE)
+                engine_path = _resolve_engine_path(engine_type)
+                if self.engine is not None and self.loaded_path == engine_path:
+                    return {"status": "ok", "message": "Browser already running"}
+                # Try reconnecting to existing headed session before launching new one
+                if await self._probe_existing_session(settings):
+                    return {"status": "ok", "message": "Reconnected to existing browser"}
                 await self._ensure_engine(settings)
             return {"status": "ok", "message": "Browser launched and connected"}
         except Exception as exc:
@@ -364,6 +443,22 @@ class ScraperEngine:
         except Exception as exc:
             logger.exception("Model switch failed")
             return {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
+
+    async def _interrupt_generation(self, engine: Any) -> None:
+        """Click the engine's on-page stop button so generation actually halts.
+
+        Called when the client aborts the stream — without this the browser
+        tab happily keeps generating for nobody, burning tokens in the
+        background until it finishes on its own.
+        """
+        stop = getattr(engine, "stop_generation", None)
+        if stop is None:
+            return
+        try:
+            if await stop():
+                logger.info("Browser generation stopped via on-page stop button")
+        except Exception as exc:
+            logger.warning("Could not click browser stop button: %s", exc)
 
     async def _stream_get_response(
         self,
@@ -468,17 +563,30 @@ class ScraperEngine:
         files: list[dict[str, Any]] | None = None,
         model: str | None = None,
         thinking_mode: str | None = None,
+        chat_url: str | None = None,
+        raw: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
         settings = _load_settings()
         if not settings.get("enabled"):
             yield {"type": "error", "message": "Browser scraper is disabled"}
             return
 
+        engine: Any = None
         async with self._lock:
             try:
                 yield {"type": "status", "message": "browser_scraper_starting"}
                 engine = await self._ensure_engine(settings)
                 yield {"type": "status", "message": "browser_scraper_connected"}
+
+                # Quick liveness check — if the browser was closed externally,
+                # _ensure_engine still returns the stale object. Probe CDP and
+                # restart if dead so we don't fail silently on send_msg.
+                if not await self._is_browser_alive(engine):
+                    logger.warning("Browser process gone, restarting engine")
+                    self.engine = None
+                    self.loaded_path = None
+                    engine = await self._ensure_engine(settings)
+                    yield {"type": "status", "message": "browser_scraper_reconnected"}
 
                 # DeepSeek: the requested model id rides along with every chat
                 # request (and reflects whatever the UI has selected, including
@@ -492,10 +600,25 @@ class ScraperEngine:
                 if chat_id and chat_id != self.active_chat_id:
                     # If the engine just switched models it already opened a
                     # fresh chat (with the right model clicked) — adopt the new
-                    # chat_id instead of opening a second, redundant chat that
-                    # would reload the page and snap DeepSeek back to Instant.
+                    # chat_id instead of opening a second, redundant chat.
                     if getattr(engine, "has_fresh_chat", False):
                         engine.has_fresh_chat = False
+                    elif chat_url:
+                        # Resume an existing scraper conversation by navigating
+                        # to its stored URL instead of starting a fresh chat.
+                        page = getattr(engine, "page", None)
+                        if page is not None:
+                            try:
+                                current = page.url
+                                if current != chat_url:
+                                    await page.goto(chat_url, wait_until="domcontentloaded", timeout=15000)
+                                    await asyncio.sleep(2)
+                                    yield {"type": "status", "message": "browser_resumed_chat"}
+                            except Exception as exc:
+                                yield {
+                                    "type": "status",
+                                    "message": f"browser_resume_failed: {exc}",
+                                }
                     else:
                         new_chat = getattr(engine, "new_chat", None)
                         if new_chat is not None:
@@ -535,7 +658,25 @@ class ScraperEngine:
                                     "message": f"browser_file_attach_failed:{exc}",
                                 }
 
-                sent = await engine.send_msg(message)
+                # Apply the requested thinking mode (DeepThink on/off) right
+                # before sending so the reply is generated with the correct
+                # reasoning setting. Only DeepSeek implements this; other
+                # engines simply ignore it.
+                if thinking_mode in ("deepthink", "fast"):
+                    set_thinking = getattr(engine, "set_thinking_mode", None)
+                    if set_thinking is not None:
+                        try:
+                            await set_thinking(thinking_mode)
+                        except Exception as exc:
+                            yield {
+                                "type": "status",
+                                "message": f"browser_thinking_mode_failed: {exc}",
+                            }
+
+                send_kwargs: dict[str, Any] = {}
+                if _accepts_arg(engine.send_msg, 'raw'):
+                    send_kwargs['raw'] = raw
+                sent = await engine.send_msg(message, **send_kwargs)
                 if not sent:
                     yield {
                         "type": "error",
@@ -566,11 +707,28 @@ class ScraperEngine:
                         }
 
                 new_parent = f"browser-{uuid.uuid4().hex}"
+                # Capture the browser URL after response completes — this is
+                # the conversation URL that lets us resume this chat later.
+                chat_url = None
+                try:
+                    page = getattr(engine, "page", None)
+                    if page is not None:
+                        chat_url = page.url
+                except Exception:
+                    pass
                 yield {
                     "type": "done",
                     "chat_id": chat_id,
                     "parent_id": new_parent,
+                    "chat_url": chat_url,
                 }
+            except (asyncio.CancelledError, GeneratorExit):
+                # The client hit stop (or the stream was cut mid-generation).
+                # Abort the fetch alone doesn't reach the webpage — click the
+                # real stop button so DeepSeek/Qwen actually stops generating.
+                if engine is not None:
+                    await self._interrupt_generation(engine)
+                raise
             except SystemExit as exc:
                 yield {
                     "type": "error",
@@ -591,12 +749,15 @@ class ScraperEngine:
         files: list[dict[str, Any]] | None = None,
         model: str | None = None,
         thinking_mode: str | None = None,
+        chat_url: str | None = None,
+        raw: bool = False,
     ) -> dict[str, Any]:
         thinking_parts: list[str] = []
         answer_parts: list[str] = []
         tool_events: list[dict[str, Any]] = []
         final_chat_id = chat_id
         final_parent_id = parent_id
+        final_chat_url: str | None = None
         error: str | None = None
 
         async for event in self.stream_events(
@@ -606,6 +767,8 @@ class ScraperEngine:
             files=files,
             model=model,
             thinking_mode=thinking_mode,
+            chat_url=chat_url,
+            raw=raw,
         ):
             event_type = event.get("type")
             if event_type == "thinking":
@@ -617,12 +780,14 @@ class ScraperEngine:
             elif event_type == "done":
                 final_chat_id = event.get("chat_id") or final_chat_id
                 final_parent_id = event.get("parent_id") or final_parent_id
+                final_chat_url = event.get("chat_url") or final_chat_url
             elif event_type == "error":
                 error = str(event.get("message", "Unknown scraper error"))
 
         return {
             "chat_id": final_chat_id,
             "parent_id": final_parent_id,
+            "chat_url": final_chat_url,
             "thinking": "".join(thinking_parts),
             "answer": "".join(answer_parts),
             "tool_events": tool_events,

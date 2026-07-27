@@ -51,6 +51,26 @@ _INSTRUCTION_PATHS = [
 
 _MEMORY_PATH = str(PROJECT_ROOT / "Brain" / "Memory.json")
 
+def _get_relevant_memories(message: str) -> str:
+    """Retrieve relevant memories for a user message via semantic search."""
+    try:
+        from engine.memory_search import get_searcher
+        import json as _json
+        settings_path = PROJECT_ROOT / "memory_search_settings.json"
+        enabled = True
+        top_k = 10
+        if settings_path.exists():
+            cfg = _json.loads(settings_path.read_text(encoding="utf-8"))
+            enabled = cfg.get("enabled", True)
+            top_k = cfg.get("top_k", 10)
+        if not enabled:
+            return ""
+        searcher = get_searcher()
+        results = searcher.search(message, top_k=top_k)
+        return searcher.format_for_prompt(results)
+    except Exception:
+        return ""
+
 _UI_GARBAGE_WORDS = (
     "code|markdown|download|content_copy|expand_less|expand_more|"
     "keyboard_arrow_down|keyboard_arrow_up|thinking|thoughts|edit|"
@@ -197,7 +217,7 @@ class GhostChat:
             "--no-default-browser-check",
             "--force-dark-mode",
             "--enable-features=WebUIDarkMode",
-            "--ozone-platform-hint=auto",
+            "--ozone-platform=wayland",
             "--disable-blink-features=AutomationControlled",
         ]
         if not self.viewer:
@@ -417,7 +437,7 @@ class GhostChat:
         text = re.sub(r"^text\n", "", text)
         return text
 
-    async def send_msg(self, message: str) -> bool:
+    async def send_msg(self, message: str, raw: bool = False) -> bool:
         for attempt in range(3):
             try:
                 field = await self._find_input_field()
@@ -427,11 +447,19 @@ class GhostChat:
                 await asyncio.sleep(0.5)
                 await field.click()
 
-                if not self.system_injected:
+                if raw:
+                    # Raw mode: send message as-is without any system prompt injection.
+                    # Used for internal prompts (memory consolidation, etc.)
+                    pass
+                elif not self.system_injected:
                     instructions = self._load_instructions()
                     markdown_instruction = "MOST IMPORTANT OF ALL\n START YOUR RESPONSE WITH ``` AND ENDS WITH ```, WRAP YOUR WHOLE RESPONSE WITH IT. DON'T USE ``` IN ANYWHERE ELSE IN YOUR RESPONSE."
+                    mem_block = _get_relevant_memories(message)
                     if instructions:
-                        message = f"[SYSTEM INSTRUCTION]\n{instructions}\n\n{markdown_instruction}\n\n[USER MESSAGE]\n{message}"
+                        if mem_block:
+                            message = f"[SYSTEM INSTRUCTION]\n{instructions}\n\n{mem_block}\n\n{markdown_instruction}\n\n[USER MESSAGE]\n{message}"
+                        else:
+                            message = f"[SYSTEM INSTRUCTION]\n{instructions}\n\n{markdown_instruction}\n\n[USER MESSAGE]\n{message}"
                     self.system_injected = True
                 else:
                     # Prepend a short quick reminder to every next user message
@@ -441,7 +469,12 @@ class GhostChat:
                         "2. Use ~~~ for code blocks instead of ```, <execute_command> to run any command.\n"
                         "3. Always use approtiate tag to run command or use skills.\n\n"
                     )
-                    message = f"{reminder}[USER MESSAGE]\n{message}"
+                    # Inject relevant memories after quick_reminder
+                    mem_block = _get_relevant_memories(message)
+                    if mem_block:
+                        message = f"{reminder}{mem_block}\n\n[USER MESSAGE]\n{message}"
+                    else:
+                        message = f"{reminder}[USER MESSAGE]\n{message}"
 
                 # Try clipboard paste first for all messages to bypass automation detection and keep Angular in sync!
                 filled = await self._paste_large_message(field, message)
@@ -690,40 +723,7 @@ class GhostChat:
             except Exception:
                 pass
 
-        # Inject Brain/Memory.json content right after Maria.md
-        if os.path.exists(_MEMORY_PATH):
-            try:
-                import json as _json
-                mem_data = _json.loads(open(_MEMORY_PATH, encoding="utf-8").read())
-                mem_sections = []
-                if isinstance(mem_data, dict):
-                    category_labels = {"semantic": "Facts & Knowledge", "episodic": "Events & Experiences", "procedural": "Skills & Processes"}
-                    for cat_key, label in category_labels.items():
-                        entries = mem_data.get(cat_key, [])
-                        if entries:
-                            lines = [f"## {label}"]
-                            for e in entries:
-                                if isinstance(e, dict):
-                                    k = e.get("key", "")
-                                    v = e.get("value", "")
-                                    lines.append(f"- **{k}**: {v}" if k else f"- {v}")
-                                else:
-                                    lines.append(f"- {e}")
-                            mem_sections.append("\n".join(lines))
-                elif isinstance(mem_data, list) and mem_data:
-                    lines = []
-                    for entry in mem_data:
-                        if isinstance(entry, dict):
-                            k = entry.get("key", entry.get("topic", ""))
-                            v = entry.get("value", entry.get("content", str(entry)))
-                            lines.append(f"- {k}: {v}" if k else f"- {v}")
-                        else:
-                            lines.append(f"- {entry}")
-                    mem_sections.append("\n".join(lines))
-                if mem_sections:
-                    parts.append("# Memory\n" + "\n\n".join(mem_sections))
-            except Exception:
-                pass
+        # Memory is now injected per-message via semantic search (see send_msg)
 
         # Load remaining instructions (output_format.md, skills.md)
         for path in _INSTRUCTION_PATHS[1:]:

@@ -1,0 +1,94 @@
+==========================================================================================
+SABLE EMBEDDING MODEL STRESS TEST RESULTS
+Generated: 2026-07-27 10:02:28
+Memory entries: 58 | Test queries: 43
+Query style: real verbatim + big ambiguous multi-topic + zero-match rejection
+Scoring: variable-length expected sets (1-7 relevant), recall@K + precision + zero-match
+==========================================================================================
+
+Model                                     Enc ms  Qry ms  Recall%   Prec%  ZeroM%   Load
+──────────────────────────────────────── ─────── ─────── ──────── ─────── ─────── ──────
+snowflake-arctic-embed-xs                   13.2     9.1    73.5%   52.7%      0%  0.11s
+gte-base                                   127.1   140.0    73.2%   52.0%      0%  0.49s
+nomic-embed-text-v1.5                      137.1   107.9    71.4%   51.8%      0%  0.63s
+mxbai-embed-large-v1                       393.1   275.9    70.6%   53.1%      0%  1.62s
+jina-embeddings-v2-small-en                 25.2    17.7    69.9%   50.4%      0%  0.17s
+all-MiniLM-L6-v2                            17.0    13.8    69.9%   52.4%    100%  0.14s
+bge-base-en-v1.5                           114.8    76.0    68.3%   49.2%      0%  0.48s
+bge-small-en-v1.5                           32.0    16.3    68.1%   49.3%      0%  0.15s
+
+------------------------------------------------------------------------------------------
+MODEL: snowflake/snowflake-arctic-embed-xs
+  Encode: 13.2 ms/text avg | 0.767s total for 58 texts
+  Query:  9.1 ms/query avg | 0.389s total for 43 queries
+  Recall:    73.5% avg across 40 scored queries
+  Precision: 52.7% avg
+  Zero-match rejection: 0% (3 irrelevant queries)
+  Load time: 0.11s
+
+------------------------------------------------------------------------------------------
+MODEL: thenlper/gte-base
+  Encode: 127.1 ms/text avg | 7.373s total for 58 texts
+  Query:  140.0 ms/query avg | 6.020s total for 43 queries
+  Recall:    73.2% avg across 40 scored queries
+  Precision: 52.0% avg
+  Zero-match rejection: 0% (3 irrelevant queries)
+  Load time: 0.49s
+
+------------------------------------------------------------------------------------------
+MODEL: nomic-ai/nomic-embed-text-v1.5
+  Encode: 137.1 ms/text avg | 7.954s total for 58 texts
+  Query:  107.9 ms/query avg | 4.638s total for 43 queries
+  Recall:    71.4% avg across 40 scored queries
+  Precision: 51.8% avg
+  Zero-match rejection: 0% (3 irrelevant queries)
+  Load time: 0.63s
+
+------------------------------------------------------------------------------------------
+MODEL: mixedbread-ai/mxbai-embed-large-v1
+  Encode: 393.1 ms/text avg | 22.801s total for 58 texts
+  Query:  275.9 ms/query avg | 11.864s total for 43 queries
+  Recall:    70.6% avg across 40 scored queries
+  Precision: 53.1% avg
+  Zero-match rejection: 0% (3 irrelevant queries)
+  Load time: 1.62s
+
+------------------------------------------------------------------------------------------
+MODEL: jinaai/jina-embeddings-v2-small-en
+  Encode: 25.2 ms/text avg | 1.461s total for 58 texts
+  Query:  17.7 ms/query avg | 0.761s total for 43 queries
+  Recall:    69.9% avg across 40 scored queries
+  Precision: 50.4% avg
+  Zero-match rejection: 0% (3 irrelevant queries)
+  Load time: 0.17s
+
+------------------------------------------------------------------------------------------
+MODEL: sentence-transformers/all-MiniLM-L6-v2
+  Encode: 17.0 ms/text avg | 0.988s total for 58 texts
+  Query:  13.8 ms/query avg | 0.593s total for 43 queries
+  Recall:    69.9% avg across 40 scored queries
+  Precision: 52.4% avg
+  Zero-match rejection: 100% (3 irrelevant queries)
+  Load time: 0.14s
+
+------------------------------------------------------------------------------------------
+MODEL: BAAI/bge-base-en-v1.5
+  Encode: 114.8 ms/text avg | 6.658s total for 58 texts
+  Query:  76.0 ms/query avg | 3.266s total for 43 queries
+  Recall:    68.3% avg across 40 scored queries
+  Precision: 49.2% avg
+  Zero-match rejection: 0% (3 irrelevant queries)
+  Load time: 0.48s
+
+------------------------------------------------------------------------------------------
+MODEL: BAAI/bge-small-en-v1.5
+  Encode: 32.0 ms/text avg | 1.857s total for 58 texts
+  Query:  16.3 ms/query avg | 0.703s total for 43 queries
+  Recall:    68.1% avg across 40 scored queries
+  Precision: 49.3% avg
+  Zero-match rejection: 0% (3 irrelevant queries)
+  Load time: 0.15s
+
+==========================================================================================
+END OF REPORT
+==========================================================================================

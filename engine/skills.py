@@ -54,6 +54,11 @@ KNOWN_TAGS = (
     "openweb",
     "create_note",
     "save_svg",
+    # Native editor tags (code_editor skill)
+    "view_file",
+    "edit_file",
+    "create_file",
+    "insert_file",
 )
 
 SKILL_REGISTRY = [
@@ -62,7 +67,7 @@ SKILL_REGISTRY = [
         "key": "code_editor",
         "trigger": "Writing to disk: create, edit, insert, or view files with precise line-numbered operations.",
         "instruction": "skills/core/code_editor/instruction.md",
-        "tags": ["execute_command"],
+        "tags": ["view_file", "edit_file", "create_file", "insert_file", "execute_command"],
     },
     {
         "name": "SVG Creator",
@@ -237,7 +242,7 @@ def _kill_process_group(proc: subprocess.Popen[str]) -> None:
             pass
 
 
-_EDITOR_OPS = {"create", "edit", "insert"}
+_EDITOR_OPS = {"create", "edit", "insert", "view"}
 _EDITOR_OUTPUT_CAP = 64 * 1024
 _EDITOR_LINE_CAP = 500
 _EDITOR_MAX_LINES = 250
@@ -445,8 +450,11 @@ def handle_execute_background_command(
         yield _end_event(tag_id, name, False, started, error="Empty command")
         return
 
-    tmp_log = Path("/tmp") / f"ghost_bg_{uuid.uuid4().hex}.log"
-    with tmp_log.open("w", encoding="utf-8") as log_file:
+    # Use a fixed UUID-based log filename BEFORE launching the process so
+    # there is no race window between open() and os.replace().
+    log_path = Path("/tmp") / f"ghost_bg_{uuid.uuid4().hex}.log"
+    log_file = log_path.open("w", encoding="utf-8")
+    try:
         proc = subprocess.Popen(
             cmd,
             shell=True,
@@ -456,29 +464,25 @@ def handle_execute_background_command(
             cwd=str(Path.home()),
             start_new_session=True,
         )
+    finally:
+        log_file.close()
 
     pid = proc.pid
-    final_log = Path("/tmp") / f"ghost_bg_{pid}.log"
-    try:
-        os.replace(tmp_log, final_log)
-    except Exception:
-        final_log = tmp_log
-
     BG_JOBS[pid] = {
         "pid": pid,
         "command": cmd,
-        "log": str(final_log),
+        "log": str(log_path),
         "started": time.time(),
         "status": "running",
     }
 
-    yield _output_event(tag_id, f"Started background job {pid}\nLog: {final_log}\n$ {cmd}\n")
+    yield _output_event(tag_id, f"Started background job {pid}\nLog: {log_path}\n$ {cmd}\n")
     yield _end_event(
         tag_id,
         name,
         True,
         started,
-        {"pid": pid, "log": str(final_log), "command": cmd},
+        {"pid": pid, "log": str(log_path), "command": cmd},
     )
 
 
@@ -488,6 +492,7 @@ def handle_check_command(
     started = time.time()
     pid_raw = attrs.get("pid") or content.strip()
 
+    pid: int | None = None
     if pid_raw:
         try:
             pid = int(pid_raw)
@@ -495,8 +500,7 @@ def handle_check_command(
             # Invalid PID — fall through to list all jobs instead of hard-failing
             pid_raw = ""
 
-    if pid_raw:
-        pid = int(pid_raw)
+    if pid_raw and pid is not None:
 
         info = BG_JOBS.get(pid, {})
         log_path = Path(info.get("log", f"/tmp/ghost_bg_{pid}.log"))
@@ -855,6 +859,172 @@ def handle_save_svg(
     yield _end_event(tag_id, name, True, started, {"path": str(path), "chars": len(svg)})
 
 
+# --------------------------------------------------------------------------
+# Native editor tag handlers — view_file, edit_file, create_file, insert_file
+# These call editor_tools.py directly (no shell heredoc quoting needed).
+# --------------------------------------------------------------------------
+
+def _run_editor(args: list[str], stdin_data: str | None = None, timeout: int = DEFAULT_TIMEOUT) -> tuple[bool, str]:
+    """Run editor_tools.py with the given args.  Returns (ok, output_text)."""
+    cmd = ["python3", str(EDITOR_TOOLS)] + args
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=stdin_data,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            errors="replace",
+        )
+        stdout = proc.stdout or ""
+        stderr = proc.stderr or ""
+        output = stdout + (f"\n{stderr}" if stderr else "")
+        return proc.returncode == 0, output
+    except subprocess.TimeoutExpired:
+        return False, f"editor_tools timed out after {timeout}s"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def handle_view_file(
+    tag_id: str, name: str, attrs: dict[str, str], content: str
+) -> Generator[dict[str, Any], None, None]:
+    started = time.time()
+    path = attrs.get("path", "").strip() or content.strip()
+    if not path:
+        yield _output_event(tag_id, "No path attribute provided\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Missing path")
+        return
+
+    path = os.path.expandvars(os.path.expanduser(path))
+
+    args = ["view", path]
+    start_line = attrs.get("start")
+    end_line = attrs.get("end")
+    full = attrs.get("full", "").lower() in ("true", "1", "yes")
+    if start_line:
+        args += ["--start", str(start_line)]
+    if end_line:
+        args += ["--end", str(end_line)]
+    if full:
+        args.append("--full")
+
+    ok, output = _run_editor(args)
+    output_trimmed = output[:RESULT_PREVIEW_CHARS]
+    yield _output_event(tag_id, output_trimmed + "\n")
+    yield _end_event(tag_id, name, ok, started, {"path": path}, None if ok else output_trimmed[:500])
+
+
+def handle_edit_file(
+    tag_id: str, name: str, attrs: dict[str, str], content: str
+) -> Generator[dict[str, Any], None, None]:
+    started = time.time()
+    path = attrs.get("path", "").strip()
+    if not path:
+        yield _output_event(tag_id, "No path attribute provided\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Missing path")
+        return
+
+    path = os.path.expandvars(os.path.expanduser(path))
+
+    if not content.strip():
+        yield _output_event(tag_id, "No SEARCH/REPLACE blocks in edit_file body\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Empty edit body")
+        return
+
+    ok, output = _run_editor(["edit", path], stdin_data=content)
+    output_trimmed = output[:RESULT_PREVIEW_CHARS]
+    yield _output_event(tag_id, output_trimmed + "\n")
+
+    if ok:
+        # Emit a file_edit event so the diff sidebar updates
+        file_event = _build_file_edit_event(tag_id, "edit", path, output_trimmed)
+        if file_event is not None:
+            yield file_event
+
+    yield _end_event(tag_id, name, ok, started, {"path": path}, None if ok else output_trimmed[:500])
+
+
+def handle_create_file(
+    tag_id: str, name: str, attrs: dict[str, str], content: str
+) -> Generator[dict[str, Any], None, None]:
+    started = time.time()
+    path = attrs.get("path", "").strip()
+    if not path:
+        yield _output_event(tag_id, "No path attribute provided\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Missing path")
+        return
+
+    path = os.path.expandvars(os.path.expanduser(path))
+    overwrite = attrs.get("overwrite", "").lower() in ("true", "1", "yes")
+
+    args = ["create", path]
+    if overwrite:
+        args.append("--overwrite")
+
+    ok, output = _run_editor(args, stdin_data=content)
+    output_trimmed = output[:RESULT_PREVIEW_CHARS]
+    yield _output_event(tag_id, output_trimmed + "\n")
+
+    if ok:
+        file_event = _build_file_edit_event(tag_id, "create", path, output_trimmed)
+        if file_event is not None:
+            yield file_event
+
+    yield _end_event(tag_id, name, ok, started, {"path": path}, None if ok else output_trimmed[:500])
+
+
+def handle_insert_file(
+    tag_id: str, name: str, attrs: dict[str, str], content: str
+) -> Generator[dict[str, Any], None, None]:
+    started = time.time()
+    path = attrs.get("path", "").strip()
+    if not path:
+        yield _output_event(tag_id, "No path attribute provided\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Missing path")
+        return
+
+    path = os.path.expandvars(os.path.expanduser(path))
+
+    at_line = attrs.get("at_line") or attrs.get("at-line")
+    after_str = attrs.get("after_str") or attrs.get("after-str")
+
+    if not at_line and not after_str:
+        yield _output_event(tag_id, "insert_file requires at_line or after_str attribute\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Missing at_line or after_str")
+        return
+
+    args = ["insert", path]
+    tmp_anchor: Path | None = None
+    try:
+        if at_line:
+            args += ["--at-line", str(at_line)]
+        elif after_str:
+            # Write anchor to a temp file so multiline anchors survive intact
+            # (passing multiline text as a CLI arg can be truncated by the shell)
+            tmp_anchor = Path("/tmp") / f"sable_anchor_{uuid.uuid4().hex}.txt"
+            tmp_anchor.write_text(after_str, encoding="utf-8")
+            args += ["--after-file", str(tmp_anchor)]
+
+        ok, output = _run_editor(args, stdin_data=content)
+    finally:
+        if tmp_anchor and tmp_anchor.exists():
+            try:
+                tmp_anchor.unlink()
+            except Exception:
+                pass
+
+    output_trimmed = output[:RESULT_PREVIEW_CHARS]
+    yield _output_event(tag_id, output_trimmed + "\n")
+
+    if ok:
+        file_event = _build_file_edit_event(tag_id, "insert", path, output_trimmed)
+        if file_event is not None:
+            yield file_event
+
+    yield _end_event(tag_id, name, ok, started, {"path": path}, None if ok else output_trimmed[:500])
+
+
 HANDLERS = {
     "execute_command": handle_execute_command,
     "execute_background_command": handle_execute_background_command,
@@ -866,6 +1036,11 @@ HANDLERS = {
     "openweb": handle_openweb,
     "create_note": handle_create_note,
     "save_svg": handle_save_svg,
+    # Native editor tags
+    "view_file": handle_view_file,
+    "edit_file": handle_edit_file,
+    "create_file": handle_create_file,
+    "insert_file": handle_insert_file,
 }
 
 
@@ -977,16 +1152,18 @@ class SkillParser:
         if match:
             return match.start()
 
-        # Hold ANY trailing '<' that could be the start of a tag, regardless
-        # of how much text precedes it.  The old 200-char limit caused tags
-        # to leak as plain text when they appeared after a large thinking/
-        # answer chunk in the same SSE event.
+        # Hold ANY trailing '<' that could be the start of a skill tag.
+        # Only hold if the text after '<' is a valid prefix of a known tag
+        # name (and does NOT already contain '>' which would mean it's a
+        # closed HTML tag like <br> or <h2>, not an in-flight skill tag).
         idx = self.buf.rfind("<")
         if idx >= 0:
             tail = self.buf[idx:]
-            partial = tail.lstrip("<").strip().lower()
-            if partial == "" or any(tag.startswith(partial) for tag in KNOWN_TAGS):
-                return idx
+            # If the tail already has a '>' it's a complete HTML tag — release it
+            if ">" not in tail:
+                partial = tail.lstrip("<").strip().lower()
+                if partial == "" or any(tag.startswith(partial) or partial.startswith(tag) for tag in KNOWN_TAGS):
+                    return idx
         return None
 
 
@@ -1054,7 +1231,7 @@ def build_tool_feedback(
 
         entry = f'<tool_result name="{name}" ok="{str(ok).lower()}" duration_ms="{duration}">\n'
         if content:
-            entry += f'<input>\n{content[:400]}... ... ...\n</input>\n'
+            entry += f'<input>\n{content[:2000]}{"... [truncated]" if len(content) > 2000 else ""}\n</input>\n'
         if output:
             entry += f'<output>\n{output}\n</output>\n'
         if error:

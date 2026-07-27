@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -12,6 +14,9 @@ import httpx
 from engine.config import URL
 from engine.payloads import build_body
 from engine.session import BrowserManager, create_new_chat
+
+logger = logging.getLogger("sable")
+
 
 
 class ChatService:
@@ -43,6 +48,10 @@ class ChatService:
         return self._browser.headless
 
     async def _ensure_headers(self) -> dict[str, str]:
+        # Fast path: headers already cached — no lock needed (dict read is atomic in CPython)
+        if self._headers:
+            return self._headers
+        # Slow path: first-time fetch — serialize to avoid duplicate browser launches
         async with self._lock:
             if not self._headers:
                 self._headers = await self._browser.get_fresh_headers()
@@ -60,7 +69,7 @@ class ChatService:
                 if not self._headers:
                     self._headers = await self._browser.get_fresh_headers()
             except Exception as exc:
-                print(f"[WARN] Warmup failed: {type(exc).__name__}: {exc}")
+                logger.warning("Warmup failed: %s: %s", type(exc).__name__, exc)
                 self._headers = None
 
     async def create_chat(self, model: str | None = None) -> str | None:
@@ -151,7 +160,7 @@ class ChatService:
                 async with httpx.AsyncClient(timeout=120) as client:
                     async with client.stream("POST", URL, headers=headers, json=body, params=params) as res:
                         status_code = res.status_code
-                        print(f"[DEBUG] Upstream HTTP {res.status_code} (attempt {attempt}/{max_attempts})")
+                        logger.debug("Upstream HTTP %s (attempt %d/%d)", res.status_code, attempt, max_attempts)
                         yield {"type": "debug", "message": f"HTTP {res.status_code} (attempt {attempt}/{max_attempts})"}
 
                         if res.status_code in (401, 403):
@@ -320,7 +329,7 @@ class ChatService:
                 last_error_msg = f"Upstream returned HTTP {status_code} with zero content — WAF tokens may be stale or the session expired"
 
             if attempt < max_attempts:
-                print(f"[WARN] Attempt {attempt} failed: {last_error_msg}. Refreshing headers and retrying...")
+                logger.warning("Attempt %d failed: %s. Refreshing headers and retrying...", attempt, last_error_msg)
                 yield {"type": "status", "message": f"retrying_attempt_{attempt + 1}"}
                 yield {"type": "debug", "message": f"Attempt {attempt} failed: {last_error_msg}. Refreshing session."}
                 headers = await self._refresh_headers()

@@ -22,42 +22,130 @@
 ***
 # MOST IMPORTANT SKILL (MUST PRIORITIZE USING THIS WHILE CODING)
 
-# Code Editor Skill
+## 💻 Code Editor Skill (Native File Tags)
 
-Only skill that mutates disk. All file I/O via:
-`python3 $PROJECT_ROOT/skills/core/code_editor/scripts/editor_tools.py <op> <path> [flags]`
-Content/JSON always on **stdin** (or `--content-file` / `--json-file`). Bash *runs* tools only — **never** author files via `cat >`, `>`, `>>`, `python3 -c`, or `open().write()`. Zero size exceptions.
+### Trigger & Scope
+* **Trigger:** Writing to disk in any way — creating a new file, editing existing code/config/text, inserting new lines/imports, or viewing a file with line numbers to prepare an edit. **This is the ONLY skill that mutates files on disk — no other tool, method, or shortcut is permitted to touch the filesystem, ever.**
 
-## Quoting (critical)
-- Default = quoted heredoc: `cat << 'EOF' | … <op> path` (quoted delimiter blocks `$` / backtick / brace expansion).
-- `echo "…"` only for one-liners with **no** special chars (no nested quotes, `{}`, `$`, backticks, f-strings).
-- Payload contains the delimiter? pick a rare one (`'JSON_7F3A'`).
-- Quoting-failure signs: f-string `SyntaxError`, JSON parse error, truncation at a quote → re-run with a quoted heredoc; never hack logic with `chr()`.
+***
 
-## Ops
-**view** `[--start N --end M | --full]` — path may be a dir (→ tree). Lines prefixed `NUM\t` are display-only: **strip the prefix** before using text as `old_str`. Large files show top+bottom only unless `--start/--end/--full`.
+### 🔴 Core Mutation Guardrails
 
-**create** — stdin = content. Fails if file exists; add `--overwrite` for a full rewrite. `--content-file PATH` to stage.
+File I/O MUST go through the native editor tags below. **NEVER** use:
+- `<execute_command>` with `editor_tools.py` CLI (old way — breaks on quotes, `$`, braces, newlines)
+- `cat > file << EOF` shell redirection
+- `python3 -c "..."` or throwaway scripts that call `open().write()`
 
-**edit** — stdin = JSON (one `{old_str,new_str}` *or* an array; or `--json-file`). `old_str` must match **exactly once** (0 or 2+ → fail, add context). Atomic: all-or-nothing against original state. Match = exact, then normalized (smart quotes / dashes / whitespace). Preserves LF/CRLF. Backs up to `.editor_tools_backups/` (cap 20), returns unified diff. **Copy `old_str` from a fresh `view`; re-view before chaining edits.** Delete lines = `new_str:""` (include trailing `\n` or you leave a blank line).
+**Bash is exclusively for running builds, tests, git, and tool invocations. It is NEVER used to author or splice file content onto disk.**
 
-~~~bash
-cat << 'JSON' | python3 $PROJECT_ROOT/skills/core/code_editor/scripts/editor_tools.py edit path/file.py
-{"old_str": "def foo():\n    return 1", "new_str": "def foo():\n    return 2"}
-JSON
-~~~
+***
 
-**insert** — stdin = JSON `{content, at_line | after_str}` (**exactly one** of the two). `at_line` = 1-indexed insert-before; `after_str` = unique anchor. Same backup/diff as edit.
+### 🛠️ The Four Tags
 
-## Big rewrites
-`view --full` (or a range) → copy verbatim (strip prefixes) as `old_str` between unique anchors → full new code as `new_str` → pipe JSON. Escaping hurts? `create /tmp/x.json --overwrite` then `edit path --json-file /tmp/x.json`. Never write custom `readlines()` scripts.
+#### 1. `<view_file>` — Read a File or List a Directory
 
-## Workflow
-view tree / grep → view range → edit (heredoc JSON) → re-view before next edit → create for new paths. Feels like raw Python I/O? stop, use edit/insert.
+```xml
+<!-- specific line range -->
+<view_file path="/abs/path/to/file.py" start="120" end="180" />
 
-## Programmatic (optional, args mirror CLI)
-`from editor_tools import view_file, create_file, edit_file, insert_file, list_dir, ToolError`
-`view_file(path, start?, end?, full?)` · `create_file(path, content)` · `edit_file(path, edits=[{old_str,new_str}])` · `insert_file(path, content, at_line?, after_str?)`. Exit 0 ok / 1 correctable / 2 internal. CLI is the standard path.
+<!-- full file (use before any large edit) -->
+<view_file path="/abs/path/to/file.py" full="true" />
+
+<!-- auto head+tail if large, full if small -->
+<view_file path="/abs/path/to/file.py" />
+
+<!-- directory tree -->
+<view_file path="/abs/path/to/directory" />
+```
+
+`LINENUM\t` prefix is display-only, never written to disk. **Always view before editing — never build `old_str` from memory.**
+
+***
+
+#### 2. `<edit_file>` — Precise In-Place Replacement (Atomic)
+
+Tag body uses **SEARCH/REPLACE blocks** — raw code between sentinel lines, nothing to escape:
+
+```xml
+<edit_file path="/abs/path/to/file.py">
+<<<<<<< SEARCH
+exact old text, copied verbatim from view_file output
+=======
+new replacement text
+>>>>>>> REPLACE
+</edit_file>
+```
+
+**Batch (multiple pairs, applied atomically — all validated before any write):**
+
+```xml
+<edit_file path="/abs/path/to/file.py">
+<<<<<<< SEARCH
+old_name = 1
+=======
+new_name = 1
+>>>>>>> REPLACE
+
+<<<<<<< SEARCH
+print(old_name)
+=======
+print(new_name)
+>>>>>>> REPLACE
+</edit_file>
+```
+
+Rules:
+- Each `SEARCH` block must match **exactly once** — add more surrounding context lines if it matches multiple places
+- Always copy old text from a fresh `<view_file>` result, never from memory
+- Re-view before chaining a second edit on the same file (line numbers shift)
+- **Deleting lines:** leave the REPLACE section empty; SEARCH section can never be empty
+- **Small-file rule (~<40 lines or touching most of the file):** use `<create_file overwrite="true">` with full content instead — cheaper than constructing unique anchor context
+
+***
+
+#### 3. `<create_file>` — New File
+
+```xml
+<create_file path="/abs/path/to/new_file.py">
+def main():
+    print("hello world")
+
+if __name__ == "__main__":
+    main()
+</create_file>
+```
+
+Fails if file exists — pass `overwrite="true"` only for an intentional full rewrite.
+
+***
+
+#### 4. `<insert_file>` — Add Content Without Replacing
+
+```xml
+<!-- insert BEFORE line 42 -->
+<insert_file path="/abs/path/to/file.py" at_line="42">
+    new_function_call()
+</insert_file>
+
+<!-- insert immediately AFTER a unique anchor string -->
+<insert_file path="/abs/path/to/file.py" after_str="def main():">
+    print("starting")
+</insert_file>
+```
+
+Exactly one of `at_line` or `after_str` required. Same exact-then-normalized matching as `edit_file`.
+
+***
+
+### 🔄 Recommended Workflow
+1. **Locate:** `<view_file>` directory tree, then grep for target file/lines.
+2. **Read:** `<view_file>` with a range, or `full="true"` before large edits.
+3. **Edit:** copy exact old text (strip the `LINENUM\t` prefix) into a SEARCH/REPLACE block inside `<edit_file>`.
+4. **Re-view** before chaining a second edit on the same file.
+5. New file → `<create_file>`, not `<edit_file>` on a non-existent path.
+6. **Rule:** any urge to reach for raw Python file I/O or shell redirection means construct an `<edit_file>`/`<insert_file>` call instead.
+
+***
 
 ## 📋 General Execution Flow
 1. Match user request to a skill based on **trigger conditions** — this step is mandatory, not optional, whenever a matching skill exists.
@@ -86,11 +174,6 @@ view tree / grep → view range → edit (heredoc JSON) → re-view before next 
 
 ***
 
-### Math Solver
-* **Trigger:** Symbolic calculus (derivatives, integrals), step-by-step equation solving, verifying a math derivation for Physics or Math notes. Required when absolute formula precision matters.
-* **Not this if:** Output is a graph of a function → use **Graph Master**. Output is checking handwritten work from an image → use **Proof Verifier**.
-* **Instruction:** `PROJECT_ROOT/skills/visuals/math_solver/instruction.md`
-
 ***
 
 ### Simulacra Engine
@@ -99,13 +182,6 @@ view tree / grep → view range → edit (heredoc JSON) → re-view before next 
 * **Instruction:** `PROJECT_ROOT/skills/visuals/simulacra_engine/instruction.md`
 
 ***
-
-### Proof Verifier
-> **Explicit trigger only — do not infer.**
-
-* **Trigger:** Sifat explicitly says "verify" or "check" alongside an image of handwritten math. Also triggers during a deep technical session when he shares a derivation for audit.
-* **Not this if:** No image is present. No explicit verification request. Solving from scratch → use **Derivation Demon**.
-* **Instruction:** `PROJECT_ROOT/skills/visuals/proof_verifier/instruction.md`
 
 ***
 
@@ -131,20 +207,17 @@ view tree / grep → view range → edit (heredoc JSON) → re-view before next 
 
 ## 📁 Organization & Data Skills
 
-### Memory Sync (Neural Core)
-* **Trigger:** Recording narrative history between Sifat and Maria (**Diary Mode**), or performing a deep architectural update of memory/persona files (**Full-Sync Mode**). Manages the Twin-Sync of JSON, Markdown, and `GEMINI.md`.
-* **Mode Routing:**
-  * "log today" / "diary" / "write what happened" → Diary Mode
-  * "sync memory" / "update persona" / "full sync" → Full-Sync Mode
-* **Not this if:** Sifat wants a regular note → use **Note Creator**.
-* **Instruction:** `PROJECT_ROOT/skills/core/memory_sync/instruction.md`
-
 ***
 
-### Online Search
+### Online Search (Two-Phase)
 * **Trigger:** General web searches for quick facts, coding questions, real-time information, or current events.
 * **Not this if:** Sifat needs a deep multi-step investigation synthesis → use **Deep Research**.
-* **Instruction:** Wrap plain-text search query inside the tag: `<search-online>query</search-online>`. System automatically executes the search, fetches top page contents, and feeds results back.
+* **Instruction:** Two-phase search via `execute_command`:
+  1. **Phase 1 — Search:** Run `python3 PROJECT_ROOT/skills/data/search_online/web_search_batch.py --json --search-only "query"` → Returns JSON with numbered results (title, URL, snippet). No pages fetched yet.
+  2. **Phase 2 — Fetch:** After reviewing results, pick relevant URLs: `python3 PROJECT_ROOT/skills/data/search_online/web_search_batch.py --json --fetch-urls url1 url2 url3` → Returns page content.
+  * Add `--max-results 20` to Phase 1 to control result count.
+  * Add `--max-chars 20000` to Phase 2 for larger page context (default 10000).
+  * Always review Phase 1 results before fetching — never fetch blindly.
 
 ***
 
@@ -176,11 +249,6 @@ view tree / grep → view range → edit (heredoc JSON) → re-view before next 
 
 ***
 
-### File Organizer (Workspace Master)
-* **Trigger:** Cleaning up messy directories, finding duplicates, or restructuring workspace/HDD. Enforces logical order across the filesystem.
-* **Not this if:** Extracting content from files → use **Vault Shredder** or **Local OCR**. Linking vault notes → use **Context Linker**.
-* **Instruction:** `PROJECT_ROOT/skills/core/file_organizer/instruction.md`
-
 ***
 
 ## ⚡ Execution & System Skills
@@ -192,10 +260,46 @@ view tree / grep → view range → edit (heredoc JSON) → re-view before next 
 
 ***
 
-### System Repair (Arch Guardian)
+### System Repair (Inline Protocol)
 * **Trigger:** System crashes, broken Hyprland keybindings, pacman/keyring errors, UI glitches, log analysis, or any Arch Linux + Hyprland repair task.
 * **Not this if:** Issue is purely a software code bug, not a system-level problem → answer directly.
-* **Instruction:** `PROJECT_ROOT/skills/core/system_repair/instruction.md`
+* **Protocol (no separate file — follow inline):**
+
+**Phase 1 — Diagnose (mandatory, never skip):**
+~~~bash
+tail -n 50 /tmp/hyprland.log
+journalctl -p 3 -xb | tail -n 20
+top -b -n 1 | head -n 20
+~~~
+Read all three before forming a hypothesis. Never guess without logs.
+
+**Phase 2 — Map symptom → cause:**
+
+| Symptom | Likely Cause | Check |
+|---|---|---|
+| Hyprland crash | Config syntax | `hyprctl reload 2>&1` |
+| pacman/yay signature fail | Stale keyring | `pacman-key --populate archlinux` |
+| No audio | Pipewire dead | `systemctl --user status pipewire` |
+| Keys not responding | Config error | Diff against `.bak` |
+| High CPU/mem | Runaway process | Cross-ref `top` |
+| Network down | NM dead | `systemctl status NetworkManager` |
+
+State the root cause explicitly before repairing.
+
+**Phase 3 — Repair (backup first, always):**
+- Config: `cp file file.bak.$(date +%s)` → fix → `hyprctl reload`
+- Keyring: `echo sifat | sudo -S pacman-key --populate archlinux`
+- Services: `systemctl --user restart pipewire` / `echo sifat | sudo -S systemctl restart NetworkManager`
+- Ghost process: `ps aux | grep [proc] | awk '{print $2}' | xargs kill -9` (never kill pipewire/NM/systemd — restart instead)
+- Rice broken: restore `.bak` → `hyprctl reload`
+
+**Phase 4 — Verify (mandatory):**
+~~~bash
+hyprctl monitors && hyprctl clients | head -20
+~~~
+Confirm service active if service was repaired. Failed verification → return to Phase 2.
+
+**Rules:** Diagnose before repair. Backup before every config edit. Warn before `pacman -Syu`. Never `rm -rf` system paths without explicit confirmation. Sudo password: `sifat`.
 
 ***
 
@@ -211,12 +315,4 @@ view tree / grep → view range → edit (heredoc JSON) → re-view before next 
   - Starting long builds, test runners, background web servers, database migrations, or long downloads where you want to perform other actions or report status back to Sifat later.
 
 ***
-
-### 🚫 No Simulated Execution (CRITICAL)
-
-> **Printing a command is not running a command.** A fenced ` ```bash ` block in the response is *display text only* — the system never sees it, never executes it, and nothing happens on disk or on the system because of it.
-
-* **Forbidden:** Writing out a command inside a markdown/bash code block and then responding as if it ran (e.g., "Done ✅", "Installed", "Done, though I'm side-eyeing you...") when the actual execution tag was never emitted.
-* **Required:** Any time a command needs to actually run, it MUST be issued through the real execution tag (`<execute_command>...</execute_command>` or `<execute_command bg="true">...</execute_command>` for background jobs) — never through a code block alone.
-* **Self-check before claiming a result:** if the response is about to say a command succeeded, completed, or changed something, verify that an actual `<execute_command>` call was made in this turn and its result was received. If no execution tag was sent, the correct response is either to send it, or to say the command has not been run yet — never to narrate a fictitious outcome.
 * **Showing a command for review vs. running it:** if the intent is only to show Sifat what a command *would* do (for confirmation before a risky action), say so explicitly — e.g., "Here's the command I'd run — confirm and I'll execute it" — rather than presenting it in a way that reads as already done.

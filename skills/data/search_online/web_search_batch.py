@@ -465,6 +465,25 @@ def searxng_search_html(query: str, *, instance: str, max_results: int) -> list[
     return results
 
 
+def _normalize_url(raw_url: str) -> str:
+    """Decode DDG redirect wrappers and fix protocol-relative URLs."""
+    url = html.unescape(raw_url).strip()
+    # Decode DuckDuckGo redirect wrapper: //duckduckgo.com/l/?uddg=ENCODED&rut=...
+    parsed = urllib.parse.urlparse(url)
+    if parsed.netloc in ("duckduckgo.com", "www.duckduckgo.com") and parsed.path == "/l/":
+        qs = urllib.parse.parse_qs(parsed.query)
+        target = qs.get("uddg", [""])[0]
+        if target:
+            url = urllib.parse.unquote(target)
+            parsed = urllib.parse.urlparse(url)
+    # Fix protocol-relative URLs (//example.com/...)
+    if url.startswith("//"):
+        url = "https:" + url
+    elif not parsed.scheme:
+        url = "https://" + url
+    return url
+
+
 def duckduckgo_search(query: str, *, max_results: int) -> list[SearchResult]:
     url = "https://html.duckduckgo.com/html/"
     try:
@@ -473,7 +492,7 @@ def duckduckgo_search(query: str, *, max_results: int) -> list[SearchResult]:
         return []
     results: list[SearchResult] = []
     for item in re.finditer(r'<a[^>]*class=["\']result__a["\'][^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', body, re.I | re.S):
-        raw_url = html.unescape(item.group(1)).strip()
+        raw_url = _normalize_url(item.group(1))
         title = re.sub(r"<.*?>", "", item.group(2), flags=re.S)
         snippet_match = re.search(r'<a[^>]*class=["\']result__snippet["\'][^>]*>(.*?)</a>', body[item.end():], re.I | re.S)
         snippet = re.sub(r"<.*?>", "", snippet_match.group(1), flags=re.S) if snippet_match else ""
@@ -484,6 +503,7 @@ def duckduckgo_search(query: str, *, max_results: int) -> list[SearchResult]:
 
 
 def fetch_webpage_content(url: str, *, timeout: int = 10, max_chars: int = 5000) -> dict[str, Any]:
+    url = _normalize_url(url)
     try:
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -560,7 +580,7 @@ def rank_results(query: str, results: list[SearchResult]) -> list[SearchResult]:
     return sorted(results, key=score)
 
 
-def comprehensive_web_search(query: str, *, max_pages: int = 5, time_filter: str | None = None) -> dict[str, Any]:
+def comprehensive_web_search(query: str, *, max_pages: int = 5, max_chars: int = 10000, time_filter: str | None = None) -> dict[str, Any]:
     settings = load_settings()
     provider_name, raw_results = search_provider(query, settings=settings, max_results=max(max_pages, int(settings.get("search_result_count") or 5)), time_filter=time_filter)
     if not raw_results:
@@ -580,7 +600,7 @@ def comprehensive_web_search(query: str, *, max_pages: int = 5, time_filter: str
     fetched: list[dict[str, Any]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, max_pages or 1)) as executor:
         future_map = {
-            executor.submit(fetch_webpage_content, source["url"], timeout=10, max_chars=5000): source
+            executor.submit(fetch_webpage_content, source["url"], timeout=10, max_chars=max_chars): source
             for source in sources
         }
         for future in concurrent.futures.as_completed(future_map):
@@ -624,7 +644,7 @@ def comprehensive_web_search(query: str, *, max_pages: int = 5, time_filter: str
             parts.append(f"\n[CONTENT {idx}] From: {page.get('url', '')}")
             if title:
                 parts.append(f"Title: {title}")
-            parts.append(truncate(page.get("content", ""), 2500))
+            parts.append(truncate(page.get("content", ""), max_chars))
 
     return {
         "query": query,
@@ -654,19 +674,107 @@ def render_text(result: dict[str, Any]) -> str:
     return "\n".join(header).strip()
 
 
+def search_only(query: str, *, max_results: int = 15, time_filter: str | None = None) -> dict[str, Any]:
+    """Phase 1: search and return ranked results without fetching page content."""
+    settings = load_settings()
+    provider_name, raw_results = search_provider(
+        query, settings=settings, max_results=max_results, time_filter=time_filter
+    )
+    if not raw_results:
+        return {
+            "query": query,
+            "provider": provider_name,
+            "time_filter": time_filter,
+            "ok": False,
+            "error": "no search results",
+            "results": [],
+        }
+
+    ranked = rank_results(query, raw_results)
+    results = [
+        {"index": idx, "title": item.title, "url": item.url, "snippet": truncate(item.snippet, 220)}
+        for idx, item in enumerate(ranked[:max_results], 1)
+    ]
+    return {
+        "query": query,
+        "provider": provider_name,
+        "time_filter": time_filter,
+        "ok": True,
+        "results": results,
+    }
+
+
+def fetch_specific_urls(urls: list[str], *, max_chars: int = 10000) -> dict[str, Any]:
+    """Phase 2: fetch content from specific URLs chosen by the model."""
+    fetched: list[dict[str, Any]] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(urls) or 1)) as executor:
+        future_map = {
+            executor.submit(fetch_webpage_content, url, timeout=10, max_chars=max_chars): url
+            for url in urls
+        }
+        for future in concurrent.futures.as_completed(future_map):
+            url = future_map[future]
+            try:
+                page = future.result()
+            except Exception as e:
+                fetched.append({"url": url, "success": False, "error": str(e), "content": "", "title": ""})
+                continue
+            fetched.append(page)
+
+    # Preserve original URL order
+    url_order = {url: idx for idx, url in enumerate(urls)}
+    fetched.sort(key=lambda p: url_order.get(p.get("url", ""), 999))
+
+    parts: list[str] = []
+    parts.append("=" * 70)
+    parts.append(f"FETCHED PAGE CONTENT ({len(fetched)} pages)")
+    parts.append("=" * 70)
+    for idx, page in enumerate(fetched, 1):
+        title = page.get("title") or ""
+        parts.append(f"\n[CONTENT {idx}] From: {page.get('url', '')}")
+        if title:
+            parts.append(f"Title: {title}")
+        if page.get("success") and page.get("content"):
+            parts.append(truncate(page["content"], max_chars))
+        else:
+            parts.append(f"Error: {page.get('error', 'no content')}")
+
+    return {
+        "ok": True,
+        "fetched_count": len(fetched),
+        "pages": fetched,
+        "context": "\n".join(parts).strip(),
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Standalone batch web search")
     p.add_argument("queries", nargs="*", help="One or more search queries")
     p.add_argument("--queries-file", help="Read queries from a text file (one per line); use '-' for stdin")
     p.add_argument("--stdin", action="store_true", help="Read queries from stdin, one per line")
     p.add_argument("--max-pages", type=int, default=5, help="Maximum pages to fetch per query")
+    p.add_argument("--max-results", type=int, default=15, help="Maximum search results to return (search-only mode)")
     p.add_argument("--time-filter", choices=["day", "week", "month", "year"], help="Force a freshness filter")
     p.add_argument("--json", action="store_true", help="Print JSON instead of text")
+    p.add_argument("--search-only", action="store_true", help="Only return search results (titles/URLs), skip fetching")
+    p.add_argument("--fetch-urls", nargs="+", metavar="URL", help="Fetch specific URLs directly (phase 2)")
+    p.add_argument("--max-chars", type=int, default=10000, help="Max characters per fetched page (default 10000)")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    # Phase 2: fetch specific URLs directly
+    if args.fetch_urls:
+        result = fetch_specific_urls(args.fetch_urls, max_chars=args.max_chars)
+        if args.json:
+            json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
+            sys.stdout.write("\n")
+        else:
+            sys.stdout.write(result["context"] + "\n")
+        return 0
+
     try:
         queries = collect_queries(args)
     except Exception as e:
@@ -677,8 +785,33 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("error: provide queries as arguments, --queries-file, or stdin\n")
         return 1
 
+    # Phase 1: search-only mode
+    if args.search_only:
+        items = [
+            search_only(query, max_results=args.max_results, time_filter=args.time_filter or infer_time_filter(query))
+            for query in queries
+        ]
+        if args.json:
+            json.dump({"count": len(items), "items": items}, sys.stdout, indent=2, ensure_ascii=False)
+            sys.stdout.write("\n")
+        else:
+            for item in items:
+                if not item["ok"]:
+                    sys.stdout.write(f"Error: {item.get('error', 'unknown')}\n")
+                    continue
+                sys.stdout.write(f"=== Query: {item['query']} ===\n")
+                sys.stdout.write(f"Provider: {item.get('provider', '')}\n\n")
+                for r in item["results"]:
+                    sys.stdout.write(f"[{r['index']}] {r['title']}\n")
+                    sys.stdout.write(f"    {r['url']}\n")
+                    if r.get("snippet"):
+                        sys.stdout.write(f"    {r['snippet']}\n")
+                    sys.stdout.write("\n")
+        return 0
+
+    # Legacy: full search + fetch
     items = [
-        comprehensive_web_search(query, max_pages=args.max_pages, time_filter=args.time_filter or infer_time_filter(query))
+        comprehensive_web_search(query, max_pages=args.max_pages, max_chars=args.max_chars, time_filter=args.time_filter or infer_time_filter(query))
         for query in queries
     ]
 
