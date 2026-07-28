@@ -2475,43 +2475,10 @@
     // === Memory Search Settings ===
     const msModelSelect = document.getElementById("msModelSelect");
     const msTopK = document.getElementById("msTopK");
-    const msThresholdEditor = document.getElementById("msThresholdEditor");
     const msEnabled = document.getElementById("msEnabled");
     const msSaveBtn = document.getElementById("msSaveBtn");
     const msInfo = document.getElementById("msInfo");
     let _msLoaded = false;
-
-    function buildThresholdEditor(models, customThresholds) {
-      msThresholdEditor.innerHTML = "";
-      const header = document.createElement("p");
-      header.className = "muted";
-      header.style.cssText = "font-size:11px;margin:0 0 2px;text-transform:uppercase;letter-spacing:0.5px;";
-      header.textContent = "Per-model thresholds (blank = calibrated default)";
-      msThresholdEditor.appendChild(header);
-      (models || []).forEach((m) => {
-        const row = document.createElement("div");
-        row.style.cssText = "display:flex;align-items:center;gap:8px;";
-        const label = document.createElement("span");
-        label.className = "muted";
-        label.style.cssText = "font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
-        label.textContent = m.id.split("/").pop();
-        label.title = m.id;
-        const input = document.createElement("input");
-        input.type = "number";
-        input.step = "0.001";
-        input.min = "0";
-        input.max = "1";
-        input.className = "mem-input";
-        input.style.cssText = "width:80px;";
-        input.placeholder = String(m.threshold);
-        input.dataset.model = m.id;
-        const custom = customThresholds?.[m.id];
-        if (custom !== undefined && custom !== null) input.value = custom;
-        row.appendChild(label);
-        row.appendChild(input);
-        msThresholdEditor.appendChild(row);
-      });
-    }
 
     async function loadMemorySearchSettings() {
       if (_msLoaded) return;
@@ -2528,7 +2495,6 @@
           msModelSelect.appendChild(opt);
         });
         msTopK.value = data.top_k || 10;
-        buildThresholdEditor(data.available_models, data.model_thresholds);
         msEnabled.checked = data.enabled !== false;
         msInfo.textContent = `Active: ${data.current_model} | Threshold: ${data.current_threshold}`;
         _msLoaded = true;
@@ -2537,17 +2503,12 @@
 
     msSaveBtn.addEventListener("click", async () => {
       try {
-        const modelThresholds = {};
-        msThresholdEditor.querySelectorAll("input[data-model]").forEach((inp) => {
-          if (inp.value.trim() !== "") modelThresholds[inp.dataset.model] = parseFloat(inp.value);
-        });
         const res = await fetch("/api/settings/memory-search", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             model: msModelSelect.value,
             top_k: parseInt(msTopK.value) || 10,
-            model_thresholds: modelThresholds,
             enabled: msEnabled.checked,
           }),
         });
@@ -2923,53 +2884,4 @@
       // active with DeepSeek the dropdown must show DS model types, not Qwen.
       await loadModels();
     });
-
-  // ── Browser Session Monitor ──────────────────────────────────
-  async function loadBrowserSession() {
-    const card = document.getElementById('browserSessionCard');
-    if (!card) return;
-    try {
-      const res = await fetch('/api/scraper/sessions');
-      const d = await res.json();
-      if (!d.active) {
-        card.innerHTML = '<p class="muted" style="font-size:12px;margin:0;">No active browser session.</p>';
-        return;
-      }
-      const alive = d.alive;
-      const dot = alive ? '\u{1F7E2}' : '\u{1F534}';
-      const statusTxt = alive ? 'Running' : 'Dead / Zombie';
-      card.innerHTML =
-        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">' +
-          '<span style="font-size:13px;font-weight:600;color:var(--text);">' + dot + ' ' + statusTxt + '</span>' +
-          '<button onclick="killBrowserSession()" style="background:var(--danger);color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:11px;cursor:pointer;font-weight:600;">\u2715 Kill</button>' +
-        '</div>' +
-        '<div style="display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:12px;color:var(--text-dim);">' +
-          '<span>Engine</span><span style="color:var(--text);">' + (d.engine_type || '\u2014') + '</span>' +
-          '<span>Chat ID</span><span style="color:var(--text);">' + (d.chat_id || '\u2014') + '</span>' +
-          '<span>PID</span><span style="color:var(--text);">' + (d.chrome_pid || '\u2014') + '</span>' +
-          '<span>CDP Port</span><span style="color:var(--text);">' + (d.cdp_port || '\u2014') + '</span>' +
-          '<span>Headless</span><span style="color:var(--text);">' + (d.headless ? 'Yes' : 'No') + '</span>' +
-          '<span>URL</span><span style="color:var(--text);word-break:break-all;font-size:11px;">' + (d.page_url || '\u2014') + '</span>' +
-        '</div>';
-    } catch {
-      card.innerHTML = '<p class="muted" style="font-size:12px;margin:0;color:var(--danger);">Failed to fetch session info.</p>';
-    }
-  }
-
-  async function killBrowserSession() {
-    try {
-      const res = await fetch('/api/scraper/sessions/kill', { method: 'POST' });
-      const d = await res.json();
-      showToast(d.killed_pid ? 'Killed PID ' + d.killed_pid : 'Session reset (no PID found)', 'success');
-    } catch {
-      showToast('Failed to kill session', 'error');
-    }
-    await loadBrowserSession();
-  }
-
-  document.getElementById('refreshSessionBtn')?.addEventListener('click', loadBrowserSession);
-  loadBrowserSession();
-  setInterval(loadBrowserSession, 15000);
-  // ── /Browser Session Monitor ─────────────────────────────────
-
 

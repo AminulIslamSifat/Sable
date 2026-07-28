@@ -88,7 +88,7 @@ class MemorySearcher:
         if self._initialized:
             return
         self._model_name: str = DEFAULT_MODEL
-        self._custom_thresholds: dict[str, float] = {}
+        self._custom_threshold: float | None = None
         self._model: Any = None
         self._entries: list[str] = []
         self._normed_vectors: np.ndarray | None = None
@@ -103,12 +103,9 @@ class MemorySearcher:
 
     @property
     def threshold(self) -> float:
-        return self.get_threshold(self._model_name)
-
-    def get_threshold(self, model_name: str) -> float:
-        if model_name in self._custom_thresholds:
-            return self._custom_thresholds[model_name]
-        return MODEL_THRESHOLDS.get(model_name, 0.5)
+        if self._custom_threshold is not None:
+            return self._custom_threshold
+        return MODEL_THRESHOLDS.get(self._model_name, 0.5)
 
     def set_model(self, model_name: str) -> None:
         with self._load_lock:
@@ -117,21 +114,19 @@ class MemorySearcher:
                 self._model = None
                 self._normed_vectors = None
 
-    def set_thresholds(self, thresholds: dict[str, float]) -> None:
+    def set_threshold(self, threshold: float | None) -> None:
         with self._load_lock:
-            self._custom_thresholds = {
-                k: max(0.0, min(1.0, float(v))) for k, v in thresholds.items()
-            }
-
-    def get_custom_thresholds(self) -> dict[str, float]:
-        return dict(self._custom_thresholds)
+            if threshold is None:
+                self._custom_threshold = None
+                return
+            self._custom_threshold = max(0.0, min(1.0, float(threshold)))
 
     def _ensure_model(self) -> None:
         if self._model is not None:
             return
         from fastembed import TextEmbedding
 
-        self._model = TextEmbedding(model_name=self._model_name, enable_cpu_mem_arena=False)
+        self._model = TextEmbedding(model_name=self._model_name)
 
     def _ensure_loaded(self) -> None:
         with self._load_lock:

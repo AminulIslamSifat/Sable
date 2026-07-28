@@ -602,18 +602,6 @@ async def update_scraper_settings_route(payload: dict[str, Any]) -> dict[str, An
     return settings
 
 
-@app.get("/api/scraper/sessions")
-async def get_scraper_sessions() -> dict[str, Any]:
-    """Return info about the active browser session (chat id, pid, url, liveness)."""
-    return await scraper_service.get_session_info()
-
-
-@app.post("/api/scraper/sessions/kill")
-async def kill_scraper_session() -> dict[str, Any]:
-    """Forcefully kill the browser process and reset scraper state."""
-    return await scraper_service.kill_session()
-
-
 @app.post("/api/scraper/model")
 async def switch_scraper_model(payload: dict[str, Any]) -> dict[str, Any]:
     """Switch the browser engine's active model type (DeepSeek Instant/Expert/Vision)."""

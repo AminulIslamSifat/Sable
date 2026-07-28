@@ -444,63 +444,6 @@ class ScraperEngine:
             logger.exception("Model switch failed")
             return {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
 
-    async def get_session_info(self) -> dict[str, Any]:
-        """Return info about the active browser session for the settings UI."""
-        engine = self.engine
-        if engine is None:
-            return {"active": False}
-
-        settings = _load_settings()
-        alive = await self._is_browser_alive(engine)
-
-        pid: int | None = None
-        chrome_proc = getattr(engine, "chrome_process", None)
-        if chrome_proc is not None:
-            try:
-                pid = chrome_proc.pid
-            except Exception:
-                pass
-
-        page_url: str | None = None
-        page = getattr(engine, "page", None)
-        if page is not None:
-            try:
-                page_url = page.url
-            except Exception:
-                pass
-
-        return {
-            "active": True,
-            "alive": alive,
-            "chat_id": self.active_chat_id,
-            "engine_type": settings.get("engine_type", DEFAULT_ENGINE_TYPE),
-            "cdp_port": getattr(engine, "port", None),
-            "chrome_pid": pid,
-            "page_url": page_url,
-            "headless": bool(settings.get("headless", False)),
-        }
-
-    async def kill_session(self) -> dict[str, Any]:
-        """Forcefully kill the browser process and reset all scraper state."""
-        import os
-        import signal
-
-        engine = self.engine
-        killed_pid: int | None = None
-
-        if engine is not None:
-            chrome_proc = getattr(engine, "chrome_process", None)
-            if chrome_proc is not None:
-                try:
-                    pid = chrome_proc.pid
-                    os.killpg(os.getpgid(pid), signal.SIGKILL)
-                    killed_pid = pid
-                except (ProcessLookupError, PermissionError, OSError):
-                    pass
-
-        await self.stop(kill_browser=True)
-        return {"status": "ok", "killed_pid": killed_pid}
-
     async def _interrupt_generation(self, engine: Any) -> None:
         """Click the engine's on-page stop button so generation actually halts.
 

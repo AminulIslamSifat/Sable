@@ -1019,15 +1019,7 @@ def handle_insert_file(
     args = ["insert", path]
     backup_path = _make_backup(path)
     tmp_anchor: Path | None = None
-    tmp_content: Path | None = None
     try:
-        # Write content to a temp file so editor_tools.py uses its raw-file
-        # path (--content-file) instead of falling through to JSON stdin parsing,
-        # which breaks on backticks, ${}, quotes, and other code characters.
-        tmp_content = Path("/tmp") / f"sable_insert_{uuid.uuid4().hex}.txt"
-        tmp_content.write_text(content, encoding="utf-8")
-        args += ["--content-file", str(tmp_content)]
-
         if at_line:
             args += ["--at-line", str(at_line)]
         elif after_str:
@@ -1037,14 +1029,13 @@ def handle_insert_file(
             tmp_anchor.write_text(after_str, encoding="utf-8")
             args += ["--after-file", str(tmp_anchor)]
 
-        ok, output = _run_editor(args)
+        ok, output = _run_editor(args, stdin_data=content)
     finally:
-        for tmp in (tmp_anchor, tmp_content):
-            if tmp and tmp.exists():
-                try:
-                    tmp.unlink()
-                except Exception:
-                    pass
+        if tmp_anchor and tmp_anchor.exists():
+            try:
+                tmp_anchor.unlink()
+            except Exception:
+                pass
 
     output_trimmed = output[:RESULT_PREVIEW_CHARS]
     yield _output_event(tag_id, output_trimmed + "\n")

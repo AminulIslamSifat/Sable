@@ -11,47 +11,13 @@ Run: cd /home/sifat/hdd/projects/Sable && uv run python test/test_embedding.py
 """
 
 import argparse
-import builtins
-import io
 import json
 import sqlite3
-import sys
 import time
 from pathlib import Path
 
 import numpy as np
 from fastembed import TextEmbedding
-
-
-class TeeWriter(io.TextIOBase):
-    """Duplicates writes to an original stream and an in-memory buffer."""
-
-    def __init__(self, original: io.TextIOBase) -> None:
-        super().__init__()
-        self._original = original
-        self._buffer = io.StringIO()
-
-    def writable(self) -> bool:
-        return True
-
-    def write(self, s: str) -> int:
-        self._buffer.write(s)
-        return self._original.write(s)
-
-    def flush(self) -> None:
-        self._buffer.flush()
-        self._original.flush()
-
-    def getvalue(self) -> str:
-        return self._buffer.getvalue()
-
-
-_original_print = builtins.print
-
-
-def _tee_print(*args, **kwargs) -> None:
-    """Print that respects the active tee when one is installed."""
-    _original_print(*args, **kwargs)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -350,9 +316,14 @@ TEST_QUERIES = [
 ]
 
 ALL_MODELS = [
+    "sentence-transformers/all-MiniLM-L6-v2",
     "BAAI/bge-small-en-v1.5",
     "snowflake/snowflake-arctic-embed-xs",
+    "nomic-ai/nomic-embed-text-v1.5",
     "jinaai/jina-embeddings-v2-small-en",
+    "BAAI/bge-base-en-v1.5",
+    "thenlper/gte-base",
+    "mixedbread-ai/mxbai-embed-large-v1",
 ]
 
 DEFAULT_MODEL = "snowflake/snowflake-arctic-embed-xs"
@@ -411,7 +382,7 @@ def _load_live_prompts(n: int = 50) -> list[str]:
         if text.startswith("[") and "\n" in text[:25]:
             text = text.split("\n", 1)[1]
         text = text.strip()
-        if text and len(text) >= 30:
+        if text:
             prompts.append(text)
     return prompts
 
@@ -442,8 +413,7 @@ def benchmark_live(model_name: str, top_k: int = 5) -> dict | None:
     print(f"✅ Loaded in {load_s:.2f}s")
 
     t_enc = time.perf_counter()
-    # Embed one-at-a-time to avoid fastembed inhomogeneous-shape bug with variable-length tokens
-    mem_vecs = np.array([list(model.embed([m]))[0] for m in memories], dtype="float32")
+    mem_vecs = np.array(list(model.embed(memories)), dtype="float32")
     encode_s = time.perf_counter() - t_enc
     avg_encode_ms = (encode_s / len(memories)) * 1000
 
@@ -517,7 +487,6 @@ def benchmark_live(model_name: str, top_k: int = 5) -> dict | None:
         "topk_max": all_kth_scores[-1],
         "suggested_threshold": suggested,
         "load_s": load_s,
-        "prompts": prompts,
     }
 
 
@@ -690,18 +659,8 @@ def benchmark_model(model_name: str) -> dict | None:
     }
 
 
-def save_results(results: list[dict], console_log: str = "") -> None:
+def save_results(results: list[dict]) -> None:
     lines = []
-    if console_log:
-        lines.append("=" * 90)
-        lines.append("FULL CONSOLE OUTPUT")
-        lines.append("=" * 90)
-        lines.append(console_log.rstrip("\n"))
-        lines.append("")
-        lines.append("=" * 90)
-        lines.append("SUMMARY")
-        lines.append("=" * 90)
-        lines.append("")
     lines.append("=" * 90)
     lines.append("SABLE EMBEDDING MODEL STRESS TEST RESULTS")
     lines.append(f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -743,71 +702,7 @@ def save_results(results: list[dict], console_log: str = "") -> None:
     print(f"\n💾 Results saved to {RESULTS_FILE}")
 
 
-def save_live_results(results: list[dict], console_log: str = "") -> None:
-    lines = []
-    if console_log:
-        lines.append("=" * 90)
-        lines.append("FULL CONSOLE OUTPUT")
-        lines.append("=" * 90)
-        lines.append(console_log.rstrip("\n"))
-        lines.append("")
-        lines.append("=" * 90)
-        lines.append("SUMMARY")
-        lines.append("=" * 90)
-        lines.append("")
-    lines.append("=" * 90)
-    lines.append("SABLE LIVE EMBEDDING BENCHMARK RESULTS")
-    lines.append(f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append("Mode: LIVE (real Memory.json + real user prompts from sable.db)")
-    lines.append("=" * 90)
-    lines.append("")
-    hdr = f"{'Model':<40} {'Enc ms':>7} {'Qry ms':>7} {'Thresh':>7} {'Top1 Med':>9} {'Load':>6}"
-    lines.append(hdr)
-    lines.append(f"{'─'*40} {'─'*7} {'─'*7} {'─'*7} {'─'*9} {'─'*6}")
-    for r in sorted(results, key=lambda x: -x["top1_median"]):
-        name = r["model"].split("/")[-1][:39]
-        row = f"{name:<40} {r['encode_ms']:>7.1f} {r['query_ms']:>7.1f} "
-        row += f"{r['suggested_threshold']:>7.3f} {r['top1_median']:>9.4f} {r['load_s']:>5.2f}s"
-        lines.append(row)
-    lines.append("")
-    for r in sorted(results, key=lambda x: -x["top1_median"]):
-        lines.append("-" * 90)
-        lines.append(f"MODEL: {r['model']}")
-        mc = r['memory_count']
-        pc = r['prompt_count']
-        tk = r['top_k']
-        lines.append(f"  Memory entries: {mc} | Prompts: {pc} | Top-K: {tk}")
-        lines.append(f"  Encode: {r['encode_ms']:.1f} ms/text avg | {r['encode_total_s']:.3f}s total")
-        lines.append(f"  Query:  {r['query_ms']:.1f} ms/query avg | {r['query_total_s']:.3f}s total")
-        t1min = r['top1_min']
-        t1med = r['top1_median']
-        t1max = r['top1_max']
-        lines.append(f"  Top-1 scores:  min={t1min:.4f}  median={t1med:.4f}  max={t1max:.4f}")
-        tkmin = r['topk_min']
-        tkmed = r['topk_median']
-        tkmax = r['topk_max']
-        lines.append(f"  Top-{tk} scores: min={tkmin:.4f}  median={tkmed:.4f}  max={tkmax:.4f}")
-        lines.append(f"  Suggested threshold: {r['suggested_threshold']:.3f}")
-        lines.append(f"  Load time: {r['load_s']:.2f}s")
-        lines.append("")
-    # Full prompts used
-    prompts_list = results[0].get("prompts", []) if results else []
-    if prompts_list:
-        lines.append("=" * 90)
-        lines.append(f"PROMPTS USED ({len(prompts_list)} total)")
-        lines.append("=" * 90)
-        for i, p in enumerate(prompts_list, 1):
-            lines.append(f"\n[{i}] {p}")
-        lines.append("")
-    lines.append("=" * 90)
-    lines.append("END OF LIVE REPORT")
-    lines.append("=" * 90)
-    RESULTS_FILE.write_text("\n".join(lines), encoding="utf-8")
-    print(f"\n💾 Live results saved to {RESULTS_FILE}")
-
-
-
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(description="Embedding model stress test")
     parser.add_argument("--model", default=None, help="Single model name to test")
     parser.add_argument("--all", action="store_true", help="Benchmark all recommended models")
@@ -818,34 +713,6 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, default=5, help="Top-K results to show in live mode (default 5)")
     args = parser.parse_args()
 
-    # Tee stdout so every print() is captured for the output file
-    tee = TeeWriter(sys.stdout)
-    sys.stdout = tee
-    try:
-        _run(args)
-    finally:
-        sys.stdout = tee._original
-
-    console_log = tee.getvalue()
-
-    # Re-inject the captured log into whichever save function was called
-    # We detect which file was written by checking if it already exists with summary-only content
-    # Simpler: just re-save with the full log appended. The save functions are idempotent on RESULTS_FILE.
-    # But we need to know which mode ran. Store a flag via a module-level variable.
-    global _LAST_SAVE_MODE
-    if _LAST_SAVE_MODE == "live":
-        save_live_results(_LAST_RESULTS, console_log)
-    elif _LAST_SAVE_MODE == "benchmark":
-        save_results(_LAST_RESULTS, console_log)
-
-
-_LAST_SAVE_MODE: str = ""
-_LAST_RESULTS: list[dict] = []
-
-
-def _run(args: argparse.Namespace) -> None:
-    global _LAST_SAVE_MODE, _LAST_RESULTS
-
     if args.live:
         models = [args.model] if args.model else ALL_MODELS
         live_results: list[dict] = []
@@ -854,8 +721,6 @@ def _run(args: argparse.Namespace) -> None:
             if r:
                 live_results.append(r)
         if live_results:
-            _LAST_SAVE_MODE = "live"
-            _LAST_RESULTS = live_results
             save_live_results(live_results)
         return
 
@@ -873,8 +738,6 @@ def _run(args: argparse.Namespace) -> None:
             results.append(r)
 
     if results:
-        _LAST_SAVE_MODE = "benchmark"
-        _LAST_RESULTS = results
         save_results(results)
 
         if len(results) > 1:

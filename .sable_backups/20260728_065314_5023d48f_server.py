@@ -602,18 +602,6 @@ async def update_scraper_settings_route(payload: dict[str, Any]) -> dict[str, An
     return settings
 
 
-@app.get("/api/scraper/sessions")
-async def get_scraper_sessions() -> dict[str, Any]:
-    """Return info about the active browser session (chat id, pid, url, liveness)."""
-    return await scraper_service.get_session_info()
-
-
-@app.post("/api/scraper/sessions/kill")
-async def kill_scraper_session() -> dict[str, Any]:
-    """Forcefully kill the browser process and reset scraper state."""
-    return await scraper_service.kill_session()
-
-
 @app.post("/api/scraper/model")
 async def switch_scraper_model(payload: dict[str, Any]) -> dict[str, Any]:
     """Switch the browser engine's active model type (DeepSeek Instant/Expert/Vision)."""
@@ -1272,17 +1260,8 @@ async def chat(request: ChatRequest):
     except Exception:
         pass  # Memory injection is best-effort; never block chat
 
-    # Determine current mode and lock it per-chat
-    current_mode = "scraper" if scraper_enabled else "api"
-    locked_mode = get_chat_mode(active_chat_id)
-    if locked_mode and locked_mode != current_mode:
-        return {
-            "error": f"This chat was created in {locked_mode} mode. "
-                     f"Switch back to {locked_mode} mode or start a new chat."
-        }
-
     title = make_title(request.message)
-    ensure_chat(active_chat_id, title, request.parent_id, mode=current_mode)
+    ensure_chat(active_chat_id, title, request.parent_id)
     set_title_if_default(active_chat_id, title)
 
     parent_id = get_parent_id(active_chat_id, request.parent_id)

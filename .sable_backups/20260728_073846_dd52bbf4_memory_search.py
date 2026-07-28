@@ -131,7 +131,7 @@ class MemorySearcher:
             return
         from fastembed import TextEmbedding
 
-        self._model = TextEmbedding(model_name=self._model_name, enable_cpu_mem_arena=False)
+        self._model = TextEmbedding(model_name=self._model_name)
 
     def _ensure_loaded(self) -> None:
         with self._load_lock:

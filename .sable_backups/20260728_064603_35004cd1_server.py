@@ -201,30 +201,18 @@ def init_db() -> None:
             conn.execute("ALTER TABLE chats ADD COLUMN memory_keys TEXT DEFAULT '[]'")
         if "chat_url" not in chat_cols:
             conn.execute("ALTER TABLE chats ADD COLUMN chat_url TEXT")
-        if "mode" not in chat_cols:
-            conn.execute("ALTER TABLE chats ADD COLUMN mode TEXT")
 
 
-def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = None, mode: str | None = None) -> None:
+def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = None) -> None:
     now = utcnow()
     with get_db() as conn:
-        existing = conn.execute("SELECT id, mode FROM chats WHERE id = ?", (chat_id,)).fetchone()
+        existing = conn.execute("SELECT id FROM chats WHERE id = ?", (chat_id,)).fetchone()
         if existing:
-            # Lock mode on first real interaction if not yet set
-            if mode and not existing["mode"]:
-                conn.execute("UPDATE chats SET mode = ? WHERE id = ?", (mode, chat_id))
             return
         conn.execute(
-            "INSERT INTO chats (id, title, parent_id, created_at, updated_at, mode) VALUES (?, ?, ?, ?, ?, ?)",
-            (chat_id, title, parent_id, now, now, mode),
+            "INSERT INTO chats (id, title, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (chat_id, title, parent_id, now, now),
         )
-
-
-def get_chat_mode(chat_id: str) -> str | None:
-    """Return the locked mode for a chat ('api' or 'scraper'), or None if unset."""
-    with get_db() as conn:
-        row = conn.execute("SELECT mode FROM chats WHERE id = ?", (chat_id,)).fetchone()
-    return row["mode"] if row and row["mode"] else None
 
 
 def set_title_if_default(chat_id: str, title: str) -> None:
@@ -600,18 +588,6 @@ async def update_scraper_settings_route(payload: dict[str, Any]) -> dict[str, An
         settings["prelaunch"] = prelaunch_result
 
     return settings
-
-
-@app.get("/api/scraper/sessions")
-async def get_scraper_sessions() -> dict[str, Any]:
-    """Return info about the active browser session (chat id, pid, url, liveness)."""
-    return await scraper_service.get_session_info()
-
-
-@app.post("/api/scraper/sessions/kill")
-async def kill_scraper_session() -> dict[str, Any]:
-    """Forcefully kill the browser process and reset scraper state."""
-    return await scraper_service.kill_session()
 
 
 @app.post("/api/scraper/model")
@@ -1272,17 +1248,8 @@ async def chat(request: ChatRequest):
     except Exception:
         pass  # Memory injection is best-effort; never block chat
 
-    # Determine current mode and lock it per-chat
-    current_mode = "scraper" if scraper_enabled else "api"
-    locked_mode = get_chat_mode(active_chat_id)
-    if locked_mode and locked_mode != current_mode:
-        return {
-            "error": f"This chat was created in {locked_mode} mode. "
-                     f"Switch back to {locked_mode} mode or start a new chat."
-        }
-
     title = make_title(request.message)
-    ensure_chat(active_chat_id, title, request.parent_id, mode=current_mode)
+    ensure_chat(active_chat_id, title, request.parent_id)
     set_title_if_default(active_chat_id, title)
 
     parent_id = get_parent_id(active_chat_id, request.parent_id)

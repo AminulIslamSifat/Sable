@@ -1,0 +1,225 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Tool Activity Card — Preview</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0f0d15;
+    font-family: 'Maple Mono', 'JetBrains Mono', monospace;
+    color: #e0dce8;
+    padding: 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+    align-items: center;
+  }
+  h1 { font-size: 14px; color: #8b7fa8; letter-spacing: 1px; text-transform: uppercase; }
+  .scenario { width: 100%; max-width: 680px; }
+  .scenario-label { font-size: 11px; color: #6b6180; margin-bottom: 8px; }
+
+  /* The card itself */
+  .tool-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: #1a1625;
+    border: 1px solid #2d2640;
+    border-radius: 10px;
+    padding: 12px 16px;
+    animation: slideIn 0.2s ease-out;
+    position: relative;
+    overflow: hidden;
+  }
+  .tool-card::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    border-radius: 3px 0 0 3px;
+  }
+  .tool-card.creating::before { background: #a78bfa; }
+  .tool-card.editing::before { background: #f59e0b; }
+  .tool-card.running::before { background: #34d399; }
+  .tool-card.reading::before { background: #60a5fa; }
+  .tool-card.generating::before { background: #8b5cf6; }
+  .tool-card.done::before { background: #34d399; }
+
+  .tool-icon {
+    width: 32px; height: 32px;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px;
+    flex-shrink: 0;
+  }
+  .creating .tool-icon { background: #a78bfa22; }
+  .editing .tool-icon { background: #f59e0b22; }
+  .running .tool-icon { background: #34d39922; }
+  .reading .tool-icon { background: #60a5fa22; }
+  .generating .tool-icon { background: #8b5cf622; }
+  .done .tool-icon { background: #34d39922; }
+
+  .tool-info { flex: 1; min-width: 0; }
+  .tool-title { font-size: 13px; font-weight: 600; color: #e0dce8; }
+  .tool-detail { font-size: 11px; color: #8b7fa8; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .tool-status { flex-shrink: 0; }
+
+  /* Spinner */
+  .spinner {
+    width: 16px; height: 16px;
+    border: 2px solid #2d2640;
+    border-top-color: #a78bfa;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  .running .spinner { border-top-color: #34d399; }
+  .generating .spinner { border-top-color: #8b5cf6; }
+
+  /* Checkmark */
+  .check { color: #34d399; font-size: 16px; animation: popIn 0.3s ease-out; }
+
+  /* Progress bar for code gen */
+  .progress-track {
+    width: 100%;
+    height: 3px;
+    background: #2d2640;
+    border-radius: 2px;
+    margin-top: 8px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #8b5cf6, #a78bfa);
+    border-radius: 2px;
+    animation: progress 3s ease-in-out infinite;
+  }
+
+  /* Pulse dot for generating */
+  .pulse-dot {
+    width: 8px; height: 8px;
+    background: #8b5cf6;
+    border-radius: 50%;
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes slideIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes popIn { from { transform: scale(0); } to { transform: scale(1); } }
+  @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.7); } }
+  @keyframes progress { 0% { width: 5%; } 50% { width: 70%; } 100% { width: 95%; } }
+
+  /* Message bubble below for context */
+  .msg-bubble {
+    margin-top: 12px;
+    background: #1a1625;
+    border: 1px solid #2d2640;
+    border-radius: 12px;
+    padding: 16px;
+    font-size: 13px;
+    color: #9b93ad;
+    line-height: 1.6;
+  }
+  .msg-bubble .cursor {
+    display: inline-block;
+    width: 2px; height: 14px;
+    background: #a78bfa;
+    animation: blink 1s step-end infinite;
+    vertical-align: middle;
+    margin-left: 2px;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+
+<h1>Tool Activity Card — States</h1>
+
+<!-- State 1: Generating code (long output, no tag yet) -->
+<div class="scenario">
+  <div class="scenario-label">① Generating long code (no tool tag yet — just streaming)</div>
+  <div class="tool-card generating">
+    <div class="tool-icon">✍️</div>
+    <div class="tool-info">
+      <div class="tool-title">Writing code...</div>
+      <div class="tool-detail">342 lines · 12.4 KB</div>
+      <div class="progress-track"><div class="progress-fill"></div></div>
+    </div>
+    <div class="tool-status"><div class="pulse-dot"></div></div>
+  </div>
+  <div class="msg-bubble">
+    <span style="color:#6b6180">def consolidate_memory(payload):</span><br>
+    <span style="color:#6b6180">&nbsp;&nbsp;chat_id = payload.get("chat_id")</span><br>
+    <span style="color:#6b6180">&nbsp;&nbsp;...</span><span class="cursor"></span>
+  </div>
+</div>
+
+<!-- State 2: Creating file -->
+<div class="scenario">
+  <div class="scenario-label">② Tool tag detected — creating a file</div>
+  <div class="tool-card creating">
+    <div class="tool-icon">📝</div>
+    <div class="tool-info">
+      <div class="tool-title">Creating file</div>
+      <div class="tool-detail">/home/sifat/hdd/projects/Sable/engine/memory_search.py</div>
+    </div>
+    <div class="tool-status"><div class="spinner"></div></div>
+  </div>
+</div>
+
+<!-- State 3: Editing file -->
+<div class="scenario">
+  <div class="scenario-label">③ Editing existing file</div>
+  <div class="tool-card editing">
+    <div class="tool-icon">✏️</div>
+    <div class="tool-info">
+      <div class="tool-title">Editing file</div>
+      <div class="tool-detail">/home/sifat/hdd/projects/Sable/server.py · 2 replacements</div>
+    </div>
+    <div class="tool-status"><div class="spinner"></div></div>
+  </div>
+</div>
+
+<!-- State 4: Running command -->
+<div class="scenario">
+  <div class="scenario-label">④ Executing a command</div>
+  <div class="tool-card running">
+    <div class="tool-icon">⚡</div>
+    <div class="tool-info">
+      <div class="tool-title">Running command</div>
+      <div class="tool-detail">python test/test_consolidate_parse.py</div>
+    </div>
+    <div class="tool-status"><div class="spinner"></div></div>
+  </div>
+</div>
+
+<!-- State 5: Reading file -->
+<div class="scenario">
+  <div class="scenario-label">⑤ Viewing / reading a file</div>
+  <div class="tool-card reading">
+    <div class="tool-icon">👁️</div>
+    <div class="tool-info">
+      <div class="tool-title">Reading file</div>
+      <div class="tool-detail">server.py · lines 660–713</div>
+    </div>
+    <div class="tool-status"><div class="spinner"></div></div>
+  </div>
+</div>
+
+<!-- State 6: Done -->
+<div class="scenario">
+  <div class="scenario-label">⑥ Tool finished (auto-fades after 1.2s)</div>
+  <div class="tool-card done">
+    <div class="tool-icon">✅</div>
+    <div class="tool-info">
+      <div class="tool-title">Created server.py</div>
+      <div class="tool-detail">87 lines written</div>
+    </div>
+    <div class="tool-status"><span class="check">✓</span></div>
+  </div>
+</div>
+
+</body>
+</html>

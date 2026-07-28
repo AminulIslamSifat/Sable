@@ -350,9 +350,14 @@ TEST_QUERIES = [
 ]
 
 ALL_MODELS = [
+    "sentence-transformers/all-MiniLM-L6-v2",
     "BAAI/bge-small-en-v1.5",
     "snowflake/snowflake-arctic-embed-xs",
+    "nomic-ai/nomic-embed-text-v1.5",
     "jinaai/jina-embeddings-v2-small-en",
+    "BAAI/bge-base-en-v1.5",
+    "thenlper/gte-base",
+    "mixedbread-ai/mxbai-embed-large-v1",
 ]
 
 DEFAULT_MODEL = "snowflake/snowflake-arctic-embed-xs"
@@ -411,7 +416,7 @@ def _load_live_prompts(n: int = 50) -> list[str]:
         if text.startswith("[") and "\n" in text[:25]:
             text = text.split("\n", 1)[1]
         text = text.strip()
-        if text and len(text) >= 30:
+        if text:
             prompts.append(text)
     return prompts
 
@@ -517,7 +522,6 @@ def benchmark_live(model_name: str, top_k: int = 5) -> dict | None:
         "topk_max": all_kth_scores[-1],
         "suggested_threshold": suggested,
         "load_s": load_s,
-        "prompts": prompts,
     }
 
 
@@ -790,15 +794,6 @@ def save_live_results(results: list[dict], console_log: str = "") -> None:
         lines.append(f"  Suggested threshold: {r['suggested_threshold']:.3f}")
         lines.append(f"  Load time: {r['load_s']:.2f}s")
         lines.append("")
-    # Full prompts used
-    prompts_list = results[0].get("prompts", []) if results else []
-    if prompts_list:
-        lines.append("=" * 90)
-        lines.append(f"PROMPTS USED ({len(prompts_list)} total)")
-        lines.append("=" * 90)
-        for i, p in enumerate(prompts_list, 1):
-            lines.append(f"\n[{i}] {p}")
-        lines.append("")
     lines.append("=" * 90)
     lines.append("END OF LIVE REPORT")
     lines.append("=" * 90)
@@ -807,7 +802,7 @@ def save_live_results(results: list[dict], console_log: str = "") -> None:
 
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(description="Embedding model stress test")
     parser.add_argument("--model", default=None, help="Single model name to test")
     parser.add_argument("--all", action="store_true", help="Benchmark all recommended models")
@@ -818,34 +813,6 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, default=5, help="Top-K results to show in live mode (default 5)")
     args = parser.parse_args()
 
-    # Tee stdout so every print() is captured for the output file
-    tee = TeeWriter(sys.stdout)
-    sys.stdout = tee
-    try:
-        _run(args)
-    finally:
-        sys.stdout = tee._original
-
-    console_log = tee.getvalue()
-
-    # Re-inject the captured log into whichever save function was called
-    # We detect which file was written by checking if it already exists with summary-only content
-    # Simpler: just re-save with the full log appended. The save functions are idempotent on RESULTS_FILE.
-    # But we need to know which mode ran. Store a flag via a module-level variable.
-    global _LAST_SAVE_MODE
-    if _LAST_SAVE_MODE == "live":
-        save_live_results(_LAST_RESULTS, console_log)
-    elif _LAST_SAVE_MODE == "benchmark":
-        save_results(_LAST_RESULTS, console_log)
-
-
-_LAST_SAVE_MODE: str = ""
-_LAST_RESULTS: list[dict] = []
-
-
-def _run(args: argparse.Namespace) -> None:
-    global _LAST_SAVE_MODE, _LAST_RESULTS
-
     if args.live:
         models = [args.model] if args.model else ALL_MODELS
         live_results: list[dict] = []
@@ -854,8 +821,6 @@ def _run(args: argparse.Namespace) -> None:
             if r:
                 live_results.append(r)
         if live_results:
-            _LAST_SAVE_MODE = "live"
-            _LAST_RESULTS = live_results
             save_live_results(live_results)
         return
 
@@ -873,8 +838,6 @@ def _run(args: argparse.Namespace) -> None:
             results.append(r)
 
     if results:
-        _LAST_SAVE_MODE = "benchmark"
-        _LAST_RESULTS = results
         save_results(results)
 
         if len(results) > 1:

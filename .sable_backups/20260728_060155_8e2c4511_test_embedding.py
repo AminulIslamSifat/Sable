@@ -350,9 +350,14 @@ TEST_QUERIES = [
 ]
 
 ALL_MODELS = [
+    "sentence-transformers/all-MiniLM-L6-v2",
     "BAAI/bge-small-en-v1.5",
     "snowflake/snowflake-arctic-embed-xs",
+    "nomic-ai/nomic-embed-text-v1.5",
     "jinaai/jina-embeddings-v2-small-en",
+    "BAAI/bge-base-en-v1.5",
+    "thenlper/gte-base",
+    "mixedbread-ai/mxbai-embed-large-v1",
 ]
 
 DEFAULT_MODEL = "snowflake/snowflake-arctic-embed-xs"
@@ -517,7 +522,6 @@ def benchmark_live(model_name: str, top_k: int = 5) -> dict | None:
         "topk_max": all_kth_scores[-1],
         "suggested_threshold": suggested,
         "load_s": load_s,
-        "prompts": prompts,
     }
 
 
@@ -789,15 +793,6 @@ def save_live_results(results: list[dict], console_log: str = "") -> None:
         lines.append(f"  Top-{tk} scores: min={tkmin:.4f}  median={tkmed:.4f}  max={tkmax:.4f}")
         lines.append(f"  Suggested threshold: {r['suggested_threshold']:.3f}")
         lines.append(f"  Load time: {r['load_s']:.2f}s")
-        lines.append("")
-    # Full prompts used
-    prompts_list = results[0].get("prompts", []) if results else []
-    if prompts_list:
-        lines.append("=" * 90)
-        lines.append(f"PROMPTS USED ({len(prompts_list)} total)")
-        lines.append("=" * 90)
-        for i, p in enumerate(prompts_list, 1):
-            lines.append(f"\n[{i}] {p}")
         lines.append("")
     lines.append("=" * 90)
     lines.append("END OF LIVE REPORT")
