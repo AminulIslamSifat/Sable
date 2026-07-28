@@ -263,6 +263,18 @@
     {
       "key": "Sable frontend auto-model-switch on chat select",
       "value": "selectChat() in web/app.js checks meta.parent_id type: /^\\d+$/ (numeric) = DeepSeek chat, otherwise Qwen. If current selectedModel's api_backend doesn't match the chat type, auto-switches dropdown to first model of the correct type and calls populateThinkingModes(null). Same-type switches don't touch the dropdown. /api/models endpoint includes api_backend field (null for Qwen, 'deepseek' for DS models) to enable this check."
+    },
+    {
+      "key": "DeepSeek token refresh architecture (shared browser)",
+      "value": "DeepSeekClient now uses an injected token_refresher callback (set via set_token_refresher()) instead of launching a standalone Playwright instance on browser-data. The refresher is wired in server.py to service.refresh_deepseek_token(), which calls BrowserManager.extract_deepseek_token() — opens a NEW TAB in the already-running Qwen persistent browser context, navigates to chat.deepseek.com, reads localStorage 'userToken', closes the tab. This avoids Chromium profile lock conflicts. Fallback: if no refresher is set, _refresh_token_from_browser() still launches a standalone persistent context. Token refresh triggers: (1) server startup after Qwen warmup, (2) no token on first challenge, (3) 401 on PoW challenge, (4) 401 on session create (new — previously just raised), (5) manual POST /api/settings/deepseek/refresh-token. set_token() clears _sessions dict when token changes to prevent stale cross-account session reuse."
+    },
+    {
+      "key": "DeepSeek token refresh UI button",
+      "value": "Settings → General has a '🐋 DeepSeek API Token' card with ↻ Refresh Token button (id=refreshDeepseekTokenBtn) and inline status line (id=deepseekTokenStatus). Button calls POST /api/settings/deepseek/refresh-token, shows 'Refreshing…' → '✅ Token refreshed successfully (preview)' or '✕ error'. Also calls loadModels() after success to update model dropdown visibility. Added to index.html after headless toggle section, handler in app.js after restartBrowserBtn listener."
+    },
+    {
+      "key": "BrowserManager.extract_deepseek_token method",
+      "value": "engine/session.py BrowserManager.extract_deepseek_token() — async method that opens a new page in the existing persistent browser context (self.context.new_page()), navigates to https://chat.deepseek.com, waits 2s for JS hydration, reads localStorage.getItem('userToken'), parses JSON {value:...}, closes the page in finally block. Raises RuntimeError if no context or no token. Exposed via ChatService.refresh_deepseek_token() with self._lock serialization. Added import json to session.py."
     }
   ],
   "episodic": [
@@ -365,6 +377,10 @@
     {
       "key": "DeepSeek connector full Sable integration 2026-07-28",
       "value": "Completed full integration of DeepSeek HTTP API into Sable as a first-class model option (2026-07-28 ~20:30-21:05). Steps: (1) Replaced scraper-hijack routing with per-model api_backend check. (2) Added Expert/Instant/Vision to config.py dropdown with Fast+Thinking modes. (3) Fixed model_type=None coercion bug (Instant needs null, not 'default'). (4) Added session continuity — _sessions dict tracks (session_id, parent_counter) per Sable chat_id, parent_message_id goes null→2→4→6. (5) Prepended instruction/ files (Maria.md, output_format.md, skills.md) to first message since DeepSeek lacks persistent instructions. (6) Frontend auto-switches model dropdown when selecting chats based on parent_id type (numeric=DS, UUID=Qwen). (7) /api/models now exposes api_backend. All syntax-verified, server restart pending."
+    },
+    {
+      "key": "DeepSeek token refresh upgrade to shared browser 2026-07-28",
+      "value": "Upgraded DeepSeek auth to refresh like Qwen (2026-07-28 ~23:00-23:25). Changes across 5 files: (1) connectors/deepseek/client.py — added token_refresher callback, set_token clears _sessions on change, _create_session retries on 401, _refresh_token() prefers injected refresher over standalone browser, extracted _parse_localstorage_token static method. (2) engine/session.py — added extract_deepseek_token() using shared browser context new tab. (3) engine/service.py — added refresh_deepseek_token() wrapper with lock. (4) server.py — wired set_token_refresher(service.refresh_deepseek_token) at module level, added startup refresh in lifespan after service.warmup() with try/except warning. (5) web/index.html + app.js — added DeepSeek token refresh button with inline status feedback. All syntax-verified via py_compile. Server restart pending."
     }
   ],
   "procedural": [
@@ -443,6 +459,10 @@
     {
       "key": "Full DeepSeek chat completion flow (verified working)",
       "value": "Complete working sequence: (1) TOKEN=$(python3 -c \"import json; print(json.loads(localStorage.getItem('userToken'))['value'])\") from browser eval. (2) curl POST /api/v0/chat/create_pow_challenge with Bearer token + {target_path:'/api/v0/chat/completion'} → get challenge JSON. (3) echo challenge_json | /home/sifat/hdd/projects/Sable/connectors/deepseek/pow_solver/pow_solver → nonce. (4) Build pow_header = base64(json{algorithm,challenge,salt,answer:nonce,signature,target_path}). (5) POST /api/v0/chat_session/create with {} → session_id. (6) POST /api/v0/chat/completion with headers (Authorization, X-DS-PoW-Response, x-client-version:2.3.0, x-client-platform:web, x-client-bundle-id:com.deepseek.chat, x-client-locale:en_US) + body {chat_session_id, parent_message_id:null, model_type:'default', prompt, ref_file_ids:[], thinking_enabled:false, search_enabled:false, action:null, preempt:false}. Response is SSE text/event-stream."
+    },
+    {
+      "key": "Manually refreshing DeepSeek token in Sable",
+      "value": "Three ways: (1) UI: Settings → General → 🐋 DeepSeek API Token → ↻ Refresh Token (shows inline status). (2) API: curl -X POST http://localhost:8000/api/settings/deepseek/refresh-token -H 'Authorization: Bearer YOUR_SABLE_TOKEN'. (3) Automatic: server startup refreshes after Qwen warmup; 401 on challenge or session create triggers auto-refresh. If switching DeepSeek accounts in browser-data profile, use the button or restart server — cached token stays valid until 401 or manual refresh."
     }
   ],
   "ephemeral": []
