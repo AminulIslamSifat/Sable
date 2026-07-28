@@ -197,6 +197,102 @@ class BrowserManager:
         token = str(token).strip()
         if not token:
             raise RuntimeError("DeepSeek userToken was empty after parsing.")
+
+
+    async def upload_deepseek_file(
+        self,
+        file_path: str,
+        model_type: str = "vision",
+        thinking_enabled: bool = False,
+    ) -> dict:
+        """Upload a file through the DeepSeek web client and return the file metadata.
+
+        Uses the shared persistent browser context, opens a temporary DeepSeek tab,
+        sets the file on the chat input, and intercepts /api/v0/file/upload_file.
+        """
+        await self.start()
+        if not self.context:
+            raise RuntimeError("Browser session is not available")
+
+        abs_path = os.path.abspath(os.path.expanduser(file_path))
+        if not os.path.exists(abs_path):
+            raise FileNotFoundError(f"Upload file not found: {abs_path}")
+
+        file_size = os.path.getsize(abs_path)
+        page = await self.context.new_page()
+        try:
+            async def _add_upload_headers(route):
+                headers = {
+                    **route.request.headers,
+                    "x-model-type": model_type,
+                    "x-thinking-enabled": "1" if thinking_enabled else "0",
+                    "x-file-size": str(file_size),
+                }
+                await route.continue_(headers=headers)
+
+            await page.route("**/api/v0/file/upload_file", _add_upload_headers)
+
+            await page.goto("https://chat.deepseek.com", wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(3000)
+
+            async with page.expect_response(
+                lambda r: r.url.rstrip("/").endswith("/api/v0/file/upload_file")
+                and r.request.method == "POST",
+                timeout=90000,
+            ) as upload_info:
+                file_inputs = await page.query_selector_all("input[type=file]")
+                if file_inputs:
+                    await file_inputs[0].set_input_files(abs_path)
+                else:
+                    attach_selectors = [
+                        'input[type=file]',
+                        '[aria-label*="Attach" i]',
+                        '[aria-label*="Upload" i]',
+                        '[data-testid*="attach" i]',
+                        '[data-testid*="upload" i]',
+                        'button[aria-haspopup="dialog"]',
+                    ]
+                    clicked = False
+                    for selector in attach_selectors:
+                        handle = await page.query_selector(selector)
+                        if handle is None:
+                            continue
+                        try:
+                            async with page.expect_file_chooser(timeout=5000) as fc_info:
+                                await handle.click()
+                            file_chooser = await fc_info.value
+                            await file_chooser.set_files(abs_path)
+                            clicked = True
+                            break
+                        except Exception:
+                            continue
+                    if not clicked:
+                        raise RuntimeError(
+                            "Could not find a DeepSeek attach/upload control in the browser page."
+                        )
+
+            response = await upload_info.value
+            payload = await response.json()
+
+            if payload.get("code") != 0:
+                raise RuntimeError(f"DeepSeek upload failed: {payload}")
+
+            biz = payload.get("data", {}).get("biz_data", {})
+            file_id = biz.get("id")
+            if not file_id:
+                raise RuntimeError(f"DeepSeek upload response missing file id: {payload}")
+
+            return {
+                "file_id": str(file_id),
+                "status": biz.get("status"),
+                "file_name": biz.get("file_name") or os.path.basename(abs_path),
+                "file_size": biz.get("file_size") or file_size,
+                "model_kind": biz.get("model_kind"),
+                "is_image": bool(biz.get("is_image", False)),
+            }
+        finally:
+            await page.close()
+
         return token
 
     async def upload_image(self, image_path: str) -> dict | None:
