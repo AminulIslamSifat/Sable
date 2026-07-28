@@ -275,6 +275,14 @@
     {
       "key": "BrowserManager.extract_deepseek_token method",
       "value": "engine/session.py BrowserManager.extract_deepseek_token() — async method that opens a new page in the existing persistent browser context (self.context.new_page()), navigates to https://chat.deepseek.com, waits 2s for JS hydration, reads localStorage.getItem('userToken'), parses JSON {value:...}, closes the page in finally block. Raises RuntimeError if no context or no token. Exposed via ChatService.refresh_deepseek_token() with self._lock serialization. Added import json to session.py."
+    },
+    {
+      "key": "Qwen auth/session architecture in Sable",
+      "value": "Qwen HTTP path uses no permanent API key. ChatService(user_data_dir='browser-data') launches BrowserManager persistent Chromium on startup (service.warmup()). get_fresh_headers() probes chat.qwen.ai/api/v2/users/status and /api/v2/chats to sniff WAF tokens (bx-ua, bx-umidtoken) from request headers + cookies from context. Headers cached in ChatService._headers (fast path: dict read, no lock). Refresh triggers: (1) warmup at startup, (2) restart_browser() from settings, (3) _stream_request retry loop calls _refresh_headers() on auth rejection or zero-content responses (max 3 attempts with linear backoff). Account changes in browser-data profile are picked up on next refresh/restart. build_headers() in engine/session.py falls back to config.py COOKIES/BX_UA/BX_UMIDTOKEN constants when browser sniffing fails."
+    },
+    {
+      "key": "Sable static assets have no cache-busting",
+      "value": "web/index.html loads app.js and styles.css without version query params or content hashes. After frontend changes, browsers serve stale cached JS/CSS until hard refresh (Ctrl+Shift+R). No service worker cache invalidation for these files either (sw.js exists but caching strategy unknown). Always remind Sifat to hard refresh after frontend edits."
     }
   ],
   "episodic": [
