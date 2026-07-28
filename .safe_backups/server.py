@@ -14,10 +14,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-import uvicorn
 
-
-from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -34,9 +32,6 @@ from engine.memory_search import get_searcher, list_available_models
 from engine.service import ChatService
 from engine.skills import BACKUP_DIR, SkillParser, browse_skills, build_tool_feedback, list_skills
 from connectors.deepseek.client import get_client as get_deepseek_client
-
-from instruction.mem_cmd import _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY,_CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE
-
 
 logger = logging.getLogger("sable")
 
@@ -76,14 +71,14 @@ RETRY_BASE_DELAY = 1.0  # seconds; exponential backoff: 1s, 2s, 4s
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "web"
 INDEX_FILE = WEB_DIR / "index.html"
-DB_PATH = BASE_DIR / "system/sable.db"
+DB_PATH = BASE_DIR / "sable.db"
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 SKILL_ROUND_WARN_THRESHOLD = 15  # log a warning after this many rounds; no hard cap
 
-# Simple bearer-token auth — reads from system/.auth_token file, then env var.
-_AUTH_TOKEN_FILE = Path(__file__).resolve().parent / "system/.auth_token"
+# Simple bearer-token auth — reads from .auth_token file, then env var.
+_AUTH_TOKEN_FILE = Path(__file__).resolve().parent / ".auth_token"
 
 
 def _load_auth_token() -> str:
@@ -475,7 +470,6 @@ class ChatRequest(BaseModel):
     model: str | None = None
     thinking_mode: str | None = None
     stream: bool = True
-    ref_file_ids: list[str] | None = None
 
 
 class NewChatRequest(BaseModel):
@@ -880,6 +874,94 @@ async def update_memory_search_settings(payload: dict[str, Any]) -> dict[str, An
         "current_model": searcher.model_name,
         "current_threshold": searcher.threshold,
     }
+
+
+_CONSOLIDATE_PROMPT_TEMPLATE_HISTORY = (
+    "[SYSTEM: Memory consolidation pass. You already have the full conversation above. Do NOT re-summarize it.]\n\n"
+    "CURRENT MEMORY STORE:\n<<CURRENT_MEMORY>>\n\n"
+    "TASK: Scan the conversation above. Extract facts worth remembering for future sessions.\n"
+    "Memory is now semantic-search backed, so granular entries are fine — prefer many specific entries over few broad ones.\n\n"
+    "WHAT TO CAPTURE:\n"
+    "- Architecture decisions, design patterns, project structure\n"
+    "- User preferences, workflows, tool configs, environment details\n"
+    "- Bugs found, fixes applied, workarounds discovered\n"
+    "- API behaviors, quirks, gotchas, version-specific notes\n"
+    "- File paths, command patterns, dependency relationships\n"
+    "- Anything that would save time or prevent confusion in a future session\n\n"
+    "AUTO-CLASSIFICATION:\n"
+    "- PROTECTED: Credentials, passwords, API keys, sudo configs, security-sensitive paths,\n"
+    "  identity info, anything that MUST NEVER be forgotten or accidentally deleted.\n"
+    "  Protected entries are immune to deletion — never include protected keys in the delete list.\n"
+    "- EPHEMERAL: Temporary workarounds, time-bound tasks, version-specific hacks,\n"
+    "  debugging notes for active issues, anything with a natural expiration.\n"
+    "  Ephemeral entries require an expires_at field (ISO 8601 datetime string).\n"
+    "- SEMANTIC/EPISODIC/PROCEDURAL: Everything else — classify normally.\n\n"
+    "RULES:\n"
+    "- Skip entries already present in the current memory store (check keys and values)\n"
+    "- Each entry should be self-contained and searchable by its key\n"
+    "- Keys should be short descriptive labels; values should be dense and specific\n"
+    "- Delete entries that are now outdated, superseded, or contradicted by new info\n"
+    "- NEVER delete protected entries — they are permanent regardless of staleness\n"
+    "- No maximum limit — capture everything genuinely useful\n"
+    "- Still skip pure greetings, trivial chat, and transient one-off tasks\n\n"
+    'OUTPUT: Raw JSON only, no markdown fences, no explanation.\n'
+    'Format: {\n'
+    '  "add": {\n'
+    '    "semantic": [{"key": "...", "value": "..."}],\n'
+    '    "episodic": [{"key": "...", "value": "..."}],\n'
+    '    "procedural": [{"key": "...", "value": "..."}],\n'
+    '    "protected": [{"key": "...", "value": "..."}],\n'
+    '    "ephemeral": [{"key": "...", "value": "...", "expires_at": "2026-08-15T00:00:00"}]\n'
+    '  },\n'
+    '  "delete": ["exact_key_string"]\n'
+    '}\n'
+    'Delete list must NEVER contain keys from the protected category.\n'
+    'If nothing qualifies, return exactly: {"add": {"semantic": [], "episodic": [], "procedural": [], "protected": [], "ephemeral": []}, "delete": []}'
+)
+
+_CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE = (
+    "[SYSTEM: Memory consolidation pass. Use this chat's message thread for context — do NOT ask for more context.]\n\n"
+    "CURRENT MEMORY STORE:\n<<CURRENT_MEMORY>>\n\n"
+    "CONTEXT:\n<<CONVERSATION_SUMMARY>>\n\n"
+    "TASK: Based on the conversation in this thread, extract facts worth remembering for future sessions.\n"
+    "Memory is now semantic-search backed, so granular entries are fine — prefer many specific entries over few broad ones.\n\n"
+    "WHAT TO CAPTURE:\n"
+    "- Architecture decisions, design patterns, project structure\n"
+    "- User preferences, workflows, tool configs, environment details\n"
+    "- Bugs found, fixes applied, workarounds discovered\n"
+    "- API behaviors, quirks, gotchas, version-specific notes\n"
+    "- File paths, command patterns, dependency relationships\n"
+    "- Anything that would save time or prevent confusion in a future session\n\n"
+    "AUTO-CLASSIFICATION:\n"
+    "- PROTECTED: Credentials, passwords, API keys, sudo configs, security-sensitive paths,\n"
+    "  identity info, anything that MUST NEVER be forgotten or accidentally deleted.\n"
+    "  Protected entries are immune to deletion — never include protected keys in the delete list.\n"
+    "- EPHEMERAL: Temporary workarounds, time-bound tasks, version-specific hacks,\n"
+    "  debugging notes for active issues, anything with a natural expiration.\n"
+    "  Ephemeral entries require an expires_at field (ISO 8601 datetime string).\n"
+    "- SEMANTIC/EPISODIC/PROCEDURAL: Everything else — classify normally.\n\n"
+    "RULES:\n"
+    "- Skip entries already present in the current memory store (check keys and values)\n"
+    "- Each entry should be self-contained and searchable by its key\n"
+    "- Keys should be short descriptive labels; values should be dense and specific\n"
+    "- Delete entries that are now outdated, superseded, or contradicted by new info\n"
+    "- NEVER delete protected entries — they are permanent regardless of staleness\n"
+    "- No maximum limit — capture everything genuinely useful\n"
+    "- Still skip pure greetings, trivial chat, and transient one-off tasks\n\n"
+    'OUTPUT: Raw JSON only, no markdown fences, no explanation.\n'
+    'Format: {\n'
+    '  "add": {\n'
+    '    "semantic": [{"key": "...", "value": "..."}],\n'
+    '    "episodic": [{"key": "...", "value": "..."}],\n'
+    '    "procedural": [{"key": "...", "value": "..."}],\n'
+    '    "protected": [{"key": "...", "value": "..."}],\n'
+    '    "ephemeral": [{"key": "...", "value": "...", "expires_at": "2026-08-15T00:00:00"}]\n'
+    '  },\n'
+    '  "delete": ["exact_key_string"]\n'
+    '}\n'
+    'Delete list must NEVER contain keys from the protected category.\n'
+    'If nothing qualifies, return exactly: {"add": {"semantic": [], "episodic": [], "procedural": [], "protected": [], "ephemeral": []}, "delete": []}'
+)
 
 
 def _build_conversation_summary(messages: list[dict[str, Any]], max_chars: int = 12000) -> str:
@@ -1384,15 +1466,11 @@ async def chat(request: ChatRequest):
     # DeepSeek API models — pure HTTP, no browser, no scraper needed
     if not request.stream and _is_deepseek_api_model(request.model):
         ds_cfg = get_model_config(request.model)
-        api_model_type = ds_cfg.get("api_model_type", "default")
-        ds_ephemeral = api_model_type == "vision" and bool(request.ref_file_ids)
         result = await get_deepseek_client().chat(
             message=timestamped_message,
-            model=api_model_type,
+            model=ds_cfg.get("api_model_type", "default"),
             thinking_mode=request.thinking_mode,
-            chat_id=None if ds_ephemeral else active_chat_id,
-            ref_file_ids=request.ref_file_ids,
-            inject_instructions=not ds_ephemeral,
+            chat_id=active_chat_id,
         )
         answer = str(result.get("answer", ""))
         thinking = str(result.get("thinking", ""))
@@ -1482,15 +1560,11 @@ async def chat(request: ChatRequest):
 
                 if _is_deepseek_api_model(request.model):
                     _ds_cfg = get_model_config(request.model)
-                    _ds_api_type = _ds_cfg.get("api_model_type", "default")
-                    _ds_ephemeral = _ds_api_type == "vision" and bool(request.ref_file_ids)
                     round_event_source = get_deepseek_client().stream_chat(
                         message=current_message,
-                        model=_ds_api_type,
+                        model=_ds_cfg.get("api_model_type", "default"),
                         thinking_mode=request.thinking_mode,
-                        chat_id=None if _ds_ephemeral else active_chat_id,
-                        ref_file_ids=request.ref_file_ids if round_index == 0 else None,
-                        inject_instructions=not _ds_ephemeral,
+                        chat_id=active_chat_id,
                     )
                 elif scraper_enabled:
                     round_event_source = scraper_service.stream_events(
@@ -1661,43 +1735,6 @@ async def chat(request: ChatRequest):
     )
 
 
-@app.post("/api/deepseek/upload-file")
-async def deepseek_upload_file(
-    file: UploadFile = File(...),
-    model_type: str = Query("vision"),
-    thinking_enabled: bool = Query(False),
-) -> dict[str, Any]:
-    """Upload a file for DeepSeek Vision via shared browser context."""
-    import uuid as _uuid
-    from pathlib import Path as _Path
-
-    suffix = _Path(file.filename or "image.png").suffix
-    dest = UPLOAD_DIR / f"ds_{_uuid.uuid4().hex}{suffix}"
-    content = await file.read()
-    dest.write_bytes(content)
-
-    try:
-        meta = await service.upload_deepseek_file(
-            str(dest),
-            model_type=model_type,
-            thinking_enabled=thinking_enabled,
-        )
-        return {
-            "uploaded": True,
-            "path": str(dest),
-            "meta": {
-                "file_id": meta.get("file_id"),
-                "status": meta.get("status"),
-                "file_name": meta.get("file_name"),
-                "file_size": meta.get("file_size"),
-                "model_kind": meta.get("model_kind"),
-                "is_image": meta.get("is_image"),
-            },
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"DeepSeek upload failed: {exc}")
-
-
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     if INDEX_FILE.exists():
@@ -1706,4 +1743,6 @@ def index() -> str:
 
 
 if __name__ == "__main__":
-    uvicorn.run("server:app", host="127.0.0.1", port=61770, reload=False)
+    import uvicorn
+
+    uvicorn.run("server:app", host="127.0.0.1", port=6000, reload=False)
