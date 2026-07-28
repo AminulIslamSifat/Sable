@@ -330,10 +330,13 @@ class DeepSeekClient:
         model: str | None = None,
         thinking_mode: str | None = None,
         chat_id: str | None = None,
+        ref_file_ids: list[str] | None = None,
+        inject_instructions: bool = True,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat completion. Yields Sable-compatible event dicts."""
         thinking_enabled = str(thinking_mode or "").lower() in ("thinking", "deepthink")
         model_type = model  # None is valid (Instant sends null)
+        file_ids = [str(fid) for fid in (ref_file_ids or []) if str(fid).strip()]
 
         try:
             session_id, parent_id, headers = await self._prepare_request(chat_id=chat_id)
@@ -346,7 +349,7 @@ class DeepSeekClient:
 
         # First message in session → prepend instruction context
         prompt = message
-        if parent_id is None:
+        if parent_id is None and inject_instructions:
             instructions = _load_instructions()
             if instructions:
                 prompt = f"{instructions}\n\n{message}"
@@ -356,7 +359,7 @@ class DeepSeekClient:
             "parent_message_id": parent_id,
             "model_type": model_type,
             "prompt": prompt,
-            "ref_file_ids": [],
+            "ref_file_ids": file_ids,
             "thinking_enabled": thinking_enabled,
             "search_enabled": False,
             "action": None,
