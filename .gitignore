@@ -37,7 +37,7 @@ uploads/
 *.key
 *.pem
 .session_tokens.json
-.auth_token
+system/.auth_token
 .sable_backups
 
 # OS junk

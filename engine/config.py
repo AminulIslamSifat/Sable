@@ -12,7 +12,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 BRAIN_DIR = _ROOT / "Brain"
 MEMORY_PATH = BRAIN_DIR / "Memory.json"
 PROTECTED_PATH = BRAIN_DIR / "Protected.json"
-MEMORY_SEARCH_SETTINGS_PATH = _ROOT / "memory_search_settings.json"
+MEMORY_SEARCH_SETTINGS_PATH = _ROOT / "system/memory_search_settings.json"
 
 URL = "https://chat.qwen.ai/api/v2/chat/completions"
 NEW_CHAT_URL = "https://chat.qwen.ai/api/v2/chats/new"
