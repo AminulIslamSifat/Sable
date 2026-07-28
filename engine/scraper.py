@@ -26,7 +26,7 @@ from typing import Any
 logger = logging.getLogger("sable.scraper")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-SETTINGS_PATH = BASE_DIR / "scraper_settings.json"
+SETTINGS_PATH = BASE_DIR / "system/scraper_settings.json"
 ENGINES_DIR = BASE_DIR / "engine" / "scraper_engines"
 
 # Registry of available scraper engines
@@ -70,7 +70,7 @@ def _load_settings() -> dict[str, Any]:
             if isinstance(stored, dict):
                 settings.update(stored)
         except Exception as exc:
-            logger.warning("Could not read scraper_settings.json: %s", exc)
+            logger.warning("Could not read system/scraper_settings.json: %s", exc)
 
     # Migrate legacy engine_path to engine_type
     if "engine_path" in settings and "engine_type" not in settings:
