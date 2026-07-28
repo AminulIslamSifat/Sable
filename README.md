@@ -14,7 +14,7 @@ Browser (UI) ──SSE/REST──▶ FastAPI Server ──HTTP stream──▶ Q
                                   │                        DeepSeek API
                                   ├── Playwright ──▶ Persistent Chromium (session cookies + WAF tokens)
                                   ├── Semantic Search ──▶ Brain (Memory.json)
-                                  ├── SQLite ──▶ sable.db (chats & messages)
+                                  ├── SQLite ──▶ system/sable.db (chats & messages)
                                   └── Skill Registry ──▶ Editor / Playwright / ADB subprocesses
 ~~~
 
@@ -248,9 +248,9 @@ Sable/
 
 ## Configuration
 
-- **Auth token:** Write to `.auth_token` (persistent) or `export SABLE_TOKEN=...` (temporary). Default: `sable`.
+- **Auth token:** Write to `system/.auth_token` (persistent) or `export SABLE_TOKEN=...` (temporary). Default: `sable`.
 - **DeepSeek token:** Write to `.deepseek_token` or `export DEEPSEEK_TOKEN=...`.
-- **Memory search:** Thresholds and embedding model in `memory_search_settings.json` — editable at runtime via API.
-- **Scraper:** Engine settings in `scraper_settings.json`.
+- **Memory search:** Thresholds and embedding model in `system/memory_search_settings.json` — editable at runtime via API.
+- **Scraper:** Engine settings in `system/scraper_settings.json`.
 - **Models:** Add/edit in `engine/config.py` → `MODELS` list.
  

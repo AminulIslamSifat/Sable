@@ -76,14 +76,14 @@ RETRY_BASE_DELAY = 1.0  # seconds; exponential backoff: 1s, 2s, 4s
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "web"
 INDEX_FILE = WEB_DIR / "index.html"
-DB_PATH = BASE_DIR / "sable.db"
+DB_PATH = BASE_DIR / "system/sable.db"
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 SKILL_ROUND_WARN_THRESHOLD = 15  # log a warning after this many rounds; no hard cap
 
-# Simple bearer-token auth — reads from .auth_token file, then env var.
-_AUTH_TOKEN_FILE = Path(__file__).resolve().parent / ".auth_token"
+# Simple bearer-token auth — reads from system/.auth_token file, then env var.
+_AUTH_TOKEN_FILE = Path(__file__).resolve().parent / "system/.auth_token"
 
 
 def _load_auth_token() -> str:

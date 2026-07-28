@@ -56,7 +56,7 @@ def _get_relevant_memories(message: str) -> str:
     try:
         from engine.memory_search import get_searcher
         import json as _json
-        settings_path = PROJECT_ROOT / "memory_search_settings.json"
+        settings_path = PROJECT_ROOT / "system/memory_search_settings.json"
         enabled = True
         top_k = 10
         if settings_path.exists():
