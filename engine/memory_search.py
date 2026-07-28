@@ -21,12 +21,13 @@ _PROTECTED_PATH = _BRAIN_DIR / "Protected.json"
 # NOTE: thenlper/gte-base could NOT be calibrated — fastembed returns ragged
 # embeddings for it (numpy "inhomogeneous shape" error on load), so it's
 # currently unusable anyway; its value below is just the old guess.
-# Calibrated 2026-07-28 against hybrid score (0.7v + 0.3k) using 50 real
-# user prompts vs real Memory.json — balanced = midpoint(p25, median).
+# Calibrated 2026-07-28 (v2) against hybrid score (0.7v + 0.3k) using 50
+# clean user prompts (memory-context prefix stripped) vs 85-entry Memory.json.
+# balanced = midpoint(p25, median).
 MODEL_THRESHOLDS: dict[str, float] = {
-    "jinaai/jina-embeddings-v2-small-en": 0.596,
-    "snowflake/snowflake-arctic-embed-xs": 0.546,
-    "BAAI/bge-small-en-v1.5": 0.504,
+    "jinaai/jina-embeddings-v2-small-en": 0.641,
+    "snowflake/snowflake-arctic-embed-xs": 0.594,
+    "BAAI/bge-small-en-v1.5": 0.538,
 }
 
 DEFAULT_MODEL = "snowflake/snowflake-arctic-embed-xs"
@@ -229,11 +230,16 @@ class MemorySearcher:
             vector_scores = self._normed_vectors @ q_norm
 
             # Hybrid blend: vector similarity + keyword coverage
+            # Skip keyword boost for very short queries (< 3 unique tokens)
+            # to prevent single common words from maxing out coverage.
             query_tokens = _tokenize(query)
-            keyword_scores = np.array(
-                [_keyword_score(query_tokens, et) for et in self._entry_tokens],
-                dtype="float32",
-            )
+            if len(query_tokens) >= 3:
+                keyword_scores = np.array(
+                    [_keyword_score(query_tokens, et) for et in self._entry_tokens],
+                    dtype="float32",
+                )
+            else:
+                keyword_scores = np.zeros(len(self._entry_tokens), dtype="float32")
             scores = VECTOR_WEIGHT * vector_scores + KEYWORD_WEIGHT * keyword_scores
 
             # Protected entries get a relevance boost

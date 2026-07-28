@@ -73,16 +73,8 @@
       "value": "test/test_embedding.py --live flag pulls last 50 user prompts from sable.db, runs them against real Brain/Memory.json entries, displays raw scores per result with ★ marker for scores >= 0.6, and outputs score distribution (min/p25/median/p75/max) with suggested threshold as midpoint between p25 and median. Supports --top-k and --model flags. Runs all 8 models by default when no --model specified."
     },
     {
-      "key": "calibrate_thresholds.py calibration tool",
-      "value": "calibrate_thresholds.py in Sable root measures each model's TP/FP score separation against 12 relevant queries (mapped to specific memory keys) and 8 irrelevant queries (including hard tech negatives). Recommends threshold as midpoint between FP ceiling and TP floor when cleanly separable. Run via uv run python calibrate_thresholds.py. Used to produce the 2026-07-27 MODEL_THRESHOLDS calibration."
-    },
-    {
       "key": "Sable memory injection centralized in server.py /api/chat",
       "value": "Memory injection happens centrally in server.py /api/chat endpoint (line ~1191) for BOTH API and scraper paths. Searches via MemorySearcher.search(), formats via format_for_prompt(), prepends [RELEVANT MEMORY CONTEXT] block to timestamped_message before passing to either service.chat() or scraper_service.chat(). Per-chat dedup tracked in SQLite chats.memory_keys column via get_injected_memory_keys()/save_injected_memory_keys()."
-    },
-    {
-      "key": "Sable MODEL_THRESHOLDS recalibrated for hybrid scoring 2026-07-28",
-      "value": "MODEL_THRESHOLDS in engine/memory_search.py recalibrated on 2026-07-28 against hybrid score (0.7*vector + 0.3*keyword) using 50 real user prompts vs real Memory.json. Reduced to 3 models: jinaai/jina-embeddings-v2-small-en=0.596, snowflake/snowflake-arctic-embed-xs=0.546, BAAI/bge-small-en-v1.5=0.504. Previous values (e.g. jina=0.74) were calibrated for pure cosine and caused zero recall with hybrid scoring. All other models removed from supported list."
     },
     {
       "key": "Sable per-model threshold editor in settings",
@@ -97,20 +89,180 @@
       "value": "fastembed's ONNX Runtime pre-allocates a massive CPU memory arena by default — 4.2GB RSS for a 90MB embedding model (snowflake-arctic-embed-xs), peaking at 6.87GB VmPeak. Fix: pass enable_cpu_mem_arena=False to TextEmbedding() in engine/memory_search.py _ensure_model(). fastembed exposes this via EXPOSED_SESSION_OPTIONS in common/onnx_model.py. After fix: 52MB RSS, 113MB VmPeak. Single anonymous mmap of 4192MB was the arena."
     },
     {
-      "key": "Sable skills registry.json architecture",
-      "value": "Skills metadata moved from hardcoded SKILL_REGISTRY Python list in engine/skills.py to skills/registry.json (single source of truth). 14 skills: 11 with directories (core/code_editor, core/phone_control, visuals/svg_creator, visuals/graph_master, visuals/simulacra_engine, visuals/frontend_design, study/study_suite, data/document_skills, data/search_online, data/http_client, data/youtube_downloader) + 3 inline (system_repair, background_command, file_uploader — path:null, protocol in instruction/skills.md). browse_skills() enriches with instruction.md content + scripts/ listing per request. /api/skills/browse endpoint serves the frontend settings panel."
-    },
-    {
       "key": "Sable skills that do NOT exist",
       "value": "These skills were in the old hardcoded SKILL_REGISTRY but have no directory or instruction file: file_organizer, memory_sync, openweb, proof_verifier, math_solver. Removed from registry.json on 2026-07-28. instruction/skills.md is the authoritative source for what skills actually exist."
     },
     {
-      "key": "Sifat uses jina embedding model for Sable memory search",
-      "value": "Active embedding model is jinaai/jina-embeddings-v2-small-en (threshold 0.596), not the code default snowflake-arctic-embed-xs. Set via memory search settings UI. Confirmed working with memory injection in live chat on 2026-07-28."
-    },
-    {
       "key": "phantom_bot WEB_APP_URL already includes /panel",
       "value": "config.py line 19: WEB_APP_URL = f\"{WEBHOOK_URL.rstrip('/')}/panel\". Any code appending /panel again creates double-prefix (panel/panel/). Admin button in bot/handlers/command.py must use f\"{WEB_APP_URL}/\" not f\"{WEB_APP_URL}/panel/\"."
+    },
+    {
+      "key": "Sable editor_tools.py v4 structural span bug and fix",
+      "value": "_structural_span_count() in editor_tools.py had a bug: it consumed blank lines in content but compared the next non-blank content line against a blank entry in collapsed_old_struct, causing early break and truncated replacement spans. Fixed 2026-07-28 by rewriting to extract non_blank_targets from collapsed_old_struct and matching only those in order, consuming all blank lines as part of the span. Affects both _find_unique_span and _find_all_spans structural paths."
+    },
+    {
+      "key": "Sable editor_tools test suite location and coverage",
+      "value": "test/test_editor_tools.py — 69 tests covering: view_file (full/range/dir/empty/truncation), create_file (new/overwrite/shebang/stats), edit_file (3 matching layers, batch atomicity, replace_all, dry_run, deletion, overlap detection, ambiguity), insert_file (at_line/after_str/dry_run/stats), CRLF preservation, encoding rejection, backup rotation, SEARCH/REPLACE parser, nearest-match suggestions, unicode, special chars, structural span edge cases. Run: uv run --with pytest python -m pytest test/test_editor_tools.py -q"
+    },
+    {
+      "key": "Sable after_str attribute parser truncates on arrow syntax",
+      "value": "The tag attribute parser in engine/skills.py truncates after_str values containing '->' (Python type hint arrow). E.g. after_str='def foo(name: str) -> None:' gets parsed as just 'def'. Workaround: use at_line instead of after_str when the anchor contains -> characters."
+    },
+    {
+      "key": "Sable double backup on every file edit",
+      "value": "Both skills.py _make_backup() (writes to BACKUP_DIR for UI revert button) and editor_tools.py _backup() (writes to .editor_tools_backups/ next to file with rotation max 20) fire on every edit_file/insert_file call. Redundant but intentional — different consumers. Not a bug, noted as acceptable disk overhead."
+    },
+    {
+      "key": "instruction/skills.md is the merged skill registry doc",
+      "value": "There is no separate instruction.md for the code_editor skill — its documentation lives inside instruction/skills.md under '## 💻 Code Editor Skill (Native File Tags)'. Updated 2026-07-28 to document replace_all, dry_run attributes, 3-layer matching cascade (exact/normalized/structural), nearest-match suggestion, structured stats output, shebang auto-chmod, and encoding guard."
+    },
+    {
+      "key": "Zen/Firefox incompatible with Playwright executable_path",
+      "value": "Passing --executable=/usr/bin/zen-browser to Playwright crashes instantly — Playwright sends Chromium CDP flags (--remote-debugging-pipe) which Firefox-based browsers don't understand. Even --browser=firefox requires Playwright's own Juggler-patched Firefox build, not stock Firefox/Zen. Use default Chromium or Playwright's bundled browsers only."
+    },
+    {
+      "key": "Sable skills registry.json now has 15 skills",
+      "value": "Updated 2026-07-28: 12 with directories (core/code_editor, core/phone_control, core/browser_control, visuals/svg_creator, visuals/graph_master, visuals/simulacra_engine, visuals/frontend_design, study/study_suite, data/document_skills, data/search_online, data/http_client, data/youtube_downloader) + 3 inline (system_repair, background_command, file_uploader). browser_control added after phone_control."
+    },
+    {
+      "key": "Sable bg=true routing in handle_execute_command",
+      "value": "handle_execute_command in engine/skills.py now checks attrs.get('bg','').lower() in ('true','1','yes') at the top and delegates to handle_execute_background_command via yield from. Previously the bg attribute was silently ignored — the two handlers were completely separate with no cross-routing. Fix is 5 lines at function entry. Takes effect on next restart."
+    },
+    {
+      "key": "Screenshot",
+      "value": "If you try to get a screenshot but failed then go with scraping the text out of that screenshot. This is applicable when you are controlling browser, or anything thats needs screenshot to work with. But still try to avoid using screenshot if possible if screenshot getting failed. Some model dont support image."
+    },
+    {
+      "key": "Sable memory_used column and UI chip architecture",
+      "value": "messages table has memory_used TEXT column (auto-migrated on startup). User message saves include memory_used JSON list via add_message(..., memory_used=...). get_messages() parses it back as list. Frontend renders '🧠 Memory Used (N)' chip on user bubbles; clicking opens popup showing key, category badge, score, and full value per memory. Components in web/app.js: createMemoryChip() (factory), attachMemoryChip() (user msg, dedup via .memory-chip query), openMemoryPopup() (overlay+panel). CSS classes: .memory-chip, .memory-chip-tool, .memory-overlay, .memory-panel, .memory-item, .memory-cat, .memory-score."
+    },
+    {
+      "key": "Sable tool-result memory surfacing via SSE and skill_events",
+      "value": "Tool-round memory injection (server.py, after build_tool_feedback in the streaming loop) builds _tool_mem_used list and does two things: (1) emits SSE {type:'memory_used', source:'tool', memories:[...], round:N} for live UI, (2) appends {type:'memory_used', memories:[...], round:N} to skill_events for history persistence. Frontend: ui.attachToolMemory() pins chip after the last .skill-stack in the turn; addHistoryMessage event loop handles memory_used events by placing chip after the current group. .memory-chip-tool CSS gives it block-level placement with margins."
+    },
+    {
+      "key": "Sable history display strips memory block and timestamp prefix",
+      "value": "addHistoryMessage in web/app.js strips the injected memory context block (regex: /^\\[RELEVANT MEMORY CONTEXT\\][\\s\\S]*?\\n\\n/) and timestamp prefix (regex: /^\\[\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\]\\n?/) from user message content before rendering. Real timestamp is extracted and set on the .msg-timestamp element (fixes previous bug where reload time was shown). Memory chip re-attached from persisted message.memory_used array."
+    },
+    {
+      "key": "Browser control default profile and stealth config",
+      "value": "browser_control.py start now defaults user_data_dir to PROJECT_ROOT/automation-browser-data (resolved via Path(__file__).resolve().parents[4]). No --user-data-dir flag needed. Stealth anti-detection: launch args include --disable-blink-features=AutomationControlled, --no-first-run, --no-default-browser-check. _STEALTH_JS class variable injected via context.add_init_script() patches navigator.webdriver=undefined, fake plugins/languages/platform, window.chrome object. Context gets locale='en-US', timezone_id='Asia/Dhaka'. Purpose: avoid Google bot detection on automated Chromium."
+    },
+    {
+      "key": "browser_control eval supports b64 and file input modes",
+      "value": "cmd_eval in browser_control.py now accepts three input modes: (1) raw JS string for trivial expressions with no double quotes, (2) 'b64:<base64>' prefix — daemon decodes base64 before evaluating, (3) 'file:/path/to/script.js' prefix — daemon reads the file and evaluates its contents. CLI also supports --b64 and --file flags that auto-prefix the positional arg. This eliminates ALL shell quoting issues with complex JS containing quotes, newlines, emoji, or special characters. Added 2026-07-28."
+    },
+    {
+      "key": "browser_control click and type have force parameter",
+      "value": "cmd_click(selector, timeout=10000, force=False) and cmd_type(selector, text, clear=True, force=False) now accept force=True to skip Playwright's actionability checks (visible, enabled, stable). Use --force=true flag from CLI. Critical when browser window is minimized or on another workspace — elements exist in DOM and eval works, but click/type timeout with 'element is not visible'. Added 2026-07-28."
+    },
+    {
+      "key": "Playwright actionability checks require visible browser window",
+      "value": "Playwright's click(), type(), fill(), hover(), select_option() all run strict actionability checks: element must be visible, enabled, and stable in the viewport. If the headed browser window is minimized, on another Hyprland workspace, or fully occluded, ALL interaction commands timeout after 10s with 'element is not visible' — even though the element exists in the DOM and eval/dump_html work fine. eval() bypasses these checks entirely. Fix: ensure window is visible, restart daemon headed, or use force=True."
+    },
+    {
+      "key": "browser_control instruction.md rewritten with 3 critical rules",
+      "value": "instruction.md fully rewritten 2026-07-28. Three CRITICAL rules at top: (1) Shell Quoting — never pass JS with double quotes directly, use --b64 or --file; SyntaxError = shell quoting, stop and switch approach. (2) Headed Mode + Visible Window — interaction commands need visible window, use --force=true as escape hatch. (3) Diagnose Before Retry — never retry same failing command more than once, read error, check page state, screenshot. Also added: seq vs direct commands table (seq for repeatable pipelines, direct for interactive debugging), full troubleshooting table, Gmail/contenteditable-specific notes."
+    },
+    {
+      "key": "Gmail compose automation full working pattern",
+      "value": "Gmail compose body is a contenteditable div with TrustedHTML CSP. innerHTML assignment throws TrustedHTML error. execCommand('insertText') returns true but may silently discard text. createTextNode+appendChild works but Gmail may not register as user input (saves as draft instead of sending). RELIABLE PATTERN: (1) Start daemon headed with visible window — this is the #1 prerequisite. (2) type for To field (input[aria-label='To recipients']) + press Enter. (3) type for Subject (input[name=subjectbox]). (4) click body div[aria-label='Message Body'] (use --force=true if visibility fails). (5) eval --file with execCommand('selectAll') then execCommand('insertText', false, text). (6) Verify body: eval 'el.innerText.length'. (7) Send: press Control+Enter. (8) Verify sent: document.title returns to inbox. If window not visible, ALL click/type commands timeout — this was the root cause of a 30-min debugging disaster on 2026-07-28."
+    },
+    {
+      "key": "Memory context can mislead models when it lacks preconditions",
+      "value": "Sifat identified that memory entries documenting WHAT worked without WHY (preconditions) cause models to repeat approaches that fail in different contexts. Example: 'Gmail execCommand workaround' memory was technically correct but omitted the critical precondition (visible browser window), causing the model to trust cached success over live error messages ('element is not visible'). Lesson: memory entries for automation patterns MUST include preconditions and environmental requirements, not just the technique."
+    },
+    {
+      "key": "Sable SkillParser nested tag fix in _find_complete",
+      "value": "SkillParser._find_complete() in engine/skills.py (L1123-1155) now tracks unclosed outer tags in an `unclosed: list[int]` of start positions. During finditer, any match whose start position is after an unclosed tag's start is skipped — preventing inner tags (e.g. <get_file> references in documentation) from being executed as live commands while the outer tag (e.g. <create_file>) is still streaming without its closing tag. Fix is 10 lines, zero side effects on normal single-tag parsing. Applied 2026-07-28."
+    },
+    {
+      "key": "calibrate_thresholds.py actual location",
+      "value": "The file calibrate_thresholds.py does NOT exist at Sable root (/home/sifat/hdd/projects/Sable/calibrate_thresholds.py). The actual threshold calibration script is test/test_hybrid_threshold.py which loads 50 real prompts from sable.db, runs them through each embedding model, and outputs per-model score distributions with suggested thresholds. The memory entry referencing 'calibrate_thresholds.py in Sable root' is incorrect — update any references to point to test/test_hybrid_threshold.py instead."
+    },
+    {
+      "key": "Sable keyword scoring min-token guard",
+      "value": "MemorySearcher.search() in engine/memory_search.py skips keyword scoring (sets keyword_scores to zeros) when the query has fewer than 3 unique non-stopword tokens. Prevents short queries like 'test test test' from achieving 100% keyword coverage and inflating hybrid scores to 0.82+ against any entry containing that word. Without the guard, hybrid = 0.7*vector + 0.3*1.0 = ~0.825 for any entry with the matching token. With the guard, short queries get pure vector scoring (~0.55), well below threshold. Added 2026-07-28."
+    },
+    {
+      "key": "test_hybrid_threshold.py prompt stripping and guard",
+      "value": "test/test_hybrid_threshold.py load_prompts() now strips [RELEVANT MEMORY CONTEXT] blocks via regex r'^\\[RELEVANT MEMORY CONTEXT\\][\\s\\S]*?\\n\\n' and timestamp prefixes via r'^\\[\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\]\\n?' — matching the frontend stripping in web/app.js. Previous logic (startswith('[') and newline in first 25 chars) missed the 26-char memory context prefix, contaminating ~60% of prompts with self-matching memory text and inflating scores by ~0.05. The scoring loop also replicates the min-token keyword guard (< 3 unique tokens → zero keyword scores)."
+    },
+    {
+      "key": "Sable MODEL_THRESHOLDS v2 calibrated 2026-07-28",
+      "value": "MODEL_THRESHOLDS in engine/memory_search.py recalibrated v2 on 2026-07-28 using 50 clean prompts (memory-context prefix stripped) against 85-entry Memory.json with min-token keyword guard active. Balanced thresholds (midpoint of p25 and median): jinaai/jina-embeddings-v2-small-en=0.641, snowflake/snowflake-arctic-embed-xs=0.594, BAAI/bge-small-en-v1.5=0.538. Previous v1 values (0.596/0.546/0.504) were calibrated on a smaller store without prompt stripping or min-token guard."
+    },
+    {
+      "key": "Sable project line counts via tokei",
+      "value": "Sable at /home/sifat/hdd/projects/Sable: 29,172 lines of pure code, 42,663 total lines across 129 files (tokei). Breakdown: Python 19,594, JavaScript 3,977, CSS 2,322, HTML 361, Markdown 4,790 (2,093 code in embedded snippets), plus small JSON/TOML/SVG/XML/plain text. The 354k count from find+wc -l was inflated 12x by Chromium profile blobs in automation-browser-data/ and browser-scraper-data/. tokei auto-excludes binary/cache folders."
+    },
+    {
+      "key": "Sable git history is minimal",
+      "value": "Sable has only 8 git commits from AminulIslamSifat despite 29k+ lines of code. Most of the codebase was built agentically via Sable's own file-editing tools (edit_file, create_file tags) or external agents, bypassing version control entirely. Git is not the source of truth for code provenance — blame is useless for tracking authorship."
+    },
+    {
+      "key": "DeepSeek PoW algorithm (DeepSeekHashV1) fully cracked",
+      "value": "DeepSeekHashV1 = SHA3-256 with Keccak-f[1600] round 0 SKIPPED (23 rounds instead of standard 24). Input: f\"{salt}_{expire_at}_{nonce}\".encode() (plain ASCII string, NO hex decoding). Check: deepseek_hash_v1(input) == bytes.fromhex(challenge) — EXACT 32-byte equality, not leading-zeros. Server generates challenge by picking random nonce in [0, difficulty), hashing it, sending hash. Client brute-forces same range. difficulty=144000 typical. Pure Python ~50s, WASM ~100ms, Go ~50ms."
+    },
+    {
+      "key": "DeepSeek chat API flow (3-step PoW + completion)",
+      "value": "Step 1: POST /api/v0/chat/create_pow_challenge with {target_path: '/api/v0/chat/completion'} + Bearer token → returns {algorithm, challenge, salt, signature, difficulty, expire_at, expire_after}. Step 2: Solve nonce, build x-ds-pow-response header = base64(JSON{algorithm, challenge, salt, answer, signature, target_path}). Step 3: POST /api/v0/chat/completion with headers (Authorization, x-ds-pow-response, x-client-version, x-client-platform, x-client-bundle-id, x-client-locale) + body {chat_session_id, parent_message_id, model_type, prompt, ref_file_ids, thinking_enabled, search_enabled, action, preempt}. Session created via POST /api/v0/chat_session/create (returns data.biz_data.id). Response is SSE stream."
+    },
+    {
+      "key": "DeepSeek PoW reference note location",
+      "value": "Full reference doc saved at /home/sifat/hdd/projects/Sable/output/notes/deepseek-pow-cracked.md (271 lines). Contains: algorithm explanation, working Python hash implementation, verified test vector, API flow, auth details, speed options, SSE response format, sources, and files-on-disk list. Use this as the primary reference for DeepSeek scraper integration."
+    },
+    {
+      "key": "DeepSeek PoW WASM direct invocation pattern",
+      "value": "The WASM at fe-static.deepseek.com/chat/static/sha3_wasm_bg.7b9ca65ddd.wasm can be instantiated in-browser with empty imports ({}). Exports: wasm_solve(ret_ptr, ch_ptr, ch_len, pf_ptr, pf_len, difficulty_f64), __wbindgen_add_to_stack_pointer(delta), __wbindgen_export_0(size, align) for malloc. Pattern: allocate strings via export_0, write bytes, call wasm_solve with ret_ptr from stack_pointer(-16), read Int32 status + Float64 answer from ret_ptr. Also downloadable to /tmp/sha3_wasm.wasm for wasmtime usage."
+    },
+    {
+      "key": "DeepSeek PoW existing open-source implementations",
+      "value": "GitHub: shaohuahuawww/deepseek-pow (Python + Go + WASM backends, MIT), Kaesra/deepseek-pow-analysis (WASM analysis), PyPI: DeepSeekPowSolver. DeepWiki: LLM-Red-Team/deepseek-free-api/5.3-proof-of-work-system (full docs). CSDN blog 157974736 (Chinese, x-ds-pow-response analysis). The shaohuahuawww repo has dsk/hash_impl.py (pure Python) and dsk/pow_solver.go (Go binary, ~50ms)."
+    },
+    {
+      "key": "DeepSeek SSE response format",
+      "value": "Completion endpoint returns text/event-stream. Events: 'data: {json}' lines. Content chunks: {v: {response: {fragments: [{type: 'RESPONSE', content: '...'}]}}}. Stream end: {v: 'FINISHED'} or {v: 'COMPLETE'}. Final sentinel: 'data: [DONE]'. Status values 'WIP' indicate in-progress."
+    },
+    {
+      "key": "DeepSeek PoW verified test vector",
+      "value": "Input: b'7650f5b27da8c1ab6cef_1785244726564_42076' → Output: 1667afccd601c7ad4df9b9231e7fe3274f12941a6613c4f672ec0222bf777b2a. Verified against WASM solver output (tag=1, answer=42076). This confirms the round-0-skipped Keccak implementation is correct."
+    },
+    {
+      "key": "DeepSeek Go PoW solver compiled and verified",
+      "value": "Go binary at /home/sifat/hdd/projects/Sable/connectors/deepseek/pow_solver/pow_solver (compiled from main.go in same dir, go mod init pow_solver). Takes challenge JSON on stdin, outputs nonce integer on stdout. Solves difficulty=144000 in ~84ms. Verified against known test vector (nonce 42076) and two live challenges (15305, 65252). Module: connectors/deepseek/pow_solver/ with go.mod."
+    },
+    {
+      "key": "DeepSeek auth token in localStorage not in-memory",
+      "value": "chat.deepseek.com stores Bearer token in localStorage under key 'userToken' as JSON: {\"value\":\"km/HzoBys33Sz...\",\"__version\":\"0\"}. Extract via localStorage.getItem('userToken') then JSON.parse().value. The monkey-patch fetch interception approach returns null — unnecessary. The token value is used directly as 'Bearer <value>' in Authorization header. Previous belief that it was in-memory JS closure only was incorrect."
+    },
+    {
+      "key": "DeepSeek SSE content extraction pattern",
+      "value": "SSE stream content assembly: First data event contains full initial fragment at v.response.fragments[0].content (e.g. 'Hello'). Subsequent content chunks are JSON patches: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\" chunk\"}. Concatenate initial + all APPEND v values for full response. Stream end markers: {\"p\":\"response/status\",\"o\":\"SET\",\"v\":\"FINISHED\"} then 'event: close'. Title event gives auto-generated session title."
+    },
+    {
+      "key": "DeepSeek session creation endpoint",
+      "value": "POST https://chat.deepseek.com/api/v0/chat_session/create with empty JSON body {} and Bearer token returns {data:{biz_data:{id:'uuid'}}}. The id is used as chat_session_id in completion requests. No other parameters needed. Each completion call can use a fresh session or reuse existing ones."
+    },
+    {
+      "key": "Sable DeepSeek model routing architecture",
+      "value": "DeepSeek models (Expert/Instant/Vision) are first-class entries in engine/config.py MODELS list with api_backend:'deepseek' and api_model_type field. server.py routes via _is_deepseek_api_model(model_id) which checks get_model_config(model_id).get('api_backend')=='deepseek' + token availability. Routing order (non-stream): scraper_enabled → browser scraper; _is_deepseek_api_model → HTTP API client; fallback → built-in Qwen service. Stream path same priority. The old _use_deepseek_api() scraper-settings-based hijack was removed — routing is now per-model, not per-scraper-state."
+    },
+    {
+      "key": "DeepSeek model_type values for Sable dropdown",
+      "value": "Three DeepSeek models in config.py: deepseek-expert (api_model_type='expert'), deepseek-instant (api_model_type=None, serializes as JSON null), deepseek-vision (api_model_type='vision'). Each has Fast + Thinking modes. The client's thinking_enabled check is case-insensitive: str(thinking_mode).lower() in ('thinking','deepthink'). model_type=None must NOT be coerced to 'default' — Instant requires literal null in the request body."
+    },
+    {
+      "key": "DeepSeek session continuity via parent_message_id counter",
+      "value": "DeepSeek conversations use integer parent_message_id: first message sends null, then 2, 4, 6, 8... (increments by 2 each turn — user msg gets odd id, assistant gets even). DeepSeekClient._sessions dict maps sable_chat_id → (deepseek_session_id, next_parent_id). _prepare_request(chat_id) reuses existing session or creates new. _advance_session() called on FINISHED event increments counter. Server passes chat_id=active_chat_id to both chat() and stream_chat()."
+    },
+    {
+      "key": "DeepSeek first-message instruction injection",
+      "value": "On first message of each DeepSeek session (parent_id is None), the client prepends all files from /home/sifat/hdd/projects/Sable/instruction/ — Maria.md, output_format.md, skills.md (~33k chars total) — before the user's actual message. Loaded once and cached in _instruction_cache module global. DeepSeek has no persistent system prompt feature, so this is the only way to set persona/context."
+    },
+    {
+      "key": "Sable frontend auto-model-switch on chat select",
+      "value": "selectChat() in web/app.js checks meta.parent_id type: /^\\d+$/ (numeric) = DeepSeek chat, otherwise Qwen. If current selectedModel's api_backend doesn't match the chat type, auto-switches dropdown to first model of the correct type and calls populateThinkingModes(null). Same-type switches don't touch the dropdown. /api/models endpoint includes api_backend field (null for Qwen, 'deepseek' for DS models) to enable this check."
     }
   ],
   "episodic": [
@@ -153,6 +305,66 @@
     {
       "key": "Sable skills panel fixed 2026-07-28",
       "value": "Settings skills tab showed nothing because frontend called /api/skills/browse which didn't exist (backend only had /api/skills). Also schema mismatch: frontend expected category/path/scripts/instruction-content, backend gave key/trigger/instruction-filepath. Fixed by creating skills/registry.json, adding browse_skills() to engine/skills.py, and /api/skills/browse endpoint to server.py. Removed 5 non-existent skills from registry."
+    },
+    {
+      "key": "Editor tools v4 audit and span bug fix 2026-07-28",
+      "value": "Full audit of editor_tools.py (920 lines) on 2026-07-28. Wrote 69-test suite, found and fixed structural span calculation bug in _find_all_spans and _find_unique_span (span too short when file has extra blank lines vs old_str). Extracted _structural_span_count() helper. Moved import re to module top. Updated instruction/skills.md with v4 features. Live integration test confirmed create/edit(batch)/insert pipeline works. Undo tag deferred (backups sufficient). Multi-file batch skipped per Sifat."
+    },
+    {
+      "key": "Browser control skill full audit and DevTools test 2026-07-28",
+      "value": "Full audit of browser_control.py on 2026-07-28. Original 24 tests passed. Added 20 DevTools tests (source, CSS all/filtered/missing, localStorage, sessionStorage, cookies, network capture+filtering, console capture+level filtering, performance timing) bringing total to 48/48. Found and fixed: (1) cmd_css Playwright array arg bug — JS function needed ([sel, props]) destructuring not (sel, props), (2) test assertion for missing CSS selector — code returns ok=true with error in result, not ok=false. Created instruction.md (8.7KB), added to registry.json and instruction/skills.md."
+    },
+    {
+      "key": "Browser control live email test 2026-07-28",
+      "value": "End-to-end test: started daemon with --user-data-dir (scraper profile), opened Gmail (already logged in as ais.wos.001), composed email to aminul.i.sifat@gmail.com with subject 'Browser Control Test — Sable 🕸️', sent successfully. Required execCommand workaround for TrustedHTML. Confirmed 'Message sent' toast. Also discovered Zen browser crash (incompatible with Playwright executable_path) and stale socket cleanup issues during testing."
+    },
+    {
+      "key": "Sable bg=true routing fix 2026-07-28",
+      "value": "Discovered bg='true' attribute on execute_command was silently ignored — handle_execute_command never checked it, ran everything synchronously. The nohup workaround in shell worked because bash-level backgrounding bypasses Sable's tag parsing entirely. Fixed by adding 5-line delegation check at top of handle_execute_command. Not yet live (no restart during active session)."
+    },
+    {
+      "key": "Memory Used chip+popup feature built 2026-07-28",
+      "value": "Implemented full memory surfacing UI in Sable. User-message chips were already partially built (SSE memory_used event + attachMemoryChip + openMemoryPopup + all popup CSS existed). Added: (1) tool-result memory SSE with source:'tool' + skill_events persistence, (2) messages.memory_used DB column with migration for history reload, (3) history stripping of raw [RELEVANT MEMORY CONTEXT] blocks + timestamp prefix restoration, (4) createMemoryChip refactor from attachMemoryChip, (5) .memory-chip-tool CSS. Syntax verified (ast.parse + node --check). Backend changes need server restart; frontend works on hard refresh. Server deliberately not restarted (active session)."
+    },
+    {
+      "key": "Browser control stealth and profile default added 2026-07-28",
+      "value": "Changed browser_control.py to default user_data_dir to automation-browser-data (was None, requiring manual --user-data-dir flag). Added anti-bot-detection stealth: --disable-blink-features=AutomationControlled launch arg, _STEALTH_JS init script (navigator.webdriver, plugins, languages, window.chrome, platform overrides), locale/timezone on context. Updated instruction.md persistent sessions note. Motivation: Google immediately flags default Playwright Chromium as bot, hindering automation performance."
+    },
+    {
+      "key": "Gmail automation debugging marathon 2026-07-28",
+      "value": "30-minute failed attempt to send email via browser_control to bittosaaha@gmail.com. Root causes stacked: (1) Shell quoting mangled every eval with double quotes — tried 10+ quote arrangements instead of switching to base64/file approach. (2) Gmail TrustedHTML silently rejected execCommand body injection — returned true but body stayed empty. (3) Browser window was minimized/hidden — every click/type timed out with 'element is not visible' but eval worked, creating confusion. (4) Model kept writing JSON seq files instead of using direct daemon commands. (5) Model retried same failing approaches without reading error messages. Fix: restarted daemon headed (visible window), used type for To/Subject, click+eval --file for body, press Control+Enter to send. All 48 tests still pass after script changes. Result: added force params, eval b64/file modes, and rewrote instruction.md with critical rules."
+    },
+    {
+      "key": "browser_control script hardened and instruction rewritten 2026-07-28",
+      "value": "After Gmail debugging disaster: (1) Added force=True param to cmd_click and cmd_type (skips Playwright visibility checks). (2) Added b64: and file: prefix support to cmd_eval (daemon-side decoding). (3) Added --b64 and --file CLI shortcuts. (4) Fully rewrote instruction.md: 3 critical rules at top (shell quoting, visibility, diagnose-before-retry), seq vs direct commands guidance table, troubleshooting table with 10 symptom/cause/fix rows, Gmail-specific section. (5) All 48/48 tests pass. Syntax verified via py_compile."
+    },
+    {
+      "key": "Nested tag parser fix and instruction rewrite 2026-07-28",
+      "value": "Fixed SkillParser._find_complete() to skip tags nested inside unclosed outer tags — previously, streaming a <create_file> whose content contained complete <get_file>...</get_file> references caused the inner tags to be parsed and executed as real commands, corrupting the outer tag's content. Fix: track unclosed tag start positions, skip any finditer match inside them. Also rewrote browser_control instruction.md (373 lines, 24 sections, 14973 bytes) via Python script (execute_command + pathlib.write_text) to avoid any tag-like syntax in the file content. Server restarted by Sifat to activate the fix."
+    },
+    {
+      "key": "Sifat asked to clean up unnecessary models 2026-07-28",
+      "value": "Sifat requested removal of unnecessary models. Investigation revealed calibrate_thresholds.py doesn't exist (despite memory claiming it does), and test/test_hybrid_threshold.py still references 4 models including the broken thenlper/gte-base. The actual calibration tool is test/test_hybrid_threshold.py."
+    },
+    {
+      "key": "Memory threshold recalibration v2 and keyword guard 2026-07-28",
+      "value": "Recalibrated all 3 model thresholds after discovering two issues: (1) test_hybrid_threshold.py prompt stripping failed to remove [RELEVANT MEMORY CONTEXT] prefixes (26 chars exceeded the 25-char window), contaminating ~60% of prompts with self-matching memory text and inflating scores ~0.05. Fixed with proper regex matching frontend pattern. (2) 'test test test' triggered memory injection at 0.82+ scores because single-token queries get 100% keyword coverage (+0.3 bonus). Fixed by adding min-token guard (< 3 unique tokens → zero keyword scores) in both engine/memory_search.py and test file. Re-ran calibration: jina=0.641, snowflake=0.594, bge=0.538. Updated MODEL_THRESHOLDS. Server not restarted (active session)."
+    },
+    {
+      "key": "Sable line count confusion 2026-07-28",
+      "value": "Sifat asked for Sable line count. First attempt (find+wc -l) returned 354,063 lines — caused panic. Root cause: find didn't exclude automation-browser-data and browser-scraper-data Chromium profile folders. Switching to tokei gave accurate count of 29,172 code lines. Also discovered git only has 8 commits despite 29k lines, confirming most code was written agentically."
+    },
+    {
+      "key": "DeepSeek PoW reverse-engineering session 2026-07-28",
+      "value": "Full reverse-engineering of DeepSeek's PoW system. Started by intercepting network traffic via browser DevTools (network_capture), found x-ds-pow-response header and create_pow_challenge endpoint. Downloaded WASM (26KB) and worker JS. Disassembled with wasm2wat (10720 lines, 65 functions). Identified SHA3 sponge (200-byte state, 136-byte rate, 0x06 padding). Initially tried standard SHA3-256 with various input formats — all failed (INVALID_POW_RESPONSE from server). Breakthrough: found github.com/shaohuahuawww/deepseek-pow revealing the round-0 skip. Verified hash_impl.py against WASM output — exact match. Full end-to-end HTTP test (Python solve → send → get response) NOT yet completed — pure Python solve takes ~50s which is impractical; need Go/wasmtime backend first."
+    },
+    {
+      "key": "DeepSeek PoW full e2e verified 2026-07-28",
+      "value": "Completed full end-to-end DeepSeek chat API test on 2026-07-28 ~19:40. Flow: (1) grabbed token from localStorage 'userToken', (2) POST create_pow_challenge got 144k difficulty, (3) Go solver returned nonce in 84ms, (4) built base64 PoW header, (5) created session via chat_session/create, (6) POST completion with all headers → 200, SSE stream, FINISHED. Two successful completions ('Hello. It is nice here.' and 'Hello Sifat!'), zero INVALID_POW_RESPONSE errors. The PoW system is fully defeated."
+    },
+    {
+      "key": "DeepSeek connector full Sable integration 2026-07-28",
+      "value": "Completed full integration of DeepSeek HTTP API into Sable as a first-class model option (2026-07-28 ~20:30-21:05). Steps: (1) Replaced scraper-hijack routing with per-model api_backend check. (2) Added Expert/Instant/Vision to config.py dropdown with Fast+Thinking modes. (3) Fixed model_type=None coercion bug (Instant needs null, not 'default'). (4) Added session continuity — _sessions dict tracks (session_id, parent_counter) per Sable chat_id, parent_message_id goes null→2→4→6. (5) Prepended instruction/ files (Maria.md, output_format.md, skills.md) to first message since DeepSeek lacks persistent instructions. (6) Frontend auto-switches model dropdown when selecting chats based on parent_id type (numeric=DS, UUID=Qwen). (7) /api/models now exposes api_backend. All syntax-verified, server restart pending."
     }
   ],
   "procedural": [
@@ -177,10 +389,6 @@
       "value": "When phantom_bot pages fail under a URL prefix (e.g., /panel), check: 1) JS files for hardcoded absolute paths (fetch, location.href) that lack prefix — inject url_prefix via template. 2) Server-side routes that render templates must pass url_prefix to enable JS prefixing. 3) Regex rewriter (for HTML attrs) must avoid double-prefixing paths already generated by url_for. 4) Homepage slowness: MongoDB Atlas cold-start can cause 502 if index route makes many parallel queries; consider connection warming or query reduction."
     },
     {
-      "key": "Calibrating memory search thresholds for new models",
-      "value": "When adding or changing embedding models in Sable: 1) Add model to MODEL_THRESHOLDS with a placeholder value. 2) Run calibrate_thresholds.py to measure real TP/FP score separation. 3) Update threshold to recommended value. 4) Verify with test/test_embedding.py --live --model <name> against real prompts. Do NOT reuse thresholds from other models or pure-vector benchmarks — hybrid scoring shifts all distributions."
-    },
-    {
       "key": "Running live threshold analysis across all models",
       "value": "To compare all models against real usage: cd /home/sifat/hdd/projects/Sable && uv run python test/test_embedding.py --live --top-k 5. Outputs per-prompt raw scores and threshold suggestion for each of 8 models. Use --model X to isolate one. Note: with small memory stores (<50 entries), even irrelevant queries score high — separation improves as store grows."
     },
@@ -195,6 +403,46 @@
     {
       "key": "Diagnosing Python process memory bloat on Linux",
       "value": "When a Python process uses excessive RAM: 1) grep VmRSS/VmPeak /proc/PID/status for overview. 2) cat /proc/PID/smaps_rollup for Rss/Pss/AnonHugePages breakdown. 3) Parse /proc/PID/maps to find large anonymous mappings (>100MB) — single huge anon mmaps indicate allocator arenas (ONNX, numpy, jemalloc). 4) Compare RSS vs VmPeak: big gap means allocation-then-free pattern (arena pre-allocation). 5) Check loaded .so files via grep on maps to identify the library. 6) For ONNX specifically: disable enable_cpu_mem_arena in SessionOptions."
+    },
+    {
+      "key": "Editing files that contain Sable tag syntax",
+      "value": "When a target file contains literal XML tool tags (<edit_file>, <view_file>, etc.) or SEARCH/REPLACE markers: 1) Do NOT use edit_file/create_file — the parser will intercept embedded tags as live calls. 2) Use execute_command with a Python script that reads the file, does string/list replacement on the target lines, and writes back. 3) Use pathlib.Path.read_text()/write_text() for clean UTF-8 handling. 4) Verify result with view_file after."
+    },
+    {
+      "key": "Running editor_tools test suite",
+      "value": "cd /home/sifat/hdd/projects/Sable && uv run --with pytest python -m pytest test/test_editor_tools.py -v. pytest is not in the project venv — must use --with pytest flag. Tests import editor_tools via sys.path.insert pointing to skills/core/code_editor/scripts/. All tests use tempfile fixtures (no pollution). Full suite runs in ~0.2s."
+    },
+    {
+      "key": "Running browser_control test suite",
+      "value": "cd /home/sifat/hdd/projects/Sable && uv run python test/test_browser_control.py. 48 tests, takes ~35s total (30s is the Playwright timeout on the error-handling click #nonexistent-element test). Use background execution or nohup for the full suite — inline commands with 15s timeout will kill it mid-run. Daemon cleanup after: kill $(cat /tmp/sable_browser.pid); rm -f /tmp/sable_browser.sock /tmp/sable_browser.pid."
+    },
+    {
+      "key": "Starting browser daemon with persistent profile",
+      "value": "setsid /home/sifat/hdd/projects/Sable/.venv/bin/python /home/sifat/hdd/projects/Sable/skills/core/browser_control/scripts/browser_control.py start --headed --user-data-dir=/home/sifat/hdd/projects/Sable/browser-scraper-data > /tmp/browser_daemon.log 2>&1 & sleep 5. Use setsid+disown or nohup — daemon forks and the parent exits, inline execution loses the process. Verify with status command after. Always stop daemon when browser work is complete."
+    },
+    {
+      "key": "Avoiding shell quoting in browser eval commands",
+      "value": "When running JS via browser_control eval: (1) If JS has NO double quotes: eval 'document.title' works directly. (2) If JS has quotes/newlines/emoji: write JS to file via heredoc with QUOTED delimiter (cat > /tmp/x.js << 'JSEOF' ... JSEOF), then either: eval --file /tmp/x.js, or B64=$(base64 -w0 /tmp/x.js) && eval \"b64:$B64\". (3) NEVER retry with different quote arrangements after a SyntaxError — it's always shell quoting, switch to file/b64 immediately. (4) The heredoc delimiter MUST be quoted ('JSEOF') to prevent shell expansion of $ and backticks inside the JS."
+    },
+    {
+      "key": "Diagnosing browser interaction timeouts",
+      "value": "When click/type/hover timeout with 'element is not visible': (1) First check: eval 'document.title' — if this works but click doesn't, the window is hidden/minimized. (2) Check: dump_html 'selector' — if element exists in HTML but click fails, it's a visibility issue not a missing element. (3) Fix option A: restart daemon headed, ensure window is on current workspace. (4) Fix option B: use --force=true on the command (skips all safety checks). (5) NEVER retry the same click/type more than once — if it times out twice, it's environmental, not a selector issue. (6) Screenshot + get_file to visually confirm page state before further debugging."
+    },
+    {
+      "key": "Writing files containing tag-like syntax in Sable",
+      "value": "When creating/editing files whose content contains literal XML tag references (<get_file>, <create_file>, etc.): (1) The _find_complete nested-tag fix (2026-07-28) now protects against inner tags being parsed during streaming of an outer tag. (2) For extra safety with large files, use execute_command with a Python script (pathlib.write_text) instead of create_file/edit_file tags. (3) In markdown documentation, use phrasing like 'get_file tag' or 'file_uploader skill' instead of literal angle-bracket tags. (4) If using python -c with triple-quoted strings, escape backticks and double quotes for shell safety."
+    },
+    {
+      "key": "Counting code lines in projects",
+      "value": "Use tokei (pacman -S tokei) for accurate language-aware line counts. It auto-excludes binary blobs, node_modules, cached browser data, and other non-code artifacts. find+wc -l picks up everything and inflates counts dramatically (12x in Sable's case). For large projects, run in background (bg='true') — inline find+wc times out at 15s."
+    },
+    {
+      "key": "Solving DeepSeek PoW challenges",
+      "value": "Fast path: use wasmtime with /tmp/sha3_wasm.wasm (100ms) or compile Go solver from shaohuahuawww/deepseek-pow (50ms). Slow path: pure Python hash_impl.py (~50s for difficulty=144000). Algorithm: prefix = f'{salt}_{expire_at}_'.encode(); for nonce in range(difficulty): if deepseek_hash_v1(prefix + str(nonce).encode()) == bytes.fromhex(challenge): return nonce. The hash is SHA3-256 sponge with _keccak_f23 (rounds 1-23, skipping round 0). Build response: base64(JSON{algorithm, challenge, salt, answer, signature, target_path}). Send as X-DS-PoW-Response header."
+    },
+    {
+      "key": "Full DeepSeek chat completion flow (verified working)",
+      "value": "Complete working sequence: (1) TOKEN=$(python3 -c \"import json; print(json.loads(localStorage.getItem('userToken'))['value'])\") from browser eval. (2) curl POST /api/v0/chat/create_pow_challenge with Bearer token + {target_path:'/api/v0/chat/completion'} → get challenge JSON. (3) echo challenge_json | /home/sifat/hdd/projects/Sable/connectors/deepseek/pow_solver/pow_solver → nonce. (4) Build pow_header = base64(json{algorithm,challenge,salt,answer:nonce,signature,target_path}). (5) POST /api/v0/chat_session/create with {} → session_id. (6) POST /api/v0/chat/completion with headers (Authorization, X-DS-PoW-Response, x-client-version:2.3.0, x-client-platform:web, x-client-bundle-id:com.deepseek.chat, x-client-locale:en_US) + body {chat_session_id, parent_message_id:null, model_type:'default', prompt, ref_file_ids:[], thinking_enabled:false, search_enabled:false, action:null, preempt:false}. Response is SSE text/event-stream."
     }
   ],
   "ephemeral": []

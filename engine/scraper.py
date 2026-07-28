@@ -481,7 +481,8 @@ class ScraperEngine:
         }
 
     async def kill_session(self) -> dict[str, Any]:
-        """Forcefully kill the browser process and reset all scraper state."""
+        """Gracefully stop the browser, escalating to SIGKILL only if needed."""
+        import asyncio
         import os
         import signal
 
@@ -489,14 +490,36 @@ class ScraperEngine:
         killed_pid: int | None = None
 
         if engine is not None:
+            # Phase 1: try graceful cleanup via engine (flushes LevelDB properly)
+            cleanup = getattr(engine, "cleanup", None)
+            if cleanup is not None:
+                try:
+                    result = cleanup()
+                    if inspect.isawaitable(result):
+                        await asyncio.wait_for(result, timeout=5.0)
+                except Exception:
+                    pass
+
+            # Phase 2: if the process is still alive, SIGTERM the group
             chrome_proc = getattr(engine, "chrome_process", None)
             if chrome_proc is not None:
                 try:
                     pid = chrome_proc.pid
-                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    pgid = os.getpgid(pid)
+                    # Check if still running
+                    os.kill(pid, 0)
+                    os.killpg(pgid, signal.SIGTERM)
                     killed_pid = pid
+                    # Give it 3s to flush and exit
+                    await asyncio.sleep(3.0)
+                    # Phase 3: SIGKILL only if STILL alive
+                    try:
+                        os.kill(pid, 0)  # raises if dead
+                        os.killpg(pgid, signal.SIGKILL)
+                    except (ProcessLookupError, OSError):
+                        pass  # already dead, good
                 except (ProcessLookupError, PermissionError, OSError):
-                    pass
+                    pass  # process already gone
 
         await self.stop(kill_browser=True)
         return {"status": "ok", "killed_pid": killed_pid}

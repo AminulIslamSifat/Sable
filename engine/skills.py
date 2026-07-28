@@ -157,7 +157,6 @@ def _kill_process_group(proc: subprocess.Popen[str]) -> None:
 _EDITOR_OPS = {"create", "edit", "insert", "view"}
 _EDITOR_OUTPUT_CAP = 64 * 1024
 _EDITOR_LINE_CAP = 500
-_EDITOR_MAX_LINES = 250
 
 
 def _parse_editor_command(cmd: str) -> tuple[str, str] | None:
@@ -274,9 +273,6 @@ def _build_file_edit_event(
                     with open(target, "r", encoding="utf-8", errors="replace") as fh:
                         preview = fh.read(_EDITOR_OUTPUT_CAP)
                     preview_lines = preview.splitlines()
-                    if len(preview_lines) > _EDITOR_MAX_LINES:
-                        preview_lines = preview_lines[:_EDITOR_MAX_LINES]
-                        evt["truncated"] = True
                     if len(preview) >= _EDITOR_OUTPUT_CAP:
                         evt["truncated"] = True
                     lines.extend(_diff_line_payload("add", line) for line in preview_lines)
@@ -285,9 +281,6 @@ def _build_file_edit_event(
             except Exception:
                 lines.append(_diff_line_payload("meta", first or "Created file"))
 
-        if len(lines) > _EDITOR_MAX_LINES:
-            lines = lines[:_EDITOR_MAX_LINES]
-            evt["truncated"] = True
         evt["lines"] = lines
         return evt
     except Exception:
@@ -297,6 +290,11 @@ def _build_file_edit_event(
 def handle_execute_command(
     tag_id: str, name: str, attrs: dict[str, str], content: str
 ) -> Generator[dict[str, Any], None, None]:
+    # Route bg="true" to background handler
+    if attrs.get("bg", "").lower() in ("true", "1", "yes"):
+        yield from handle_execute_background_command(tag_id, name, attrs, content)
+        return
+
     started = time.time()
     cmd = content.strip()
     editor_target = _parse_editor_command(cmd)
@@ -1116,7 +1114,15 @@ class SkillParser:
             self.buf = ""
 
     def _find_complete(self) -> tuple[int, int, str, str, str] | None:
+        # Track open-but-unclosed tags so we never match tags nested inside
+        # an outer tag whose closing tag hasn't streamed in yet.
+        unclosed: list[int] = []  # start positions of open tags without a close
+
         for match in self.open_re.finditer(self.buf):
+            # Skip this match if it falls inside an unclosed outer tag's content
+            if any(match.start() > pos for pos in unclosed):
+                continue
+
             name = match.group(1).lower()
             attrs = match.group(2) or ""
             stripped_attrs = attrs.rstrip()
@@ -1132,6 +1138,8 @@ class SkillParser:
                     attrs,
                     self.buf[match.end() : close_match.start()],
                 )
+            # Tag opened but not yet closed — mark its region as "inside"
+            unclosed.append(match.start())
         return None
 
     def _hold_start(self) -> int | None:
