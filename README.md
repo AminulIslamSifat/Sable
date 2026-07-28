@@ -87,7 +87,7 @@ Three memory categories supported:
 **Step 3 — Start the server**
 
 ~~~bash
-./startapp
+./start
 ~~~
 
 Open **http://localhost:61770**. Login screen asks for your auth token (configured via `init.sh` or saved in `system/.auth_token`).
