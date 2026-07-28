@@ -93,6 +93,7 @@ AUTH_TOKEN = _load_auth_token()
 AUTH_EXEMPT_PREFIXES = ("/api/login", "/api/health", "/static/", "/uploads/")
 
 service = ChatService(user_data_dir=str(BASE_DIR / "browser-data"))
+get_deepseek_client().set_token_refresher(service.refresh_deepseek_token)
 
 
 def utcnow() -> str:
@@ -382,6 +383,11 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
         except Exception:
             pass
     await service.warmup()
+    try:
+        ds_token = await service.refresh_deepseek_token()
+        get_deepseek_client().set_token(ds_token)
+    except Exception as exc:
+        logger.warning("DeepSeek startup token refresh failed: %s: %s", type(exc).__name__, exc)
     yield
     await service.close()
     await scraper_service.stop(kill_browser=True)
@@ -658,6 +664,17 @@ async def update_browser_settings(payload: dict[str, bool]) -> dict[str, Any]:
     if headless is None:
         raise HTTPException(status_code=400, detail="Missing 'headless' field")
     await service.restart_browser(headless=headless)
+
+@app.post("/api/settings/deepseek/refresh-token")
+async def refresh_deepseek_token() -> dict[str, Any]:
+    """Force-refresh the DeepSeek API token from the browser-data profile."""
+    try:
+        token = await get_deepseek_client().refresh_token()
+        return {"status": "ok", "token_preview": token[:20] + "...", "active": True}
+    except Exception as exc:
+        logger.error("DeepSeek token refresh failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Refresh failed: {exc}")
+
     return {"status": "ok", "headless": service.browser_headless}
 
 

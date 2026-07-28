@@ -4,6 +4,7 @@ import os
 import time
 import uuid
 import base64
+import json
 from pathlib import Path
 
 import httpx
@@ -166,6 +167,37 @@ class BrowserManager:
             bx_ua=captured.get("bx-ua"),
             bx_umidtoken=captured.get("bx-umidtoken")
         )
+
+    async def extract_deepseek_token(self) -> str:
+        """Read DeepSeek bearer token from the shared persistent browser profile."""
+        await self.start()
+        if not self.context:
+            raise RuntimeError("Browser session is not available")
+
+        page = await self.context.new_page()
+        try:
+            await page.goto("https://chat.deepseek.com", wait_until="domcontentloaded", timeout=15000)
+            await page.wait_for_timeout(2000)  # let JS hydrate localStorage
+            raw = await page.evaluate("() => localStorage.getItem('userToken')")
+        finally:
+            await page.close()
+
+        if not raw:
+            raise RuntimeError("No DeepSeek userToken found in browser profile. Log in to chat.deepseek.com first.")
+
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                token = parsed.get("value", raw)
+            else:
+                token = raw
+        except (json.JSONDecodeError, AttributeError):
+            token = raw.strip('"')
+
+        token = str(token).strip()
+        if not token:
+            raise RuntimeError("DeepSeek userToken was empty after parsing.")
+        return token
 
     async def upload_image(self, image_path: str) -> dict | None:
         """Upload an image via Aliyun OSS JS SDK using the running browser context."""
