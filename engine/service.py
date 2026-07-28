@@ -88,6 +88,22 @@ class ChatService:
     async def upload_image(self, image_path: str) -> dict[str, Any] | None:
         return await self._browser.upload_image(image_path)
 
+
+    async def upload_deepseek_file(
+        self,
+        file_path: str,
+        model_type: str = "vision",
+        thinking_enabled: bool = False,
+    ) -> dict[str, Any]:
+        """Upload a file to DeepSeek via the shared browser and return file metadata."""
+        async with self._lock:
+            return await self._browser.upload_deepseek_file(
+                file_path,
+                model_type=model_type,
+                thinking_enabled=thinking_enabled,
+            )
+
+
     async def sync_context(self) -> bool:
         return await self._browser.sync_context()
 
