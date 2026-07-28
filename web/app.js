@@ -1886,27 +1886,28 @@
       const meta = chatList.find(c => c.id === chatId);
       parentId = meta?.parent_id || null;
 
-      // Auto-switch model dropdown based on chat type (numeric parent = DeepSeek, UUID = Qwen)
-      if (parentId) {
-        const isDeepseekChat = /^\d+$/.test(String(parentId));
-        const curEntry = modelList.find(m => m.id === selectedModel);
-        const curIsDeepseek = curEntry?.api_backend === "deepseek";
-        if (isDeepseekChat && !curIsDeepseek) {
-          const dsModel = modelList.find(m => m.api_backend === "deepseek");
-          if (dsModel) {
-            selectedModel = dsModel.id;
-            modelSelectEl.value = selectedModel;
-            try { localStorage.setItem(MODEL_KEY, selectedModel); } catch(e) {}
-            populateThinkingModes(null);
-          }
-        } else if (!isDeepseekChat && curIsDeepseek) {
-          const qwenModel = modelList.find(m => m.api_backend !== "deepseek");
-          if (qwenModel) {
-            selectedModel = qwenModel.id;
-            modelSelectEl.value = selectedModel;
-            try { localStorage.setItem(MODEL_KEY, selectedModel); } catch(e) {}
-            populateThinkingModes(null);
-          }
+      // Auto-switch model dropdown based on chat type.
+      // Numeric parent_id = DeepSeek session; UUID or null = Qwen.
+      // null parent_id (new/empty chat) is NEVER DeepSeek — DS always gets
+      // a numeric parent_id after the first response — so default to Qwen.
+      const isDeepseekChat = parentId != null && /^\d+$/.test(String(parentId));
+      const curEntry = modelList.find(m => m.id === selectedModel);
+      const curIsDeepseek = curEntry?.api_backend === "deepseek";
+      if (isDeepseekChat && !curIsDeepseek) {
+        const dsModel = modelList.find(m => m.api_backend === "deepseek");
+        if (dsModel) {
+          selectedModel = dsModel.id;
+          modelSelectEl.value = selectedModel;
+          try { localStorage.setItem(MODEL_KEY, selectedModel); } catch(e) {}
+          populateThinkingModes(null);
+        }
+      } else if (!isDeepseekChat && curIsDeepseek) {
+        const qwenModel = modelList.find(m => m.api_backend !== "deepseek");
+        if (qwenModel) {
+          selectedModel = qwenModel.id;
+          modelSelectEl.value = selectedModel;
+          try { localStorage.setItem(MODEL_KEY, selectedModel); } catch(e) {}
+          populateThinkingModes(null);
         }
       }
 
