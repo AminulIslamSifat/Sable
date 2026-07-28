@@ -90,10 +90,10 @@ class BrowserManager:
             # Validate auth tokens loaded
             has_token = await self.page.evaluate("() => !!localStorage.getItem('token')")
             if not has_token:
-                print("[WARN] ⚠️  No JWT token in localStorage after load!")
+                print("[WARN]   No JWT token in localStorage after load!")
                 print("[WARN] Profile may be stale/corrupted. Try: rm -rf ./browser-data && re-login via browser_opener.py")
             else:
-                print("[DEBUG] ✅ Auth token hydrated successfully.")
+                print("[DEBUG]  Auth token hydrated successfully.")
 
             await self.page.add_script_tag(url="https://gosspublic.alicdn.com/aliyun-oss-sdk-6.18.1.min.js")
             await self.page.wait_for_timeout(1000)

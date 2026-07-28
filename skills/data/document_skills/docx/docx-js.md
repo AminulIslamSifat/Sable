@@ -24,8 +24,8 @@ Packer.toBlob(doc).then(blob => { /* download logic */ }); // Browser
 ## Text & Formatting
 ```javascript
 // IMPORTANT: Never use \n for line breaks - always use separate Paragraph elements
-// ❌ WRONG: new TextRun("Line 1\nLine 2")
-// ✅ CORRECT: new Paragraph({ children: [new TextRun("Line 1")] }), new Paragraph({ children: [new TextRun("Line 2")] })
+//  WRONG: new TextRun("Line 1\nLine 2")
+//  CORRECT: new Paragraph({ children: [new TextRun("Line 1")] }), new Paragraph({ children: [new TextRun("Line 2")] })
 
 // Basic text with all formatting options
 new Paragraph({
@@ -43,7 +43,7 @@ new Paragraph({
     new TextRun({ text: "H2O", subScript: true }),
     new TextRun({ text: "SMALL CAPS", smallCaps: true }),
     new SymbolRun({ char: "2022", font: "Symbol" }), // Bullet •
-    new SymbolRun({ char: "00A9", font: "Arial" })   // Copyright © - Arial for symbols
+    new SymbolRun({ char: "00A9", font: "Arial" })   // Copyright  - Arial for symbols
   ]
 })
 ```
@@ -136,7 +136,7 @@ const doc = new Document({
         children: [new TextRun("First numbered item")] }),
       new Paragraph({ numbering: { reference: "first-numbered-list", level: 0 },
         children: [new TextRun("Second numbered item")] }),
-      // ⚠️ CRITICAL: Different reference = INDEPENDENT list that restarts at 1
+      //  CRITICAL: Different reference = INDEPENDENT list that restarts at 1
       // Same reference = CONTINUES previous numbering
       new Paragraph({ numbering: { reference: "second-numbered-list", level: 0 },
         children: [new TextRun("Starts at 1 again (because different reference)")] })
@@ -144,15 +144,15 @@ const doc = new Document({
   }]
 });
 
-// ⚠️ CRITICAL NUMBERING RULE: Each reference creates an INDEPENDENT numbered list
+//  CRITICAL NUMBERING RULE: Each reference creates an INDEPENDENT numbered list
 // - Same reference = continues numbering (1, 2, 3... then 4, 5, 6...)
 // - Different reference = restarts at 1 (1, 2, 3... then 1, 2, 3...)
 // Use unique reference names for each separate numbered section!
 
-// ⚠️ CRITICAL: NEVER use unicode bullets - they create fake lists that don't work properly
+//  CRITICAL: NEVER use unicode bullets - they create fake lists that don't work properly
 // new TextRun("• Item")           // WRONG
 // new SymbolRun({ char: "2022" }) // WRONG
-// ✅ ALWAYS use numbering config with LevelFormat.BULLET for real Word lists
+//  ALWAYS use numbering config with LevelFormat.BULLET for real Word lists
 ```
 
 ## Tables
@@ -162,7 +162,7 @@ const tableBorder = { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" };
 const cellBorders = { top: tableBorder, bottom: tableBorder, left: tableBorder, right: tableBorder };
 
 new Table({
-  columnWidths: [4680, 4680], // ⚠️ CRITICAL: Set column widths at table level - values in DXA (twentieths of a point)
+  columnWidths: [4680, 4680], //  CRITICAL: Set column widths at table level - values in DXA (twentieths of a point)
   margins: { top: 100, bottom: 100, left: 180, right: 180 }, // Set once for all cells
   rows: [
     new TableRow({
@@ -171,7 +171,7 @@ new Table({
         new TableCell({
           borders: cellBorders,
           width: { size: 4680, type: WidthType.DXA }, // ALSO set width on each cell
-          // ⚠️ CRITICAL: Always use ShadingType.CLEAR to prevent black backgrounds in Word.
+          //  CRITICAL: Always use ShadingType.CLEAR to prevent black backgrounds in Word.
           shading: { fill: "D5E8F0", type: ShadingType.CLEAR }, 
           verticalAlign: VerticalAlign.CENTER,
           children: [new Paragraph({ 
@@ -229,8 +229,8 @@ new Table({
 ## Links & Navigation
 ```javascript
 // TOC (requires headings) - CRITICAL: Use HeadingLevel only, NOT custom styles
-// ❌ WRONG: new Paragraph({ heading: HeadingLevel.HEADING_1, style: "customHeader", children: [new TextRun("Title")] })
-// ✅ CORRECT: new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun("Title")] })
+//  WRONG: new Paragraph({ heading: HeadingLevel.HEADING_1, style: "customHeader", children: [new TextRun("Title")] })
+//  CORRECT: new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun("Title")] })
 new TableOfContents("Table of Contents", { hyperlink: true, headingStyleRange: "1-3" }),
 
 // External link
@@ -280,9 +280,9 @@ new Paragraph({
   children: [new TextRun("This starts on a new page")]
 })
 
-// ⚠️ CRITICAL: NEVER use PageBreak standalone - it will create invalid XML that Word cannot open
-// ❌ WRONG: new PageBreak() 
-// ✅ CORRECT: new Paragraph({ children: [new PageBreak()] })
+//  CRITICAL: NEVER use PageBreak standalone - it will create invalid XML that Word cannot open
+//  WRONG: new PageBreak() 
+//  CORRECT: new Paragraph({ children: [new PageBreak()] })
 ```
 
 ## Headers/Footers & Page Setup
@@ -330,7 +330,7 @@ new Paragraph({
 - **Borders:** `SINGLE`, `DOUBLE`, `DASHED`, `DOTTED`  
 - **Numbering:** `DECIMAL` (1,2,3), `UPPER_ROMAN` (I,II,III), `LOWER_LETTER` (a,b,c)
 - **Tabs:** `LEFT`, `CENTER`, `RIGHT`, `DECIMAL`
-- **Symbols:** `"2022"` (•), `"00A9"` (©), `"00AE"` (®), `"2122"` (™), `"00B0"` (°), `"F070"` (✓), `"F0FC"` (✗)
+- **Symbols:** `"2022"` (•), `"00A9"` (), `"00AE"` (), `"2122"` (), `"00B0"` (°), `"F070"` (✓), `"F0FC"` (✗)
 
 ## Critical Issues & Common Mistakes
 - **CRITICAL: PageBreak must ALWAYS be inside a Paragraph** - standalone PageBreak creates invalid XML that Word cannot open

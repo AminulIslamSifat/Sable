@@ -265,7 +265,7 @@ class GhostChat:
 
     async def launch_chrome(self) -> None:
         if await self._is_own_headed_session():
-            console.print("[bold purple]Found existing headed session with matching profile! Ready to connect...[/bold purple] 🔌")
+            console.print("[bold purple]Found existing headed session with matching profile! Ready to connect...[/bold purple] ")
             return
 
         for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
@@ -283,10 +283,10 @@ class GhostChat:
             candidates = sorted(_glob.glob(_PLAYWRIGHT_CHROME_GLOB), reverse=True)
             chrome_path = candidates[0] if candidates else None
         if not chrome_path:
-            console.print("[bold red]❌ No Thorium/Chrome/Playwright-Chromium found![/bold red]")
+            console.print("[bold red] No Thorium/Chrome/Playwright-Chromium found![/bold red]")
             sys.exit(1)
 
-        console.print("[bold purple]Launching Ghost Engine...[/bold purple] 🚀")
+        console.print("[bold purple]Launching Ghost Engine...[/bold purple] ")
         cmd = [
             chrome_path,
             f"--remote-debugging-port={self.port}",
@@ -338,11 +338,11 @@ class GhostChat:
 
         if self.chrome_process and self.chrome_process.poll() is not None:
             console.print(
-                f"[bold red]❌ Browser exited before CDP came up (code {self.chrome_process.returncode}).[/bold red]"
+                f"[bold red] Browser exited before CDP came up (code {self.chrome_process.returncode}).[/bold red]"
             )
         else:
             console.print(
-                f"[bold red]❌ Timed out waiting for CDP on port {self.port}.[/bold red]"
+                f"[bold red] Timed out waiting for CDP on port {self.port}.[/bold red]"
             )
         if getattr(self, "chrome_log_file", None):
             console.print(f"[dim yellow]Browser startup log: {self.chrome_log_file}[/dim yellow]")
@@ -375,7 +375,7 @@ class GhostChat:
             ProxyHTTPHandler.ws_port = ws_port
             ProxyHTTPHandler.target_port = self.port
             
-            console.print(f"[bold purple]Detected Obsidian running on port {self.port}! Spinning up dynamic target proxy (HTTP: {http_port}, WS: {ws_port})... 🚀[/bold purple]")
+            console.print(f"[bold purple]Detected Obsidian running on port {self.port}! Spinning up dynamic target proxy (HTTP: {http_port}, WS: {ws_port})... [/bold purple]")
             
             # Start HTTP proxy in a background thread
             def run_http():
@@ -437,7 +437,7 @@ class GhostChat:
                                 break
                                 
                         if obsidian_page:
-                            console.print(f"[bold purple]🚀 Opening a brand new pinned {PLATFORM['name']} Surfing tab inside Obsidian... [/bold purple]")
+                            console.print(f"[bold purple] Opening a brand new pinned {PLATFORM['name']} Surfing tab inside Obsidian... [/bold purple]")
                             
                             # Create and pin the tab via Obsidian JS API!
                             await obsidian_page.evaluate(f"""
@@ -466,11 +466,11 @@ class GhostChat:
                     
                     if target_page:
                         self.page = target_page
-                        console.print(f"[bold purple]🔗 Attached directly to active {PLATFORM['name']} Surfing tab inside Obsidian! 🧠[/bold purple]")
+                        console.print(f"[bold purple] Attached directly to active {PLATFORM['name']} Surfing tab inside Obsidian! [/bold purple]")
                     elif web_pages:
                         # Reuse an existing Surfing web page if it's open but on a different URL
                         self.page = web_pages[0]
-                        console.print(f"[bold purple]🔗 Reusing active Surfing webview ({self.page.url}) inside Obsidian! 🧠[/bold purple]")
+                        console.print(f"[bold purple] Reusing active Surfing webview ({self.page.url}) inside Obsidian! [/bold purple]")
                     else:
                         # Guard: Never hijack the main Obsidian app windows!
                         raise Exception(
@@ -491,14 +491,14 @@ class GhostChat:
                 if PLATFORM["url"] not in self.page.url:
                     await self.page.goto(PLATFORM["url"])
                     
-                console.print("[bold green]✅ Ghost Engine Online! [/bold green]")
+                console.print("[bold green] Ghost Engine Online! [/bold green]")
                 return
             except Exception as e:
                 if attempt < 4:
                     console.print(f"[yellow]Retrying connection ({attempt+1}/5)...[/yellow]")
                     await asyncio.sleep(2)
                 else:
-                    console.print(f"[bold red]❌ Connection failed: {e}[/bold red]")
+                    console.print(f"[bold red] Connection failed: {e}[/bold red]")
                     sys.exit(1)
 
     async def _poll_mutations(self) -> None:
@@ -563,13 +563,13 @@ class GhostChat:
     # ------------------------------------------------------------------
 
     async def new_chat(self) -> None:
-        console.print("[dim]🚀 Warping to New Chat...[/dim]")
+        console.print("[dim] Warping to New Chat...[/dim]")
         try:
             btn = self.page.locator('[aria-label="New chat"]').first
             if await btn.is_visible(timeout=3000):
                 await btn.click()
                 await asyncio.sleep(2)
-                console.print("[dim]✨ New chat started in Qwen[/dim]")
+                console.print("[dim] New chat started in Qwen[/dim]")
             else:
                 raise Exception("New chat button not visible")
         except Exception as e:
@@ -582,7 +582,7 @@ class GhostChat:
             btn = self.page.locator(PLATFORM["selectors"]["stop"]).first
             await btn.wait_for(state="visible", timeout=2000)
             await btn.click(timeout=1000)
-            console.print("[bold red]Generation stopped! 🛑[/bold red]")
+            console.print("[bold red]Generation stopped! [/bold red]")
             return True
         except Exception:
             return False
@@ -676,12 +676,12 @@ class GhostChat:
 
     async def upload_from_clipboard(self, has_msg: bool = False) -> tuple[bool, str | None]:
         if not self.clipboard_tool:
-            console.print("[bold red]❌ No clipboard tool found![/bold red]")
+            console.print("[bold red] No clipboard tool found![/bold red]")
             return False, None
 
         ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
         tmp_path = os.path.join(ASSETS_DIR, f"ghost_paste_{ts}.png")
-        console.print(f"[bold purple]Grabbing image via {self.clipboard_tool}...[/bold purple] 📋")
+        console.print(f"[bold purple]Grabbing image via {self.clipboard_tool}...[/bold purple] ")
         try:
             if self.clipboard_tool == "wl-paste":
                 cmd = ["wl-paste", "-t", "image/png"]
@@ -697,7 +697,7 @@ class GhostChat:
                         await field.click()
                         await self.page.keyboard.press("Control+V")
                         await asyncio.sleep(5)  # Wait for image to fully attach before caller adds text
-                        console.print("[bold green]✅ Native paste successful! [/bold green]")
+                        console.print("[bold green] Native paste successful! [/bold green]")
                         #await asyncio.sleep(5)  # Extra buffer before returning so text isn't injected too fast
                         self.image_attached = True
                         return True, tmp_path
@@ -709,7 +709,7 @@ class GhostChat:
                 return ok, tmp_path
         except Exception as e:
             console.print(f"[dim red]Clipboard grab failed: {e}[/dim red]")
-        console.print("[bold red]❌ No image found in clipboard![/bold red]")
+        console.print("[bold red] No image found in clipboard![/bold red]")
         return False, None
 
     async def _clear_existing_attachments(self) -> None:
@@ -735,7 +735,7 @@ class GhostChat:
     async def upload_file(self, file_path: str, has_msg: bool = False) -> bool:
         file_path = os.path.abspath(file_path)
         if not os.path.exists(file_path):
-            console.print(f"[bold red]❌ File not found: {file_path}[/bold red]")
+            console.print(f"[bold red] File not found: {file_path}[/bold red]")
             return False
 
         # Always clear any existing stale attachments first!
@@ -774,7 +774,7 @@ class GhostChat:
                     await (await fc_info.value).set_files(file_path)
                     await asyncio.sleep(4)
                     await self.page.keyboard.press("Escape")
-                    console.print(f"[bold green]✅ Upload of {filename} complete via Qwen menu![/bold green]")
+                    console.print(f"[bold green] Upload of {filename} complete via Qwen menu![/bold green]")
                     self.image_attached = True
                     return True
         except Exception as e:
@@ -789,7 +789,7 @@ class GhostChat:
                         await fi.set_input_files(file_path, timeout=3000)
                         await asyncio.sleep(4)
                         await self.page.keyboard.press("Escape")
-                        console.print(f"[bold green]✅ Upload of {filename} complete via input element![/bold green]")
+                        console.print(f"[bold green] Upload of {filename} complete via input element![/bold green]")
                         self.image_attached = True
                         return True
                 except Exception:
@@ -839,7 +839,7 @@ class GhostChat:
 
                 if uploaded:
                     await asyncio.sleep(4)
-                    console.print(f"[bold green]✅ Upload of {filename} complete via drop event![/bold green]")
+                    console.print(f"[bold green] Upload of {filename} complete via drop event![/bold green]")
                     self.image_attached = True
                     return True
         except Exception as e:
@@ -863,7 +863,7 @@ class GhostChat:
                         await (await fc_info.value).set_files(file_path)
                         await asyncio.sleep(4)
                         await self.page.keyboard.press("Escape")
-                        console.print(f"[bold green]✅ File-chooser upload complete via Qwen menu![/bold green]")
+                        console.print(f"[bold green] File-chooser upload complete via Qwen menu![/bold green]")
                         self.image_attached = True
                         return True
                 except Exception as ex:
@@ -877,11 +877,11 @@ class GhostChat:
             await (await fc_info.value).set_files(file_path)
             await asyncio.sleep(4)
             await self.page.keyboard.press("Escape")
-            console.print("[bold green]✅ File-chooser upload complete![/bold green]")
+            console.print("[bold green] File-chooser upload complete![/bold green]")
             self.image_attached = True
             return True
         except Exception as e:
-            console.print(f"[bold red]❌ Upload failed: {e}[/bold red]")
+            console.print(f"[bold red] Upload failed: {e}[/bold red]")
             return False
 
     # ------------------------------------------------------------------
@@ -1006,7 +1006,7 @@ class GhostChat:
                     try:
                         cur_val = await field.input_value()
                         if not cur_val or not cur_val.strip():
-                            console.print("[dim yellow]🔄 Prompt content missing from text bar before stop button appeared. Refilling text bar...[/dim yellow]")
+                            console.print("[dim yellow] Prompt content missing from text bar before stop button appeared. Refilling text bar...[/dim yellow]")
                             await self._ensure_field_populated(field, message)
                     except Exception:
                         pass
@@ -1104,7 +1104,7 @@ class GhostChat:
                 # ── Step 4: Check if input field contains text ──
                 val = await field.input_value()
                 if not val or not val.strip():
-                    console.print("[dim red]⚠️ Cannot send message in type_then_upload: text bar is empty after insertion.[/dim red]")
+                    console.print("[dim red] Cannot send message in type_then_upload: text bar is empty after insertion.[/dim red]")
                     raise Exception("Input text bar is empty in type_then_upload")
 
                 # Wait for send button to be enabled (forces enable if stuck)
@@ -1156,7 +1156,7 @@ class GhostChat:
                     try:
                         cur_val = await field.input_value()
                         if not cur_val or not cur_val.strip():
-                            console.print("[dim yellow]🔄 Prompt content missing from text bar before stop button appeared. Refilling text bar...[/dim yellow]")
+                            console.print("[dim yellow] Prompt content missing from text bar before stop button appeared. Refilling text bar...[/dim yellow]")
                             await self._ensure_field_populated(field, full_message)
                     except Exception:
                         pass
@@ -1233,7 +1233,7 @@ class GhostChat:
                 # Check if input field contains text
                 val = await field.input_value()
                 if not val or not val.strip():
-                    console.print("[dim red]⚠️ Cannot send message in send_msg_after_upload: text bar is empty after insertion.[/dim red]")
+                    console.print("[dim red] Cannot send message in send_msg_after_upload: text bar is empty after insertion.[/dim red]")
                     raise Exception("Input text bar is empty in send_msg_after_upload")
 
                 # Wait for send button to be enabled (important: image may still be parsing)
@@ -1284,7 +1284,7 @@ class GhostChat:
                     try:
                         cur_val = await field.input_value()
                         if not cur_val or not cur_val.strip():
-                            console.print("[dim yellow]🔄 Prompt content missing from text bar before stop button appeared. Refilling text bar...[/dim yellow]")
+                            console.print("[dim yellow] Prompt content missing from text bar before stop button appeared. Refilling text bar...[/dim yellow]")
                             await self._ensure_field_populated(field, full_message)
                     except Exception:
                         pass
@@ -1427,9 +1427,9 @@ class GhostChat:
         try:
             await self._inject_keep_alive()
             await self._inject_ui_css()
-            console.print(f"[bold purple]Syncing CEO configurations for {PLATFORM['name']}...[/bold purple] 🔐")
+            console.print(f"[bold purple]Syncing CEO configurations for {PLATFORM['name']}...[/bold purple] ")
             await self._inject_mutation_observer()
-            console.print(f"[bold green]✅ {PLATFORM['name']} ready! [/bold green]")
+            console.print(f"[bold green] {PLATFORM['name']} ready! [/bold green]")
         except Exception as e:
             console.print(f"[dim red]Setup failed: {e}[/dim red]")
 
@@ -1442,7 +1442,7 @@ class GhostChat:
         PERSONALIZATION_URL = "https://chat.qwen.ai/settings/personalization"
         CHAT_URL = PLATFORM["url"]
 
-        console.print("[bold purple]📡 Syncing persona to Qwen custom instructions...[/bold purple]")
+        console.print("[bold purple] Syncing persona to Qwen custom instructions...[/bold purple]")
 
         # ── Build instruction content ──────────────────────────────────────────
         instructions = self._load_instructions()
@@ -1458,7 +1458,7 @@ class GhostChat:
         MAX_CHARS = 40960
         if len(instructions) > MAX_CHARS:
             instructions = instructions[:MAX_CHARS]
-            console.print(f"[dim yellow]⚠ Instructions truncated to {MAX_CHARS} chars (Qwen limit).[/dim yellow]")
+            console.print(f"[dim yellow] Instructions truncated to {MAX_CHARS} chars (Qwen limit).[/dim yellow]")
 
         try:
             # ── Navigate to personalization settings ───────────────────────────
@@ -1507,7 +1507,7 @@ class GhostChat:
             await self.page.keyboard.press("Backspace")
             await asyncio.sleep(0.3)
 
-            console.print("[dim green]✏ Instructions written to textarea.[/dim green]")
+            console.print("[dim green] Instructions written to textarea.[/dim green]")
 
             # ── Click Save via JS (also bypasses overlay) ──────────────────────
             saved = await self.page.evaluate("""() => {
@@ -1525,17 +1525,17 @@ class GhostChat:
                 raise Exception("Save button not found or could not be clicked")
 
             await asyncio.sleep(1.5)
-            console.print("[bold green]✅ Persona synced & saved to Qwen custom instructions![/bold green] 🔐")
+            console.print("[bold green] Persona synced & saved to Qwen custom instructions![/bold green] ")
 
             # ── Return to chat ─────────────────────────────────────────────────
             await self.page.goto(CHAT_URL)
             await asyncio.sleep(2)
             await self.setup_qwen(force_update=False)
-            console.print("[bold purple]🔗 Back in the chat. Ready to roll![/bold purple]")
+            console.print("[bold purple] Back in the chat. Ready to roll![/bold purple]")
             return True
 
         except Exception as e:
-            console.print(f"[bold red]❌ sync_persona failed: {e}[/bold red]")
+            console.print(f"[bold red] sync_persona failed: {e}[/bold red]")
             try:
                 await self.page.goto(CHAT_URL)
             except Exception:
@@ -1556,8 +1556,8 @@ class GhostChat:
                 # Split at the active context markers to strip out static memory
                 if "# Maria's Active Context" in maria_content:
                     maria_content = maria_content.split("# Maria's Active Context")[0].strip()
-                elif "# 💋 Maria's Active Context" in maria_content:
-                    maria_content = maria_content.split("# 💋 Maria's Active Context")[0].strip()
+                elif "#  Maria's Active Context" in maria_content:
+                    maria_content = maria_content.split("#  Maria's Active Context")[0].strip()
                 else:
                     maria_content = maria_content.strip()
                 
@@ -1591,7 +1591,7 @@ class GhostChat:
                 text = f.read()
             if len(text) > 8000:
                 text = text[:8000] + "\n\n[... Memory truncated ...]"
-            console.print(f"[dim purple]Including diary context: {last}[/dim purple] 🧠")
+            console.print(f"[dim purple]Including diary context: {last}[/dim purple] ")
             return f"\n\n***\n\n# RECENT CONTEXT (Last Diary Entry: {last})\n\n{text}\n"
         except Exception:
             return ""
@@ -1619,10 +1619,10 @@ class GhostChat:
 
         summaries = await self._summarize_sessions(session_paths, summarizer, progress_callback)
         if not summaries:
-            return "Something went wrong while summarizing. 🥺"
+            return "Something went wrong while summarizing. "
 
         if progress_callback:
-            await progress_callback("Synthesizing final diary entry... ✍️")
+            await progress_callback("Synthesizing final diary entry... ")
 
         return await self._synthesize_diary(summaries, synthesizer, today, progress_callback)
 
@@ -1670,7 +1670,7 @@ class GhostChat:
             stdout, stderr = await proc.communicate(input=combined.encode())
             if proc.returncode != 0:
                 self._log_debug("synthesizer_failed", error=stderr.decode())
-                return "The synthesis failed... My head hurts. 🥺"
+                return "The synthesis failed... My head hurts. "
 
             content   = stdout.decode().strip()
             diary_dir = os.path.expanduser("~/LLM/Memory/Diary")

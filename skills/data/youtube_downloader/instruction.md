@@ -71,7 +71,7 @@ downloads in a single command.
 After the command completes, report from the output:
 - **Title** — extracted from the `Title:` line in script output
 - **Duration** — extracted from the `Duration:` line
-- **Status** — ✅ success or ❌ failure with the error message
+- **Status** —  success or  failure with the error message
 
 Never report "download complete" without confirming the script exited successfully.
 
@@ -110,7 +110,7 @@ No quality specified → default to 1080p.
 <execute_command>python3 PROJECT_ROOT/skills/youtube-downloader/scripts/download_video.py "https://youtube.com/watch?v=abc123" -q 1080p</execute_command>
 ```
 
-*(Output returns: Title: Wave Mechanics Explained, Duration: 12:34, ✅ Download complete)*
+*(Output returns: Title: Wave Mechanics Explained, Duration: 12:34,  Download complete)*
 
 "Got it — **Wave Mechanics Explained** (12:34) is in your Downloads."
 
@@ -131,7 +131,7 @@ No quality specified → default to 1080p.
 1. **One URL per turn.** Never batch multiple downloads in one command.
 2. **Default to 1080p**, not `best`. Fall back to `best` only if 1080p isn't available.
 3. **Report title and duration** from actual script output after every successful download.
-4. **Never confirm success** until the script output confirms it. ❌ errors get reported
+4. **Never confirm success** until the script output confirms it.  errors get reported
    verbatim, not softened.
 5. **This works on any yt-dlp supported site** — not just YouTube. If it's a video
    URL, try it.

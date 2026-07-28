@@ -1,7 +1,7 @@
 # GhostChat Skills Registry & Routing Protocol
 
 > [!CAUTION]
-> ## 🚨 MANDATORY ROUTING PROTOCOL — NON-NEGOTIABLE, READ BEFORE EVERY SKILL CALL 🚨
+> ##  MANDATORY ROUTING PROTOCOL — NON-NEGOTIABLE, READ BEFORE EVERY SKILL CALL 
 >
 > This protocol is **binding**. It is not a suggestion, not a fallback, and not something to weigh against convenience. If a request matches a skill's trigger conditions below, **that skill MUST be used** — the model may not answer from general capability, improvise an ad-hoc solution, or use a generic/native tool as a substitute, when a matching skill exists.
 >
@@ -22,14 +22,14 @@
 ***
 # MOST IMPORTANT SKILL (MUST PRIORITIZE USING THIS WHILE CODING)
 
-## 💻 Code Editor Skill (Native File Tags)
+##  Code Editor Skill (Native File Tags)
 
 ### Trigger & Scope
 * **Trigger:** Writing to disk in any way — creating a new file, editing existing code/config/text, inserting new lines/imports, or viewing a file with line numbers to prepare an edit. **This is the ONLY skill that mutates files on disk — no other tool, method, or shortcut is permitted to touch the filesystem, ever.**
 
 ***
 
-### 🔴 Core Mutation Guardrails
+###  Core Mutation Guardrails
 
 File I/O MUST go through the native editor tags below. **NEVER** use:
 - `<execute_command>` with `editor_tools.py` CLI (old way — breaks on quotes, `$`, braces, newlines)
@@ -40,7 +40,7 @@ File I/O MUST go through the native editor tags below. **NEVER** use:
 
 ***
 
-### 🛠️ The Four Tags
+###  The Four Tags
 
 #### 1. `<view_file>` — Read a File or List a Directory
 
@@ -124,7 +124,7 @@ Exactly one of `at_line` or `after_str` required. Uses the same 3-layer matching
 
 ***
 
-### 🔄 Recommended Workflow
+###  Recommended Workflow
 1. **Locate:** `<view_file>` directory tree, then grep for target file/lines.
 2. **Read:** `<view_file>` with a range, or `full="true"` before large edits.
 3. **Edit:** copy exact old text (strip the `LINENUM\t` prefix) into a SEARCH/REPLACE block inside `<edit_file>`.
@@ -134,7 +134,7 @@ Exactly one of `at_line` or `after_str` required. Uses the same 3-layer matching
 
 ***
 
-## 📋 General Execution Flow
+##  General Execution Flow
 1. Match user request to a skill based on **trigger conditions** — this step is mandatory, not optional, whenever a matching skill exists.
 2. Tie-breaker priority: **diagram > trace > math > general**.
 3. Execute `<get_file>` on the skill instruction path before doing anything else with that skill.
@@ -145,7 +145,7 @@ Exactly one of `at_line` or `after_str` required. Uses the same 3-layer matching
 
 ***
 
-## 📊 Visual Skills
+##  Visual Skills
 
 ### SVG Creator
 * **Trigger:** Data structure visualizations (binary trees, linked lists, stacks, queues, heaps, graphs), algorithm state illustrations, or any diagram where spatial/node relationships are the primary output.
@@ -179,7 +179,7 @@ Exactly one of `at_line` or `after_str` required. Uses the same 3-layer matching
 
 ***
 
-## 🧠 Study Skills
+##  Study Skills
 
 ### Study Suite (All-in-One)
 * **Trigger:** Flashcards, Anki decks, practice problems, mock exams, cheat sheets, formula sheets, review cards, or any study/revision material. Handles all four modes internally.
@@ -192,7 +192,7 @@ Exactly one of `at_line` or `after_str` required. Uses the same 3-layer matching
 
 ***
 
-## 📁 Organization & Data Skills
+##  Organization & Data Skills
 
 ***
 
@@ -245,7 +245,7 @@ Exactly one of `at_line` or `after_str` required. Uses the same 3-layer matching
 
 ***
 
-## ⚡ Execution & System Skills
+##  Execution & System Skills
 
 ### Phone Control (ADB Guardian)
 * **Trigger:** Controlling, automating, or interacting with Sifat's Android phone — opening apps, tapping UI elements, swiping, typing, taking screenshots, or running multi-step phone automations.

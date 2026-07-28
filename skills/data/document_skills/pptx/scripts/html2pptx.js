@@ -758,7 +758,7 @@ async function extractSlideData(page) {
           const runs = parseInlineFormatting(li, { breakLine: false });
           // Clean manual bullets from first run
           if (runs.length > 0) {
-            runs[0].text = runs[0].text.replace(/^[•\-\*▪▸]\s*/, '');
+            runs[0].text = runs[0].text.replace(/^[•\-\*▸]\s*/, '');
             runs[0].options.bullet = { indent: textIndent };
           }
           // Set breakLine on last run
@@ -806,7 +806,7 @@ async function extractSlideData(page) {
       if (rect.width === 0 || rect.height === 0 || !text) return;
 
       // Validate: Check for manual bullet symbols in text elements (not in lists)
-      if (el.tagName !== 'LI' && /^[•\-\*▪▸○●◆◇■□]\s/.test(text.trimStart())) {
+      if (el.tagName !== 'LI' && /^[•\-\*▸○●◆◇■□]\s/.test(text.trimStart())) {
         errors.push(
           `Text element <${el.tagName.toLowerCase()}> starts with bullet symbol "${text.substring(0, 20)}...". ` +
           'Use <ul> or <ol> lists instead of manual bullet symbols.'

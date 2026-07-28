@@ -45,17 +45,17 @@ def main() -> None:
         # Get raw scores (bypass threshold)
         results = searcher.search(prompt, top_k=5, threshold=0.0)
         if not results:
-            print("    ❌ No results at all")
+            print("     No results at all")
             continue
 
         passed = [r for r in results if r["score"] >= THRESHOLD]
         print(f"    Top-5 scores: {', '.join(f'{r['score']:.4f}' for r in results)}")
         if passed:
-            print(f"    ✅ {len(passed)} would pass threshold:")
+            print(f"     {len(passed)} would pass threshold:")
             for r in passed:
                 print(f"       [{r['score']:.4f}] {r['key']}: {r['value'][:80]}")
         else:
-            print(f"    ❌ None pass {THRESHOLD} (best: {results[0]['score']:.4f}, gap: {THRESHOLD - results[0]['score']:.4f})")
+            print(f"     None pass {THRESHOLD} (best: {results[0]['score']:.4f}, gap: {THRESHOLD - results[0]['score']:.4f})")
             print(f"       Best match: {results[0]['key']}: {results[0]['value'][:80]}")
 
 

@@ -53,4 +53,4 @@ def test_symlinks_true_restore_succeeds() -> None:
 if __name__ == "__main__":
     test_default_copytree_fails_on_broken_symlinks()
     test_symlinks_true_restore_succeeds()
-    print("\nAll restore-symlink regression tests passed ✅")
+    print("\nAll restore-symlink regression tests passed ")

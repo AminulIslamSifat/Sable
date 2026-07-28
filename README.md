@@ -10,12 +10,12 @@ Built for one person. ~29,000 lines of Python/JS across 129 files. Not a weekend
 ## Architecture
 
 ~~~
-Browser (UI) ──SSE/REST──▶ FastAPI Server ──HTTP stream──▶ Qwen API
+Browser (UI) ──SSE/REST── FastAPI Server ──HTTP stream── Qwen API
                                   │                        DeepSeek API
-                                  ├── Playwright ──▶ Persistent Chromium (session cookies + WAF tokens)
-                                  ├── Semantic Search ──▶ Brain (Memory.json)
-                                  ├── SQLite ──▶ sable.db (chats & messages)
-                                  └── Skill Registry ──▶ Editor / Playwright / ADB subprocesses
+                                  ├── Playwright ── Persistent Chromium (session cookies + WAF tokens)
+                                  ├── Semantic Search ── Brain (Memory.json)
+                                  ├── SQLite ── sable.db (chats & messages)
+                                  └── Skill Registry ── Editor / Playwright / ADB subprocesses
 ~~~
 
 The server routes each message through a **persistent Chromium browser profile** that holds your Qwen session — no API key needed. Session cookies and WAF tokens are sniffed from the browser's network layer, auto-refreshed on 401s, and never leave your machine. DeepSeek models use a direct HTTP API with **Proof-of-Work challenge-based auth** (solved via a compiled Go binary, ~84ms per challenge).

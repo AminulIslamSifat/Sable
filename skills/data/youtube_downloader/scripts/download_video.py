@@ -25,7 +25,7 @@ def check_yt_dlp():
     try:
         subprocess.run(["yt-dlp", "--version"], capture_output=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
-        print("❌ yt-dlp not found. Install it with: pacman -S yt-dlp")
+        print(" yt-dlp not found. Install it with: pacman -S yt-dlp")
         sys.exit(1)
 
 
@@ -38,7 +38,7 @@ def check_ffmpeg():
     try:
         subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
-        print("⚠️  ffmpeg not found. Stream merging may fail. Install with: pacman -S ffmpeg")
+        print("  ffmpeg not found. Stream merging may fail. Install with: pacman -S ffmpeg")
 
 
 # ── Video info ────────────────────────────────────────────────────────────────
@@ -54,12 +54,12 @@ def get_video_info(url):
         text=True
     )
     if result.returncode != 0:
-        print(f"❌ Could not fetch video info:\n{result.stderr.strip()}", file=sys.stderr)
+        print(f" Could not fetch video info:\n{result.stderr.strip()}", file=sys.stderr)
         return None
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as e:
-        print(f"❌ Failed to parse video info: {e}", file=sys.stderr)
+        print(f" Failed to parse video info: {e}", file=sys.stderr)
         return None
 
 
@@ -97,7 +97,7 @@ def download_video(url, output_path=None, quality="1080p", format_type="mp4", au
     try:
         os.makedirs(output_path, exist_ok=True)
     except OSError as e:
-        print(f"❌ Cannot create output directory '{output_path}': {e}", file=sys.stderr)
+        print(f" Cannot create output directory '{output_path}': {e}", file=sys.stderr)
         return False
 
     # Dependency checks — fail fast before any network call
@@ -106,7 +106,7 @@ def download_video(url, output_path=None, quality="1080p", format_type="mp4", au
         check_ffmpeg()
 
     # Fetch and display video info before download
-    print(f"\n🔍 Fetching info for: {url}")
+    print(f"\n Fetching info for: {url}")
     info = get_video_info(url)
     if info is None:
         return False
@@ -155,14 +155,14 @@ def download_video(url, output_path=None, quality="1080p", format_type="mp4", au
     # Execute — no capture_output so yt-dlp progress prints live to terminal
     try:
         subprocess.run(cmd, check=True)
-        print(f"\n✅ Done — {title} ({duration})")
+        print(f"\n Done — {title} ({duration})")
         return True
     except subprocess.CalledProcessError as e:
         # yt-dlp already printed its own error live to stderr
-        print(f"\n❌ Download failed (exit code {e.returncode})", file=sys.stderr)
+        print(f"\n Download failed (exit code {e.returncode})", file=sys.stderr)
         return False
     except Exception as e:
-        print(f"\n❌ Unexpected error: {e}", file=sys.stderr)
+        print(f"\n Unexpected error: {e}", file=sys.stderr)
         return False
 
 

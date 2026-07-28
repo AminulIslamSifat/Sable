@@ -187,7 +187,7 @@ class GhostChat:
 
     async def launch_chrome(self) -> None:
         if await self._is_own_headed_session():
-            console.print("[bold purple]Found existing headed session with matching profile! Ready to connect...[/bold purple] 🔌")
+            console.print("[bold purple]Found existing headed session with matching profile! Ready to connect...[/bold purple] ")
             return
 
         for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
@@ -205,10 +205,10 @@ class GhostChat:
             candidates = sorted(_glob.glob(_PLAYWRIGHT_CHROME_GLOB), reverse=True)
             chrome_path = candidates[0] if candidates else None
         if not chrome_path:
-            console.print("[bold red]❌ No Thorium/Chrome/Playwright-Chromium found![/bold red]")
+            console.print("[bold red] No Thorium/Chrome/Playwright-Chromium found![/bold red]")
             sys.exit(1)
 
-        console.print("[bold purple]Launching Ghost Engine...[/bold purple] 🚀")
+        console.print("[bold purple]Launching Ghost Engine...[/bold purple] ")
         cmd = [
             chrome_path,
             f"--remote-debugging-port={self.port}",
@@ -259,7 +259,7 @@ class GhostChat:
             await asyncio.sleep(0.5)
 
         # --- DUMP ACTUAL BROWSER LOGS ON FAILURE ---
-        console.print("[bold red]❌ Browser startup failed. Dumping browser stdout/stderr:[/bold red]")
+        console.print("[bold red] Browser startup failed. Dumping browser stdout/stderr:[/bold red]")
         if getattr(self, "chrome_log_file", None) and os.path.exists(self.chrome_log_file):
             try:
                 with open(self.chrome_log_file, "r", encoding="utf-8") as f:
@@ -297,14 +297,14 @@ class GhostChat:
                 if PLATFORM["url"] not in self.page.url:
                     await self.page.goto(PLATFORM["url"])
                     
-                console.print("[bold green]✅ Ghost Engine Online! [/bold green]")
+                console.print("[bold green] Ghost Engine Online! [/bold green]")
                 return
             except Exception as e:
                 if attempt < 4:
                     console.print(f"[yellow]Retrying connection ({attempt+1}/5)...[/yellow]")
                     await asyncio.sleep(2)
                 else:
-                    console.print(f"[bold red]❌ Connection failed: {e}[/bold red]")
+                    console.print(f"[bold red] Connection failed: {e}[/bold red]")
                     sys.exit(1)
 
     async def _poll_mutations(self) -> None:
@@ -368,14 +368,14 @@ class GhostChat:
         return False
 
     async def new_chat(self, reapply_model: bool = True) -> None:
-        console.print("[dim]🚀 Warping to New Chat...[/dim]")
+        console.print("[dim] Warping to New Chat...[/dim]")
         self.system_injected = False
         try:
             btn = self.page.locator('[aria-label="New chat"]').first
             if await btn.is_visible(timeout=3000):
                 await btn.click()
                 await asyncio.sleep(2)
-                console.print("[dim]✨ New chat started in AI Studio[/dim]")
+                console.print("[dim] New chat started in AI Studio[/dim]")
             else:
                 raise Exception("New chat button not visible")
         except Exception as e:
@@ -388,14 +388,14 @@ class GhostChat:
         if reapply_model and self.current_model_type != "default":
             if await self._click_model_button(self.current_model_type):
                 label = {"expert": "Expert", "vision": "Vision"}.get(self.current_model_type, self.current_model_type)
-                console.print(f"[dim]{label} mode restored after new chat[/dim] 🚀")
+                console.print(f"[dim]{label} mode restored after new chat[/dim] ")
 
     async def stop_generation(self) -> bool:
         try:
             btn = self.page.locator(PLATFORM["selectors"]["stop"]).first
             await btn.wait_for(state="visible", timeout=2000)
             await btn.click(timeout=1000)
-            console.print("[bold red]Generation stopped! 🛑[/bold red]")
+            console.print("[bold red]Generation stopped! [/bold red]")
             return True
         except Exception:
             return False
@@ -409,7 +409,7 @@ class GhostChat:
                     await fi.set_input_files(file_path, timeout=3000)
                     await asyncio.sleep(3)
                     await self.page.keyboard.press("Escape")
-                    console.print("[bold green]✅ Upload complete![/bold green]")
+                    console.print("[bold green] Upload complete![/bold green]")
                     return True
                 except Exception:
                     continue
@@ -422,11 +422,11 @@ class GhostChat:
             await (await fc_info.value).set_files(file_path)
             await asyncio.sleep(3)
             await self.page.keyboard.press("Escape")
-            console.print("[bold green]✅ Upload complete![/bold green]")
+            console.print("[bold green] Upload complete![/bold green]")
             return True
 
         except Exception as e:
-            console.print(f"[bold red]❌ Upload failed: {e}[/bold red]")
+            console.print(f"[bold red] Upload failed: {e}[/bold red]")
             return False
 
     # ------------------------------------------------------------------
@@ -667,7 +667,7 @@ class GhostChat:
                 self.system_injected = False
                 self.has_fresh_chat = True
                 label = {"default": "Instant", "expert": "Expert", "vision": "Vision"}[model_type]
-                console.print(f"[dim]Switched to {label} mode[/dim] 🚀")
+                console.print(f"[dim]Switched to {label} mode[/dim] ")
                 return True
             console.print(f"[dim yellow]Model button '{model_type}' not visible[/dim yellow]")
             return False
@@ -698,11 +698,11 @@ class GhostChat:
             if mode == "deepthink" and not is_on:
                 await toggle.click()
                 await asyncio.sleep(0.4)
-                console.print("[dim]DeepThink enabled[/dim] 🧠")
+                console.print("[dim]DeepThink enabled[/dim] ")
             elif mode == "fast" and is_on:
                 await toggle.click()
                 await asyncio.sleep(0.4)
-                console.print("[dim]DeepThink disabled (fast mode)[/dim] ⚡")
+                console.print("[dim]DeepThink disabled (fast mode)[/dim] ")
         except Exception as e:
             console.print(f"[dim red]Thinking mode toggle failed: {e}[/dim red]")
 
@@ -710,7 +710,7 @@ class GhostChat:
     async def setup_deepseek(self, force_update: bool = False, include_diary: bool = False, model_type: str | None = None) -> None:
         """Setup for DeepSeek platform."""
         try:
-            console.print(f"[bold purple]Syncing CEO configurations for {PLATFORM['name']}...[/bold purple] 🔐")
+            console.print(f"[bold purple]Syncing CEO configurations for {PLATFORM['name']}...[/bold purple] ")
 
             # Click the requested model type button if visible (defaults to current)
             effective_type = model_type or self.current_model_type
@@ -719,7 +719,7 @@ class GhostChat:
                 if await model_btn.is_visible(timeout=2000):
                     await model_btn.click()
                     label = {"default": "Instant", "expert": "Expert", "vision": "Vision"}.get(effective_type, effective_type)
-                    console.print(f"[dim]{label} mode enabled[/dim] 🚀")
+                    console.print(f"[dim]{label} mode enabled[/dim] ")
             except Exception:
                 pass
 
@@ -733,13 +733,13 @@ class GhostChat:
                         
                         if "ds-toggle-button--selected" not in classes or pressed == "false":
                             await toggle.click()
-                            console.print("[dim]DeepThink enabled[/dim] 🧠")
+                            console.print("[dim]DeepThink enabled[/dim] ")
                         else:
-                            console.print("[dim]DeepThink already active[/dim] 🧠")
+                            console.print("[dim]DeepThink already active[/dim] ")
                 except: pass
 
             await self._inject_mutation_observer()
-            console.print(f"[bold green]✅ {PLATFORM['name']} ready! [/bold green]")
+            console.print(f"[bold green] {PLATFORM['name']} ready! [/bold green]")
         except Exception as e:
             console.print(f"[dim red]Setup failed: {e}[/dim red]")
 
@@ -800,8 +800,8 @@ class GhostChat:
             and not re.fullmatch(r"model\s+\d{1,2}:\d{2}(?:\s*[ap]m)?", line.strip().lower())
         ]
         cleaned = "\n\n".join(lines)
-        cleaned = re.sub(r"(?:###\s*🧠\s*Model Thoughts\s*)+", "", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"(?:🧠\s*Model Tho(?:ughts?)?)+",   "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"(?:###\s*\s*Model Thoughts\s*)+", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"(?:\s*Model Tho(?:ughts?)?)+",   "", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         return cleaned.strip()
 
@@ -941,7 +941,7 @@ class GhostChat:
             if await self.page.locator(new_response_sel).count() > 0:
                 break
             if time.time() > wait_deadline:
-                console.print("[bold red]⏰ Timed out waiting for DeepSeek response (60s)[/bold red]")
+                console.print("[bold red] Timed out waiting for DeepSeek response (60s)[/bold red]")
                 return "", ""
             await asyncio.sleep(0.3)
 

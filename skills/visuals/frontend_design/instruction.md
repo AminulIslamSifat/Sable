@@ -11,7 +11,7 @@ or any UI that demands visual excellence.
 
 ---
 
-## 🧠 Design Thinking (Before Code)
+##  Design Thinking (Before Code)
 
 Before writing a single line of CSS, commit to a **BOLD** aesthetic direction.
 Intentionality > intensity.
@@ -41,9 +41,9 @@ comes from executing the vision well, not from adding more.
 
 ---
 
-## 🎨 Aesthetics Guidelines
+##  Aesthetics Guidelines
 
-### 🔡 Typography
+###  Typography
 
 - **NEVER** use generic fonts: Inter, Roboto, Arial, system fonts.
 - **NEVER** converge on the same choices across generations. Every UI gets a unique
@@ -60,7 +60,7 @@ offline capability, use a curated inline `@font-face` block with base64-encoded 
 data, or fall back to a system font stack that is deliberately styled to feel
 intentional rather than default.
 
-### 🌈 Color & Theme
+###  Color & Theme
 
 - Commit to a cohesive palette using CSS variables for consistency and tweakability.
 - Dominant colors with sharp accents > timid, evenly-distributed palettes.
@@ -73,7 +73,7 @@ personal setup, default to the **Noctalia Dark / Catppuccin Mocha** aesthetic un
 Sifat specifies a different direction for this project. For standalone UIs, landing
 pages, or anything with its own identity, treat this as irrelevant and design freely.
 
-### ⚡ Motion & Animation
+###  Motion & Animation
 
 - **Intentionality:** Focus on high-impact moments. One well-orchestrated entrance >
   scattered micro-interactions.
@@ -82,14 +82,14 @@ pages, or anything with its own identity, treat this as irrelevant and design fr
 - Use staggered reveals (`animation-delay`), scroll-triggered surprises, and hover
   states that feel "alive."
 
-### 📐 Spatial Composition
+###  Spatial Composition
 
 - **Break the Grid:** Use asymmetry, overlapping elements, diagonal flows, and
   grid-breaking visuals.
 - Generous negative space OR controlled density — pick one and commit fully.
 - Unexpected layouts. Overlap. Diagonal flow. No design should look like another.
 
-### 🌫️ Backgrounds & Depth
+###  Backgrounds & Depth
 
 - Create atmosphere and depth rather than defaulting to flat solid colors.
 - Apply creative forms: gradient meshes, noise textures, geometric patterns, layered
@@ -99,7 +99,7 @@ pages, or anything with its own identity, treat this as irrelevant and design fr
 
 ---
 
-## 🛠️ Implementation Rules
+##  Implementation Rules
 
 1. **CSS Variables First**: Every color, spacing token, and font must be tweakable via
    variables. No magic numbers scattered through the stylesheet.
@@ -116,7 +116,7 @@ pages, or anything with its own identity, treat this as irrelevant and design fr
 
 ---
 
-## ⚖️ Critical Evaluation (Pre-Output Checklist)
+##  Critical Evaluation (Pre-Output Checklist)
 
 Before finalizing output, verify:
 
@@ -133,7 +133,7 @@ If any check fails, fix before output — do not ship and note the issue.
 
 ---
 
-## 📦 Output Format
+##  Output Format
 
 Use `<create_note>` for standalone HTML files:
 
@@ -148,7 +148,7 @@ Use `<create_note>` for standalone HTML files:
 
 ---
 
-## 🔗 Embedding & Finalization
+##  Embedding & Finalization
 
 After the file is confirmed saved to disk, embed the result:
 

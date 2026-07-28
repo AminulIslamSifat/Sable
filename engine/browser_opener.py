@@ -14,7 +14,7 @@ QWEN_URL = "https://chat.qwen.ai"
 
 
 def main() -> None:
-    print(f"🚀 Opening Qwen in browser profile ({USER_DATA_DIR})...")
+    print(f" Opening Qwen in browser profile ({USER_DATA_DIR})...")
     print("Log in, switch accounts, or complete any checks in the browser window.")
     print("When done, press ENTER in this terminal to save session & close.\n")
 
@@ -29,12 +29,12 @@ def main() -> None:
             page.goto(QWEN_URL)
 
             try:
-                input("👉 [Press ENTER when finished to save & exit] ")
+                input(" [Press ENTER when finished to save & exit] ")
             except (KeyboardInterrupt, EOFError):
                 print("\nClosing browser...")
 
             context.close()
-            print("✨ Session & cookies saved to ./browser-data. You can now run python chat.py! 💙")
+            print(" Session & cookies saved to ./browser-data. You can now run python chat.py! ")
     except Exception as e:
         print(f"[ERROR] Failed to launch browser: {e}")
 

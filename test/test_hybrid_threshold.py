@@ -67,7 +67,7 @@ def run_model(model_name: str, prompts: list[str]) -> None:
     print(f"  Loaded {len(searcher._entries)} memory entries in {load_s:.2f}s")
 
     if not searcher._entries or searcher._normed_vectors is None:
-        print("  ❌ No entries loaded, skipping")
+        print("   No entries loaded, skipping")
         return
 
     all_top1: list[float] = []
@@ -112,14 +112,14 @@ def run_model(model_name: str, prompts: list[str]) -> None:
     n = len(all_top1)
 
     print(f"\n{'─' * 80}")
-    print(f"  📐 TOP-1 SCORE DISTRIBUTION ({n} prompts)")
+    print(f"   TOP-1 SCORE DISTRIBUTION ({n} prompts)")
     print(f"{'─' * 80}")
     print(f"  min={all_top1[0]:.4f}  p10={all_top1[n//10]:.4f}  p25={all_top1[n//4]:.4f}  "
           f"median={all_top1[n//2]:.4f}  p75={all_top1[3*n//4]:.4f}  "
           f"p90={all_top1[9*n//10]:.4f}  max={all_top1[-1]:.4f}")
     print(f"  mean={np.mean(all_top1):.4f}  std={np.std(all_top1):.4f}")
 
-    print(f"\n  📐 TOP-3 (worst of top-3) DISTRIBUTION")
+    print(f"\n   TOP-3 (worst of top-3) DISTRIBUTION")
     print(f"  min={all_top3[0]:.4f}  p25={all_top3[n//4]:.4f}  "
           f"median={all_top3[n//2]:.4f}  p75={all_top3[3*n//4]:.4f}  max={all_top3[-1]:.4f}")
 
@@ -130,7 +130,7 @@ def run_model(model_name: str, prompts: list[str]) -> None:
     balanced = round((noise + typical) / 2, 3)
     strict = round(typical, 3)
 
-    print(f"\n  💡 SUGGESTED THRESHOLDS (hybrid: {VECTOR_WEIGHT}v + {KEYWORD_WEIGHT}k)")
+    print(f"\n   SUGGESTED THRESHOLDS (hybrid: {VECTOR_WEIGHT}v + {KEYWORD_WEIGHT}k)")
     print(f"     Loose    (p25):              {loose:.3f}  — catches most, some noise")
     print(f"     Balanced (p25+median / 2):   {balanced:.3f}  — recommended")
     print(f"     Strict   (median):           {strict:.3f}  — only strong matches")
@@ -145,7 +145,7 @@ def main() -> None:
         try:
             run_model(model, prompts)
         except Exception as e:
-            print(f"\n  ❌ {model}: {type(e).__name__}: {e}")
+            print(f"\n   {model}: {type(e).__name__}: {e}")
 
 
 if __name__ == "__main__":

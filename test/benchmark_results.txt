@@ -3,10 +3,10 @@ FULL CONSOLE OUTPUT
 ==========================================================================================
 
 ======================================================================
-🔴 LIVE MODE: BAAI/bge-small-en-v1.5
+ LIVE MODE: BAAI/bge-small-en-v1.5
    38 memory entries | 43 recent prompts | top-5
 ======================================================================
-✅ Loaded in 0.20s
+ Loaded in 0.20s
 
   [1] "[error] Server error 500: Internal Server Error  i was getting this error after your edit,..."
       ★ [0.6313] Sable parser and background bugs fixed 2026-07-27: Full audit of Sable engine/sk
@@ -288,7 +288,7 @@ FULL CONSOLE OUTPUT
         [0.5326] Diagnosing memory injection failures in Sable: When memory injection appears to 
         [0.5306] Memory injection zero-recall diagnosed and fixed 2026-07-28: Diagnosed why memor
 
-  [41] "===================================================================== ✅ Loaded in 1.16s Tr..."
+  [41] "=====================================================================  Loaded in 1.16s Tr..."
       ★ [0.8050] test_embedding.py --live mode for threshold tuning: test/test_embedding.py --liv
       ★ [0.7826] Calibrating memory search thresholds for new models: When adding or changing emb
       ★ [0.7682] Running live threshold analysis across all models: To compare all models against
@@ -310,20 +310,20 @@ FULL CONSOLE OUTPUT
       ★ [0.6475] test_embedding.py --live mode for threshold tuning: test/test_embedding.py --liv
 
 ══════════════════════════════════════════════════════════════════════
-📐 SCORE DISTRIBUTION (43 prompts)
+ SCORE DISTRIBUTION (43 prompts)
 ══════════════════════════════════════════════════════════════════════
    Top-1 scores:  min=0.5369  p25=0.6313  median=0.6902  p75=0.7548  max=0.9392
    Top-5 scores: min=0.5073  p25=0.5969  median=0.6483  p75=0.6966  max=0.8317
 
-   💡 Suggested threshold: 0.661
+    Suggested threshold: 0.661
       (midpoint of p25=0.631 and median=0.690)
 ══════════════════════════════════════════════════════════════════════
 
 ======================================================================
-🔴 LIVE MODE: snowflake/snowflake-arctic-embed-xs
+ LIVE MODE: snowflake/snowflake-arctic-embed-xs
    38 memory entries | 43 recent prompts | top-5
 ======================================================================
-✅ Loaded in 0.12s
+ Loaded in 0.12s
 
   [1] "[error] Server error 500: Internal Server Error  i was getting this error after your edit,..."
       ★ [0.6700] phantom_bot routine editor JS file location: Routine editor JavaScript is at /ho
@@ -605,7 +605,7 @@ FULL CONSOLE OUTPUT
       ★ [0.6791] Calibrating memory search thresholds for new models: When adding or changing emb
       ★ [0.6770] test_embedding.py --live mode for threshold tuning: test/test_embedding.py --liv
 
-  [41] "===================================================================== ✅ Loaded in 1.16s Tr..."
+  [41] "=====================================================================  Loaded in 1.16s Tr..."
       ★ [0.7895] Sable parser and background bugs fixed 2026-07-27: Full audit of Sable engine/sk
       ★ [0.7891] Running live threshold analysis across all models: To compare all models against
       ★ [0.7797] memory_benchmark.py converted to fastembed backend: test/memory_benchmark.py con
@@ -627,20 +627,20 @@ FULL CONSOLE OUTPUT
       ★ [0.6911] Sable background command final_log NameError bug: handle_execute_background_comm
 
 ══════════════════════════════════════════════════════════════════════
-📐 SCORE DISTRIBUTION (43 prompts)
+ SCORE DISTRIBUTION (43 prompts)
 ══════════════════════════════════════════════════════════════════════
    Top-1 scores:  min=0.6700  p25=0.7080  median=0.7321  p75=0.7760  max=0.9204
    Top-5 scores: min=0.6448  p25=0.6826  median=0.7053  p75=0.7287  max=0.8517
 
-   💡 Suggested threshold: 0.720
+    Suggested threshold: 0.720
       (midpoint of p25=0.708 and median=0.732)
 ══════════════════════════════════════════════════════════════════════
 
 ======================================================================
-🔴 LIVE MODE: jinaai/jina-embeddings-v2-small-en
+ LIVE MODE: jinaai/jina-embeddings-v2-small-en
    38 memory entries | 43 recent prompts | top-5
 ======================================================================
-✅ Loaded in 0.14s
+ Loaded in 0.14s
 
   [1] "[error] Server error 500: Internal Server Error  i was getting this error after your edit,..."
       ★ [0.7734] Sable background command final_log NameError bug: handle_execute_background_comm
@@ -922,7 +922,7 @@ FULL CONSOLE OUTPUT
       ★ [0.7205] Sable scraper consolidation architecture: Scraper-mode memory consolidation send
       ★ [0.7180] memory_benchmark.py converted to fastembed backend: test/memory_benchmark.py con
 
-  [41] "===================================================================== ✅ Loaded in 1.16s Tr..."
+  [41] "=====================================================================  Loaded in 1.16s Tr..."
       ★ [0.8631] test_embedding.py --live mode for threshold tuning: test/test_embedding.py --liv
       ★ [0.8614] Sable MODEL_THRESHOLDS recalibrated for hybrid scoring 2026-07-28: MODEL_THRESHO
       ★ [0.8549] Running live threshold analysis across all models: To compare all models against
@@ -944,20 +944,20 @@ FULL CONSOLE OUTPUT
       ★ [0.7512] Debugging scraper message delivery failures: When scraper messages fail silently
 
 ══════════════════════════════════════════════════════════════════════
-📐 SCORE DISTRIBUTION (43 prompts)
+ SCORE DISTRIBUTION (43 prompts)
 ══════════════════════════════════════════════════════════════════════
    Top-1 scores:  min=0.7322  p25=0.7629  median=0.8096  p75=0.8489  max=0.9530
    Top-5 scores: min=0.7071  p25=0.7449  median=0.7879  p75=0.8138  max=0.9104
 
-   💡 Suggested threshold: 0.786
+    Suggested threshold: 0.786
       (midpoint of p25=0.763 and median=0.810)
 ══════════════════════════════════════════════════════════════════════
 
 ======================================================================
-🔴 LIVE MODE: thenlper/gte-base
+ LIVE MODE: thenlper/gte-base
    38 memory entries | 43 recent prompts | top-5
 ======================================================================
-✅ Loaded in 0.48s
+ Loaded in 0.48s
 
   [1] "[error] Server error 500: Internal Server Error  i was getting this error after your edit,..."
       ★ [0.8083] Scraper consolidation empty response debug 2026-07-27: Scraper consolidation fai
@@ -1239,7 +1239,7 @@ FULL CONSOLE OUTPUT
       ★ [0.7730] Sable scraper consolidation architecture: Scraper-mode memory consolidation send
       ★ [0.7707] Sable memory search hybrid scoring formula: MemorySearcher uses hybrid score: 0.
 
-  [41] "===================================================================== ✅ Loaded in 1.16s Tr..."
+  [41] "=====================================================================  Loaded in 1.16s Tr..."
       ★ [0.8956] memory_benchmark.py converted to fastembed backend: test/memory_benchmark.py con
       ★ [0.8879] memory_benchmark.py tokenizers conflict resolved 2026-07-27: memory_benchmark.py
       ★ [0.8841] test_embedding.py --live mode for threshold tuning: test/test_embedding.py --liv
@@ -1261,20 +1261,20 @@ FULL CONSOLE OUTPUT
       ★ [0.8128] Sable memory injection centralized in server.py /api/chat: Memory injection happ
 
 ══════════════════════════════════════════════════════════════════════
-📐 SCORE DISTRIBUTION (43 prompts)
+ SCORE DISTRIBUTION (43 prompts)
 ══════════════════════════════════════════════════════════════════════
    Top-1 scores:  min=0.7798  p25=0.8041  median=0.8557  p75=0.8785  max=0.9297
    Top-5 scores: min=0.7651  p25=0.7879  median=0.8226  p75=0.8410  max=0.8942
 
-   💡 Suggested threshold: 0.830
+    Suggested threshold: 0.830
       (midpoint of p25=0.804 and median=0.856)
 ══════════════════════════════════════════════════════════════════════
 
 ======================================================================
-🔴 LIVE MODE: mixedbread-ai/mxbai-embed-large-v1
+ LIVE MODE: mixedbread-ai/mxbai-embed-large-v1
    38 memory entries | 43 recent prompts | top-5
 ======================================================================
-✅ Loaded in 1.69s
+ Loaded in 1.69s
 
   [1] "[error] Server error 500: Internal Server Error  i was getting this error after your edit,..."
         [0.5626] phantom_bot panel debugging marathon 2026-07-27: Debugged multiple issues with p
@@ -1556,7 +1556,7 @@ FULL CONSOLE OUTPUT
         [0.4348] Sable memory injection centralized in server.py /api/chat: Memory injection happ
         [0.4330] memory_benchmark.py tokenizers conflict resolved 2026-07-27: memory_benchmark.py
 
-  [41] "===================================================================== ✅ Loaded in 1.16s Tr..."
+  [41] "=====================================================================  Loaded in 1.16s Tr..."
       ★ [0.7480] memory_benchmark.py converted to fastembed backend: test/memory_benchmark.py con
       ★ [0.7320] memory_benchmark.py tokenizers conflict resolved 2026-07-27: memory_benchmark.py
       ★ [0.7201] Running live threshold analysis across all models: To compare all models against
@@ -1578,22 +1578,22 @@ FULL CONSOLE OUTPUT
         [0.5569] memory_benchmark.py tokenizers conflict resolved 2026-07-27: memory_benchmark.py
 
 ══════════════════════════════════════════════════════════════════════
-📐 SCORE DISTRIBUTION (43 prompts)
+ SCORE DISTRIBUTION (43 prompts)
 ══════════════════════════════════════════════════════════════════════
    Top-1 scores:  min=0.4408  p25=0.5246  median=0.6186  p75=0.7020  max=0.9300
    Top-5 scores: min=0.4068  p25=0.4776  median=0.5709  p75=0.6201  max=0.7993
 
-   💡 Suggested threshold: 0.572
+    Suggested threshold: 0.572
       (midpoint of p25=0.525 and median=0.619)
 ══════════════════════════════════════════════════════════════════════
 
 ======================================================================
-🔴 LIVE MODE: onnx-community/embeddinggemma-300m-ONNX
+ LIVE MODE: onnx-community/embeddinggemma-300m-ONNX
    38 memory entries | 43 recent prompts | top-5
 ======================================================================
-❌ Failed to load onnx-community/embeddinggemma-300m-ONNX: Model onnx-community/embeddinggemma-300m-ONNX is not supported in TextEmbedding. Please check the supported models using `TextEmbedding.list_supported_models()`
+ Failed to load onnx-community/embeddinggemma-300m-ONNX: Model onnx-community/embeddinggemma-300m-ONNX is not supported in TextEmbedding. Please check the supported models using `TextEmbedding.list_supported_models()`
 
-💾 Live results saved to /home/sifat/hdd/projects/Sable/test/benchmark_results.txt
+ Live results saved to /home/sifat/hdd/projects/Sable/test/benchmark_results.txt
 
 ==========================================================================================
 SUMMARY
@@ -1854,7 +1854,7 @@ fuckign fix this
 [40] i just fucking want my ram back, with no kernel or motherfucker taking 7gb
 
 [41] =====================================================================
-✅ Loaded in 1.16s
+ Loaded in 1.16s
 Traceback (most recent call last):
   File "/home/sifat/hdd/projects/Sable/test/test_embedding.py", line 800, in <module>
     main()

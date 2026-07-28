@@ -166,12 +166,12 @@ TEST_QUERIES = [
         "description": "Memory test redesign (real verbatim)",
     },
     {
-        "query": "❌ Failed to load Alibaba-NLP/gte-small-en-v1.5: Model Alibaba-NLP/gte-small-en-v1.5 is not supported in TextEmbedding. Please check the supported models using `TextEmbedding.list_supported_models()`",
+        "query": " Failed to load Alibaba-NLP/gte-small-en-v1.5: Model Alibaba-NLP/gte-small-en-v1.5 is not supported in TextEmbedding. Please check the supported models using `TextEmbedding.list_supported_models()`",
         "expected": [16],
         "description": "Raw error paste (real verbatim)",
     },
     {
-        "query": "uv run python test/test_embedding.py\n🔄 Loading bge-small-en-v1.5 (first run downloads ~130MB)...\nTraceback (most recent call last):\n  File \"test/test_embedding.py\", line 57, in <module>\n    main()\n  File \"test/test_embedding.py\", line 14, in main\n    from fastembed import TextEmbedding\nModuleNotFoundError: No module named 'fastembed'",
+        "query": "uv run python test/test_embedding.py\n Loading bge-small-en-v1.5 (first run downloads ~130MB)...\nTraceback (most recent call last):\n  File \"test/test_embedding.py\", line 57, in <module>\n    main()\n  File \"test/test_embedding.py\", line 14, in main\n    from fastembed import TextEmbedding\nModuleNotFoundError: No module named 'fastembed'",
         "expected": [16],
         "description": "Missing dependency error (real verbatim)",
     },
@@ -395,7 +395,7 @@ def _load_live_memories() -> list[str]:
 def _load_live_prompts(n: int = 50) -> list[str]:
     """Pull the last N user messages from sable.db, stripped of timestamp prefix."""
     if not _DB_PATH.exists():
-        print(f"⚠️  DB not found at {_DB_PATH}")
+        print(f"  DB not found at {_DB_PATH}")
         return []
     conn = sqlite3.connect(_DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -421,14 +421,14 @@ def benchmark_live(model_name: str, top_k: int = 5) -> dict | None:
     memories = _load_live_memories()
     prompts = _load_live_prompts(50)
     if not memories:
-        print("❌ No memory entries found in Brain/Memory.json")
+        print(" No memory entries found in Brain/Memory.json")
         return None
     if not prompts:
-        print("❌ No user prompts found in sable.db")
+        print(" No user prompts found in sable.db")
         return None
 
     print(f"\n{'='*70}")
-    print(f"🔴 LIVE MODE: {model_name}")
+    print(f" LIVE MODE: {model_name}")
     print(f"   {len(memories)} memory entries | {len(prompts)} recent prompts | top-{top_k}")
     print(f"{'='*70}")
 
@@ -436,10 +436,10 @@ def benchmark_live(model_name: str, top_k: int = 5) -> dict | None:
     try:
         model = TextEmbedding(model_name=model_name)
     except Exception as e:
-        print(f"❌ Failed to load {model_name}: {e}")
+        print(f" Failed to load {model_name}: {e}")
         return None
     load_s = time.perf_counter() - t0
-    print(f"✅ Loaded in {load_s:.2f}s")
+    print(f" Loaded in {load_s:.2f}s")
 
     t_enc = time.perf_counter()
     # Embed one-at-a-time to avoid fastembed inhomogeneous-shape bug with variable-length tokens
@@ -478,7 +478,7 @@ def benchmark_live(model_name: str, top_k: int = 5) -> dict | None:
     all_kth_scores.sort()
     n = len(all_top_scores)
     print(f"\n{'═'*70}")
-    print(f"📐 SCORE DISTRIBUTION ({n} prompts)")
+    print(f" SCORE DISTRIBUTION ({n} prompts)")
     print(f"{'═'*70}")
     print(f"   Top-1 scores:  min={all_top_scores[0]:.4f}  "
           f"p25={all_top_scores[n//4]:.4f}  "
@@ -494,7 +494,7 @@ def benchmark_live(model_name: str, top_k: int = 5) -> dict | None:
     noise_floor = all_top_scores[n // 4]
     typical = all_top_scores[n // 2]
     suggested = round((noise_floor + typical) / 2, 3)
-    print(f"\n   💡 Suggested threshold: {suggested:.3f}")
+    print(f"\n    Suggested threshold: {suggested:.3f}")
     print(f"      (midpoint of p25={noise_floor:.3f} and median={typical:.3f})")
     print(f"{'═'*70}")
 
@@ -523,31 +523,31 @@ def benchmark_live(model_name: str, top_k: int = 5) -> dict | None:
 
 def benchmark_model(model_name: str) -> dict | None:
     print(f"\n{'='*70}")
-    print(f"🔄 Testing: {model_name}")
+    print(f" Testing: {model_name}")
     print(f"{'='*70}")
 
     t0 = time.perf_counter()
     try:
         model = TextEmbedding(model_name=model_name)
     except Exception as e:
-        print(f"❌ Failed to load {model_name}: {e}")
+        print(f" Failed to load {model_name}: {e}")
         return None
     load_time = time.perf_counter() - t0
-    print(f"✅ Model loaded in {load_time:.2f}s")
+    print(f" Model loaded in {load_time:.2f}s")
 
     # Encode all memory entries
     t0 = time.perf_counter()
     mem_vectors = np.array(list(model.embed(MEMORY_ENTRIES)), dtype="float32")
     encode_time = time.perf_counter() - t0
     avg_encode_ms = (encode_time / len(MEMORY_ENTRIES)) * 1000
-    print(f"🧪 Encoded {len(MEMORY_ENTRIES)} memory entries in {encode_time:.3f}s ({avg_encode_ms:.1f} ms/text)")
+    print(f" Encoded {len(MEMORY_ENTRIES)} memory entries in {encode_time:.3f}s ({avg_encode_ms:.1f} ms/text)")
 
     # Normalize memory vectors once
     norms = np.linalg.norm(mem_vectors, axis=1, keepdims=True)
     normed_mem = mem_vectors / norms
 
     # Run query tests
-    print(f"\n🔍 Running {len(TEST_QUERIES)} query tests...")
+    print(f"\n Running {len(TEST_QUERIES)} query tests...")
     total_recall = 0.0
     total_precision = 0.0
     scored_queries = 0
@@ -576,7 +576,7 @@ def benchmark_model(model_name: str) -> dict | None:
             is_correct = top_score < 0.3
             if is_correct:
                 zero_match_correct += 1
-            marker = "✅" if is_correct else "⚠️"
+            marker = "" if is_correct else ""
             print(f"\n   {marker} Q{i+1}: {test['description']}")
             q_text = test["query"].replace("\n", " ")
             print(f"      Query: \"{q_text[:80]}...\"" if len(q_text) > 80 else f"      Query: \"{q_text}\"")
@@ -595,7 +595,7 @@ def benchmark_model(model_name: str) -> dict | None:
         total_precision += precision
         scored_queries += 1
 
-        hit_marker = "✅" if recall >= 0.6 else "⚠️" if recall >= 0.3 else "❌"
+        hit_marker = "" if recall >= 0.6 else "" if recall >= 0.3 else ""
         print(f"\n   {hit_marker} Q{i+1}: {test['description']}")
         q_text = test["query"].replace("\n", " ")
         print(f"      Query: \"{q_text[:80]}...\"" if len(q_text) > 80 else f"      Query: \"{q_text}\"")
@@ -613,7 +613,7 @@ def benchmark_model(model_name: str) -> dict | None:
 
     # ── THRESHOLD ANALYSIS ──
     print(f"\n{'═'*70}")
-    print(f"📐 THRESHOLD ANALYSIS for {model_name}")
+    print(f" THRESHOLD ANALYSIS for {model_name}")
     print(f"{'═'*70}")
     print(f"\n   Zero-match queries (irrelevant — should score LOW):")
     for i, test in enumerate(TEST_QUERIES):
@@ -661,12 +661,12 @@ def benchmark_model(model_name: str) -> dict | None:
     zero_max = max(zero_top_scores) if zero_top_scores else 0
     relevant_min = relevant_top_scores[0] if relevant_top_scores else 1.0
     suggested = (zero_max + relevant_min) / 2
-    print(f"\n   💡 Suggested threshold: {suggested:.4f}")
+    print(f"\n    Suggested threshold: {suggested:.4f}")
     print(f"      (midpoint between max irrelevant top-score {zero_max:.4f} and min relevant top-score {relevant_min:.4f})")
     print(f"{'═'*70}")
 
     print(f"\n{'─'*70}")
-    print(f"📊 RESULTS for {model_name}")
+    print(f" RESULTS for {model_name}")
     print(f"   Encode speed:      {avg_encode_ms:.1f} ms/text (total: {encode_time:.3f}s)")
     print(f"   Query speed:       {avg_query_ms:.1f} ms/query (total: {total_query_time:.3f}s)")
     print(f"   Avg Recall:        {avg_recall:.1f}% ({scored_queries} scored queries)")
@@ -740,7 +740,7 @@ def save_results(results: list[dict], console_log: str = "") -> None:
     lines.append("=" * 90)
 
     RESULTS_FILE.write_text("\n".join(lines), encoding="utf-8")
-    print(f"\n💾 Results saved to {RESULTS_FILE}")
+    print(f"\n Results saved to {RESULTS_FILE}")
 
 
 def save_live_results(results: list[dict], console_log: str = "") -> None:
@@ -803,7 +803,7 @@ def save_live_results(results: list[dict], console_log: str = "") -> None:
     lines.append("END OF LIVE REPORT")
     lines.append("=" * 90)
     RESULTS_FILE.write_text("\n".join(lines), encoding="utf-8")
-    print(f"\n💾 Live results saved to {RESULTS_FILE}")
+    print(f"\n Live results saved to {RESULTS_FILE}")
 
 
 
@@ -879,7 +879,7 @@ def _run(args: argparse.Namespace) -> None:
 
         if len(results) > 1:
             print(f"\n{'='*70}")
-            print("🏆 COMPARISON SUMMARY")
+            print(" COMPARISON SUMMARY")
             print(f"{'='*70}")
             print(f"{'Model':<40} {'Enc ms':>7} {'Qry ms':>7} {'Recall':>7} {'Prec':>6} {'ZeroM':>6} {'Load':>6}")
             print(f"{'─'*40} {'─'*7} {'─'*7} {'─'*7} {'─'*6} {'─'*6} {'─'*6}")

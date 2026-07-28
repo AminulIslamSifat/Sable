@@ -72,7 +72,7 @@ the script will silently pick the first it sees.
 
 ## Core Commands Reference
 
-### 🔍 UI Inspection
+###  UI Inspection
 
 **Dump full UI hierarchy** — always use before tapping if unsure what's on screen:
 ```xml
@@ -93,7 +93,7 @@ Returns `x y` coordinates or `NOT_FOUND`.
 
 ---
 
-### 👆 Tapping
+###  Tapping
 
 **Tap by text** (dump → find → tap in one call — preferred method):
 ```xml
@@ -131,7 +131,7 @@ coordinates in the returned string if a tap looks off.
 
 ---
 
-### 🔄 Swiping / Scrolling
+###  Swiping / Scrolling
 
 **Directional swipes** (auto-centers on screen):
 ```xml
@@ -158,7 +158,7 @@ Args: `x1 y1 x2 y2 [duration_ms]`
 
 ---
 
-### ⌨️ Typing & Keys
+###  Typing & Keys
 
 **Type text** (handles spaces; ASCII only — `input text` under the hood can't
 type Bangla or other non-ASCII characters, and is slow character-by-character
@@ -183,7 +183,7 @@ for long strings):
 
 ---
 
-### 🔓 Unlock
+###  Unlock
 
 Check lock state anytime via `info`'s `lock_state` field (`locked` /
 `unlocked` / `unknown`), or run `unlock` directly — it does its own internal
@@ -208,7 +208,7 @@ attempts can trigger Android's lockout/backup-PIN screen.
 
 ---
 
-### 📸 Screenshot
+###  Screenshot
 
 ```xml
 <execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py screenshot /tmp/phone_screen.png</execute_command>
@@ -221,7 +221,7 @@ After taking a screenshot, upload it to model context if you need to show Sifat:
 
 ---
 
-### 📱 App Management
+###  App Management
 
 **List installed apps**:
 ```xml
@@ -257,7 +257,7 @@ If unsure of the package name, run `list_apps` and grep for partial match.
 
 ---
 
-### ⏱️ Waiting
+###  Waiting
 
 ```xml
 <execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py wait 1500</execute_command>
@@ -280,7 +280,7 @@ running individual commands. This is more reliable, readable, and self-documenti
   {"cmd": "input",     "args": ["Sifat"],         "wait_ms": 800},
   {"cmd": "tap_text",  "args": ["Sifat"],         "wait_ms": 1000},
   {"cmd": "tap_text",  "args": ["Type a message"],"wait_ms": 300},
-  {"cmd": "input",     "args": ["Hey 👋"],        "wait_ms": 300},
+  {"cmd": "input",     "args": ["Hey "],        "wait_ms": 300},
   {"cmd": "tap_id",    "args": ["send_button"],   "wait_ms": 500},
   {"cmd": "screenshot","args": ["/tmp/sent.png"], "wait_ms": 0}
 ]

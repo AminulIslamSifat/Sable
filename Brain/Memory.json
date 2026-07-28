@@ -114,7 +114,7 @@
     },
     {
       "key": "instruction/skills.md is the merged skill registry doc",
-      "value": "There is no separate instruction.md for the code_editor skill — its documentation lives inside instruction/skills.md under '## 💻 Code Editor Skill (Native File Tags)'. Updated 2026-07-28 to document replace_all, dry_run attributes, 3-layer matching cascade (exact/normalized/structural), nearest-match suggestion, structured stats output, shebang auto-chmod, and encoding guard."
+      "value": "There is no separate instruction.md for the code_editor skill — its documentation lives inside instruction/skills.md under '##  Code Editor Skill (Native File Tags)'. Updated 2026-07-28 to document replace_all, dry_run attributes, 3-layer matching cascade (exact/normalized/structural), nearest-match suggestion, structured stats output, shebang auto-chmod, and encoding guard."
     },
     {
       "key": "Zen/Firefox incompatible with Playwright executable_path",
@@ -134,7 +134,7 @@
     },
     {
       "key": "Sable memory_used column and UI chip architecture",
-      "value": "messages table has memory_used TEXT column (auto-migrated on startup). User message saves include memory_used JSON list via add_message(..., memory_used=...). get_messages() parses it back as list. Frontend renders '🧠 Memory Used (N)' chip on user bubbles; clicking opens popup showing key, category badge, score, and full value per memory. Components in web/app.js: createMemoryChip() (factory), attachMemoryChip() (user msg, dedup via .memory-chip query), openMemoryPopup() (overlay+panel). CSS classes: .memory-chip, .memory-chip-tool, .memory-overlay, .memory-panel, .memory-item, .memory-cat, .memory-score."
+      "value": "messages table has memory_used TEXT column (auto-migrated on startup). User message saves include memory_used JSON list via add_message(..., memory_used=...). get_messages() parses it back as list. Frontend renders ' Memory Used (N)' chip on user bubbles; clicking opens popup showing key, category badge, score, and full value per memory. Components in web/app.js: createMemoryChip() (factory), attachMemoryChip() (user msg, dedup via .memory-chip query), openMemoryPopup() (overlay+panel). CSS classes: .memory-chip, .memory-chip-tool, .memory-overlay, .memory-panel, .memory-item, .memory-cat, .memory-score."
     },
     {
       "key": "Sable tool-result memory surfacing via SSE and skill_events",
@@ -263,6 +263,10 @@
     {
       "key": "Sable frontend auto-model-switch on chat select",
       "value": "selectChat() in web/app.js checks meta.parent_id type: /^\\d+$/ (numeric) = DeepSeek chat, otherwise Qwen. If current selectedModel's api_backend doesn't match the chat type, auto-switches dropdown to first model of the correct type and calls populateThinkingModes(null). Same-type switches don't touch the dropdown. /api/models endpoint includes api_backend field (null for Qwen, 'deepseek' for DS models) to enable this check."
+    },
+    {
+      "key": "sable-sifat project no-emoji preference",
+      "value": "User requested removal of all emojis from the sable-sifat project at /home/bitto/projects/sable-sifat (2026-07-29). When generating content, code, documentation, or UI text for this project, avoid using emoji characters. The removal was done via Python emoji library (uv run --with emoji) scanning all UTF-8 text files, excluding .git, node_modules, venvs, caches, browser-data dirs, and binary files."
     }
   ],
   "episodic": [
@@ -316,7 +320,7 @@
     },
     {
       "key": "Browser control live email test 2026-07-28",
-      "value": "End-to-end test: started daemon with --user-data-dir (scraper profile), opened Gmail (already logged in as ais.wos.001), composed email to aminul.i.sifat@gmail.com with subject 'Browser Control Test — Sable 🕸️', sent successfully. Required execCommand workaround for TrustedHTML. Confirmed 'Message sent' toast. Also discovered Zen browser crash (incompatible with Playwright executable_path) and stale socket cleanup issues during testing."
+      "value": "End-to-end test: started daemon with --user-data-dir (scraper profile), opened Gmail (already logged in as ais.wos.001), composed email to aminul.i.sifat@gmail.com with subject 'Browser Control Test — Sable ', sent successfully. Required execCommand workaround for TrustedHTML. Confirmed 'Message sent' toast. Also discovered Zen browser crash (incompatible with Playwright executable_path) and stale socket cleanup issues during testing."
     },
     {
       "key": "Sable bg=true routing fix 2026-07-28",
@@ -365,6 +369,10 @@
     {
       "key": "DeepSeek connector full Sable integration 2026-07-28",
       "value": "Completed full integration of DeepSeek HTTP API into Sable as a first-class model option (2026-07-28 ~20:30-21:05). Steps: (1) Replaced scraper-hijack routing with per-model api_backend check. (2) Added Expert/Instant/Vision to config.py dropdown with Fast+Thinking modes. (3) Fixed model_type=None coercion bug (Instant needs null, not 'default'). (4) Added session continuity — _sessions dict tracks (session_id, parent_counter) per Sable chat_id, parent_message_id goes null→2→4→6. (5) Prepended instruction/ files (Maria.md, output_format.md, skills.md) to first message since DeepSeek lacks persistent instructions. (6) Frontend auto-switches model dropdown when selecting chats based on parent_id type (numeric=DS, UUID=Qwen). (7) /api/models now exposes api_backend. All syntax-verified, server restart pending."
+    },
+    {
+      "key": "sable-sifat emoji removal task 2026-07-29",
+      "value": "User requested finding and removing all emojis from the sable-sifat project under the projects folder. Provided a Python script using the emoji library (replace_emoji + emoji_list for verification) with dry-run/check/apply modes. Script preserves BOM, line endings, skips non-UTF-8 and binary files, excludes .git/node_modules/venv/caches/browser-data. Does not rename files/dirs. User was instructed to backup/commit before applying."
     }
   ],
   "procedural": [

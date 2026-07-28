@@ -60,7 +60,7 @@ The SVG content must be **complete, valid, self-contained XML** — no external 
 
 ***
 
-## 🎨 Mandatory Visual Standards
+##  Mandatory Visual Standards
 
 Every SVG **must** meet this baseline. Flat, unpolished diagrams are a failure.
 
@@ -103,7 +103,7 @@ font-family: 'JetBrains Mono', 'Fira Mono', 'Cascadia Code', monospace
 
 ***
 
-## 📐 viewBox & Sizing Rules
+##  viewBox & Sizing Rules
 
 Always use **both** `viewBox` and explicit `width`/`height`. This ensures correct scaling in Obsidian and browsers.
 
@@ -127,7 +127,7 @@ Always use **both** `viewBox` and explicit `width`/`height`. This ensures correc
 
 ***
 
-## 🏹 Arrow & Edge Markers
+##  Arrow & Edge Markers
 
 For any **directed** structure (directed graphs, linked list pointers, tree child edges), always define an arrowhead marker in `<defs>` and reference it on edges:
 
@@ -155,7 +155,7 @@ For **undirected graphs**, plain `<line>` or `<path>` with no marker is correct 
 
 ***
 
-## 📊 Complexity Tiers
+##  Complexity Tiers
 
 | Tier | Concepts | Approach |
 |---|---|---|
@@ -187,7 +187,7 @@ Apply `.active` to the currently visited node and `.new-node` to freshly inserte
 
 ***
 
-## 📏 Layout Math Guide
+##  Layout Math Guide
 
 Never hardcode node positions without calculating them. Use these formulas:
 

@@ -1935,8 +1935,8 @@
       <select id="thinkingModeSelect" title="Thinking mode used for new chats"></select>
     </div>
     <div class="mode-switcher" id="modeSwitcher">
-      <button id="modeApi" class="active" title="Direct API chat">⚡ API</button>
-      <button id="modeScraper" title="Headed browser scraper chat">🌐 Scraper</button>
+      <button id="modeApi" class="active" title="Direct API chat"> API</button>
+      <button id="modeScraper" title="Headed browser scraper chat"> Scraper</button>
     </div>
     <div class="scraper-engine-wrap" id="scraperEngineWrap">
       <select id="scraperEngineSelect" title="Scraper engine"></select>
@@ -1953,7 +1953,7 @@
     <div id="chats"></div>
     <div class="sidebar-footer">
       <button id="settingsBtn" class="sidebar-footer-btn" title="Settings">
-        <span>⚙</span> Settings
+        <span></span> Settings
       </button>
     </div>
   </aside>
@@ -2025,7 +2025,7 @@
     <div class="diff-sidebar-header">
       <span class="diff-sidebar-title">File edits</span>
       <div>
-        <button id="diffClear" class="icon-btn" title="Clear file edits">🗑</button>
+        <button id="diffClear" class="icon-btn" title="Clear file edits"></button>
         <button id="diffClose" class="icon-btn" title="Close file edits">✕</button>
       </div>
     </div>
@@ -2049,7 +2049,7 @@
         <div id="tab-logs" class="settings-tab-content active">
           <div class="log-toolbar">
             <label class="log-toggle"><input type="checkbox" id="logAutoScroll" checked> Auto-scroll</label>
-            <button id="logClear" class="icon-btn" title="Clear logs">🗑</button>
+            <button id="logClear" class="icon-btn" title="Clear logs"></button>
           </div>
           <pre id="logViewer" class="log-viewer"></pre>
         </div>
@@ -2073,7 +2073,7 @@
           </div>
           <p class="muted" style="font-size:11px;margin-top:4px;">Toggle headless mode and restart to apply. Session cookies are preserved via persistent profile.</p>
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
-            <button id="deleteAllChatsBtn" style="background:var(--danger-bg);color:var(--danger);border:1px solid var(--danger);padding:8px 16px;font-size:12px;font-weight:600;width:100%;">🗑 Delete All Chats</button>
+            <button id="deleteAllChatsBtn" style="background:var(--danger-bg);color:var(--danger);border:1px solid var(--danger);padding:8px 16px;font-size:12px;font-weight:600;width:100%;"> Delete All Chats</button>
             <p class="muted" style="font-size:11px;margin-top:6px;">Permanently removes every chat and message. This cannot be undone.</p>
           </div>
         </div>
@@ -2087,7 +2087,7 @@
             <button id="memAddBtn" class="icon-btn" style="width:auto;padding:6px 12px;font-size:12px;">+ Add</button>
           </div>
           <div class="mem-input-row mem-save-row">
-            <button id="memSaveBtn" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;">💾 Save</button>
+            <button id="memSaveBtn" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"> Save</button>
             <span id="memStatus" class="muted mem-status"></span>
           </div>
 
@@ -2181,30 +2181,30 @@
        ========================================================================= */
 
     const CALLOUT_META = {
-      note:     { icon: "📝", color: "#6ea8fe" },
-      info:     { icon: "ℹ️", color: "#6ea8fe" },
-      abstract: { icon: "📋", color: "#4fd1c5" },
-      summary:  { icon: "📋", color: "#4fd1c5" },
-      tldr:     { icon: "📋", color: "#4fd1c5" },
-      tip:      { icon: "💡", color: "#4fd18a" },
-      hint:     { icon: "💡", color: "#4fd18a" },
-      success:  { icon: "✅", color: "#4fd18a" },
-      check:    { icon: "✅", color: "#4fd18a" },
-      done:     { icon: "✅", color: "#4fd18a" },
-      question: { icon: "❓", color: "#c9a464" },
-      help:     { icon: "❓", color: "#c9a464" },
-      faq:      { icon: "❓", color: "#c9a464" },
-      warning:  { icon: "⚠️", color: "#e8b45a" },
-      caution:  { icon: "⚠️", color: "#e8b45a" },
-      attention:{ icon: "⚠️", color: "#e8b45a" },
-      danger:   { icon: "⛔", color: "#e5646a" },
-      error:    { icon: "⛔", color: "#e5646a" },
-      bug:      { icon: "🐛", color: "#e5646a" },
-      important:{ icon: "❗", color: "#e5646a" },
-      example:  { icon: "📄", color: "#b48ce8" },
-      quote:    { icon: "💬", color: "#9a9aa2" },
-      cite:     { icon: "💬", color: "#9a9aa2" },
-      default:  { icon: "📌", color: "#c9a464" }
+      note:     { icon: "", color: "#6ea8fe" },
+      info:     { icon: "", color: "#6ea8fe" },
+      abstract: { icon: "", color: "#4fd1c5" },
+      summary:  { icon: "", color: "#4fd1c5" },
+      tldr:     { icon: "", color: "#4fd1c5" },
+      tip:      { icon: "", color: "#4fd18a" },
+      hint:     { icon: "", color: "#4fd18a" },
+      success:  { icon: "", color: "#4fd18a" },
+      check:    { icon: "", color: "#4fd18a" },
+      done:     { icon: "", color: "#4fd18a" },
+      question: { icon: "", color: "#c9a464" },
+      help:     { icon: "", color: "#c9a464" },
+      faq:      { icon: "", color: "#c9a464" },
+      warning:  { icon: "", color: "#e8b45a" },
+      caution:  { icon: "", color: "#e8b45a" },
+      attention:{ icon: "", color: "#e8b45a" },
+      danger:   { icon: "", color: "#e5646a" },
+      error:    { icon: "", color: "#e5646a" },
+      bug:      { icon: "", color: "#e5646a" },
+      important:{ icon: "", color: "#e5646a" },
+      example:  { icon: "", color: "#b48ce8" },
+      quote:    { icon: "", color: "#9a9aa2" },
+      cite:     { icon: "", color: "#9a9aa2" },
+      default:  { icon: "", color: "#c9a464" }
     };
 
     function escHtml(str) {
@@ -2703,7 +2703,7 @@
 
       const nameEl = document.createElement("span");
       nameEl.className = "skill-name";
-      nameEl.textContent = "⚡ " + name;
+      nameEl.textContent = " " + name;
 
       left.appendChild(arrow);
       left.appendChild(nameEl);
@@ -2771,7 +2771,7 @@
       left.className = "skill-header-left";
       const nameEl = document.createElement("span");
       nameEl.className = "skill-name";
-      nameEl.textContent = "⚡ " + name;
+      nameEl.textContent = " " + name;
       left.appendChild(nameEl);
 
       const statusEl = document.createElement("span");
@@ -2948,7 +2948,7 @@
 
       const arrow = document.createElement("span");
       arrow.className = "diff-card-arrow";
-      arrow.textContent = "▶";
+      arrow.textContent = "";
 
       header.append(arrow, op, path, stats);
 
@@ -3279,7 +3279,7 @@
           const h = hours || '?';
           answerContent.innerHTML = `
             <div class="rate-limit-card">
-              <span class="rl-icon">⏳</span>
+              <span class="rl-icon"></span>
               <span class="rl-title">Daily Usage Limit Reached</span>
               <span class="rl-detail">${message || 'You have reached the upper limit for today\'s usage.'}</span>
               <span class="rl-timer">Try again in ~${h} hour${h === 1 ? '' : 's'}. This message will stay visible so you don't miss it.</span>
@@ -3303,7 +3303,7 @@
           if (!turn.querySelector(".msg.bot")) {
             ensureAnswer();
             answerEl.classList.remove("streaming");
-            answerContent.textContent = "⚠ Empty response from upstream — check server terminal for WAF/auth details.";
+            answerContent.textContent = " Empty response from upstream — check server terminal for WAF/auth details.";
           }
           // Attach toolbar to every bot message in this turn
           turn.querySelectorAll(".msg.bot").forEach(botEl => {
@@ -3420,7 +3420,7 @@
             showToast(msg, "error");
             ui.appendAnswer(`\n[error] ${msg}`);
           } else if (evt.type === "tool_call") {
-            ui.addEvent(`⚙ tool: ${JSON.stringify(evt.data).slice(0, 300)}`);
+            ui.addEvent(` tool: ${JSON.stringify(evt.data).slice(0, 300)}`);
           } else if (evt.type === "tool_result") {
             ui.addEvent(`✓ result: ${JSON.stringify(evt.data).slice(0, 300)}`);
           } else if (evt.type === "skill_pending") {
@@ -3533,7 +3533,7 @@
       if (scraperChats.length > 0) {
         const header = document.createElement('div');
         header.className = 'scraper-chats-header' + (scraperChatsCollapsed ? ' collapsed' : '');
-        header.innerHTML = '<span class="arrow">▼</span> 🌐 Scraper Chats (' + scraperChats.length + ')';
+        header.innerHTML = '<span class="arrow">▼</span>  Scraper Chats (' + scraperChats.length + ')';
         header.onclick = () => {
           scraperChatsCollapsed = !scraperChatsCollapsed;
           renderChats();
@@ -3758,7 +3758,7 @@
 
     async function consolidateMemory() {
       if (!activeChatId) return;
-      showToast("🧠 Consolidating memory...", "info");
+      showToast(" Consolidating memory...", "info");
       try {
         const res = await fetch("/api/memory/consolidate", {
           method: "POST",
@@ -3767,23 +3767,23 @@
         });
         if (!res.ok) {
           const text = await res.text().catch(() => "");
-          showToast(`🧠 Consolidation failed (${res.status}): ${text.slice(0, 200)}`, "error");
+          showToast(` Consolidation failed (${res.status}): ${text.slice(0, 200)}`, "error");
           return;
         }
         const data = await res.json();
         if (data.status === "ok") {
           if (data.added > 0) {
-            showToast(`🧠 Saved ${data.added} new memor${data.added === 1 ? "y" : "ies"}`, "success");
+            showToast(` Saved ${data.added} new memor${data.added === 1 ? "y" : "ies"}`, "success");
           } else {
-            showToast("🧠 Nothing new worth remembering", "info");
+            showToast(" Nothing new worth remembering", "info");
           }
         } else if (data.status === "skipped") {
-          showToast("🧠 Skipped — too few messages", "info");
+          showToast(" Skipped — too few messages", "info");
         } else {
-          showToast(`🧠 Consolidation failed: ${data.detail || "unknown error"}`, "error");
+          showToast(` Consolidation failed: ${data.detail || "unknown error"}`, "error");
         }
       } catch (e) {
-        showToast("🧠 Consolidation error: " + e.message, "error");
+        showToast(" Consolidation error: " + e.message, "error");
       }
     }
 
@@ -4035,7 +4035,7 @@
               showToast(msg, "error");
               ui.appendAnswer(`\n[error] ${msg}`);
             } else if (evt.type === "tool_call") {
-              ui.addEvent(`⚙ tool: ${JSON.stringify(evt.data).slice(0, 300)}`);
+              ui.addEvent(` tool: ${JSON.stringify(evt.data).slice(0, 300)}`);
             } else if (evt.type === "tool_result") {
               ui.addEvent(`✓ result: ${JSON.stringify(evt.data).slice(0, 300)}`);
             } else if (evt.type === "skill_pending") {

@@ -120,7 +120,7 @@ async def stream_chat(
 
                             if text:
                                 if not in_thinking:
-                                    sys.stdout.write("\n🧠 [Thinking]\n")
+                                    sys.stdout.write("\n [Thinking]\n")
                                     in_thinking = True
                                 sys.stdout.write(text)
                                 sys.stdout.flush()
@@ -129,7 +129,7 @@ async def stream_chat(
                         elif phase == "answer" and content:
                             if not in_answer:
                                 if in_thinking:
-                                    sys.stdout.write("\n\n💬 [Answer]\n")
+                                    sys.stdout.write("\n\n [Answer]\n")
                                 in_answer = True
                             sys.stdout.write(content)
                             sys.stdout.flush()
@@ -162,12 +162,12 @@ async def main() -> None:
             try:
                 user_input = input("> ")
             except (EOFError, KeyboardInterrupt):
-                print("\nbye 💙")
+                print("\nbye ")
                 break
 
             stripped = user_input.strip()
             if stripped.lower() == "quit":
-                print("bye 💙")
+                print("bye ")
                 break
             if not stripped:
                 continue

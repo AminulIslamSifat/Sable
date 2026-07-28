@@ -1,7 +1,7 @@
 
 """Tiny test file — exists only to show off the new tool card animation.
 
-Delete me whenever. I just wanted to see that progress bar sweep. 💜
+Delete me whenever. I just wanted to see that progress bar sweep. 
 """
 
 

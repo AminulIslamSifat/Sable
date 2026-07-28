@@ -8,7 +8,7 @@ performance timing.
 
 ---
 
-## 🚨 CRITICAL RULES — READ BEFORE ANY BROWSER TASK
+##  CRITICAL RULES — READ BEFORE ANY BROWSER TASK
 
 ### Rule 1: Shell Quoting Will Kill Your eval Commands
 

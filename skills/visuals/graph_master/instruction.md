@@ -63,7 +63,7 @@ The `plotter.py` script will:
 
 ***
 
-## 🎨 Mandatory Style Spec
+##  Mandatory Style Spec
 
 Every plot **must** use this visual standard. Default Matplotlib grey is never acceptable.
 
@@ -100,7 +100,7 @@ Each curve gets the next color from `CURVE_COLORS` in order. For single-curve pl
 
 ***
 
-## 📐 Range Selection Guide
+##  Range Selection Guide
 
 Never blindly default to `[0, 10]`. Choose the range that makes the physics or math **meaningful**.
 
@@ -117,7 +117,7 @@ Never blindly default to `[0, 10]`. Choose the range that makes the physics or m
 
 ***
 
-## 📊 Complexity Tiers
+##  Complexity Tiers
 
 Match implementation effort to the concept. Use the `options` field to unlock advanced layouts.
 

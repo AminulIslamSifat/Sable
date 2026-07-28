@@ -150,30 +150,30 @@
        ========================================================================= */
 
     const CALLOUT_META = {
-      note:     { icon: "📝", color: "#6ea8fe" },
-      info:     { icon: "ℹ️", color: "#6ea8fe" },
-      abstract: { icon: "📋", color: "#4fd1c5" },
-      summary:  { icon: "📋", color: "#4fd1c5" },
-      tldr:     { icon: "📋", color: "#4fd1c5" },
-      tip:      { icon: "💡", color: "#4fd18a" },
-      hint:     { icon: "💡", color: "#4fd18a" },
-      success:  { icon: "✅", color: "#4fd18a" },
-      check:    { icon: "✅", color: "#4fd18a" },
-      done:     { icon: "✅", color: "#4fd18a" },
-      question: { icon: "❓", color: "#c9a464" },
-      help:     { icon: "❓", color: "#c9a464" },
-      faq:      { icon: "❓", color: "#c9a464" },
-      warning:  { icon: "⚠️", color: "#e8b45a" },
-      caution:  { icon: "⚠️", color: "#e8b45a" },
-      attention:{ icon: "⚠️", color: "#e8b45a" },
-      danger:   { icon: "⛔", color: "#e5646a" },
-      error:    { icon: "⛔", color: "#e5646a" },
-      bug:      { icon: "🐛", color: "#e5646a" },
-      important:{ icon: "❗", color: "#e5646a" },
-      example:  { icon: "📄", color: "#b48ce8" },
-      quote:    { icon: "💬", color: "#9a9aa2" },
-      cite:     { icon: "💬", color: "#9a9aa2" },
-      default:  { icon: "📌", color: "#c9a464" }
+      note:     { icon: "", color: "#6ea8fe" },
+      info:     { icon: "", color: "#6ea8fe" },
+      abstract: { icon: "", color: "#4fd1c5" },
+      summary:  { icon: "", color: "#4fd1c5" },
+      tldr:     { icon: "", color: "#4fd1c5" },
+      tip:      { icon: "", color: "#4fd18a" },
+      hint:     { icon: "", color: "#4fd18a" },
+      success:  { icon: "", color: "#4fd18a" },
+      check:    { icon: "", color: "#4fd18a" },
+      done:     { icon: "", color: "#4fd18a" },
+      question: { icon: "", color: "#c9a464" },
+      help:     { icon: "", color: "#c9a464" },
+      faq:      { icon: "", color: "#c9a464" },
+      warning:  { icon: "", color: "#e8b45a" },
+      caution:  { icon: "", color: "#e8b45a" },
+      attention:{ icon: "", color: "#e8b45a" },
+      danger:   { icon: "", color: "#e5646a" },
+      error:    { icon: "", color: "#e5646a" },
+      bug:      { icon: "", color: "#e5646a" },
+      important:{ icon: "", color: "#e5646a" },
+      example:  { icon: "", color: "#b48ce8" },
+      quote:    { icon: "", color: "#9a9aa2" },
+      cite:     { icon: "", color: "#9a9aa2" },
+      default:  { icon: "", color: "#c9a464" }
     };
 
     function escHtml(str) {
@@ -676,7 +676,7 @@
       const name = evt.name || "skill";
       let initial = evt.data && evt.data.content ? String(evt.data.content) : "";
       // For tags without content (view_file, insert_file, etc.), show the
-      // key attributes so the card isn't just a blank "⚡ view_file" box.
+      // key attributes so the card isn't just a blank " view_file" box.
       // Backend nests attrs under data.attrs — check both levels.
       if (!initial && evt.data) {
         const d = evt.data.attrs || evt.data;
@@ -703,7 +703,7 @@
 
       const nameEl = document.createElement("span");
       nameEl.className = "skill-name";
-      nameEl.textContent = "⚡ " + name;
+      nameEl.textContent = " " + name;
 
       left.appendChild(arrow);
       left.appendChild(nameEl);
@@ -864,7 +864,7 @@
     function createMemoryChip(memories) {
       const chip = document.createElement("button");
       chip.className = "memory-chip";
-      chip.textContent = `🧠 Memory Used (${memories.length})`;
+      chip.textContent = ` Memory Used (${memories.length})`;
       chip.title = "Show the memories injected into this message";
       chip.addEventListener("click", () => openMemoryPopup(memories));
       return chip;
@@ -890,7 +890,7 @@
       const header = document.createElement("div");
       header.className = "memory-header";
       const h = document.createElement("h2");
-      h.textContent = `🧠 Memory Used (${memories.length})`;
+      h.textContent = ` Memory Used (${memories.length})`;
       const closeBtn = document.createElement("button");
       closeBtn.className = "memory-close";
       closeBtn.textContent = "✕";
@@ -989,11 +989,11 @@
 
       const arrow = document.createElement("span");
       arrow.className = "diff-card-arrow";
-      arrow.textContent = "▶";
+      arrow.textContent = "";
 
       const revertBtn = document.createElement("button");
       revertBtn.className = "diff-revert-btn";
-      revertBtn.textContent = "↩ Revert";
+      revertBtn.textContent = " Revert";
       revertBtn.title = evt.backup_path ? "Restore from backup" : "No backup available";
       if (!evt.backup_path) revertBtn.disabled = true;
       revertBtn.addEventListener("click", async (e) => {
@@ -1019,7 +1019,7 @@
           revertBtn.textContent = "✗ Error";
           showToast("Revert error: " + err.message, "error");
         }
-        setTimeout(() => { revertBtn.textContent = "↩ Revert"; revertBtn.disabled = false; }, 2000);
+        setTimeout(() => { revertBtn.textContent = " Revert"; revertBtn.disabled = false; }, 2000);
       });
 
       header.append(arrow, op, path, stats, revertBtn);
@@ -1361,7 +1361,7 @@
           const h = hours || '?';
           answerContent.innerHTML = `
             <div class="rate-limit-card">
-              <span class="rl-icon">⏳</span>
+              <span class="rl-icon"></span>
               <span class="rl-title">Daily Usage Limit Reached</span>
               <span class="rl-detail">${message || 'You have reached the upper limit for today\'s usage.'}</span>
               <span class="rl-timer">Try again in ~${h} hour${h === 1 ? '' : 's'}. This message will stay visible so you don't miss it.</span>
@@ -1390,10 +1390,10 @@
           const f = fileEditSummary.count;
           const a = fileEditSummary.added;
           const r = fileEditSummary.removed;
-          c.innerHTML = `<span class="fes-icon">📝</span>` +
+          c.innerHTML = `<span class="fes-icon"></span>` +
             `<span class="fes-text"><strong>${f}</strong> file${f === 1 ? "" : "s"} edited · ` +
             `<span class="fes-add">+${a}</span> / <span class="fes-del">-${r}</span></span>` +
-            `<span class="fes-arrow">▶</span>`;
+            `<span class="fes-arrow"></span>`;
           scrollBottom();
         },
         showToolPending(evt) {
@@ -1401,17 +1401,17 @@
           const tag = evt.tag || "tool";
           const attrs = evt.attrs || {};
           const meta = {
-            create_file:  { icon: "📝", label: "Creating file", detail: attrs.path || "", progress: true },
-            edit_file:    { icon: "✏️", label: "Editing file", detail: attrs.path || "", progress: true },
-            insert_file:  { icon: "✏️", label: "Inserting into file", detail: attrs.path || "" },
-            view_file:    { icon: "👁️", label: "Reading file", detail: attrs.path || (attrs.full ? "full file" : "") },
-            execute_command: { icon: "⚡", label: "Running command", detail: "" },
-            execute_background_command: { icon: "⚡", label: "Running background task", detail: "" },
-            get_file:     { icon: "📂", label: "Loading file", detail: "" },
-            create_note:  { icon: "🗒️", label: "Creating note", detail: attrs.path || "" },
-            save_svg:     { icon: "🎨", label: "Saving SVG", detail: attrs.path || "" },
+            create_file:  { icon: "", label: "Creating file", detail: attrs.path || "", progress: true },
+            edit_file:    { icon: "", label: "Editing file", detail: attrs.path || "", progress: true },
+            insert_file:  { icon: "", label: "Inserting into file", detail: attrs.path || "" },
+            view_file:    { icon: "", label: "Reading file", detail: attrs.path || (attrs.full ? "full file" : "") },
+            execute_command: { icon: "", label: "Running command", detail: "" },
+            execute_background_command: { icon: "", label: "Running background task", detail: "" },
+            get_file:     { icon: "", label: "Loading file", detail: "" },
+            create_note:  { icon: "", label: "Creating note", detail: attrs.path || "" },
+            save_svg:     { icon: "", label: "Saving SVG", detail: attrs.path || "" },
           };
-          const info = meta[tag] || { icon: "⚙️", label: tag, detail: "" };
+          const info = meta[tag] || { icon: "", label: tag, detail: "" };
           // Remove any existing tool card in this turn
           const existing = turn.querySelector(".tool-activity-card");
           if (existing) existing.remove();
@@ -1465,7 +1465,7 @@
           if (!turn.querySelector(".msg.bot")) {
             ensureAnswer();
             answerEl.classList.remove("streaming");
-            answerContent.textContent = "⚠ Empty response from upstream — check server terminal for WAF/auth details.";
+            answerContent.textContent = " Empty response from upstream — check server terminal for WAF/auth details.";
           }
           // Attach toolbar to every bot message in this turn
           turn.querySelectorAll(".msg.bot").forEach(botEl => {
@@ -1601,7 +1601,7 @@
             showToast(msg, "error");
             ui.appendAnswer(`\n[error] ${msg}`);
           } else if (evt.type === "tool_call") {
-            ui.addEvent(`⚙ tool: ${JSON.stringify(evt.data).slice(0, 300)}`);
+            ui.addEvent(` tool: ${JSON.stringify(evt.data).slice(0, 300)}`);
           } else if (evt.type === "tool_result") {
             ui.addEvent(`✓ result: ${JSON.stringify(evt.data).slice(0, 300)}`);
           } else if (evt.type === "tool_pending") {
@@ -1713,7 +1713,7 @@
       if (scraperChats.length > 0) {
         const header = document.createElement('div');
         header.className = 'scraper-chats-header' + (scraperChatsCollapsed ? ' collapsed' : '');
-        header.innerHTML = '<span class="arrow">▼</span> 🌐 Scraper Chats (' + scraperChats.length + ')';
+        header.innerHTML = '<span class="arrow">▼</span>  Scraper Chats (' + scraperChats.length + ')';
         header.onclick = () => {
           scraperChatsCollapsed = !scraperChatsCollapsed;
           renderChats();
@@ -1969,7 +1969,7 @@
       const cid = chatId || activeChatId;
       if (!cid) return Promise.resolve();
       const mode = scraperMode ? 'scraper' : 'api';
-      showToast("🧠 Consolidating memory...", "info");
+      showToast(" Consolidating memory...", "info");
 
       const controller = new AbortController();
       const timeout = useTimeout ? setTimeout(() => controller.abort(), 30000) : null;
@@ -1984,7 +1984,7 @@
           clearTimeout(timeout);
           if (!res.ok) {
             const text = await res.text().catch(() => "");
-            showToast(`🧠 Consolidation failed (${res.status}): ${text.slice(0, 200)}`, "error");
+            showToast(` Consolidation failed (${res.status}): ${text.slice(0, 200)}`, "error");
             return;
           }
           const data = await res.json();
@@ -1993,22 +1993,22 @@
               const parts = [];
               if (data.added) parts.push(`${data.added} added`);
               if (data.deleted) parts.push(`${data.deleted} deleted`);
-              showToast(`🧠 ${parts.join(", ")}`, "success");
+              showToast(` ${parts.join(", ")}`, "success");
             } else {
-              showToast("🧠 Nothing new worth remembering", "info");
+              showToast(" Nothing new worth remembering", "info");
             }
           } else if (data.status === "skipped") {
-            showToast("🧠 Skipped — too few messages", "info");
+            showToast(" Skipped — too few messages", "info");
           } else {
-            showToast(`🧠 Consolidation failed: ${data.detail || "unknown error"}`, "error");
+            showToast(` Consolidation failed: ${data.detail || "unknown error"}`, "error");
           }
         })
         .catch((e) => {
           clearTimeout(timeout);
           if (e.name === "AbortError") {
-            showToast("🧠 Consolidation timed out (30s)", "error");
+            showToast(" Consolidation timed out (30s)", "error");
           } else {
-            showToast("🧠 Consolidation error: " + e.message, "error");
+            showToast(" Consolidation error: " + e.message, "error");
           }
         })
         .finally(() => {
@@ -2031,7 +2031,7 @@
       if (oldChatId && scraperMode) {
         // Scraper mode: send consolidation prompt into the active browser tab,
         // wait for the model to respond with memory JSON, then create new chat.
-        showToast("🧠 Consolidating memory in browser...", "info");
+        showToast(" Consolidating memory in browser...", "info");
         try {
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 120000);
@@ -2048,21 +2048,21 @@
               const parts = [];
               if (data.added) parts.push(`${data.added} added`);
               if (data.deleted) parts.push(`${data.deleted} deleted`);
-              showToast(parts.length ? `🧠 ${parts.join(", ")}` : "🧠 Nothing new worth remembering", "success");
+              showToast(parts.length ? ` ${parts.join(", ")}` : " Nothing new worth remembering", "success");
             } else if (data.status === "skipped") {
-              showToast("🧠 Skipped — too few messages", "info");
+              showToast(" Skipped — too few messages", "info");
             } else {
-              showToast(`🧠 Consolidation failed: ${data.detail || "unknown"}`, "error");
+              showToast(` Consolidation failed: ${data.detail || "unknown"}`, "error");
             }
           } else {
             const text = await res.text().catch(() => "");
-            showToast(`🧠 Consolidation failed (${res.status}): ${text.slice(0, 200)}`, "error");
+            showToast(` Consolidation failed (${res.status}): ${text.slice(0, 200)}`, "error");
           }
         } catch (e) {
           if (e.name === "AbortError") {
-            showToast("🧠 Consolidation timed out (2min)", "error");
+            showToast(" Consolidation timed out (2min)", "error");
           } else {
-            showToast("🧠 Consolidation error: " + e.message, "error");
+            showToast(" Consolidation error: " + e.message, "error");
           }
         }
       } else if (oldChatId) {
@@ -2211,7 +2211,7 @@
         _messageQueue.push(message);
         inputEl.value = "";
         autoResize();
-        showToast("🧠 Message queued — waiting for memory consolidation...", "info");
+        showToast(" Message queued — waiting for memory consolidation...", "info");
         return;
       }
 
@@ -2435,7 +2435,7 @@
 
     // === Brain / Memory Panel ===
     const CATEGORIES = ["semantic", "episodic", "procedural", "ephemeral"];
-    const CAT_LABELS = { semantic: "Facts & Knowledge", episodic: "Events & Experiences", procedural: "Skills & Processes", ephemeral: "⏳ Temporary" };
+    const CAT_LABELS = { semantic: "Facts & Knowledge", episodic: "Events & Experiences", procedural: "Skills & Processes", ephemeral: " Temporary" };
     let _memoryCache = { semantic: [], episodic: [], procedural: [], ephemeral: [] };
     let _activeCat = "semantic";
     const memList = document.getElementById("memoryList");
@@ -2497,7 +2497,7 @@
         if (entry.expires_at) {
           const badge = document.createElement("span");
           badge.className = "mem-expiry-badge";
-          badge.textContent = "⏳ " + String(entry.expires_at).replace("T", " ").slice(0, 16);
+          badge.textContent = " " + String(entry.expires_at).replace("T", " ").slice(0, 16);
           header.appendChild(badge);
         }
         header.appendChild(delBtn);
@@ -2586,7 +2586,7 @@
         valPreview.textContent = entry.value || "";
         const badge = document.createElement("span");
         badge.className = "mem-protected-badge";
-        badge.textContent = "🔒";
+        badge.textContent = "";
         const delBtn = document.createElement("button");
         delBtn.textContent = "✕";
         delBtn.className = "icon-btn mem-del-btn";
@@ -2721,7 +2721,7 @@
         if (res.ok) {
           const data = await res.json();
           msInfo.textContent = `Active: ${data.current_model} | Threshold: ${data.current_threshold}`;
-          showToast("✅ Memory search settings saved", "success");
+          showToast(" Memory search settings saved", "success");
         } else {
           showToast("✕ Failed to save", "error");
         }
@@ -3154,7 +3154,7 @@
           '<div style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;">' +
             '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">' +
               '<span style="font-size:13px;font-weight:600;color:var(--text);">' + dot + ' ' + p.label + '</span>' +
-              '<button data-profile="' + key + '" class="restoreProfileBtn" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:11px;cursor:pointer;font-weight:600;' + (p.has_backup ? '' : 'opacity:0.4;pointer-events:none;') + '">♻ Restore</button>' +
+              '<button data-profile="' + key + '" class="restoreProfileBtn" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:11px;cursor:pointer;font-weight:600;' + (p.has_backup ? '' : 'opacity:0.4;pointer-events:none;') + '"> Restore</button>' +
             '</div>' +
             '<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-size:12px;color:var(--text-dim);">' +
               '<span>Data</span><span style="color:var(--text);">' + p.data_dir + ' (' + p.size_mb + ' MB)</span>' +
@@ -3175,7 +3175,7 @@
     const label = profile === 'api' ? 'API (ChatService)' : 'Scraper';
     if (!confirm('Restore ' + label + ' browser data from backup?\n\nThis DELETES the current profile and replaces it with the .bak snapshot. Make sure the browser is stopped.')) return;
     btn.disabled = true;
-    btn.textContent = '⏳ Restoring…';
+    btn.textContent = ' Restoring…';
     try {
       const res = await fetch('/api/settings/browser/restore', {
         method: 'POST',
@@ -3184,7 +3184,7 @@
       });
       const d = await res.json();
       if (res.ok) {
-        showToast('♻ ' + label + ' profile restored from ' + d.restored_from, 'success');
+        showToast(' ' + label + ' profile restored from ' + d.restored_from, 'success');
       } else {
         showToast('Restore failed: ' + (d.detail || 'Unknown error'), 'error');
       }
@@ -3192,7 +3192,7 @@
       showToast('Restore failed — network error', 'error');
     }
     btn.disabled = false;
-    btn.textContent = '♻ Restore';
+    btn.textContent = ' Restore';
     await loadBrowserProfiles();
   }
 

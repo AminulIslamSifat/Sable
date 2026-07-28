@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import uvicorn
+
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -1597,7 +1599,7 @@ async def chat(request: ChatRequest):
                             yield _sse_line
                         hours = event.get("hours", "?")
                         details = event.get("message", "Daily usage limit reached.")
-                        error_message = f"⏳ Rate Limited — {details} (retry in {hours}h)"
+                        error_message = f" Rate Limited — {details} (retry in {hours}h)"
                         stream_error = True
 
                     yield sse(event)
@@ -1726,6 +1728,4 @@ def index() -> str:
 
 
 if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run("server:app", host="127.0.0.1", port=6000, reload=False)
+    uvicorn.run("server:app", host="127.0.0.1", port=61770, reload=False)
