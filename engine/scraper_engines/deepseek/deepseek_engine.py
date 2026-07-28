@@ -258,19 +258,23 @@ class GhostChat:
 
             await asyncio.sleep(0.5)
 
-        if self.chrome_process and self.chrome_process.poll() is not None:
-            console.print(
-                f"[bold red]❌ Browser exited before CDP came up (code {self.chrome_process.returncode}).[/bold red]"
-            )
+        # --- DUMP ACTUAL BROWSER LOGS ON FAILURE ---
+        console.print("[bold red]❌ Browser startup failed. Dumping browser stdout/stderr:[/bold red]")
+        if getattr(self, "chrome_log_file", None) and os.path.exists(self.chrome_log_file):
+            try:
+                with open(self.chrome_log_file, "r", encoding="utf-8") as f:
+                    logs = f.read().strip()
+                    console.print(f"[dim yellow]{logs if logs else '(Browser output log was empty)'}[/dim yellow]")
+            except Exception as read_err:
+                console.print(f"[red]Could not read log file: {read_err}[/red]")
         else:
-            console.print(
-                f"[bold red]❌ Timed out waiting for CDP on port {self.port}.[/bold red]"
-            )
-        if getattr(self, "chrome_log_file", None):
-            console.print(f"[dim yellow]Browser startup log: {self.chrome_log_file}[/dim yellow]")
+            console.print("[dim red]No browser log file found.[/dim red]")
+
         if last_error:
-            console.print(f"[dim red]Last CDP check error: {last_error}[/dim red]")
-        sys.exit(1)
+            console.print(f"[dim red]Last CDP connection error: {last_error}[/dim red]")
+
+        # Raise RuntimeError instead of sys.exit(1) so the engine can catch it properly
+        raise RuntimeError(f"Browser process exited or CDP failed to respond on port {self.port}")
 
     async def connect(self) -> None:
         from config import PLATFORMS_CONFIG

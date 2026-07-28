@@ -1259,10 +1259,63 @@
             `<span class="fes-arrow">▶</span>`;
           scrollBottom();
         },
+        showToolPending(evt) {
+          hidePending();
+          const tag = evt.tag || "tool";
+          const attrs = evt.attrs || {};
+          const meta = {
+            create_file:  { icon: "📝", label: "Creating file", detail: attrs.path || "", progress: true },
+            edit_file:    { icon: "✏️", label: "Editing file", detail: attrs.path || "", progress: true },
+            insert_file:  { icon: "✏️", label: "Inserting into file", detail: attrs.path || "" },
+            view_file:    { icon: "👁️", label: "Reading file", detail: attrs.path || (attrs.full ? "full file" : "") },
+            execute_command: { icon: "⚡", label: "Running command", detail: "" },
+            execute_background_command: { icon: "⚡", label: "Running background task", detail: "" },
+            get_file:     { icon: "📂", label: "Loading file", detail: "" },
+            create_note:  { icon: "🗒️", label: "Creating note", detail: attrs.path || "" },
+            save_svg:     { icon: "🎨", label: "Saving SVG", detail: attrs.path || "" },
+          };
+          const info = meta[tag] || { icon: "⚙️", label: tag, detail: "" };
+          // Remove any existing tool card in this turn
+          const existing = turn.querySelector(".tool-activity-card");
+          if (existing) existing.remove();
+          const card = document.createElement("div");
+          card.className = "tool-activity-card";
+          const detailHtml = info.progress
+            ? `<div class="tac-detail tac-detail-split"><span class="tac-path">${info.detail || ""}</span><span class="tac-count">writing…</span></div>`
+            : (info.detail ? `<div class="tac-detail">${info.detail}</div>` : "");
+          card.innerHTML =
+            `<div class="tac-icon">${info.icon}</div>` +
+            `<div class="tac-info"><div class="tac-title">${info.label}</div>` +
+            detailHtml +
+            (info.progress ? `<div class="tac-progress-track"><div class="tac-progress-fill"></div></div>` : "") +
+            `</div><div class="tac-status">${info.progress ? `<div class="tac-pulse-dot"></div>` : `<div class="tac-spinner"></div>`}</div>`;
+          turn.appendChild(card);
+          scrollBottom();
+        },
+        showToolProgress(evt) {
+          const card = turn.querySelector(".tool-activity-card");
+          if (!card) return;
+          const count = card.querySelector(".tac-count");
+          if (!count) return;
+          const bytes = evt.bytes || 0;
+          const size = bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
+          count.textContent = `${evt.lines || 0} lines · ${size}`;
+        },
+        showToolDone() {
+          const card = turn.querySelector(".tool-activity-card");
+          if (!card) return;
+          const status = card.querySelector(".tac-status");
+          if (status) status.innerHTML = `<span class="tac-check">✓</span>`;
+          card.classList.add("tac-done");
+          setTimeout(() => card.remove(), 1200);
+        },
         finalize() {
           hidePending();
           closeCurrentThinking();
           closeAnswer();
+          // Clean up any lingering tool activity card
+          const tac = turn.querySelector(".tool-activity-card");
+          if (tac) tac.remove();
           // Any placeholder still spinning means the stream died mid-tag.
           turn.querySelectorAll(".skill-card.pending").forEach(card => {
             const status = card.querySelector(".pending-status");
@@ -1409,7 +1462,12 @@
             ui.addEvent(`⚙ tool: ${JSON.stringify(evt.data).slice(0, 300)}`);
           } else if (evt.type === "tool_result") {
             ui.addEvent(`✓ result: ${JSON.stringify(evt.data).slice(0, 300)}`);
+          } else if (evt.type === "tool_pending") {
+            ui.showToolPending(evt);
+          } else if (evt.type === "tool_progress") {
+            ui.showToolProgress(evt);
           } else if (evt.type === "skill_start") {
+            ui.showToolDone();
             ui.addSkillStart(evt);
           } else if (evt.type === "skill_output") {
             ui.appendSkillOutput(evt);
@@ -2417,10 +2475,43 @@
     // === Memory Search Settings ===
     const msModelSelect = document.getElementById("msModelSelect");
     const msTopK = document.getElementById("msTopK");
+    const msThresholdEditor = document.getElementById("msThresholdEditor");
     const msEnabled = document.getElementById("msEnabled");
     const msSaveBtn = document.getElementById("msSaveBtn");
     const msInfo = document.getElementById("msInfo");
     let _msLoaded = false;
+
+    function buildThresholdEditor(models, customThresholds) {
+      msThresholdEditor.innerHTML = "";
+      const header = document.createElement("p");
+      header.className = "muted";
+      header.style.cssText = "font-size:11px;margin:0 0 2px;text-transform:uppercase;letter-spacing:0.5px;";
+      header.textContent = "Per-model thresholds (blank = calibrated default)";
+      msThresholdEditor.appendChild(header);
+      (models || []).forEach((m) => {
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;align-items:center;gap:8px;";
+        const label = document.createElement("span");
+        label.className = "muted";
+        label.style.cssText = "font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+        label.textContent = m.id.split("/").pop();
+        label.title = m.id;
+        const input = document.createElement("input");
+        input.type = "number";
+        input.step = "0.001";
+        input.min = "0";
+        input.max = "1";
+        input.className = "mem-input";
+        input.style.cssText = "width:80px;";
+        input.placeholder = String(m.threshold);
+        input.dataset.model = m.id;
+        const custom = customThresholds?.[m.id];
+        if (custom !== undefined && custom !== null) input.value = custom;
+        row.appendChild(label);
+        row.appendChild(input);
+        msThresholdEditor.appendChild(row);
+      });
+    }
 
     async function loadMemorySearchSettings() {
       if (_msLoaded) return;
@@ -2437,6 +2528,7 @@
           msModelSelect.appendChild(opt);
         });
         msTopK.value = data.top_k || 10;
+        buildThresholdEditor(data.available_models, data.model_thresholds);
         msEnabled.checked = data.enabled !== false;
         msInfo.textContent = `Active: ${data.current_model} | Threshold: ${data.current_threshold}`;
         _msLoaded = true;
@@ -2445,12 +2537,17 @@
 
     msSaveBtn.addEventListener("click", async () => {
       try {
+        const modelThresholds = {};
+        msThresholdEditor.querySelectorAll("input[data-model]").forEach((inp) => {
+          if (inp.value.trim() !== "") modelThresholds[inp.dataset.model] = parseFloat(inp.value);
+        });
         const res = await fetch("/api/settings/memory-search", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             model: msModelSelect.value,
             top_k: parseInt(msTopK.value) || 10,
+            model_thresholds: modelThresholds,
             enabled: msEnabled.checked,
           }),
         });
@@ -2643,6 +2740,39 @@
       }
     })();
 
+    // ---------- Theme ----------
+    const THEME_KEY = "sable_theme";
+    const themePicker = document.getElementById("themePicker");
+
+    function applyTheme(name) {
+      if (name && name !== "sable") {
+        document.documentElement.setAttribute("data-theme", name);
+      } else {
+        document.documentElement.removeAttribute("data-theme");
+      }
+    }
+
+    themePicker.addEventListener("click", (e) => {
+      const btn = e.target.closest(".theme-swatch");
+      if (!btn) return;
+      const name = btn.dataset.theme;
+      applyTheme(name);
+      themePicker.querySelectorAll(".theme-swatch").forEach((b) => b.classList.toggle("active", b === btn));
+      try { localStorage.setItem(THEME_KEY, name); } catch (err) {}
+    });
+
+    (function loadTheme() {
+      let saved = null;
+      try { saved = localStorage.getItem(THEME_KEY); } catch (e) {}
+      if (saved) {
+        applyTheme(saved);
+        const match = themePicker.querySelector('.theme-swatch[data-theme="' + saved + '"]');
+        if (match) {
+          themePicker.querySelectorAll(".theme-swatch").forEach((b) => b.classList.toggle("active", b === match));
+        }
+      }
+    })();
+
     // ---------- Mode Switcher (API / Scraper) ----------
     const modeApiBtn = document.getElementById('modeApi');
     const modeScraperBtn = document.getElementById('modeScraper');
@@ -2793,4 +2923,53 @@
       // active with DeepSeek the dropdown must show DS model types, not Qwen.
       await loadModels();
     });
+
+  // ── Browser Session Monitor ──────────────────────────────────
+  async function loadBrowserSession() {
+    const card = document.getElementById('browserSessionCard');
+    if (!card) return;
+    try {
+      const res = await fetch('/api/scraper/sessions');
+      const d = await res.json();
+      if (!d.active) {
+        card.innerHTML = '<p class="muted" style="font-size:12px;margin:0;">No active browser session.</p>';
+        return;
+      }
+      const alive = d.alive;
+      const dot = alive ? '\u{1F7E2}' : '\u{1F534}';
+      const statusTxt = alive ? 'Running' : 'Dead / Zombie';
+      card.innerHTML =
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">' +
+          '<span style="font-size:13px;font-weight:600;color:var(--text);">' + dot + ' ' + statusTxt + '</span>' +
+          '<button onclick="killBrowserSession()" style="background:var(--danger);color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:11px;cursor:pointer;font-weight:600;">\u2715 Kill</button>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:12px;color:var(--text-dim);">' +
+          '<span>Engine</span><span style="color:var(--text);">' + (d.engine_type || '\u2014') + '</span>' +
+          '<span>Chat ID</span><span style="color:var(--text);">' + (d.chat_id || '\u2014') + '</span>' +
+          '<span>PID</span><span style="color:var(--text);">' + (d.chrome_pid || '\u2014') + '</span>' +
+          '<span>CDP Port</span><span style="color:var(--text);">' + (d.cdp_port || '\u2014') + '</span>' +
+          '<span>Headless</span><span style="color:var(--text);">' + (d.headless ? 'Yes' : 'No') + '</span>' +
+          '<span>URL</span><span style="color:var(--text);word-break:break-all;font-size:11px;">' + (d.page_url || '\u2014') + '</span>' +
+        '</div>';
+    } catch {
+      card.innerHTML = '<p class="muted" style="font-size:12px;margin:0;color:var(--danger);">Failed to fetch session info.</p>';
+    }
+  }
+
+  async function killBrowserSession() {
+    try {
+      const res = await fetch('/api/scraper/sessions/kill', { method: 'POST' });
+      const d = await res.json();
+      showToast(d.killed_pid ? 'Killed PID ' + d.killed_pid : 'Session reset (no PID found)', 'success');
+    } catch {
+      showToast('Failed to kill session', 'error');
+    }
+    await loadBrowserSession();
+  }
+
+  document.getElementById('refreshSessionBtn')?.addEventListener('click', loadBrowserSession);
+  loadBrowserSession();
+  setInterval(loadBrowserSession, 15000);
+  // ── /Browser Session Monitor ─────────────────────────────────
+
 

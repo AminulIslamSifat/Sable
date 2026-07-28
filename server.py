@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import uuid
 from collections.abc import AsyncGenerator, Callable, Generator
@@ -29,7 +30,7 @@ from engine.scraper import (
 )
 from engine.memory_search import get_searcher, list_available_models
 from engine.service import ChatService
-from engine.skills import SkillParser, build_tool_feedback, list_skills
+from engine.skills import BACKUP_DIR, SkillParser, build_tool_feedback, list_skills
 
 logger = logging.getLogger("sable")
 
@@ -200,18 +201,30 @@ def init_db() -> None:
             conn.execute("ALTER TABLE chats ADD COLUMN memory_keys TEXT DEFAULT '[]'")
         if "chat_url" not in chat_cols:
             conn.execute("ALTER TABLE chats ADD COLUMN chat_url TEXT")
+        if "mode" not in chat_cols:
+            conn.execute("ALTER TABLE chats ADD COLUMN mode TEXT")
 
 
-def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = None) -> None:
+def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = None, mode: str | None = None) -> None:
     now = utcnow()
     with get_db() as conn:
-        existing = conn.execute("SELECT id FROM chats WHERE id = ?", (chat_id,)).fetchone()
+        existing = conn.execute("SELECT id, mode FROM chats WHERE id = ?", (chat_id,)).fetchone()
         if existing:
+            # Lock mode on first real interaction if not yet set
+            if mode and not existing["mode"]:
+                conn.execute("UPDATE chats SET mode = ? WHERE id = ?", (mode, chat_id))
             return
         conn.execute(
-            "INSERT INTO chats (id, title, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (chat_id, title, parent_id, now, now),
+            "INSERT INTO chats (id, title, parent_id, created_at, updated_at, mode) VALUES (?, ?, ?, ?, ?, ?)",
+            (chat_id, title, parent_id, now, now, mode),
         )
+
+
+def get_chat_mode(chat_id: str) -> str | None:
+    """Return the locked mode for a chat ('api' or 'scraper'), or None if unset."""
+    with get_db() as conn:
+        row = conn.execute("SELECT mode FROM chats WHERE id = ?", (chat_id,)).fetchone()
+    return row["mode"] if row and row["mode"] else None
 
 
 def set_title_if_default(chat_id: str, title: str) -> None:
@@ -285,6 +298,21 @@ def add_message(
         return int(cur.lastrowid)
 
 
+def update_message(
+    message_id: int,
+    content: str,
+    thinking: str | None = None,
+    parent_id: str | None = None,
+    skill_events: list[dict[str, Any]] | None = None,
+) -> None:
+    skill_events_json = json.dumps(skill_events, ensure_ascii=False) if skill_events else None
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE messages SET content = ?, thinking = ?, parent_id = ?, skill_events = ? WHERE id = ?",
+            (content, thinking, parent_id, skill_events_json, message_id),
+        )
+
+
 def get_messages(chat_id: str) -> list[dict[str, Any]]:
     with get_db() as conn:
         rows = conn.execute(
@@ -322,6 +350,17 @@ def delete_chat(chat_id: str) -> bool:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     init_db()
+    # Restore persisted memory-search settings (model + per-model thresholds)
+    if _MEMORY_SEARCH_SETTINGS.exists():
+        try:
+            _ms = json.loads(_MEMORY_SEARCH_SETTINGS.read_text(encoding="utf-8"))
+            _s = get_searcher()
+            if _ms.get("model"):
+                _s.set_model(str(_ms["model"]))
+            if isinstance(_ms.get("model_thresholds"), dict):
+                _s.set_thresholds(_ms["model_thresholds"])
+        except Exception:
+            pass
     await service.warmup()
     yield
     await service.close()
@@ -358,7 +397,11 @@ async def auth_middleware(request: Request, call_next):
     if not path.startswith("/api/") or any(path.startswith(p) for p in AUTH_EXEMPT_PREFIXES):
         return await call_next(request)
     auth_header = request.headers.get("authorization", "")
-    if not auth_header.startswith("Bearer ") or auth_header[7:] != AUTH_TOKEN:
+    authorized = auth_header.startswith("Bearer ") and auth_header[7:] == AUTH_TOKEN
+    if not authorized and path == "/api/logs":
+        # EventSource can't set custom headers — allow ?token= for the log stream only
+        authorized = request.query_params.get("token", "") == AUTH_TOKEN
+    if not authorized:
         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     return await call_next(request)
 
@@ -367,6 +410,29 @@ async def auth_middleware(request: Request, call_next):
 async def login(payload: LoginRequest) -> dict[str, str]:
     if payload.token.strip() != AUTH_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid token")
+    return {"status": "ok"}
+
+
+class RevertRequest(BaseModel):
+    path: str
+    backup_path: str
+
+
+@app.post("/api/file/revert")
+def revert_file(payload: RevertRequest) -> dict[str, str]:
+    backup = Path(payload.backup_path).expanduser()
+    target = Path(payload.path).expanduser()
+    # Only allow restoring from the managed backup directory
+    try:
+        backup.resolve().relative_to(BACKUP_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Backup outside managed directory")
+    if not backup.is_file():
+        raise HTTPException(status_code=404, detail="Backup not found")
+    try:
+        shutil.copy2(backup, target)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Revert failed: {exc}")
     return {"status": "ok"}
 
 
@@ -536,6 +602,18 @@ async def update_scraper_settings_route(payload: dict[str, Any]) -> dict[str, An
     return settings
 
 
+@app.get("/api/scraper/sessions")
+async def get_scraper_sessions() -> dict[str, Any]:
+    """Return info about the active browser session (chat id, pid, url, liveness)."""
+    return await scraper_service.get_session_info()
+
+
+@app.post("/api/scraper/sessions/kill")
+async def kill_scraper_session() -> dict[str, Any]:
+    """Forcefully kill the browser process and reset scraper state."""
+    return await scraper_service.kill_session()
+
+
 @app.post("/api/scraper/model")
 async def switch_scraper_model(payload: dict[str, Any]) -> dict[str, Any]:
     """Switch the browser engine's active model type (DeepSeek Instant/Expert/Vision)."""
@@ -623,6 +701,7 @@ async def get_memory_search_settings() -> dict[str, Any]:
     return {
         "enabled": cfg.get("enabled", True),
         "top_k": cfg.get("top_k", 10),
+        "model_thresholds": searcher.get_custom_thresholds(),
         "current_model": searcher.model_name,
         "current_threshold": searcher.threshold,
         "available_models": list_available_models(),
@@ -634,6 +713,7 @@ async def update_memory_search_settings(payload: dict[str, Any]) -> dict[str, An
     model = payload.get("model")
     top_k = payload.get("top_k")
     enabled = payload.get("enabled")
+    model_thresholds = payload.get("model_thresholds")
 
     cfg: dict[str, Any] = {}
     if _MEMORY_SEARCH_SETTINGS.exists():
@@ -645,6 +725,17 @@ async def update_memory_search_settings(payload: dict[str, Any]) -> dict[str, An
     if model is not None:
         cfg["model"] = str(model)
         get_searcher().set_model(str(model))
+    if isinstance(model_thresholds, dict):
+        # Only keep numeric overrides; empty/"auto" values reset to calibrated default
+        clean: dict[str, float] = {}
+        for k, v in model_thresholds.items():
+            try:
+                if v not in (None, "", "auto"):
+                    clean[str(k)] = float(v)
+            except (TypeError, ValueError):
+                continue
+        cfg["model_thresholds"] = clean
+        get_searcher().set_thresholds(clean)
     if top_k is not None:
         cfg["top_k"] = int(top_k)
     if enabled is not None:
@@ -1181,8 +1272,17 @@ async def chat(request: ChatRequest):
     except Exception:
         pass  # Memory injection is best-effort; never block chat
 
+    # Determine current mode and lock it per-chat
+    current_mode = "scraper" if scraper_enabled else "api"
+    locked_mode = get_chat_mode(active_chat_id)
+    if locked_mode and locked_mode != current_mode:
+        return {
+            "error": f"This chat was created in {locked_mode} mode. "
+                     f"Switch back to {locked_mode} mode or start a new chat."
+        }
+
     title = make_title(request.message)
-    ensure_chat(active_chat_id, title, request.parent_id)
+    ensure_chat(active_chat_id, title, request.parent_id, mode=current_mode)
     set_title_if_default(active_chat_id, title)
 
     parent_id = get_parent_id(active_chat_id, request.parent_id)
@@ -1259,6 +1359,7 @@ async def chat(request: ChatRequest):
         current_message = timestamped_message
         current_parent = parent_id
         round_index = 0
+        saved_message_id: int | None = None
 
         yield sse({"type": "status", "message": "processing"})
 
@@ -1361,6 +1462,17 @@ async def chat(request: ChatRequest):
                 if round_skill_events:
                     skill_events.extend(round_skill_events)
 
+                # --- Incremental per-round save (upsert) ---
+                round_answer = "".join(answer_parts)
+                round_thinking = "".join(thinking_parts)
+                stored = round_answer or error_message or ""
+                if saved_message_id is None:
+                    saved_message_id = add_message(
+                        active_chat_id, "assistant", stored, round_thinking, final_parent, skill_events
+                    )
+                else:
+                    update_message(saved_message_id, stored, round_thinking, final_parent, skill_events)
+
                 feedback = build_tool_feedback(round_skill_events)
 
                 if stream_error or error_message or not feedback:
@@ -1419,7 +1531,10 @@ async def chat(request: ChatRequest):
                 answer = "\n".join(summary)
 
             stored_content = answer or error_message or ""
-            add_message(active_chat_id, "assistant", stored_content, thinking, final_parent, skill_events)
+            if saved_message_id is not None:
+                update_message(saved_message_id, stored_content, thinking, final_parent, skill_events)
+            else:
+                add_message(active_chat_id, "assistant", stored_content, thinking, final_parent, skill_events)
             touch_chat(active_chat_id, final_parent)
 
     return StreamingResponse(

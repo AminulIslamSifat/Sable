@@ -27,6 +27,7 @@ NOTES_DIR = OUTPUT_ROOT / "notes"
 ASSETS_DIR = OUTPUT_ROOT / "assets"
 SESSIONS_DIR = OUTPUT_ROOT / "sessions"
 UPLOAD_DIR = SABLE_ROOT / "uploads"
+BACKUP_DIR = SABLE_ROOT / ".sable_backups"
 EDITOR_TOOLS = SKILLS_DIR / "core" / "code_editor" / "scripts" / "editor_tools.py"
 SUDO_PASSWORD = "sifat"
 DEFAULT_TIMEOUT = 15
@@ -283,7 +284,25 @@ def _diff_line_payload(kind: str, text: str) -> dict[str, str]:
     return {"t": kind, "text": text}
 
 
-def _build_file_edit_event(tag_id: str, op: str, path: str, output: str) -> dict[str, Any] | None:
+def _make_backup(path: str) -> str | None:
+    """Snapshot a file before mutating it so the UI can offer a one-click revert."""
+    try:
+        src = Path(path)
+        if not src.is_file():
+            return None
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", src.name)
+        backup = BACKUP_DIR / f"{stamp}_{uuid.uuid4().hex[:8]}_{safe}"
+        shutil.copy2(src, backup)
+        return str(backup)
+    except Exception:
+        return None
+
+
+def _build_file_edit_event(
+    tag_id: str, op: str, path: str, output: str, backup_path: str | None = None
+) -> dict[str, Any] | None:
     try:
         first, _, rest = output.partition("\n")
         first = first.strip()
@@ -303,6 +322,7 @@ def _build_file_edit_event(tag_id: str, op: str, path: str, output: str) -> dict
             "removed": 0,
             "truncated": False,
             "lines": [],
+            "backup_path": backup_path or "",
         }
         lines: list[dict[str, str]] = []
 
@@ -932,13 +952,14 @@ def handle_edit_file(
         yield _end_event(tag_id, name, False, started, error="Empty edit body")
         return
 
+    backup_path = _make_backup(path)
     ok, output = _run_editor(["edit", path], stdin_data=content)
     output_trimmed = output[:RESULT_PREVIEW_CHARS]
     yield _output_event(tag_id, output_trimmed + "\n")
 
     if ok:
         # Emit a file_edit event so the diff sidebar updates
-        file_event = _build_file_edit_event(tag_id, "edit", path, output_trimmed)
+        file_event = _build_file_edit_event(tag_id, "edit", path, output_trimmed, backup_path)
         if file_event is not None:
             yield file_event
 
@@ -962,12 +983,13 @@ def handle_create_file(
     if overwrite:
         args.append("--overwrite")
 
+    backup_path = _make_backup(path) if overwrite else None
     ok, output = _run_editor(args, stdin_data=content)
     output_trimmed = output[:RESULT_PREVIEW_CHARS]
     yield _output_event(tag_id, output_trimmed + "\n")
 
     if ok:
-        file_event = _build_file_edit_event(tag_id, "create", path, output_trimmed)
+        file_event = _build_file_edit_event(tag_id, "create", path, output_trimmed, backup_path)
         if file_event is not None:
             yield file_event
 
@@ -995,8 +1017,17 @@ def handle_insert_file(
         return
 
     args = ["insert", path]
+    backup_path = _make_backup(path)
     tmp_anchor: Path | None = None
+    tmp_content: Path | None = None
     try:
+        # Write content to a temp file so editor_tools.py uses its raw-file
+        # path (--content-file) instead of falling through to JSON stdin parsing,
+        # which breaks on backticks, ${}, quotes, and other code characters.
+        tmp_content = Path("/tmp") / f"sable_insert_{uuid.uuid4().hex}.txt"
+        tmp_content.write_text(content, encoding="utf-8")
+        args += ["--content-file", str(tmp_content)]
+
         if at_line:
             args += ["--at-line", str(at_line)]
         elif after_str:
@@ -1006,19 +1037,20 @@ def handle_insert_file(
             tmp_anchor.write_text(after_str, encoding="utf-8")
             args += ["--after-file", str(tmp_anchor)]
 
-        ok, output = _run_editor(args, stdin_data=content)
+        ok, output = _run_editor(args)
     finally:
-        if tmp_anchor and tmp_anchor.exists():
-            try:
-                tmp_anchor.unlink()
-            except Exception:
-                pass
+        for tmp in (tmp_anchor, tmp_content):
+            if tmp and tmp.exists():
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
 
     output_trimmed = output[:RESULT_PREVIEW_CHARS]
     yield _output_event(tag_id, output_trimmed + "\n")
 
     if ok:
-        file_event = _build_file_edit_event(tag_id, "insert", path, output_trimmed)
+        file_event = _build_file_edit_event(tag_id, "insert", path, output_trimmed, backup_path)
         if file_event is not None:
             yield file_event
 
@@ -1097,6 +1129,8 @@ class SkillParser:
     def __init__(self) -> None:
         self.buf = ""
         self.open_re = re.compile(r"<\s*(" + TAG_ALTERNATION + r")\b([^>]*)>", re.I)
+        self._pending_tag: str | None = None  # tracks emitted tool_pending to avoid repeats
+        self._last_progress: tuple[int, int] = (0, 0)  # (lines, bytes) of last tool_progress
 
     def feed(self, text: str) -> Generator[dict[str, Any], None, None]:
         self.buf += text
@@ -1108,6 +1142,8 @@ class SkillParser:
                 if before:
                     yield {"type": "text", "text": before}
                 self.buf = self.buf[end:]
+                self._pending_tag = None  # tag completed, clear pending state
+                self._last_progress = (0, 0)
                 yield from _run_tag(name, attrs, content)
                 continue
 
@@ -1121,6 +1157,35 @@ class SkillParser:
             if hold > 0:
                 yield {"type": "text", "text": self.buf[:hold]}
                 self.buf = self.buf[hold:]
+
+            # Emit a tool_pending event so the frontend can show an activity
+            # card while the tag content is still streaming in.
+            pending_match = self.open_re.search(self.buf)
+            if pending_match:
+                tag_name = pending_match.group(1).lower()
+                if tag_name != self._pending_tag:
+                    self._pending_tag = tag_name
+                    self._last_progress = (0, 0)
+                    attrs = _parse_attrs(pending_match.group(2) or "")
+                    yield {
+                        "type": "tool_pending",
+                        "tag": tag_name,
+                        "attrs": attrs,
+                    }
+                # Stream live progress (lines/bytes of the partial tag content)
+                # so the activity card can show a growing counter while writing.
+                partial = self.buf[pending_match.end():]
+                p_lines = partial.count("\n") + (1 if partial else 0)
+                p_bytes = len(partial.encode("utf-8"))
+                last_lines, last_bytes = self._last_progress
+                if p_lines != last_lines or p_bytes - last_bytes >= 96:
+                    self._last_progress = (p_lines, p_bytes)
+                    yield {
+                        "type": "tool_progress",
+                        "tag": tag_name,
+                        "lines": p_lines,
+                        "bytes": p_bytes,
+                    }
             break
 
     def flush(self) -> Generator[dict[str, Any], None, None]:

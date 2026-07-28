@@ -59,6 +59,38 @@
     {
       "key": "phantom_bot schedule route variable mismatches",
       "value": "schedule_index route originally passed schedule_types and docs (dict), but template expected types and schedules (flat list). schedule_add route was /schedule/add/<stype> expecting subject/date/note, but template POSTs to /schedule/add with type/subject/teacher/date/time/topic/syllabus. Fixed by rewriting routes to match template expectations."
+    },
+    {
+      "key": "Sable memory search hybrid scoring formula",
+      "value": "MemorySearcher uses hybrid score: 0.7*vector_similarity + 0.3*keyword_coverage. Keyword coverage = |query_tokens ∩ entry_tokens| / |query_tokens|. Protected entries get +0.15 boost. This blend significantly lowers scores vs pure cosine similarity — thresholds must be calibrated for hybrid, not raw vector scores."
+    },
+    {
+      "key": "memory_benchmark.py converted to fastembed backend",
+      "value": "test/memory_benchmark.py converted from sentence-transformers to fastembed TextEmbedding backend on 2026-07-27. Original used SentenceTransformer with trust_remote_code and manual query/doc prefixes; new version uses FastEmbed which handles prefixes internally. MODEL_REGISTRY simplified to short_name -> model_id mapping. Eliminates tokenizers version conflict (transformers<=0.23.0 vs fastembed needing 0.23.1)."
+    },
+    {
+      "key": "test_embedding.py --live mode for threshold tuning",
+      "value": "test/test_embedding.py --live flag pulls last 50 user prompts from sable.db, runs them against real Brain/Memory.json entries, displays raw scores per result with ★ marker for scores >= 0.6, and outputs score distribution (min/p25/median/p75/max) with suggested threshold as midpoint between p25 and median. Supports --top-k and --model flags. Runs all 8 models by default when no --model specified."
+    },
+    {
+      "key": "calibrate_thresholds.py calibration tool",
+      "value": "calibrate_thresholds.py in Sable root measures each model's TP/FP score separation against 12 relevant queries (mapped to specific memory keys) and 8 irrelevant queries (including hard tech negatives). Recommends threshold as midpoint between FP ceiling and TP floor when cleanly separable. Run via uv run python calibrate_thresholds.py. Used to produce the 2026-07-27 MODEL_THRESHOLDS calibration."
+    },
+    {
+      "key": "Sable memory injection centralized in server.py /api/chat",
+      "value": "Memory injection happens centrally in server.py /api/chat endpoint (line ~1191) for BOTH API and scraper paths. Searches via MemorySearcher.search(), formats via format_for_prompt(), prepends [RELEVANT MEMORY CONTEXT] block to timestamped_message before passing to either service.chat() or scraper_service.chat(). Per-chat dedup tracked in SQLite chats.memory_keys column via get_injected_memory_keys()/save_injected_memory_keys()."
+    },
+    {
+      "key": "Sable MODEL_THRESHOLDS recalibrated for hybrid scoring 2026-07-28",
+      "value": "MODEL_THRESHOLDS in engine/memory_search.py recalibrated on 2026-07-28 against hybrid score (0.7*vector + 0.3*keyword) using 50 real user prompts vs real Memory.json. Reduced to 3 models: jinaai/jina-embeddings-v2-small-en=0.596, snowflake/snowflake-arctic-embed-xs=0.546, BAAI/bge-small-en-v1.5=0.504. Previous values (e.g. jina=0.74) were calibrated for pure cosine and caused zero recall with hybrid scoring. All other models removed from supported list."
+    },
+    {
+      "key": "Sable per-model threshold editor in settings",
+      "value": "Memory search settings UI (Brain tab) includes per-model threshold editor. Each available model gets a number input; placeholder shows calibrated default, typing a value overrides it, leaving blank resets to default. Backend stores overrides as model_thresholds dict in memory_search_settings.json. Searcher.get_threshold(model) checks custom override first, falls back to MODEL_THRESHOLDS. Custom thresholds persist across restarts via lifespan restoration."
+    },
+    {
+      "key": "Sable per-chat mode locking",
+      "value": "Chats table has a 'mode' column ('api' or 'scraper') auto-migrated on startup. Mode is locked on first message via ensure_chat(mode=current_mode). get_chat_mode(chat_id) retrieves it. /api/chat blocks sends when current global scraper_enabled state mismatches the chat's locked mode, returning error: 'This chat was created in {mode} mode. Switch back to {mode} mode or start a new chat.' Existing chats without mode get locked on next interaction."
     }
   ],
   "episodic": [
@@ -77,6 +109,18 @@
     {
       "key": "phantom_bot panel debugging marathon 2026-07-27",
       "value": "Debugged multiple issues with phantom_bot's panel under /panel url_prefix: admin panel redirect loop (hardcoded JS paths), schedule editor not loading (variable/form mismatches), CSS double prefix (regex rewriter), admin fields missing (API field mapping), routine editor not loading (hardcoded JS paths). All fixed except homepage timeout due to MongoDB Atlas cold-start on parallel count queries. Pattern emerged: any JS file with absolute fetch/redirect URLs must be prefixed-aware."
+    },
+    {
+      "key": "memory_benchmark.py tokenizers conflict resolved 2026-07-27",
+      "value": "memory_benchmark.py failed with ImportError: tokenizers>=0.22.0,<=0.23.0 required but 0.23.1 installed. Root cause: sentence-transformers/transformers pinned tokenizers<=0.23.0 while fastembed needed 0.23.1. Resolved by converting benchmark to fastembed backend instead of upgrading transformers — eliminates the dependency conflict entirely since production only declares fastembed."
+    },
+    {
+      "key": "Memory injection zero-recall diagnosed and fixed 2026-07-28",
+      "value": "Diagnosed why memory injection never triggered in live chat: jina threshold was 0.74 but hybrid scores for conversational prompts maxed at ~0.70. Ran test_hybrid_threshold.py against 50 real prompts for jina, snowflake, bge-small, and gte-base. Found balanced thresholds (midpoint of p25 and median): jina=0.596, snowflake=0.546, bge-small=0.504. gte-base confirmed broken (inhomogeneous embeddings). Updated MODEL_THRESHOLDS, added per-model threshold editor to web UI, verified injection works and per-chat dedup prevents re-injection."
+    },
+    {
+      "key": "Sable mode-locking 500 bug and fix 2026-07-28",
+      "value": "First implementation of mode-locking guard caused 500 errors: ensure_chat used `SELECT id FROM chats` but then accessed `existing[\"mode\"]` — KeyError since mode wasn't in the result set. Sifat had to revert server.py and restart. Fixed by changing to `SELECT id, mode FROM chats WHERE id = ?`. Lesson: when adding column access to existing queries, always verify the SELECT clause includes the new column."
     }
   ],
   "procedural": [
@@ -99,6 +143,22 @@
     {
       "key": "Debugging phantom_bot cloudflare tunnel URL-prefix issues",
       "value": "When phantom_bot pages fail under a URL prefix (e.g., /panel), check: 1) JS files for hardcoded absolute paths (fetch, location.href) that lack prefix — inject url_prefix via template. 2) Server-side routes that render templates must pass url_prefix to enable JS prefixing. 3) Regex rewriter (for HTML attrs) must avoid double-prefixing paths already generated by url_for. 4) Homepage slowness: MongoDB Atlas cold-start can cause 502 if index route makes many parallel queries; consider connection warming or query reduction."
+    },
+    {
+      "key": "Calibrating memory search thresholds for new models",
+      "value": "When adding or changing embedding models in Sable: 1) Add model to MODEL_THRESHOLDS with a placeholder value. 2) Run calibrate_thresholds.py to measure real TP/FP score separation. 3) Update threshold to recommended value. 4) Verify with test/test_embedding.py --live --model <name> against real prompts. Do NOT reuse thresholds from other models or pure-vector benchmarks — hybrid scoring shifts all distributions."
+    },
+    {
+      "key": "Running live threshold analysis across all models",
+      "value": "To compare all models against real usage: cd /home/sifat/hdd/projects/Sable && uv run python test/test_embedding.py --live --top-k 5. Outputs per-prompt raw scores and threshold suggestion for each of 8 models. Use --model X to isolate one. Note: with small memory stores (<50 entries), even irrelevant queries score high — separation improves as store grows."
+    },
+    {
+      "key": "Diagnosing memory injection failures in Sable",
+      "value": "When memory injection appears to never trigger: 1) Run test/test_memory_injection.py with recent prompts to see raw hybrid scores vs threshold. 2) If all scores are below threshold, run test/test_hybrid_threshold.py to recalibrate — hybrid scoring (0.7v+0.3k) produces different distributions than pure cosine. 3) Check server.py /api/chat endpoint lines ~1206-1225 for silent exception swallowing. 4) Verify per-chat dedup isn't over-filtering by checking SQLite chats.memory_keys column. 5) After changing thresholds, restart server or use per-model threshold editor in settings to apply without restart."
+    },
+    {
+      "key": "Sable SQLite row access pattern",
+      "value": "When modifying Sable DB helper functions to access new columns: always check that the SELECT statement explicitly includes the column name before accessing via row[\"col\"]. SQLite Row objects only contain columns listed in SELECT — accessing an unlisted column raises IndexError/KeyError causing 500s. Grep for the SELECT query when extending existing functions."
     }
   ],
   "ephemeral": []

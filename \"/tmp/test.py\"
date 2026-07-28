@@ -1,0 +1,3 @@
+\ndef hello():'))
+events += list(p.feed('\n    print(\"hi\")'))
+events += list(p.feed('\n
