@@ -14,6 +14,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import uvicorn
+
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -1658,6 +1660,4 @@ def index() -> str:
 
 
 if __name__ == "__main__":
-    import uvicorn
-
     uvicorn.run("server:app", host="127.0.0.1", port=61770, reload=False)
