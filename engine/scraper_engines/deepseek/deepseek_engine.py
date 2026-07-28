@@ -557,22 +557,25 @@ class GhostChat:
         return None
 
     async def _paste_large_message(self, field, message: str) -> bool:
-        """Try OS clipboard paste, then JS injection, to input messages naturally."""
-        # 1. OS clipboard + Ctrl-V
+        """Inject text via JS directly — never touches the OS clipboard."""
         try:
-            if self.clipboard_tool == "wl-paste":
-                subprocess.run(["wl-copy"], input=message.encode(), timeout=2)
-            elif self.clipboard_tool == "xclip":
-                subprocess.run(["xclip", "-selection", "clipboard"], input=message.encode(), timeout=2)
-            else:
-                console.print("[dim yellow]No clipboard tool available, falling back to JS injection[/dim yellow]")
-                return False
-            await self.page.evaluate("() => { if (window.ghost_observer) window.ghost_observer.disconnect(); }")
-            await field.click()
-            await self.page.keyboard.press("Control+V")
-            await asyncio.sleep(0.3)
-            
-            # Force React updates in case native paste handler didn't sync yet
+            escaped = message.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
+            await self.page.evaluate(f"""
+                (msg) => {{
+                    const el = document.activeElement;
+                    if (el && (el.isContentEditable || el.tagName === 'TEXTAREA' || el.tagName === 'INPUT')) {{
+                        if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {{
+                            el.value = msg;
+                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        }} else {{
+                            el.textContent = msg;
+                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        }}
+                    }}
+                }}
+            """, escaped)
+            await asyncio.sleep(0.2)
             await field.focus()
             await self.page.keyboard.press("End")
             await self.page.keyboard.type(" ")
@@ -672,6 +675,38 @@ class GhostChat:
             console.print(f"[dim red]Model switch failed: {e}[/dim red]")
             return False
 
+
+    async def set_thinking_mode(self, mode: str) -> None:
+        """Toggle DeepThink on/off before sending a message.
+
+        mode: "deepthink" → ensure toggle is ON, "fast" → ensure toggle is OFF.
+        Called by scraper.py right before send_msg.
+        """
+        sel = PLATFORM["selectors"].get("deepthink_toggle")
+        if not sel:
+            return
+        try:
+            toggle = self.page.locator(sel).first
+            if not await toggle.is_visible(timeout=3000):
+                console.print("[dim yellow]DeepThink toggle not visible[/dim yellow]")
+                return
+
+            classes = await toggle.get_attribute("class") or ""
+            pressed = await toggle.get_attribute("aria-pressed")
+            is_on = "ds-toggle-button--selected" in classes and pressed != "false"
+
+            if mode == "deepthink" and not is_on:
+                await toggle.click()
+                await asyncio.sleep(0.4)
+                console.print("[dim]DeepThink enabled[/dim] 🧠")
+            elif mode == "fast" and is_on:
+                await toggle.click()
+                await asyncio.sleep(0.4)
+                console.print("[dim]DeepThink disabled (fast mode)[/dim] ⚡")
+        except Exception as e:
+            console.print(f"[dim red]Thinking mode toggle failed: {e}[/dim red]")
+
+
     async def setup_deepseek(self, force_update: bool = False, include_diary: bool = False, model_type: str | None = None) -> None:
         """Setup for DeepSeek platform."""
         try:
@@ -731,7 +766,7 @@ class GhostChat:
                 except Exception:
                     pass
 
-        return "\n\n".join(parts) + f"\n\nPROJECT_ROOT = {PROJECT_ROOT} \n OUTPUT_FOLDER = /home/sifat/hdd/Conversation"
+        return "\n\n".join(parts) + f"\n\nPROJECT_ROOT = {PROJECT_ROOT} \n OUTPUT_FOLDER = {PROJECT_ROOT / 'output'}"
 
     # ------------------------------------------------------------------
     # Text cleaning

@@ -1,5 +1,5 @@
 {
-  "enabled": true,
+  "enabled": false,
   "engine_type": "deepseek",
   "port": 9333,
   "headless": false,

@@ -11,9 +11,12 @@ import subprocess
 import json
 import os
 
+from pathlib import Path
+
+
 # ── Constants ─────────────────────────────────────────────────────────────────
-DEFAULT_OUTPUT = "/home/sifat/hdd/Downloads"
-VAULT_OUTPUT   = "/home/sifat/hdd/vault"
+DEFAULT_OUTPUT = str(Path.home() / "Downloads")
+VAULT_OUTPUT   = str(Path.home() / "Sable_output" / "vault")
 
 
 # ── Dependency checks ─────────────────────────────────────────────────────────

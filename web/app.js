@@ -593,6 +593,21 @@
       toastTimer = setTimeout(() => toastEl.classList.remove("show"), 3500);
     }
 
+    // mobile: tap to dismiss toast immediately
+    toastEl.addEventListener("click", () => {
+      clearTimeout(toastTimer);
+      toastEl.classList.remove("show");
+    });
+
+    // mobile browsers throttle setTimeout in background tabs —
+    // dismiss any stale toast when the tab regains focus
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && toastEl.classList.contains("show")) {
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => toastEl.classList.remove("show"), 800);
+      }
+    });
+
     function saveActiveChat() {
       try {
         if (activeChatId) localStorage.setItem(ACTIVE_CHAT_KEY, activeChatId);

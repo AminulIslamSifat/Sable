@@ -1,65 +1,39 @@
+
 #!/usr/bin/env python3
 """
-editor_tools.py — A small, dependable file view/create/edit toolkit for
-LLM coding agents, modeled on how Claude Code, Aider, and pi's coding
-agent avoid the failure modes of "have the model paste a whole file
-through a shell heredoc."
+editor_tools.py — v4: file view/create/edit toolkit for LLM coding agents.
 
-v3 changes — redesigned around how real coding agents actually do this
-(Aider's SEARCH/REPLACE blocks, Anthropic's own str_replace_based_edit_tool,
-OpenAI Codex's apply_patch/V4A): none of them make a model hand-author
-JSON containing code. Raw code sits directly in the payload, never
-nested inside a hand-escaped JSON string.
-  - `edit` now reads plain SEARCH/REPLACE marker blocks (see
-    _parse_search_replace_blocks docstring) from stdin or --diff-file.
-    One heredoc, no JSON, no escaping — the exact failure mode that
-    kept breaking (newlines/quotes mangling a hand-typed JSON string)
-    is structurally impossible now, because old_str/new_str are never
-    inside a string literal. Multiple blocks in one call = atomic batch,
-    same guarantee as before (all validated before any write happens).
-  - --json-file is kept ONLY for programmatic/scripted callers that
-    already have a JSON array lying around; it is no longer the
-    documented default and the skill doc no longer teaches it first.
-  - JSON parsing (still available via --json-file) catches
-    json.JSONDecodeError specifically and reports the exact byte
-    offset with surrounding context and a concrete diagnosis, instead
-    of a bare "Internal error: Expecting ',' delimiter" with no context.
-  - insert keeps its v2 raw-file interface (--content-file plus
-    --at-line / --after-str / --after-file) — that command only ever
-    needed a single raw string, so --content-file already solved it;
-    no marker format needed there.
-  - Everything else is unchanged: CRLF/LF preservation, atomic
-    multi-edit validation, layered exact->normalized matching, capped
-    backups, unified-diff snippet in the return value.
+v4 changes:
+  - Structural matching layer: tolerates indentation differences (tabs vs
+    spaces, leading whitespace), blank-line variance, and internal spacing.
+    Matching cascade: exact → normalized → structural. All layers still
+    require a UNIQUE match; fuzzy/edit-distance is never used.
+  - Nearest-match suggestion on failure: when old_str matches zero locations,
+    a sliding-window SequenceMatcher scan finds the closest block (ratio ≥ 0.6)
+    and includes it in the error message with line numbers.
+  - Structured stats feedback: every mutation (edit/insert/create) returns a
+    "── stats ──" block with lines_before, lines_after, added, removed, net,
+    and affected_range so the model gets numeric feedback without re-viewing.
+  - replace_all mode: skip uniqueness check, replace ALL occurrences, report
+    count. Useful for renames and import path changes.
+  - dry_run mode: validate all SEARCH blocks, show the diff that WOULD apply,
+    but do NOT write to disk.
+  - Shebang detection: create_file auto-chmods 0o755 if content starts with #!
+  - Encoding guard: non-UTF-8 files produce a clear error instead of garbled text.
+  - Blank-line collapse in structural matching: consecutive blank lines are
+    collapsed to one before comparison.
 
-Design principles (see SKILL.md for full rationale):
+Design principles (unchanged from v3):
   1. Files on disk are NEVER modified except through create_file(),
-     edit_file(), and insert_file(). No heredocs, no shell redirection
-     for content.
-  2. view_file() adds line numbers ONLY in the string returned to the
-     model. The numbers are never written back to disk.
+     edit_file(), and insert_file().
+  2. view_file() adds line numbers ONLY in the returned string.
   3. edit_file() requires each old_str to match EXACTLY ONE location
-     after normalization. Zero matches or multiple matches is a hard
-     error with a message that tells the model how to fix it — never a
-     silent "guess and apply."
-  4. Matching is layered: exact match first, then a narrow normalization
-     pass (smart quotes, unicode dashes, trailing whitespace, NBSP) —
-     never a fuzzy/edit-distance match. Fuzzy matching can silently
-     apply an edit to the wrong block of similar-looking code; a failed
-     exact/normalized match returns an error instead, which is the
-     safer failure mode for code.
-  5. Every successful edit_file()/insert_file() call writes a
-     timestamped backup before touching the real file, so a bad edit is
-     always one copy away from reversible.
-  6. Raw code (old_str, new_str, insert content) should never have to
-     survive a hand-typed JSON escaping pass. JSON is available for
-     batch edits where it's genuinely useful, but every single-edit /
-     single-insert workflow has a raw-file (or raw-arg) path that never
-     touches a JSON parser.
+     (unless replace_all=True). Zero or multiple = hard error.
+  4. Matching is layered: exact → normalized → structural. Never fuzzy.
+  5. Every successful edit/insert writes a timestamped backup first.
+  6. Raw code never survives a hand-typed JSON escaping pass.
 
-Exit codes for CLI use: 0 = success, 1 = user/model error (bad match,
-missing file, etc — safe to retry with corrected args), 2 = unexpected
-internal error.
+Exit codes: 0 = success, 1 = user/model error, 2 = internal error.
 """
 
 import argparse
@@ -67,23 +41,22 @@ import difflib
 import json
 import os
 import shutil
+import stat
 import sys
 import time
 import unicodedata
 
-MAX_VIEW_CHARS = 16000      # above this, view_file truncates (no range given)
-HEAD_TAIL_LINES = 60        # lines shown from each end when truncating
+MAX_VIEW_CHARS = 16000
+HEAD_TAIL_LINES = 60
 BACKUP_DIR_NAME = ".editor_tools_backups"
-MAX_BACKUPS_PER_FILE = 20   # oldest backups pruned beyond this count
-DIFF_CONTEXT_LINES = 2      # lines of context shown in the returned diff
+MAX_BACKUPS_PER_FILE = 20
+DIFF_CONTEXT_LINES = 3
+NEAREST_MATCH_THRESHOLD = 0.6
+NEAREST_MATCH_WINDOW_SLACK = 4  # lines of slack when searching for nearest match
 
 
 # --------------------------------------------------------------------------
-# Normalization — narrow and explicit. This is NOT fuzzy matching. It only
-# collapses characters that are visually/semantically identical but differ
-# in encoding (smart quotes vs straight quotes, unicode dashes, NBSP, etc),
-# and trailing whitespace per line. It never tolerates different words,
-# reordered code, or approximate matches.
+# Normalization layers
 # --------------------------------------------------------------------------
 
 _QUOTE_MAP = {
@@ -95,16 +68,77 @@ _SPACE_MAP = {c: " " for c in "\u00a0\u2002\u2003\u2004\u2005\u2006\u2007\u2008\
 
 
 def _normalize(text: str) -> str:
+    """Layer 2: smart quotes, unicode dashes, NBSP, trailing whitespace, tabs→4sp."""
     text = unicodedata.normalize("NFKC", text)
     trans = {}
     trans.update({ord(k): v for k, v in _QUOTE_MAP.items()})
     trans.update({ord(k): v for k, v in _DASH_MAP.items()})
     trans.update({ord(k): v for k, v in _SPACE_MAP.items()})
     text = text.translate(trans)
+    text = text.replace("\t", "    ")
     lines = text.split("\n")
     lines = [ln.rstrip() for ln in lines]
     return "\n".join(lines)
 
+
+def _normalize_structural_line(line: str) -> str:
+    """Layer 3 per-line: strip ALL leading/trailing whitespace, collapse internal."""
+    return " ".join(line.split())
+
+
+def _collapse_blank_lines(lines: list[str]) -> list[str]:
+    """Collapse consecutive blank lines into a single blank line."""
+    result = []
+    prev_blank = False
+    for ln in lines:
+        is_blank = ln.strip() == ""
+        if is_blank and prev_blank:
+            continue
+        result.append(ln)
+        prev_blank = is_blank
+    return result
+
+
+def _structural_lines_match(content_lines: list[str], old_lines: list[str]) -> list[int]:
+    """Layer 3: match by structural equivalence (whitespace-insensitive).
+    Returns list of starting indices where old_lines matches content_lines."""
+    norm_content = [_normalize_structural_line(l) for l in content_lines]
+    norm_old = [_normalize_structural_line(l) for l in old_lines]
+
+    # Collapse blank lines on both sides for comparison
+    # Build a mapping from collapsed-index → original-index for content
+    collapsed_content = []
+    collapsed_to_orig = []
+    prev_blank = False
+    for i, ln in enumerate(norm_content):
+        is_blank = ln == ""
+        if is_blank and prev_blank:
+            continue
+        collapsed_content.append(ln)
+        collapsed_to_orig.append(i)
+        prev_blank = is_blank
+
+    collapsed_old = _collapse_blank_lines(norm_old)
+    # Remove leading/trailing empty strings from old (models often add/remove edge blanks)
+    while collapsed_old and collapsed_old[0] == "":
+        collapsed_old.pop(0)
+    while collapsed_old and collapsed_old[-1] == "":
+        collapsed_old.pop()
+
+    if not collapsed_old:
+        return []
+
+    n = len(collapsed_old)
+    matches = []
+    for i in range(len(collapsed_content) - n + 1):
+        if collapsed_content[i:i + n] == collapsed_old:
+            matches.append(collapsed_to_orig[i])
+    return matches
+
+
+# --------------------------------------------------------------------------
+# Utilities
+# --------------------------------------------------------------------------
 
 def _count_occurrences(haystack: str, needle: str) -> int:
     if not needle:
@@ -117,15 +151,26 @@ class ToolError(Exception):
 
 
 # --------------------------------------------------------------------------
-# Line-ending handling — read files leaving \r\n intact (newline=""), track
-# which style the file actually uses, and always write back in that style.
-# This is what stops a CRLF (Windows) file from silently becoming LF on the
-# first edit, which would otherwise show up as a full-file diff in git.
+# Line-ending handling
 # --------------------------------------------------------------------------
 
 def _read_raw(path: str) -> str:
-    with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
-        return f.read()
+    try:
+        with open(path, "r", encoding="utf-8", errors="strict", newline="") as f:
+            return f.read()
+    except UnicodeDecodeError:
+        # Try to detect encoding
+        with open(path, "rb") as f:
+            raw_bytes = f.read(4096)
+        # Simple heuristic
+        if b"\x00" in raw_bytes:
+            hint = "likely binary or UTF-16"
+        else:
+            hint = "not UTF-8 (possibly latin-1 or cp1252)"
+        raise ToolError(
+            f"'{path}' is {hint}. This tool only handles UTF-8 text files. "
+            f"Use <get_file> to upload non-text files to context."
+        )
 
 
 def _detect_line_ending(text: str) -> str:
@@ -136,7 +181,6 @@ def _detect_line_ending(text: str) -> str:
 
 def _write_raw(path: str, text: str, line_ending: str) -> None:
     if line_ending == "\r\n":
-        # normalize any stray bare \n first, then apply \r\n uniformly
         text = text.replace("\r\n", "\n").replace("\n", "\r\n")
     with open(path, "w", encoding="utf-8", newline="") as f:
         f.write(text)
@@ -150,7 +194,7 @@ def list_dir(path: str, max_depth: int = 2) -> str:
     if not os.path.isdir(path):
         raise ToolError(f"'{path}' is not a directory")
 
-    ignore = {"node_modules", "__pycache__", "venv"}
+    ignore = {"node_modules", "__pycache__", "venv", ".git"}
     lines = []
 
     def walk(dir_path, depth, prefix):
@@ -181,7 +225,7 @@ def view_file(path: str, start: int = None, end: int = None, full: bool = False)
     text = _read_raw(path).replace("\r\n", "\n")
     lines = text.split("\n")
     if lines and lines[-1] == "":
-        lines = lines[:-1]  # don't count a trailing newline as an extra blank line
+        lines = lines[:-1]
     total = len(lines)
     if total == 0:
         return "(empty file)"
@@ -229,11 +273,24 @@ def create_file(path: str, content: str, overwrite: bool = False) -> str:
         os.makedirs(parent, exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="") as f:
         f.write(content)
-    return f"Created '{path}' ({len(content)} bytes, {content.count(chr(10)) + 1} lines)"
+
+    # Auto-chmod if shebang present
+    if content.startswith("#!"):
+        st = os.stat(path)
+        os.chmod(path, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+    stats = (
+        f"\n── stats ──\n"
+        f"lines: {line_count}\n"
+        f"bytes: {len(content.encode('utf-8'))}\n"
+        f"executable: {'yes (shebang detected)' if content.startswith('#!') else 'no'}"
+    )
+    return f"Created '{path}' ({len(content)} bytes, {line_count} lines){stats}"
 
 
 # --------------------------------------------------------------------------
-# backups — capped per file, oldest pruned
+# backups
 # --------------------------------------------------------------------------
 
 def _backup(path: str) -> str:
@@ -243,7 +300,6 @@ def _backup(path: str) -> str:
     base = os.path.basename(path)
     name = f"{base}.{stamp}.bak"
     dest = os.path.join(backup_dir, name)
-    # avoid collision if two backups happen within the same second
     i = 1
     while os.path.exists(dest):
         dest = os.path.join(backup_dir, f"{base}.{stamp}.{i}.bak")
@@ -263,6 +319,10 @@ def _backup(path: str) -> str:
     return dest
 
 
+# --------------------------------------------------------------------------
+# diff + stats
+# --------------------------------------------------------------------------
+
 def _diff_snippet(before: str, after: str, path: str) -> str:
     diff = list(difflib.unified_diff(
         before.split("\n"), after.split("\n"),
@@ -271,34 +331,119 @@ def _diff_snippet(before: str, after: str, path: str) -> str:
     ))
     if not diff:
         return ""
-    # skip the two header lines (---/+++), keep it compact
     body = diff[2:]
-    max_lines = 40
+    max_lines = 50
     if len(body) > max_lines:
         body = body[:max_lines] + [f"... ({len(diff) - 2 - max_lines} more diff lines omitted)"]
     return "\n".join(body)
+
+
+def _compute_stats(before: str, after: str, diff_text: str) -> str:
+    """Compute structured stats from before/after content and diff."""
+    before_lines = before.count("\n") + (1 if before and not before.endswith("\n") else 0)
+    after_lines = after.count("\n") + (1 if after and not after.endswith("\n") else 0)
+
+    added = 0
+    removed = 0
+    first_hunk_line = None
+    last_hunk_line = None
+    for line in diff_text.split("\n"):
+        if line.startswith("+") and not line.startswith("+++"):
+            added += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            removed += 1
+        elif line.startswith("@@"):
+            # Parse @@ -old_start,old_count +new_start,new_count @@
+            import re
+            m = re.search(r"\+(\d+)", line)
+            if m:
+                hunk_start = int(m.group(1))
+                if first_hunk_line is None:
+                    first_hunk_line = hunk_start
+                last_hunk_line = hunk_start
+
+    net = after_lines - before_lines
+    net_str = f"+{net}" if net > 0 else str(net)
+
+    affected = ""
+    if first_hunk_line is not None:
+        if last_hunk_line and last_hunk_line != first_hunk_line:
+            affected = f"affected_range: L{first_hunk_line}–L{last_hunk_line + added}"
+        else:
+            affected = f"affected_range: L{first_hunk_line}–L{first_hunk_line + added + removed}"
+
+    stats = (
+        f"\n── stats ──\n"
+        f"lines_before: {before_lines}\n"
+        f"lines_after: {after_lines}\n"
+        f"added: {added}\n"
+        f"removed: {removed}\n"
+        f"net: {net_str}\n"
+        f"{affected}"
+    )
+    return stats
 
 
 # --------------------------------------------------------------------------
 # edit — layered matching, mandatory uniqueness, atomic multi-edit
 # --------------------------------------------------------------------------
 
-def _find_unique_span(content: str, old_str: str):
-    """Returns (start_index, end_index, replacement_note) for the unique
-    match of old_str in content, trying exact then normalized matching.
+def _find_nearest_match(content: str, old_str: str) -> str:
+    """Find the closest block in content to old_str using SequenceMatcher.
+    Returns a suggestion string or empty string if nothing close enough."""
+    content_lines = content.split("\n")
+    old_lines = old_str.split("\n")
+    n = len(old_lines)
+    if n == 0:
+        return ""
+
+    best_ratio = 0.0
+    best_start = -1
+    # Sliding window with slack
+    window_sizes = [n, n + NEAREST_MATCH_WINDOW_SLACK, max(1, n - NEAREST_MATCH_WINDOW_SLACK)]
+    for ws in window_sizes:
+        if ws > len(content_lines):
+            continue
+        for i in range(len(content_lines) - ws + 1):
+            candidate = "\n".join(content_lines[i:i + ws])
+            ratio = difflib.SequenceMatcher(None, old_str, candidate).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_start = i
+
+    if best_ratio < NEAREST_MATCH_THRESHOLD or best_start < 0:
+        return ""
+
+    # Show the closest block with line numbers
+    ws = min(n + NEAREST_MATCH_WINDOW_SLACK, len(content_lines) - best_start)
+    snippet_lines = content_lines[best_start:best_start + ws]
+    numbered = "".join(f"    {best_start + i + 1:6d}\t{l}\n" for i, l in enumerate(snippet_lines))
+    return (
+        f"\nClosest match (ratio {best_ratio:.2f}) at lines {best_start + 1}–{best_start + ws}:\n"
+        f"{numbered}"
+        f"Re-view that range and copy old_str exactly from the output."
+    )
+
+
+def _find_unique_span(content: str, old_str: str, replace_all: bool = False):
+    """Returns (start_index, end_index, note) for the unique match of old_str.
+    Matching cascade: exact → normalized → structural.
+    If replace_all=True, returns the FIRST match (caller handles iteration).
     Raises ToolError if not found or ambiguous."""
+
+    # Layer 1: exact
     count = _count_occurrences(content, old_str)
-    if count == 1:
+    if count >= 1:
+        if count > 1 and not replace_all:
+            raise ToolError(
+                f"old_str matches {count} locations. Add more surrounding lines "
+                f"to old_str (and the identical lines to new_str) so it matches "
+                f"exactly once, or use replace_all mode.\n--- old_str was ---\n{old_str}"
+            )
         idx = content.index(old_str)
         return idx, idx + len(old_str), None
-    if count > 1:
-        raise ToolError(
-            f"old_str matches {count} locations. Add more surrounding lines "
-            f"to old_str (and the identical lines to new_str) so it matches "
-            f"exactly once.\n--- old_str was ---\n{old_str}"
-        )
 
-    # normalized fallback, aligned by line
+    # Layer 2: normalized (quotes, dashes, trailing-ws, tabs)
     content_lines = content.split("\n")
     old_lines = old_str.split("\n")
     norm_content_lines = [_normalize(l) for l in content_lines]
@@ -308,30 +453,137 @@ def _find_unique_span(content: str, old_str: str):
         i for i in range(len(norm_content_lines) - n + 1)
         if norm_content_lines[i:i + n] == norm_old_lines
     ]
-    if len(matches) == 1:
+    if len(matches) == 1 or (len(matches) >= 1 and replace_all):
         i = matches[0]
         start_idx = len("\n".join(content_lines[:i])) + (1 if i > 0 else 0)
         end_idx = start_idx + len("\n".join(content_lines[i:i + n]))
-        return start_idx, end_idx, "matched after normalizing quotes/dashes/whitespace"
+        note = "matched after normalizing quotes/dashes/whitespace"
+        if len(matches) > 1:
+            note += f" ({len(matches)} total occurrences, replace_all mode)"
+        return start_idx, end_idx, note
     if len(matches) > 1:
         raise ToolError(
             f"old_str matches {len(matches)} locations after normalization. "
-            f"Add more surrounding lines so it matches exactly once.\n"
+            f"Add more surrounding lines so it matches exactly once, "
+            f"or use replace_all mode.\n--- old_str was ---\n{old_str}"
+        )
+
+    # Layer 3: structural (indentation-insensitive, blank-line collapse)
+    struct_matches = _structural_lines_match(content_lines, old_lines)
+    if len(struct_matches) == 1 or (len(struct_matches) >= 1 and replace_all):
+        i = struct_matches[0]
+        # Determine how many original lines the old_str spans in the file
+        # by matching the collapsed old lines against collapsed content from position i
+        norm_old_struct = [_normalize_structural_line(l) for l in old_lines]
+        collapsed_old_struct = _collapse_blank_lines(norm_old_struct)
+        while collapsed_old_struct and collapsed_old_struct[0] == "":
+            collapsed_old_struct.pop(0)
+        while collapsed_old_struct and collapsed_old_struct[-1] == "":
+            collapsed_old_struct.pop()
+
+        # Count how many original content lines this spans
+        span_count = 0
+        matched_count = 0
+        for j in range(i, len(content_lines)):
+            ln_struct = _normalize_structural_line(content_lines[j])
+            if ln_struct == "" and matched_count < len(collapsed_old_struct):
+                span_count += 1
+                continue
+            if matched_count < len(collapsed_old_struct) and ln_struct == collapsed_old_struct[matched_count]:
+                matched_count += 1
+                span_count += 1
+                if matched_count == len(collapsed_old_struct):
+                    break
+            elif ln_struct == "":
+                span_count += 1
+            else:
+                break
+
+        if span_count == 0:
+            span_count = len(old_lines)  # fallback
+
+        start_idx = len("\n".join(content_lines[:i])) + (1 if i > 0 else 0)
+        end_idx = start_idx + len("\n".join(content_lines[i:i + span_count]))
+        note = "matched after structural normalization (indentation/blank-lines ignored)"
+        if len(struct_matches) > 1:
+            note += f" ({len(struct_matches)} total occurrences, replace_all mode)"
+        return start_idx, end_idx, note
+    if len(struct_matches) > 1:
+        raise ToolError(
+            f"old_str matches {len(struct_matches)} locations after structural "
+            f"normalization (whitespace-insensitive). Add more surrounding lines "
+            f"so it matches exactly once, or use replace_all mode.\n"
             f"--- old_str was ---\n{old_str}"
         )
+
+    # Total failure — find nearest match for a helpful suggestion
+    suggestion = _find_nearest_match(content, old_str)
     raise ToolError(
-        "old_str was not found, even after normalizing quotes/dashes/whitespace. "
+        "old_str was not found, even after normalizing quotes/dashes/whitespace "
+        "and structural (indentation-insensitive) matching. "
         "Call view_file on this path again and copy old_str exactly from the "
         "output — do not retype it from memory.\n"
-        f"--- old_str was ---\n{old_str}"
+        f"--- old_str was ---\n{old_str}\n"
+        f"--- repr ---\n{repr(old_str)}"
+        + (f"\n{suggestion}" if suggestion else "")
     )
 
 
-def edit_file(path: str, edits, backup: bool = True) -> str:
-    """edits: either a single {"old_str", "new_str"} dict, or a list of them.
-    All edits are validated (unique match found) against the ORIGINAL content
-    before any are applied — so a batch either fully succeeds or fails with
-    the file untouched."""
+def _find_all_spans(content: str, old_str: str) -> list[tuple[int, int, str | None]]:
+    """Find ALL non-overlapping spans of old_str in content (for replace_all).
+    Uses the same matching cascade but collects all matches."""
+    spans = []
+
+    # Try exact first
+    search_start = 0
+    while True:
+        idx = content.find(old_str, search_start)
+        if idx == -1:
+            break
+        spans.append((idx, idx + len(old_str), None))
+        search_start = idx + len(old_str)
+
+    if spans:
+        return spans
+
+    # Try normalized line-by-line
+    content_lines = content.split("\n")
+    old_lines = old_str.split("\n")
+    norm_content_lines = [_normalize(l) for l in content_lines]
+    norm_old_lines = [_normalize(l) for l in old_lines]
+    n = len(norm_old_lines)
+    for i in range(len(norm_content_lines) - n + 1):
+        if norm_content_lines[i:i + n] == norm_old_lines:
+            start_idx = len("\n".join(content_lines[:i])) + (1 if i > 0 else 0)
+            end_idx = start_idx + len("\n".join(content_lines[i:i + n]))
+            spans.append((start_idx, end_idx, "normalized"))
+
+    if spans:
+        return spans
+
+    # Try structural
+    struct_matches = _structural_lines_match(content_lines, old_lines)
+    for i in struct_matches:
+        start_idx = len("\n".join(content_lines[:i])) + (1 if i > 0 else 0)
+        end_idx = start_idx + len("\n".join(content_lines[i:i + len(old_lines)]))
+        spans.append((start_idx, end_idx, "structural"))
+
+    if not spans:
+        suggestion = _find_nearest_match(content, old_str)
+        raise ToolError(
+            "old_str was not found anywhere in the file (replace_all mode).\n"
+            f"--- old_str was ---\n{old_str}"
+            + (f"\n{suggestion}" if suggestion else "")
+        )
+    return spans
+
+
+def edit_file(path: str, edits, backup: bool = True,
+              replace_all: bool = False, dry_run: bool = False) -> str:
+    """edits: a single {"old_str", "new_str"} dict, or a list of them.
+    All edits validated against ORIGINAL content before any write (atomic).
+    replace_all: replace ALL occurrences instead of requiring uniqueness.
+    dry_run: validate and show diff but do NOT write."""
     if not os.path.isfile(path):
         raise ToolError(f"'{path}' does not exist")
 
@@ -350,56 +602,83 @@ def edit_file(path: str, edits, backup: bool = True) -> str:
 
     raw = _read_raw(path)
     line_ending = _detect_line_ending(raw)
-    content = raw.replace("\r\n", "\n")  # work in \n internally, restore on write
+    content = raw.replace("\r\n", "\n")
 
-    # Validate all matches up front against the ORIGINAL content, using
-    # original character offsets. Edits must not overlap.
-    spans = []
-    for i, e in enumerate(edits):
-        try:
-            start, end, note = _find_unique_span(content, e["old_str"])
-        except ToolError as err:
-            raise ToolError(f"edit #{i + 1} of {len(edits)} failed: {err}")
-        for s2, e2, *_ in spans:
-            if start < e2 and s2 < end:
-                raise ToolError(
-                    f"edit #{i + 1} overlaps another edit in this same batch — "
-                    f"split into separate calls or merge them into one old_str/new_str"
-                )
-        spans.append((start, end, i, note))
+    # Collect all spans
+    all_spans = []  # (start, end, edit_index, note)
 
-    # Apply back-to-front so earlier offsets stay valid
+    if replace_all:
+        for i, e in enumerate(edits):
+            spans = _find_all_spans(content, e["old_str"])
+            for start, end, note in spans:
+                all_spans.append((start, end, i, note))
+    else:
+        for i, e in enumerate(edits):
+            try:
+                start, end, note = _find_unique_span(content, e["old_str"])
+            except ToolError as err:
+                raise ToolError(f"edit #{i + 1} of {len(edits)} failed: {err}")
+            # Check overlap
+            for s2, e2, *_ in all_spans:
+                if start < e2 and s2 < end:
+                    raise ToolError(
+                        f"edit #{i + 1} overlaps another edit in this batch — "
+                        f"split into separate calls or merge them into one old_str/new_str"
+                    )
+            all_spans.append((start, end, i, note))
+
+    if not all_spans:
+        raise ToolError("no matches found for any edit in the batch")
+
+    # Sort and check overlaps for replace_all mode
+    all_spans.sort(key=lambda t: t[0])
+    for j in range(1, len(all_spans)):
+        if all_spans[j][0] < all_spans[j - 1][1]:
+            raise ToolError(
+                "overlapping matches detected in replace_all mode — "
+                "the old_str occurrences overlap in the file"
+            )
+
+    # Apply back-to-front
     new_content = content
-    for start, end, i, note in sorted(spans, key=lambda t: t[0], reverse=True):
+    total_replacements = len(all_spans)
+    for start, end, i, note in sorted(all_spans, key=lambda t: t[0], reverse=True):
         new_content = new_content[:start] + edits[i]["new_str"] + new_content[end:]
+
+    diff = _diff_snippet(content, new_content, path)
+    stats = _compute_stats(content, new_content, diff)
+
+    if dry_run:
+        header = f"DRY RUN — '{path}': {total_replacements} replacement(s) validated, NO changes written"
+        notes = [n for *_, n in all_spans if n]
+        if notes:
+            header += f"\n(note: {len(notes)} match(es) used normalization/structural matching)"
+        return f"{header}\n{diff}{stats}" if diff else header + stats
 
     if backup:
         _backup(path)
     _write_raw(path, new_content, line_ending)
 
-    diff = _diff_snippet(content, new_content, path)
-    notes = [n for *_, n in spans if n]
+    notes = [n for *_, n in all_spans if n]
     warn = ""
     if notes:
-        warn = f"\n(note: {len(notes)} of {len(edits)} edit(s) matched only after " \
-               f"normalizing quotes/dashes/whitespace — consider re-copying old_str " \
-               f"from view_file next time)"
-    n = len(edits)
-    header = f"Edited '{path}' ({n} change{'s' if n != 1 else ''}){warn}"
-    return f"{header}\n{diff}" if diff else header
+        warn = f"\n(note: {len(notes)} of {total_replacements} match(es) used normalization/structural matching)"
+
+    n_edits = len(edits)
+    if replace_all and total_replacements > n_edits:
+        header = f"Edited '{path}' ({total_replacements} replacements across {n_edits} pattern{'s' if n_edits != 1 else ''}){warn}"
+    else:
+        header = f"Edited '{path}' ({total_replacements} change{'s' if total_replacements != 1 else ''}){warn}"
+    return f"{header}\n{diff}{stats}" if diff else header + stats
 
 
 # --------------------------------------------------------------------------
-# insert — anchor-less insertion (new lines, not a replace)
+# insert
 # --------------------------------------------------------------------------
 
 def insert_file(path: str, content: str, at_line: int = None, after_str: str = None,
-                 backup: bool = True) -> str:
-    """Insert `content` as new lines, either:
-      - at_line: insert BEFORE this 1-indexed line number (1 = top of file)
-      - after_str: insert immediately after the unique line(s) matching this
-        anchor text (matched the same exact->normalized way as edit_file)
-    Exactly one of at_line / after_str must be given."""
+                backup: bool = True, dry_run: bool = False) -> str:
+    """Insert `content` as new lines. Exactly one of at_line / after_str required."""
     if not os.path.isfile(path):
         raise ToolError(f"'{path}' does not exist")
     if (at_line is None) == (after_str is None):
@@ -420,31 +699,31 @@ def insert_file(path: str, content: str, at_line: int = None, after_str: str = N
         insert_pos = at_line - 1
     else:
         start, end, _note = _find_unique_span(text, after_str)
-        # convert char offset `end` to a line index
         insert_pos = text[:end].count("\n")
         if not text[:end].endswith("\n"):
-            insert_pos += 1  # anchor doesn't end on a line boundary edge case
+            insert_pos += 1
 
     new_block = content.split("\n")
     new_lines = lines[:insert_pos] + new_block + lines[insert_pos:]
     new_text = "\n".join(new_lines) + ("\n" if trailing_newline else "")
 
+    diff = _diff_snippet(text, new_text, path)
+    stats = _compute_stats(text, new_text, diff)
+
+    if dry_run:
+        header = f"DRY RUN — insert into '{path}' at line {insert_pos + 1}, NO changes written"
+        return f"{header}\n{diff}{stats}" if diff else header + stats
+
     if backup:
         _backup(path)
     _write_raw(path, new_text, line_ending)
 
-    diff = _diff_snippet(text, new_text, path)
-    header = f"Inserted into '{path}' at line {insert_pos + 1}"
-    return f"{header}\n{diff}" if diff else header
+    header = f"Inserted into '{path}' at line {insert_pos + 1} ({len(new_block)} lines added)"
+    return f"{header}\n{diff}{stats}" if diff else header + stats
 
 
 # --------------------------------------------------------------------------
-# SEARCH/REPLACE blocks — the PRIMARY edit format (v3). Same idea as
-# Aider's edit blocks / a git merge conflict: raw code sits directly in
-# the payload between sentinel lines, never inside a string literal, so
-# there is nothing to escape. One or more blocks per call; multiple
-# blocks are applied atomically as a batch (same guarantee edit_file()
-# already provides for a list of {old_str,new_str} dicts).
+# SEARCH/REPLACE block parser
 # --------------------------------------------------------------------------
 
 _SEARCH_MARK = "<<<<<<< SEARCH"
@@ -453,30 +732,16 @@ _REPLACE_MARK = ">>>>>>> REPLACE"
 
 
 def _parse_search_replace_blocks(text: str):
-    """Parse text of the form:
-
-        <<<<<<< SEARCH
-        ...old text, verbatim, any quotes/newlines/backslashes...
-        =======
-        ...new text, verbatim...
-        >>>>>>> REPLACE
-
-    Repeat the three-marker group for additional blocks (batch edit,
-    applied atomically). Each marker must appear alone on its own line
-    (surrounding whitespace on that line is ignored). Returns a single
-    {"old_str","new_str"} dict for one block, or a list of them for
-    multiple blocks — either is accepted by edit_file().
-    """
+    """Parse SEARCH/REPLACE marker blocks. Returns dict or list of dicts."""
     lines = text.split("\n")
     blocks = []
-    state = "outside"   # outside -> search -> replace -> outside ...
+    state = "outside"
     cur_old, cur_new = [], []
     for line in lines:
         stripped = line.strip()
         if state == "outside":
             if stripped == _SEARCH_MARK:
                 state, cur_old = "search", []
-            # stray text outside any block (commentary, blank lines) is ignored
         elif state == "search":
             if stripped == _DIVIDER_MARK:
                 state, cur_new = "replace", []
@@ -492,25 +757,18 @@ def _parse_search_replace_blocks(text: str):
     if state != "outside":
         raise ToolError(
             "Unterminated SEARCH/REPLACE block: missing the closing "
-            f"'{_DIVIDER_MARK}' or '{_REPLACE_MARK}' marker line. Each block "
-            f"needs exactly these three lines, each alone on its own line, "
-            f"in order:\n{_SEARCH_MARK}\n<old text>\n{_DIVIDER_MARK}\n<new text>\n{_REPLACE_MARK}"
+            f"'{_DIVIDER_MARK}' or '{_REPLACE_MARK}' marker line."
         )
     if not blocks:
         raise ToolError(
             f"No SEARCH/REPLACE blocks found. Expected at least one block "
-            f"delimited by '{_SEARCH_MARK}' / '{_DIVIDER_MARK}' / '{_REPLACE_MARK}', "
-            f"each marker alone on its own line."
+            f"delimited by '{_SEARCH_MARK}' / '{_DIVIDER_MARK}' / '{_REPLACE_MARK}'."
         )
     return blocks if len(blocks) > 1 else blocks[0]
 
 
 # --------------------------------------------------------------------------
-# JSON payload loading — legacy/programmatic path only (--json-file).
-# Gives a real diagnosis instead of a bare parser exception, since the
-# most common cause is a hand-typed heredoc with a literal newline or
-# unescaped quote landing inside a JSON string value. Prefer
-# _parse_search_replace_blocks for anything a model is typing by hand.
+# JSON payload loading (legacy)
 # --------------------------------------------------------------------------
 
 def _load_json_payload(raw_text: str, source_label: str):
@@ -519,29 +777,12 @@ def _load_json_payload(raw_text: str, source_label: str):
     except json.JSONDecodeError as e:
         pos = e.pos
         window = 40
-        start = max(0, pos - window)
-        end = min(len(raw_text), pos + window)
-        excerpt = raw_text[start:end]
-        pointer_col = pos - start
-        pointer_line = " " * pointer_col + "^-- around here"
+        snippet = raw_text[max(0, pos - window):pos + window]
         raise ToolError(
-            f"Malformed JSON from {source_label}: {e.msg} at line {e.lineno} "
-            f"column {e.colno} (char {pos}).\n"
-            f"This almost always means a literal newline, tab, or an "
-            f"unescaped \" or \\ landed inside a JSON string value instead "
-            f"of being written as \\n / \\\" / \\\\.\n"
-            f"--- context around the error ---\n{excerpt}\n{pointer_line}\n"
-            f"--- fix ---\n"
-            f"For a single edit, skip JSON entirely: write old_str to one "
-            f"raw file and new_str to another (plain heredocs, no escaping "
-            f"needed), then run:\n"
-            f"  editor_tools.py edit <path> --old-file <old.txt> --new-file <new.txt>\n"
-            f"For insert, use:\n"
-            f"  editor_tools.py insert <path> --content-file <new.txt> --at-line N\n"
-            f"  editor_tools.py insert <path> --content-file <new.txt> --after-str \"<anchor line>\"\n"
-            f"JSON is only needed for batch edits (a list of multiple "
-            f"old_str/new_str pairs applied atomically)."
-        ) from None
+            f"JSON parse error in {source_label} at byte {pos}: {e.msg}\n"
+            f"Context: ...{snippet}...\n"
+            f"Hint: if this is hand-typed code, use SEARCH/REPLACE blocks instead of JSON."
+        )
 
 
 # --------------------------------------------------------------------------
@@ -549,46 +790,39 @@ def _load_json_payload(raw_text: str, source_label: str):
 # --------------------------------------------------------------------------
 
 def _cli():
-    parser = argparse.ArgumentParser(
-        description="File view/create/edit/insert tools for coding agents."
-    )
+    parser = argparse.ArgumentParser(description="editor_tools v4")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_view = sub.add_parser("view", help="View a file (with line numbers) or list a directory")
+    p_view = sub.add_parser("view")
     p_view.add_argument("path")
     p_view.add_argument("--start", type=int, default=None)
     p_view.add_argument("--end", type=int, default=None)
-    p_view.add_argument("--full", action="store_true", help="Return the entire file, numbered, bypassing truncation")
+    p_view.add_argument("--full", action="store_true")
 
-    p_create = sub.add_parser("create", help="Create a new file")
+    p_create = sub.add_parser("create")
     p_create.add_argument("path")
-    p_create.add_argument("--content-file", help="Read content from this file instead of stdin")
+    p_create.add_argument("--content-file")
     p_create.add_argument("--overwrite", action="store_true")
 
-    p_edit = sub.add_parser(
-        "edit",
-        help="Replace text using <<<<<<< SEARCH / ======= / >>>>>>> REPLACE block(s) on "
-             "stdin (default) or --diff-file. --json-file is legacy/programmatic only.",
-    )
+    p_edit = sub.add_parser("edit")
     p_edit.add_argument("path")
-    p_edit.add_argument("--diff-file", help="File containing SEARCH/REPLACE block(s), instead of stdin")
-    p_edit.add_argument("--json-file", help="Legacy: file containing JSON edit payload (dict or list)")
+    p_edit.add_argument("--diff-file")
+    p_edit.add_argument("--json-file")
     p_edit.add_argument("--no-backup", action="store_true")
+    p_edit.add_argument("--replace-all", action="store_true",
+                        help="Replace ALL occurrences instead of requiring unique match")
+    p_edit.add_argument("--dry-run", action="store_true",
+                        help="Validate and show diff without writing")
 
-    p_insert = sub.add_parser(
-        "insert",
-        help="Insert new content without replacing anything. Prefer --content-file plus "
-             "--at-line or --after-str (raw, no JSON).",
-    )
+    p_insert = sub.add_parser("insert")
     p_insert.add_argument("path")
-    p_insert.add_argument("--content-file", help="RAW file containing the content to insert (no JSON, no escaping)")
-    p_insert.add_argument("--at-line", type=int, default=None, help="Insert BEFORE this 1-indexed line number")
-    p_insert.add_argument("--after-str", default=None, help="Insert immediately after this unique anchor text")
-    p_insert.add_argument("--after-file", default=None,
-                           help="RAW file containing the anchor text, for anchors too long/awkward for a CLI arg")
-    p_insert.add_argument("--json-file", help='File containing {"content": "...", "at_line": N} or '
-                                               '{"content": "...", "after_str": "..."}')
+    p_insert.add_argument("--content-file")
+    p_insert.add_argument("--at-line", type=int, default=None)
+    p_insert.add_argument("--after-str", default=None)
+    p_insert.add_argument("--after-file", default=None)
+    p_insert.add_argument("--json-file")
     p_insert.add_argument("--no-backup", action="store_true")
+    p_insert.add_argument("--dry-run", action="store_true")
 
     args = parser.parse_args()
 
@@ -615,7 +849,12 @@ def _cli():
                 else:
                     raw_text = sys.stdin.read()
                 payload = _parse_search_replace_blocks(raw_text)
-            print(edit_file(args.path, payload, backup=not args.no_backup))
+            print(edit_file(
+                args.path, payload,
+                backup=not args.no_backup,
+                replace_all=args.replace_all,
+                dry_run=args.dry_run,
+            ))
 
         elif args.command == "insert":
             if args.content_file and (args.at_line is not None or args.after_str or args.after_file):
@@ -631,6 +870,7 @@ def _cli():
                     args.path, content,
                     at_line=args.at_line, after_str=after_str,
                     backup=not args.no_backup,
+                    dry_run=args.dry_run,
                 ))
             elif args.json_file:
                 with open(args.json_file, "r", encoding="utf-8") as f:
@@ -639,6 +879,7 @@ def _cli():
                     args.path, payload["content"],
                     at_line=payload.get("at_line"), after_str=payload.get("after_str"),
                     backup=not args.no_backup,
+                    dry_run=args.dry_run,
                 ))
             elif args.content_file:
                 raise ToolError("--content-file requires --at-line, --after-str, or --after-file")
@@ -648,6 +889,7 @@ def _cli():
                     args.path, payload["content"],
                     at_line=payload.get("at_line"), after_str=payload.get("after_str"),
                     backup=not args.no_backup,
+                    dry_run=args.dry_run,
                 ))
 
     except ToolError as e:

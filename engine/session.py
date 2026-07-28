@@ -311,7 +311,7 @@ class BrowserManager:
                 instructions += fpath.read_text(encoding="utf-8") + "\n\n"
 
         PROJECT_ROOT = Path(__file__).resolve().parent.parent
-        OUTPUT_ROOT = Path("/home/sifat/hdd/Conversation/")
+        OUTPUT_ROOT = PROJECT_ROOT / "output"
         ASSETS_DIR = OUTPUT_ROOT / "assets"
         instructions += (
             f"\n\n***\n\n# SYSTEM DIRECTORIES\n"

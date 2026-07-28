@@ -1,7 +1,8 @@
 
 """Verify SkillParser emits tool_pending events while buffering tag content."""
 import sys
-sys.path.insert(0, "/home/sifat/hdd/projects/Sable")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from engine.skills import SkillParser
 

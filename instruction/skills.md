@@ -221,6 +221,13 @@ Exactly one of `at_line` or `after_str` required. Same exact-then-normalized mat
 
 ***
 
+### Deep Research
+* **Trigger:** Multi-part or comparative questions needing synthesis across many sources — "compare X across Y and Z with pricing/reviews/benchmarks", "comprehensive report on...", "everything about...", or explicit "deep research"/"deep dive" requests.
+* **Not this if:** A single query would answer it → use **Online Search**. The ask is formatting/organizing already-known info into a doc → use **Document Skills**.
+* **Instruction:** `PROJECT_ROOT/skills/data/deep_research/instruction.md`
+
+***
+
 ### File Uploader
 * **Trigger:** Preferred method of loading file into the context when you need pdf, pptx, docx, odt, image or any type of non text based file.
 * **Not this if:** You need to edit/create/mutate files → use **Code Editor**.
