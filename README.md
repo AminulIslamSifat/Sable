@@ -18,7 +18,7 @@ Browser (UI) ──SSE/REST──▶ FastAPI Server ──HTTP stream──▶ Q
                                   └── Skill Registry ──▶ Editor / Playwright / ADB subprocesses
 ~~~
 
-The server routes each message through a **persistent Chromium browser profile** that holds your Qwen session — no API key needed. Session cookies and WAF tokens are sniffed from the browser's network layer, auto-refreshed on 401s, and never leave your machine. DeepSeek models use a direct HTTP API with PoW challenge-based auth instead.
+The server routes each message through a **persistent Chromium browser profile** that holds your Qwen session — no API key needed. Session cookies and WAF tokens are sniffed from the browser's network layer, auto-refreshed on 401s, and never leave your machine. DeepSeek models use a direct HTTP API with **Proof-of-Work challenge-based auth** (solved via a compiled Go binary, ~84ms per challenge).
 
 **Memory** entries from `Brain/Memory.json` are injected into every message via semantic search (fastembed). Only the most relevant facts surface — no dumping the whole file into context.
 
@@ -34,9 +34,10 @@ The server routes each message through a **persistent Chromium browser profile**
 |:---|:---|
 | Python ≥ 3.11 | |
 | `uv` | Fast Python package manager |
+| Go ≥ 1.21 | Required for DeepSeek PoW solver (compiles on first run) |
 | Playwright browsers | `uv run playwright install chromium` |
 | A Qwen account | Free tier at [chat.qwen.ai](https://chat.qwen.ai) |
-| (Optional) DeepSeek account | For Expert/Instant/Vision models — token from platform.deepseek.com |
+| (Optional) DeepSeek account | For Expert/Instant/Vision models — API key from [platform.deepseek.com](https://platform.deepseek.com) |
 
 ### Installation
 
@@ -46,6 +47,9 @@ uv sync
 uv run playwright install chromium
 ~~~
 
+> [!NOTE]
+> The DeepSeek PoW solver (`connectors/deepseek/pow_solver/`) compiles automatically on first use. If you don't plan to use DeepSeek models, Go is optional.
+
 ### First-Time Setup
 
 **Step 1 — Authenticate with Qwen**
@@ -54,12 +58,28 @@ uv run playwright install chromium
 uv run python engine/browser_opener.py
 ~~~
 
-A Chromium window opens at `chat.qwen.ai`. Log in manually, solve any CAPTCHAs, press Enter in the terminal. Session cookies + WAF tokens are saved to `./browser-data/` and auto-refreshed.
+A Chromium window opens at `chat.qwen.ai`. Log in manually, solve any CAPTCHAs, press Enter in the terminal. Session cookies + WAF tokens are saved to `engine/browser-data/` and auto-refreshed.
 
 > [!NOTE]
 > If the session expires after long idle periods, re-run `browser_opener.py`. The server auto-refreshes on 401s, but manual re-login is sometimes needed.
 
-**Step 2 — Set your persona**
+**Step 2 — Set up DeepSeek (optional)**
+
+~~~bash
+# Store your DeepSeek API key
+echo "your-deepseek-token" > .deepseek_token
+# Or export it:
+export DEEPSEEK_TOKEN="your-deepseek-token"
+~~~
+
+The PoW solver Go binary will compile automatically on first API call. You can also compile it manually:
+
+~~~bash
+cd connectors/deepseek/pow_solver
+go build -o pow_solver main.go
+~~~
+
+**Step 3 — Set your persona**
 
 ~~~bash
 cp instruction/Maria.md.example instruction/Maria.md
@@ -67,7 +87,7 @@ cp instruction/Maria.md.example instruction/Maria.md
 
 Edit `instruction/Maria.md` — this **is** the system prompt. Name, OS, tools, active projects, code style, sudo password, everything. The agent reads this on every message to know who you are and how you work.
 
-**Step 3 — Seed your memory (optional)**
+**Step 4 — Seed your memory (optional)**
 
 ~~~bash
 cp Brain/Memory.json.example Brain/Memory.json
@@ -81,7 +101,7 @@ Three memory categories supported:
 | `episodic` | Events & milestones | "Deployed v0.4 on 2026-07-28" |
 | `procedural` | Workflows & preferences | "Run tests before every commit" |
 
-**Step 4 — Start the server**
+**Step 5 — Start the server**
 
 ~~~bash
 uv run python server.py
@@ -104,16 +124,19 @@ Models and their thinking modes live in `engine/config.py`:
 | `deepseek-instant` | DeepSeek Instant | DeepSeek (HTTP API) | Fast, Thinking |
 | `deepseek-vision` | DeepSeek Vision | DeepSeek (HTTP API) | Fast, Thinking |
 
-Add new models by editing the `MODELS` list — they appear in the UI automatically. Qwen models route through the browser session with sniffed cookies/WAF tokens. DeepSeek models use a direct HTTP API with PoW challenge-based auth.
+Add new models by editing the `MODELS` list — they appear in the UI automatically.
 
-> [!TIP]
-> DeepSeek models need a `DEEPSEEK_TOKEN` env var or `.deepseek_token` file. Vision model supports image uploads. DeepSeek chats use numeric parent IDs (separate session tracking from Qwen's UUID system).
+### How routing works
+
+- **Qwen models** → Route through the Playwright-managed Chromium browser profile. Cookies and WAF tokens are sniffed from the browser's network layer and auto-refreshed.
+- **DeepSeek models** → Direct HTTP API calls. The server solves a Proof-of-Work challenge (difficulty ~144,000, solved in ~84ms by the Go binary) to obtain a session token, then streams responses. Session continuity is maintained per-chat via numeric parent message IDs.
+- **Model switching** → Frontend auto-switches the model dropdown based on the chat's parent ID type (numeric = DeepSeek, UUID = Qwen).
 
 ***
 
 ## Skill Registry
 
-Skills live in `skills/<category>/<key>/` with an `instruction.md` protocol file. Registered skills (17 total):
+Skills live in `skills/<category>/<key>/` with an `instruction.md` protocol file. 15 registered skills:
 
 | Category | Skills |
 |:---|:---|
@@ -137,7 +160,7 @@ The UI is a **vanilla JS SPA** — no React, no build step. Open `http://localho
 - **Thinking mode selector** — Fast, Auto, or Thinking per model
 - **Chat history** — persisted in SQLite, browsable via sidebar
 - **Skill event cards** — file edits, command outputs, tool results rendered inline
-- **Memory chips** — surfaced memories clickable with full-context popups
+- **Memory chips** — surfaced memories clickable with full-context popups (supports tool-result memories too)
 - **File upload** — drag-and-drop images/PDFs into chat
 - **PWA support** — installable as standalone app via `manifest.json` + service worker
 
@@ -154,18 +177,27 @@ Sable/
 │   ├── service.py                # ChatService (DB ops, chat CRUD)
 │   ├── session.py                # Qwen session management
 │   ├── scraper.py                # Playwright browser scraper service
+│   ├── scraper_engines/          # Per-backend scraper implementations
+│   │   ├── deepseek/             # DeepSeek PoW challenge + SSE parsing
+│   │   └── qwen/                 # Qwen WAF token + cookie sniffing
 │   ├── browser_opener.py         # Manual auth flow (opens Chromium)
+│   ├── browser-data/             # Persistent Chromium profile (gitignored)
 │   ├── memory_search.py          # Semantic search over Memory.json
 │   ├── skills.py                 # Skill parser, execution, backup guards
 │   └── payloads.py               # Request payload builders
 ├── connectors/
-│   └── deepseek/                 # DeepSeek HTTP API client + PoW solver
+│   └── deepseek/                 # DeepSeek HTTP API client
+│       ├── client.py             # API client with session management
+│       └── pow_solver/           # Go PoW solver (compiles on first use)
+│           ├── main.go           # Challenge solver (~84ms, difficulty 144k)
+│           └── pow_solver        # Compiled binary (gitignored)
 ├── instruction/
 │   ├── Maria.md                  # System prompt (persona + core rules)
+│   ├── Maria.md.example          # Persona template for new users
 │   ├── output_format.md          # Output formatting rules
 │   └── skills.md                 # Skill registry + routing protocol
 ├── skills/
-│   ├── registry.json             # Skill definitions (17 registered)
+│   ├── registry.json             # Skill definitions (15 registered)
 │   ├── core/                     # Code editor, ADB, Playwright, etc.
 │   ├── visuals/                  # SVG, graphs, simulations, frontend
 │   ├── study/                    # Flashcards, practice problems
@@ -182,8 +214,8 @@ Sable/
 ├── output/                       # Generated content (notes, assets, sessions)
 ├── uploads/                      # Uploaded file storage
 ├── test/                         # Test suite + benchmarks
-├── browser-data/                 # Persistent Chromium profile (gitignored)
-├── browser-scraper-data/         # Scraper's Chromium profile (gitignored)
+├── browser-data/                 # Qwen Chromium profile (gitignored)
+├── browser-scraper-data/         # Scraper Chromium profile (gitignored)
 ├── .sable_backups/               # Auto-backups before file edits
 └── pyproject.toml
 ~~~
