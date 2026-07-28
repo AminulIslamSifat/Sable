@@ -20,6 +20,9 @@ build/
 browser-data/
 browser-scraper-data/
 scraper_output/
+browser-data.bak/
+browser-scraper-data.bak/
+
 
 # Uploads (user-uploaded files)
 uploads/
