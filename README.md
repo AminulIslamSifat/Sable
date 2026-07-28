@@ -41,27 +41,20 @@ The server routes each message through a **persistent Chromium browser profile**
 
 ### Installation
 
-~~~bash
-cd /home/sifat/hdd/projects/Sable
-uv sync
-uv run playwright install chromium
-~~~
-
 > [!NOTE]
 > The DeepSeek PoW solver (`connectors/deepseek/pow_solver/`) compiles automatically on first use. If you don't plan to use DeepSeek models, Go is optional.
 
 ### First-Time Setup
 
-**Step 1 — Authenticate with Qwen**
+**Quick Automated Setup (Recommended)**
+
+Instead of running steps 1 through 5 manually, you can use the automated initialization script:
 
 ~~~bash
-uv run python engine/browser_opener.py
+chmod +x init.sh
+./init.sh
 ~~~
 
-A Chromium window opens at `chat.qwen.ai`. Log in manually, solve any CAPTCHAs, press Enter in the terminal. Session cookies + WAF tokens are saved to `engine/browser-data/` and auto-refreshed.
-
-> [!NOTE]
-> If the session expires after long idle periods, re-run `browser_opener.py`. The server auto-refreshes on 401s, but manual re-login is sometimes needed.
 
 **Step 2 — Set up DeepSeek (optional)**
 
@@ -79,19 +72,9 @@ cd connectors/deepseek/pow_solver
 go build -o pow_solver main.go
 ~~~
 
-**Step 3 — Set your persona**
-
-~~~bash
-cp instruction/Maria.md.example instruction/Maria.md
-~~~
 
 Edit `instruction/Maria.md` — this **is** the system prompt. Name, OS, tools, active projects, code style, sudo password, everything. The agent reads this on every message to know who you are and how you work.
 
-**Step 4 — Seed your memory (optional)**
-
-~~~bash
-cp Brain/Memory.json.example Brain/Memory.json
-~~~
 
 Three memory categories supported:
 
@@ -101,13 +84,13 @@ Three memory categories supported:
 | `episodic` | Events & milestones | "Deployed v0.4 on 2026-07-28" |
 | `procedural` | Workflows & preferences | "Run tests before every commit" |
 
-**Step 5 — Start the server**
+**Step 3 — Start the server**
 
 ~~~bash
-uv run python server.py
+./startapp
 ~~~
 
-Open **http://localhost:8000**. Login screen asks for your auth token (default: `sable`).
+Open **http://localhost:8000**. Login screen asks for your auth token (configured via `init.sh` or saved in `system/.auth_token`).
 
 ***
 
