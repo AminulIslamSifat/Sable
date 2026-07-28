@@ -2932,21 +2932,34 @@
     });
 
     const refreshDeepseekTokenBtn = document.getElementById("refreshDeepseekTokenBtn");
+    const deepseekTokenStatus = document.getElementById("deepseekTokenStatus");
     if (refreshDeepseekTokenBtn) {
+      const setDsStatus = (msg, color) => {
+        if (!deepseekTokenStatus) return;
+        deepseekTokenStatus.textContent = msg;
+        deepseekTokenStatus.style.color = color || "var(--text-dim)";
+      };
       refreshDeepseekTokenBtn.addEventListener("click", async () => {
         refreshDeepseekTokenBtn.disabled = true;
         refreshDeepseekTokenBtn.textContent = "↻ Refreshing...";
+        setDsStatus("Refreshing DeepSeek token from browser profile…", "var(--text-dim)");
         try {
           const res = await fetch("/api/settings/deepseek/refresh-token", { method: "POST" });
           const data = await res.json().catch(() => ({}));
           if (res.ok) {
+            const preview = data.token_preview ? " (" + data.token_preview + ")" : "";
+            setDsStatus("✅ Token refreshed successfully" + preview, "var(--success, #3daa5c)");
             showToast("DeepSeek token refreshed", "success");
             await loadModels();
           } else {
-            showToast(data.detail || data.error || "DeepSeek token refresh failed", "error");
+            const msg = data.detail || data.error || "DeepSeek token refresh failed";
+            setDsStatus("✕ " + msg, "var(--danger, #cf3b52)");
+            showToast(msg, "error");
           }
         } catch (e) {
-          showToast("DeepSeek refresh error: " + e.message, "error");
+          const msg = "DeepSeek refresh error: " + e.message;
+          setDsStatus("✕ " + msg, "var(--danger, #cf3b52)");
+          showToast(msg, "error");
         } finally {
           refreshDeepseekTokenBtn.disabled = false;
           refreshDeepseekTokenBtn.textContent = "↻ Refresh Token";
