@@ -105,6 +105,43 @@ class DeepSeekClient:
         return {"Authorization": f"Bearer {tok}", **CLIENT_HEADERS}
 
     # ------------------------------------------------------------------
+    # Token auto-refresh via persistent browser profile
+    # ------------------------------------------------------------------
+
+    _BROWSER_PROFILE = Path.home() / ".local/share/ghostchat/chrome-data"
+
+    async def _refresh_token_from_browser(self) -> str:
+        """Open persistent browser profile, read DeepSeek token from localStorage."""
+        from playwright.async_api import async_playwright
+
+        logger.info("Refreshing DeepSeek token from browser profile...")
+        async with async_playwright() as pw:
+            ctx = await pw.chromium.launch_persistent_context(
+                user_data_dir=str(self._BROWSER_PROFILE),
+                headless=True,
+                args=["--disable-gpu", "--no-sandbox"],
+            )
+            page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+            await page.goto("https://chat.deepseek.com", wait_until="domcontentloaded", timeout=15000)
+            await page.wait_for_timeout(2000)  # let JS hydrate localStorage
+            token = await page.evaluate("() => localStorage.getItem('userToken')")
+            await ctx.close()
+
+        if not token:
+            raise DeepSeekAPIError("No userToken found in browser profile. Log in to chat.deepseek.com first.")
+
+        # localStorage stores JSON: {"value":"<jwt>","__version":"0"}
+        try:
+            parsed = json.loads(token)
+            token = parsed.get("value", token)
+        except (json.JSONDecodeError, AttributeError):
+            token = token.strip('"')
+
+        self.set_token(token)
+        logger.info("Token refreshed successfully from browser.")
+        return token
+
+    # ------------------------------------------------------------------
     # HTTP client lifecycle
     # ------------------------------------------------------------------
 
@@ -161,15 +198,29 @@ class DeepSeekClient:
     # ------------------------------------------------------------------
 
     async def _get_challenge(self) -> dict[str, Any]:
-        """Request a fresh PoW challenge."""
+        """Request a fresh PoW challenge. Auto-refreshes token from browser on 401."""
         http = await self._get_http()
+
+        # No token at all — try browser refresh before anything else
+        if not self.token:
+            await self._refresh_token_from_browser()
+
         resp = await http.post(
             "/api/v0/chat/create_pow_challenge",
             json={"target_path": "/api/v0/chat/completion"},
             headers=self._auth_headers(),
         )
         if resp.status_code == 401:
-            raise DeepSeekAPIError("Token expired (401). Re-extract from browser.")
+            # Token expired — auto-refresh from persistent browser profile
+            logger.warning("401 on challenge — refreshing token from browser...")
+            await self._refresh_token_from_browser()
+            resp = await http.post(
+                "/api/v0/chat/create_pow_challenge",
+                json={"target_path": "/api/v0/chat/completion"},
+                headers=self._auth_headers(),
+            )
+            if resp.status_code == 401:
+                raise DeepSeekAPIError("Token still invalid after browser refresh. Log in to chat.deepseek.com.")
         resp.raise_for_status()
         data = resp.json()
         if data.get("code") != 0:
