@@ -253,3 +253,4 @@ Sable/
 - **Memory search:** Thresholds and embedding model in `memory_search_settings.json` — editable at runtime via API.
 - **Scraper:** Engine settings in `scraper_settings.json`.
 - **Models:** Add/edit in `engine/config.py` → `MODELS` list.
+ 
