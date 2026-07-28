@@ -91,6 +91,26 @@
     {
       "key": "Sable per-chat mode locking",
       "value": "Chats table has a 'mode' column ('api' or 'scraper') auto-migrated on startup. Mode is locked on first message via ensure_chat(mode=current_mode). get_chat_mode(chat_id) retrieves it. /api/chat blocks sends when current global scraper_enabled state mismatches the chat's locked mode, returning error: 'This chat was created in {mode} mode. Switch back to {mode} mode or start a new chat.' Existing chats without mode get locked on next interaction."
+    },
+    {
+      "key": "Sable ONNX Runtime memory arena fix",
+      "value": "fastembed's ONNX Runtime pre-allocates a massive CPU memory arena by default — 4.2GB RSS for a 90MB embedding model (snowflake-arctic-embed-xs), peaking at 6.87GB VmPeak. Fix: pass enable_cpu_mem_arena=False to TextEmbedding() in engine/memory_search.py _ensure_model(). fastembed exposes this via EXPOSED_SESSION_OPTIONS in common/onnx_model.py. After fix: 52MB RSS, 113MB VmPeak. Single anonymous mmap of 4192MB was the arena."
+    },
+    {
+      "key": "Sable skills registry.json architecture",
+      "value": "Skills metadata moved from hardcoded SKILL_REGISTRY Python list in engine/skills.py to skills/registry.json (single source of truth). 14 skills: 11 with directories (core/code_editor, core/phone_control, visuals/svg_creator, visuals/graph_master, visuals/simulacra_engine, visuals/frontend_design, study/study_suite, data/document_skills, data/search_online, data/http_client, data/youtube_downloader) + 3 inline (system_repair, background_command, file_uploader — path:null, protocol in instruction/skills.md). browse_skills() enriches with instruction.md content + scripts/ listing per request. /api/skills/browse endpoint serves the frontend settings panel."
+    },
+    {
+      "key": "Sable skills that do NOT exist",
+      "value": "These skills were in the old hardcoded SKILL_REGISTRY but have no directory or instruction file: file_organizer, memory_sync, openweb, proof_verifier, math_solver. Removed from registry.json on 2026-07-28. instruction/skills.md is the authoritative source for what skills actually exist."
+    },
+    {
+      "key": "Sifat uses jina embedding model for Sable memory search",
+      "value": "Active embedding model is jinaai/jina-embeddings-v2-small-en (threshold 0.596), not the code default snowflake-arctic-embed-xs. Set via memory search settings UI. Confirmed working with memory injection in live chat on 2026-07-28."
+    },
+    {
+      "key": "phantom_bot WEB_APP_URL already includes /panel",
+      "value": "config.py line 19: WEB_APP_URL = f\"{WEBHOOK_URL.rstrip('/')}/panel\". Any code appending /panel again creates double-prefix (panel/panel/). Admin button in bot/handlers/command.py must use f\"{WEB_APP_URL}/\" not f\"{WEB_APP_URL}/panel/\"."
     }
   ],
   "episodic": [
@@ -121,6 +141,18 @@
     {
       "key": "Sable mode-locking 500 bug and fix 2026-07-28",
       "value": "First implementation of mode-locking guard caused 500 errors: ensure_chat used `SELECT id FROM chats` but then accessed `existing[\"mode\"]` — KeyError since mode wasn't in the result set. Sifat had to revert server.py and restart. Fixed by changing to `SELECT id, mode FROM chats WHERE id = ?`. Lesson: when adding column access to existing queries, always verify the SELECT clause includes the new column."
+    },
+    {
+      "key": "ONNX 4GB memory arena diagnosed and fixed 2026-07-28",
+      "value": "Sable uvicorn process growing to 7-8GB. Diagnosed via /proc/PID/smaps_rollup (4.29GB RSS, 6.87GB VmPeak) and /proc/PID/maps (single 4192MB anonymous mmap). Root cause: ONNX Runtime enable_cpu_mem_arena=True default in fastembed. One-line fix: enable_cpu_mem_arena=False in TextEmbedding() constructor. Result: 4290MB → 52MB RSS (98.8% reduction). Stabilized immediately — not a slow leak but a massive upfront allocation."
+    },
+    {
+      "key": "phantom_bot admin button double-prefix fixed 2026-07-28",
+      "value": "Admin panel button URL showed panel/panel/ because WEB_APP_URL (config.py) already ends with /panel, and command.py appended another /panel/. Fixed command.py line 11: url=f\"{WEB_APP_URL}/\" instead of url=f\"{WEB_APP_URL}/panel/\"."
+    },
+    {
+      "key": "Sable skills panel fixed 2026-07-28",
+      "value": "Settings skills tab showed nothing because frontend called /api/skills/browse which didn't exist (backend only had /api/skills). Also schema mismatch: frontend expected category/path/scripts/instruction-content, backend gave key/trigger/instruction-filepath. Fixed by creating skills/registry.json, adding browse_skills() to engine/skills.py, and /api/skills/browse endpoint to server.py. Removed 5 non-existent skills from registry."
     }
   ],
   "procedural": [
@@ -159,6 +191,10 @@
     {
       "key": "Sable SQLite row access pattern",
       "value": "When modifying Sable DB helper functions to access new columns: always check that the SELECT statement explicitly includes the column name before accessing via row[\"col\"]. SQLite Row objects only contain columns listed in SELECT — accessing an unlisted column raises IndexError/KeyError causing 500s. Grep for the SELECT query when extending existing functions."
+    },
+    {
+      "key": "Diagnosing Python process memory bloat on Linux",
+      "value": "When a Python process uses excessive RAM: 1) grep VmRSS/VmPeak /proc/PID/status for overview. 2) cat /proc/PID/smaps_rollup for Rss/Pss/AnonHugePages breakdown. 3) Parse /proc/PID/maps to find large anonymous mappings (>100MB) — single huge anon mmaps indicate allocator arenas (ONNX, numpy, jemalloc). 4) Compare RSS vs VmPeak: big gap means allocation-then-free pattern (arena pre-allocation). 5) Check loaded .so files via grep on maps to identify the library. 6) For ONNX specifically: disable enable_cpu_mem_arena in SessionOptions."
     }
   ],
   "ephemeral": []

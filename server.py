@@ -30,7 +30,7 @@ from engine.scraper import (
 )
 from engine.memory_search import get_searcher, list_available_models
 from engine.service import ChatService
-from engine.skills import BACKUP_DIR, SkillParser, build_tool_feedback, list_skills
+from engine.skills import BACKUP_DIR, SkillParser, browse_skills, build_tool_feedback, list_skills
 
 logger = logging.getLogger("sable")
 
@@ -562,6 +562,11 @@ def delete_chat_route(chat_id: str) -> dict[str, Any]:
 @app.get("/api/skills")
 def skills() -> dict[str, list[dict[str, Any]]]:
     return {"skills": list_skills()}
+
+
+@app.get("/api/skills/browse")
+def skills_browse() -> dict[str, list[dict[str, Any]]]:
+    return {"skills": browse_skills()}
 
 
 @app.post("/api/sync-context")
