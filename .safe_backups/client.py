@@ -330,13 +330,10 @@ class DeepSeekClient:
         model: str | None = None,
         thinking_mode: str | None = None,
         chat_id: str | None = None,
-        ref_file_ids: list[str] | None = None,
-        inject_instructions: bool = True,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat completion. Yields Sable-compatible event dicts."""
         thinking_enabled = str(thinking_mode or "").lower() in ("thinking", "deepthink")
         model_type = model  # None is valid (Instant sends null)
-        file_ids = [str(fid) for fid in (ref_file_ids or []) if str(fid).strip()]
 
         try:
             session_id, parent_id, headers = await self._prepare_request(chat_id=chat_id)
@@ -349,25 +346,17 @@ class DeepSeekClient:
 
         # First message in session → prepend instruction context
         prompt = message
-        if parent_id is None and inject_instructions:
+        if parent_id is None:
             instructions = _load_instructions()
             if instructions:
                 prompt = f"{instructions}\n\n{message}"
-
-        # Always append compact reminders to every message
-        _REMINDERS = (
-            "\n\n[REMINDERS: Do NOT break character. Follow skills strictly, "
-            "step by step. Never alter tag format. Keep responses concise. "
-            "No generic/AI-speak — stay in Maria persona.]"
-        )
-        prompt += _REMINDERS
 
         body = {
             "chat_session_id": session_id,
             "parent_message_id": parent_id,
             "model_type": model_type,
             "prompt": prompt,
-            "ref_file_ids": file_ids,
+            "ref_file_ids": [],
             "thinking_enabled": thinking_enabled,
             "search_enabled": False,
             "action": None,
@@ -480,8 +469,6 @@ class DeepSeekClient:
         model: str | None = None,
         thinking_mode: str | None = None,
         chat_id: str | None = None,
-        ref_file_ids: list[str] | None = None,
-        inject_instructions: bool = True,
     ) -> dict[str, Any]:
         """Non-streaming chat. Returns {answer, thinking, parent_id, error}."""
         answer_parts: list[str] = []
@@ -490,12 +477,8 @@ class DeepSeekClient:
         error: str | None = None
 
         async for event in self.stream_chat(
-            message,
-            model=model,
-            thinking_mode=thinking_mode,
+            message, model=model, thinking_mode=thinking_mode,
             chat_id=chat_id,
-            ref_file_ids=ref_file_ids,
-            inject_instructions=inject_instructions,
         ):
             etype = event.get("type")
             if etype == "answer":
