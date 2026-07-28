@@ -90,7 +90,7 @@ Three memory categories supported:
 ./startapp
 ~~~
 
-Open **http://localhost:8000**. Login screen asks for your auth token (configured via `init.sh` or saved in `system/.auth_token`).
+Open **http://localhost:61770**. Login screen asks for your auth token (configured via `init.sh` or saved in `system/.auth_token`).
 
 ***
 
