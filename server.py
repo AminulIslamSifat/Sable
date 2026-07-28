@@ -1660,4 +1660,4 @@ def index() -> str:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("server:app", host="127.0.0.1", port=6000, reload=False)
+    uvicorn.run("server:app", host="127.0.0.1", port=61770, reload=False)
