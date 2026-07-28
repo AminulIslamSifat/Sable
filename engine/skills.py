@@ -62,138 +62,49 @@ KNOWN_TAGS = (
     "insert_file",
 )
 
-SKILL_REGISTRY = [
-    {
-        "name": "Code Editor",
-        "key": "code_editor",
-        "trigger": "Writing to disk: create, edit, insert, or view files with precise line-numbered operations.",
-        "instruction": "skills/core/code_editor/instruction.md",
-        "tags": ["view_file", "edit_file", "create_file", "insert_file", "execute_command"],
-    },
-    {
-        "name": "SVG Creator",
-        "key": "svg_creator",
-        "trigger": "Data structure visualizations, node/edge diagrams, algorithm state illustrations.",
-        "instruction": "skills/visuals/svg_creator/instruction.md",
-        "tags": ["save_svg"],
-    },
-    {
-        "name": "Graph Master",
-        "key": "graph_master",
-        "trigger": "Mathematical function plots and labeled Cartesian/polar coordinate graphs.",
-        "instruction": "skills/visuals/graph_master/instruction.md",
-        "tags": ["save_svg", "execute_command"],
-    },
-    {
-        "name": "Math Solver",
-        "key": "math_solver",
-        "trigger": "Symbolic calculus, step-by-step equation solving, derivation verification.",
-        "instruction": "skills/visuals/math_solver/instruction.md",
-        "tags": [],
-    },
-    {
-        "name": "Simulacra Engine",
-        "key": "simulacra_engine",
-        "trigger": "Dynamic, animated, interactive visualizations of physical or mathematical systems.",
-        "instruction": "skills/visuals/simulacra_engine/instruction.md",
-        "tags": ["create_note", "execute_command"],
-    },
-    {
-        "name": "Proof Verifier",
-        "key": "proof_verifier",
-        "trigger": "Explicit verification of handwritten math or derivation images.",
-        "instruction": "skills/visuals/proof_verifier/instruction.md",
-        "tags": ["get_file"],
-    },
-    {
-        "name": "Frontend Design",
-        "key": "frontend_design",
-        "trigger": "Production-grade UI, web components, high-fidelity layouts.",
-        "instruction": "skills/visuals/frontend_design/instruction.md",
-        "tags": ["create_note", "execute_command"],
-    },
-    {
-        "name": "Study Suite",
-        "key": "study_suite",
-        "trigger": "Flashcards, Anki decks, practice problems, mock exams, cheat sheets, formula sheets.",
-        "instruction": "skills/study/study_suite/instruction.md",
-        "tags": ["create_note", "execute_command"],
-    },
-    {
-        "name": "Memory Sync",
-        "key": "memory_sync",
-        "trigger": "Diary logging or full persona/memory synchronization.",
-        "instruction": "skills/core/memory_sync/instruction.md",
-        "tags": ["create_note", "execute_command"],
-    },
-    {
-        "name": "OpenWeb",
-        "key": "openweb",
-        "trigger": "Fetching structured data from a specific site or target URL.",
-        "instruction": "skills/data/openweb/instruction.md",
-        "tags": ["openweb"],
-    },
-    {
-        "name": "Online Search",
-        "key": "online_search",
-        "trigger": "General web searches for quick facts, coding questions, or current events.",
-        "instruction": "instruction/skills.md",
-        "tags": ["search-online"],
-    },
-    {
-        "name": "File Uploader",
-        "key": "file_uploader",
-        "trigger": "Loading PDFs, images, Office files, or other non-text files into context.",
-        "instruction": "instruction/skills.md",
-        "tags": ["get_file", "read_file"],
-    },
-    {
-        "name": "Document Skills",
-        "key": "document_skills",
-        "trigger": "Creating, editing, or analyzing DOCX, PDF, PPTX, XLSX documents.",
-        "instruction": "skills/data/document_skills/instruction.md",
-        "tags": ["execute_command", "get_file"],
-    },
-    {
-        "name": "Video Downloader",
-        "key": "video_downloader",
-        "trigger": "Downloading videos or extracting audio from media platforms.",
-        "instruction": "skills/data/youtube_downloader/instruction.md",
-        "tags": ["execute_command", "execute_background_command", "check_command"],
-    },
-    {
-        "name": "File Organizer",
-        "key": "file_organizer",
-        "trigger": "Cleaning up directories, finding duplicates, restructuring workspace/HDD.",
-        "instruction": "skills/core/file_organizer/instruction.md",
-        "tags": ["execute_command"],
-    },
-    {
-        "name": "Phone Control",
-        "key": "phone_control",
-        "trigger": "Controlling or automating an Android phone through ADB.",
-        "instruction": "skills/core/phone_control/instruction.md",
-        "tags": ["execute_command"],
-    },
-    {
-        "name": "System Repair",
-        "key": "system_repair",
-        "trigger": "Arch Linux or Hyprland repair, logs, pacman/keyring errors, UI glitches.",
-        "instruction": "skills/core/system_repair/instruction.md",
-        "tags": ["execute_command"],
-    },
-    {
-        "name": "Background Command Execution",
-        "key": "background_command",
-        "trigger": "Long-running processes, dev servers, builds, tests, downloads, and process monitoring.",
-        "instruction": "instruction/skills.md",
-        "tags": ["execute_background_command", "check_command"],
-    },
-]
+_REGISTRY_PATH = Path(__file__).resolve().parent.parent / "skills" / "registry.json"
+SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
+
+
+def _load_registry() -> list[dict[str, Any]]:
+    try:
+        return json.loads(_REGISTRY_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+SKILL_REGISTRY: list[dict[str, Any]] = _load_registry()
 
 
 def list_skills() -> list[dict[str, Any]]:
     return SKILL_REGISTRY
+
+
+def browse_skills() -> list[dict[str, Any]]:
+    """Return skills enriched with instruction content and script listings."""
+    skills = _load_registry()
+    for sk in skills:
+        rel = sk.get("path", "")
+        skill_dir = SKILLS_DIR / rel if rel else None
+
+        # Load instruction.md content
+        instr_path = skill_dir / "instruction.md" if skill_dir else None
+        if instr_path and instr_path.is_file():
+            try:
+                sk["instruction"] = instr_path.read_text(encoding="utf-8")
+            except Exception:
+                sk["instruction"] = None
+        else:
+            sk["instruction"] = None
+
+        # List scripts
+        scripts_dir = skill_dir / "scripts" if skill_dir else None
+        if scripts_dir and scripts_dir.is_dir():
+            sk["scripts"] = sorted(f.name for f in scripts_dir.iterdir() if f.is_file())
+        else:
+            sk["scripts"] = []
+
+    return skills
 
 
 def _output_event(tag_id: str, text: str, stream: str = "stdout") -> dict[str, Any]:
