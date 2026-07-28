@@ -11,7 +11,7 @@ from engine.memory_search import MemorySearcher
 
 DB_PATH = Path(__file__).resolve().parent.parent / "sable.db"
 MODEL = "jinaai/jina-embeddings-v2-small-en"
-THRESHOLD = 0.74
+THRESHOLD = 0.596
 
 RECENT_PROMPTS = [
     "is it not saving thinking and skill event now?",
@@ -32,7 +32,7 @@ def main() -> None:
 
     searcher = MemorySearcher()
     searcher.set_model(MODEL)
-    searcher.set_threshold(THRESHOLD)
+    searcher.set_thresholds({MODEL: THRESHOLD})
     searcher._ensure_loaded()
 
     print(f"Memory entries loaded: {len(searcher._entries)}")

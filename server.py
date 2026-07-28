@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from engine.config import MODELS, MEMORY_PATH as _MEMORY_PATH, PROTECTED_PATH as _PROTECTED_PATH, MEMORY_SEARCH_SETTINGS_PATH as _MEMORY_SEARCH_SETTINGS
+from engine.config import MODELS, MEMORY_PATH as _MEMORY_PATH, PROTECTED_PATH as _PROTECTED_PATH, MEMORY_SEARCH_SETTINGS_PATH as _MEMORY_SEARCH_SETTINGS, get_model_config
 from engine.scraper import (
     get_settings as get_scraper_settings,
     list_engines as list_scraper_engines,
@@ -31,11 +31,22 @@ from engine.scraper import (
 from engine.memory_search import get_searcher, list_available_models
 from engine.service import ChatService
 from engine.skills import BACKUP_DIR, SkillParser, browse_skills, build_tool_feedback, list_skills
+from connectors.deepseek.client import get_client as get_deepseek_client
 
 logger = logging.getLogger("sable")
 
 # Live log buffer for /api/logs SSE endpoint
 _log_buffer: asyncio.Queue[str] = asyncio.Queue(maxsize=500)
+
+
+def _is_deepseek_api_model(model_id: str | None = None) -> bool:
+    """True when the selected model routes through the DeepSeek HTTP API."""
+    if not model_id:
+        return False
+    cfg = get_model_config(model_id)
+    if cfg.get("api_backend") != "deepseek":
+        return False
+    return get_deepseek_client().token is not None
 
 
 class SSELogHandler(logging.Handler):
@@ -194,6 +205,8 @@ def init_db() -> None:
         existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(messages)")}
         if "skill_events" not in existing_cols:
             conn.execute("ALTER TABLE messages ADD COLUMN skill_events TEXT")
+        if "memory_used" not in existing_cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN memory_used TEXT")
 
         # Migration: add memory_keys column to chats for per-chat dedup
         chat_cols = {row["name"] for row in conn.execute("PRAGMA table_info(chats)")}
@@ -286,14 +299,16 @@ def add_message(
     thinking: str | None = None,
     parent_id: str | None = None,
     skill_events: list[dict[str, Any]] | None = None,
+    memory_used: list[dict[str, Any]] | None = None,
 ) -> int:
     now = utcnow()
     skill_events_json = json.dumps(skill_events, ensure_ascii=False) if skill_events else None
+    memory_used_json = json.dumps(memory_used, ensure_ascii=False) if memory_used else None
     with get_db() as conn:
         cur = conn.execute(
-            "INSERT INTO messages (chat_id, role, content, thinking, skill_events, parent_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (chat_id, role, content, thinking, skill_events_json, parent_id, now),
+            "INSERT INTO messages (chat_id, role, content, thinking, skill_events, memory_used, parent_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, role, content, thinking, skill_events_json, memory_used_json, parent_id, now),
         )
         return int(cur.lastrowid)
 
@@ -316,7 +331,7 @@ def update_message(
 def get_messages(chat_id: str) -> list[dict[str, Any]]:
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT id, chat_id, role, content, thinking, skill_events, parent_id, created_at "
+            "SELECT id, chat_id, role, content, thinking, skill_events, memory_used, parent_id, created_at "
             "FROM messages WHERE chat_id = ? ORDER BY id ASC",
             (chat_id,),
         ).fetchall()
@@ -328,6 +343,11 @@ def get_messages(chat_id: str) -> list[dict[str, Any]]:
                 msg["skill_events"] = json.loads(raw_events) if raw_events else []
             except json.JSONDecodeError:
                 msg["skill_events"] = []
+            raw_mem = msg.get("memory_used")
+            try:
+                msg["memory_used"] = json.loads(raw_mem) if raw_mem else []
+            except json.JSONDecodeError:
+                msg["memory_used"] = []
             messages.append(msg)
         return messages
 
@@ -517,6 +537,7 @@ def models() -> dict[str, list[dict[str, Any]]]:
             {
                 "id": m["id"],
                 "label": m["label"],
+                "api_backend": m.get("api_backend"),
                 "thinking_modes": [
                     {"id": tm["id"], "label": tm["label"]} for tm in m["thinking_modes"]
                 ],
@@ -641,6 +662,86 @@ async def update_browser_settings(payload: dict[str, bool]) -> dict[str, Any]:
 
 
 
+
+
+_BROWSER_PROFILES: dict[str, tuple[str, str]] = {
+    "api": ("browser-data", "browser-data.bak"),
+    "scraper": ("browser-scraper-data", "browser-scraper-data.bak"),
+}
+
+
+def _dir_size_mb(path: Path) -> float:
+    """Recursive dir size in MB (blocking — call via to_thread)."""
+    if not path.is_dir():
+        return 0.0
+    total = 0
+    for f in path.rglob("*"):
+        if f.is_file():
+            try:
+                total += f.stat().st_size
+            except OSError:
+                pass
+    return round(total / 1_048_576, 1)
+
+
+@app.get("/api/settings/browser/profiles")
+async def get_browser_profiles() -> dict[str, Any]:
+    """Return status of each browser profile + its backup."""
+    import asyncio
+
+    def _collect() -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, (data_dir, bak_dir) in _BROWSER_PROFILES.items():
+            data_path = BASE_DIR / data_dir
+            bak_path = BASE_DIR / bak_dir
+            result[key] = {
+                "label": "API (ChatService)" if key == "api" else "Scraper",
+                "data_dir": data_dir,
+                "exists": data_path.is_dir(),
+                "size_mb": _dir_size_mb(data_path),
+                "has_backup": bak_path.is_dir(),
+                "backup_size_mb": _dir_size_mb(bak_path),
+            }
+        return result
+
+    # Directory walks are blocking I/O on a spinning HDD — offload to a thread
+    result = await asyncio.to_thread(_collect)
+    return {"profiles": result}
+
+
+@app.post("/api/settings/browser/restore")
+async def restore_browser_profile(payload: dict[str, str]) -> dict[str, Any]:
+    """Delete current profile data and restore from .bak snapshot."""
+    import asyncio
+    import shutil
+
+    profile = payload.get("profile", "")
+    if profile not in _BROWSER_PROFILES:
+        raise HTTPException(status_code=400, detail=f"Unknown profile '{profile}'. Use 'api' or 'scraper'.")
+
+    data_dir, bak_dir = _BROWSER_PROFILES[profile]
+    data_path = BASE_DIR / data_dir
+    bak_path = BASE_DIR / bak_dir
+
+    if not bak_path.is_dir():
+        raise HTTPException(status_code=404, detail=f"No backup found at {bak_dir}")
+
+    def _do_restore() -> None:
+        if data_path.is_dir():
+            shutil.rmtree(data_path)
+        # symlinks=True: Chromium's Singleton{Lock,Cookie,Socket} are broken
+        # symlinks (dead PID targets) — following them crashes copytree with ENOENT
+        shutil.copytree(bak_path, data_path, symlinks=True)
+
+    # Run heavy file I/O in a thread so the event loop doesn't block
+    await asyncio.to_thread(_do_restore)
+
+    return {
+        "status": "ok",
+        "profile": profile,
+        "restored_from": bak_dir,
+        "restored_to": data_dir,
+    }
 
 
 @app.get("/api/settings/memory")
@@ -1261,6 +1362,7 @@ async def chat(request: ChatRequest):
     _injected_memory_keys = get_injected_memory_keys(active_chat_id)
     _ms_cfg: dict[str, Any] = {"enabled": True, "top_k": 10}
     _searcher = get_searcher()
+    _memory_used: list[dict[str, Any]] = []  # memories injected for THIS message (surfaced in UI)
     try:
         if _MEMORY_SEARCH_SETTINGS.exists():
             _ms_cfg = json.loads(_MEMORY_SEARCH_SETTINGS.read_text(encoding="utf-8"))
@@ -1274,6 +1376,15 @@ async def chat(request: ChatRequest):
                     for r in _new_results:
                         _injected_memory_keys.add(r["key"])
                     save_injected_memory_keys(active_chat_id, _injected_memory_keys)
+                    _memory_used = [
+                        {
+                            "key": r.get("key", ""),
+                            "value": r.get("value", ""),
+                            "category": r.get("category", ""),
+                            "score": round(float(r.get("score", 0.0)), 3),
+                        }
+                        for r in _new_results
+                    ]
     except Exception:
         pass  # Memory injection is best-effort; never block chat
 
@@ -1291,7 +1402,7 @@ async def chat(request: ChatRequest):
     set_title_if_default(active_chat_id, title)
 
     parent_id = get_parent_id(active_chat_id, request.parent_id)
-    add_message(active_chat_id, "user", timestamped_message, None, parent_id)
+    add_message(active_chat_id, "user", timestamped_message, None, parent_id, memory_used=_memory_used or None)
 
     # Resolve file entries: if only a path is given, upload to get full file object
     resolved_files: list[dict[str, Any]] | None = None
@@ -1332,6 +1443,25 @@ async def chat(request: ChatRequest):
 
         add_message(active_chat_id, "assistant", answer or error or "", thinking, final_parent)
         touch_chat(active_chat_id, final_parent)
+        result["memory_used"] = _memory_used
+        return result
+
+    # DeepSeek API models — pure HTTP, no browser, no scraper needed
+    if not request.stream and _is_deepseek_api_model(request.model):
+        ds_cfg = get_model_config(request.model)
+        result = await get_deepseek_client().chat(
+            message=timestamped_message,
+            model=ds_cfg.get("api_model_type", "default"),
+            thinking_mode=request.thinking_mode,
+            chat_id=active_chat_id,
+        )
+        answer = str(result.get("answer", ""))
+        thinking = str(result.get("thinking", ""))
+        final_parent = result.get("parent_id") or parent_id
+        error = result.get("error")
+        add_message(active_chat_id, "assistant", answer or error or "", thinking, final_parent)
+        touch_chat(active_chat_id, final_parent)
+        result["memory_used"] = _memory_used
         return result
 
     if not request.stream and not scraper_enabled:
@@ -1353,6 +1483,7 @@ async def chat(request: ChatRequest):
 
         add_message(active_chat_id, "assistant", answer or error or "", thinking, final_parent)
         touch_chat(active_chat_id, final_parent)
+        result["memory_used"] = _memory_used
         return result
 
     async def event_stream():
@@ -1367,6 +1498,10 @@ async def chat(request: ChatRequest):
         saved_message_id: int | None = None
 
         yield sse({"type": "status", "message": "processing"})
+
+        # Surface which memories were injected for this message (UI "Memory Used" chip)
+        if _memory_used:
+            yield sse({"type": "memory_used", "memories": _memory_used})
 
         try:
             while True:
@@ -1406,7 +1541,15 @@ async def chat(request: ChatRequest):
                 files_for_round = resolved_files if round_index == 0 else None
                 stream_error = False
 
-                if scraper_enabled:
+                if _is_deepseek_api_model(request.model):
+                    _ds_cfg = get_model_config(request.model)
+                    round_event_source = get_deepseek_client().stream_chat(
+                        message=current_message,
+                        model=_ds_cfg.get("api_model_type", "default"),
+                        thinking_mode=request.thinking_mode,
+                        chat_id=active_chat_id,
+                    )
+                elif scraper_enabled:
                     round_event_source = scraper_service.stream_events(
                         message=current_message,
                         chat_id=active_chat_id,
@@ -1495,6 +1638,28 @@ async def chat(request: ChatRequest):
                                 for r in _new_mem:
                                     _injected_memory_keys.add(r["key"])
                                 save_injected_memory_keys(active_chat_id, _injected_memory_keys)
+                                _tool_mem_used = [
+                                    {
+                                        "key": r.get("key", ""),
+                                        "value": r.get("value", ""),
+                                        "category": r.get("category", ""),
+                                        "score": round(float(r.get("score", 0.0)), 3),
+                                    }
+                                    for r in _new_mem
+                                ]
+                                # Persist into skill_events so history re-renders the chip,
+                                # and emit SSE so the live UI can show it immediately.
+                                skill_events.append(
+                                    {"type": "memory_used", "memories": _tool_mem_used, "round": round_index}
+                                )
+                                yield sse(
+                                    {
+                                        "type": "memory_used",
+                                        "memories": _tool_mem_used,
+                                        "source": "tool",
+                                        "round": round_index,
+                                    }
+                                )
                 except Exception:
                     pass
 

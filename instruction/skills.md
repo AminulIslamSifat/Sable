@@ -64,38 +64,24 @@ File I/O MUST go through the native editor tags below. **NEVER** use:
 
 #### 2. `<edit_file>` — Precise In-Place Replacement (Atomic)
 
-Tag body uses **SEARCH/REPLACE blocks** — raw code between sentinel lines, nothing to escape:
+Tag body uses **SEARCH/REPLACE blocks** — raw code between sentinel lines, nothing to escape.
+The block is delimited by `<<<<<<< SEARCH`, `=======`, and `>>>>>>> REPLACE` marker lines.
 
-```xml
-<edit_file path="/abs/path/to/file.py">
-<<<<<<< SEARCH
-exact old text, copied verbatim from view_file output
-=======
-new replacement text
->>>>>>> REPLACE
-</edit_file>
-```
+**Attributes:**
+- `replace_all="true"` — replace ALL occurrences instead of requiring unique match. Reports count.
+- `dry_run="true"` — validate all SEARCH blocks, show the diff that WOULD apply, but do NOT write to disk.
 
-**Batch (multiple pairs, applied atomically — all validated before any write):**
+**Matching cascade (3 layers, all require unique hit unless replace_all):**
+1. **Exact** — byte-for-byte match
+2. **Normalized** — smart quotes to straight, unicode dashes to hyphen, NBSP to space, tabs to 4 spaces, trailing whitespace stripped
+3. **Structural** — indentation-insensitive (any leading whitespace), consecutive blank lines collapsed to one, leading/trailing blanks in old_str ignored
 
-```xml
-<edit_file path="/abs/path/to/file.py">
-<<<<<<< SEARCH
-old_name = 1
-=======
-new_name = 1
->>>>>>> REPLACE
+If all layers fail, the error includes a **nearest-match suggestion** (ratio >= 0.6) with line numbers so you can re-view and copy exactly.
 
-<<<<<<< SEARCH
-print(old_name)
-=======
-print(new_name)
->>>>>>> REPLACE
-</edit_file>
-```
+**Output includes structured stats** (lines_before, lines_after, added, removed, net, affected_range).
 
 Rules:
-- Each `SEARCH` block must match **exactly once** — add more surrounding context lines if it matches multiple places
+- Each SEARCH block must match **exactly once** — add more surrounding context lines if it matches multiple places
 - Always copy old text from a fresh `<view_file>` result, never from memory
 - Re-view before chaining a second edit on the same file (line numbers shift)
 - **Deleting lines:** leave the REPLACE section empty; SEARCH section can never be empty
@@ -116,6 +102,7 @@ if __name__ == "__main__":
 ```
 
 Fails if file exists — pass `overwrite="true"` only for an intentional full rewrite.
+Auto-detects shebang (`#!`) and sets executable permission. Rejects non-UTF-8 files with a clear error.
 
 ***
 
@@ -133,7 +120,7 @@ Fails if file exists — pass `overwrite="true"` only for an intentional full re
 </insert_file>
 ```
 
-Exactly one of `at_line` or `after_str` required. Same exact-then-normalized matching as `edit_file`.
+Exactly one of `at_line` or `after_str` required. Uses the same 3-layer matching cascade as `edit_file`. Supports `dry_run="true"`.
 
 ***
 
@@ -264,6 +251,20 @@ Exactly one of `at_line` or `after_str` required. Same exact-then-normalized mat
 * **Trigger:** Controlling, automating, or interacting with Sifat's Android phone — opening apps, tapping UI elements, swiping, typing, taking screenshots, or running multi-step phone automations.
 * **Not this if:** Query is about ADB theory without execution, or Termux/phone-side scripting without ADB.
 * **Instruction:** `PROJECT_ROOT/skills/core/phone_control/instruction.md`
+
+
+### Browser Control (Playwright Daemon)
+* **Trigger:** Browser automation, web scraping, DevTools inspection (network routes, CSS computed styles, console logs, localStorage/sessionStorage, cookies, performance timing), screenshots, tab management, and multi-step web workflows.
+* **Not this if:** Query is about browser theory without execution, or a simple HTTP API call without rendering → use **HTTP Client**. Downloading a video/file → use **Video Downloader**.
+* **Instruction:** `PROJECT_ROOT/skills/core/browser_control/instruction.md`
+
+***
+
+### Testing & Debugging (Discipline)
+* **Trigger:** ANY bug report, error, "it doesn't work", or unexpected behavior — and BEFORE claiming any fix is done. Load this the moment something misbehaves, not after you've already guessed.
+* **Not this if:** You're writing new features from scratch with no bug to investigate. But the verification checklist still applies before you call any fix complete.
+* **Core rule:** Measure before you theorize. Reproduce → Isolate (control experiment) → Measure (real numbers) → ONE hypothesis → falsify it → fix → re-reproduce to confirm the symptom is gone. Never stack untested guesses. Never present a hypothesis as a finding.
+* **Instruction:** `PROJECT_ROOT/skills/core/testing_debugging/instruction.md`
 
 ***
 

@@ -1,4 +1,3 @@
-
 [
   {
     "name": "Code Editor",
@@ -6,7 +5,13 @@
     "category": "Core",
     "path": "core/code_editor",
     "trigger": "Writing to disk: create, edit, insert, or view files with precise line-numbered operations.",
-    "tags": ["view_file", "edit_file", "create_file", "insert_file", "execute_command"]
+    "tags": [
+      "view_file",
+      "edit_file",
+      "create_file",
+      "insert_file",
+      "execute_command"
+    ]
   },
   {
     "name": "Phone Control",
@@ -14,7 +19,29 @@
     "category": "Core",
     "path": "core/phone_control",
     "trigger": "Controlling or automating an Android phone through ADB.",
-    "tags": ["execute_command"]
+    "tags": [
+      "execute_command"
+    ]
+  },
+  {
+    "name": "Browser Control",
+    "key": "browser_control",
+    "category": "Core",
+    "path": "core/browser_control",
+    "trigger": "Browser automation, web scraping, DevTools inspection (network, CSS, console, storage, performance), screenshots, and multi-step web workflows via persistent Playwright daemon.",
+    "tags": [
+      "execute_command"
+    ]
+  },
+  {
+    "name": "Testing & Debugging",
+    "key": "testing_debugging",
+    "category": "Core",
+    "path": "core/testing_debugging",
+    "trigger": "Investigating any bug, error, or 'it doesn't work' report, and verifying that a fix actually works. Load BEFORE diagnosing and BEFORE claiming a fix is done. Methodology only — no scripts.",
+    "tags": [
+      "execute_command"
+    ]
   },
   {
     "name": "System Repair",
@@ -22,8 +49,10 @@
     "category": "Core",
     "path": null,
     "trigger": "Arch Linux or Hyprland repair, logs, pacman/keyring errors, UI glitches.",
-    "tags": ["execute_command"],
-    "note": "Inline protocol in instruction/skills.md — no separate directory."
+    "tags": [
+      "execute_command"
+    ],
+    "note": "Inline protocol in instruction/skills.md \u2014 no separate directory."
   },
   {
     "name": "Background Commands",
@@ -31,8 +60,11 @@
     "category": "Core",
     "path": null,
     "trigger": "Long-running processes, dev servers, builds, tests, downloads, and process monitoring.",
-    "tags": ["execute_background_command", "check_command"],
-    "note": "Inline protocol in instruction/skills.md — no separate directory."
+    "tags": [
+      "execute_background_command",
+      "check_command"
+    ],
+    "note": "Inline protocol in instruction/skills.md \u2014 no separate directory."
   },
   {
     "name": "File Uploader",
@@ -40,8 +72,10 @@
     "category": "Core",
     "path": null,
     "trigger": "Loading PDFs, images, Office files, or other non-text files into context.",
-    "tags": ["get_file"],
-    "note": "Inline — wrap path in <get_file> tag. No separate directory."
+    "tags": [
+      "get_file"
+    ],
+    "note": "Inline \u2014 wrap path in <get_file> tag. No separate directory."
   },
   {
     "name": "SVG Creator",
@@ -49,7 +83,9 @@
     "category": "Visuals",
     "path": "visuals/svg_creator",
     "trigger": "Data structure visualizations, node/edge diagrams, algorithm state illustrations.",
-    "tags": ["save_svg"]
+    "tags": [
+      "save_svg"
+    ]
   },
   {
     "name": "Graph Master",
@@ -57,7 +93,10 @@
     "category": "Visuals",
     "path": "visuals/graph_master",
     "trigger": "Mathematical function plots and labeled Cartesian/polar coordinate graphs.",
-    "tags": ["save_svg", "execute_command"]
+    "tags": [
+      "save_svg",
+      "execute_command"
+    ]
   },
   {
     "name": "Simulacra Engine",
@@ -65,7 +104,10 @@
     "category": "Visuals",
     "path": "visuals/simulacra_engine",
     "trigger": "Dynamic, animated, interactive visualizations of physical or mathematical systems.",
-    "tags": ["create_note", "execute_command"]
+    "tags": [
+      "create_note",
+      "execute_command"
+    ]
   },
   {
     "name": "Frontend Design",
@@ -73,7 +115,10 @@
     "category": "Visuals",
     "path": "visuals/frontend_design",
     "trigger": "Production-grade UI, web components, high-fidelity layouts.",
-    "tags": ["create_note", "execute_command"]
+    "tags": [
+      "create_note",
+      "execute_command"
+    ]
   },
   {
     "name": "Study Suite",
@@ -81,7 +126,10 @@
     "category": "Study",
     "path": "study/study_suite",
     "trigger": "Flashcards, Anki decks, practice problems, mock exams, cheat sheets, formula sheets.",
-    "tags": ["create_note", "execute_command"]
+    "tags": [
+      "create_note",
+      "execute_command"
+    ]
   },
   {
     "name": "Document Skills",
@@ -89,7 +137,10 @@
     "category": "Data",
     "path": "data/document_skills",
     "trigger": "Creating, editing, or analyzing DOCX, PDF, PPTX, XLSX documents.",
-    "tags": ["execute_command", "get_file"]
+    "tags": [
+      "execute_command",
+      "get_file"
+    ]
   },
   {
     "name": "Online Search",
@@ -97,7 +148,9 @@
     "category": "Data",
     "path": "data/search_online",
     "trigger": "General web searches for quick facts, coding questions, or current events.",
-    "tags": ["execute_command"]
+    "tags": [
+      "execute_command"
+    ]
   },
   {
     "name": "HTTP Client",
@@ -105,7 +158,9 @@
     "category": "Data",
     "path": "data/http_client",
     "trigger": "Testing APIs, hitting endpoints, sending HTTP requests, debugging webhooks.",
-    "tags": ["execute_command"]
+    "tags": [
+      "execute_command"
+    ]
   },
   {
     "name": "Video Downloader",
@@ -113,6 +168,10 @@
     "category": "Data",
     "path": "data/youtube_downloader",
     "trigger": "Downloading videos or extracting audio from media platforms.",
-    "tags": ["execute_command", "execute_background_command", "check_command"]
+    "tags": [
+      "execute_command",
+      "execute_background_command",
+      "check_command"
+    ]
   }
 ]

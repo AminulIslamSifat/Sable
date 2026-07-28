@@ -21,7 +21,6 @@ MODELS = [
     "jinaai/jina-embeddings-v2-small-en",
     "snowflake/snowflake-arctic-embed-xs",
     "BAAI/bge-small-en-v1.5",
-    "thenlper/gte-base",
 ]
 
 
@@ -35,8 +34,11 @@ def load_prompts(n: int = 50) -> list[str]:
     prompts: list[str] = []
     for row in rows:
         text = row["content"] or ""
-        if text.startswith("[") and "\n" in text[:25]:
-            text = text.split("\n", 1)[1]
+        # Strip injected memory context block (same pattern the frontend strips)
+        import re
+        text = re.sub(r"^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n", "", text)
+        # Strip timestamp prefix
+        text = re.sub(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\n?", "", text)
         text = text.strip()
         if text and len(text) >= 30:
             prompts.append(text)
@@ -80,10 +82,13 @@ def run_model(model_name: str, prompts: list[str]) -> None:
         vector_scores = searcher._normed_vectors @ q_n
 
         query_tokens = _tokenize(prompt)
-        keyword_scores = np.array(
-            [_keyword_score(query_tokens, et) for et in searcher._entry_tokens],
-            dtype="float32",
-        )
+        if len(query_tokens) >= 3:
+            keyword_scores = np.array(
+                [_keyword_score(query_tokens, et) for et in searcher._entry_tokens],
+                dtype="float32",
+            )
+        else:
+            keyword_scores = np.zeros(len(searcher._entry_tokens), dtype="float32")
         scores = VECTOR_WEIGHT * vector_scores + KEYWORD_WEIGHT * keyword_scores
 
         for j, meta in enumerate(searcher._entry_meta):

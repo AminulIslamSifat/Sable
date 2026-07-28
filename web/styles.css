@@ -1292,6 +1292,107 @@
 
     .settings-overlay.hidden { display: none; }
 
+    /* ---------- memory-used chip + popup ---------- */
+    .memory-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 8px;
+      padding: 3px 11px;
+      font-family: var(--font-body);
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent-text);
+      background: var(--accent-dim);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background 0.15s ease, transform 0.1s ease;
+    }
+    .memory-chip:hover { background: #9a7d4a22; transform: translateY(-1px); }
+    /* Tool-result variant sits as a standalone element after a skill stack */
+    .memory-chip-tool { display: flex; width: fit-content; margin: 6px 0; }
+
+    .memory-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1100;
+      background: rgba(0, 0, 0, 0.55);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(4px);
+    }
+    .memory-panel {
+      width: 640px;
+      max-width: 92vw;
+      max-height: 80vh;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    }
+    .memory-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .memory-header h2 { margin: 0; font-size: 16px; color: var(--text); }
+    .memory-close {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      font-size: 16px;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: var(--radius);
+    }
+    .memory-close:hover { color: var(--text); background: var(--panel-2); }
+    .memory-body {
+      padding: 16px 20px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .memory-item {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+    }
+    .memory-item-top {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+    .memory-item-key { font-weight: 700; font-size: 13px; color: var(--text); }
+    .memory-cat {
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--accent-dim);
+      color: var(--accent-text);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .memory-cat-protected { background: #eab30815; color: #eab308; }
+    .memory-score { font-size: 11px; color: var(--muted); margin-left: auto; }
+    .memory-item-val {
+      font-size: 13px;
+      color: var(--text-dim);
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
     .settings-panel {
       width: 720px;
       max-width: 92vw;
@@ -2035,6 +2136,12 @@
       .settings-header { padding: 12px 14px; }
       .log-toolbar { padding: 8px 10px; flex-wrap: wrap; }
       .log-viewer { padding: 10px 12px; font-size: 11px; }
+
+      /* Brain tab mobile fixes */
+      .mem-tab-bar { flex-wrap: wrap; gap: 4px; }
+      .mem-tab-btn { font-size: 10px; padding: 3px 8px; }
+      .mem-input-row { flex-wrap: wrap; }
+      .mem-input-row select.mem-input { min-width: 0; flex: 1; }
     }
 
     /* ---------- small phones (≤480px) ---------- */
@@ -2058,8 +2165,22 @@
         border-radius: 0;
       }
       .settings-tab { padding: 9px 10px; font-size: 11.5px; }
+
+      /* Brain tab mobile fixes */
+      .mem-tab-bar { flex-wrap: wrap; gap: 4px; }
+      .mem-tab-btn { font-size: 10px; padding: 3px 8px; }
+
       .mem-entry { padding: var(--sp-2) var(--sp-3); }
       .mem-entry-key { font-size: 11px; }
+      .mem-entry-header { flex-wrap: wrap; gap: 4px; }
+      .mem-entry-val { flex: 1 1 auto; min-width: 0; }
+
+      .mem-input-row { flex-direction: column; gap: 6px; }
+      .mem-input-row .mem-input { width: 100%; box-sizing: border-box; }
+      .mem-input-row select.mem-input { min-width: 0; }
+      .mem-input-row button { align-self: flex-start; }
+
+      #msThresholdEditor .muted { font-size: 10px; }
     }
 
     /* ---------- diff sidebar ---------- */

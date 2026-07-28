@@ -1,5 +1,6 @@
 {
   "model": "jinaai/jina-embeddings-v2-small-en",
-  "top_k": 10,
-  "enabled": true
+  "top_k": 5,
+  "enabled": true,
+  "model_thresholds": {}
 }

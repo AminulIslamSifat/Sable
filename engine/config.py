@@ -84,6 +84,72 @@ MODELS = [
             },
         ],
     },
+    {
+        "id": "deepseek-expert",
+        "label": "DeepSeek Expert",
+        "api_backend": "deepseek",
+        "api_model_type": "expert",
+        "thinking_modes": [
+            {
+                "id": "fast",
+                "label": "Fast",
+                "thinking_enabled": False,
+                "auto_thinking": False,
+                "thinking_mode": "Fast",
+            },
+            {
+                "id": "thinking",
+                "label": "Thinking",
+                "thinking_enabled": True,
+                "auto_thinking": False,
+                "thinking_mode": "Thinking",
+            },
+        ],
+    },
+    {
+        "id": "deepseek-instant",
+        "label": "DeepSeek Instant",
+        "api_backend": "deepseek",
+        "api_model_type": None,
+        "thinking_modes": [
+            {
+                "id": "fast",
+                "label": "Fast",
+                "thinking_enabled": False,
+                "auto_thinking": False,
+                "thinking_mode": "Fast",
+            },
+            {
+                "id": "thinking",
+                "label": "Thinking",
+                "thinking_enabled": True,
+                "auto_thinking": False,
+                "thinking_mode": "Thinking",
+            },
+        ],
+    },
+    {
+        "id": "deepseek-vision",
+        "label": "DeepSeek Vision",
+        "api_backend": "deepseek",
+        "api_model_type": "vision",
+        "thinking_modes": [
+            {
+                "id": "fast",
+                "label": "Fast",
+                "thinking_enabled": False,
+                "auto_thinking": False,
+                "thinking_mode": "Fast",
+            },
+            {
+                "id": "thinking",
+                "label": "Thinking",
+                "thinking_enabled": True,
+                "auto_thinking": False,
+                "thinking_mode": "Thinking",
+            },
+        ],
+    },
 ]
 
 # Default/current model id — kept for backward compatibility with code that

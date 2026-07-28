@@ -40,6 +40,7 @@ import argparse
 import difflib
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -97,6 +98,50 @@ def _collapse_blank_lines(lines: list[str]) -> list[str]:
         result.append(ln)
         prev_blank = is_blank
     return result
+
+
+def _structural_span_count(content_lines: list[str], old_lines: list[str], start_i: int) -> int:
+    """Count how many original content lines a structural match spans,
+    starting at index start_i. Handles extra blank lines in the file that
+    were collapsed during matching.
+
+    Strategy: match non-blank tokens in order; all blank lines between
+    matched tokens are consumed as part of the span."""
+    norm_old_struct = [_normalize_structural_line(l) for l in old_lines]
+    collapsed_old_struct = _collapse_blank_lines(norm_old_struct)
+    while collapsed_old_struct and collapsed_old_struct[0] == "":
+        collapsed_old_struct.pop(0)
+    while collapsed_old_struct and collapsed_old_struct[-1] == "":
+        collapsed_old_struct.pop()
+
+    # Extract non-blank targets — these must appear in order
+    non_blank_targets = [l for l in collapsed_old_struct if l != ""]
+    if not non_blank_targets:
+        return len(old_lines)
+
+    span_count = 0
+    target_idx = 0
+
+    for j in range(start_i, len(content_lines)):
+        ln_struct = _normalize_structural_line(content_lines[j])
+
+        if target_idx >= len(non_blank_targets):
+            break  # all targets matched
+
+        if ln_struct == "":
+            # Blank line — consume as part of the span
+            span_count += 1
+        elif ln_struct == non_blank_targets[target_idx]:
+            # Matched next non-blank target
+            target_idx += 1
+            span_count += 1
+        else:
+            # Non-blank line that doesn't match — stop
+            break
+
+    if span_count == 0 or target_idx < len(non_blank_targets):
+        span_count = len(old_lines)  # fallback if match incomplete
+    return span_count
 
 
 def _structural_lines_match(content_lines: list[str], old_lines: list[str]) -> list[int]:
@@ -354,7 +399,6 @@ def _compute_stats(before: str, after: str, diff_text: str) -> str:
             removed += 1
         elif line.startswith("@@"):
             # Parse @@ -old_start,old_count +new_start,new_count @@
-            import re
             m = re.search(r"\+(\d+)", line)
             if m:
                 hunk_start = int(m.group(1))
@@ -472,36 +516,7 @@ def _find_unique_span(content: str, old_str: str, replace_all: bool = False):
     struct_matches = _structural_lines_match(content_lines, old_lines)
     if len(struct_matches) == 1 or (len(struct_matches) >= 1 and replace_all):
         i = struct_matches[0]
-        # Determine how many original lines the old_str spans in the file
-        # by matching the collapsed old lines against collapsed content from position i
-        norm_old_struct = [_normalize_structural_line(l) for l in old_lines]
-        collapsed_old_struct = _collapse_blank_lines(norm_old_struct)
-        while collapsed_old_struct and collapsed_old_struct[0] == "":
-            collapsed_old_struct.pop(0)
-        while collapsed_old_struct and collapsed_old_struct[-1] == "":
-            collapsed_old_struct.pop()
-
-        # Count how many original content lines this spans
-        span_count = 0
-        matched_count = 0
-        for j in range(i, len(content_lines)):
-            ln_struct = _normalize_structural_line(content_lines[j])
-            if ln_struct == "" and matched_count < len(collapsed_old_struct):
-                span_count += 1
-                continue
-            if matched_count < len(collapsed_old_struct) and ln_struct == collapsed_old_struct[matched_count]:
-                matched_count += 1
-                span_count += 1
-                if matched_count == len(collapsed_old_struct):
-                    break
-            elif ln_struct == "":
-                span_count += 1
-            else:
-                break
-
-        if span_count == 0:
-            span_count = len(old_lines)  # fallback
-
+        span_count = _structural_span_count(content_lines, old_lines, i)
         start_idx = len("\n".join(content_lines[:i])) + (1 if i > 0 else 0)
         end_idx = start_idx + len("\n".join(content_lines[i:i + span_count]))
         note = "matched after structural normalization (indentation/blank-lines ignored)"
@@ -564,8 +579,9 @@ def _find_all_spans(content: str, old_str: str) -> list[tuple[int, int, str | No
     # Try structural
     struct_matches = _structural_lines_match(content_lines, old_lines)
     for i in struct_matches:
+        span_count = _structural_span_count(content_lines, old_lines, i)
         start_idx = len("\n".join(content_lines[:i])) + (1 if i > 0 else 0)
-        end_idx = start_idx + len("\n".join(content_lines[i:i + len(old_lines)]))
+        end_idx = start_idx + len("\n".join(content_lines[i:i + span_count]))
         spans.append((start_idx, end_idx, "structural"))
 
     if not spans:

@@ -860,6 +860,86 @@
       return div;
     }
 
+    // ---------- memory-used chip + popup ----------
+    function createMemoryChip(memories) {
+      const chip = document.createElement("button");
+      chip.className = "memory-chip";
+      chip.textContent = `🧠 Memory Used (${memories.length})`;
+      chip.title = "Show the memories injected into this message";
+      chip.addEventListener("click", () => openMemoryPopup(memories));
+      return chip;
+    }
+
+    function attachMemoryChip(userMsgDiv, memories) {
+      if (!userMsgDiv || !Array.isArray(memories) || !memories.length) return;
+      if (userMsgDiv.querySelector(".memory-chip")) return;  // no duplicates
+      const chip = createMemoryChip(memories);
+      const toolbar = userMsgDiv.querySelector(".msg-toolbar");
+      if (toolbar) userMsgDiv.insertBefore(chip, toolbar);
+      else userMsgDiv.appendChild(chip);
+    }
+
+    function openMemoryPopup(memories) {
+      document.querySelectorAll(".memory-overlay").forEach((el) => el.remove());
+      const overlay = document.createElement("div");
+      overlay.className = "memory-overlay";
+
+      const panel = document.createElement("div");
+      panel.className = "memory-panel";
+
+      const header = document.createElement("div");
+      header.className = "memory-header";
+      const h = document.createElement("h2");
+      h.textContent = `🧠 Memory Used (${memories.length})`;
+      const closeBtn = document.createElement("button");
+      closeBtn.className = "memory-close";
+      closeBtn.textContent = "✕";
+      closeBtn.addEventListener("click", () => overlay.remove());
+      header.appendChild(h);
+      header.appendChild(closeBtn);
+      panel.appendChild(header);
+
+      const body = document.createElement("div");
+      body.className = "memory-body";
+      for (const m of memories) {
+        const item = document.createElement("div");
+        item.className = "memory-item";
+
+        const top = document.createElement("div");
+        top.className = "memory-item-top";
+        const key = document.createElement("span");
+        key.className = "memory-item-key";
+        key.textContent = m.key || "(untitled)";
+        const cat = document.createElement("span");
+        cat.className = "memory-cat memory-cat-" + (m.category || "general");
+        cat.textContent = m.category || "general";
+        const score = document.createElement("span");
+        score.className = "memory-score";
+        score.textContent = m.score != null ? `score ${m.score}` : "";
+        top.appendChild(key);
+        top.appendChild(cat);
+        top.appendChild(score);
+
+        const val = document.createElement("div");
+        val.className = "memory-item-val";
+        val.textContent = m.value || "";
+
+        item.appendChild(top);
+        item.appendChild(val);
+        body.appendChild(item);
+      }
+      panel.appendChild(body);
+      overlay.appendChild(panel);
+
+      overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+      document.body.appendChild(overlay);
+
+      const onEsc = (e) => {
+        if (e.key === "Escape") { overlay.remove(); document.removeEventListener("keydown", onEsc); }
+      };
+      document.addEventListener("keydown", onEsc);
+    }
+
     // ---------- file edit sidebar ----------
     const diffSidebarEl = document.getElementById("diffSidebar");
     const diffCardsEl = document.getElementById("diffCards");
@@ -1031,11 +1111,41 @@
             if (card) finishSkillCard(card, evt);
           } else if (evt.type === "file_edit") {
             handleFileEdit(evt, false);
+          } else if (evt.type === "memory_used") {
+            // Tool-round memory chip — pin after the skill stack it belongs to
+            if (Array.isArray(evt.memories) && evt.memories.length) {
+              const chip = createMemoryChip(evt.memories);
+              chip.classList.add("memory-chip-tool");
+              if (group) group.after(chip);
+              else chatEl.appendChild(chip);
+            }
           }
         }
       }
 
-      const msgDiv = addMessage(message.role === "user" ? "user" : "bot", message.content || "");
+      let displayContent = message.content || "";
+      let realTs = null;
+      if (message.role === "user") {
+        // Strip the injected memory block + timestamp prefix — the bubble shows
+        // what the user typed; the memories live behind the chip instead.
+        const memMatch = displayContent.match(/^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n/);
+        if (memMatch) displayContent = displayContent.slice(memMatch[0].length);
+        const tsMatch = displayContent.match(/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\n?/);
+        if (tsMatch) {
+          realTs = tsMatch[1];
+          displayContent = displayContent.slice(tsMatch[0].length);
+        }
+      }
+      const msgDiv = addMessage(message.role === "user" ? "user" : "bot", displayContent);
+      if (message.role === "user" && msgDiv) {
+        if (realTs) {
+          const tsEl = msgDiv.querySelector(".msg-timestamp");
+          if (tsEl) tsEl.textContent = `[${realTs}]`;
+        }
+        if (Array.isArray(message.memory_used) && message.memory_used.length) {
+          attachMemoryChip(msgDiv, message.memory_used);
+        }
+      }
       // Attach toolbar to historical bot messages
       if (message.role !== "user" && msgDiv) {
         const toolbar = document.createElement("div");
@@ -1213,6 +1323,18 @@
         },
         nextSkillRound() {
           if (skillRounds[skillRounds.length - 1].length) skillRounds.push([]);
+        },
+        attachToolMemory(memories) {
+          // Memories injected from a tool result — pin the chip right after
+          // the skill stack of the round that triggered the injection.
+          hidePending();
+          const stacks = turn.querySelectorAll(".skill-stack");
+          const anchor = stacks.length ? stacks[stacks.length - 1] : null;
+          const chip = createMemoryChip(memories);
+          chip.classList.add("memory-chip-tool");
+          if (anchor) anchor.after(chip);
+          else turn.appendChild(chip);
+          scrollBottom();
         },
         appendAnswer(text) {
           hidePending();
@@ -1425,7 +1547,7 @@
       targetDiv.appendChild(resendBar);
     }
 
-    async function consumeChatStream(res, ui) {
+    async function consumeChatStream(res, ui, userMsgDiv) {
       const reader  = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -1455,6 +1577,11 @@
             saveActiveChat();
           } else if (evt.type === "status") {
             if (evt.message === "feeding_skill_results") ui.nextSkillRound();
+          } else if (evt.type === "memory_used") {
+            if (Array.isArray(evt.memories) && evt.memories.length) {
+              if (evt.source === "tool") ui.attachToolMemory(evt.memories);
+              else if (userMsgDiv) attachMemoryChip(userMsgDiv, evt.memories);
+            }
           } else if (evt.type === "thinking") {
             ui.appendThinking(evt.text || "");
           } else if (evt.type === "answer") {
@@ -1758,6 +1885,31 @@
       activeChatId = chatId;
       const meta = chatList.find(c => c.id === chatId);
       parentId = meta?.parent_id || null;
+
+      // Auto-switch model dropdown based on chat type (numeric parent = DeepSeek, UUID = Qwen)
+      if (parentId) {
+        const isDeepseekChat = /^\d+$/.test(String(parentId));
+        const curEntry = modelList.find(m => m.id === selectedModel);
+        const curIsDeepseek = curEntry?.api_backend === "deepseek";
+        if (isDeepseekChat && !curIsDeepseek) {
+          const dsModel = modelList.find(m => m.api_backend === "deepseek");
+          if (dsModel) {
+            selectedModel = dsModel.id;
+            modelSelectEl.value = selectedModel;
+            try { localStorage.setItem(MODEL_KEY, selectedModel); } catch(e) {}
+            populateThinkingModes(null);
+          }
+        } else if (!isDeepseekChat && curIsDeepseek) {
+          const qwenModel = modelList.find(m => m.api_backend !== "deepseek");
+          if (qwenModel) {
+            selectedModel = qwenModel.id;
+            modelSelectEl.value = selectedModel;
+            try { localStorage.setItem(MODEL_KEY, selectedModel); } catch(e) {}
+            populateThinkingModes(null);
+          }
+        }
+      }
+
       saveActiveChat();
       renderChats();
       await loadMessages(chatId);
@@ -2125,7 +2277,7 @@
           return;
         }
 
-        const { gotAnswer, gotDone, gotError } = await consumeChatStream(res, ui);
+        const { gotAnswer, gotDone, gotError } = await consumeChatStream(res, ui, userMsgDiv);
 
         // Detect empty response: stream ended with no answer tokens,
         // or stream "done" but answer content is whitespace-only.
@@ -2986,5 +3138,66 @@
   loadBrowserSession();
   setInterval(loadBrowserSession, 15000);
   // ── /Browser Session Monitor ─────────────────────────────────
+
+  // ── Browser Profile Restore ─────────────────────────────────
+  async function loadBrowserProfiles() {
+    const container = document.getElementById('browserProfileCards');
+    if (!container) return;
+    try {
+      const res = await fetch('/api/settings/browser/profiles');
+      const d = await res.json();
+      let html = '';
+      for (const [key, p] of Object.entries(d.profiles)) {
+        const dot = p.exists ? '\u{1F7E2}' : '\u{1F534}';
+        const bakDot = p.has_backup ? '\u{1F7E2}' : '\u{1F534}';
+        html +=
+          '<div style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;">' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">' +
+              '<span style="font-size:13px;font-weight:600;color:var(--text);">' + dot + ' ' + p.label + '</span>' +
+              '<button data-profile="' + key + '" class="restoreProfileBtn" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:11px;cursor:pointer;font-weight:600;' + (p.has_backup ? '' : 'opacity:0.4;pointer-events:none;') + '">♻ Restore</button>' +
+            '</div>' +
+            '<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-size:12px;color:var(--text-dim);">' +
+              '<span>Data</span><span style="color:var(--text);">' + p.data_dir + ' (' + p.size_mb + ' MB)</span>' +
+              '<span>Backup</span><span style="color:var(--text);">' + bakDot + ' ' + (p.has_backup ? p.backup_size_mb + ' MB' : 'No backup found') + '</span>' +
+            '</div>' +
+          '</div>';
+      }
+      container.innerHTML = html;
+      container.querySelectorAll('.restoreProfileBtn').forEach(btn => {
+        btn.addEventListener('click', () => restoreBrowserProfile(btn.dataset.profile, btn));
+      });
+    } catch {
+      container.innerHTML = '<p class="muted" style="font-size:12px;margin:0;color:var(--danger);">Failed to load profiles.</p>';
+    }
+  }
+
+  async function restoreBrowserProfile(profile, btn) {
+    const label = profile === 'api' ? 'API (ChatService)' : 'Scraper';
+    if (!confirm('Restore ' + label + ' browser data from backup?\n\nThis DELETES the current profile and replaces it with the .bak snapshot. Make sure the browser is stopped.')) return;
+    btn.disabled = true;
+    btn.textContent = '⏳ Restoring…';
+    try {
+      const res = await fetch('/api/settings/browser/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile })
+      });
+      const d = await res.json();
+      if (res.ok) {
+        showToast('♻ ' + label + ' profile restored from ' + d.restored_from, 'success');
+      } else {
+        showToast('Restore failed: ' + (d.detail || 'Unknown error'), 'error');
+      }
+    } catch {
+      showToast('Restore failed — network error', 'error');
+    }
+    btn.disabled = false;
+    btn.textContent = '♻ Restore';
+    await loadBrowserProfiles();
+  }
+
+  document.getElementById('refreshProfilesBtn')?.addEventListener('click', loadBrowserProfiles);
+  loadBrowserProfiles();
+  // ── /Browser Profile Restore ────────────────────────────────
 
 
