@@ -1871,13 +1871,61 @@
         const messages = data.messages || [];
         if (messages.length === 0) {
           chatEl.innerHTML = `<div class="empty"><h2>New conversation</h2><p>Send the first message.</p></div>`;
-          return;
+          return [];
         }
         for (const msg of messages) addHistoryMessage(msg);
         renderMathJax(chatEl);
         scrollBottom(true);
+        return messages;
       } catch (err) {
         console.error("Failed to load messages:", err);
+        return [];
+      }
+    }
+
+    /**
+     * After messages load, check the last message's actual parent_id and
+     * auto-switch model if needed (the chat metadata parent_id can be stale).
+     * - parent_id is null → do nothing
+     * - current model is qwen + parent_id is numeric (2,4,6 etc) → switch to deepseek
+     * - current model is deepseek + parent_id is UUID → switch to qwen
+     */
+    function autoSwitchModelForChat(messages) {
+      if (!messages || messages.length === 0) return;
+
+      const lastMsg = messages[messages.length - 1];
+      const lastParentId = lastMsg.parent_id;
+
+      // parent_id is null → do nothing
+      if (lastParentId === null || lastParentId === undefined) return;
+
+      const isParentNumeric = /^\d+$/.test(String(lastParentId));
+      const isParentUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(lastParentId));
+      const curEntry = modelList.find(m => m.id === selectedModel);
+      const curIsDeepseek = curEntry?.api_backend === "deepseek";
+      const curIsQwen = curEntry && !curIsDeepseek;
+
+      // Qwen model + numeric parent_id → switch to deepseek
+      if (curIsQwen && isParentNumeric) {
+        const dsModel = modelList.find(m => m.api_backend === "deepseek");
+        if (dsModel && dsModel.id !== selectedModel) {
+          selectedModel = dsModel.id;
+          modelSelectEl.value = selectedModel;
+          try { localStorage.setItem(MODEL_KEY, selectedModel); } catch(e) {}
+          populateThinkingModes(null);
+        }
+        return;
+      }
+
+      // Deepseek model + UUID parent_id → switch to qwen
+      if (curIsDeepseek && isParentUuid) {
+        const qwenModel = modelList.find(m => m.api_backend !== "deepseek");
+        if (qwenModel && qwenModel.id !== selectedModel) {
+          selectedModel = qwenModel.id;
+          modelSelectEl.value = selectedModel;
+          try { localStorage.setItem(MODEL_KEY, selectedModel); } catch(e) {}
+          populateThinkingModes(null);
+        }
       }
     }
 
@@ -1913,7 +1961,12 @@
 
       saveActiveChat();
       renderChats();
-      await loadMessages(chatId);
+      const messages = await loadMessages(chatId);
+
+      // After messages load, check the last message's actual parent_id
+      // and auto-switch model if needed (the chat metadata parent_id can be stale).
+      autoSwitchModelForChat(messages);
+
       inputEl.focus();
     }
 
@@ -2877,6 +2930,29 @@
         restartBrowserBtn.textContent = "↻ Restart";
       }
     });
+
+    const refreshDeepseekTokenBtn = document.getElementById("refreshDeepseekTokenBtn");
+    if (refreshDeepseekTokenBtn) {
+      refreshDeepseekTokenBtn.addEventListener("click", async () => {
+        refreshDeepseekTokenBtn.disabled = true;
+        refreshDeepseekTokenBtn.textContent = "↻ Refreshing...";
+        try {
+          const res = await fetch("/api/settings/deepseek/refresh-token", { method: "POST" });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok) {
+            showToast("DeepSeek token refreshed", "success");
+            await loadModels();
+          } else {
+            showToast(data.detail || data.error || "DeepSeek token refresh failed", "error");
+          }
+        } catch (e) {
+          showToast("DeepSeek refresh error: " + e.message, "error");
+        } finally {
+          refreshDeepseekTokenBtn.disabled = false;
+          refreshDeepseekTokenBtn.textContent = "↻ Refresh Token";
+        }
+      });
+    }
 
     // Load browser settings when settings panel opens
     const origOpenSettings = openSettings;

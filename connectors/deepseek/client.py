@@ -18,7 +18,7 @@ import base64
 import json
 import logging
 import subprocess
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -64,12 +64,21 @@ class DeepSeekAPIError(Exception):
 class DeepSeekClient:
     """Async DeepSeek chat client with PoW solving."""
 
-    def __init__(self, token: str | None = None) -> None:
+    def __init__(
+        self,
+        token: str | None = None,
+        token_refresher: Callable[[], Awaitable[str]] | None = None,
+    ) -> None:
         self._token = token
+        self._token_refresher = token_refresher
         self._http: httpx.AsyncClient | None = None
         self._lock = asyncio.Lock()
         # Session continuity: sable_chat_id → (deepseek_session_id, next_parent_id)
         self._sessions: dict[str, tuple[str, int | None]] = {}
+
+    def set_token_refresher(self, refresher: Callable[[], Awaitable[str]] | None) -> None:
+        """Inject an external coroutine that returns a fresh DeepSeek token."""
+        self._token_refresher = refresher
 
     # ------------------------------------------------------------------
     # Token management
@@ -89,7 +98,9 @@ class DeepSeekClient:
         return self._token
 
     def set_token(self, token: str) -> None:
-        """Set and persist token."""
+        """Set and persist token. Clears stale sessions when the token changes."""
+        if token != self._token:
+            self._sessions.clear()
         self._token = token
         try:
             TOKEN_CACHE.write_text(
@@ -105,16 +116,32 @@ class DeepSeekClient:
         return {"Authorization": f"Bearer {tok}", **CLIENT_HEADERS}
 
     # ------------------------------------------------------------------
-    # Token auto-refresh via persistent browser profile
+    # Token auto-refresh
     # ------------------------------------------------------------------
 
-    _BROWSER_PROFILE = Path.home() / ".local/share/ghostchat/chrome-data"
+    _BROWSER_PROFILE = Path(__file__).resolve().parent.parent.parent / "browser-data"
+
+    async def refresh_token(self) -> str:
+        """Public method — refresh token using injected refresher or fallback browser profile."""
+        return await self._refresh_token()
+
+    async def _refresh_token(self) -> str:
+        """Refresh token via external provider when available, else standalone browser."""
+        if self._token_refresher is not None:
+            logger.info("Refreshing DeepSeek token via injected browser session...")
+            token = await self._token_refresher()
+            if not token:
+                raise DeepSeekAPIError("Token refresher returned an empty token.")
+            self.set_token(token)
+            logger.info("Token refreshed successfully via injected browser session.")
+            return token
+        return await self._refresh_token_from_browser()
 
     async def _refresh_token_from_browser(self) -> str:
-        """Open persistent browser profile, read DeepSeek token from localStorage."""
+        """Fallback: open persistent browser profile, read DeepSeek token from localStorage."""
         from playwright.async_api import async_playwright
 
-        logger.info("Refreshing DeepSeek token from browser profile...")
+        logger.info("Refreshing DeepSeek token from standalone browser profile...")
         async with async_playwright() as pw:
             ctx = await pw.chromium.launch_persistent_context(
                 user_data_dir=str(self._BROWSER_PROFILE),
@@ -130,16 +157,21 @@ class DeepSeekClient:
         if not token:
             raise DeepSeekAPIError("No userToken found in browser profile. Log in to chat.deepseek.com first.")
 
+        token = self._parse_localstorage_token(token)
+        self.set_token(token)
+        logger.info("Token refreshed successfully from standalone browser.")
+        return token
+
+    @staticmethod
+    def _parse_localstorage_token(raw: str) -> str:
         # localStorage stores JSON: {"value":"<jwt>","__version":"0"}
         try:
-            parsed = json.loads(token)
-            token = parsed.get("value", token)
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return str(parsed.get("value", raw))
         except (json.JSONDecodeError, AttributeError):
-            token = token.strip('"')
-
-        self.set_token(token)
-        logger.info("Token refreshed successfully from browser.")
-        return token
+            pass
+        return raw.strip('"')
 
     # ------------------------------------------------------------------
     # HTTP client lifecycle
@@ -203,7 +235,7 @@ class DeepSeekClient:
 
         # No token at all — try browser refresh before anything else
         if not self.token:
-            await self._refresh_token_from_browser()
+            await self._refresh_token()
 
         resp = await http.post(
             "/api/v0/chat/create_pow_challenge",
@@ -212,8 +244,8 @@ class DeepSeekClient:
         )
         if resp.status_code == 401:
             # Token expired — auto-refresh from persistent browser profile
-            logger.warning("401 on challenge — refreshing token from browser...")
-            await self._refresh_token_from_browser()
+            logger.warning("401 on challenge — refreshing token...")
+            await self._refresh_token()
             resp = await http.post(
                 "/api/v0/chat/create_pow_challenge",
                 json={"target_path": "/api/v0/chat/completion"},
@@ -228,7 +260,7 @@ class DeepSeekClient:
         return data["data"]["biz_data"]["challenge"]
 
     async def _create_session(self) -> str:
-        """Create a new chat session, return its UUID."""
+        """Create a new chat session, return its UUID. Auto-refreshes token on 401."""
         http = await self._get_http()
         resp = await http.post(
             "/api/v0/chat_session/create",
@@ -236,7 +268,15 @@ class DeepSeekClient:
             headers=self._auth_headers(),
         )
         if resp.status_code == 401:
-            raise DeepSeekAPIError("Token expired (401). Re-extract from browser.")
+            logger.warning("401 on session create — refreshing token...")
+            await self._refresh_token()
+            resp = await http.post(
+                "/api/v0/chat_session/create",
+                json={},
+                headers=self._auth_headers(),
+            )
+            if resp.status_code == 401:
+                raise DeepSeekAPIError("Token still invalid after refresh. Log in to chat.deepseek.com.")
         resp.raise_for_status()
         data = resp.json()
         biz = data["data"]["biz_data"]

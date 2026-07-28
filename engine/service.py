@@ -72,6 +72,11 @@ class ChatService:
                 logger.warning("Warmup failed: %s: %s", type(exc).__name__, exc)
                 self._headers = None
 
+    async def refresh_deepseek_token(self) -> str:
+        """Extract a fresh DeepSeek token from the shared browser profile."""
+        async with self._lock:
+            return await self._browser.extract_deepseek_token()
+
     async def create_chat(self, model: str | None = None) -> str | None:
         headers = await self._ensure_headers()
         chat_id = await create_new_chat(headers, model=model)
