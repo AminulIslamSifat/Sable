@@ -22,7 +22,7 @@ import httpx
 SABLE_ROOT = Path(__file__).resolve().parent.parent
 SKILLS_DIR = SABLE_ROOT / "skills"
 INSTRUCTION_DIR = SABLE_ROOT / "instruction"
-OUTPUT_ROOT = Path("/home/sifat/hdd/Conversation")
+OUTPUT_ROOT = SABLE_ROOT / "output"
 NOTES_DIR = OUTPUT_ROOT / "notes"
 ASSETS_DIR = OUTPUT_ROOT / "assets"
 SESSIONS_DIR = OUTPUT_ROOT / "sessions"
@@ -863,12 +863,20 @@ def handle_edit_file(
         yield _end_event(tag_id, name, False, started, error="Empty edit body")
         return
 
-    backup_path = _make_backup(path)
-    ok, output = _run_editor(["edit", path], stdin_data=content)
+    replace_all = attrs.get("replace_all", "").lower() in ("true", "1", "yes")
+    dry_run = attrs.get("dry_run", "").lower() in ("true", "1", "yes")
+
+    backup_path = _make_backup(path) if not dry_run else None
+    args = ["edit", path]
+    if replace_all:
+        args.append("--replace-all")
+    if dry_run:
+        args.append("--dry-run")
+    ok, output = _run_editor(args, stdin_data=content)
     output_trimmed = output[:RESULT_PREVIEW_CHARS]
     yield _output_event(tag_id, output_trimmed + "\n")
 
-    if ok:
+    if ok and not dry_run:
         # Emit a file_edit event so the diff sidebar updates
         file_event = _build_file_edit_event(tag_id, "edit", path, output_trimmed, backup_path)
         if file_event is not None:
@@ -921,6 +929,7 @@ def handle_insert_file(
 
     at_line = attrs.get("at_line") or attrs.get("at-line")
     after_str = attrs.get("after_str") or attrs.get("after-str")
+    dry_run = attrs.get("dry_run", "").lower() in ("true", "1", "yes")
 
     if not at_line and not after_str:
         yield _output_event(tag_id, "insert_file requires at_line or after_str attribute\n", "stderr")
@@ -928,7 +937,9 @@ def handle_insert_file(
         return
 
     args = ["insert", path]
-    backup_path = _make_backup(path)
+    if dry_run:
+        args.append("--dry-run")
+    backup_path = _make_backup(path) if not dry_run else None
     tmp_anchor: Path | None = None
     tmp_content: Path | None = None
     try:

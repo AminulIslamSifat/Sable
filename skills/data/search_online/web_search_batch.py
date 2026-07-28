@@ -747,6 +747,69 @@ def fetch_specific_urls(urls: list[str], *, max_chars: int = 10000) -> dict[str,
     }
 
 
+def load_research_state(path: str) -> dict[str, Any]:
+    """Load a deep-research state file, or return an empty structure if missing/invalid."""
+    p = Path(path)
+    if not p.exists():
+        return {"topics": {}}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {"topics": {}}
+    if not isinstance(data, dict) or "topics" not in data:
+        return {"topics": {}}
+    return data
+
+
+def save_research_state(path: str, state: dict[str, Any]) -> None:
+    Path(path).write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def research_init(path: str, topics: list[str]) -> dict[str, Any]:
+    """Create a fresh state file with one entry per sub-topic, all marked 'open'."""
+    state = {"topics": {}}
+    for name in topics:
+        state["topics"][name] = {"status": "open", "queries": [], "fetched_urls": []}
+    save_research_state(path, state)
+    return state
+
+
+def research_mark(path: str, topic: str, status: str) -> dict[str, Any]:
+    """Update a sub-topic's status: open | answered | thin | conflicting."""
+    state = load_research_state(path)
+    entry = state["topics"].setdefault(topic, {"status": status, "queries": [], "fetched_urls": []})
+    entry["status"] = status
+    save_research_state(path, state)
+    return state
+
+
+def render_research_status(state: dict[str, Any]) -> str:
+    if not state.get("topics"):
+        return "No research state yet."
+    lines = ["RESEARCH STATE", "-" * 50]
+    for name, info in state["topics"].items():
+        lines.append(f"[{info.get('status', 'open')}] {name}")
+        if info.get("queries"):
+            lines.append(f"    queries run ({len(info['queries'])}): {', '.join(info['queries'])}")
+        if info.get("fetched_urls"):
+            lines.append(f"    urls fetched: {len(info['fetched_urls'])}")
+    return "\n".join(lines)
+
+
+def _record_queries(state: dict[str, Any], topic: str, queries: list[str]) -> None:
+    entry = state["topics"].setdefault(topic, {"status": "open", "queries": [], "fetched_urls": []})
+    for q in queries:
+        if q not in entry["queries"]:
+            entry["queries"].append(q)
+
+
+def _record_fetched(state: dict[str, Any], topic: str, urls: list[str]) -> None:
+    entry = state["topics"].setdefault(topic, {"status": "open", "queries": [], "fetched_urls": []})
+    for u in urls:
+        if u not in entry["fetched_urls"]:
+            entry["fetched_urls"].append(u)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Standalone batch web search")
     p.add_argument("queries", nargs="*", help="One or more search queries")
@@ -759,15 +822,54 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--search-only", action="store_true", help="Only return search results (titles/URLs), skip fetching")
     p.add_argument("--fetch-urls", nargs="+", metavar="URL", help="Fetch specific URLs directly (phase 2)")
     p.add_argument("--max-chars", type=int, default=10000, help="Max characters per fetched page (default 10000)")
+    p.add_argument("--research-log", metavar="PATH", help="Path to a deep-research state JSON file, used to track sub-topic progress across search rounds")
+    p.add_argument("--topic", help="Sub-topic name this --search-only/--fetch-urls call belongs to (used with --research-log)")
+    p.add_argument("--research-init", nargs="+", metavar="TOPIC", help="Create a new state file at --research-log with these sub-topic names, all marked 'open'")
+    p.add_argument("--research-mark", nargs=2, metavar=("TOPIC", "STATUS"), help="Set a sub-topic's status in --research-log: open|answered|thin|conflicting")
+    p.add_argument("--research-status", action="store_true", help="Print the current state summary from --research-log and exit")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
+    # Research-state bookkeeping actions (no search performed)
+    if args.research_init or args.research_mark or args.research_status:
+        if not args.research_log:
+            sys.stderr.write("error: --research-init/--research-mark/--research-status require --research-log PATH\n")
+            return 1
+        if args.research_init:
+            state = research_init(args.research_log, args.research_init)
+            sys.stdout.write(f"Initialized {args.research_log} with {len(args.research_init)} topic(s)\n")
+            sys.stdout.write(render_research_status(state) + "\n")
+            return 0
+        if args.research_mark:
+            topic, status = args.research_mark
+            state = research_mark(args.research_log, topic, status)
+            sys.stdout.write(render_research_status(state) + "\n")
+            return 0
+        state = load_research_state(args.research_log)
+        sys.stdout.write(render_research_status(state) + "\n")
+        return 0
+
     # Phase 2: fetch specific URLs directly
     if args.fetch_urls:
-        result = fetch_specific_urls(args.fetch_urls, max_chars=args.max_chars)
+        urls = args.fetch_urls
+        state = None
+        if args.research_log and args.topic:
+            state = load_research_state(args.research_log)
+            already = set(state["topics"].get(args.topic, {}).get("fetched_urls", []))
+            skipped = [u for u in urls if u in already]
+            urls = [u for u in urls if u not in already]
+            if skipped:
+                sys.stderr.write(f"note: skipping {len(skipped)} already-fetched URL(s) for topic '{args.topic}'\n")
+            if not urls:
+                sys.stdout.write("All requested URLs already fetched for this topic; nothing to do.\n")
+                return 0
+        result = fetch_specific_urls(urls, max_chars=args.max_chars)
+        if state is not None:
+            _record_fetched(state, args.topic, urls)
+            save_research_state(args.research_log, state)
         if args.json:
             json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
             sys.stdout.write("\n")
@@ -791,6 +893,10 @@ def main(argv: list[str] | None = None) -> int:
             search_only(query, max_results=args.max_results, time_filter=args.time_filter or infer_time_filter(query))
             for query in queries
         ]
+        if args.research_log and args.topic:
+            state = load_research_state(args.research_log)
+            _record_queries(state, args.topic, queries)
+            save_research_state(args.research_log, state)
         if args.json:
             json.dump({"count": len(items), "items": items}, sys.stdout, indent=2, ensure_ascii=False)
             sys.stdout.write("\n")
