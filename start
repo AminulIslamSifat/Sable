@@ -1,7 +1,16 @@
+
 #!/bin/bash
 
 # Exit immediately if a command exits with a non-zero status
 set -e
 
-echo "Starting the server with uv..."
-uv run python server.py
+SERVICE="sable.service"
+
+if systemctl --user cat "$SERVICE" >/dev/null 2>&1; then
+    echo "Starting Sable via systemd..."
+    systemctl --user start "$SERVICE"
+    systemctl --user --no-pager status "$SERVICE" || true
+else
+    echo "systemd user service not found — starting the server directly with uv..."
+    exec uv run python server.py
+fi
