@@ -1,4 +1,4 @@
-"""Qwen Browser Opener — launch headful browser with persistent ./browser-data profile.
+"""Qwen Browser Opener — launch headful browser with persistent browser-data profile.
 
 Use this tool to:
 - Log into Qwen or switch accounts
@@ -9,7 +9,9 @@ Use this tool to:
 import sys
 from playwright.sync_api import sync_playwright
 
-USER_DATA_DIR = "./browser-data"
+from engine.config import BROWSER_DATA_DIR
+
+USER_DATA_DIR = str(BROWSER_DATA_DIR)
 QWEN_URL = "https://chat.qwen.ai"
 
 
@@ -34,7 +36,7 @@ def main() -> None:
                 print("\nClosing browser...")
 
             context.close()
-            print("✨ Session & cookies saved to ./browser-data. You can now run python chat.py! 💙")
+            print(f"✨ Session & cookies saved to {USER_DATA_DIR}. You can now run python chat.py! 💙")
     except Exception as e:
         print(f"[ERROR] Failed to launch browser: {e}")
 

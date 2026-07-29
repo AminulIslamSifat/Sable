@@ -18,13 +18,14 @@ build/
 \"
 
 
-# Browser data (contains cookies, sessions, cache)
-browser-data/
-browser-scraper-data/
+# Browser data (contains cookies, sessions, cache) — all under system/
+system/browser-data/
+system/browser-data.bak/
+system/browser-scraper-data/
+system/automation-browser-data/
+system/automation-browser-data.bak/
+system/browser-scraper-data.bak/
 scraper_output/
-browser-data.bak/
-browser-scraper-data.bak/
-automation-browser-data/
 
 
 # Uploads (user-uploaded files)
@@ -49,6 +50,7 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+output/
 
 # Logs
 *.log
@@ -59,3 +61,5 @@ instruction/Maria.md
 test/
 Brain/Memory.json
 Brain/Protected.json
+.auth_token
+mockups/

@@ -35,7 +35,10 @@ def build_headers(cookies: str | None = None, bx_ua: str | None = None, bx_umidt
 class BrowserManager:
     """Manages a single persistent Chromium instance to upload images & sniff headers."""
 
-    def __init__(self, user_data_dir: str = "./browser-data", headless: bool = True):
+    def __init__(self, user_data_dir: str | None = None, headless: bool = True):
+        if user_data_dir is None:
+            from engine.config import BROWSER_DATA_DIR
+            user_data_dir = str(BROWSER_DATA_DIR)
         self.user_data_dir = user_data_dir
         self.headless = headless
         self.playwright = None
@@ -92,7 +95,7 @@ class BrowserManager:
             has_token = await self.page.evaluate("() => !!localStorage.getItem('token')")
             if not has_token:
                 print("[WARN] ⚠️  No JWT token in localStorage after load!")
-                print("[WARN] Profile may be stale/corrupted. Try: rm -rf ./browser-data && re-login via browser_opener.py")
+                print(f"[WARN] Profile may be stale/corrupted. Try: rm -rf {self.user_data_dir} && re-login via browser_opener.py")
             else:
                 print("[DEBUG] ✅ Auth token hydrated successfully.")
 

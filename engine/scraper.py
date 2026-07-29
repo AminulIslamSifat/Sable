@@ -25,6 +25,8 @@ from typing import Any
 
 logger = logging.getLogger("sable.scraper")
 
+from engine.config import BROWSER_SCRAPER_DATA_DIR
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 SETTINGS_PATH = BASE_DIR / "system/scraper_settings.json"
 ENGINES_DIR = BASE_DIR / "engine" / "scraper_engines"
@@ -306,7 +308,7 @@ class ScraperEngine:
 
         # Scraper gets its own persistent profile (separate from ChatService).
         try:
-            engine.user_data_dir = str(BASE_DIR / "browser-scraper-data")
+            engine.user_data_dir = str(BROWSER_SCRAPER_DATA_DIR)
         except Exception:
             pass
 
@@ -346,7 +348,7 @@ class ScraperEngine:
         import urllib.request
 
         port = settings.get("port", DEFAULT_SETTINGS["port"])
-        user_data_dir = str(BASE_DIR / "browser-scraper-data")
+        user_data_dir = str(BROWSER_SCRAPER_DATA_DIR)
 
         # Quick TCP check first
         try:

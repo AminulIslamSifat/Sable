@@ -29,6 +29,23 @@ echo -e "\n${YELLOW}[+] Running the browser opener engine...${NC}"
 uv run python engine/browser_opener.py
 echo -e "${GREEN}[✓] Success: Browser opener executed${NC}"
 
+# 3.5. Distribute browser-data to all profile slots (under system/)
+echo -e "\n${YELLOW}[+] Distributing browser profile to all slots...${NC}"
+mkdir -p system
+
+SRC="system/browser-data"
+for target in system/browser-scraper-data system/automation-browser-data system/automation-browser-data.bak; do
+    if [ ! -d "$target" ]; then
+        echo -e "${YELLOW}[i] Creating $target from $SRC...${NC}"
+        cp -r "$SRC" "$target"
+    else
+        echo -e "${CYAN}[i] $target already exists, skipping${NC}"
+    fi
+done
+
+echo -e "${GREEN}[✓] Success: Browser profiles distributed${NC}"
+
+
 # 4. Ask for a password and save it to system/.auth_token
 echo -e "\n${YELLOW}[+] Setting up authentication token...${NC}"
 mkdir -p system
