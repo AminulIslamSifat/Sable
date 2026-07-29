@@ -135,6 +135,8 @@
       <div class="settings-tabs">
         <button class="settings-tab active" data-tab="logs">Live Logs</button>
         <button class="settings-tab" data-tab="general">General</button>
+        <button class="settings-tab" data-tab="account">Account</button>
+        <button class="settings-tab" data-tab="backup">Backup</button>
         <button class="settings-tab" data-tab="brain">Brain</button>
         <button class="settings-tab" data-tab="skills">Skills</button>
       </div>
@@ -218,19 +220,29 @@
             </div>
           </div>
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-              <label style="font-size:13px;color:var(--text-dim);font-weight:600;">💾 Restore Browser Data</label>
-              <button id="refreshProfilesBtn" class="icon-btn" title="Refresh profile info" style="width:auto;padding:4px 10px;font-size:11px;">↻ Refresh</button>
-            </div>
-            <div id="browserProfileCards" style="display:flex;flex-direction:column;gap:10px;">
-              <p class="muted" style="font-size:12px;margin:0;">Loading profiles…</p>
-            </div>
-            <p class="muted" style="font-size:11px;margin-top:6px;">Restores from the .bak snapshot (clean login state). Deletes current data first. Stop the browser before restoring.</p>
-          </div>
-          <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
             <button id="deleteAllChatsBtn" style="background:var(--danger-bg);color:var(--danger);border:1px solid var(--danger);padding:8px 16px;font-size:12px;font-weight:600;width:100%;">🗑 Delete All Chats</button>
             <p class="muted" style="font-size:11px;margin-top:6px;">Permanently removes every chat and message. This cannot be undone.</p>
           </div>
+        </div>
+        <div id="tab-account" class="settings-tab-content">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <label style="font-size:14px;color:var(--text);font-weight:600;">👤 Account Profiles</label>
+            <button id="refreshAccountsBtn" class="icon-btn" title="Refresh account list" style="width:auto;padding:4px 10px;font-size:11px;">↻ Refresh</button>
+          </div>
+          <div id="accountProfileCards" style="display:flex;flex-direction:column;gap:8px;">
+            <p class="muted" style="font-size:12px;margin:0;">Loading accounts…</p>
+          </div>
+          <p class="muted" style="font-size:11px;margin-top:10px;">Switches the API browser profile symlink. Browser restarts automatically after switch.<br>Profiles live in <code>system/browser-data-acc*</code> — each one is a full Chromium profile logged into a different account.</p>
+        </div>
+        <div id="tab-backup" class="settings-tab-content">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <label style="font-size:14px;color:var(--text);font-weight:600;">💾 Browser Profile Backups</label>
+            <button id="refreshProfilesBtn" class="icon-btn" title="Refresh profile info" style="width:auto;padding:4px 10px;font-size:11px;">↻ Refresh</button>
+          </div>
+          <div id="browserProfileCards" style="display:flex;flex-direction:column;gap:10px;">
+            <p class="muted" style="font-size:12px;margin:0;">Loading profiles…</p>
+          </div>
+          <p class="muted" style="font-size:11px;margin-top:10px;">Restores from the .bak snapshot (clean login state). Deletes current data first. Stop the browser before restoring.</p>
         </div>
         <div id="tab-brain" class="settings-tab-content">
           <h3 class="mem-title">Memory Search</h3>

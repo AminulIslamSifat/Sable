@@ -3,6 +3,10 @@
 # Exit immediately if a command exits with a non-zero status
 set -e
 
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+UV_BIN="$(command -v uv || true)"
+cd "$PROJECT_ROOT"
+
 # Color definitions
 CYAN='\033[1;36m'
 GREEN='\033[1;32m'
@@ -26,15 +30,33 @@ echo -e "${GREEN}[✓] Success: Playwright Chromium installed${NC}"
 
 # 3. Run browser opener engine
 echo -e "\n${YELLOW}[+] Running the browser opener engine...${NC}"
-uv run python engine/browser_opener.py
+uv run python -m engine.browser_opener
 echo -e "${GREEN}[✓] Success: Browser opener executed${NC}"
 
-# 3.5. Distribute browser-data to all profile slots (under system/)
-echo -e "\n${YELLOW}[+] Distributing browser profile to all slots...${NC}"
+# 3.5. Set up account profile structure and distribute to all slots (under system/)
+echo -e "\n${YELLOW}[+] Setting up account profiles and distributing...${NC}"
 mkdir -p system
 
-SRC="system/browser-data"
-for target in system/browser-scraper-data system/automation-browser-data system/automation-browser-data.bak; do
+# Migrate browser-data → browser-data-acc1 + symlink (first-run only)
+if [ -d "system/browser-data" ] && [ ! -L "system/browser-data" ]; then
+    if [ ! -d "system/browser-data-acc1" ]; then
+        echo -e "${YELLOW}[i] Migrating browser-data → browser-data-acc1...${NC}"
+        mv system/browser-data system/browser-data-acc1
+    else
+        echo -e "${CYAN}[i] browser-data-acc1 already exists, removing raw browser-data${NC}"
+        rm -rf system/browser-data
+    fi
+fi
+
+# Ensure symlink exists
+if [ ! -L "system/browser-data" ]; then
+    ln -s browser-data-acc1 system/browser-data
+    echo -e "${GREEN}[✓] Symlink: system/browser-data → browser-data-acc1${NC}"
+fi
+
+# Distribute from acc1 to other profile slots
+SRC="system/browser-data-acc1"
+for target in system/browser-data.bak system/browser-scraper-data system/automation-browser-data system/automation-browser-data.bak; do
     if [ ! -d "$target" ]; then
         echo -e "${YELLOW}[i] Creating $target from $SRC...${NC}"
         cp -r "$SRC" "$target"
@@ -90,9 +112,42 @@ else
     echo -e "\n${RED}[!] Warning: 'start' script not found in the root directory.${NC}"
 fi
 
+# 8. Install systemd user service
+echo -e "\n${YELLOW}[+] Installing systemd user service...${NC}"
+mkdir -p "${HOME}/.config/systemd/user"
+
+if [ -z "$UV_BIN" ]; then
+    echo -e "${RED}[!] Warning: uv not found in PATH; the systemd unit may fail to start.${NC}"
+fi
+
+cat > "${HOME}/.config/systemd/user/sable.service" <<EOF
+[Unit]
+Description=Sable chat server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${PROJECT_ROOT}
+ExecStart=${UV_BIN:-/usr/bin/env uv} run python server.py
+Restart=on-failure
+RestartSec=3
+Environment=TERM=xterm-256color
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload || true
+systemctl --user enable sable.service >/dev/null 2>&1 || true
+
+echo -e "${GREEN}[✓] Success: systemd user service installed and enabled (sable.service)${NC}"
+
 echo -e "\n${CYAN}==========================================${NC}"
 echo -e "${GREEN}         Setup Completed Successfully!    ${NC}"
 echo -e "${CYAN}==========================================${NC}"
-echo -e "You can now run the application using:"
+echo -e "You can now start the service using:"
 echo -e "  ${GREEN}./start${NC}"
+echo -e "or:"
+echo -e "  ${GREEN}systemctl --user start sable${NC}"
 echo -e "${CYAN}------------------------------------------${NC}"

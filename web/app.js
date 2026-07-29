@@ -1887,7 +1887,7 @@
      * After messages load, check the last message's actual parent_id and
      * auto-switch model if needed (the chat metadata parent_id can be stale).
      * - parent_id is null → do nothing
-     * - current model is qwen + parent_id is numeric (2,4,6 etc) → switch to deepseek
+     * - current model is qwen + parent_id is browser-<hex> → switch to deepseek
      * - current model is deepseek + parent_id is UUID → switch to qwen
      */
     function autoSwitchModelForChat(messages) {
@@ -1899,14 +1899,14 @@
       // parent_id is null → do nothing
       if (lastParentId === null || lastParentId === undefined) return;
 
-      const isParentNumeric = /^\d+$/.test(String(lastParentId));
+      const isParentDeepseek = /^browser-[0-9a-f]+$/i.test(String(lastParentId));
       const isParentUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(lastParentId));
       const curEntry = modelList.find(m => m.id === selectedModel);
       const curIsDeepseek = curEntry?.api_backend === "deepseek";
       const curIsQwen = curEntry && !curIsDeepseek;
 
-      // Qwen model + numeric parent_id → switch to deepseek
-      if (curIsQwen && isParentNumeric) {
+      // Qwen model + browser-* parent_id → switch to deepseek
+      if (curIsQwen && isParentDeepseek) {
         const dsModel = modelList.find(m => m.api_backend === "deepseek");
         if (dsModel && dsModel.id !== selectedModel) {
           selectedModel = dsModel.id;
@@ -1935,10 +1935,10 @@
       parentId = meta?.parent_id || null;
 
       // Auto-switch model dropdown based on chat type.
-      // Numeric parent_id = DeepSeek session; UUID or null = Qwen.
+      // browser-<hex> parent_id = DeepSeek session; UUID or null = Qwen.
       // null parent_id (new/empty chat) is NEVER DeepSeek — DS always gets
-      // a numeric parent_id after the first response — so default to Qwen.
-      const isDeepseekChat = parentId != null && /^\d+$/.test(String(parentId));
+      // a browser-* parent_id after the first response — so default to Qwen.
+      const isDeepseekChat = parentId != null && /^browser-[0-9a-f]+$/i.test(String(parentId));
       const curEntry = modelList.find(m => m.id === selectedModel);
       const curIsDeepseek = curEntry?.api_backend === "deepseek";
       if (isDeepseekChat && !curIsDeepseek) {
@@ -2846,6 +2846,7 @@
     });
 
     document.querySelector('[data-tab="skills"]').addEventListener("click", loadSkills);
+    document.querySelector('[data-tab="account"]').addEventListener("click", loadAccountProfiles);
 
     function appendLogLine(msg) {
       const span = document.createElement("span");
@@ -2967,11 +2968,82 @@
       });
     }
 
+    // ---------- Account Profile Switcher ----------
+    const accountProfileCards = document.getElementById("accountProfileCards");
+    const refreshAccountsBtn = document.getElementById("refreshAccountsBtn");
+
+    async function loadAccountProfiles() {
+      if (!accountProfileCards) return;
+      accountProfileCards.innerHTML = '<p class="muted" style="font-size:12px;margin:0;">Loading accounts…</p>';
+      try {
+        const res = await fetch("/api/settings/accounts");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        const accounts = data.accounts || [];
+        const active = data.active;
+
+        if (!accounts.length) {
+          accountProfileCards.innerHTML = '<p class="muted" style="font-size:12px;margin:0;">No account profiles found. Create dirs like <code>system/browser-data-acc1</code>, <code>system/browser-data-acc2</code>…</p>';
+          return;
+        }
+
+        accountProfileCards.innerHTML = accounts.map((acc) => {
+          const isActive = acc.name === active;
+          const email = acc.email || "unknown account";
+          const size = acc.size_mb ? acc.size_mb + " MB" : "";
+          return `<div style="display:flex;align-items:center;justify-content:space-between;background:var(--panel);border:1px solid ${isActive ? 'var(--accent)' : 'var(--border)'};border-radius:10px;padding:10px 14px;">
+            <div style="min-width:0;">
+              <div style="font-size:12px;font-weight:600;color:var(--text);">${email}</div>
+              <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">${acc.name}${size ? ' · ' + size : ''}${isActive ? ' · <span style="color:var(--accent);">active</span>' : ''}</div>
+            </div>
+            ${isActive ? '' : `<button class="icon-btn account-switch-btn" data-profile="${acc.name}" style="width:auto;padding:5px 12px;font-size:11px;white-space:nowrap;">Switch</button>`}
+          </div>`;
+        }).join("");
+
+        accountProfileCards.querySelectorAll(".account-switch-btn").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const profile = btn.dataset.profile;
+            btn.disabled = true;
+            btn.textContent = "Switching…";
+            showToast("🔄 Switching account profile…", "info");
+            try {
+              const res = await fetch("/api/settings/accounts/switch", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ profile }),
+              });
+              const data = await res.json().catch(() => ({}));
+              if (res.ok) {
+                showToast(`✅ Switched to ${data.email || profile}`, "success");
+                await loadAccountProfiles();
+                await loadModels();
+              } else {
+                showToast("Switch failed: " + (data.detail || "unknown"), "error");
+                btn.disabled = false;
+                btn.textContent = "Switch";
+              }
+            } catch (e) {
+              showToast("Switch error: " + e.message, "error");
+              btn.disabled = false;
+              btn.textContent = "Switch";
+            }
+          });
+        });
+      } catch (e) {
+        accountProfileCards.innerHTML = `<p class="muted" style="font-size:12px;margin:0;color:var(--danger);">Failed to load: ${e.message}</p>`;
+      }
+    }
+
+    if (refreshAccountsBtn) {
+      refreshAccountsBtn.addEventListener("click", loadAccountProfiles);
+    }
+
     // Load browser settings when settings panel opens
     const origOpenSettings = openSettings;
     openSettings = function() {
       origOpenSettings();
       loadBrowserSettings();
+      loadAccountProfiles();
     };
 
     // ---------- Font Size ----------
@@ -3244,7 +3316,10 @@
           '<div style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;">' +
             '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">' +
               '<span style="font-size:13px;font-weight:600;color:var(--text);">' + dot + ' ' + p.label + '</span>' +
-              '<button data-profile="' + key + '" class="restoreProfileBtn" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:11px;cursor:pointer;font-weight:600;' + (p.has_backup ? '' : 'opacity:0.4;pointer-events:none;') + '">♻ Restore</button>' +
+              '<span style="display:flex;gap:6px;">' +
+                '<button data-profile="' + key + '" class="backupProfileBtn" style="background:var(--panel);color:var(--accent);border:1px solid var(--accent);border-radius:6px;padding:5px 12px;font-size:11px;cursor:pointer;font-weight:600;">📦 Backup</button>' +
+                '<button data-profile="' + key + '" class="restoreProfileBtn" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:11px;cursor:pointer;font-weight:600;' + (p.has_backup ? '' : 'opacity:0.4;pointer-events:none;') + '">♻ Restore</button>' +
+              '</span>' +
             '</div>' +
             '<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-size:12px;color:var(--text-dim);">' +
               '<span>Data</span><span style="color:var(--text);">' + p.data_dir + ' (' + p.size_mb + ' MB)</span>' +
@@ -3255,6 +3330,9 @@
       container.innerHTML = html;
       container.querySelectorAll('.restoreProfileBtn').forEach(btn => {
         btn.addEventListener('click', () => restoreBrowserProfile(btn.dataset.profile, btn));
+      });
+      container.querySelectorAll('.backupProfileBtn').forEach(btn => {
+        btn.addEventListener('click', () => createBrowserBackup(btn.dataset.profile, btn));
       });
     } catch {
       container.innerHTML = '<p class="muted" style="font-size:12px;margin:0;color:var(--danger);">Failed to load profiles.</p>';
@@ -3283,6 +3361,31 @@
     }
     btn.disabled = false;
     btn.textContent = '♻ Restore';
+    await loadBrowserProfiles();
+  }
+
+  async function createBrowserBackup(profile, btn) {
+    const label = { api: 'API (ChatService)', scraper: 'Scraper', automation: 'Automation' }[profile] || profile;
+    btn.disabled = true;
+    const orig = btn.textContent;
+    btn.textContent = '⏳ Backing up…';
+    try {
+      const res = await fetch('/api/settings/browser/create-backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile })
+      });
+      const d = await res.json();
+      if (res.ok) {
+        showToast('📦 ' + label + ' backed up (' + d.size_mb + ' MB)', 'success');
+      } else {
+        showToast('Backup failed: ' + (d.detail || 'Unknown error'), 'error');
+      }
+    } catch {
+      showToast('Backup failed — network error', 'error');
+    }
+    btn.disabled = false;
+    btn.textContent = orig;
     await loadBrowserProfiles();
   }
 

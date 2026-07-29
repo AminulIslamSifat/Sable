@@ -685,6 +685,105 @@ async def refresh_deepseek_token() -> dict[str, Any]:
 
 
 
+# ---------------------------------------------------------------------------
+# Account profile switcher — scans system/browser-data-acc* directories
+# ---------------------------------------------------------------------------
+
+_SYSTEM_DIR = BROWSER_DATA_DIR.parent  # system/
+_ACTIVE_PROFILE_LINK = _SYSTEM_DIR / "browser-data"
+
+
+def _read_profile_email(profile_dir: Path) -> str | None:
+    """Extract the logged-in Google email from a Chromium profile's Preferences."""
+    prefs_file = profile_dir / "Default" / "Preferences"
+    if not prefs_file.exists():
+        return None
+    try:
+        prefs = json.loads(prefs_file.read_text(encoding="utf-8"))
+        accounts = prefs.get("account_info", [])
+        if accounts:
+            return accounts[0].get("email")
+    except Exception:
+        pass
+    return None
+
+
+@app.get("/api/settings/accounts")
+async def list_accounts() -> dict[str, Any]:
+    """Scan system/ for browser-data-acc* profiles and return their info."""
+
+    def _scan() -> list[dict[str, Any]]:
+        accounts: list[dict[str, Any]] = []
+        for entry in sorted(_SYSTEM_DIR.iterdir()):
+            if entry.is_dir() and entry.name.startswith("browser-data-acc"):
+                accounts.append({
+                    "name": entry.name,
+                    "email": _read_profile_email(entry),
+                    "size_mb": _dir_size_mb(entry),
+                })
+        return accounts
+
+    accounts = await asyncio.to_thread(_scan)
+
+    # Determine which profile is currently active
+    active: str | None = None
+    if _ACTIVE_PROFILE_LINK.is_symlink():
+        target = _ACTIVE_PROFILE_LINK.resolve().name
+        active = target
+    elif _ACTIVE_PROFILE_LINK.is_dir():
+        active = "browser-data (not yet migrated)"
+
+    return {"accounts": accounts, "active": active}
+
+
+@app.post("/api/settings/accounts/switch")
+async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
+    """Switch the active API browser profile to a different account directory."""
+    target_name = payload.get("profile", "")
+    if not target_name.startswith("browser-data-acc"):
+        raise HTTPException(status_code=400, detail="Profile must match 'browser-data-acc*'")
+
+    target_path = _SYSTEM_DIR / target_name
+    if not target_path.is_dir():
+        raise HTTPException(status_code=404, detail=f"Profile directory '{target_name}' not found")
+
+    def _do_switch() -> None:
+        # If browser-data is currently a real dir (first migration), rename it
+        if _ACTIVE_PROFILE_LINK.is_dir() and not _ACTIVE_PROFILE_LINK.is_symlink():
+            migration_name = "browser-data-acc1"
+            migration_path = _SYSTEM_DIR / migration_name
+            if migration_path.exists():
+                # acc1 already exists — just remove the real dir (it's a duplicate)
+                shutil.rmtree(_ACTIVE_PROFILE_LINK)
+            else:
+                _ACTIVE_PROFILE_LINK.rename(migration_path)
+        elif _ACTIVE_PROFILE_LINK.is_symlink():
+            _ACTIVE_PROFILE_LINK.unlink()
+
+        # Create symlink to the selected profile
+        _ACTIVE_PROFILE_LINK.symlink_to(target_path)
+
+    # Stop browser before swapping
+    await service.close()
+
+    try:
+        await asyncio.to_thread(_do_switch)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Switch failed: {exc}")
+
+    # Restart browser with new profile + refresh DeepSeek token
+    await service.warmup()
+    try:
+        ds_token = await service.refresh_deepseek_token()
+        get_deepseek_client().set_token(ds_token)
+    except Exception:
+        pass  # Non-fatal — DeepSeek might not be logged in on this account
+
+    return {"status": "ok", "active": target_name, "email": _read_profile_email(target_path)}
+
+
+
+
 
 
 _BROWSER_PROFILES: dict[str, tuple[Path, Path]] = {
@@ -759,8 +858,39 @@ async def restore_browser_profile(payload: dict[str, str]) -> dict[str, Any]:
     return {
         "status": "ok",
         "profile": profile,
-        "restored_from": bak_dir,
-        "restored_to": data_dir,
+        "restored_from": str(bak_path),
+        "restored_to": str(data_path),
+    }
+
+
+@app.post("/api/settings/browser/create-backup")
+async def create_browser_backup(payload: dict[str, str]) -> dict[str, Any]:
+    """Snapshot current browser profile data to its .bak copy."""
+    import asyncio
+    import shutil
+
+    profile = payload.get("profile", "")
+    if profile not in _BROWSER_PROFILES:
+        raise HTTPException(status_code=400, detail=f"Unknown profile '{profile}'. Use 'api', 'scraper', or 'automation'.")
+
+    data_path, bak_path = _BROWSER_PROFILES[profile]
+
+    if not data_path.is_dir():
+        raise HTTPException(status_code=404, detail=f"No data found at {data_path}")
+
+    def _do_backup() -> None:
+        if bak_path.is_dir():
+            shutil.rmtree(bak_path)
+        shutil.copytree(data_path, bak_path, symlinks=True)
+
+    await asyncio.to_thread(_do_backup)
+
+    return {
+        "status": "ok",
+        "profile": profile,
+        "backed_up": str(data_path),
+        "backup_to": str(bak_path),
+        "size_mb": _dir_size_mb(bak_path),
     }
 
 
@@ -920,21 +1050,35 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
 
     if mode == "api":
         # API mode: prompt-only, threaded via parent_id. No conversation summary injected.
-        # Model accesses prior context through the Qwen parent thread, not inline history.
+        # Model accesses prior context through the parent thread, not inline history.
         prompt = _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE
         prompt = prompt.replace("<<CURRENT_MEMORY>>", current_memory)
         prompt = prompt.replace("<<CONVERSATION_SUMMARY>>", "(See conversation thread above — do not request more context.)")
         parent_id = get_parent_id(chat_id, None)
         try:
-            result = await retry_async(
-                lambda: service.chat(
-                    message=prompt,
-                    chat_id=chat_id,
-                    parent_id=parent_id,
-                    model=model,
-                ),
-                label="memory_consolidate_api",
-            )
+            if _is_deepseek_api_model(model):
+                _ds_cfg = get_model_config(model)
+                _ds_api_type = _ds_cfg.get("api_model_type")
+                result = await retry_async(
+                    lambda: get_deepseek_client().chat(
+                        message=prompt,
+                        model=_ds_api_type,
+                        thinking_mode="fast",
+                        chat_id=chat_id,
+                        inject_instructions=False,
+                    ),
+                    label="memory_consolidate_api_ds",
+                )
+            else:
+                result = await retry_async(
+                    lambda: service.chat(
+                        message=prompt,
+                        chat_id=chat_id,
+                        parent_id=parent_id,
+                        model=model,
+                    ),
+                    label="memory_consolidate_api",
+                )
         except Exception as exc:
             return {"status": "error", "detail": f"Model call failed: {exc}"}
     else:
