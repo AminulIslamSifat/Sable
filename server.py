@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from engine.config import MODELS, MEMORY_PATH as _MEMORY_PATH, PROTECTED_PATH as _PROTECTED_PATH, MEMORY_SEARCH_SETTINGS_PATH as _MEMORY_SEARCH_SETTINGS, get_model_config, BROWSER_DATA_DIR, BROWSER_SCRAPER_DATA_DIR, BROWSER_AUTOMATION_DATA_DIR
+from engine.config import MODELS, MEMORY_PATH as _MEMORY_PATH, PROTECTED_PATH as _PROTECTED_PATH, MEMORY_SEARCH_SETTINGS_PATH as _MEMORY_SEARCH_SETTINGS, get_model_config, BROWSER_DATA_DIR, BROWSER_SCRAPER_DATA_DIR, BROWSER_AUTOMATION_DATA_DIR, HOST, PORT
 from engine.scraper import (
     get_settings as get_scraper_settings,
     list_engines as list_scraper_engines,
@@ -1847,4 +1847,4 @@ def index() -> str:
 
 
 if __name__ == "__main__":
-    uvicorn.run("server:app", host="127.0.0.1", port=61770, reload=False)
+    uvicorn.run("server:app", host=HOST, port=PORT, reload=False)

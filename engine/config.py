@@ -1,9 +1,17 @@
 """Qwen Engine Configuration — Endpoints, Models, and Default Constants."""
 
+import os
 from pathlib import Path
 
 # Project root (two levels up from this file: engine/config.py → engine/ → project root)
 _ROOT = Path(__file__).resolve().parent.parent
+
+# --------------------------------------------------------------------------
+# Server bind settings — single source of truth for the FastAPI/uvicorn app.
+# Override with SABLE_HOST / SABLE_PORT environment variables when needed.
+# --------------------------------------------------------------------------
+HOST = os.getenv("SABLE_HOST", "0.0.0.0")
+PORT = int(os.getenv("SABLE_PORT", "6001"))
 
 # --------------------------------------------------------------------------
 # Runtime data paths — single source of truth used by server.py and any
