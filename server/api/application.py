@@ -1,0 +1,101 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import shutil
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any, Generator
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from engine.memory_search import get_searcher
+from connectors.deepseek.client import get_client as get_deepseek_client
+
+from .dependencies import service
+from server.database import init_db
+from server.auth import AUTH_TOKEN
+from server.config import (
+    AUTH_EXEMPT_PREFIXES, WEB_DIR, UPLOAD_DIR,
+    _MEMORY_SEARCH_SETTINGS,
+)
+from server.utils import logger
+
+# Import routers
+from .routes.auth import router as auth_router
+from .routes.chats import router as chats_router
+from .routes.memory import router as memory_router
+from .routes.settings import router as settings_router
+from .routes.scraper import router as scraper_router
+from .routes.upload import router as upload_router
+from .routes.deepseek import router as deepseek_router
+from .routes.chat import router as chat_router
+from .routes.misc import router as misc_router
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> Generator[None, None, None]:
+    init_db()
+    if _MEMORY_SEARCH_SETTINGS.exists():
+        try:
+            _ms = json.loads(_MEMORY_SEARCH_SETTINGS.read_text(encoding="utf-8"))
+            _s = get_searcher()
+            if _ms.get("model"):
+                _s.set_model(str(_ms["model"]))
+            if isinstance(_ms.get("model_thresholds"), dict):
+                _s.set_thresholds(_ms["model_thresholds"])
+        except Exception:
+            pass
+    await service.warmup()
+    try:
+        ds_token = await service.refresh_deepseek_token()
+        get_deepseek_client().set_token(ds_token)
+    except Exception as exc:
+        logger.warning("DeepSeek startup token refresh failed: %s: %s", type(exc).__name__, exc)
+    yield
+    await service.close()
+    from engine.scraper import scraper as scraper_service
+    await scraper_service.stop(kill_browser=True)
+
+app = FastAPI(title="Sable API", version="0.4.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+if WEB_DIR.exists():
+    app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+
+if UPLOAD_DIR.exists():
+    app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+# ---------- Auth Middleware ----------
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith("/api/") or any(path.startswith(p) for p in AUTH_EXEMPT_PREFIXES):
+        return await call_next(request)
+    auth_header = request.headers.get("authorization", "")
+    authorized = auth_header.startswith("Bearer ") and auth_header[7:] == AUTH_TOKEN
+    if not authorized and path == "/api/logs":
+        authorized = request.query_params.get("token", "") == AUTH_TOKEN
+    if not authorized:
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+    return await call_next(request)
+
+# Include routers
+app.include_router(auth_router)
+app.include_router(chats_router)
+app.include_router(memory_router)
+app.include_router(settings_router)
+app.include_router(scraper_router)
+app.include_router(upload_router)
+app.include_router(deepseek_router)
+app.include_router(chat_router)
+app.include_router(misc_router)
