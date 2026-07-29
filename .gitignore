@@ -37,7 +37,7 @@ uploads/
 !.env.example
 *.key
 *.pem
-.session_tokens.json
+system/.session_tokens.json
 system/.auth_token
 .sable_backups
 
