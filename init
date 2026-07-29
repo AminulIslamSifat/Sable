@@ -29,7 +29,7 @@ uv run playwright install chromium
 echo -e "${GREEN}[✓] Success: Playwright Chromium installed${NC}"
 
 # 3. Run browser opener engine
-echo -e "\n${YELLOW}[+] Running the browser opener engine...${NC}"
+echo -e "\n${YELLOW}[+] Running the browser opener engine... Log in into Qwen and DeepSeek in the browser.${NC}"
 uv run python -m engine.browser_opener
 echo -e "${GREEN}[✓] Success: Browser opener executed${NC}"
 
