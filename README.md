@@ -502,6 +502,139 @@ Each has a `.bak` counterpart for backup and restore.
 
 Account endpoints scan directories matching `system/browser-data-acc*`, read the logged-in email from Chromium `Preferences`, and report profile sizes.
 
+
+### Adding multiple accounts
+
+Sable can keep multiple Qwen/Google accounts as separate Chromium profile directories.
+
+Profile directories must match this naming pattern:
+
+~~~
+system/browser-data-accN
+~~~
+
+Where `N` is a number, for example:
+
+~~~
+system/browser-data-acc1
+system/browser-data-acc2
+system/browser-data-acc3
+~~~
+
+The Account settings tab scans any directory matching `browser-data-acc*`.
+
+#### 1. Stop Sable first
+
+Do not copy browser profiles while Sable or Chromium is actively using them.
+
+If you use the systemd service:
+
+~~~bash
+systemctl --user stop sable.service
+~~~
+
+If you run Sable manually, stop that process too.
+
+#### 2. Copy an existing profile
+
+Start from an existing logged-in profile, usually `browser-data-acc1` or your current active profile:
+
+~~~bash
+cd /home/sifat/hdd/projects/Sable/system
+cp -r browser-data-acc1 browser-data-acc12
+~~~
+
+Use the next available number. For example, if you already have `acc1` through `acc11`, create `acc12`.
+
+#### 3. Open the new profile in Sable's browser opener
+
+Use `engine/browser_opener.py` instead of launching Chromium manually.
+
+From the project root:
+
+~~~bash
+cd /home/sifat/hdd/projects/Sable
+uv run python engine/browser_opener.py browser-data-acc12
+~~~
+
+You can also pass just the account number:
+
+~~~bash
+uv run python engine/browser_opener.py 12
+~~~
+
+This opens the persistent profile at:
+
+~~~
+system/browser-data-acc12
+~~~
+
+When you are finished logging in, press `ENTER` in the terminal to save the session and close the browser.
+
+#### 4. Log into the new account
+
+In that browser window:
+
+1. Go to Qwen or Google login
+2. Log into the new account
+3. Make sure the account is fully signed in
+4. Close the browser completely
+
+The account email is read from:
+
+~~~
+system/browser-data-acc12/Default/Preferences
+~~~
+
+#### 5. Start Sable and switch accounts
+
+Start Sable again:
+
+~~~bash
+systemctl --user start sable.service
+~~~
+
+Or manually:
+
+~~~bash
+./start
+~~~
+
+Then open the web UI settings and go to the **Account** tab. The new profile should appear with its email and size.
+
+You can also use the API:
+
+~~~bash
+curl -s http://127.0.0.1:61770/api/settings/accounts \
+  -H "Authorization: Bearer YOUR_SABLE_TOKEN"
+~~~
+
+Switch active profile symlink:
+
+~~~bash
+curl -s -X POST http://127.0.0.1:61770/api/settings/accounts/switch \
+  -H "Authorization: Bearer YOUR_SABLE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"profile": "browser-data-acc12"}'
+~~~
+
+#### 6. Make a profile permanent for the API backend
+
+The account switcher manages the `system/browser-data` symlink. The main API backend profile path is configured in `engine/config.py`:
+
+~~~python
+BROWSER_DATA_DIR = _SYSTEM / "browser-data-acc7"
+~~~
+
+If you want the API backend to always use a specific account profile, change that line to the desired directory:
+
+~~~python
+BROWSER_DATA_DIR = _SYSTEM / "browser-data-acc12"
+~~~
+
+Then restart Sable.
+
+
 ***
 
 ## Web UI
