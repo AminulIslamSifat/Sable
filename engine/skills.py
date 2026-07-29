@@ -1245,4 +1245,3 @@ def build_tool_feedback(
     return (
         "<tool_results>\n" + "\n".join(parts) + "\n</tool_results>"
     )
-
