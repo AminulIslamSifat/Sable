@@ -199,7 +199,7 @@ def get_thinking_mode_config(model_id: str | None = None, thinking_mode_id: str 
 # --------------------------------------------------------------------------
 
 def _load_session_tokens() -> dict:
-    token_file = _ROOT / ".session_tokens.json"
+    token_file = _ROOT / "system" / ".session_tokens.json"
     if token_file.exists():
         try:
             import json as _json
