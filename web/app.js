@@ -3410,6 +3410,3 @@
 
   document.getElementById('refreshProfilesBtn')?.addEventListener('click', loadBrowserProfiles);
   loadBrowserProfiles();
-  // ── /Browser Profile Restore ────────────────────────────────
-
-
