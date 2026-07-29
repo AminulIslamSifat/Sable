@@ -283,6 +283,25 @@ class MemorySearcher:
                 text = f"{k}: {v}" if k else v
                 self._add_entry(text, k, v, "protected")
 
+    def clear_cache(self) -> None:
+        """Delete the .npz cache file and force a full re-embed on next search."""
+        with self._load_lock:
+            try:
+                if _CACHE_PATH.exists():
+                    _CACHE_PATH.unlink()
+            except OSError:
+                pass
+            self._normed_vectors = None
+            self._entries = []
+            self._entry_meta = []
+            self._entry_tokens = []
+
+    def rebuild_cache(self) -> int:
+        """Clear cache and immediately re-embed all entries. Returns entry count."""
+        self.clear_cache()
+        self._ensure_loaded()
+        return len(self._entries)
+
     def reload_memory(self) -> None:
         with self._load_lock:
             self._normed_vectors = None
