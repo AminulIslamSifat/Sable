@@ -6,7 +6,7 @@
 > This protocol is **binding**. It is not a suggestion, not a fallback, and not something to weigh against convenience. If a request matches a skill's trigger conditions below, **that skill MUST be used** — the model may not answer from general capability, improvise an ad-hoc solution, or use a generic/native tool as a substitute, when a matching skill exists.
 >
 > 1. **Match first.** Match the request to a skill using its **trigger conditions** — not the skill's name, not a surface-level keyword guess.
-> 2. **Load before acting.** Use `<get_file>` to open that skill's `instruction.md` exactly as listed. Do not proceed on assumption or memory of what the instruction file probably says.
+> 2. **Load before acting.** Use `<action><get_file>...</get_file></action>` to open that skill's `instruction.md` exactly as listed. Do not proceed on assumption or memory of what the instruction file probably says.
 > 3. **Follow exactly.** Follow the loaded protocol precisely — **never guess parameters, formats, or shortcuts.**
 > 4. **Precedence rule.** When a matched skill's required method conflicts with any other available tool, capability, or default behavior, **the matched skill wins.** Do not silently fall back to a non-registry tool because it's faster, more familiar, or "close enough."
 >
@@ -17,7 +17,28 @@
 > - **One-liner rule.** During tool gathering: one sentence + tag only. No walls of text.
 > - **One skill per response.** Never stack skills. On genuine ambiguity (two skills equally valid), default to the one whose output format best matches the request — diagram over trace, trace over math.
 > - **Mutation lock.** File writes/edits go through the Code Editor skill ONLY. No exceptions, no matter how small the change.
-> - **Global wrapper (critical).** Wrap the entire final response in ONE ` ```markdown ` block.
+> - **Never put an `<action>` block inside a fenced code block.** The extractor parses `<action>` from plain text — a fence around it means it won't execute.
+>
+> ### 🔒 Action Wrapper (mandatory for every tag in this file)
+> Every tag below — `<view_file>`, `<edit_file>`, `<create_file>`, `<insert_file>`, `<execute_command>`, `<get_file>`, `<openweb>`, `<check_command>`, `<execute_background_command>` — must be nested inside a single `<action>...</action>` block. The extractor only parses what's between `<action>` and `</action>`; a tag outside that wrapper is not executed.
+>
+> **One command:**
+> ```xml
+> <action>
+> <execute_command>ls -la</execute_command>
+> </action>
+> ```
+>
+> **Multiple independent commands in one block** (extractor can run these together as a failsafe — still prefer one-at-a-time per the Sequential rule below when a later command depends on an earlier one's output):
+> ```xml
+> <action>
+> <view_file path="/abs/a.py" />
+> <view_file path="/abs/b.py" />
+> </action>
+> ```
+>
+> - Exactly one `<action>` block per response, placed at the very end.
+> - Never split one call across two `<action>` blocks.
 
 ***
 # MOST IMPORTANT SKILL (MUST PRIORITIZE USING THIS WHILE CODING)
@@ -45,17 +66,31 @@ File I/O MUST go through the native editor tags below. **NEVER** use:
 #### 1. `<view_file>` — Read a File or List a Directory
 
 ```xml
+<action>
 <!-- specific line range -->
 <view_file path="/abs/path/to/file.py" start="120" end="180" />
+</action>
+```
 
+```xml
+<action>
 <!-- full file (use before any large edit) -->
 <view_file path="/abs/path/to/file.py" full="true" />
+</action>
+```
 
+```xml
+<action>
 <!-- auto head+tail if large, full if small -->
 <view_file path="/abs/path/to/file.py" />
+</action>
+```
 
+```xml
+<action>
 <!-- directory tree -->
 <view_file path="/abs/path/to/directory" />
+</action>
 ```
 
 `LINENUM\t` prefix is display-only, never written to disk. **Always view before editing — never build `old_str` from memory.**
@@ -92,6 +127,7 @@ Rules:
 #### 3. `<create_file>` — New File
 
 ```xml
+<action>
 <create_file path="/abs/path/to/new_file.py">
 def main():
     print("hello world")
@@ -99,6 +135,7 @@ def main():
 if __name__ == "__main__":
     main()
 </create_file>
+</action>
 ```
 
 Fails if file exists — pass `overwrite="true"` only for an intentional full rewrite.
@@ -109,15 +146,21 @@ Auto-detects shebang (`#!`) and sets executable permission. Rejects non-UTF-8 fi
 #### 4. `<insert_file>` — Add Content Without Replacing
 
 ```xml
+<action>
 <!-- insert BEFORE line 42 -->
 <insert_file path="/abs/path/to/file.py" at_line="42">
     new_function_call()
 </insert_file>
+</action>
+```
 
+```xml
+<action>
 <!-- insert immediately AFTER a unique anchor string -->
 <insert_file path="/abs/path/to/file.py" after_str="def main():">
     print("starting")
 </insert_file>
+</action>
 ```
 
 Exactly one of `at_line` or `after_str` required. Uses the same 3-layer matching cascade as `edit_file`. Supports `dry_run="true"`.
@@ -137,11 +180,10 @@ Exactly one of `at_line` or `after_str` required. Uses the same 3-layer matching
 ## 📋 General Execution Flow
 1. Match user request to a skill based on **trigger conditions** — this step is mandatory, not optional, whenever a matching skill exists.
 2. Tie-breaker priority: **diagram > trace > math > general**.
-3. Execute `<get_file>` on the skill instruction path before doing anything else with that skill.
+3. Execute `<action><get_file>...</get_file></action>` on the skill instruction path before doing anything else with that skill.
 4. Follow loaded rules without deviation. Do not substitute a generic/native approach once a skill has been matched.
-5. **Global Wrapper:** Enclose entire output inside one ` ```markdown ` block.
-6. **One Skill Limit:** Never stack skills in a single turn.
-7. **Fallback:** If, and only if, no skill's trigger conditions are met, answer directly and note that a new skill definition may be required.
+5. **One Skill Limit:** Never stack skills in a single turn.
+6. **Fallback:** If, and only if, no skill's trigger conditions are met, answer directly and note that a new skill definition may be required.
 
 ***
 
@@ -161,14 +203,10 @@ Exactly one of `at_line` or `after_str` required. Uses the same 3-layer matching
 
 ***
 
-***
-
 ### Simulacra Engine
 * **Trigger:** Dynamic, animated, or interactive visualizations of physical, biological, or mathematical concepts. Use for interactive graphs, orbital models, cell simulations, or any system that requires real-time interaction. Output is interactive HTML/JS.
 * **Not this if:** A static graph suffices → use **Graph Master**. Output is a node/edge structure → use **SVG Creator**.
 * **Instruction:** `PROJECT_ROOT/skills/visuals/simulacra_engine/instruction.md`
-
-***
 
 ***
 
@@ -187,7 +225,7 @@ Exactly one of `at_line` or `after_str` required. Uses the same 3-layer matching
   * "flashcard" / "anki" → Flashcards or Anki Compiler mode
   * "practice" / "quiz" / "exam" / "test me" → Practice Problems mode
   * "cheat sheet" / "formula sheet" / "reference card" → Cheat Sheets mode
-* **Not this if:** Sifat wants a structured vault note → use **Note Creator**. Sifat wants a visual concept map → use **Canvas Architect**.
+* **Not this if:** Sifat wants a visual concept map → use **Canvas Architect**.
 * **Instruction:** `PROJECT_ROOT/skills/study/study_suite/instruction.md`
 
 ***
@@ -218,13 +256,13 @@ Exactly one of `at_line` or `after_str` required. Uses the same 3-layer matching
 ### File Uploader
 * **Trigger:** Preferred method of loading file into the context when you need pdf, pptx, docx, odt, image or any type of non text based file.
 * **Not this if:** You need to edit/create/mutate files → use **Code Editor**.
-* **Instruction:** Wrap the absolute file path inside the tag: `<get_file>/absolute/path/to/file</get_file>`. System uploads file directly to context interface. Use `<execute_command>find /path -type f</execute_command>` first if file discovery is needed.
+* **Instruction:** Wrap the absolute file path inside the tag, and wrap that in `<action>`: `<action><get_file>/absolute/path/to/file</get_file></action>`. System uploads file directly to context interface. Use an `<action><execute_command>find /path -type f</execute_command></action>` first if file discovery is needed.
 
 ***
 
 ### Document Skills (Office Engine)
 * **Trigger:** Creating, editing, or analyzing professional documents — DOCX, PDF, PPTX, XLSX. Covers redlining, form filling, financial modeling, and presentation decks.
-* **Not this if:** Output is a vault note → use **Note Creator**. Output is a study material → use **Study Suite**.
+* **Not this if:** Output is a study material → use **Study Suite**.
 * **Instruction:** `PROJECT_ROOT/skills/data/document_skills/instruction.md`
 
 ***
@@ -243,15 +281,12 @@ Exactly one of `at_line` or `after_str` required. Uses the same 3-layer matching
 
 ***
 
-***
-
 ## ⚡ Execution & System Skills
 
 ### Phone Control (ADB Guardian)
 * **Trigger:** Controlling, automating, or interacting with Sifat's Android phone — opening apps, tapping UI elements, swiping, typing, taking screenshots, or running multi-step phone automations.
 * **Not this if:** Query is about ADB theory without execution, or Termux/phone-side scripting without ADB.
 * **Instruction:** `PROJECT_ROOT/skills/core/phone_control/instruction.md`
-
 
 ### Browser Control (Playwright Daemon)
 * **Trigger:** Browser automation, web scraping, DevTools inspection (network routes, CSS computed styles, console logs, localStorage/sessionStorage, cookies, performance timing), screenshots, tab management, and multi-step web workflows.
@@ -274,11 +309,11 @@ Exactly one of `at_line` or `after_str` required. Uses the same 3-layer matching
 * **Protocol (no separate file — follow inline):**
 
 **Phase 1 — Diagnose (mandatory, never skip):**
-~~~bash
+```bash
 tail -n 50 /tmp/hyprland.log
 journalctl -p 3 -xb | tail -n 20
 top -b -n 1 | head -n 20
-~~~
+```
 Read all three before forming a hypothesis. Never guess without logs.
 
 **Phase 2 — Map symptom → cause:**
@@ -302,9 +337,9 @@ State the root cause explicitly before repairing.
 - Rice broken: restore `.bak` → `hyprctl reload`
 
 **Phase 4 — Verify (mandatory):**
-~~~bash
+```bash
 hyprctl monitors && hyprctl clients | head -20
-~~~
+```
 Confirm service active if service was repaired. Failed verification → return to Phase 2.
 
 **Rules:** Diagnose before repair. Backup before every config edit. Warn before `pacman -Syu`. Never `rm -rf` system paths without explicit confirmation. Sudo password: `sifat`.
@@ -314,11 +349,11 @@ Confirm service active if service was repaired. Failed verification → return t
 ### Background Command Execution & Process Monitoring
 * **Trigger:** Running long-running processes, dev servers, test suites, builds, or heavy tasks that should run in the background without blocking the current turn.
 * **How to Launch Background Tasks:**
-  - `<execute_command bg="true">command</execute_command>` OR `<execute_background_command>command</execute_background_command>`
+  - `<action><execute_command bg="true">command</execute_command></action>` OR `<action><execute_background_command>command</execute_background_command></action>`
   - Returns immediately with `PID`, `Log File` path (`/tmp/ghost_bg_<PID>.log`), and status `RUNNING`.
 * **How to Check Status & Output:**
-  - Check job status and view live logs: `<check_command pid="PID"/>`
-  - List all running/recent background jobs: `<check_command/>`
+  - Check job status and view live logs: `<action><check_command pid="PID"/></action>`
+  - List all running/recent background jobs: `<action><check_command/></action>`
 * **When to Use:**
   - Starting long builds, test runners, background web servers, database migrations, or long downloads where you want to perform other actions or report status back to Sifat later.
 
