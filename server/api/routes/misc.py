@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse   # <-- added StreamingResponse
 from engine.config import MODELS
 from engine.scraper import get_settings as get_scraper_settings
 from engine.skills import browse_skills, list_skills
