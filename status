@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+# Clear screen once at start
+clear
+
+# Print header
+echo -e "\033[1m=== Sable Chat Server Monitor (:61770) ===\033[0m"
+echo
+
+# Check live status using ss and grep
+if ss -ltnp | grep -q "61770"; then
+    echo -e "\033[32m[ACTIVE]  \033[0m Server is running:"
+    echo
+    ss -ltnp | grep --color=always "61770"
+else
+    echo -e "\033[31m[INACTIVE]\033[0m No service found listening on port 61770."
+fi
+
+# OSC 8 clickable link with green text and no underline (\033[24m turns off underline)
+echo -e "View Server: \033[32m\033[24m\033]http://localhost:61770\033\\http://localhost:61770\033]\033\033[0m"
+echo
