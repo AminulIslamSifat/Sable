@@ -2755,6 +2755,7 @@
           msModelSelect.appendChild(opt);
         });
         msTopK.value = data.top_k || 10;
+        document.getElementById("msMaxChars").value = data.max_prompt_chars || 20000;
         buildThresholdEditor(data.available_models, data.model_thresholds);
         msEnabled.checked = data.enabled !== false;
         msInfo.textContent = `Active: ${data.current_model} | Threshold: ${data.current_threshold}`;
@@ -2774,6 +2775,7 @@
           body: JSON.stringify({
             model: msModelSelect.value,
             top_k: parseInt(msTopK.value) || 10,
+            max_prompt_chars: parseInt(document.getElementById("msMaxChars").value) || 20000,
             model_thresholds: modelThresholds,
             enabled: msEnabled.checked,
           }),
