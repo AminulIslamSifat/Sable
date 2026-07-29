@@ -14,6 +14,7 @@ import numpy as np
 _BRAIN_DIR = Path(__file__).resolve().parent.parent / "Brain"
 _MEMORY_PATH = _BRAIN_DIR / "Memory.json"
 _PROTECTED_PATH = _BRAIN_DIR / "Protected.json"
+_CACHE_PATH = Path(__file__).resolve().parent.parent / "system" / "memory_cache.npz"
 
 # Empirically calibrated (2026-07-27) against the hybrid score
 # (0.7*vector + 0.3*keyword) via calibrate_thresholds.py — each value sits
@@ -134,19 +135,93 @@ class MemorySearcher:
 
         self._model = TextEmbedding(model_name=self._model_name, enable_cpu_mem_arena=False)
 
+    def _save_cache(self) -> None:
+        try:
+            meta_json = json.dumps(self._entry_meta, ensure_ascii=False)
+            np.savez_compressed(
+                _CACHE_PATH,
+                vectors=self._normed_vectors,
+                entries=np.array(self._entries, dtype=object),
+                meta=np.array(meta_json),
+                model_name=np.array(self._model_name),
+            )
+        except Exception:
+            pass  # cache is best-effort; never break search over it
+
+    def _load_cache_data(self) -> dict[str, Any] | None:
+        """Load raw cache arrays. Returns None if missing or model mismatch."""
+        if not _CACHE_PATH.exists():
+            return None
+        try:
+            data = np.load(_CACHE_PATH, allow_pickle=True)
+            if str(data["model_name"]) != self._model_name:
+                return None
+            return {
+                "vectors": data["vectors"],
+                "entries": list(data["entries"]),
+                "meta": json.loads(str(data["meta"])),
+            }
+        except Exception:
+            return None
+
+    def _populate_from_cache(self, cached: dict[str, Any]) -> None:
+        self._normed_vectors = cached["vectors"]
+        self._entries = cached["entries"]
+        self._entry_meta = cached["meta"]
+        self._entry_tokens = [_tokenize(e) for e in self._entries]
+
     def _ensure_loaded(self) -> None:
         with self._load_lock:
             if self._normed_vectors is not None:
                 return
             self._ensure_model()
+
+            # Always parse current entries from JSON (cheap)
             self._load_memory_entries()
-            if self._entries:
+            if not self._entries:
+                self._normed_vectors = np.empty((0, 0), dtype="float32")
+                return
+
+            cached = self._load_cache_data()
+            if cached is not None:
+                # Build lookup: entry_text -> cached vector index
+                cache_index: dict[str, int] = {
+                    text: i for i, text in enumerate(cached["entries"])
+                }
+                # Check if current entries exactly match cache (fast path)
+                if cached["entries"] == self._entries:
+                    self._populate_from_cache(cached)
+                    return
+
+                # Incremental: reuse cached vectors, embed only new entries
+                new_indices: list[int] = []
+                reuse_vectors: list[np.ndarray | None] = [None] * len(self._entries)
+                for i, text in enumerate(self._entries):
+                    if text in cache_index:
+                        reuse_vectors[i] = cached["vectors"][cache_index[text]]
+                    else:
+                        new_indices.append(i)
+
+                if new_indices:
+                    new_texts = [self._entries[i] for i in new_indices]
+                    new_vecs = np.array(
+                        list(self._model.embed(new_texts)), dtype="float32"
+                    )
+                    norms = np.linalg.norm(new_vecs, axis=1, keepdims=True)
+                    new_vecs = new_vecs / np.where(norms == 0, 1.0, norms)
+                    for j, idx in enumerate(new_indices):
+                        reuse_vectors[idx] = new_vecs[j]
+
+                self._normed_vectors = np.vstack(reuse_vectors)
+                self._entry_tokens = [_tokenize(e) for e in self._entries]
+            else:
+                # No cache at all — full embed
                 vecs = np.array(list(self._model.embed(self._entries)), dtype="float32")
                 norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-                safe_norms = np.where(norms == 0, 1.0, norms)
-                self._normed_vectors = vecs / safe_norms
-            else:
-                self._normed_vectors = np.empty((0, 0), dtype="float32")
+                self._normed_vectors = vecs / np.where(norms == 0, 1.0, norms)
+                self._entry_tokens = [_tokenize(e) for e in self._entries]
+
+            self._save_cache()
 
     def _add_entry(self, text: str, key: str, value: str, category: str) -> None:
         self._entries.append(text)
@@ -159,6 +234,7 @@ class MemorySearcher:
         self._entry_tokens = []
 
         # Load main memory (semantic, episodic, procedural, ephemeral)
+        # (full vectorize path — cache miss or stale)
         if _MEMORY_PATH.exists():
             try:
                 data = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
