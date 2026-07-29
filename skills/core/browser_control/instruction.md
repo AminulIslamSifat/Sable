@@ -156,7 +156,7 @@ Socket path is fixed at `/tmp/sable_browser.sock`.
 **Start command (background, headed):**
 
 ```bash
-setsid /home/sifat/hdd/projects/Sable/.venv/bin/python /home/sifat/hdd/projects/Sable/skills/core/browser_control/scripts/browser_control.py start --headed --user-data-dir=/home/sifat/hdd/projects/Sable/browser-scraper-data > /tmp/browser_daemon.log 2>&1 &
+setsid /home/sifat/hdd/projects/Sable/.venv/bin/python /home/sifat/hdd/projects/Sable/skills/core/browser_control/scripts/browser_control.py start --headed > /tmp/browser_daemon.log 2>&1 &
 sleep 5
 ```
 
@@ -369,5 +369,5 @@ checking `document.title` returns to inbox.
 - Screenshots go to `/tmp/sable_browser_screenshots/` — auto-created.
 - For long-running tasks, launch daemon `start` as a background command since browser launch takes 2-3s.
 - Always `stop` the daemon when work is complete.
-- **Persistent sessions:** the daemon defaults to `PROJECT_ROOT/automation-browser-data` as its profile directory (cookies, logins persist). Override with `--user-data-dir=/path`.
+- **Persistent sessions:** the daemon defaults to `BROWSER_AUTOMATION_DATA_DIR` from `engine/config.py` (`PROJECT_ROOT/automation-browser-data`) as its profile directory (cookies, logins persist). Override with `--user-data-dir=/path`.
 - **Zen/Firefox incompatibility:** Playwright requires its own bundled browsers. Do NOT pass `--executable` pointing to Zen/Firefox.

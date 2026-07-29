@@ -14,6 +14,13 @@ MEMORY_PATH = BRAIN_DIR / "Memory.json"
 PROTECTED_PATH = BRAIN_DIR / "Protected.json"
 MEMORY_SEARCH_SETTINGS_PATH = _ROOT / "system/memory_search_settings.json"
 
+# Browser profile directories — single source of truth for all browser data paths.
+# All profiles live under system/ to keep the project root clean.
+_SYSTEM = _ROOT / "system"
+BROWSER_DATA_DIR = _SYSTEM / "browser-data"
+BROWSER_SCRAPER_DATA_DIR = _SYSTEM / "browser-scraper-data"
+BROWSER_AUTOMATION_DATA_DIR = _SYSTEM / "automation-browser-data"
+
 URL = "https://chat.qwen.ai/api/v2/chat/completions"
 NEW_CHAT_URL = "https://chat.qwen.ai/api/v2/chats/new"
 
