@@ -14,6 +14,14 @@ class SSELogHandler(logging.Handler):
             pass
 
 _sse_handler = SSELogHandler()
-_sse_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S"))
+_sse_handler.setFormatter(
+    logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S"
+    )
+)
 logging.getLogger().addHandler(_sse_handler)
 logging.getLogger().setLevel(logging.DEBUG)
+
+# This is the logger used throughout the application
+logger = logging.getLogger("sable")
