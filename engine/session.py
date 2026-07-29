@@ -324,22 +324,19 @@ class BrowserManager:
         return None
 
     async def sync_context(self) -> bool:
-        """Sync persona instructions to Qwen custom instructions (mirrors Maria's sync_persona)."""
+        """Sync persona instructions to Qwen via settings/update API (no Playwright DOM)."""
         await self.start()
-        PERSONALIZATION_URL = "https://chat.qwen.ai/settings/personalization"
-        CHAT_URL = "https://chat.qwen.ai"
 
+        SETTINGS_URL = "https://chat.qwen.ai/api/v2/users/user/settings/update"
+
+        # Build instruction payload from instruction/ files
         instruction_dir = Path(__file__).resolve().parent.parent / "instruction"
         instructions = ""
 
-        # Load Maria.md first
         maria_path = instruction_dir / "Maria.md"
         if maria_path.exists():
             instructions += maria_path.read_text(encoding="utf-8") + "\n\n"
 
-        # Memory is now injected per-message via semantic search (see service.stream_events)
-
-        # Load remaining instructions
         for fname in ["output_format.md", "skills.md"]:
             fpath = instruction_dir / fname
             if fpath.exists():
@@ -361,71 +358,57 @@ class BrowserManager:
         if len(instructions) > MAX_CHARS:
             instructions = instructions[:MAX_CHARS]
 
+        # Get fresh auth headers from browser session
+        headers = await self.get_fresh_headers()
+        headers.update({
+            "Content-Type": "application/json",
+            "Version": "0.2.80",
+            "source": "web",
+            "Origin": "https://chat.qwen.ai",
+            "Referer": "https://chat.qwen.ai/settings/personalization",
+            "X-Request-Id": str(uuid.uuid4()),
+        })
+
         try:
-            await self.page.goto(PERSONALIZATION_URL)
-            await self.page.wait_for_timeout(3000)
-
-            settings_btn_sel = "button.qwen-personalization-custom-instruction-button"
-            await self.page.wait_for_selector(settings_btn_sel, timeout=10000)
-            await self.page.evaluate("document.querySelector('button.qwen-personalization-custom-instruction-button').click()")
-            await self.page.wait_for_timeout(1500)
-
-            textarea_sel = "div.comment-textarea textarea[maxlength='40960']"
-            await self.page.wait_for_selector(textarea_sel, timeout=8000)
-
-            # FIX: query_selector is a coroutine in the async API — must be awaited,
-            # otherwise el_handle is a truthy coroutine object and the guard below
-            # never catches a missing element.
-            el_handle = await self.page.query_selector(textarea_sel)
-            if not el_handle:
-                raise Exception("Custom instruction textarea not found")
-
-            await self.page.evaluate("""({element, msg}) => {
-                if (!element) return;
-                element.focus();
-                const setter = Object.getOwnPropertyDescriptor(
-                    window.HTMLTextAreaElement.prototype, 'value'
-                ).set;
-                if (setter) setter.call(element, msg);
-                else element.value = msg;
-                element.dispatchEvent(new Event('input',  { bubbles: true }));
-                element.dispatchEvent(new Event('change', { bubbles: true }));
-            }""", {"element": el_handle, "msg": instructions})
-            await self.page.wait_for_timeout(500)
-
-            await self.page.evaluate("""(element) => {
-                element.focus();
-                const end = element.value.length;
-                element.setSelectionRange(end, end);
-            }""", el_handle)
-            await self.page.keyboard.type(" ")
-            await self.page.keyboard.press("Backspace")
-            await self.page.wait_for_timeout(300)
-
-            saved = await self.page.evaluate("""() => {
-                const btns = document.querySelectorAll('button.qwen-chat-btn.brandprimary');
-                for (const btn of btns) {
-                    if (btn.innerText.trim() === 'Save') {
-                        btn.click();
-                        return true;
+            async with httpx.AsyncClient(timeout=15) as client:
+                # Step 1: Disable default Qwen tools that conflict with Sable skills
+                tools_payload = {
+                    "tools_enabled": {
+                        "web_extractor": False,
+                        "web_search_image": False,
+                        "web_search": False,
+                        "image_gen_tool": False,
+                        "code_interpreter": False,
+                        "history_retriever": False,
+                        "image_edit_tool": False,
+                        "bio": False,
+                        "image_zoom_in_tool": False,
                     }
                 }
-                return false;
-            }""")
-            if not saved:
-                raise Exception("Save button not found or could not be clicked")
+                r1 = await client.post(SETTINGS_URL, json=tools_payload, headers=headers)
+                d1 = r1.json()
+                if not d1.get("success"):
+                    raise Exception(f"Disable tools failed: {d1}")
+                print("[DEBUG] Qwen default tools disabled")
 
-            await self.page.wait_for_timeout(1500)
-            await self.page.goto(CHAT_URL)
-            await self.page.wait_for_timeout(2000)
-            print("[DEBUG] Context synced successfully!")
-            return True
+                # Step 2: Update personalization instruction
+                instr_payload = {
+                    "personalization": {
+                        "name": "Sifat",
+                        "description": "",
+                        "style": "Default",
+                        "instruction": instructions,
+                    }
+                }
+                headers["X-Request-Id"] = str(uuid.uuid4())
+                r2 = await client.post(SETTINGS_URL, json=instr_payload, headers=headers)
+                d2 = r2.json()
+                if not d2.get("success"):
+                    raise Exception(f"Update instruction failed: {d2}")
+                print(f"[DEBUG] Context synced successfully! ({len(instructions)} chars)")
+                return True
         except Exception as e:
             print(f"[ERROR] sync_context failed: {e}")
-            try:
-                await self.page.goto(CHAT_URL)
-            except Exception:
-                pass
             return False
 
     async def close(self):
