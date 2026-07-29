@@ -1077,6 +1077,7 @@
         chatEl.appendChild(wrap);
       }
 
+      let hasRoundText = false;
       if (events.length > 0) {
         const cards = {};
         let group = null;
@@ -1093,6 +1094,10 @@
                 <div class="thinking-body">${escHtml(evt.text || "")}</div>
               </details>`;
             chatEl.appendChild(wrap);
+          } else if (evt.type === "round_text") {
+            // Per-round text — render inline so it interleaves with tool cards
+            hasRoundText = true;
+            if (evt.text) addMessage("bot", evt.text);
           } else if (evt.type === "skill_start") {
             if (!group) {
               group = document.createElement("div");
@@ -1136,7 +1141,10 @@
           displayContent = displayContent.slice(tsMatch[0].length);
         }
       }
-      const msgDiv = addMessage(message.role === "user" ? "user" : "bot", displayContent);
+      // If round_text events already rendered bot text inline, skip the final blob
+      const msgDiv = (message.role !== "user" && hasRoundText)
+        ? null
+        : addMessage(message.role === "user" ? "user" : "bot", displayContent);
       if (message.role === "user" && msgDiv) {
         if (realTs) {
           const tsEl = msgDiv.querySelector(".msg-timestamp");
@@ -1812,6 +1820,18 @@
     }
 
     modelSelectEl.addEventListener("change", async () => {
+      // Block cross-provider switches on locked chats (within-group is fine)
+      const activeMeta = chatList.find(c => c.id === activeChatId);
+      if (activeMeta?.provider) {
+        const newEntry = modelList.find(m => m.id === modelSelectEl.value);
+        const newIsDs = newEntry?.api_backend === "deepseek";
+        const chatIsDs = activeMeta.provider === "deepseek" || activeMeta.provider === "scraping";
+        if (newIsDs !== chatIsDs) {
+          modelSelectEl.value = selectedModel; // revert
+          showToast("This chat is locked to " + activeMeta.provider + " — start a new chat to switch providers.", "error");
+          return;
+        }
+      }
       selectedModel = modelSelectEl.value;
       try { localStorage.setItem(MODEL_KEY, selectedModel); } catch (err) {}
       // Switching models resets the thinking mode to that model's default,
@@ -1884,49 +1904,40 @@
     }
 
     /**
-     * After messages load, check the last message's actual parent_id and
-     * auto-switch model if needed (the chat metadata parent_id can be stale).
-     * - parent_id is null → do nothing
-     * - current model is qwen + parent_id is browser-<hex> → switch to deepseek
-     * - current model is deepseek + parent_id is UUID → switch to qwen
+     * Rebuild the model dropdown filtered to the provider's model group.
+     * - null (new/unlocked chat): show all models, enabled
+     * - "qwen": show only qwen models, enabled (free switching within group)
+     * - "deepseek": show only deepseek models, enabled (free switching within group)
+     * - "scraping": show deepseek models, DISABLED (locked tight)
      */
-    function autoSwitchModelForChat(messages) {
-      if (!messages || messages.length === 0) return;
+    function lockModelDropdown(provider) {
+      const allowed = provider
+        ? modelList.filter(m => {
+            if (provider === "deepseek" || provider === "scraping") return m.api_backend === "deepseek";
+            return !m.api_backend; // qwen
+          })
+        : modelList;
 
-      const lastMsg = messages[messages.length - 1];
-      const lastParentId = lastMsg.parent_id;
-
-      // parent_id is null → do nothing
-      if (lastParentId === null || lastParentId === undefined) return;
-
-      const isParentDeepseek = /^browser-[0-9a-f]+$/i.test(String(lastParentId));
-      const isParentUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(lastParentId));
-      const curEntry = modelList.find(m => m.id === selectedModel);
-      const curIsDeepseek = curEntry?.api_backend === "deepseek";
-      const curIsQwen = curEntry && !curIsDeepseek;
-
-      // Qwen model + browser-* parent_id → switch to deepseek
-      if (curIsQwen && isParentDeepseek) {
-        const dsModel = modelList.find(m => m.api_backend === "deepseek");
-        if (dsModel && dsModel.id !== selectedModel) {
-          selectedModel = dsModel.id;
-          modelSelectEl.value = selectedModel;
-          try { localStorage.setItem(MODEL_KEY, selectedModel); } catch(e) {}
-          populateThinkingModes(null);
-        }
-        return;
+      modelSelectEl.innerHTML = "";
+      for (const m of allowed) {
+        const opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = m.label || m.id;
+        modelSelectEl.appendChild(opt);
       }
 
-      // Deepseek model + UUID parent_id → switch to qwen
-      if (curIsDeepseek && isParentUuid) {
-        const qwenModel = modelList.find(m => m.api_backend !== "deepseek");
-        if (qwenModel && qwenModel.id !== selectedModel) {
-          selectedModel = qwenModel.id;
-          modelSelectEl.value = selectedModel;
-          try { localStorage.setItem(MODEL_KEY, selectedModel); } catch(e) {}
-          populateThinkingModes(null);
-        }
+      // If current selection isn't in the allowed set, switch to first allowed
+      if (!allowed.some(m => m.id === selectedModel)) {
+        selectedModel = allowed[0]?.id || modelList[0].id;
+        modelSelectEl.value = selectedModel;
+        try { localStorage.setItem(MODEL_KEY, selectedModel); } catch(e) {}
+        populateThinkingModes(null);
+      } else {
+        modelSelectEl.value = selectedModel;
       }
+
+      // Only scraping gets hard-disabled; qwen/deepseek allow within-group switching
+      modelSelectEl.disabled = provider === "scraping";
     }
 
     async function selectChat(chatId) {
@@ -1934,38 +1945,12 @@
       const meta = chatList.find(c => c.id === chatId);
       parentId = meta?.parent_id || null;
 
-      // Auto-switch model dropdown based on chat type.
-      // browser-<hex> parent_id = DeepSeek session; UUID or null = Qwen.
-      // null parent_id (new/empty chat) is NEVER DeepSeek — DS always gets
-      // a browser-* parent_id after the first response — so default to Qwen.
-      const isDeepseekChat = parentId != null && /^browser-[0-9a-f]+$/i.test(String(parentId));
-      const curEntry = modelList.find(m => m.id === selectedModel);
-      const curIsDeepseek = curEntry?.api_backend === "deepseek";
-      if (isDeepseekChat && !curIsDeepseek) {
-        const dsModel = modelList.find(m => m.api_backend === "deepseek");
-        if (dsModel) {
-          selectedModel = dsModel.id;
-          modelSelectEl.value = selectedModel;
-          try { localStorage.setItem(MODEL_KEY, selectedModel); } catch(e) {}
-          populateThinkingModes(null);
-        }
-      } else if (!isDeepseekChat && curIsDeepseek) {
-        const qwenModel = modelList.find(m => m.api_backend !== "deepseek");
-        if (qwenModel) {
-          selectedModel = qwenModel.id;
-          modelSelectEl.value = selectedModel;
-          try { localStorage.setItem(MODEL_KEY, selectedModel); } catch(e) {}
-          populateThinkingModes(null);
-        }
-      }
+      // Lock model dropdown to the chat's provider (or unlock for new chats)
+      lockModelDropdown(meta?.provider || null);
 
       saveActiveChat();
       renderChats();
-      const messages = await loadMessages(chatId);
-
-      // After messages load, check the last message's actual parent_id
-      // and auto-switch model if needed (the chat metadata parent_id can be stale).
-      autoSwitchModelForChat(messages);
+      await loadMessages(chatId);
 
       inputEl.focus();
     }
@@ -2138,6 +2123,7 @@
         }
         activeChatId = data.chat_id;
         parentId = null;
+        lockModelDropdown(null); // unlock dropdown for fresh chat
         saveActiveChat();
         await loadChats();
         chatEl.innerHTML = `<div class="empty"><h2>New conversation</h2><p>Send the first message.</p></div>`;
@@ -2274,6 +2260,19 @@
         if (!created) return;
       }
 
+      // Mode cross-guard: block sending from mismatched provider chats
+      const activeMeta = chatList.find(c => c.id === activeChatId);
+      if (activeMeta?.provider) {
+        if (scraperMode && activeMeta.provider !== "scraping") {
+          showToast("This chat is locked to " + activeMeta.provider + " — switch off scraper mode or start a new chat.", "error");
+          return;
+        }
+        if (!scraperMode && activeMeta.provider === "scraping") {
+          showToast("This is a scraping chat — enable scraper mode or start a new chat.", "error");
+          return;
+        }
+      }
+
       setSending(true);
       inputEl.value = "";
       autoResize();
@@ -2360,8 +2359,15 @@
       } finally {
         ui.finalize();
         setSending(false);
-        // Skip sidebar rebuild — chat list doesn't change mid-conversation.
-        // Full loadChats() only needed on create/delete/mode-switch.
+
+        // After first message, provider is now locked in DB — lock the dropdown
+        const meta = chatList.find(c => c.id === activeChatId);
+        if (meta && !meta.provider) {
+          const prov = scraperMode ? "scraping"
+            : (modelList.find(m => m.id === selectedModel)?.api_backend === "deepseek" ? "deepseek" : "qwen");
+          meta.provider = prov; // update local cache
+          lockModelDropdown(prov);
+        }
       }
     }
 
@@ -2749,6 +2755,7 @@
           msModelSelect.appendChild(opt);
         });
         msTopK.value = data.top_k || 10;
+        document.getElementById("msMaxChars").value = data.max_prompt_chars || 20000;
         buildThresholdEditor(data.available_models, data.model_thresholds);
         msEnabled.checked = data.enabled !== false;
         msInfo.textContent = `Active: ${data.current_model} | Threshold: ${data.current_threshold}`;
@@ -2768,6 +2775,7 @@
           body: JSON.stringify({
             model: msModelSelect.value,
             top_k: parseInt(msTopK.value) || 10,
+            max_prompt_chars: parseInt(document.getElementById("msMaxChars").value) || 20000,
             model_thresholds: modelThresholds,
             enabled: msEnabled.checked,
           }),

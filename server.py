@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from engine.config import MODELS, MEMORY_PATH as _MEMORY_PATH, PROTECTED_PATH as _PROTECTED_PATH, MEMORY_SEARCH_SETTINGS_PATH as _MEMORY_SEARCH_SETTINGS, get_model_config, BROWSER_DATA_DIR, BROWSER_SCRAPER_DATA_DIR, BROWSER_AUTOMATION_DATA_DIR, HOST, PORT
+from engine.config import MODELS, MEMORY_PATH as _MEMORY_PATH, PROTECTED_PATH as _PROTECTED_PATH, MEMORY_SEARCH_SETTINGS_PATH as _MEMORY_SEARCH_SETTINGS, MEMORY_SEARCH_MAX_PROMPT_CHARS as _DEFAULT_MAX_PROMPT_CHARS, get_model_config, BROWSER_DATA_DIR, BROWSER_SCRAPER_DATA_DIR, BROWSER_AUTOMATION_DATA_DIR, HOST, PORT
 from engine.scraper import (
     get_settings as get_scraper_settings,
     list_engines as list_scraper_engines,
@@ -226,18 +226,20 @@ def init_db() -> None:
             conn.execute("ALTER TABLE chats ADD COLUMN provider TEXT")
 
 
-def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = None, mode: str | None = None) -> None:
+def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = None, mode: str | None = None, provider: str | None = None) -> None:
     now = utcnow()
     with get_db() as conn:
-        existing = conn.execute("SELECT id, mode FROM chats WHERE id = ?", (chat_id,)).fetchone()
+        existing = conn.execute("SELECT id, mode, provider FROM chats WHERE id = ?", (chat_id,)).fetchone()
         if existing:
-            # Lock mode on first real interaction if not yet set
+            # Lock mode/provider on first real interaction if not yet set
             if mode and not existing["mode"]:
                 conn.execute("UPDATE chats SET mode = ? WHERE id = ?", (mode, chat_id))
+            if provider and not existing["provider"]:
+                conn.execute("UPDATE chats SET provider = ? WHERE id = ?", (provider, chat_id))
             return
         conn.execute(
-            "INSERT INTO chats (id, title, parent_id, created_at, updated_at, mode) VALUES (?, ?, ?, ?, ?, ?)",
-            (chat_id, title, parent_id, now, now, mode),
+            "INSERT INTO chats (id, title, parent_id, created_at, updated_at, mode, provider) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, title, parent_id, now, now, mode, provider),
         )
 
 
@@ -246,6 +248,13 @@ def get_chat_mode(chat_id: str) -> str | None:
     with get_db() as conn:
         row = conn.execute("SELECT mode FROM chats WHERE id = ?", (chat_id,)).fetchone()
     return row["mode"] if row and row["mode"] else None
+
+
+def get_chat_provider(chat_id: str) -> str | None:
+    """Return the locked provider for a chat ('qwen', 'deepseek', 'scraping'), or None if unset."""
+    with get_db() as conn:
+        row = conn.execute("SELECT provider FROM chats WHERE id = ?", (chat_id,)).fetchone()
+    return row["provider"] if row and row["provider"] else None
 
 
 def set_title_if_default(chat_id: str, title: str) -> None:
@@ -365,7 +374,7 @@ def get_messages(chat_id: str) -> list[dict[str, Any]]:
 def list_chats() -> list[dict[str, Any]]:
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT id, title, parent_id, created_at, updated_at FROM chats ORDER BY updated_at DESC"
+            "SELECT id, title, parent_id, created_at, updated_at, provider FROM chats ORDER BY updated_at DESC"
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -961,6 +970,7 @@ async def get_memory_search_settings() -> dict[str, Any]:
     return {
         "enabled": cfg.get("enabled", True),
         "top_k": cfg.get("top_k", 10),
+        "max_prompt_chars": cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS),
         "model_thresholds": searcher.get_custom_thresholds(),
         "current_model": searcher.model_name,
         "current_threshold": searcher.threshold,
@@ -973,6 +983,7 @@ async def update_memory_search_settings(payload: dict[str, Any]) -> dict[str, An
     model = payload.get("model")
     top_k = payload.get("top_k")
     enabled = payload.get("enabled")
+    max_prompt_chars = payload.get("max_prompt_chars")
     model_thresholds = payload.get("model_thresholds")
 
     cfg: dict[str, Any] = {}
@@ -998,6 +1009,8 @@ async def update_memory_search_settings(payload: dict[str, Any]) -> dict[str, An
         get_searcher().set_thresholds(clean)
     if top_k is not None:
         cfg["top_k"] = int(top_k)
+    if max_prompt_chars is not None:
+        cfg["max_prompt_chars"] = max(1000, int(max_prompt_chars))
     if enabled is not None:
         cfg["enabled"] = bool(enabled)
 
@@ -1044,13 +1057,21 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     if len(messages) < 2:
         return {"status": "skipped", "reason": "too few messages"}
 
-    # Load current memory
-    current_memory = "{}"
-    if _MEMORY_PATH.exists():
+    # Load only memories actually injected into this chat
+    injected_keys = get_injected_memory_keys(chat_id)
+    filtered_memory: dict[str, list] = {}
+    if _MEMORY_PATH.exists() and injected_keys:
         try:
-            current_memory = _MEMORY_PATH.read_text(encoding="utf-8")
+            full_memory = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
+            if isinstance(full_memory, dict):
+                for category, entries in full_memory.items():
+                    if isinstance(entries, list):
+                        matched = [e for e in entries if isinstance(e, dict) and e.get("key") in injected_keys]
+                        if matched:
+                            filtered_memory[category] = matched
         except Exception:
-            current_memory = "{}"
+            pass
+    current_memory = json.dumps(filtered_memory, indent=2) if filtered_memory else "{}"
 
     if mode == "api":
         # API mode: prompt-only, threaded via parent_id. No conversation summary injected.
@@ -1243,13 +1264,21 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
     if len(messages) < 2:
         return {"status": "skipped", "reason": "too few messages"}
 
-    # Load current memory
-    current_memory = "{}"
-    if _MEMORY_PATH.exists():
+    # Load only memories actually injected into this chat
+    injected_keys = get_injected_memory_keys(chat_id)
+    filtered_memory: dict[str, list] = {}
+    if _MEMORY_PATH.exists() and injected_keys:
         try:
-            current_memory = _MEMORY_PATH.read_text(encoding="utf-8")
+            full_memory = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
+            if isinstance(full_memory, dict):
+                for category, entries in full_memory.items():
+                    if isinstance(entries, list):
+                        matched = [e for e in entries if isinstance(e, dict) and e.get("key") in injected_keys]
+                        if matched:
+                            filtered_memory[category] = matched
         except Exception:
-            current_memory = "{}"
+            pass
+    current_memory = json.dumps(filtered_memory, indent=2) if filtered_memory else "{}"
 
     prompt = _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY.replace("<<CURRENT_MEMORY>>", current_memory)
 
@@ -1446,7 +1475,8 @@ async def chat(request: ChatRequest):
     try:
         if _MEMORY_SEARCH_SETTINGS.exists():
             _ms_cfg = json.loads(_MEMORY_SEARCH_SETTINGS.read_text(encoding="utf-8"))
-        if _ms_cfg.get("enabled", True):
+        _max_chars = _ms_cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS)
+        if _ms_cfg.get("enabled", True) and len(request.message) <= _max_chars:
             _mem_results = _searcher.search(request.message, top_k=_ms_cfg.get("top_k", 10))
             _new_results = [r for r in _mem_results if r.get("key") and r["key"] not in _injected_memory_keys]
             if _new_results:
@@ -1477,8 +1507,22 @@ async def chat(request: ChatRequest):
                      f"Switch back to {locked_mode} mode or start a new chat."
         }
 
+    # Determine current provider and lock it per-chat
+    if scraper_enabled:
+        current_provider = "scraping"
+    elif _is_deepseek_api_model(request.model):
+        current_provider = "deepseek"
+    else:
+        current_provider = "qwen"
+    locked_provider = get_chat_provider(active_chat_id)
+    if locked_provider and locked_provider != current_provider:
+        return {
+            "error": f"This chat is locked to {locked_provider}. "
+                     f"You can't use {current_provider} here — start a new chat."
+        }
+
     title = make_title(request.message)
-    ensure_chat(active_chat_id, title, request.parent_id, mode=current_mode)
+    ensure_chat(active_chat_id, title, request.parent_id, mode=current_mode, provider=current_provider)
     set_title_if_default(active_chat_id, title)
 
     parent_id = get_parent_id(active_chat_id, request.parent_id)
@@ -1592,6 +1636,7 @@ async def chat(request: ChatRequest):
             while True:
                 round_skill_events: list[dict[str, Any]] = []
                 round_thinking_parts: list[str] = []
+                round_answer_parts: list[str] = []
                 parser = SkillParser()
 
                 # These stay plain (sync) generators — they don't await anything,
@@ -1605,6 +1650,7 @@ async def chat(request: ChatRequest):
                             chunk = str(item.get("text", ""))
                             if chunk:
                                 answer_parts.append(chunk)
+                                round_answer_parts.append(chunk)
                                 yield sse({"type": "answer", "text": chunk})
                         else:
                             if item.get("type") in ("skill_start", "skill_output", "skill_end", "file_edit"):
@@ -1617,6 +1663,7 @@ async def chat(request: ChatRequest):
                             chunk = str(item.get("text", ""))
                             if chunk:
                                 answer_parts.append(chunk)
+                                round_answer_parts.append(chunk)
                                 yield sse({"type": "answer", "text": chunk})
                         else:
                             if item.get("type") in ("skill_start", "skill_output", "skill_end", "file_edit"):
@@ -1691,11 +1738,14 @@ async def chat(request: ChatRequest):
 
                     yield sse(event)
 
-                # Preserve per-round ordering (thinking -> that round's commands)
-                # so the history loader can rebuild the t1,c1,t2,c2 layout.
+                # Preserve per-round ordering (thinking -> text -> commands)
+                # so the history loader can rebuild the t1,txt1,c1,t2,txt2,c2 layout.
                 round_thinking_text = "".join(round_thinking_parts)
                 if round_thinking_text:
                     skill_events.append({"type": "round_thinking", "text": round_thinking_text})
+                round_text = "".join(round_answer_parts)
+                if round_text:
+                    skill_events.append({"type": "round_text", "text": round_text})
                 if round_skill_events:
                     skill_events.extend(round_skill_events)
 
@@ -1719,7 +1769,8 @@ async def chat(request: ChatRequest):
 
                 # Inject relevant memories from tool results (skip already-sent keys)
                 try:
-                    if _ms_cfg.get("enabled", True) and feedback:
+                    _max_chars_tool = _ms_cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS)
+                    if _ms_cfg.get("enabled", True) and feedback and len(feedback) <= _max_chars_tool:
                         _tool_mem = _searcher.search(feedback, top_k=_ms_cfg.get("top_k", 10))
                         _new_mem = [r for r in _tool_mem if r.get("key") and r["key"] not in _injected_memory_keys]
                         if _new_mem:

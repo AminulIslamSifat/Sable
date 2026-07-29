@@ -22,6 +22,10 @@ MEMORY_PATH = BRAIN_DIR / "Memory.json"
 PROTECTED_PATH = BRAIN_DIR / "Protected.json"
 MEMORY_SEARCH_SETTINGS_PATH = _ROOT / "system/memory_search_settings.json"
 
+# Maximum prompt length (chars) before memory vectorization is skipped entirely.
+# Prevents RAM spikes when huge messages are sent. Configurable via web settings.
+MEMORY_SEARCH_MAX_PROMPT_CHARS = 20000
+
 # Browser profile directories — single source of truth for all browser data paths.
 # All profiles live under system/ to keep the project root clean.
 _SYSTEM = _ROOT / "system"
