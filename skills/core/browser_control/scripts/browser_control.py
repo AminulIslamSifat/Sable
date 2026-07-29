@@ -669,8 +669,12 @@ def main():
         browser_type = "chromium"
         executable_path = None
         # Default to project-local automation profile (persistent sessions)
-        _project_root = Path(__file__).resolve().parents[4]
-        user_data_dir = str(_project_root / "automation-browser-data")
+        try:
+            from engine.config import BROWSER_AUTOMATION_DATA_DIR
+            user_data_dir = str(BROWSER_AUTOMATION_DATA_DIR)
+        except ImportError:
+            _project_root = Path(__file__).resolve().parents[4]
+            user_data_dir = str(_project_root / "system" / "automation-browser-data")
 
         for i, arg in enumerate(sys.argv):
             if arg == "--browser" and i + 1 < len(sys.argv):

@@ -119,7 +119,10 @@ class DeepSeekClient:
     # Token auto-refresh
     # ------------------------------------------------------------------
 
-    _BROWSER_PROFILE = Path(__file__).resolve().parent.parent.parent / "browser-data"
+    @property
+    def _BROWSER_PROFILE(self) -> Path:
+        from engine.config import BROWSER_DATA_DIR
+        return BROWSER_DATA_DIR
 
     async def refresh_token(self) -> str:
         """Public method — refresh token using injected refresher or fallback browser profile."""

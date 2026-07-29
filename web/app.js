@@ -3262,7 +3262,7 @@
   }
 
   async function restoreBrowserProfile(profile, btn) {
-    const label = profile === 'api' ? 'API (ChatService)' : 'Scraper';
+    const label = { api: 'API (ChatService)', scraper: 'Scraper', automation: 'Automation' }[profile] || profile;
     if (!confirm('Restore ' + label + ' browser data from backup?\n\nThis DELETES the current profile and replaces it with the .bak snapshot. Make sure the browser is stopped.')) return;
     btn.disabled = true;
     btn.textContent = '⏳ Restoring…';

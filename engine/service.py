@@ -28,7 +28,10 @@ class ChatService:
     `async for event in service.stream_events(...)` instead of the old sync calls.
     """
 
-    def __init__(self, user_data_dir: str = "./browser-data") -> None:
+    def __init__(self, user_data_dir: str | None = None) -> None:
+        if user_data_dir is None:
+            from engine.config import BROWSER_DATA_DIR
+            user_data_dir = str(BROWSER_DATA_DIR)
         self._browser = BrowserManager(user_data_dir=user_data_dir)
         self._headers: dict[str, str] | None = None
         self._lock = asyncio.Lock()

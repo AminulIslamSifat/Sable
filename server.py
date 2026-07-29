@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from engine.config import MODELS, MEMORY_PATH as _MEMORY_PATH, PROTECTED_PATH as _PROTECTED_PATH, MEMORY_SEARCH_SETTINGS_PATH as _MEMORY_SEARCH_SETTINGS, get_model_config
+from engine.config import MODELS, MEMORY_PATH as _MEMORY_PATH, PROTECTED_PATH as _PROTECTED_PATH, MEMORY_SEARCH_SETTINGS_PATH as _MEMORY_SEARCH_SETTINGS, get_model_config, BROWSER_DATA_DIR, BROWSER_SCRAPER_DATA_DIR, BROWSER_AUTOMATION_DATA_DIR
 from engine.scraper import (
     get_settings as get_scraper_settings,
     list_engines as list_scraper_engines,
@@ -97,7 +97,7 @@ def _load_auth_token() -> str:
 AUTH_TOKEN = _load_auth_token()
 AUTH_EXEMPT_PREFIXES = ("/api/login", "/api/health", "/static/", "/uploads/")
 
-service = ChatService(user_data_dir=str(BASE_DIR / "browser-data"))
+service = ChatService(user_data_dir=str(BROWSER_DATA_DIR))
 get_deepseek_client().set_token_refresher(service.refresh_deepseek_token)
 
 
@@ -673,7 +673,7 @@ async def update_browser_settings(payload: dict[str, bool]) -> dict[str, Any]:
 
 @app.post("/api/settings/deepseek/refresh-token")
 async def refresh_deepseek_token() -> dict[str, Any]:
-    """Force-refresh the DeepSeek API token from the browser-data profile."""
+    """Force-refresh the DeepSeek API token from the browser profile."""
     try:
         token = await get_deepseek_client().refresh_token()
         return {"status": "ok", "token_preview": token[:20] + "...", "active": True}
@@ -687,9 +687,10 @@ async def refresh_deepseek_token() -> dict[str, Any]:
 
 
 
-_BROWSER_PROFILES: dict[str, tuple[str, str]] = {
-    "api": ("browser-data", "browser-data.bak"),
-    "scraper": ("browser-scraper-data", "browser-scraper-data.bak"),
+_BROWSER_PROFILES: dict[str, tuple[Path, Path]] = {
+    "api": (BROWSER_DATA_DIR, BROWSER_DATA_DIR.parent / (BROWSER_DATA_DIR.name + ".bak")),
+    "scraper": (BROWSER_SCRAPER_DATA_DIR, BROWSER_SCRAPER_DATA_DIR.parent / (BROWSER_SCRAPER_DATA_DIR.name + ".bak")),
+    "automation": (BROWSER_AUTOMATION_DATA_DIR, BROWSER_AUTOMATION_DATA_DIR.parent / (BROWSER_AUTOMATION_DATA_DIR.name + ".bak")),
 }
 
 
@@ -714,12 +715,10 @@ async def get_browser_profiles() -> dict[str, Any]:
 
     def _collect() -> dict[str, Any]:
         result: dict[str, Any] = {}
-        for key, (data_dir, bak_dir) in _BROWSER_PROFILES.items():
-            data_path = BASE_DIR / data_dir
-            bak_path = BASE_DIR / bak_dir
+        for key, (data_path, bak_path) in _BROWSER_PROFILES.items():
             result[key] = {
-                "label": "API (ChatService)" if key == "api" else "Scraper",
-                "data_dir": data_dir,
+                "label": {"api": "API (ChatService)", "scraper": "Scraper", "automation": "Automation (Browser Control)"}[key],
+                "data_dir": str(data_path.relative_to(BASE_DIR)),
                 "exists": data_path.is_dir(),
                 "size_mb": _dir_size_mb(data_path),
                 "has_backup": bak_path.is_dir(),
@@ -740,14 +739,12 @@ async def restore_browser_profile(payload: dict[str, str]) -> dict[str, Any]:
 
     profile = payload.get("profile", "")
     if profile not in _BROWSER_PROFILES:
-        raise HTTPException(status_code=400, detail=f"Unknown profile '{profile}'. Use 'api' or 'scraper'.")
+        raise HTTPException(status_code=400, detail=f"Unknown profile '{profile}'. Use 'api', 'scraper', or 'automation'.")
 
-    data_dir, bak_dir = _BROWSER_PROFILES[profile]
-    data_path = BASE_DIR / data_dir
-    bak_path = BASE_DIR / bak_dir
+    data_path, bak_path = _BROWSER_PROFILES[profile]
 
     if not bak_path.is_dir():
-        raise HTTPException(status_code=404, detail=f"No backup found at {bak_dir}")
+        raise HTTPException(status_code=404, detail=f"No backup found at {bak_path}")
 
     def _do_restore() -> None:
         if data_path.is_dir():

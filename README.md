@@ -164,7 +164,6 @@ Sable/
 │   │   ├── deepseek/             # DeepSeek PoW challenge + SSE parsing
 │   │   └── qwen/                 # Qwen WAF token + cookie sniffing
 │   ├── browser_opener.py         # Manual auth flow (opens Chromium)
-│   ├── browser-data/             # Persistent Chromium profile (gitignored)
 │   ├── memory_search.py          # Semantic search over Memory.json
 │   ├── skills.py                 # Skill parser, execution, backup guards
 │   └── payloads.py               # Request payload builders
@@ -197,8 +196,12 @@ Sable/
 ├── output/                       # Generated content (notes, assets, sessions)
 ├── uploads/                      # Uploaded file storage
 ├── test/                         # Test suite + benchmarks
-├── browser-data/                 # Qwen Chromium profile (gitignored)
-├── browser-scraper-data/         # Scraper Chromium profile (gitignored)
+├── system/
+│   ├── browser-data/             # Qwen Chromium profile (gitignored)
+│   ├── browser-scraper-data/     # Scraper Chromium profile (gitignored)
+│   ├── automation-browser-data/  # Browser control daemon profile (gitignored)
+│   ├── memory_search_settings.json
+│   └── scraper_settings.json
 ├── .sable_backups/               # Auto-backups before file edits
 └── pyproject.toml
 ~~~
