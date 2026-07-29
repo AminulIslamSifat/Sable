@@ -1,5 +1,9 @@
+<div align="center">
 
-# Sable
+# Sable 
+Agentic Orchestration Layer
+
+</div>
 
 **Sable** is a personal agentic chat platform: a local FastAPI server that wraps multiple LLM backends, persists chats in SQLite, injects semantic memory into conversations, executes local skills from the model stream, and serves a vanilla-JS PWA chat UI.
 
