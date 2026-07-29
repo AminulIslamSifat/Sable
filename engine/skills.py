@@ -1044,16 +1044,69 @@ TAG_ALTERNATION = "|".join(re.escape(tag) for tag in KNOWN_TAGS)
 
 
 class SkillParser:
-    """Extracts complete agentic tags from streamed answer text."""
+    """Extracts complete agentic tags from streamed answer text.
+
+    Tags are only parsed when they appear inside an <action>...</action> block.
+    Text outside action blocks is emitted as plain prose — no tag extraction.
+    """
+
+    _ACTION_OPEN = re.compile(r"<\s*action\s*>", re.I)
+    _ACTION_CLOSE = re.compile(r"<\s*/\s*action\s*>", re.I)
 
     def __init__(self) -> None:
         self.buf = ""
         self.open_re = re.compile(r"<\s*(" + TAG_ALTERNATION + r")\b([^>]*)>", re.I)
+        self._in_action = False
         self._pending_tag: str | None = None  # tracks emitted tool_pending to avoid repeats
         self._last_progress: tuple[int, int] = (0, 0)  # (lines, bytes) of last tool_progress
 
     def feed(self, text: str) -> Generator[dict[str, Any], None, None]:
         self.buf += text
+        while True:
+            # --- Action boundary gate ---
+            if not self._in_action:
+                m = self._ACTION_OPEN.search(self.buf)
+                if m is None:
+                    # No <action> in buffer — flush as prose (hold trailing partial)
+                    idx = self.buf.rfind("<")
+                    if idx >= 0 and ">" not in self.buf[idx:]:
+                        tail = self.buf[idx:].lstrip("<").strip().lower()
+                        if tail == "" or "action".startswith(tail):
+                            if idx > 0:
+                                yield {"type": "text", "text": self.buf[:idx]}
+                            self.buf = self.buf[idx:]
+                            break
+                    if self.buf:
+                        yield {"type": "text", "text": self.buf}
+                        self.buf = ""
+                    break
+                # Found <action> — emit prose before it, enter action mode
+                before = self.buf[:m.start()]
+                if before:
+                    yield {"type": "text", "text": before}
+                self.buf = self.buf[m.end():]
+                self._in_action = True
+                # fall through to tag extraction
+
+            # --- Check for </action> closing boundary ---
+            close_m = self._ACTION_CLOSE.search(self.buf)
+            if close_m is not None:
+                # Limit tag search to content before </action>
+                after = self.buf[close_m.end():]
+                self.buf = self.buf[:close_m.start()]
+                self._in_action = False
+                # Extract any complete tags in the action region
+                yield from self._extract_loop()
+                # Emit post-action text as prose
+                self.buf = after
+                continue  # re-enter loop to handle 'after' text
+
+            # Still inside action, no close yet — extract tags from what we have
+            yield from self._extract_loop()
+            break
+
+    def _extract_loop(self) -> Generator[dict[str, Any], None, None]:
+        """Run the existing tag-find/hold/pending logic on self.buf."""
         while True:
             found = self._find_complete()
             if found:
@@ -1062,14 +1115,16 @@ class SkillParser:
                 if before:
                     yield {"type": "text", "text": before}
                 self.buf = self.buf[end:]
-                self._pending_tag = None  # tag completed, clear pending state
+                self._pending_tag = None
                 self._last_progress = (0, 0)
                 yield from _run_tag(name, attrs, content)
                 continue
 
             hold = self._hold_start()
             if hold is None:
-                if self.buf:
+                # No partial tag — but DON'T flush buf here if still in action
+                # (text between tags inside action is just whitespace/prose)
+                if self.buf and not self._in_action:
                     yield {"type": "text", "text": self.buf}
                     self.buf = ""
                 break
@@ -1112,6 +1167,7 @@ class SkillParser:
         if self.buf:
             yield {"type": "text", "text": self.buf}
             self.buf = ""
+        self._in_action = False
 
     def _find_complete(self) -> tuple[int, int, str, str, str] | None:
         # Track open-but-unclosed tags so we never match tags nested inside

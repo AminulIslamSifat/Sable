@@ -505,9 +505,20 @@
       return /^>\s*\[!\w+\]/m.test(text) || /==[^=]+==/.test(text);
     }
 
+    const _HTML_TAGS = new Set("a,abbr,address,area,article,aside,audio,b,base,bdi,bdo,blockquote,body,br,button,canvas,caption,cite,code,col,colgroup,data,datalist,dd,del,details,dfn,dialog,div,dl,dt,em,embed,fieldset,figcaption,figure,footer,form,h1,h2,h3,h4,h5,h6,head,header,hr,html,i,iframe,img,input,ins,kbd,label,legend,li,link,main,map,mark,meta,meter,nav,noscript,object,ol,optgroup,option,output,p,param,picture,pre,progress,q,rp,rt,ruby,s,samp,script,section,select,slot,small,source,span,strong,style,sub,summary,sup,table,tbody,td,template,textarea,tfoot,th,thead,time,title,tr,track,u,ul,var,video,wbr,svg,path,rect,circle,ellipse,line,polyline,polygon,text,g,defs,use,symbol,linearGradient,radialGradient,stop,clipPath,mask,pattern,image,foreignObject,animate,animateTransform,animateMotion,desc,title,metadata,marker,solidColor,solidColorRef,switch,unknown".split(","));
+
+    function escapeNonHtmlTags(text) {
+      // Escape angle brackets for tags that aren't valid HTML/SVG
+      // so marked + DOMPurify don't swallow them silently.
+      return text.replace(/<(\/?)([a-zA-Z_][\w.-]*)(\s[^>]*)?>/g, (match, slash, tag, rest) => {
+        if (_HTML_TAGS.has(tag.toLowerCase())) return match;
+        return match.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      });
+    }
+
     function renderMarkdown(raw) {
       if (!raw) return "";
-      const text = normalizeMd(String(raw).replace(/\r\n/g, "\n"));
+      const text = escapeNonHtmlTags(normalizeMd(String(raw).replace(/\r\n/g, "\n")));
 
       ensureMarked();
       if (window.marked && window.DOMPurify && !usesLegacyExtras(text)) {
