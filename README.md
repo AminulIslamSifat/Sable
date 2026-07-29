@@ -1,6 +1,6 @@
 <div align="center">
 
-![sable](image.png)
+<img src="web/sable_icon.svg" width="100">
 
 # Sable 
 Agentic Orchestration Layer
