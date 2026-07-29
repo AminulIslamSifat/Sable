@@ -1,319 +1,356 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Sable</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=3">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Maple+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=3">
-  <link rel="manifest" href="/static/manifest.json">
-  <meta name="theme-color" content="#7c5cbf">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <link rel="apple-touch-icon" href="/static/icon-192.png">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sable</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=3">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
+
+    <!-- Tailwind + FontAwesome (CDN) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="theme-color" content="#4a6cf7">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="apple-touch-icon" href="/static/icon-192.png">
 </head>
+
+<style>:root{--bg:#17181a;--sidebar:#1a1b1e;--panel:#202124;--panel-2:#282a2e;--border:#323438;--border-soft:#282a2e;--text:#ededee;--text-dim:#b8babe;--muted:#7e8087;--muted-2:#4e5057;--accent:#4a6cf7;--accent-dim:rgba(74, 108, 247, 0.10);--accent-text:#7a94fa;--danger:#e06060;--danger-bg:rgba(224, 96, 96, 0.12);--ok:#5cb87a;--bg-glow:#1a1b1f;--radius:8px;--radius-lg:12px;--font-body:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;--font-mono:'SF Mono','Fira Code','Menlo','Monaco','Consolas',monospace;--font-size-response:14.5px;--shadow-md:0 4px 16px rgba(0, 0, 0, 0.35);--shadow-lg:0 12px 48px rgba(0, 0, 0, 0.45)}[data-theme=noctalia]{--bg:#14121a;--sidebar:#181620;--panel:#1e1c2a;--panel-2:#26223a;--border:#322e46;--border-soft:#26223a;--text:#e6e2ef;--text-dim:#b8b0cc;--muted:#8a7ea8;--muted-2:#5e547a;--accent:#6c5ce7;--accent-dim:rgba(108, 92, 231, 0.10);--accent-text:#8f82f0;--bg-glow:#181624}[data-theme=ember]{--bg:#141110;--sidebar:#1a1614;--panel:#201c19;--panel-2:#28221e;--border:#342c28;--border-soft:#28221e;--text:#ede8e2;--text-dim:#c8beb4;--muted:#928478;--muted-2:#685a4e;--accent:#d95a2a;--accent-dim:rgba(217, 90, 42, 0.10);--accent-text:#ec7a4e;--bg-glow:#181412}[data-theme=ocean]{--bg:#111318;--sidebar:#15181f;--panel:#1a1e28;--panel-2:#222632;--border:#2d3342;--border-soft:#222632;--text:#e0e6f0;--text-dim:#b0bccf;--muted:#707e95;--muted-2:#4e5a6e;--accent:#2d7fd9;--accent-dim:rgba(45, 127, 217, 0.10);--accent-text:#5a9ae8;--bg-glow:#141820}[data-theme=forest]{--bg:#111411;--sidebar:#151815;--panel:#1a1e1a;--panel-2:#222622;--border:#2d322d;--border-soft:#222622;--text:#e0e8e0;--text-dim:#b0c4b0;--muted:#6e8a6e;--muted-2:#4e644e;--accent:#3a9a58;--accent-dim:rgba(58, 154, 88, 0.10);--accent-text:#5eb87a;--bg-glow:#141a14}[data-theme=rose]{--bg:#141113;--sidebar:#1a1518;--panel:#201a1f;--panel-2:#282228;--border:#342c32;--border-soft:#282228;--text:#ece2e8;--text-dim:#c8b4be;--muted:#947a86;--muted-2:#6a5460;--accent:#cc4a7a;--accent-dim:rgba(204, 74, 122, 0.10);--accent-text:#e06a94;--bg-glow:#1a1418}[data-theme=indigo]{--bg:#11121a;--sidebar:#151722;--panel:#1a1c2a;--panel-2:#222434;--border:#2d3046;--border-soft:#222434;--text:#e2e4f0;--text-dim:#b4b8d0;--muted:#7880a8;--muted-2:#565c7c;--accent:#5b6ee1;--accent-dim:rgba(91, 110, 225, 0.10);--accent-text:#7c8cf0;--bg-glow:#141622}[data-theme=crimson]{--bg:#141112;--sidebar:#1a1516;--panel:#201a1c;--panel-2:#282224;--border:#342a2c;--border-soft:#282224;--text:#ece2e2;--text-dim:#c8b4b4;--muted:#947878;--muted-2:#6a5454;--accent:#c93a4e;--accent-dim:rgba(201, 58, 78, 0.10);--accent-text:#e86478;--bg-glow:#1a1416}[data-theme=mono]{--bg:#121212;--sidebar:#161616;--panel:#1c1c1c;--panel-2:#242424;--border:#303030;--border-soft:#242424;--text:#e8e8e8;--text-dim:#c0c0c0;--muted:#8a8a8a;--muted-2:#5a5a5a;--accent:#c8c8c8;--accent-dim:rgba(200, 200, 200, 0.08);--accent-text:#e8e8e8;--bg-glow:#161616}[data-theme=teal]{--bg:#111414;--sidebar:#151818;--panel:#1a1e1e;--panel-2:#222626;--border:#2d3232;--border-soft:#222626;--text:#e0e8e6;--text-dim:#b0c4c0;--muted:#6e8e86;--muted-2:#4e6860;--accent:#1aa89a;--accent-dim:rgba(26, 168, 154, 0.10);--accent-text:#40c4b6;--bg-glow:#141a1a}*{box-sizing:border-box}body,html{margin:0;height:100%;font-family:var(--font-body);background:radial-gradient(ellipse at 50% 0,var(--bg-glow) 0,var(--bg) 70%);color:var(--text);-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}body{display:flex}::selection{background:var(--accent-dim);color:var(--accent-text)}:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--radius)}::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:0 0}::-webkit-scrollbar-thumb{background:var(--border);border-radius:8px}::-webkit-scrollbar-thumb:hover{background:var(--muted-2)}.login-overlay{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at 50% 0,var(--bg-glow) 0,var(--bg) 70%);padding:20px}.login-overlay.hidden{display:none}.login-card{width:100%;max-width:340px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-lg);padding:32px 28px;text-align:center;box-shadow:var(--shadow-lg)}.login-logo{width:52px;height:52px;margin-bottom:12px;opacity:.9}.login-card h1{margin:0;font-size:22px;font-weight:600;letter-spacing:-.3px;color:var(--text)}.login-sub{margin:6px 0 22px;font-size:13px;color:var(--muted);font-weight:400}.login-form{display:flex;flex-direction:column;gap:10px}.login-input{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-family:inherit;font-size:14px;padding:12px 14px;text-align:center;letter-spacing:.3px;transition:border-color .15s}.login-input:focus{outline:0;border-color:var(--accent)}.login-btn{background:var(--accent);color:#fff;border:none;border-radius:var(--radius);font-family:inherit;font-size:14px;font-weight:600;padding:12px;cursor:pointer;transition:opacity .15s,transform 80ms}.login-btn:hover{opacity:.9}.login-btn:disabled{opacity:.5;cursor:default}.login-error{margin:14px 0 0;font-size:12px;color:var(--danger)}.login-error.hidden{display:none}.sidebar{width:260px;min-width:260px;height:100vh;height:100dvh;padding:18px 14px;border-right:1px solid var(--border);background:var(--sidebar);display:flex;flex-direction:column;gap:10px;transition:transform .25s ease,margin-left .25s ease;overflow:hidden;position:relative;z-index:100}body.sidebar-collapsed .sidebar{transform:translateX(-100%);margin-left:-260px}.sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99;backdrop-filter:blur(2px)}body.sidebar-open .sidebar-overlay{display:block}body.sidebar-open .sidebar{transform:translateX(0);margin-left:0}.icon-btn{width:32px;height:32px;border-radius:8px;background:0 0;border:1px solid var(--border);color:var(--muted);font-size:15px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background .15s,color .15s,border-color .15s,transform 80ms;cursor:pointer}.icon-btn:hover{background:var(--panel);color:var(--text);border-color:var(--accent)}.icon-btn:active{transform:scale(.96)}.brand{display:flex;align-items:center;gap:10px;padding:0 4px;flex-shrink:0}.brand img{width:22px;height:22px;flex-shrink:0;opacity:.9}.brand-text{display:flex;flex-direction:column;gap:1px}.brand h1{margin:0;font-family:var(--font-body);font-weight:600;font-size:15px;letter-spacing:-.2px;color:var(--text);line-height:1.2}.brand span{color:var(--muted-2);font-size:10px;letter-spacing:.2px;line-height:1.2;font-weight:400}button{border:0;border-radius:var(--radius);cursor:pointer;font-family:inherit;position:relative;transition:background .15s,border-color .15s,opacity .15s,transform 80ms}button:active:not(:disabled){transform:scale(.97)}button:disabled{opacity:.4;cursor:not-allowed}#newChat{width:100%;padding:10px 14px;font-size:13px;font-weight:600;color:#fff;background:var(--accent);display:flex;align-items:center;justify-content:center;gap:8px;flex-shrink:0;border-radius:var(--radius);transition:opacity .15s,transform 80ms}#newChat:hover:not(:disabled){opacity:.88}#newChat .spinner,#syncContext .spinner{display:none;width:13px;height:13px;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}#newChat.loading .spinner,#syncContext.loading .spinner{display:block}#newChat.loading .btn-label,#syncContext.loading .btn-label{opacity:.6}#syncContext{width:100%;padding:9px 14px;font-size:12.5px;font-weight:500;color:var(--text-dim);background:var(--panel);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;flex-shrink:0;gap:8px;border-radius:var(--radius);transition:background .15s,color .15s,border-color .15s}#syncContext:hover:not(:disabled){background:var(--panel-2);color:var(--text);border-color:var(--accent)}@keyframes spin{to{transform:rotate(360deg)}}.selector-wrap{position:relative;width:100%}.selector-wrap select{width:100%;padding:9px 30px 9px 12px;font-size:12.5px;font-weight:500;font-family:inherit;color:var(--text-dim);background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);appearance:none;-webkit-appearance:none;cursor:pointer;transition:background .15s,border-color .15s,color .15s}.selector-wrap select:hover:not(:disabled){background:var(--panel-2);color:var(--text)}.selector-wrap select:focus{outline:0;border-color:var(--accent)}.selector-wrap select:disabled{opacity:.35;cursor:not-allowed}.selector-wrap select option{background:var(--panel);color:var(--text)}.selector-wrap::after{content:"▾";position:absolute;right:11px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:10px;pointer-events:none;transition:color .15s}.selector-wrap:hover::after{color:var(--text-dim)}.header-model-wrap{width:auto;min-width:170px}.header-model-wrap select{padding:7px 28px 7px 11px;font-size:12px;background:var(--panel);border:1px solid var(--border);border-radius:6px}.thinking-select-wrap{flex-shrink:0}.thinking-select-wrap select:disabled{opacity:.3}#chats{display:flex;flex-direction:column;gap:3px;overflow-y:auto;padding-right:2px;flex:1;min-height:0}.chat-row{display:flex;align-items:center;gap:4px}.chat-row .chat-item{flex:1;width:auto}.chat-item{width:100%;text-align:left;padding:9px 10px 9px 9px;border:1px solid transparent;border-left:2px solid transparent;background:0 0;color:var(--text-dim);font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-radius:6px;transition:background .15s,color .15s,border-color .15s;cursor:pointer}.chat-item:hover:not(.active){background:var(--panel);color:var(--text)}.chat-item.active{background:var(--panel-2);color:var(--text);border-color:var(--border);border-left-color:var(--accent)}.skeleton-chat{height:34px;margin-bottom:4px;border-radius:6px;background:linear-gradient(90deg,var(--panel) 25%,var(--panel-2) 50%,var(--panel) 75%);background-size:200px 100%;animation:shimmer 1.4s ease-in-out infinite}.skeleton-chat:first-child{width:85%}.skeleton-chat:nth-child(2){width:70%}.skeleton-chat:nth-child(3){width:78%}@keyframes shimmer{0%{background-position:-200px 0}100%{background-position:calc(200px + 100%) 0}}.chat-delete{min-width:28px;height:34px;border-radius:6px;background:0 0;color:var(--muted-2);border:1px solid transparent;font-weight:400;font-size:16px;line-height:1;padding:0;flex-shrink:0;opacity:0;transition:opacity .15s,background .15s,color .15s,transform 80ms;cursor:pointer}.chat-row:hover .chat-delete{opacity:1}.chat-delete:hover{background:var(--danger-bg);color:var(--danger)}.main{flex:1;height:100vh;height:100dvh;display:flex;flex-direction:column;min-width:0;position:relative}header{height:46px;padding:0 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--bg)}header strong{font-family:var(--font-body);font-size:14px;font-weight:600;letter-spacing:-.2px;color:var(--text)}header small{color:var(--muted-2);font-size:11px;font-weight:400}.header-left{display:flex;align-items:center;gap:14px;min-width:0}.header-right{display:flex;align-items:center;gap:10px}#chat{flex:1;overflow-y:auto;padding:28px 22px;padding-bottom:120px;display:flex;flex-direction:column;gap:14px;align-items:center;--chat-width:min(88%, 840px)}.msg{width:var(--chat-width);max-width:var(--chat-width);padding:12px 16px;border-radius:var(--radius-lg);line-height:1.6;word-wrap:break-word;border:1px solid transparent;font-size:14px}.user{align-self:flex-end;width:calc(var(--chat-width) * .5);max-width:calc(var(--chat-width) * .5);background:var(--panel-2);border:1px solid var(--border);color:var(--text);white-space:pre-wrap;border-radius:var(--radius-lg)}.user.collapsed .user-text{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}.user-expand-btn{font-size:11px;color:var(--accent-text);background:0 0;border:none;cursor:pointer;padding:4px 0 0;font-family:inherit;transition:opacity .15s}.user-expand-btn:hover{opacity:.7;text-decoration:underline}.msg-timestamp{font-family:var(--font-mono);font-size:10.5px;color:var(--muted-2);margin-bottom:4px;font-weight:400;letter-spacing:.2px}.bot{align-self:center;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-lg);padding:10px 14px;width:var(--chat-width);max-width:var(--chat-width)}.msg-toolbar{display:flex;gap:6px;margin-top:6px;opacity:0;transition:opacity .15s}.msg-toolbar:focus-within,.msg.bot:hover .msg-toolbar,.msg.user:hover .msg-toolbar{opacity:1}.msg-toolbar button{font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--muted);cursor:pointer;font-family:inherit;transition:background .12s,color .12s,border-color .12s}.msg-toolbar button:hover{background:var(--panel-2);color:var(--text);border-color:var(--accent)}.bot.streaming .md-content::after{content:'▍';color:var(--accent);animation:blink .9s steps(1) infinite}@keyframes blink{50%{opacity:0}}@keyframes msg-enter{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}.msg-enter{animation:msg-enter .25s ease-out}.pending-indicator{display:flex;align-items:center;gap:5px;align-self:center;width:var(--chat-width);max-width:var(--chat-width);padding:6px 2px}.pending-indicator .dot{width:6px;height:6px;border-radius:50%;background:var(--muted);animation:pending-bounce 1.1s ease-in-out infinite}.pending-indicator .dot:nth-child(2){animation-delay:.15s}.pending-indicator .dot:nth-child(3){animation-delay:.3s}@keyframes pending-bounce{0%,100%,60%{transform:translateY(0);opacity:.4}30%{transform:translateY(-4px);opacity:1}}.turn{align-self:center;width:var(--chat-width);max-width:var(--chat-width);display:flex;flex-direction:column;gap:10px}.thinking-wrap{width:var(--chat-width,100%);max-width:var(--chat-width,100%)}.turn .thinking-wrap{width:100%;max-width:100%}.turn .msg.bot{width:100%;max-width:100%;align-self:stretch}details.thinking{border:1px solid var(--border);background:var(--panel);padding:9px 12px;border-radius:var(--radius);font-size:12.5px;color:var(--muted);transition:border-color .15s,background .15s}details.thinking[open]{border-color:var(--border-soft);background:var(--panel-2)}details.thinking summary{cursor:pointer;font-weight:500;user-select:none;list-style:none;display:flex;align-items:center;gap:6px;color:var(--muted);border-radius:calc(var(--radius) - 4px);margin:-3px -4px;padding:3px 4px;transition:color .15s,background .15s}details.thinking summary:hover{color:var(--text-dim);background:var(--panel-2)}details.thinking[open] summary:hover{background:var(--panel)}details.thinking summary::before{content:'▸';font-size:10px;transition:transform .15s;color:var(--muted-2)}details.thinking[open] summary::before{transform:rotate(90deg)}details.thinking .thinking-body{margin-top:8px;white-space:pre-wrap;line-height:1.55;font-family:var(--font-mono);font-size:12px;color:var(--text-dim)}.event{color:var(--muted-2);font-size:12px;font-family:var(--font-mono);padding:2px 8px}.skill-stack{display:flex;flex-direction:column;gap:8px;width:var(--chat-width);max-width:var(--chat-width)}.turn .skill-stack{width:100%;max-width:100%}.retry-command-bar{width:100%;display:flex;justify-content:flex-end;margin:8px 0 2px}.retry-command-bar button{font-size:12px;font-weight:600;letter-spacing:.02em;padding:6px 14px;border-radius:6px;border:1px solid var(--border);background:var(--accent-dim);color:var(--accent-text);cursor:pointer;transition:border-color .15s,background .15s,transform .1s}.retry-command-bar button:hover:not(:disabled){border-color:var(--accent);background:var(--panel-2)}.retry-command-bar button:active:not(:disabled){transform:scale(.97)}.retry-command-bar button:disabled{opacity:.5;cursor:default}.skill-card{width:100%;border:1px solid var(--border);background:var(--panel);border-radius:var(--radius);padding:10px 12px;font-size:13px;flex-shrink:0;transition:background .15s}.skill-card.collapsed .skill-command,.skill-card.collapsed .skill-image,.skill-card.collapsed .skill-output{display:none}.skill-command{margin:8px 0 0;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-family:var(--font-mono);font-size:12px;color:var(--text-dim)}.skill-output{display:none}.skill-card.show-output .skill-command{display:none}.skill-card.show-output .skill-output{display:block}.skill-toggle-btn{font-size:11px;font-family:var(--font-mono);color:var(--muted);background:var(--panel-2);border:1px solid var(--border);border-radius:6px;padding:2px 8px;cursor:pointer;transition:background .15s,color .15s,border-color .15s;flex-shrink:0}.skill-toggle-btn:hover{background:var(--accent-dim);color:var(--accent-text);border-color:var(--accent)}.skill-header{display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;user-select:none}.skill-header-left{display:flex;align-items:center;gap:7px;min-width:0}.skill-arrow{color:var(--muted-2);font-size:10px;transition:transform .15s;flex-shrink:0}.skill-card.collapsed .skill-arrow{transform:rotate(-90deg)}.skill-name{font-weight:600;color:var(--accent-text);font-family:var(--font-mono);font-size:12px}.skill-status{color:var(--muted);white-space:nowrap;font-size:11.5px;font-family:var(--font-mono)}.skill-output{margin:8px 0 0;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-family:var(--font-mono);font-size:12px;color:var(--text-dim)}.skill-output.error{border-color:var(--danger);color:#f3b4b7}.skill-image{margin-top:8px;max-width:100%;border-radius:6px;border:1px solid var(--border)}.md-content{color:var(--text);font-size:var(--font-size-response)}.md-content>:first-child{margin-top:0}.md-content>:last-child{margin-bottom:0}.md-content h1,.md-content h2,.md-content h3,.md-content h4,.md-content h5,.md-content h6{font-family:var(--font-body);font-weight:600;color:var(--text);line-height:1.3;margin:22px 0 10px;letter-spacing:-.2px}.md-content h1{font-size:24px;padding-bottom:8px;border-bottom:1px solid var(--border)}.md-content h2{font-size:20px;padding-bottom:6px;border-bottom:1px solid var(--border-soft)}.md-content h3{font-size:17px;color:var(--accent-text)}.md-content h4{font-size:15px}.md-content h5,.md-content h6{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}.md-content p{margin:10px 0;white-space:pre-wrap;line-height:1.7}.md-content a{color:var(--accent-text);text-decoration:none;border-bottom:1px solid var(--accent-dim);transition:border-color .15s}.md-content a:hover{border-bottom-color:var(--accent-text)}.md-content strong{color:var(--text);font-weight:700}.md-content em{color:var(--text-dim)}.md-content ol,.md-content ul{margin:8px 0;padding-left:24px}.md-content li{margin:4px 0}.md-content li::marker{color:var(--muted)}.md-content ul.contains-task-list{list-style:none;padding-left:4px}.md-content ul.contains-task-list li{list-style:none;margin-left:0}.md-content input[type=checkbox]{accent-color:var(--accent);margin-right:7px;transform:translateY(1px);cursor:pointer}.md-content blockquote{margin:12px 0;padding:4px 14px;border-left:3px solid var(--accent);background:var(--panel);color:var(--muted);border-radius:0 6px 6px 0}.md-content blockquote p{margin:6px 0}.md-content hr{border:none;border-top:1px solid var(--border);margin:22px 0}.md-content code{font-family:var(--font-mono);font-size:.87em;background:var(--panel-2);border:1px solid var(--border);padding:1.5px 6px;border-radius:4px;color:var(--accent-text)}.md-content pre{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;overflow-x:auto;margin:12px 0}.md-content pre code{background:0 0;border:none;padding:0;color:var(--text-dim);font-size:12.5px;line-height:1.6}.md-content table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13px;display:block;overflow-x:auto;border-radius:8px;border:1px solid var(--border)}.md-content td,.md-content th{border:1px solid var(--border);padding:7px 12px;text-align:left}.md-content th{background:var(--panel);color:var(--accent-text);font-weight:600;font-family:var(--font-body)}.md-content tr:nth-child(2n) td{background:var(--panel)}.md-content img{max-width:100%;border-radius:6px;border:1px solid var(--border)}.md-content .callout{--callout-color:var(--accent);margin:14px 0;border:1px solid var(--border);border-left:3px solid var(--callout-color);background:var(--panel);border-radius:0 8px 8px 0;padding:10px 14px}.md-content .callout-title{display:flex;align-items:center;gap:8px;font-weight:700;color:var(--callout-color);font-family:var(--font-body);font-size:13px;text-transform:capitalize}.md-content .callout-icon{font-size:14px;line-height:1}.md-content .callout-content{margin-top:6px;color:var(--text-dim);font-size:13.5px}.md-content .callout-content p{margin:4px 0}.md-content .callout-content>:first-child{margin-top:0}.md-content .callout-content>:last-child{margin-bottom:0}.md-content .mermaid-wrap{margin:14px 0;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;overflow-x:auto;overflow-y:auto;max-height:80vh}.md-content .mermaid-wrap svg{display:block;min-width:400px;min-height:200px;width:max-content!important;height:auto!important}.md-content .mermaid-error{color:var(--danger);font-size:12px;padding:8px 12px;background:var(--danger-bg);border-radius:6px;white-space:pre-wrap;word-break:break-word}.md-content .svg-wrap{margin:14px 0;display:flex;justify-content:center;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;overflow:auto;max-height:80vh}.md-content .svg-wrap svg{display:block;max-width:100%;height:auto}.md-content mark{background:rgba(201,164,100,.3);color:var(--text);padding:0 3px;border-radius:3px}.md-content del{color:var(--muted-2)}.input-area{position:absolute;left:0;right:0;bottom:0;z-index:10;padding:10px 20px 22px;pointer-events:none;background:0 0}.input-area .attach-preview,.input-area .input-row{pointer-events:auto}.input-row{background:var(--panel);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid var(--border);border-radius:var(--radius-lg);padding:6px;box-shadow:var(--shadow-md);display:flex;gap:8px;align-items:flex-end;max-width:900px;margin:0 auto;transition:border-color .15s,box-shadow .15s}.input-row:focus-within{border-color:var(--accent);box-shadow:0 4px 24px rgba(74,108,247,.12),var(--shadow-md)}textarea{flex:1;resize:none;min-height:38px;max-height:200px;padding:8px 14px;border-radius:var(--radius-lg);border:1px solid transparent;background:0 0;color:var(--text);outline:0;font:inherit;font-size:14px;line-height:1.5;transition:border-color .15s;overflow-y:auto}textarea::placeholder{color:var(--muted-2)}textarea:focus{border-color:transparent}textarea:focus-visible{outline:0}textarea:disabled{opacity:.4}#send{width:38px;height:38px;padding:0;font-size:16px;font-weight:600;color:#fff;background:var(--accent);flex-shrink:0;display:flex;align-items:center;justify-content:center;border-radius:var(--radius-lg);transition:background .15s,opacity .15s,transform 80ms;border:none;cursor:pointer}#send:hover:not(:disabled){opacity:.85}#send:active:not(:disabled){transform:scale(.95)}#send .spinner{display:none;width:15px;height:15px;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;margin:auto}#send .btn-label-stop{display:none;width:13px;height:13px;background:0 0;border:2.5px solid #fff;border-radius:3px;flex-shrink:0}#send.loading .spinner{display:block}#send.loading .btn-label{display:none}#send.stop-mode .spinner{display:none}#send.stop-mode .btn-label{display:none}#send.stop-mode .btn-label-stop{display:block}#send.stop-mode{background:var(--accent)}#send.stop-mode:hover:not(:disabled){opacity:.85}.attach-btn{width:38px;height:38px;flex-shrink:0;background:var(--panel-2);border:1px solid var(--border);color:var(--muted);font-size:20px;font-weight:400;line-height:1;display:flex;align-items:center;justify-content:center;border-radius:var(--radius-lg);transition:background .15s,color .15s,border-color .15s,transform 80ms;cursor:pointer}.attach-btn:hover:not(:disabled){background:var(--panel);color:var(--text);border-color:var(--accent)}.attach-btn:active:not(:disabled){transform:scale(.95)}.attach-btn:disabled{opacity:.4;cursor:not-allowed}.attach-preview{display:flex;flex-wrap:wrap;gap:8px;padding:0 0 10px;max-width:900px;margin:0 auto}.attach-preview:empty{display:none}.attach-chip{position:relative;width:64px;height:64px;border-radius:6px;overflow:hidden;border:1px solid var(--border);background:var(--panel-2)}.attach-chip img{width:100%;height:100%;object-fit:cover}.attach-chip .remove{position:absolute;top:2px;right:2px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.65);color:#fff;font-size:12px;line-height:18px;text-align:center;cursor:pointer;border:none;padding:0;transition:background .15s}.attach-chip .remove:hover{background:var(--danger)}.attach-chip.uploading::after{content:"";position:absolute;inset:0;background:rgba(0,0,0,.35);animation:pulse-upload 1s ease-in-out infinite}@keyframes pulse-upload{0%,100%{opacity:.3}50%{opacity:.6}}.user-images{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.user-images img{max-width:180px;max-height:180px;border-radius:6px;border:1px solid var(--border);object-fit:cover;cursor:pointer;transition:opacity .15s}.user-images img:hover{opacity:.85}.input-area.drag-over{border-top-color:var(--accent);background:var(--accent-dim)}.empty{margin:auto;text-align:center;color:var(--muted);max-width:380px;padding:40px 20px}.empty h2{font-family:var(--font-body);color:var(--text);margin-bottom:6px;font-weight:600;font-size:20px;letter-spacing:-.3px}.empty p{font-size:13.5px;opacity:.7}#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--panel);border:1px solid var(--border);color:var(--text);padding:9px 18px;border-radius:var(--radius);font-size:13px;transition:transform .3s ease,opacity .3s ease;z-index:999;pointer-events:none;box-shadow:var(--shadow-md)}#toast.show{transform:translateX(-50%) translateY(0)}#toast.error{border-color:var(--danger);color:var(--danger)}#toast.success{border-color:var(--ok);color:var(--ok)}#toast.info{border-color:var(--border);color:var(--text-dim)}.settings-overlay{position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px)}.settings-overlay.hidden{display:none}.settings-panel{width:720px;max-width:92vw;height:560px;max-height:85vh;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-lg);display:flex;flex-direction:column;overflow:hidden;box-shadow:var(--shadow-lg)}.settings-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);flex-shrink:0}.settings-header h2{margin:0;font-size:16px;font-weight:600;color:var(--text);letter-spacing:-.2px}.settings-tabs{display:flex;gap:0;border-bottom:1px solid var(--border);padding:0 12px;flex-shrink:0;overflow-x:auto;scrollbar-width:none}.settings-tabs::-webkit-scrollbar{display:none}.settings-tab{padding:10px 18px;font-size:12.5px;font-weight:500;color:var(--muted);background:0 0;border:none;border-bottom:2px solid transparent;cursor:pointer;transition:color .15s,border-color .15s;white-space:nowrap;font-family:inherit}.settings-tab:hover{color:var(--text-dim)}.settings-tab.active{color:var(--accent-text);border-bottom-color:var(--accent)}.settings-body{flex:1;overflow:hidden;position:relative}.settings-tab-content{display:none;height:100%;flex-direction:column;overflow-y:auto}.settings-tab-content.active{display:flex}#tab-brain,#tab-general{padding:16px 20px}.log-toolbar{display:flex;align-items:center;gap:12px;padding:8px 16px;border-bottom:1px solid var(--border-soft);flex-shrink:0}.log-toggle{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}.log-toggle input{accent-color:var(--accent);width:14px;height:14px;cursor:pointer}.log-viewer{flex:1;margin:0;padding:12px 16px;overflow:auto;background:var(--bg);font-family:var(--font-mono);font-size:12px;line-height:1.65;color:var(--text-dim);white-space:pre-wrap;word-break:break-all}.log-viewer .log-warn{color:#e5c76a}.log-viewer .log-error{color:var(--danger)}.log-viewer .log-info{color:var(--text-dim)}.log-viewer .log-debug{color:var(--muted-2)}.settings-tab-content p.muted{padding:24px 20px;color:var(--muted);font-size:13px}.mem-tab-bar{display:flex;gap:var(--sp-2,4px);margin-bottom:var(--sp-4,8px);flex-wrap:wrap}.mem-tab-btn{font-size:11px;padding:4px 10px;width:auto;background:var(--panel-2);color:var(--muted);border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:background .15s,color .15s,border-color .15s}.mem-tab-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}.mem-tab-btn:hover:not(.active){background:var(--panel);color:var(--text)}.mem-empty{font-size:11px;color:var(--muted);padding:12px 0}.mem-entry{border:1px solid var(--border);border-radius:6px;padding:var(--sp-3,6px) var(--sp-4,8px);cursor:pointer;transition:background .15s}.mem-entry:hover{background:var(--panel-2)}.mem-entry-header{display:flex;gap:var(--sp-3,6px);align-items:center;flex-wrap:wrap}.mem-entry-key{flex:1;font-size:12px;font-weight:600;color:var(--accent-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:60px}.mem-entry-val{flex:2;font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.7;min-width:80px}.mem-entry-val.hidden{display:none}.mem-del-btn{width:24px;height:24px;font-size:11px;padding:0;flex-shrink:0;background:0 0;color:var(--muted-2);border:1px solid transparent;border-radius:4px;cursor:pointer;transition:background .15s,color .15s}.mem-del-btn:hover{background:var(--danger-bg);color:var(--danger)}.mem-full-val{display:none;margin-top:var(--sp-3,6px);font-size:12px;color:var(--text);line-height:1.5;word-break:break-word;white-space:pre-wrap;padding-top:var(--sp-3,6px);border-top:1px solid var(--border)}.mem-full-val.show{display:block}.mem-title{margin:0 0 var(--sp-4,8px);font-size:14px;color:var(--accent-text);font-weight:600;letter-spacing:-.2px}.mem-desc{font-size:11px;margin-bottom:var(--sp-5,12px);color:var(--muted)}.mem-list{display:flex;flex-direction:column;gap:var(--sp-3,6px);margin-bottom:var(--sp-5,12px)}.mem-input-row{display:flex;gap:var(--sp-3,6px);flex-wrap:wrap;align-items:center}.mem-input-row.mem-save-row{margin-top:var(--sp-5,12px)}.mem-input{padding:6px 10px;background:var(--panel-2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;font-family:inherit;transition:border-color .15s}.mem-input:focus{outline:0;border-color:var(--accent)}.mem-input.mem-key{flex:1;min-width:100px}.mem-input.mem-val{flex:2;min-width:150px}.mem-expiry-badge{font-size:10px;color:#e0a030;background:rgba(224,160,48,.12);border-radius:4px;padding:1px 6px;white-space:nowrap;flex-shrink:0}.mem-protected-badge{font-size:10px;flex-shrink:0;color:var(--accent-text);background:var(--accent-dim);padding:1px 6px;border-radius:4px}.mem-entry-protected{border-left:2px solid var(--accent)}.mem-status{font-size:11px;align-self:center;color:var(--muted)}.skills-title{margin:28px 0 var(--sp-4,8px);font-size:14px;color:var(--accent-text);padding-top:20px;border-top:1px solid var(--border);font-weight:600}.skills-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:var(--sp-3,6px);margin-bottom:var(--sp-5,12px);padding:4px}.skill-chip{background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;cursor:pointer;transition:border-color .15s,background .15s,transform .1s;text-align:center}.skill-chip:hover{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,var(--panel-2));transform:translateY(-1px)}.skill-chip-name{font-size:12px;font-weight:600;color:var(--text)}.skill-chip-cat{font-size:10px;color:var(--muted);margin-top:4px}.skill-detail-overlay{display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.5);align-items:center;justify-content:center;backdrop-filter:blur(4px)}.skill-detail-overlay.show{display:flex}.skill-detail-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px 28px;max-width:640px;width:92%;max-height:80vh;overflow-y:auto;box-shadow:var(--shadow-lg)}.skill-detail-card h3{margin:0 0 12px;font-size:17px;color:var(--accent-text);font-weight:600;letter-spacing:-.2px}.skill-detail-row{margin-bottom:10px;font-size:12px;line-height:1.6}.skill-detail-row .label{color:var(--muted);font-weight:600;display:inline-block;min-width:70px}.skill-detail-row .value{color:var(--text)}.skill-detail-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}.skill-detail-tags span{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent-text);font-size:10px;padding:2px 8px;border-radius:4px}.skill-detail-close{margin-top:16px;padding:6px 16px;font-size:12px;background:var(--panel-2);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;transition:border-color .15s,background .15s}.skill-detail-close:hover{border-color:var(--accent);background:var(--panel)}.skill-detail-scripts{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}.skill-detail-scripts span{background:var(--panel-2);border:1px solid var(--border);color:var(--text);font-size:10px;font-family:monospace;padding:2px 8px;border-radius:4px}.skill-instruction{margin-top:16px;padding-top:14px;border-top:1px solid var(--border);font-size:12px;line-height:1.7;color:var(--text);overflow-wrap:break-word}.skill-instruction h1,.skill-instruction h2,.skill-instruction h3{color:var(--accent-text);margin:14px 0 6px;font-size:13px;font-weight:600}.skill-instruction pre{background:var(--panel-2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;overflow-x:auto;font-size:11px}.skill-instruction code{font-family:monospace;font-size:11px}.skill-instruction ol,.skill-instruction ul{padding-left:18px;margin:6px 0}.sidebar-footer{margin-top:auto;padding-top:12px;border-top:1px solid var(--border);flex-shrink:0}.sidebar-footer-btn{width:100%;padding:9px 14px;font-size:12.5px;font-weight:500;color:var(--text-dim);background:0 0;border:1px solid var(--border);border-radius:var(--radius);display:flex;align-items:center;gap:8px;transition:background .15s,color .15s,border-color .15s;cursor:pointer;font-family:inherit}.sidebar-footer-btn:hover{background:var(--panel);color:var(--text);border-color:var(--accent)}.memory-chip{display:inline-flex;align-items:center;gap:4px;margin-top:8px;padding:3px 11px;font-family:var(--font-body);font-size:11px;font-weight:500;color:var(--accent-text);background:var(--accent-dim);border:1px solid var(--border);border-radius:999px;cursor:pointer;transition:background .15s,transform .1s}.memory-chip:hover{background:color-mix(in srgb,var(--accent) 15%,var(--panel));transform:translateY(-1px)}.memory-chip-tool{display:flex;width:fit-content;margin:6px 0}.memory-overlay{position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px)}.memory-panel{width:640px;max-width:92vw;max-height:80vh;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-lg);display:flex;flex-direction:column;overflow:hidden;box-shadow:var(--shadow-lg)}.memory-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);flex-shrink:0}.memory-header h2{margin:0;font-size:16px;color:var(--text);font-weight:600;letter-spacing:-.2px}.memory-close{background:0 0;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:4px 8px;border-radius:var(--radius);transition:color .15s,background .15s}.memory-close:hover{color:var(--text);background:var(--panel-2)}.memory-body{padding:16px 20px;overflow-y:auto;display:flex;flex-direction:column;gap:12px}.memory-item{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px}.memory-item-top{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}.memory-item-key{font-weight:600;font-size:13px;color:var(--text)}.memory-cat{font-size:10px;padding:2px 8px;border-radius:999px;background:var(--accent-dim);color:var(--accent-text);text-transform:uppercase;letter-spacing:.4px;font-weight:600}.memory-cat-protected{background:rgba(224,160,48,.12);color:#e0a030}.memory-score{font-size:11px;color:var(--muted);margin-left:auto}.memory-item-val{font-size:13px;color:var(--text-dim);line-height:1.55;white-space:pre-wrap;word-break:break-word}.diff-sidebar{position:fixed;top:0;right:0;height:100vh;height:100dvh;width:min(480px,92vw);background:var(--panel);border-left:1px solid var(--border);box-shadow:-18px 0 50px rgba(0,0,0,.45);transform:translateX(105%);transition:transform .18s ease;z-index:50;display:flex;flex-direction:column}body.diff-open .diff-sidebar{transform:translateX(0)}.diff-sidebar-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 14px;border-bottom:1px solid var(--border);flex-shrink:0}.diff-sidebar-title{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent-text);font-weight:600}#diffCards{flex:1;overflow-y:auto;overflow-x:hidden;padding:12px;display:flex;flex-direction:column;gap:8px;min-height:0}.diff-card{border:1px solid var(--border);border-radius:var(--radius);background:var(--panel-2);overflow:hidden;flex-shrink:0;transition:flex-grow .25s ease,max-height .25s ease;max-height:44px;cursor:pointer}.diff-card.expanded{flex-grow:1;max-height:85vh;cursor:default}.diff-card-header{padding:8px 12px;display:flex;flex-wrap:wrap;align-items:center;gap:6px;border-bottom:1px solid var(--border-soft);user-select:none}.diff-card-arrow{color:var(--muted-2);font-size:10px;transition:transform .2s ease;flex-shrink:0;margin-right:2px}.diff-card.expanded .diff-card-arrow{transform:rotate(90deg)}.diff-op{font-size:10px;padding:2px 8px;border-radius:999px;text-transform:uppercase;font-weight:700;letter-spacing:.3px}.diff-op.edit{background:rgba(255,196,87,.12);color:#ffcf6e}.diff-op.create{background:rgba(126,255,176,.1);color:#8effb4}.diff-op.insert{background:rgba(137,180,255,.12);color:#9cc7ff}.diff-path{font-family:var(--font-mono);font-size:11.5px;color:var(--text);word-break:break-all}.diff-stats{font-size:11px;color:var(--muted);white-space:nowrap;flex-shrink:0}.diff-add-stat{color:#7dffab}.diff-del-stat{color:#ff8585}.diff-body{margin:0;padding:8px 0;flex:1;min-height:0;overflow:auto;font-family:var(--font-mono);font-size:11.5px;line-height:1.45;display:none}.diff-card.expanded .diff-body{display:block}.diff-line{white-space:pre-wrap;word-break:break-word;padding:0 10px}.diff-line.add{background:rgba(70,255,140,.06);color:#a4ffbf}.diff-line.del{background:rgba(255,70,70,.06);color:#ffb1b1}.diff-line.hunk{color:var(--accent-text);opacity:.8;padding-top:6px}.diff-line.meta{color:var(--muted);font-style:italic}.diff-line.ctx{color:var(--text-dim);opacity:.7}.diff-sidebar .icon-btn{background:0 0;border:0;color:var(--muted);font-size:16px;cursor:pointer;transition:color .15s}.diff-sidebar .icon-btn:hover{color:var(--text)}.diff-revert-btn{margin-left:auto;padding:3px 10px;font-size:10.5px;font-family:var(--font-mono);border-radius:4px;border:1px solid var(--border);background:var(--panel);color:var(--accent-text);cursor:pointer;transition:background .15s,color .15s,border-color .15s;flex-shrink:0}.diff-revert-btn:hover:not(:disabled){background:var(--accent-dim);border-color:var(--accent)}.diff-revert-btn:disabled{opacity:.4;cursor:not-allowed}.file-edit-summary-card{display:flex;align-items:center;gap:10px;margin-top:12px;padding:10px 16px;border-radius:var(--radius);background:var(--accent-dim);border:1px solid var(--border);cursor:pointer;transition:background .15s,border-color .15s;font-size:13px;color:var(--text-dim);user-select:none}.file-edit-summary-card:hover{background:var(--panel);border-color:var(--accent)}.fes-icon{font-size:15px;flex-shrink:0;opacity:.7}.fes-text strong{color:var(--accent-text);font-weight:600}.fes-add{color:#7dffab;font-weight:500}.fes-del{color:#ff8585;font-weight:500}.fes-arrow{margin-left:auto;font-size:11px;color:var(--muted);transition:transform .15s ease}.file-edit-summary-card:hover .fes-arrow{transform:translateX(3px);color:var(--accent)}.theme-picker{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.theme-swatch{display:flex;align-items:center;gap:7px;padding:7px 10px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--text-dim);font-size:11px;font-family:inherit;cursor:pointer;transition:border-color .15s,background .15s,color .15s}.theme-swatch:hover{border-color:var(--muted);background:var(--panel-2)}.theme-swatch.active{border-color:var(--accent);background:var(--accent-dim);color:var(--text)}.swatch-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}.tool-activity-card{display:flex;align-items:center;gap:12px;width:100%;padding:10px 14px;margin:6px 0;background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:var(--radius);animation:tac-slide-in .2s ease-out;transition:opacity .4s ease,border-color .3s ease}.tool-activity-card.tac-done{border-left-color:var(--ok);opacity:0}.tac-icon{width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-size:14px;background:var(--accent-dim);border-radius:6px;flex-shrink:0}.tac-info{flex:1;min-width:0}.tac-title{font-size:13px;font-weight:600;color:var(--text)}.tac-detail{font-size:11px;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono)}.tac-status{flex-shrink:0}.tac-spinner{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:tac-spin .7s linear infinite}.tac-check{color:var(--ok);font-size:15px;font-weight:700;animation:tac-pop .25s ease-out}@keyframes tac-spin{to{transform:rotate(360deg)}}@keyframes tac-slide-in{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}@keyframes tac-pop{from{transform:scale(0)}to{transform:scale(1)}}.tac-detail-split{display:flex;align-items:baseline;gap:8px}.tac-detail-split .tac-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tac-detail-split .tac-count{flex-shrink:0;color:var(--muted-2);font-variant-numeric:tabular-nums}.tac-progress-track{width:100%;height:4px;background:var(--border-soft);border-radius:2px;margin-top:8px;overflow:hidden}.tac-progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-text));border-radius:2px;box-shadow:0 0 8px var(--accent-dim);animation:tac-progress 2.4s ease-in-out infinite}.tac-pulse-dot{width:8px;height:8px;background:var(--accent);border-radius:50%;animation:tac-pulse 1.2s ease-in-out infinite}@keyframes tac-progress{0%{width:5%}50%{width:70%}100%{width:95%}}@keyframes tac-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.7)}}.mode-switcher{display:flex;border-radius:6px;overflow:hidden;border:1px solid var(--border);flex-shrink:0}.mode-switcher button{flex:1;padding:7px 0;font-size:11px;font-weight:600;background:0 0;color:var(--muted);border:none;cursor:pointer;transition:all .15s;font-family:inherit}.mode-switcher button.active{background:var(--accent);color:#fff}.mode-switcher button:hover:not(.active){background:var(--panel);color:var(--text)}.scraper-engine-wrap{display:none;flex-shrink:0}.scraper-engine-wrap.visible{display:block}.scraper-engine-wrap select{width:100%;padding:6px 10px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--text);cursor:pointer;font-family:inherit}.scraper-status{font-size:10px;color:var(--muted);display:none;flex-shrink:0}.scraper-status.visible{display:block}.scraper-status.ok{color:var(--ok)}.scraper-status.err{color:var(--danger)}.scraper-chats-header{display:flex;align-items:center;gap:6px;padding:6px 12px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);cursor:pointer;user-select:none;transition:color .15s}.scraper-chats-header:hover{color:var(--text)}.scraper-chats-header .arrow{transition:transform .2s;font-size:9px}.scraper-chats-header.collapsed .arrow{transform:rotate(-90deg)}.scraper-chats-body{overflow:hidden;flex-shrink:0}.scraper-chats-body.collapsed{display:none}.katex-display{margin:1em 0;overflow-x:auto;overflow-y:hidden;padding:.5em 0}.katex{font-size:1.1em}.math-error{color:#e74c3c;font-family:monospace;font-size:.9em;background:rgba(231,76,60,.08);padding:2px 6px;border-radius:4px}@media (max-width:860px){#toast{bottom:auto;top:56px;left:10px;right:10px;transform:translateY(-140px);opacity:0;transition:transform .3s ease,opacity .3s ease;text-align:center;pointer-events:none;max-width:100%}#toast.show{transform:translateY(0);opacity:1;pointer-events:auto}.sidebar{position:fixed;top:0;left:0;z-index:100;transform:translateX(-100%);transition:transform .25s ease}body.sidebar-collapsed .sidebar{transform:translateX(-100%)}#chat{--chat-width:100%;padding:14px 10px;padding-bottom:110px}.msg,.thinking-wrap,.turn{width:var(--chat-width);max-width:var(--chat-width)}.diff-sidebar{width:100vw}.diff-card-header{padding:8px;gap:5px}.diff-path{font-size:11px;word-break:break-all;min-width:0;flex:1}.diff-stats{font-size:10px}.diff-revert-btn{padding:2px 7px;font-size:10px}#send{width:30px;height:30px;font-size:13px}.attach-btn{width:30px;height:30px;font-size:17px}textarea{min-height:30px;padding:5px 10px;font-size:13px}header{padding:0 10px}header strong{display:none}.header-left{gap:8px}.header-right{gap:6px}.header-right small{display:none}.header-model-wrap{min-width:0;flex:1}.header-model-wrap select{max-width:none;width:100%;font-size:12px}.settings-panel{max-width:96vw;max-height:90vh}#tab-brain,#tab-general{padding:12px 14px}.settings-header{padding:12px 14px}.log-toolbar{padding:8px 10px;flex-wrap:wrap}.log-viewer{padding:10px 12px;font-size:11px}.mem-tab-bar{flex-wrap:wrap;gap:4px}.mem-tab-btn{font-size:10px;padding:3px 8px}.mem-input-row{flex-wrap:wrap}.mem-input-row select.mem-input{min-width:0;flex:1}.md-content pre{-webkit-overflow-scrolling:touch;padding:10px 12px}.md-content pre code{font-size:11.5px}.md-content table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap}.skill-instruction pre{-webkit-overflow-scrolling:touch}.settings-tabs{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding:0 8px}.settings-tabs::-webkit-scrollbar{display:none}.settings-tab{padding:10px 12px;font-size:12px;white-space:nowrap}}@media (max-width:480px){.sidebar{width:min(260px,82vw);min-width:0}#chat{padding:10px 6px;padding-bottom:110px}.msg{padding:10px 12px;font-size:13.5px}.user{width:calc(var(--chat-width) * .78);max-width:calc(var(--chat-width) * .78)}.md-content pre code{font-size:11px}.header-model-wrap select{font-size:11px}.settings-panel{width:100vw;max-width:100vw;height:100dvh;max-height:100dvh;border-radius:0}.settings-tab{padding:9px 10px;font-size:11.5px}.mem-tab-bar{flex-wrap:wrap;gap:4px}.mem-tab-btn{font-size:10px;padding:3px 8px}.mem-entry{padding:var(--sp-2,4px) var(--sp-3,6px)}.mem-entry-key{font-size:11px}.mem-entry-header{flex-wrap:wrap;gap:4px}.mem-entry-val{flex:1 1 auto;min-width:0}.mem-input-row{flex-direction:column;gap:6px}.mem-input-row .mem-input{width:100%;box-sizing:border-box}.mem-input-row select.mem-input{min-width:0}.mem-input-row button{align-self:flex-start}#msThresholdEditor .muted{font-size:10px}}
+</style>
+
 <body>
-  <!-- Login gate -->
-  <div id="loginOverlay" class="login-overlay">
-    <div class="login-card">
-      <img src="/static/sable_icon.svg" alt="Sable" class="login-logo">
-      <h1>Sable</h1>
-      <p class="login-sub">Enter your access token to continue</p>
-      <form id="loginForm" class="login-form" autocomplete="off">
-        <input type="password" id="loginToken" class="login-input" placeholder="Access token" autofocus>
-        <button type="submit" id="loginBtn" class="login-btn">Unlock</button>
-      </form>
-      <p id="loginError" class="login-error hidden">Invalid token. Try again.</p>
-    </div>
-  </div>
-
-  <div class="sidebar-overlay"></div>
-  <aside class="sidebar">
-    <div class="brand">
-      <img src="/static/sable_icon.svg" alt="Sable">
-      <div class="brand-text">
-        <h1>Sable</h1>
-        <span>agentic chat</span>
-      </div>
-    </div>
-    <div class="selector-wrap thinking-select-wrap">
-      <select id="thinkingModeSelect" title="Thinking mode used for new chats"></select>
-    </div>
-    <div class="mode-switcher" id="modeSwitcher">
-      <button id="modeApi" class="active" title="Direct API chat">⚡ API</button>
-      <button id="modeScraper" title="Headed browser scraper chat">🌐 Scraper</button>
-    </div>
-    <div class="scraper-engine-wrap" id="scraperEngineWrap">
-      <select id="scraperEngineSelect" title="Scraper engine"></select>
-    </div>
-    <div class="scraper-status" id="scraperStatus"></div>
-    <button id="newChat">
-      <div class="spinner"></div>
-      <span class="btn-label">New chat</span>
-    </button>
-    <button id="syncContext">
-      <div class="spinner"></div>
-      <span class="btn-label">⟳ Sync Context</span>
-    </button>
-    <div id="chats"></div>
-    <div class="sidebar-footer">
-      <button id="settingsBtn" class="sidebar-footer-btn" title="Settings">
-        <span>⚙</span> Settings
-      </button>
-    </div>
-  </aside>
-
-  <main class="main">
-    <header>
-      <div class="header-left">
-        <button id="sidebarToggle" class="icon-btn" title="Toggle sidebar">☰</button>
-        <strong>Sable</strong>
-        <div class="selector-wrap header-model-wrap">
-          <select id="modelSelect" title="Model used for new chats"></select>
+    <!-- Login -->
+    <div id="loginOverlay" class="login-overlay">
+        <div class="login-card">
+            <img src="/static/sable_icon.svg" alt="Sable" class="login-logo">
+            <h1>Sable</h1>
+            <p class="login-sub">Enter your access token to continue</p>
+            <form id="loginForm" class="login-form" autocomplete="off">
+                <input type="password" id="loginToken" class="login-input" placeholder="Access token" autofocus>
+                <button type="submit" id="loginBtn" class="login-btn">Unlock</button>
+            </form>
+            <p id="loginError" class="login-error hidden">Invalid token. Try again.</p>
         </div>
-      </div>
-      <div class="header-right">
-        <button id="diffToggleBtn" class="icon-btn" title="Toggle file edit sidebar">✎</button>
-        <small>localhost:6001</small>
-      </div>
-    </header>
-
-    <!-- FIX: #chat is repeatedly wiped with innerHTML by the JS (loadMessages,
-         createChat, etc). The input area used to live INSIDE #chat, so it was
-         getting deleted every time the chat log refreshed. It's now a sibling
-         of #chat instead, so it survives those resets. -->
-    <div id="chat">
-      <div class="empty">
-        <h2>Start a chat</h2>
-        <p>Create a new chat and talk to Sable.</p>
-      </div>
     </div>
 
-    <div class="input-area" id="inputArea">
-      <div class="attach-preview" id="attachPreview"></div>
-      <div class="input-row">
-        <button class="attach-btn" id="attachBtn" title="Attach file">+</button>
-        <input type="file" id="fileInput" accept="image/*" multiple hidden>
-        <textarea id="input" placeholder="Chat..." rows="1"></textarea>
-        <button id="send">
-          <div class="spinner"></div>
-          <span class="btn-label">➤</span>
-          <span class="btn-label-stop"></span>
+    <!-- Sidebar overlay -->
+    <div class="sidebar-overlay"></div>
+
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+        <div class="brand">
+            <img src="/static/sable_icon.svg" alt="Sable">
+            <div class="brand-text">
+                <h1>Sable</h1>
+                <span>agentic chat</span>
+            </div>
+        </div>
+
+        <div class="selector-wrap thinking-select-wrap">
+            <select id="thinkingModeSelect" title="Thinking mode used for new chats"></select>
+        </div>
+
+        <div class="mode-switcher" id="modeSwitcher">
+            <button id="modeApi" class="active" title="Direct API chat"><i class="fas fa-bolt text-xs mr-1"></i> API</button>
+            <button id="modeScraper" title="Headed browser scraper chat"><i class="fas fa-globe text-xs mr-1"></i> Scraper</button>
+        </div>
+
+        <div class="scraper-engine-wrap" id="scraperEngineWrap">
+            <select id="scraperEngineSelect" title="Scraper engine"></select>
+        </div>
+        <div class="scraper-status" id="scraperStatus"></div>
+
+        <button id="newChat">
+            <div class="spinner"></div>
+            <span class="btn-label"><i class="fas fa-plus mr-1.5"></i>New chat</span>
         </button>
-      </div>
+        <button id="syncContext">
+            <div class="spinner"></div>
+            <span class="btn-label"><i class="fas fa-sync-alt mr-1.5"></i>Sync Context</span>
+        </button>
+
+        <div id="chats"></div>
+
+        <div class="sidebar-footer">
+            <button id="settingsBtn" class="sidebar-footer-btn">
+                <i class="fas fa-gear"></i> Settings
+            </button>
+        </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main">
+        <header>
+            <div class="header-left">
+                <button id="sidebarToggle" class="icon-btn" title="Toggle sidebar"><i class="fas fa-bars"></i></button>
+                <strong>Sable</strong>
+                <div class="selector-wrap header-model-wrap">
+                    <select id="modelSelect" title="Model used for new chats"></select>
+                </div>
+            </div>
+            <div class="header-right">
+                <button id="diffToggleBtn" class="icon-btn" title="Toggle file edit sidebar"><i class="fas fa-pen"></i></button>
+                <small>localhost:6001</small>
+            </div>
+        </header>
+
+        <div id="chat">
+            <div class="empty">
+                <h2>Start a chat</h2>
+                <p>Create a new chat and talk to Sable.</p>
+            </div>
+        </div>
+
+        <div class="input-area" id="inputArea">
+            <div class="attach-preview" id="attachPreview"></div>
+            <div class="input-row">
+                <button class="attach-btn" id="attachBtn" title="Attach file"><i class="fas fa-plus"></i></button>
+                <input type="file" id="fileInput" accept="image/*" multiple hidden>
+                <textarea id="input" placeholder="Chat…" rows="1"></textarea>
+                <button id="send">
+                    <div class="spinner"></div>
+                    <span class="btn-label"><i class="fas fa-paper-plane"></i></span>
+                    <span class="btn-label-stop"></span>
+                </button>
+            </div>
+        </div>
+    </main>
+
+    <!-- Toast -->
+    <div id="toast"></div>
+
+    <!-- External libs -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js">
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js">
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js">
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async>
+    </script>
+
+    <!-- Diff Sidebar -->
+    <aside id="diffSidebar" class="diff-sidebar" aria-label="File edit sidebar">
+        <div class="diff-sidebar-header">
+            <span class="diff-sidebar-title"><i class="fas fa-file-lines mr-2"></i>File edits</span>
+            <div>
+                <button id="diffClear" class="icon-btn" title="Clear file edits"><i class="fas fa-xmark"></i></button>
+                <button id="diffClose" class="icon-btn" title="Close file edits"><i class="fas fa-xmark"></i></button>
+            </div>
+        </div>
+        <div id="diffCards"></div>
+    </aside>
+
+    <!-- Settings -->
+    <div id="settingsOverlay" class="settings-overlay hidden">
+        <div class="settings-panel">
+            <div class="settings-header">
+                <h2><i class="fas fa-sliders-h mr-2"></i>Settings</h2>
+                <button id="settingsClose" class="icon-btn" title="Close"><i class="fas fa-xmark"></i></button>
+            </div>
+            <div class="settings-tabs">
+                <button class="settings-tab active" data-tab="logs"><i class="fas fa-terminal mr-1.5"></i>Live Logs</button>
+                <button class="settings-tab" data-tab="general"><i class="fas fa-cog mr-1.5"></i>General</button>
+                <button class="settings-tab" data-tab="account"><i class="fas fa-user mr-1.5"></i>Account</button>
+                <button class="settings-tab" data-tab="backup"><i class="fas fa-database mr-1.5"></i>Backup</button>
+                <button class="settings-tab" data-tab="brain"><i class="fas fa-brain mr-1.5"></i>Brain</button>
+                <button class="settings-tab" data-tab="skills"><i class="fas fa-code mr-1.5"></i>Skills</button>
+            </div>
+            <div class="settings-body">
+                <!-- Logs -->
+                <div id="tab-logs" class="settings-tab-content active">
+                    <div class="log-toolbar">
+                        <label class="log-toggle"><input type="checkbox" id="logAutoScroll" checked> <i class="fas fa-arrows-alt-v mr-1"></i>Auto-scroll</label>
+                        <button id="logClear" class="icon-btn" title="Clear logs"><i class="fas fa-xmark"></i></button>
+                    </div>
+                    <pre id="logViewer" class="log-viewer"></pre>
+                </div>
+
+                <!-- General -->
+                <div id="tab-general" class="settings-tab-content">
+                    <div class="flex items-center justify-between py-2">
+                        <label for="fontSizeSelect" class="text-sm text-[var(--text-dim)]">Response Font Size</label>
+                        <select id="fontSizeSelect" class="bg-[var(--panel)] text-[var(--text-dim)] border border-[var(--border)] rounded-lg px-3 py-1.5 text-xs font-sans cursor-pointer">
+                            <option value="12px">Small (12px)</option>
+                            <option value="13px">Default (13px)</option>
+                            <option value="14.5px" selected>Medium (14.5px)</option>
+                            <option value="16px">Large (16px)</option>
+                            <option value="18px">Extra Large (18px)</option>
+                        </select>
+                    </div>
+                    <div class="mt-3 pt-3 border-t border-[var(--border)]">
+                        <label class="text-sm text-[var(--text-dim)] block mb-2">Theme</label>
+                        <div id="themePicker" class="theme-picker">
+                            <button class="theme-swatch active" data-theme="sable" title="Sable">
+                                <span class="swatch-dot" style="background:#4a6cf7;"></span>Sable
+                            </button>
+                            <button class="theme-swatch" data-theme="noctalia" title="Noctalia">
+                                <span class="swatch-dot" style="background:#6c5ce7;"></span>Noctalia
+                            </button>
+                            <button class="theme-swatch" data-theme="ember" title="Ember">
+                                <span class="swatch-dot" style="background:#d95a2a;"></span>Ember
+                            </button>
+                            <button class="theme-swatch" data-theme="ocean" title="Ocean">
+                                <span class="swatch-dot" style="background:#2d7fd9;"></span>Ocean
+                            </button>
+                            <button class="theme-swatch" data-theme="forest" title="Forest">
+                                <span class="swatch-dot" style="background:#3a9a58;"></span>Forest
+                            </button>
+                            <button class="theme-swatch" data-theme="rose" title="Rosé">
+                                <span class="swatch-dot" style="background:#cc4a7a;"></span>Rosé
+                            </button>
+                            <button class="theme-swatch" data-theme="indigo" title="Indigo">
+                                <span class="swatch-dot" style="background:#5b6ee1;"></span>Indigo
+                            </button>
+                            <button class="theme-swatch" data-theme="crimson" title="Crimson">
+                                <span class="swatch-dot" style="background:#c93a4e;"></span>Crimson
+                            </button>
+                            <button class="theme-swatch" data-theme="mono" title="Mono">
+                                <span class="swatch-dot" style="background:#c8c8c8;"></span>Mono
+                            </button>
+                            <button class="theme-swatch" data-theme="teal" title="Teal">
+                                <span class="swatch-dot" style="background:#1aa89a;"></span>Teal
+                            </button>
+                        </div>
+                    </div>
+                    <div class="flex items-center justify-between py-2">
+                        <label for="headlessToggle" class="text-sm text-[var(--text-dim)]">Headless Browser</label>
+                        <div class="flex items-center gap-2.5">
+                            <input type="checkbox" id="headlessToggle" class="accent-[var(--accent)] w-4 h-4 cursor-pointer">
+                            <button id="restartBrowser" class="icon-btn px-3 py-1.5 text-xs w-auto"><i class="fas fa-rotate-right mr-1"></i>Restart</button>
+                        </div>
+                    </div>
+                    <p class="text-[11px] text-[var(--muted)] mt-1">Toggle headless mode and restart to apply. Session cookies are preserved via persistent profile.</p>
+
+                    <div class="mt-4 pt-3.5 border-t border-[var(--border)]">
+                        <div class="flex items-center justify-between mb-2.5">
+                            <label class="text-sm text-[var(--text-dim)] font-semibold"><i class="fas fa-key mr-1.5"></i>DeepSeek API Token</label>
+                            <button id="refreshDeepseekTokenBtn" class="icon-btn px-3 py-1 text-xs w-auto"><i class="fas fa-rotate-right mr-1"></i>Refresh Token</button>
+                        </div>
+                        <p class="text-[11px] text-[var(--muted)] m-0 mb-2">Re-reads the logged-in DeepSeek account from the shared browser profile. Use this after switching accounts.</p>
+                        <p id="deepseekTokenStatus" class="text-[11px] text-[var(--muted)] m-0 min-h-[14px]"></p>
+                    </div>
+
+                    <div class="mt-4 pt-3.5 border-t border-[var(--border)]">
+                        <div class="flex items-center justify-between mb-2.5">
+                            <label class="text-sm text-[var(--text-dim)] font-semibold"><i class="fas fa-window-restore mr-1.5"></i>Browser Session</label>
+                            <button id="refreshSessionBtn" class="icon-btn px-3 py-1 text-xs w-auto"><i class="fas fa-rotate-right mr-1"></i>Refresh</button>
+                        </div>
+                        <div id="browserSessionCard" class="bg-[var(--panel)] border border-[var(--border)] rounded-xl px-4 py-3">
+                            <p class="text-xs text-[var(--muted)] m-0">Loading session info…</p>
+                        </div>
+                    </div>
+
+                    <div class="mt-4 pt-3.5 border-t border-[var(--border)]">
+                        <button id="deleteAllChatsBtn" class="w-full bg-[var(--danger-bg)] text-[var(--danger)] border border-[var(--danger)] px-4 py-2 text-xs font-semibold rounded-lg cursor-pointer transition-colors hover:opacity-80">
+                            <i class="fas fa-trash mr-1.5"></i> Delete All Chats
+                        </button>
+                        <p class="text-[11px] text-[var(--muted)] mt-1.5">Permanently removes every chat and message. This cannot be undone.</p>
+                    </div>
+                </div>
+
+                <!-- Account -->
+                <div id="tab-account" class="settings-tab-content">
+                    <div class="flex items-center justify-between mb-3">
+                        <label class="text-sm text-[var(--text)] font-semibold"><i class="fas fa-users mr-1.5"></i>Account Profiles</label>
+                        <button id="refreshAccountsBtn" class="icon-btn px-3 py-1 text-xs w-auto"><i class="fas fa-rotate-right mr-1"></i>Refresh</button>
+                    </div>
+                    <div id="accountProfileCards" class="flex flex-col gap-2">
+                        <p class="text-xs text-[var(--muted)] m-0">Loading accounts…</p>
+                    </div>
+                    <p class="text-[11px] text-[var(--muted)] mt-2.5">Switches the API browser profile symlink. Browser restarts automatically after switch.<br>Profiles live in <code class="text-[11px]">system/browser-data-acc*</code> — each one is a full Chromium profile logged into a different account.</p>
+                </div>
+
+                <!-- Backup -->
+                <div id="tab-backup" class="settings-tab-content">
+                    <div class="flex items-center justify-between mb-3">
+                        <label class="text-sm text-[var(--text)] font-semibold"><i class="fas fa-archive mr-1.5"></i>Browser Profile Backups</label>
+                        <button id="refreshProfilesBtn" class="icon-btn px-3 py-1 text-xs w-auto"><i class="fas fa-rotate-right mr-1"></i>Refresh</button>
+                    </div>
+                    <div id="browserProfileCards" class="flex flex-col gap-2.5">
+                        <p class="text-xs text-[var(--muted)] m-0">Loading profiles…</p>
+                    </div>
+                    <p class="text-[11px] text-[var(--muted)] mt-2.5">Restores from the .bak snapshot (clean login state). Deletes current data first. Stop the browser before restoring.</p>
+                </div>
+
+                <!-- Brain -->
+                <div id="tab-brain" class="settings-tab-content">
+                    <h3 class="mem-title"><i class="fas fa-search mr-1.5"></i>Memory Search</h3>
+                    <p class="muted mem-desc">Semantic retrieval model for per-message memory injection.</p>
+                    <div class="mem-input-row flex-wrap gap-2 items-center">
+                        <label class="text-xs text-[var(--muted)]">Model:</label>
+                        <select id="msModelSelect" class="mem-input flex-1 min-w-[200px]"></select>
+                        <label class="text-xs text-[var(--muted)]">Top-K:</label>
+                        <input type="number" id="msTopK" class="mem-input w-[60px]" min="1" max="50" value="10">
+                        <label class="text-xs text-[var(--muted)]">Max Chars:</label>
+                        <input type="number" id="msMaxChars" class="mem-input w-[90px]" min="1000" max="200000" step="1000" value="20000" title="Skip vectorization if prompt exceeds this length">
+                        <label class="text-xs text-[var(--muted)] flex items-center gap-1">
+                            <input type="checkbox" id="msEnabled" checked class="accent-[var(--accent)] w-4 h-4 cursor-pointer"> Enabled
+                        </label>
+                        <button id="msSaveBtn" class="icon-btn px-3 py-1.5 text-xs w-auto"><i class="fas fa-save mr-1"></i>Save</button>
+                    </div>
+                    <div id="msThresholdEditor" class="mt-2.5 flex flex-col gap-1.5"></div>
+                    <p id="msInfo" class="text-[11px] text-[var(--muted)] mt-1.5"></p>
+
+                    <h3 class="mem-title mt-4"><i class="fas fa-database mr-1.5"></i>Memory Entries</h3>
+                    <p class="muted mem-desc">Stored in Brain/Memory.json. Injected into context on sync.</p>
+                    <div id="memoryList" class="mem-list"></div>
+                    <div class="mem-input-row">
+                        <input type="text" id="memKeyInput" placeholder="Key (e.g. Favorite color)" class="mem-input mem-key">
+                        <input type="text" id="memValInput" placeholder="Value" class="mem-input mem-val">
+                        <button id="memAddBtn" class="icon-btn px-3 py-1.5 text-xs w-auto"><i class="fas fa-plus mr-1"></i>Add</button>
+                    </div>
+                    <div class="mem-input-row" id="memExpiryRow" style="display:none;">
+                        <label class="text-xs text-[var(--muted)]">Expires:</label>
+                        <input type="datetime-local" id="memExpiryInput" class="mem-input flex-1">
+                    </div>
+                    <div class="mem-input-row mem-save-row">
+                        <button id="memSaveBtn" class="icon-btn px-4 py-1.5 text-xs w-auto"><i class="fas fa-save mr-1"></i>Save</button>
+                        <span id="memStatus" class="text-[11px] text-[var(--muted)] mem-status"></span>
+                    </div>
+
+                    <h3 class="mem-title mt-5"><i class="fas fa-shield-halved mr-1.5"></i>Protected Memory</h3>
+                    <p class="muted mem-desc">Stored in Brain/Protected.json. Cannot be deleted by consolidation. Boosted in search.</p>
+                    <div id="protectedList" class="mem-list"></div>
+                    <div class="mem-input-row">
+                        <input type="text" id="protKeyInput" placeholder="Key" class="mem-input mem-key">
+                        <input type="text" id="protValInput" placeholder="Core fact (never forget)" class="mem-input mem-val">
+                        <button id="protAddBtn" class="icon-btn px-3 py-1.5 text-xs w-auto"><i class="fas fa-plus mr-1"></i>Add</button>
+                    </div>
+                    <div class="mem-input-row mem-save-row">
+                        <button id="protSaveBtn" class="icon-btn px-4 py-1.5 text-xs w-auto"><i class="fas fa-save mr-1"></i>Save</button>
+                        <span id="protStatus" class="text-[11px] text-[var(--muted)] mem-status"></span>
+                    </div>
+                </div>
+
+                <!-- Skills -->
+                <div id="tab-skills" class="settings-tab-content">
+                    <h3 class="mem-title"><i class="fas fa-code mr-1.5"></i>Skills</h3>
+                    <p class="muted mem-desc">Registered agentic skills. Click a card for details.</p>
+                    <div id="skillsGrid" class="skills-grid"></div>
+                </div>
+            </div>
+        </div>
     </div>
-  </main>
 
-  <div id="toast"></div>
-
-  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async></script>
-
-  <aside id="diffSidebar" class="diff-sidebar" aria-label="File edit sidebar">
-    <div class="diff-sidebar-header">
-      <span class="diff-sidebar-title">File edits</span>
-      <div>
-        <button id="diffClear" class="icon-btn" title="Clear file edits">🗑</button>
-        <button id="diffClose" class="icon-btn" title="Close file edits">✕</button>
-      </div>
+    <!-- Skill Detail Overlay -->
+    <div id="skillDetailOverlay" class="skill-detail-overlay">
+        <div class="skill-detail-card">
+            <h3 id="skillDetailName"></h3>
+            <div class="skill-detail-row"><span class="label">Category</span><span class="value" id="skillDetailCat"></span></div>
+            <div class="skill-detail-row"><span class="label">Path</span><span class="value" id="skillDetailPath" style="font-family:monospace;font-size:11px;opacity:0.7;"></span></div>
+            <div class="skill-detail-row" id="skillScriptsRow" style="display:none;"><span class="label">Scripts</span><div class="skill-detail-scripts" id="skillDetailScripts"></div></div>
+            <div class="skill-instruction" id="skillInstruction"></div>
+            <button class="skill-detail-close" id="skillDetailClose"><i class="fas fa-xmark mr-1.5"></i>Close</button>
+        </div>
     </div>
-    <div id="diffCards"></div>
-  </aside>
 
-  <!-- Settings Panel -->
-  <div id="settingsOverlay" class="settings-overlay hidden">
-    <div class="settings-panel">
-      <div class="settings-header">
-        <h2>Settings</h2>
-        <button id="settingsClose" class="icon-btn" title="Close">✕</button>
-      </div>
-      <div class="settings-tabs">
-        <button class="settings-tab active" data-tab="logs">Live Logs</button>
-        <button class="settings-tab" data-tab="general">General</button>
-        <button class="settings-tab" data-tab="account">Account</button>
-        <button class="settings-tab" data-tab="backup">Backup</button>
-        <button class="settings-tab" data-tab="brain">Brain</button>
-        <button class="settings-tab" data-tab="skills">Skills</button>
-      </div>
-      <div class="settings-body">
-        <div id="tab-logs" class="settings-tab-content active">
-          <div class="log-toolbar">
-            <label class="log-toggle"><input type="checkbox" id="logAutoScroll" checked> Auto-scroll</label>
-            <button id="logClear" class="icon-btn" title="Clear logs">🗑</button>
-          </div>
-          <pre id="logViewer" class="log-viewer"></pre>
-        </div>
-        <div id="tab-general" class="settings-tab-content">
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
-            <label for="fontSizeSelect" style="font-size:13px;color:var(--text-dim);">Response Font Size</label>
-            <select id="fontSizeSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
-              <option value="12px">Small (12px)</option>
-              <option value="13px">Default (13px)</option>
-              <option value="14.5px" selected>Medium (14.5px)</option>
-              <option value="16px">Large (16px)</option>
-              <option value="18px">Extra Large (18px)</option>
-            </select>
-          </div>
-          <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
-            <label style="font-size:13px;color:var(--text-dim);display:block;margin-bottom:8px;">Theme</label>
-            <div id="themePicker" class="theme-picker">
-              <button class="theme-swatch active" data-theme="sable" title="Sable">
-                <span class="swatch-dot" style="background:#9a7d4a;"></span>Sable
-              </button>
-              <button class="theme-swatch" data-theme="noctalia" title="Noctalia">
-                <span class="swatch-dot" style="background:#8b5cf6;"></span>Noctalia
-              </button>
-              <button class="theme-swatch" data-theme="ember" title="Ember">
-                <span class="swatch-dot" style="background:#e05a2b;"></span>Ember
-              </button>
-              <button class="theme-swatch" data-theme="ocean" title="Ocean">
-                <span class="swatch-dot" style="background:#2d9cdb;"></span>Ocean
-              </button>
-              <button class="theme-swatch" data-theme="forest" title="Forest">
-                <span class="swatch-dot" style="background:#3daa5c;"></span>Forest
-              </button>
-              <button class="theme-swatch" data-theme="rose" title="Rosé">
-                <span class="swatch-dot" style="background:#d4548a;"></span>Rosé
-              </button>
-              <button class="theme-swatch" data-theme="indigo" title="Indigo">
-                <span class="swatch-dot" style="background:#5b6ee1;"></span>Indigo
-              </button>
-              <button class="theme-swatch" data-theme="crimson" title="Crimson">
-                <span class="swatch-dot" style="background:#cf3b52;"></span>Crimson
-              </button>
-              <button class="theme-swatch" data-theme="mono" title="Mono">
-                <span class="swatch-dot" style="background:#d4d4d4;"></span>Mono
-              </button>
-              <button class="theme-swatch" data-theme="teal" title="Teal">
-                <span class="swatch-dot" style="background:#14b8a6;"></span>Teal
-              </button>
-            </div>
-          </div>
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
-            <label for="headlessToggle" style="font-size:13px;color:var(--text-dim);">Headless Browser</label>
-            <div style="display:flex;align-items:center;gap:10px;">
-              <input type="checkbox" id="headlessToggle" style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;">
-              <button id="restartBrowser" class="icon-btn" title="Restart browser session" style="width:auto;padding:6px 12px;font-size:12px;">↻ Restart</button>
-            </div>
-          </div>
-          <p class="muted" style="font-size:11px;margin-top:4px;">Toggle headless mode and restart to apply. Session cookies are preserved via persistent profile.</p>
-          <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-              <label style="font-size:13px;color:var(--text-dim);font-weight:600;">🐋 DeepSeek API Token</label>
-              <button id="refreshDeepseekTokenBtn" class="icon-btn" title="Refresh DeepSeek token from browser profile" style="width:auto;padding:4px 10px;font-size:11px;">↻ Refresh Token</button>
-            </div>
-            <p class="muted" style="font-size:11px;margin:0 0 8px 0;">Re-reads the logged-in DeepSeek account from the shared browser profile. Use this after switching accounts.</p>
-            <p id="deepseekTokenStatus" class="muted" style="font-size:11px;margin:0;min-height:14px;"></p>
-          </div>
-          <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-              <label style="font-size:13px;color:var(--text-dim);font-weight:600;">🌐 Browser Session</label>
-              <button id="refreshSessionBtn" class="icon-btn" title="Refresh session info" style="width:auto;padding:4px 10px;font-size:11px;">↻ Refresh</button>
-            </div>
-            <div id="browserSessionCard" style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;">
-              <p class="muted" style="font-size:12px;margin:0;">Loading session info…</p>
-            </div>
-          </div>
-          <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
-            <button id="deleteAllChatsBtn" style="background:var(--danger-bg);color:var(--danger);border:1px solid var(--danger);padding:8px 16px;font-size:12px;font-weight:600;width:100%;">🗑 Delete All Chats</button>
-            <p class="muted" style="font-size:11px;margin-top:6px;">Permanently removes every chat and message. This cannot be undone.</p>
-          </div>
-        </div>
-        <div id="tab-account" class="settings-tab-content">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-            <label style="font-size:14px;color:var(--text);font-weight:600;">👤 Account Profiles</label>
-            <button id="refreshAccountsBtn" class="icon-btn" title="Refresh account list" style="width:auto;padding:4px 10px;font-size:11px;">↻ Refresh</button>
-          </div>
-          <div id="accountProfileCards" style="display:flex;flex-direction:column;gap:8px;">
-            <p class="muted" style="font-size:12px;margin:0;">Loading accounts…</p>
-          </div>
-          <p class="muted" style="font-size:11px;margin-top:10px;">Switches the API browser profile symlink. Browser restarts automatically after switch.<br>Profiles live in <code>system/browser-data-acc*</code> — each one is a full Chromium profile logged into a different account.</p>
-        </div>
-        <div id="tab-backup" class="settings-tab-content">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-            <label style="font-size:14px;color:var(--text);font-weight:600;">💾 Browser Profile Backups</label>
-            <button id="refreshProfilesBtn" class="icon-btn" title="Refresh profile info" style="width:auto;padding:4px 10px;font-size:11px;">↻ Refresh</button>
-          </div>
-          <div id="browserProfileCards" style="display:flex;flex-direction:column;gap:10px;">
-            <p class="muted" style="font-size:12px;margin:0;">Loading profiles…</p>
-          </div>
-          <p class="muted" style="font-size:11px;margin-top:10px;">Restores from the .bak snapshot (clean login state). Deletes current data first. Stop the browser before restoring.</p>
-        </div>
-        <div id="tab-brain" class="settings-tab-content">
-          <h3 class="mem-title">Memory Search</h3>
-          <p class="muted mem-desc">Semantic retrieval model for per-message memory injection.</p>
-          <div class="mem-input-row" style="flex-wrap:wrap;gap:8px;align-items:center;">
-            <label class="muted" style="font-size:12px;">Model:</label>
-            <select id="msModelSelect" class="mem-input" style="flex:1;min-width:200px;"></select>
-            <label class="muted" style="font-size:12px;">Top-K:</label>
-            <input type="number" id="msTopK" class="mem-input" style="width:60px;" min="1" max="50" value="10">
-            <label class="muted" style="font-size:12px;">Max Chars:</label>
-            <input type="number" id="msMaxChars" class="mem-input" style="width:90px;" min="1000" max="200000" step="1000" value="20000" title="Skip vectorization if prompt exceeds this length">
-            <label class="muted" style="font-size:12px;display:flex;align-items:center;gap:4px;">
-              <input type="checkbox" id="msEnabled" checked style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;"> Enabled
-            </label>
-            <button id="msSaveBtn" class="icon-btn" style="width:auto;padding:6px 12px;font-size:12px;">💾 Save</button>
-          </div>
-          <div id="msThresholdEditor" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
-          <p id="msInfo" class="muted" style="font-size:11px;margin-top:6px;"></p>
-
-          <h3 class="mem-title" style="margin-top:16px;">Memory Entries</h3>
-          <p class="muted mem-desc">Stored in Brain/Memory.json. Injected into context on sync.</p>
-          <div id="memoryList" class="mem-list"></div>
-          <div class="mem-input-row">
-            <input type="text" id="memKeyInput" placeholder="Key (e.g. Favorite color)" class="mem-input mem-key">
-            <input type="text" id="memValInput" placeholder="Value" class="mem-input mem-val">
-            <button id="memAddBtn" class="icon-btn" style="width:auto;padding:6px 12px;font-size:12px;">+ Add</button>
-          </div>
-          <div class="mem-input-row" id="memExpiryRow" style="display:none;">
-            <label class="muted" style="font-size:12px;">⏳ Expires:</label>
-            <input type="datetime-local" id="memExpiryInput" class="mem-input" style="flex:1;">
-          </div>
-          <div class="mem-input-row mem-save-row">
-            <button id="memSaveBtn" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;">💾 Save</button>
-            <span id="memStatus" class="muted mem-status"></span>
-          </div>
-
-          <h3 class="mem-title" style="margin-top:20px;">🔒 Protected Memory</h3>
-          <p class="muted mem-desc">Stored in Brain/Protected.json. Cannot be deleted by consolidation. Boosted in search.</p>
-          <div id="protectedList" class="mem-list"></div>
-          <div class="mem-input-row">
-            <input type="text" id="protKeyInput" placeholder="Key" class="mem-input mem-key">
-            <input type="text" id="protValInput" placeholder="Core fact (never forget)" class="mem-input mem-val">
-            <button id="protAddBtn" class="icon-btn" style="width:auto;padding:6px 12px;font-size:12px;">+ Add</button>
-          </div>
-          <div class="mem-input-row mem-save-row">
-            <button id="protSaveBtn" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;">💾 Save</button>
-            <span id="protStatus" class="muted mem-status"></span>
-          </div>
-
-        </div>
-        <div id="tab-skills" class="settings-tab-content">
-          <h3 class="mem-title">Skills</h3>
-          <p class="muted mem-desc">Registered agentic skills. Click a card for details.</p>
-          <div id="skillsGrid" class="skills-grid"></div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Skill Detail Overlay -->
-  <div id="skillDetailOverlay" class="skill-detail-overlay">
-    <div class="skill-detail-card">
-      <h3 id="skillDetailName"></h3>
-      <div class="skill-detail-row"><span class="label">Category</span><span class="value" id="skillDetailCat"></span></div>
-      <div class="skill-detail-row"><span class="label">Path</span><span class="value" id="skillDetailPath" style="font-family:monospace;font-size:11px;opacity:0.7;"></span></div>
-      <div class="skill-detail-row" id="skillScriptsRow" style="display:none;"><span class="label">Scripts</span><div class="skill-detail-scripts" id="skillDetailScripts"></div></div>
-      <div class="skill-instruction" id="skillInstruction"></div>
-      <button class="skill-detail-close" id="skillDetailClose">Close</button>
-    </div>
-  </div>
-
-  <script src="/static/app.js?v=3"></script>
+    <script src="/static/app.js?v=2">
+    </script>
 </body>
 </html>
