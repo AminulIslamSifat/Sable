@@ -205,8 +205,8 @@ Example:
 [Desktop Entry]
 Type=Application
 Name=Sable
-Exec=/home/sifat/hdd/projects/Sable/start
-Path=/home/sifat/hdd/projects/Sable
+Exec=./start
+Path=.
 Terminal=false
 Hidden=false
 X-GNOME-Autostart-enabled=true
@@ -215,7 +215,7 @@ X-GNOME-Autostart-enabled=true
 This works on Cinnamon/GNOME-style desktop sessions. For Hyprland, you can instead add an exec-once rule to your Hyprland config:
 
 ~~~ini
-exec-once = /home/sifat/hdd/projects/Sable/start
+exec-once = ./start
 ~~~
 
 ### Important
@@ -540,7 +540,7 @@ If you run Sable manually, stop that process too.
 Start from an existing logged-in profile, usually `browser-data-acc1` or your current active profile:
 
 ~~~bash
-cd /home/sifat/hdd/projects/Sable/system
+cd system
 cp -r browser-data-acc1 browser-data-acc12
 ~~~
 
@@ -553,7 +553,6 @@ Use `engine/browser_opener.py` instead of launching Chromium manually.
 From the project root:
 
 ~~~bash
-cd /home/sifat/hdd/projects/Sable
 uv run python engine/browser_opener.py browser-data-acc12
 ~~~
 
