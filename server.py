@@ -222,6 +222,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE chats ADD COLUMN chat_url TEXT")
         if "mode" not in chat_cols:
             conn.execute("ALTER TABLE chats ADD COLUMN mode TEXT")
+        if "provider" not in chat_cols:
+            conn.execute("ALTER TABLE chats ADD COLUMN provider TEXT")
 
 
 def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = None, mode: str | None = None) -> None:
@@ -325,12 +327,14 @@ def update_message(
     thinking: str | None = None,
     parent_id: str | None = None,
     skill_events: list[dict[str, Any]] | None = None,
+    memory_used: list[dict[str, Any]] | None = None,
 ) -> None:
     skill_events_json = json.dumps(skill_events, ensure_ascii=False) if skill_events else None
+    memory_used_json = json.dumps(memory_used, ensure_ascii=False) if memory_used else None
     with get_db() as conn:
         conn.execute(
-            "UPDATE messages SET content = ?, thinking = ?, parent_id = ?, skill_events = ? WHERE id = ?",
-            (content, thinking, parent_id, skill_events_json, message_id),
+            "UPDATE messages SET content = ?, thinking = ?, parent_id = ?, skill_events = ?, memory_used = ? WHERE id = ?",
+            (content, thinking, parent_id, skill_events_json, memory_used_json, message_id),
         )
 
 
@@ -1576,6 +1580,7 @@ async def chat(request: ChatRequest):
         current_parent = parent_id
         round_index = 0
         saved_message_id: int | None = None
+        _all_tool_mem_used: list[dict[str, Any]] = []  # accumulated across tool rounds
 
         yield sse({"type": "status", "message": "processing"})
 
@@ -1700,10 +1705,12 @@ async def chat(request: ChatRequest):
                 stored = round_answer or error_message or ""
                 if saved_message_id is None:
                     saved_message_id = add_message(
-                        active_chat_id, "assistant", stored, round_thinking, final_parent, skill_events
+                        active_chat_id, "assistant", stored, round_thinking, final_parent, skill_events,
+                        memory_used=_all_tool_mem_used or None,
                     )
                 else:
-                    update_message(saved_message_id, stored, round_thinking, final_parent, skill_events)
+                    update_message(saved_message_id, stored, round_thinking, final_parent, skill_events,
+                                   memory_used=_all_tool_mem_used or None)
 
                 feedback = build_tool_feedback(round_skill_events)
 
@@ -1731,6 +1738,7 @@ async def chat(request: ChatRequest):
                                     }
                                     for r in _new_mem
                                 ]
+                                _all_tool_mem_used.extend(_tool_mem_used)
                                 # Persist into skill_events so history re-renders the chip,
                                 # and emit SSE so the live UI can show it immediately.
                                 skill_events.append(
