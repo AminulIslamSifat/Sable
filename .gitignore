@@ -63,3 +63,4 @@ Brain/Memory.json
 Brain/Protected.json
 .auth_token
 mockups/
+.safe_backups/
