@@ -209,7 +209,7 @@ def get_messages(chat_id: str) -> list[dict[str, Any]]:
 def list_chats() -> list[dict[str, Any]]:
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT id, title, parent_id, created_at, updated_at FROM chats ORDER BY updated_at DESC"
+            "SELECT id, title, parent_id, created_at, updated_at, provider FROM chats ORDER BY updated_at DESC"
         ).fetchall()
         return [dict(row) for row in rows]
 
