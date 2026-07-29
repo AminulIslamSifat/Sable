@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 
-# Clear screen once at start
 clear
-
 # Print header
-echo -e "\033[1m=== Sable Chat Server Monitor (:61770) ===\033[0m"
+echo -e "\033[1m=== Sable Server(:61770) ===\033[0m"
 echo
 
 # Check live status using ss and grep
