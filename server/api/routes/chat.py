@@ -8,7 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request, StreamingResponse
+from fastapi import APIRouter, Request
+from fastapi.responses import StreamingResponse   # <-- corrected import
 from engine.config import get_model_config
 from engine.memory_search import get_searcher
 from engine.scraper import get_settings as get_scraper_settings, scraper as scraper_service
