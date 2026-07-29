@@ -252,6 +252,8 @@
             <select id="msModelSelect" class="mem-input" style="flex:1;min-width:200px;"></select>
             <label class="muted" style="font-size:12px;">Top-K:</label>
             <input type="number" id="msTopK" class="mem-input" style="width:60px;" min="1" max="50" value="10">
+            <label class="muted" style="font-size:12px;">Max Chars:</label>
+            <input type="number" id="msMaxChars" class="mem-input" style="width:90px;" min="1000" max="200000" step="1000" value="20000" title="Skip vectorization if prompt exceeds this length">
             <label class="muted" style="font-size:12px;display:flex;align-items:center;gap:4px;">
               <input type="checkbox" id="msEnabled" checked style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;"> Enabled
             </label>
