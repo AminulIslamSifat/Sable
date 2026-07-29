@@ -2,5 +2,6 @@
   "model": "jinaai/jina-embeddings-v2-small-en",
   "top_k": 5,
   "enabled": true,
+  "max_prompt_chars": 20000,
   "model_thresholds": {}
 }
