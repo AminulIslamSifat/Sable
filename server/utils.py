@@ -11,8 +11,7 @@ from collections.abc import AsyncGenerator
 from engine.config import get_model_config
 from connectors.deepseek.client import get_client as get_deepseek_client
 from .config import MAX_RETRIES, RETRY_BASE_DELAY
-
-logger = logging.getLogger("sable")
+from .logging_setup import logger   # <-- added re‑export
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
