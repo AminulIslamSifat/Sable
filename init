@@ -113,9 +113,10 @@ fi
 
 # 7. Make start executable
 if [ -f "start" ]; then
-    echo -e "\n${YELLOW}[+] Making 'start' executable...${NC}"
+    echo -e "\n${YELLOW}[+] Making 'start', 'status' executable...${NC}"
     chmod +x start
-    echo -e "${GREEN}[✓] Success: 'start' is now executable${NC}"
+    chmod +x status
+    echo -e "${GREEN}[✓] Success: 'start', 'status' is now executable${NC}"
 else
     echo -e "\n${RED}[!] Warning: 'start' script not found in the root directory.${NC}"
 fi
