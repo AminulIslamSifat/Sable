@@ -220,102 +220,31 @@
       --ok: #34d399;
       --bg-glow: #0e1414;
     }
-    /* ---------- theme picker ---------- */
-    .theme-picker {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 6px;
-    }
-    .theme-swatch {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      padding: 7px 10px;
-      border-radius: 8px;
-      border: 1px solid var(--border);
-      background: var(--panel);
-      color: var(--text-dim);
-      font-size: 11px;
-      font-family: inherit;
-      cursor: pointer;
-      transition: border-color .15s ease, background .15s ease;
-    }
-    .theme-swatch:hover { border-color: var(--muted); background: var(--panel-2); }
-    .theme-swatch.active { border-color: var(--accent); background: var(--accent-dim); color: var(--text); }
-    .swatch-dot {
-      width: 10px; height: 10px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
 
-    /* ---------- tool activity card ---------- */
-    .tool-activity-card {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      width: 100%;
-      padding: 10px 14px;
-      margin: 6px 0;
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-left: 3px solid var(--accent);
-      border-radius: var(--radius);
-      animation: tac-slide-in 0.2s ease-out;
-      transition: opacity 0.4s ease, border-color 0.3s ease;
-    }
-    .tool-activity-card.tac-done {
-      border-left-color: var(--ok);
-      opacity: 0;
-    }
-    .tac-icon {
-      width: 30px; height: 30px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 14px;
-      background: var(--accent-dim);
-      border-radius: 8px;
-      flex-shrink: 0;
-      font-variant-numeric: tabular-nums;
-    }
-    .tac-progress-track {
-      width: 100%;
-      height: 4px;
-      background: var(--border-soft);
-      border-radius: 2px;
-      margin-top: 8px;
-      overflow: hidden;
-    }
-    .tac-progress-fill {
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
       height: 100%;
-      background: linear-gradient(90deg, var(--accent), var(--accent-text));
-      border-radius: 2px;
-      box-shadow: 0 0 8px var(--accent-dim);
-      animation: tac-progress 2.4s ease-in-out infinite;
+      font-family: var(--font-body);
+      background: radial-gradient(ellipse at 50% 0%, var(--bg-glow) 0%, var(--bg) 70%);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
     }
-    .tac-pulse-dot {
-      width: 8px; height: 8px;
-      background: var(--accent);
-      border-radius: 50%;
-      animation: tac-pulse 1.2s ease-in-out infinite;
-    }
-    @keyframes tac-progress { 0% { width: 5%; } 50% { width: 70%; } 100% { width: 95%; } }
-    @keyframes tac-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.7); } }
 
-    /* ---------- mode switcher (sidebar) ---------- */
-    .mode-switcher {
-      display: flex;
-      border-radius: 8px;
-      overflow: hidden;
-      border: 1px solid var(--border);
-      flex-shrink: 0;
+    body { display: flex; }
+
+    ::selection { background: var(--accent-dim); color: var(--accent-text); }
+
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: var(--radius);
     }
-    .mode-switcher button {
-      flex: 1;
-      padding: 7px 0;
-      font-size: 11px;
-      font-weight: 600;
-      background: transparent;
-      color: var(--muted);
-      border: none;
-      cursor: pointer;
-      transition: all 0.15s;
-    }
+
+    /* scrollbars */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #2a2a2e; border-radius: 8px; }
+    ::-webkit-scrollbar-thumb:hover { background: #34343a; }
+
