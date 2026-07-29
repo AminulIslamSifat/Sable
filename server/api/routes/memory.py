@@ -124,6 +124,11 @@ async def update_memory_search_settings(payload: dict[str, Any]) -> dict[str, An
         "current_threshold": searcher.threshold,
     }
 
+@router.post("/api/settings/memory-search/refresh-cache")
+async def refresh_memory_cache() -> dict[str, Any]:
+    count = get_searcher().rebuild_cache()
+    return {"status": "ok", "detail": f"Cache rebuilt. {count} entries re-embedded."}
+
 @router.post("/api/memory/consolidate")
 async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     chat_id = payload.get("chat_id")

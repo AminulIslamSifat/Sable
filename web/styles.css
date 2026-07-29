@@ -320,7 +320,7 @@
       overflow: hidden;
     }
 
-    body.sidebar-collapsed .sidebar { transform: translateX(-100%); }
+    body.sidebar-collapsed .sidebar { margin-left: -260px; }
     .sidebar-overlay {
       display: none;
       position: fixed;
