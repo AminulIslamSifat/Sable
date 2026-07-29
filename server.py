@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from engine.config import MODELS, MEMORY_PATH as _MEMORY_PATH, PROTECTED_PATH as _PROTECTED_PATH, MEMORY_SEARCH_SETTINGS_PATH as _MEMORY_SEARCH_SETTINGS, get_model_config, BROWSER_DATA_DIR, BROWSER_SCRAPER_DATA_DIR, BROWSER_AUTOMATION_DATA_DIR, HOST, PORT
+from engine.config import MODELS, MEMORY_PATH as _MEMORY_PATH, PROTECTED_PATH as _PROTECTED_PATH, MEMORY_SEARCH_SETTINGS_PATH as _MEMORY_SEARCH_SETTINGS, MEMORY_SEARCH_MAX_PROMPT_CHARS as _DEFAULT_MAX_PROMPT_CHARS, get_model_config, BROWSER_DATA_DIR, BROWSER_SCRAPER_DATA_DIR, BROWSER_AUTOMATION_DATA_DIR, HOST, PORT
 from engine.scraper import (
     get_settings as get_scraper_settings,
     list_engines as list_scraper_engines,
@@ -970,6 +970,7 @@ async def get_memory_search_settings() -> dict[str, Any]:
     return {
         "enabled": cfg.get("enabled", True),
         "top_k": cfg.get("top_k", 10),
+        "max_prompt_chars": cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS),
         "model_thresholds": searcher.get_custom_thresholds(),
         "current_model": searcher.model_name,
         "current_threshold": searcher.threshold,
@@ -982,6 +983,7 @@ async def update_memory_search_settings(payload: dict[str, Any]) -> dict[str, An
     model = payload.get("model")
     top_k = payload.get("top_k")
     enabled = payload.get("enabled")
+    max_prompt_chars = payload.get("max_prompt_chars")
     model_thresholds = payload.get("model_thresholds")
 
     cfg: dict[str, Any] = {}
@@ -1007,6 +1009,8 @@ async def update_memory_search_settings(payload: dict[str, Any]) -> dict[str, An
         get_searcher().set_thresholds(clean)
     if top_k is not None:
         cfg["top_k"] = int(top_k)
+    if max_prompt_chars is not None:
+        cfg["max_prompt_chars"] = max(1000, int(max_prompt_chars))
     if enabled is not None:
         cfg["enabled"] = bool(enabled)
 
@@ -1053,13 +1057,21 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     if len(messages) < 2:
         return {"status": "skipped", "reason": "too few messages"}
 
-    # Load current memory
-    current_memory = "{}"
-    if _MEMORY_PATH.exists():
+    # Load only memories actually injected into this chat
+    injected_keys = get_injected_memory_keys(chat_id)
+    filtered_memory: dict[str, list] = {}
+    if _MEMORY_PATH.exists() and injected_keys:
         try:
-            current_memory = _MEMORY_PATH.read_text(encoding="utf-8")
+            full_memory = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
+            if isinstance(full_memory, dict):
+                for category, entries in full_memory.items():
+                    if isinstance(entries, list):
+                        matched = [e for e in entries if isinstance(e, dict) and e.get("key") in injected_keys]
+                        if matched:
+                            filtered_memory[category] = matched
         except Exception:
-            current_memory = "{}"
+            pass
+    current_memory = json.dumps(filtered_memory, indent=2) if filtered_memory else "{}"
 
     if mode == "api":
         # API mode: prompt-only, threaded via parent_id. No conversation summary injected.
@@ -1252,13 +1264,21 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
     if len(messages) < 2:
         return {"status": "skipped", "reason": "too few messages"}
 
-    # Load current memory
-    current_memory = "{}"
-    if _MEMORY_PATH.exists():
+    # Load only memories actually injected into this chat
+    injected_keys = get_injected_memory_keys(chat_id)
+    filtered_memory: dict[str, list] = {}
+    if _MEMORY_PATH.exists() and injected_keys:
         try:
-            current_memory = _MEMORY_PATH.read_text(encoding="utf-8")
+            full_memory = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
+            if isinstance(full_memory, dict):
+                for category, entries in full_memory.items():
+                    if isinstance(entries, list):
+                        matched = [e for e in entries if isinstance(e, dict) and e.get("key") in injected_keys]
+                        if matched:
+                            filtered_memory[category] = matched
         except Exception:
-            current_memory = "{}"
+            pass
+    current_memory = json.dumps(filtered_memory, indent=2) if filtered_memory else "{}"
 
     prompt = _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY.replace("<<CURRENT_MEMORY>>", current_memory)
 
@@ -1455,7 +1475,8 @@ async def chat(request: ChatRequest):
     try:
         if _MEMORY_SEARCH_SETTINGS.exists():
             _ms_cfg = json.loads(_MEMORY_SEARCH_SETTINGS.read_text(encoding="utf-8"))
-        if _ms_cfg.get("enabled", True):
+        _max_chars = _ms_cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS)
+        if _ms_cfg.get("enabled", True) and len(request.message) <= _max_chars:
             _mem_results = _searcher.search(request.message, top_k=_ms_cfg.get("top_k", 10))
             _new_results = [r for r in _mem_results if r.get("key") and r["key"] not in _injected_memory_keys]
             if _new_results:
@@ -1748,7 +1769,8 @@ async def chat(request: ChatRequest):
 
                 # Inject relevant memories from tool results (skip already-sent keys)
                 try:
-                    if _ms_cfg.get("enabled", True) and feedback:
+                    _max_chars_tool = _ms_cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS)
+                    if _ms_cfg.get("enabled", True) and feedback and len(feedback) <= _max_chars_tool:
                         _tool_mem = _searcher.search(feedback, top_k=_ms_cfg.get("top_k", 10))
                         _new_mem = [r for r in _tool_mem if r.get("key") and r["key"] not in _injected_memory_keys]
                         if _new_mem:
