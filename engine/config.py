@@ -25,7 +25,7 @@ MEMORY_SEARCH_SETTINGS_PATH = _ROOT / "system/memory_search_settings.json"
 # Browser profile directories — single source of truth for all browser data paths.
 # All profiles live under system/ to keep the project root clean.
 _SYSTEM = _ROOT / "system"
-BROWSER_DATA_DIR = _SYSTEM / "browser-data-acc7"
+BROWSER_DATA_DIR = _SYSTEM / "browser-data-acc1"
 BROWSER_SCRAPER_DATA_DIR = _SYSTEM / "browser-scraper-data"
 BROWSER_AUTOMATION_DATA_DIR = _SYSTEM / "automation-browser-data"
 
