@@ -30,7 +30,9 @@ echo -e "${GREEN}[✓] Success: Playwright Chromium installed${NC}"
 
 # 3. Run browser opener engine
 echo -e "\n${YELLOW}[+] Running the browser opener engine... Log in into Qwen and DeepSeek in the browser.${NC}"
-uv run python -m engine.browser_opener
+# Explicit profile 1: create browser-data-acc1 directly, never rely on the
+# (possibly dangling on a fresh clone) system/browser-data symlink.
+uv run python -m engine.browser_opener 1
 echo -e "${GREEN}[✓] Success: Browser opener executed${NC}"
 
 # 3.5. Set up account profile structure and distribute to all slots (under system/)
@@ -48,10 +50,16 @@ if [ -d "system/browser-data" ] && [ ! -L "system/browser-data" ]; then
     fi
 fi
 
-# Ensure symlink exists
-if [ ! -L "system/browser-data" ]; then
+# Ensure symlink exists: create if missing, REPAIR if dangling (the fresh-clone
+# break case), but never clobber a valid link (preserves the active account on re-runs).
+if [ -L "system/browser-data" ] && [ ! -e "system/browser-data" ]; then
+    echo -e "${YELLOW}[i] Repairing dangling symlink system/browser-data → browser-data-acc1${NC}"
+    ln -sfn browser-data-acc1 system/browser-data
+elif [ ! -e "system/browser-data" ] && [ ! -L "system/browser-data" ]; then
     ln -s browser-data-acc1 system/browser-data
     echo -e "${GREEN}[✓] Symlink: system/browser-data → browser-data-acc1${NC}"
+else
+    echo -e "${CYAN}[i] system/browser-data already points to a valid target, leaving as-is${NC}"
 fi
 
 # Distribute from acc1 to other profile slots
