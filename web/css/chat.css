@@ -1,0 +1,387 @@
+    .msg {
+      width: var(--chat-width);
+      max-width: var(--chat-width);
+      padding: 12px 16px;
+      border-radius: var(--radius-lg);
+      line-height: 1.6;
+      word-wrap: break-word;
+      border: 1px solid transparent;
+      font-size: 14.5px;
+    }
+
+    .user {
+      align-self: flex-end;
+      width: calc(var(--chat-width) * 0.5);
+      max-width: calc(var(--chat-width) * 0.5);
+      background: var(--panel-2);
+      border: 1px solid #3d4a63;
+      color: var(--text);
+      white-space: pre-wrap;
+    }
+    .user.collapsed .user-text { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+    .user-expand-btn {
+      font-size: 11px;
+      color: var(--accent);
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px 0 0;
+      font-family: inherit;
+    }
+    .user-expand-btn:hover { text-decoration: underline; }
+
+    .msg-timestamp {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted-2);
+      margin-bottom: 4px;
+      font-weight: 400;
+    }
+
+    .bot {
+      align-self: center;
+      background: rgba(255, 255, 255, 0.015);
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      border-radius: var(--radius-lg);
+      padding: 10px 14px;
+      width: var(--chat-width);
+      max-width: var(--chat-width);
+    }
+
+    .msg-toolbar {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    .msg.bot:hover .msg-toolbar,
+    .msg.user:hover .msg-toolbar,
+    .msg-toolbar:focus-within { opacity: 1; }
+    .msg-toolbar button {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--muted);
+      cursor: pointer;
+      font-family: inherit;
+      transition: background 0.12s, color 0.12s;
+    }
+    .msg-toolbar button:hover { background: var(--panel-2); color: var(--text); border-color: var(--accent); }
+
+    .bot.streaming .md-content::after {
+      content: '▍';
+      color: var(--accent);
+      animation: blink 0.9s steps(1) infinite;
+    }
+
+    @keyframes blink { 50% { opacity: 0; } }
+
+    @keyframes msg-enter {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .msg-enter { animation: msg-enter 0.25s ease-out; }
+
+    /* Shown the instant a message is sent, before the first thinking/answer
+       token arrives — otherwise there's a silent gap that reads as broken. */
+    .pending-indicator {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      align-self: center;
+      width: var(--chat-width);
+      max-width: var(--chat-width);
+      padding: 6px 2px;
+    }
+
+    .pending-indicator .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--muted);
+      animation: pending-bounce 1.1s ease-in-out infinite;
+    }
+
+    .pending-indicator .dot:nth-child(2) { animation-delay: 0.15s; }
+    .pending-indicator .dot:nth-child(3) { animation-delay: 0.3s; }
+
+    @keyframes pending-bounce {
+      0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+      30% { transform: translateY(-4px); opacity: 1; }
+    }
+
+    /* a single response's turn: thinking -> tool/skill runs -> answer, all stacked together */
+    .turn {
+      align-self: center;
+      width: var(--chat-width);
+      max-width: var(--chat-width);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .thinking-wrap {
+      width: var(--chat-width, 100%);
+      max-width: var(--chat-width, 100%);
+    }
+    .turn .thinking-wrap { width: 100%; max-width: 100%; }
+    .turn .msg.bot { width: 100%; max-width: 100%; align-self: stretch; }
+
+    details.thinking {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      padding: 9px 12px;
+      border-radius: var(--radius);
+      font-size: 12.5px;
+      color: var(--muted);
+      transition: border-color 0.15s, background 0.15s;
+    }
+
+    details.thinking[open] {
+      border-color: var(--border-soft);
+      background: var(--panel-2);
+    }
+
+    details.thinking summary {
+      cursor: pointer;
+      font-weight: 500;
+      user-select: none;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      border-radius: calc(var(--radius) - 4px);
+      margin: -3px -4px;
+      padding: 3px 4px;
+      transition: color 0.15s, background 0.15s;
+    }
+
+    details.thinking summary:hover { color: var(--text-dim); background: var(--panel-2); }
+    details.thinking[open] summary:hover { background: var(--panel); }
+
+    details.thinking summary::before {
+      content: '▸';
+      font-size: 10px;
+      transition: transform 0.15s;
+      color: var(--muted-2);
+    }
+
+    details.thinking[open] summary::before { transform: rotate(90deg); }
+
+    details.thinking .thinking-body {
+      margin-top: 8px;
+      white-space: pre-wrap;
+      line-height: 1.55;
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    .event {
+      color: var(--muted-2);
+      font-size: 12px;
+      font-family: var(--font-mono);
+      padding: 2px 8px;
+    }
+
+    .skill-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: var(--chat-width);
+      max-width: var(--chat-width);
+    }
+    .turn .skill-stack { width: 100%; max-width: 100%; }
+
+    .retry-command-bar {
+      width: 100%;
+      display: flex;
+      justify-content: flex-end;
+      margin: 8px 0 2px;
+    }
+    .retry-command-bar button {
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: .02em;
+      padding: 6px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--accent-dim);
+      color: var(--accent-text);
+      cursor: pointer;
+      transition: border-color .15s ease, background .15s ease, transform .1s ease;
+    }
+    .retry-command-bar button:hover:not(:disabled) { border-color: var(--accent); background: var(--panel-2); }
+    .retry-command-bar button:active:not(:disabled) { transform: scale(.97); }
+    .retry-command-bar button:disabled { opacity: .55; cursor: default; }
+
+    .skill-card {
+      width: 100%;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      font-size: 13px;
+      flex-shrink: 0;
+    }
+
+    .skill-card.collapsed .skill-command,
+    .skill-card.collapsed .skill-output,
+    .skill-card.collapsed .skill-image {
+      display: none;
+    }
+
+    .skill-command {
+      margin: 8px 0 0;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      max-height: 280px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+
+    .skill-output {
+      display: none;
+    }
+
+    .skill-card.show-output .skill-command {
+      display: none;
+    }
+
+    .skill-card.show-output .skill-output {
+      display: block;
+    }
+
+    .skill-toggle-btn {
+      font-size: 11px;
+      font-family: var(--font-mono);
+      color: var(--muted);
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 2px 8px;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+      flex-shrink: 0;
+    }
+
+    .skill-toggle-btn:hover {
+      background: var(--accent-dim);
+      color: var(--accent-text);
+      border-color: var(--accent);
+    }
+
+    .skill-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .skill-header-left {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
+
+    .skill-arrow {
+      color: var(--muted-2);
+      font-size: 10px;
+      transition: transform 0.15s;
+      flex-shrink: 0;
+    }
+
+    .skill-card.collapsed .skill-arrow {
+      transform: rotate(-90deg);
+    }
+
+    .skill-name {
+      font-weight: 600;
+      color: var(--accent-text);
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+    }
+
+    .skill-status {
+      color: var(--muted);
+      white-space: nowrap;
+      font-size: 12px;
+      font-family: var(--font-mono);
+    }
+
+    .skill-output {
+      margin: 8px 0 0;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      max-height: 280px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+
+    .skill-output.error { border-color: var(--danger); color: #f3b4b7; }
+
+    .skill-image {
+      margin-top: 8px;
+      max-width: 100%;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+
+    }
+    .tac-info { flex: 1; min-width: 0; }
+    .tac-title { font-size: 13px; font-weight: 600; color: var(--text); }
+    .tac-detail {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 1px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: var(--font-mono);
+    }
+    .tac-status { flex-shrink: 0; }
+    .tac-spinner {
+      width: 14px; height: 14px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: tac-spin 0.7s linear infinite;
+    }
+    .tac-check {
+      color: var(--ok);
+      font-size: 15px;
+      font-weight: 700;
+      animation: tac-pop 0.25s ease-out;
+    }
+    @keyframes tac-spin { to { transform: rotate(360deg); } }
+    @keyframes tac-slide-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes tac-pop { from { transform: scale(0); } to { transform: scale(1); } }
+    .tac-detail-split { display: flex; align-items: baseline; gap: 8px; }
+    .tac-detail-split .tac-path {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .tac-detail-split .tac-count {
+      flex-shrink: 0;
+      color: var(--muted-2);

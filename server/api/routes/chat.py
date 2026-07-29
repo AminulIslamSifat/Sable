@@ -198,6 +198,7 @@ async def chat(request: ChatRequest):
                 round_skill_events: list[dict[str, Any]] = []
                 round_thinking_parts: list[str] = []
                 round_answer_parts: list[str] = []
+                pending_thinking: list[str] = []
                 parser = SkillParser()
                 def emit_parsed(text: str) -> Generator[str, None, None]:
                     for item in parser.feed(text):
@@ -261,23 +262,37 @@ async def chat(request: ChatRequest):
                 async for event in round_event_source:
                     event_type = event.get("type")
                     if event_type == "answer":
+                        if pending_thinking:
+                            yield sse({"type": "round_thinking", "text": "".join(pending_thinking)})
+                            pending_thinking.clear()
                         for _sse_line in emit_parsed(str(event.get("text", ""))):
                             yield _sse_line
                         continue
                     if event_type == "thinking":
                         thinking_parts.append(str(event.get("text", "")))
                         round_thinking_parts.append(str(event.get("text", "")))
+                        pending_thinking.append(str(event.get("text", "")))
+                        continue
                     elif event_type == "done":
+                        if pending_thinking:
+                            yield sse({"type": "round_thinking", "text": "".join(pending_thinking)})
+                            pending_thinking.clear()
                         for _sse_line in emit_flush():
                             yield _sse_line
                         final_parent = event.get("parent_id") or final_parent
                         current_parent = final_parent
                     elif event_type == "error":
+                        if pending_thinking:
+                            yield sse({"type": "round_thinking", "text": "".join(pending_thinking)})
+                            pending_thinking.clear()
                         for _sse_line in emit_flush():
                             yield _sse_line
                         error_message = str(event.get("message", "Unknown error"))
                         stream_error = True
                     elif event_type == "rate_limited":
+                        if pending_thinking:
+                            yield sse({"type": "round_thinking", "text": "".join(pending_thinking)})
+                            pending_thinking.clear()
                         for _sse_line in emit_flush():
                             yield _sse_line
                         hours = event.get("hours", "?")

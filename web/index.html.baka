@@ -8,7 +8,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Maple+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=6">
+  <link rel="stylesheet" href="/static/css/themes.css?v=1">
+  <link rel="stylesheet" href="/static/css/base.css?v=1">
+  <link rel="stylesheet" href="/static/css/layout.css?v=1">
+  <link rel="stylesheet" href="/static/css/chat.css?v=1">
+  <link rel="stylesheet" href="/static/css/markdown.css?v=1">
+  <link rel="stylesheet" href="/static/css/panels.css?v=1">
+  <link rel="stylesheet" href="/static/css/components.css?v=1">
+  <link rel="stylesheet" href="/static/css/responsive.css?v=1">
   <link rel="manifest" href="/static/manifest.json">
   <meta name="theme-color" content="#7c5cbf">
   <meta name="apple-mobile-web-app-capable" content="yes">

@@ -651,7 +651,6 @@
 
     function setSending(val) {
       sending = val;
-      inputEl.disabled = val;
       if (val) {
         sendBtn.classList.remove("loading");
         sendBtn.classList.add("stop-mode");
@@ -1300,6 +1299,21 @@
         closeThinking() {
           closeCurrentThinking();
         },
+        showRoundThinking(text) {
+          if (!text) return;
+          hidePending();
+          closeCurrentThinking();
+          lastCommandGroup = null;
+          const wrap = document.createElement("div");
+          wrap.className = "thinking-wrap";
+          wrap.innerHTML = `
+            <details class="thinking">
+              <summary>Thinking</summary>
+              <div class="thinking-body">${escHtml(text)}</div>
+            </details>`;
+          turn.appendChild(wrap);
+          scrollBottom();
+        },
         addSkillStart(evt) {
           hidePending();
           closeCurrentThinking();
@@ -1601,7 +1615,10 @@
               if (evt.source === "tool") ui.attachToolMemory(evt.memories);
               else if (userMsgDiv) attachMemoryChip(userMsgDiv, evt.memories);
             }
+          } else if (evt.type === "round_thinking") {
+            ui.showRoundThinking(evt.text || "");
           } else if (evt.type === "thinking") {
+            // Legacy fallback — backend no longer sends raw thinking tokens
             ui.appendThinking(evt.text || "");
           } else if (evt.type === "answer") {
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
@@ -2386,6 +2403,7 @@
 
     inputEl.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
+        if (sending) return; // let Enter insert newline while model responds
         // On touch devices Enter inserts a newline; the send button sends.
         if (window.matchMedia("(pointer: coarse)").matches) return;
         e.preventDefault();
@@ -2799,6 +2817,31 @@
           showToast("✕ Failed to save", "error");
         }
       } catch (e) { showToast("✕ Error saving", "error"); }
+    });
+
+    document.getElementById("msRefreshCache").addEventListener("click", async () => {
+      const btn = document.getElementById("msRefreshCache");
+      const status = document.getElementById("msCacheStatus");
+      btn.disabled = true;
+      btn.textContent = "⏳ Rebuilding…";
+      status.textContent = "";
+      try {
+        const res = await fetch("/api/settings/memory-search/refresh-cache", { method: "POST" });
+        if (res.ok) {
+          const data = await res.json();
+          status.textContent = data.detail || "Cache rebuilt.";
+          showToast("🔄 Memory cache rebuilt", "success");
+        } else {
+          status.textContent = "Failed to rebuild cache.";
+          showToast("✕ Cache refresh failed", "error");
+        }
+      } catch (e) {
+        status.textContent = "Error.";
+        showToast("✕ Error refreshing cache", "error");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "🔄 Refresh Cache";
+      }
     });
 
     // Load memory + search settings when Brain tab is clicked
