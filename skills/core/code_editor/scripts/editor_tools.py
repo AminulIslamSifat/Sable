@@ -51,6 +51,7 @@ MAX_VIEW_CHARS = 16000
 HEAD_TAIL_LINES = 60
 BACKUP_DIR_NAME = ".editor_tools_backups"
 MAX_BACKUPS_PER_FILE = 20
+MAX_DIFF_LINES = 400
 DIFF_CONTEXT_LINES = 3
 NEAREST_MATCH_THRESHOLD = 0.6
 NEAREST_MATCH_WINDOW_SLACK = 4  # lines of slack when searching for nearest match
@@ -368,23 +369,27 @@ def _backup(path: str) -> str:
 # diff + stats
 # --------------------------------------------------------------------------
 
-def _diff_snippet(before: str, after: str, path: str) -> str:
+def _full_diff_body(before: str, after: str, path: str) -> list[str]:
+    """Full unified diff body (hunks only, no file headers, never truncated)."""
     diff = list(difflib.unified_diff(
         before.split("\n"), after.split("\n"),
         fromfile=path, tofile=path,
         n=DIFF_CONTEXT_LINES, lineterm="",
     ))
-    if not diff:
+    return diff[2:] if diff else []
+
+
+def _diff_snippet(body: list[str]) -> str:
+    """Render a diff body for display, truncating past MAX_DIFF_LINES."""
+    if not body:
         return ""
-    body = diff[2:]
-    max_lines = 50
-    if len(body) > max_lines:
-        body = body[:max_lines] + [f"... ({len(diff) - 2 - max_lines} more diff lines omitted)"]
+    if len(body) > MAX_DIFF_LINES:
+        body = body[:MAX_DIFF_LINES] + [f"... ({len(body) - MAX_DIFF_LINES} more diff lines omitted)"]
     return "\n".join(body)
 
 
-def _compute_stats(before: str, after: str, diff_text: str) -> str:
-    """Compute structured stats from before/after content and diff."""
+def _compute_stats(before: str, after: str, diff_body: list[str]) -> str:
+    """Compute structured stats from before/after content and full diff body."""
     before_lines = before.count("\n") + (1 if before and not before.endswith("\n") else 0)
     after_lines = after.count("\n") + (1 if after and not after.endswith("\n") else 0)
 
@@ -392,7 +397,7 @@ def _compute_stats(before: str, after: str, diff_text: str) -> str:
     removed = 0
     first_hunk_line = None
     last_hunk_line = None
-    for line in diff_text.split("\n"):
+    for line in diff_body:
         if line.startswith("+") and not line.startswith("+++"):
             added += 1
         elif line.startswith("-") and not line.startswith("---"):
@@ -661,8 +666,9 @@ def edit_file(path: str, edits, backup: bool = True,
     for start, end, i, note in sorted(all_spans, key=lambda t: t[0], reverse=True):
         new_content = new_content[:start] + edits[i]["new_str"] + new_content[end:]
 
-    diff = _diff_snippet(content, new_content, path)
-    stats = _compute_stats(content, new_content, diff)
+    diff_body = _full_diff_body(content, new_content, path)
+    diff = _diff_snippet(diff_body)
+    stats = _compute_stats(content, new_content, diff_body)
 
     if dry_run:
         header = f"DRY RUN — '{path}': {total_replacements} replacement(s) validated, NO changes written"
@@ -723,8 +729,9 @@ def insert_file(path: str, content: str, at_line: int = None, after_str: str = N
     new_lines = lines[:insert_pos] + new_block + lines[insert_pos:]
     new_text = "\n".join(new_lines) + ("\n" if trailing_newline else "")
 
-    diff = _diff_snippet(text, new_text, path)
-    stats = _compute_stats(text, new_text, diff)
+    diff_body = _full_diff_body(text, new_text, path)
+    diff = _diff_snippet(diff_body)
+    stats = _compute_stats(text, new_text, diff_body)
 
     if dry_run:
         header = f"DRY RUN — insert into '{path}' at line {insert_pos + 1}, NO changes written"

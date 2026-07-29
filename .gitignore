@@ -19,8 +19,7 @@ build/
 
 
 # Browser data (contains cookies, sessions, cache) — all under system/
-system/browser-data/
-system/browser-data.bak/
+system/browser-data*/
 system/browser-scraper-data/
 system/automation-browser-data/
 system/automation-browser-data.bak/
