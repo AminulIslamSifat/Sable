@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "output/notes/multi-agent-upgrade-plan.md",
+                "file": "output/notes/UI_REVIEW_2026-07-30.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "multi-agent-upgrade-plan"
+              "title": "UI_REVIEW_2026-07-30"
             }
           }
         ]
@@ -78,7 +78,8 @@
       }
     ],
     "direction": "horizontal",
-    "width": 300
+    "width": 300,
+    "collapsed": true
   },
   "right": {
     "id": "5b319e29eb60a381",
@@ -94,7 +95,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "output/notes/multi-agent-upgrade-plan.md",
+                "file": "output/notes/UI_REVIEW_2026-07-30.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -104,7 +105,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Backlinks for multi-agent-upgrade-plan"
+              "title": "Backlinks for UI_REVIEW_2026-07-30"
             }
           },
           {
@@ -113,12 +114,12 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "output/notes/multi-agent-upgrade-plan.md",
+                "file": "output/notes/UI_REVIEW_2026-07-30.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "Outgoing links from multi-agent-upgrade-plan"
+              "title": "Outgoing links from UI_REVIEW_2026-07-30"
             }
           },
           {
@@ -156,13 +157,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "output/notes/multi-agent-upgrade-plan.md",
+                "file": "output/notes/UI_REVIEW_2026-07-30.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline of multi-agent-upgrade-plan"
+              "title": "Outline of UI_REVIEW_2026-07-30"
             }
           }
         ]
@@ -184,5 +185,21 @@
     }
   },
   "active": "236aecc5258c4a61",
-  "lastOpenFiles": []
+  "lastOpenFiles": [
+    "system/browser-data-acc9/Default/Code Cache/js/4323fd7a4a70ead5_0",
+    "system/browser-data-acc9/Default/IndexedDB/https_chat.deepseek.com_0.indexeddb.leveldb/000225.ldb",
+    "system/browser-data-acc9/Default/IndexedDB/https_chat.deepseek.com_0.indexeddb.leveldb/000224.ldb",
+    "system/browser-data-acc9/Default/IndexedDB/https_chat.deepseek.com_0.indexeddb.leveldb/000223.log",
+    "system/browser-data-acc9/Default/Cache/Cache_Data/todelete_403df2022df57a00_0_1",
+    "system/browser-data-acc9/Default/Cache/Cache_Data/403df2022df57a00_0",
+    "system/browser-data-acc9/Default/Cache/Cache_Data/d724740edec0adfb_0",
+    "system/browser-data-acc9/Default/Cache/Cache_Data/def2f675cb1c8698_0",
+    "system/browser-data-acc9/Default/Code Cache/js/6db70d8949790239_0",
+    "system/browser-data-acc9/Default/blob_storage/570473bb-f14a-4b2d-9610-82a2bad78913",
+    "system/browser-data-acc9/Default/DIPS-wal",
+    "output/notes/multi-agent-upgrade-plan-v2.md",
+    "output/notes/UI_REVIEW_2026-07-30.md",
+    "UI_REVIEW_2026-07-30.md",
+    "output/notes/multi-agent-upgrade-plan.md"
+  ]
 }
