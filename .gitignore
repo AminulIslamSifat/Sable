@@ -35,6 +35,7 @@ scraper_output/
 
 # Uploads (user-uploaded files)
 uploads/
+system/uploads
 
 # Secrets & credentials
 .env
