@@ -1,0 +1,24 @@
+{
+  "name": "Code Editor",
+  "key": "code_editor",
+  "version": "1.0.0",
+  "category": "core",
+  "description": "Native file I/O: view, edit, create, insert. The ONLY skill that mutates files on disk.",
+  "trigger": "Writing to disk: create, edit, insert, or view files with precise line-numbered operations.",
+  "not_this_if": "Reading a PDF/image for content -> use file_uploader. Running a build -> use execute_command directly.",
+  "tags": [
+    "view_file",
+    "edit_file",
+    "create_file",
+    "insert_file"
+  ],
+  "default": true,
+  "inline": false,
+  "priority": 100,
+  "scope": [
+    "*"
+  ],
+  "config": {},
+  "dependencies": [],
+  "$schema": "skill-v1"
+}

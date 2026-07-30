@@ -1,0 +1,21 @@
+{
+  "name": "Browser Control",
+  "key": "browser_control",
+  "version": "1.0.0",
+  "category": "core",
+  "description": "Playwright daemon for browser automation, scraping, DevTools inspection.",
+  "trigger": "Browser automation, web scraping, DevTools inspection, screenshots, and multi-step web workflows.",
+  "not_this_if": "Simple HTTP API call without rendering -> use HTTP Client. Downloading a video -> use Video Downloader.",
+  "tags": [
+    "execute_command"
+  ],
+  "default": false,
+  "inline": false,
+  "priority": 85,
+  "scope": [
+    "*"
+  ],
+  "config": {},
+  "dependencies": [],
+  "$schema": "skill-v1"
+}

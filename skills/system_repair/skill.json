@@ -1,0 +1,21 @@
+{
+  "name": "System Repair",
+  "key": "system_repair",
+  "version": "1.0.0",
+  "category": "core",
+  "description": "Arch Linux + Hyprland diagnosis and repair protocol.",
+  "trigger": "System crashes, broken keybindings, pacman/keyring errors, UI glitches, log analysis.",
+  "not_this_if": "Issue is purely a software code bug, not a system-level problem.",
+  "tags": [
+    "execute_command"
+  ],
+  "default": true,
+  "inline": true,
+  "priority": 75,
+  "scope": [
+    "*"
+  ],
+  "config": {},
+  "dependencies": [],
+  "$schema": "skill-v1"
+}

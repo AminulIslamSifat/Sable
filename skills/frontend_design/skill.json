@@ -1,0 +1,22 @@
+{
+  "name": "Frontend Design",
+  "key": "frontend_design",
+  "version": "1.0.0",
+  "category": "visuals",
+  "description": "Production-grade UI, web components, high-fidelity layouts.",
+  "trigger": "Production-grade UI, web components, high-fidelity layouts.",
+  "not_this_if": "A quick functional snippet is enough. Output is a diagram or simulation.",
+  "tags": [
+    "create_note",
+    "execute_command"
+  ],
+  "default": false,
+  "inline": false,
+  "priority": 45,
+  "scope": [
+    "*"
+  ],
+  "config": {},
+  "dependencies": [],
+  "$schema": "skill-v1"
+}
