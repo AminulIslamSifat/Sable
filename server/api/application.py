@@ -73,7 +73,7 @@ if WEB_DIR.exists():
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
 if UPLOAD_DIR.exists():
-    app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+    app.mount("/system/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 # ---------- Auth Middleware ----------
 @app.middleware("http")
