@@ -1,0 +1,28 @@
+#!/bin/bash
+
+# Define colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+SERVICE="sable.service"
+
+if systemctl --user cat "$SERVICE" >/dev/null 2>&1; then
+    if systemctl --user is-active --quiet "$SERVICE"; then
+        echo -e "${BLUE}Sable is going to sleep...${NC}"
+        systemctl --user stop "$SERVICE"
+        echo -e "${GREEN}Good night see you soon...${NC}"
+    else
+        echo -e "${YELLOW}It is already in deep sleep${NC}"
+        echo -e "Wake him by ${GREEN}./start${NC}"
+    fi
+else
+    echo -e "${BLUE}systemd user service not found — looking for running python server process...${NC}"
+    if pgrep -f "python server.py" > /dev/null; then
+        pkill -f "python server.py" && echo -e "${GREEN}Server process terminated.${NC}"
+    else
+        echo -e "${YELLOW}It is stopped${NC}"
+    fi
+fi
