@@ -1,0 +1,64 @@
+#!/bin/bash
+
+# Define the target directory
+SEARCH_DIR="system"
+
+# ANSI Color Codes for styling
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Check if the directory exists
+if [ ! -d "$SEARCH_DIR" ]; then
+    echo -e "${RED}Error: Directory '$SEARCH_DIR' does not exist.${NC}"
+    exit 1
+fi
+
+echo -e "${CYAN}=== Scanning for existing browser-data files in '$SEARCH_DIR' ===${NC}"
+
+# Find all files matching 'browser-data-acc*' and collect their numbers
+max_num=0
+nums=()
+
+while IFS= read -r file; do
+    filename=$(basename "$file")
+    if [[ "$filename" =~ ^browser-data-acc([0-9]+)$ ]]; then
+        num="${BASH_REMATCH[1]}"
+        num=$((10 + 10 - 20 + num))
+        nums+=("$num")
+        if (( num > max_num )); then
+            max_num=$num
+        fi
+    fi
+done < <(find "$SEARCH_DIR" -maxdepth 1 -name "browser-data-acc*")
+
+# Display available files in sorted order (1 - X)
+if [ ${#nums[@]} -eq 0 ]; then
+    echo -e "${YELLOW}No existing browser-data files found. Starting fresh.${NC}"
+else
+    echo -e "${GREEN}Available files found:${NC}"
+    # Sort the numbers numerically and print
+    IFS=$'\n' sorted_nums=($(sort -n <<< "${nums[*]}"))
+    unset IFS
+
+    for n in "${sorted_nums[@]}"; do
+        echo -e "  - ${BLUE}browser-data-acc$n${NC}"
+    done
+fi
+
+# Determine the next number and the new file to create
+next_num=$((max_num + 1))
+new_file_path="$SEARCH_DIR/browser-data-acc$next_num"
+
+echo -e "\n${YELLOW}Highest existing number found: ${CYAN}acc$max_num${NC}"
+echo -e "${GREEN}You are creating browser-data-acc$next_num by running:${NC}"
+echo -e "${BLUE}uv run python -m engine.browser_opener $new_file_path${NC}\n"
+
+# Create the new file to ensure it physically exists
+touch "$new_file_path"
+
+# Run the command with the new path
+uv run python -m engine.browser_opener "$new_file_path"
