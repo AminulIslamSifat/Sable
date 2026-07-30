@@ -101,6 +101,8 @@ class SkillParser:
                     yield {"type": "text", "text": before}
                 self.buf = self.buf[m.end():]
                 self._in_action = True
+                # Strip nested  opens — only outermost block is parsed
+                self.buf = self._ACTION_OPEN.sub("", self.buf)
 
             # Check for action close boundary
             close_m = self._ACTION_CLOSE.search(self.buf)
