@@ -180,9 +180,8 @@
   --bg-glow: #141a1a;
 }
 
-/* ============================================================
-             RESET & BASE
-             ============================================================ */
+/* RESET & BASE */
+
 * {
   box-sizing: border-box;
 }
@@ -217,9 +216,7 @@ body {
   border-radius: var(--radius);
 }
 
-/* ============================================================
-             SCROLLBAR
-             ============================================================ */
+/* SCROLLBAR */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -235,9 +232,7 @@ body {
   background: var(--muted-2);
 }
 
-/* ============================================================
-             LOGIN OVERLAY
-             ============================================================ */
+/* LOGIN OVERLAY */
 .login-overlay {
   position: fixed;
   inset: 0;
@@ -343,9 +338,7 @@ body {
   display: none;
 }
 
-/* ============================================================
-             SIDEBAR
-             ============================================================ */
+/* SIDEBAR */
 .sidebar {
   width: 260px;
   min-width: 260px;
@@ -388,9 +381,7 @@ body.sidebar-open .sidebar {
   margin-left: 0;
 }
 
-/* ============================================================
-             ICON BUTTON
-             ============================================================ */
+/*  ICON BUTTON */
 .icon-btn {
   width: 32px;
   height: 32px;
@@ -419,9 +410,7 @@ body.sidebar-open .sidebar {
   transform: scale(0.96);
 }
 
-/* ============================================================
-             BRAND
-             ============================================================ */
+/* BRAND */
 .brand {
   display: flex;
   align-items: center;
@@ -457,12 +446,10 @@ body.sidebar-open .sidebar {
   font-weight: 400;
 }
 
-/* ============================================================
-             BUTTONS
-             ============================================================ */
+/* BUTTONS */
 button {
   border: 0;
-  border-radius: var(--radius);
+  /* border-radius: var(--radius); */
   cursor: pointer;
   font-family: inherit;
   position: relative;
@@ -552,9 +539,7 @@ button:disabled {
   }
 }
 
-/* ============================================================
-             SELECTOR WRAP
-             ============================================================ */
+/* SELECTOR WRAP */
 .selector-wrap {
   position: relative;
   width: 100%;
@@ -627,9 +612,8 @@ button:disabled {
   opacity: 0.3;
 }
 
-/* ============================================================
-             CHAT LIST
-             ============================================================ */
+/* CHAT LIST */
+
 #chats {
   display: flex;
   flex-direction: column;
@@ -741,9 +725,7 @@ button:disabled {
   color: var(--danger);
 }
 
-/* ============================================================
-             MAIN
-             ============================================================ */
+/* MAIN */
 .main {
   flex: 1;
   height: 100vh;
@@ -754,9 +736,7 @@ button:disabled {
   position: relative;
 }
 
-/* ============================================================
-             HEADER
-             ============================================================ */
+/* HEADER */
 header {
   height: 46px;
   padding: 0 14px;
@@ -792,9 +772,7 @@ header small {
   gap: 10px;
 }
 
-/* ============================================================
-             CHAT AREA
-             ============================================================ */
+/* CHAT AREA */
 #chat {
   flex: 1;
   overflow-y: auto;
@@ -1233,9 +1211,7 @@ details.thinking .thinking-body {
   border: 1px solid var(--border);
 }
 
-/* ============================================================
-             MARKDOWN CONTENT
-             ============================================================ */
+/* MARKDOWN CONTENT */
 .md-content {
   color: var(--text);
   font-size: var(--font-size-response);
@@ -1509,9 +1485,7 @@ details.thinking .thinking-body {
   color: var(--muted-2);
 }
 
-/* ============================================================
-             INPUT AREA
-             ============================================================ */
+/* INPUT AREA */
 .input-area {
   position: absolute;
   left: 0;
@@ -1773,9 +1747,7 @@ textarea:disabled {
   background: var(--accent-dim);
 }
 
-/* ============================================================
-             EMPTY STATE
-             ============================================================ */
+/* EMPTY STATE */
 .empty {
   margin: auto;
   text-align: center;
@@ -1796,46 +1768,53 @@ textarea:disabled {
   opacity: 0.7;
 }
 
-/* ============================================================
-             TOAST
-             ============================================================ */
+/*  TOAST */
 #toast {
   position: fixed;
   bottom: 24px;
   left: 50%;
-  transform: translateX(-50%) translateY(80px);
+  transform: translateX(-50%) translateY(12px);
   background: var(--panel);
   border: 1px solid var(--border);
   color: var(--text);
-  padding: 9px 18px;
-  border-radius: var(--radius);
+  padding: 8px 16px;
+  border-radius: var(--radius-sm, 6px);
   font-size: 13px;
+  font-weight: 450;
+  letter-spacing: -0.01em;
+  opacity: 0;
   transition:
-    transform 0.3s ease,
-    opacity 0.3s ease;
+    transform 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   z-index: 999;
   pointer-events: none;
-  box-shadow: var(--shadow-md);
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.06);
 }
+
 #toast.show {
   transform: translateX(-50%) translateY(0);
+  opacity: 1;
 }
+
 #toast.error {
-  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--panel));
+  border-color: color-mix(in srgb, var(--danger) 25%, var(--border));
   color: var(--danger);
 }
+
 #toast.success {
-  border-color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 8%, var(--panel));
+  border-color: color-mix(in srgb, var(--ok) 25%, var(--border));
   color: var(--ok);
 }
+
 #toast.info {
+  background: var(--panel);
   border-color: var(--border);
   color: var(--text-dim);
 }
 
-/* ============================================================
-             SETTINGS OVERLAY
-             ============================================================ */
+/* SETTINGS OVERLAY */
 .settings-overlay {
   position: fixed;
   inset: 0;
@@ -1927,6 +1906,7 @@ textarea:disabled {
   height: 100%;
   flex-direction: column;
   overflow-y: auto;
+  padding: 5px;
 }
 .settings-tab-content.active {
   display: flex;
@@ -1994,9 +1974,7 @@ textarea:disabled {
   font-size: 13px;
 }
 
-/* ============================================================
-             MEMORY (Brain)
-             ============================================================ */
+/* MEMORY (Brain) */
 .mem-tab-bar {
   display: flex;
   gap: var(--sp-2, 4px);
@@ -2115,6 +2093,8 @@ textarea:disabled {
   color: var(--accent-text);
   font-weight: 600;
   letter-spacing: -0.2px;
+  margin-left: 10px;
+  margin-top: 10px;
 }
 .mem-desc {
   font-size: 11px;
@@ -2189,9 +2169,7 @@ textarea:disabled {
   color: var(--muted);
 }
 
-/* ============================================================
-             SKILLS (tab)
-             ============================================================ */
+/* SKILLS (tab) */
 .skills-title {
   margin: 28px 0 var(--sp-4, 8px);
   font-size: 14px;
@@ -2365,9 +2343,7 @@ textarea:disabled {
   margin: 6px 0;
 }
 
-/* ============================================================
-             SIDEBAR FOOTER
-             ============================================================ */
+/* SIDEBAR FOOTER */
 .sidebar-footer {
   margin-top: auto;
   padding-top: 12px;
@@ -2399,9 +2375,7 @@ textarea:disabled {
   border-color: var(--accent);
 }
 
-/* ============================================================
-             MEMORY CHIP (inline)
-             ============================================================ */
+/* MEMORY CHIP (inline) */
 .memory-chip {
   display: inline-flex;
   align-items: center;
@@ -2430,9 +2404,7 @@ textarea:disabled {
   margin: 6px 0;
 }
 
-/* ============================================================
-             MEMORY OVERLAY (full panel)
-             ============================================================ */
+/* MEMORY OVERLAY (full panel) */
 .memory-overlay {
   position: fixed;
   inset: 0;
@@ -2538,9 +2510,7 @@ textarea:disabled {
   word-break: break-word;
 }
 
-/* ============================================================
-             DIFF SIDEBAR
-             ============================================================ */
+/* DIFF SIDEBAR */
 .diff-sidebar {
   position: fixed;
   top: 0;
@@ -2747,9 +2717,7 @@ body.diff-open .diff-sidebar {
   cursor: not-allowed;
 }
 
-/* ============================================================
-             FILE-EDIT SUMMARY CARD
-             ============================================================ */
+/* FILE-EDIT SUMMARY CARD */
 .file-edit-summary-card {
   display: flex;
   align-items: center;
@@ -2799,9 +2767,7 @@ body.diff-open .diff-sidebar {
   color: var(--accent);
 }
 
-/* ============================================================
-             THEME PICKER
-             ============================================================ */
+/* THEME PICKER */
 .theme-picker {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -2840,9 +2806,7 @@ body.diff-open .diff-sidebar {
   flex-shrink: 0;
 }
 
-/* ============================================================
-             TOOL ACTIVITY CARD
-             ============================================================ */
+/* TOOL ACTIVITY CARD */
 .tool-activity-card {
   display: flex;
   align-items: center;
@@ -3000,9 +2964,7 @@ body.diff-open .diff-sidebar {
   }
 }
 
-/* ============================================================
-             MODE SWITCHER
-             ============================================================ */
+/* MODE SWITCHER */
 .mode-switcher {
   display: flex;
   border-radius: 6px;
@@ -3031,9 +2993,7 @@ body.diff-open .diff-sidebar {
   color: var(--text);
 }
 
-/* ============================================================
-             SCRAPER
-             ============================================================ */
+/* SCRAPER */
 .scraper-engine-wrap {
   display: none;
   flex-shrink: 0;
@@ -3102,9 +3062,7 @@ body.diff-open .diff-sidebar {
   display: none;
 }
 
-/* ============================================================
-             KATEX / MATH
-             ============================================================ */
+/* KATEX / MATH */
 .katex-display {
   margin: 1em 0;
   overflow-x: auto;
@@ -3123,9 +3081,7 @@ body.diff-open .diff-sidebar {
   border-radius: 4px;
 }
 
-/* ============================================================
-             RESPONSIVE (≤ 860px)
-             ============================================================ */
+/*  RESPONSIVE (≤ 860px)  */
 @media (max-width: 860px) {
   #toast {
     bottom: auto;
@@ -3307,9 +3263,7 @@ body.diff-open .diff-sidebar {
   }
 }
 
-/* ============================================================
-             RESPONSIVE (≤ 480px)
-             ============================================================ */
+/* RESPONSIVE (≤ 480px) */
 @media (max-width: 480px) {
   .sidebar {
     width: min(260px, 82vw);
