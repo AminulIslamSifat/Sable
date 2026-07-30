@@ -89,7 +89,7 @@ echo -e "${GREEN}[✓] Password successfully saved to system/.auth_token${NC}"
 if [ -f "instruction/Maria.md.example" ]; then
     if [ ! -f "instruction/Maria.md" ]; then
         echo -e "\n${YELLOW}[+] Creating Maria.md from template...${NC}"
-        cp instruction/Maria.md.example instruction/Maria.md
+        mv instruction/Maria.md.example instruction/Maria.md
         echo -e "${GREEN}[✓] Success: Maria.md created${NC}"
     else
         echo -e "\n${CYAN}[i] instruction/Maria.md already exists, skipping copy to prevent overwriting.${NC}"
@@ -102,7 +102,7 @@ fi
 if [ -f "Brain/Memory.json.example" ]; then
     if [ ! -f "Brain/Memory.json" ]; then
         echo -e "\n${YELLOW}[+] Creating Memory.json from template...${NC}"
-        cp Brain/Memory.json.example Brain/Memory.json
+        mv Brain/Memory.json.example Brain/Memory.json
         echo -e "${GREEN}[✓] Success: Memory.json created${NC}"
     else
         echo -e "\n${CYAN}[i] Brain/Memory.json already exists, skipping copy to prevent overwriting.${NC}"
