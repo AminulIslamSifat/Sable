@@ -272,6 +272,7 @@
       background: linear-gradient(90deg, var(--panel) 25%, var(--panel-2) 50%, var(--panel) 75%);
       background-size: 200px 100%;
       animation: shimmer 1.4s ease-in-out infinite;
+      will-change: opacity;
     }
     .skeleton-chat:nth-child(1) { width: 85%; }
     .skeleton-chat:nth-child(2) { width: 70%; }

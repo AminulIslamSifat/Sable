@@ -636,16 +636,19 @@
     }
 
     function isNearBottom() {
-      // Auto-scroll only while the reader is near the bottom: 40% on desktop, 15% on touch.
-      const isTouch = window.matchMedia("(pointer: coarse)").matches;
-      const threshold = window.innerHeight * (isTouch ? 0.15 : 0.4);
-      return chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < threshold;
+      return chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < 50;
     }
 
+    let _scrollPending = false;
     function scrollBottom(force) {
-      if (force || isNearBottom()) {
-        chatEl.scrollTop = chatEl.scrollHeight;
-      }
+      if (_scrollPending) return;
+      _scrollPending = true;
+      requestAnimationFrame(() => {
+        _scrollPending = false;
+        if (force || isNearBottom()) {
+          chatEl.scrollTop = chatEl.scrollHeight;
+        }
+      });
     }
 
     function clearEmptyState() {
@@ -1279,6 +1282,7 @@
       let skillRounds = [[]];
       let sawNormalAnswer = false;
       let fileEditSummary = { count: 0, added: 0, removed: 0, card: null };
+      let _tacExitTimer = null;
 
       function trackSkillEvent(evt) {
         skillRounds[skillRounds.length - 1].push(evt);
@@ -1300,12 +1304,37 @@
       // ── Typewriter animation for answer reveal ──
       let _ansQueue = "";
       let _ansTimer = null;
+      let _ansInFence = false;
+      const _ANS_STRUCTURAL_RE = /[\n`|<>#*_\[~=~-]/;
+
       function _ansTick() {
         if (!_ansQueue || !answerContent) { _ansTimer = null; return; }
         const chunk = _ansQueue.slice(0, TW_CHARS);
         _ansQueue = _ansQueue.slice(TW_CHARS);
         raw += chunk;
-        answerContent.innerHTML = renderMarkdown(raw);
+
+        // Fast path: plain text append — skip full markdown pipeline
+        let fast = false;
+        if (!_ansInFence && !_ANS_STRUCTURAL_RE.test(chunk)) {
+          const lastP = answerContent.lastElementChild;
+          if (lastP && lastP.tagName === "P" && lastP.lastChild && lastP.lastChild.nodeType === 3) {
+            lastP.lastChild.textContent += chunk;
+            fast = true;
+          }
+        }
+        // Fast path: inside code fence — append to <code> directly until fence closes
+        if (!fast && _ansInFence && !chunk.includes("```")) {
+          const codeEl = answerContent.querySelector("pre:last-of-type code");
+          if (codeEl) {
+            codeEl.textContent += chunk;
+            fast = true;
+          }
+        }
+        if (!fast) {
+          answerContent.innerHTML = renderMarkdown(raw);
+          _ansInFence = (raw.match(/^```/gm) || []).length % 2 === 1;
+        }
+
         scrollBottom();
         _ansTimer = _ansQueue ? setTimeout(_ansTick, TW_MS) : null;
         if (!_ansTimer) { renderMermaidDiagrams(answerContent); renderMathJax(answerContent); }
@@ -1334,6 +1363,7 @@
         answerEl = null;
         answerContent = null;
         raw = "";
+        _ansInFence = false;
       }
 
       function ensureCommandGroup() {
@@ -1388,6 +1418,9 @@
           }
           skillCards[evt.id] = card;
           trackSkillEvent(evt);
+          // Keep activity card as last child so its exit never causes a layout jump
+          const tac = turn.querySelector(".tool-activity-card");
+          if (tac) turn.appendChild(tac);
           scrollBottom();
         },
         appendSkillOutput(evt) {
@@ -1446,12 +1479,21 @@
         },
         replaceWithRateLimit(message, hours) {
           hidePending();
-          closeCurrentThinking();
-          // Remove any partial answer/skill content in this turn
-          turn.querySelectorAll('.msg.bot, .skill-stack').forEach(el => el.remove());
-          answerEl = null;
-          answerContent = null;
-          raw = "";
+          // Kill typewriter queues immediately — don't flush partial content
+          if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
+          _thinkQueue = "";
+          if (_ansTimer) { clearTimeout(_ansTimer); _ansTimer = null; }
+          _ansQueue = "";
+          currentThinkWrap = null;
+          currentThinkBody = null;
+          currentThinkSummary = null;
+          // Remove only the currently-streaming partial answer — keep completed skill work
+          if (answerEl) {
+            answerEl.remove();
+            answerEl = null;
+            answerContent = null;
+            raw = "";
+          }
           // Build persistent rate-limit card
           ensureAnswer();
           answerEl.classList.remove('streaming');
@@ -1509,10 +1551,13 @@
             save_svg:     { icon: "🎨", label: "Saving SVG", detail: attrs.path || "" },
           };
           const info = meta[tag] || { icon: "⚙️", label: tag, detail: "" };
-          // Remove any existing tool card in this turn
-          const existing = turn.querySelector(".tool-activity-card");
-          if (existing) existing.remove();
-          const card = document.createElement("div");
+          // Reuse existing card in-place to avoid layout shift
+          if (_tacExitTimer) { clearTimeout(_tacExitTimer); _tacExitTimer = null; }
+          let card = turn.querySelector(".tool-activity-card");
+          if (!card) {
+            card = document.createElement("div");
+            turn.appendChild(card);
+          }
           card.className = "tool-activity-card";
           const detailHtml = info.progress
             ? `<div class="tac-detail tac-detail-split"><span class="tac-path">${info.detail || ""}</span><span class="tac-count">writing…</span></div>`
@@ -1523,6 +1568,7 @@
             detailHtml +
             (info.progress ? `<div class="tac-progress-track"><div class="tac-progress-fill"></div></div>` : "") +
             `</div><div class="tac-status">${info.progress ? `<div class="tac-pulse-dot"></div>` : `<div class="tac-spinner"></div>`}</div>`;
+          // Always keep it as the last element
           turn.appendChild(card);
           scrollBottom();
         },
@@ -1541,7 +1587,11 @@
           const status = card.querySelector(".tac-status");
           if (status) status.innerHTML = `<span class="tac-check">✓</span>`;
           card.classList.add("tac-done");
-          setTimeout(() => card.remove(), 1200);
+          // Fade out only if no next tool reuses it (cancelled in showToolPending)
+          _tacExitTimer = setTimeout(() => {
+            card.classList.add("tac-exit");
+            setTimeout(() => card.remove(), 350);
+          }, 600);
         },
         finalize() {
           hidePending();
@@ -1631,6 +1681,7 @@
     }
 
     function attachResendBar(targetDiv, messageText) {
+      if (targetDiv.querySelector('.resend-bar')) return;
       const resendBar = document.createElement("div");
       resendBar.className = "msg-toolbar resend-bar";
       const resendBtn = document.createElement("button");
@@ -1695,6 +1746,7 @@
           } else if (evt.type === "rate_limited") {
             gotError = true;
             ui.replaceWithRateLimit(evt.message, evt.hours);
+            break;
           } else if (evt.type === "error") {
             gotError = true;
             const msg = evt.message || "Unknown error";
@@ -1721,6 +1773,7 @@
             ui.trackFileEdit(evt);
           }
         }
+        if (gotError) break;
       }
       return { gotAnswer, gotDone, gotError };
     }
