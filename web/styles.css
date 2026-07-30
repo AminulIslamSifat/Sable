@@ -263,9 +263,11 @@ body {
 }
 
 .login-logo {
+  display: block;
   width: 52px;
   height: 52px;
   margin-bottom: 12px;
+  margin-inline: auto;
   opacity: 0.9;
 }
 
