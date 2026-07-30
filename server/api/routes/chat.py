@@ -13,8 +13,22 @@ from fastapi.responses import StreamingResponse   # <-- corrected import
 from engine.config import get_model_config
 from engine.memory_search import get_searcher
 from engine.scraper import get_settings as get_scraper_settings, scraper as scraper_service
-from engine.skills import SkillParser, build_tool_feedback
+from engine.skills import SkillEngine, SkillParser, build_tool_feedback
+from engine.skills.handlers import HANDLER_MAP
 from connectors.deepseek.client import get_client as get_deepseek_client
+
+_skill_engine: SkillEngine | None = None
+
+def _get_skill_engine() -> SkillEngine:
+    """Lazy singleton — avoids re-discovering skills on every request."""
+    global _skill_engine
+    if _skill_engine is None:
+        _skill_engine = SkillEngine(
+            skills_dir=Path(__file__).resolve().parent.parent.parent.parent / "skills",
+            handlers=HANDLER_MAP,
+            agent_id="maria",
+        )
+    return _skill_engine
 
 from server.config import (
     SKILL_ROUND_WARN_THRESHOLD,
@@ -200,30 +214,34 @@ async def chat(request: ChatRequest):
                 round_answer_parts: list[str] = []
                 pending_thinking: list[str] = []
                 parser = SkillParser()
+                def _dispatch_events(items) -> Generator[str, None, None]:
+                    """Shared logic: route parser events, execute tags via engine."""
+                    engine = _get_skill_engine()
+                    for item in items:
+                        itype = item.get("type")
+                        if itype == "text":
+                            chunk = str(item.get("text", ""))
+                            if chunk:
+                                answer_parts.append(chunk)
+                                round_answer_parts.append(chunk)
+                                yield sse({"type": "answer", "text": chunk})
+                        elif itype == "tag_found":
+                            # Execute the tag through the middleware pipeline
+                            for ev in engine.process_tag(
+                                item["name"], item.get("attrs", {}), item.get("content", "")
+                            ):
+                                if ev.get("type") in ("skill_start", "skill_output", "skill_end", "file_edit"):
+                                    round_skill_events.append(ev)
+                                yield sse(ev)
+                        else:
+                            # tool_pending, tool_progress, etc — forward to frontend
+                            if itype in ("skill_start", "skill_output", "skill_end", "file_edit"):
+                                round_skill_events.append(item)
+                            yield sse(item)
                 def emit_parsed(text: str) -> Generator[str, None, None]:
-                    for item in parser.feed(text):
-                        if item.get("type") == "text":
-                            chunk = str(item.get("text", ""))
-                            if chunk:
-                                answer_parts.append(chunk)
-                                round_answer_parts.append(chunk)
-                                yield sse({"type": "answer", "text": chunk})
-                        else:
-                            if item.get("type") in ("skill_start", "skill_output", "skill_end", "file_edit"):
-                                round_skill_events.append(item)
-                            yield sse(item)
+                    yield from _dispatch_events(parser.feed(text))
                 def emit_flush() -> Generator[str, None, None]:
-                    for item in parser.flush():
-                        if item.get("type") == "text":
-                            chunk = str(item.get("text", ""))
-                            if chunk:
-                                answer_parts.append(chunk)
-                                round_answer_parts.append(chunk)
-                                yield sse({"type": "answer", "text": chunk})
-                        else:
-                            if item.get("type") in ("skill_start", "skill_output", "skill_end", "file_edit"):
-                                round_skill_events.append(item)
-                            yield sse(item)
+                    yield from _dispatch_events(parser.flush())
                 files_for_round = resolved_files if round_index == 0 else None
                 stream_error = False
                 if _is_deepseek_api_model(request.model):
@@ -262,37 +280,31 @@ async def chat(request: ChatRequest):
                 async for event in round_event_source:
                     event_type = event.get("type")
                     if event_type == "answer":
-                        if pending_thinking:
-                            yield sse({"type": "round_thinking", "text": "".join(pending_thinking)})
-                            pending_thinking.clear()
+                        pending_thinking.clear()
                         for _sse_line in emit_parsed(str(event.get("text", ""))):
                             yield _sse_line
                         continue
                     if event_type == "thinking":
-                        thinking_parts.append(str(event.get("text", "")))
-                        round_thinking_parts.append(str(event.get("text", "")))
-                        pending_thinking.append(str(event.get("text", "")))
+                        chunk = str(event.get("text", ""))
+                        thinking_parts.append(chunk)
+                        round_thinking_parts.append(chunk)
+                        pending_thinking.append(chunk)
+                        yield sse({"type": "thinking", "text": chunk})
                         continue
                     elif event_type == "done":
-                        if pending_thinking:
-                            yield sse({"type": "round_thinking", "text": "".join(pending_thinking)})
-                            pending_thinking.clear()
+                        pending_thinking.clear()
                         for _sse_line in emit_flush():
                             yield _sse_line
                         final_parent = event.get("parent_id") or final_parent
                         current_parent = final_parent
                     elif event_type == "error":
-                        if pending_thinking:
-                            yield sse({"type": "round_thinking", "text": "".join(pending_thinking)})
-                            pending_thinking.clear()
+                        pending_thinking.clear()
                         for _sse_line in emit_flush():
                             yield _sse_line
                         error_message = str(event.get("message", "Unknown error"))
                         stream_error = True
                     elif event_type == "rate_limited":
-                        if pending_thinking:
-                            yield sse({"type": "round_thinking", "text": "".join(pending_thinking)})
-                            pending_thinking.clear()
+                        pending_thinking.clear()
                         for _sse_line in emit_flush():
                             yield _sse_line
                         hours = event.get("hours", "?")
