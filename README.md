@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="web/sable_icon.svg" width="100">
+<img src="web/icon-512.png" width="100">
 
 # Sable 
 Agentic Orchestration Layer
