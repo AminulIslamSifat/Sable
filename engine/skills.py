@@ -26,7 +26,7 @@ OUTPUT_ROOT = SABLE_ROOT / "output"
 NOTES_DIR = OUTPUT_ROOT / "notes"
 ASSETS_DIR = OUTPUT_ROOT / "assets"
 SESSIONS_DIR = OUTPUT_ROOT / "sessions"
-UPLOAD_DIR = SABLE_ROOT / "uploads"
+UPLOAD_DIR = SABLE_ROOT / "system" / "uploads"
 BACKUP_DIR = SABLE_ROOT / ".sable_backups"
 EDITOR_TOOLS = SKILLS_DIR / "core" / "code_editor" / "scripts" / "editor_tools.py"
 SUDO_PASSWORD = "sifat"
@@ -533,7 +533,7 @@ def handle_get_file(
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         dest = UPLOAD_DIR / f"{uuid.uuid4().hex}{ext or '.img'}"
         shutil.copy2(path, dest)
-        result["url"] = f"/uploads/{dest.name}"
+        result["url"] = f"/system/uploads/{dest.name}"
         yield _output_event(tag_id, f"image {path} ({size} bytes) copied to {result['url']}\n")
     elif kind == "text":
         try:

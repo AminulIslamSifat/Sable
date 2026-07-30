@@ -2308,7 +2308,7 @@
       // Collect image URLs for chat display BEFORE clearing pending chips
       const imageUrls = pendingFiles
         .filter(p => p.path)
-        .map(p => "/uploads/" + p.path.split("/").pop());
+        .map(p => "/system/uploads/" + p.path.split("/").pop());
 
       // Remove previous turn's file-edit summary card
       chatEl.querySelectorAll(".file-edit-summary-card").forEach(el => el.remove());
