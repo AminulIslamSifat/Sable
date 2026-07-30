@@ -178,6 +178,7 @@ class ChatService:
             new_parent_id = parent_id
             chosen_response_id: str | None = None
             got_content = False
+            _thinking_sent_count = 0  # track cumulative thinking paragraphs already yielded
             status_code = 0
             needs_refresh = False
 
@@ -297,10 +298,16 @@ class ChatService:
 
                                     if phase in ("thinking_summary", "thinking"):
                                         thoughts = extra.get("summary_thought", {}).get("content", [])
-                                        text = "".join(thoughts) if thoughts else content
-                                        if text:
+                                        if thoughts:
+                                            # API sends cumulative array; only yield new paragraphs
+                                            new_parts = thoughts[_thinking_sent_count:]
+                                            _thinking_sent_count = len(thoughts)
+                                            if new_parts:
+                                                got_content = True
+                                                yield {"type": "thinking", "text": "\n\n".join(new_parts)}
+                                        elif content:
                                             got_content = True
-                                            yield {"type": "thinking", "text": text}
+                                            yield {"type": "thinking", "text": content}
                                     elif phase == "answer" and content:
                                         got_content = True
                                         yield {"type": "answer", "text": content}

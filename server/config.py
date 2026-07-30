@@ -27,6 +27,11 @@ MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.0
 SKILL_ROUND_WARN_THRESHOLD = 15
 
+# ── Typewriter animation (frontend) ──
+# Chars revealed per tick and interval in ms. Lower ms / higher chars = faster.
+TYPEWRITER_CHARS_PER_TICK = 3
+TYPEWRITER_TICK_MS = 12
+
 DEEPSEEK_MODELS = [
     {"id": "default", "label": "Instant", "thinking_modes": [
         {"id": "deepthink", "label": "DeepThink"},

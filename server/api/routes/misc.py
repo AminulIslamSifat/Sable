@@ -12,7 +12,10 @@ from engine.scraper import get_settings as get_scraper_settings
 from engine.skills import browse_skills, list_skills
 from engine.memory_search import get_searcher
 
-from server.config import DEEPSEEK_MODELS, INDEX_FILE, AUTH_EXEMPT_PREFIXES
+from server.config import (
+    DEEPSEEK_MODELS, INDEX_FILE, AUTH_EXEMPT_PREFIXES,
+    TYPEWRITER_CHARS_PER_TICK, TYPEWRITER_TICK_MS,
+)
 from server.models import RevertRequest
 from server.utils import logger
 from ..dependencies import service, sse
@@ -25,6 +28,13 @@ router = APIRouter()
 @router.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+@router.get("/api/config/ui")
+def ui_config() -> dict[str, Any]:
+    return {
+        "typewriter_chars_per_tick": TYPEWRITER_CHARS_PER_TICK,
+        "typewriter_tick_ms": TYPEWRITER_TICK_MS,
+    }
 
 @router.get("/api/logs")
 async def stream_logs():

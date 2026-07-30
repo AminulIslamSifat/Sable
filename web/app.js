@@ -98,6 +98,10 @@
     const MODEL_KEY = "sable_selected_model";
     const THINKING_MODE_KEY = "sable_selected_thinking_mode";
 
+    // Typewriter animation config (fetched from /api/config/ui on init)
+    let TW_CHARS = 3;
+    let TW_MS = 12;
+
     // Used only if /api/models isn't available yet — keep in sync with
     // engine/config.py's MODELS list so the dropdowns work either way.
     const FALLBACK_MODELS = [
@@ -1213,6 +1217,29 @@
       let currentThinkBody = null;
       let currentThinkSummary = null;
 
+      // ── Typewriter animation for thinking reveal ──
+      let _thinkQueue = "";
+      let _thinkTimer = null;
+      function _thinkTick() {
+        if (!_thinkQueue || !currentThinkBody) { _thinkTimer = null; return; }
+        const chunk = _thinkQueue.slice(0, TW_CHARS);
+        _thinkQueue = _thinkQueue.slice(TW_CHARS);
+        currentThinkBody.textContent += chunk;
+        scrollBottom();
+        _thinkTimer = _thinkQueue ? setTimeout(_thinkTick, TW_MS) : null;
+      }
+      function _enqueueThink(text) {
+        _thinkQueue += text;
+        if (!_thinkTimer) _thinkTimer = setTimeout(_thinkTick, TW_MS);
+      }
+      function _flushThinkQueue() {
+        if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
+        if (_thinkQueue && currentThinkBody) {
+          currentThinkBody.textContent += _thinkQueue;
+          _thinkQueue = "";
+        }
+      }
+
       function ensureThinkingBlock() {
         // Create a fresh thinking block for the current round.
         // It will be placed just before the next skill command group or answer.
@@ -1235,6 +1262,7 @@
 
       function closeCurrentThinking() {
         if (!currentThinkWrap) return;
+        _flushThinkQueue();
         if (currentThinkSummary) currentThinkSummary.textContent = "Thinking";
         const det = currentThinkWrap.querySelector("details");
         if (det) det.open = false;
@@ -1269,7 +1297,37 @@
         lastCommandGroup = null;
       }
 
+      // ── Typewriter animation for answer reveal ──
+      let _ansQueue = "";
+      let _ansTimer = null;
+      function _ansTick() {
+        if (!_ansQueue || !answerContent) { _ansTimer = null; return; }
+        const chunk = _ansQueue.slice(0, TW_CHARS);
+        _ansQueue = _ansQueue.slice(TW_CHARS);
+        raw += chunk;
+        answerContent.innerHTML = renderMarkdown(raw);
+        scrollBottom();
+        _ansTimer = _ansQueue ? setTimeout(_ansTick, TW_MS) : null;
+        if (!_ansTimer) { renderMermaidDiagrams(answerContent); renderMathJax(answerContent); }
+      }
+      function _enqueueAnswer(text) {
+        _ansQueue += text;
+        if (!_ansTimer) _ansTimer = setTimeout(_ansTick, TW_MS);
+      }
+      function _flushAnswerQueue() {
+        if (_ansTimer) { clearTimeout(_ansTimer); _ansTimer = null; }
+        if (_ansQueue && answerContent) {
+          raw += _ansQueue;
+          _ansQueue = "";
+          answerContent.innerHTML = renderMarkdown(raw);
+          renderMermaidDiagrams(answerContent);
+          renderMathJax(answerContent);
+          scrollBottom();
+        }
+      }
+
       function closeAnswer() {
+        _flushAnswerQueue();
         if (!answerEl) return;
         answerEl.classList.remove("streaming");
         if (!raw.trim()) answerEl.remove();
@@ -1293,8 +1351,7 @@
         appendThinking(text) {
           hidePending();
           ensureThinkingBlock();
-          currentThinkBody.textContent += text;
-          scrollBottom();
+          _enqueueThink(text);
         },
         closeThinking() {
           closeCurrentThinking();
@@ -1304,15 +1361,18 @@
           hidePending();
           closeCurrentThinking();
           lastCommandGroup = null;
-          const wrap = document.createElement("div");
-          wrap.className = "thinking-wrap";
-          wrap.innerHTML = `
-            <details class="thinking">
-              <summary>Thinking</summary>
-              <div class="thinking-body">${escHtml(text)}</div>
+          // Build an open thinking block and animate its content via typewriter
+          currentThinkWrap = document.createElement("div");
+          currentThinkWrap.className = "thinking-wrap";
+          currentThinkWrap.innerHTML = `
+            <details class="thinking" open>
+              <summary>Thinking…</summary>
+              <div class="thinking-body"></div>
             </details>`;
-          turn.appendChild(wrap);
-          scrollBottom();
+          currentThinkBody = currentThinkWrap.querySelector(".thinking-body");
+          currentThinkSummary = currentThinkWrap.querySelector("summary");
+          turn.appendChild(currentThinkWrap);
+          _enqueueThink(text);
         },
         addSkillStart(evt) {
           hidePending();
@@ -1373,12 +1433,16 @@
           hidePending();
           ensureAnswer();
           answerEl.style.display = "";
-          raw += text;
           if (text && text.trim() && !/\[(error|stopped|client error)\]/.test(text)) sawNormalAnswer = true;
-          answerContent.innerHTML = renderMarkdown(raw);
-          renderMermaidDiagrams(answerContent);
-          renderMathJax(answerContent);
-          scrollBottom();
+          // Errors/stop messages render instantly; normal text gets typewriter
+          if (/\[(error|stopped|client error)\]/.test(text)) {
+            _flushAnswerQueue();
+            raw += text;
+            answerContent.innerHTML = renderMarkdown(raw);
+            scrollBottom();
+          } else {
+            _enqueueAnswer(text);
+          }
         },
         replaceWithRateLimit(message, hours) {
           hidePending();
@@ -1495,7 +1559,7 @@
             }
             card.classList.remove("pending");
           });
-          if (!turn.querySelector(".msg.bot")) {
+          if (!turn.querySelector(".msg.bot") && !turn.querySelector(".skill-card")) {
             ensureAnswer();
             answerEl.classList.remove("streaming");
             answerContent.textContent = "⚠ Empty response from upstream — check server terminal for WAF/auth details.";
@@ -1645,6 +1709,7 @@
           } else if (evt.type === "tool_progress") {
             ui.showToolProgress(evt);
           } else if (evt.type === "skill_start") {
+            if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
             ui.showToolDone();
             ui.addSkillStart(evt);
           } else if (evt.type === "skill_output") {
@@ -2458,6 +2523,11 @@
     (async () => {
     await ensureAuth();
     await loadModels();
+    // Fetch typewriter animation speed from server config
+    fetch("/api/config/ui").then(r => r.json()).then(cfg => {
+      if (cfg.typewriter_chars_per_tick) TW_CHARS = cfg.typewriter_chars_per_tick;
+      if (cfg.typewriter_tick_ms) TW_MS = cfg.typewriter_tick_ms;
+    }).catch(() => {});
 
     // Load chats filtered by current mode so sidebar matches active mode
     const initialMode = scraperMode ? 'scraper' : 'api';
