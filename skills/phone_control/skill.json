@@ -1,0 +1,21 @@
+{
+  "name": "Phone Control",
+  "key": "phone_control",
+  "version": "1.0.0",
+  "category": "core",
+  "description": "ADB-based Android phone automation: tap, swipe, type, screenshot.",
+  "trigger": "Controlling or automating an Android phone through ADB.",
+  "not_this_if": "ADB theory without execution, or Termux/phone-side scripting without ADB.",
+  "tags": [
+    "execute_command"
+  ],
+  "default": false,
+  "inline": false,
+  "priority": 80,
+  "scope": [
+    "*"
+  ],
+  "config": {},
+  "dependencies": [],
+  "$schema": "skill-v1"
+}

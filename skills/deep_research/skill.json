@@ -1,0 +1,21 @@
+{
+  "name": "Deep Research",
+  "key": "deep_research",
+  "version": "1.0.0",
+  "category": "data",
+  "description": "Multi-source investigative research with synthesis.",
+  "trigger": "Multi-part or comparative questions needing synthesis across many sources.",
+  "not_this_if": "A single query would answer it -> use Online Search.",
+  "tags": [
+    "execute_command"
+  ],
+  "default": false,
+  "inline": false,
+  "priority": 60,
+  "scope": [
+    "*"
+  ],
+  "config": {},
+  "dependencies": [],
+  "$schema": "skill-v1"
+}

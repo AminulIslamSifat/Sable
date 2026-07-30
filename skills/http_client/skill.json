@@ -1,0 +1,21 @@
+{
+  "name": "HTTP Client",
+  "key": "http_client",
+  "version": "1.0.0",
+  "category": "data",
+  "description": "API testing, endpoint requests, webhook debugging with auth chains.",
+  "trigger": "Testing APIs, hitting endpoints, sending HTTP requests, debugging webhooks.",
+  "not_this_if": "Scraping a rendered website -> use Browser Control. Downloading video -> use Video Downloader.",
+  "tags": [
+    "execute_command"
+  ],
+  "default": false,
+  "inline": false,
+  "priority": 55,
+  "scope": [
+    "*"
+  ],
+  "config": {},
+  "dependencies": [],
+  "$schema": "skill-v1"
+}

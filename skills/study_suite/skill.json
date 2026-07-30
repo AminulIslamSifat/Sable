@@ -1,0 +1,22 @@
+{
+  "name": "Study Suite",
+  "key": "study_suite",
+  "version": "1.0.0",
+  "category": "study",
+  "description": "Flashcards, Anki decks, practice problems, mock exams, cheat sheets.",
+  "trigger": "Flashcards, Anki decks, practice problems, mock exams, cheat sheets, formula sheets.",
+  "not_this_if": "Visual concept map -> use SVG Creator or Simulacra Engine.",
+  "tags": [
+    "create_note",
+    "execute_command"
+  ],
+  "default": false,
+  "inline": false,
+  "priority": 55,
+  "scope": [
+    "*"
+  ],
+  "config": {},
+  "dependencies": [],
+  "$schema": "skill-v1"
+}

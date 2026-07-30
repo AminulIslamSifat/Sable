@@ -44,7 +44,7 @@ Browser UI (web/)
     │                                   │     ├── Brain/Memory.json
     │                                   │     └── fastembed / sentence-transformers embeddings
     │                                   │
-    │                                   ├── Skill parser + executor (engine/skills.py)
+    │                                   ├── Skill engine (engine/skills/ package)
     │                                   │     ├── Native editor tags
     │                                   │     ├── execute_command
     │                                   │     ├── Background jobs
@@ -288,7 +288,7 @@ Key properties:
 - Instruction files are prepended to the first message of a session:
   - `instruction/Maria.md`
   - `instruction/output_format.md`
-  - `instruction/skills.md`
+  - Skill registry auto-generated from `skills/*/skill.json`
 
 DeepSeek Vision supports file references. Files are uploaded through `/api/deepseek/upload-file`, and the returned file IDs are sent in the `/api/chat` request using `ref_file_ids`.
 
@@ -425,51 +425,73 @@ Protected memory is managed separately through `/api/settings/memory/protected`.
 
 ## Skill System
 
-Skills are registered in:
+Skills are **auto-discovered** from the `skills/` directory. Each skill is a folder containing a `skill.json` manifest and an optional `instruction.md`. No central registry file — drop a folder in, restart, done.
 
-~~~
-skills/registry.json
-~~~
-
-At the time of writing, the registry contains **16 skills**.
+At the time of writing, there are **17 skills** across 4 categories:
 
 | Category | Skills |
 |:--|:--|
 | Core | `code_editor`, `phone_control`, `browser_control`, `testing_debugging`, `system_repair`, `background_command`, `file_uploader` |
 | Visuals | `svg_creator`, `graph_master`, `simulacra_engine`, `frontend_design` |
 | Study | `study_suite` |
-| Data | `document_skills`, `online_search`, `http_client`, `video_downloader` |
+| Data | `document_skills`, `search_online`, `deep_research`, `http_client`, `youtube_downloader` |
 
-Skill directories usually contain an `instruction.md` file and optional scripts. The skill browser endpoint enriches registry entries with instruction content and script listings.
+### Architecture
+
+~~~
+engine/skills/
+├── __init__.py          # Public API: SkillEngine, SkillParser, HANDLER_MAP
+├── registry.py          # discover_skills(), validate_registry(), SkillMeta
+├── engine.py            # SkillEngine orchestrator
+├── parser.py            # SkillParser (action-gated tag extraction)
+├── middleware.py        # Validation → Permission → Execution → Logging pipeline
+├── events.py            # SSE event builders
+├── bg_jobs.py           # BackgroundJobManager
+└── handlers/            # Tag handler implementations
+    ├── common.py        # Shared constants, paths, helpers
+    ├── execute.py       # execute_command, background, check_command
+    ├── file_ops.py      # view_file, edit_file, create_file, insert_file
+    ├── io.py            # get_file, create_note, save_svg
+    └── web.py           # openweb, search_online
+~~~
+
+### skill.json schema
+
+~~~json
+{
+  "name": "Code Editor",
+  "key": "code_editor",
+  "version": "1.0.0",
+  "category": "core",
+  "description": "...",
+  "trigger": "When to use this skill",
+  "not_this_if": "When NOT to use it",
+  "tags": ["view_file", "edit_file", "create_file", "insert_file"],
+  "default": true,
+  "inline": false,
+  "priority": 100,
+  "scope": ["maria"]
+}
+~~~
+
+- `default: true` → full instruction.md injected into every system prompt
+- `priority` → higher wins tag conflicts, listed first in prompt
+- `tags` → which runtime tags this skill owns
 
 ### Known runtime tags
 
-`engine/skills.py` recognizes these tags in the model stream:
+The engine recognizes 14 tag names in the model stream:
 
-- `execute_command`
-- `execute_background_command`
-- `check_command`
-- `get_file`
-- `read_file`
-- `search-online`
-- `search_online`
-- `openweb`
-- `create_note`
-- `save_svg`
-- `view_file`
-- `edit_file`
-- `create_file`
-- `insert_file`
+`execute_command`, `execute_background_command`, `check_command`, `get_file`, `read_file`, `search-online`, `search_online`, `openweb`, `create_note`, `save_svg`, `view_file`, `edit_file`, `create_file`, `insert_file`
 
 ### Execution rules
 
-- Default command timeout: **15 seconds**
-- Maximum command timeout: **180 seconds**
-- File mutations are backed up to `.sable_backups/`
-- Native editor tags call `skills/core/code_editor/scripts/editor_tools.py`
-- Skill execution emits `skill_start`, `skill_output`, and `skill_end` events
-- The UI renders these events as inline cards
-- File edits can be reverted through `POST /api/file/revert`, restricted to the managed backup directory
+- Default command timeout: **15 seconds**, max **180 seconds**
+- File mutations backed up to `.sable_backups/`
+- Native editor tags call `skills/code_editor/scripts/editor_tools.py`
+- Execution emits `skill_start`, `skill_output`, `skill_end` SSE events
+- File edits revertible via `POST /api/file/revert`
+- Tag conflicts resolved by priority (higher wins, warning logged)
 
 ***
 
