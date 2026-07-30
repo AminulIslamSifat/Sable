@@ -24,6 +24,7 @@ build/
 #  which is exactly why the symlink leaked into git before.)
 system/browser-data
 system/browser-data*/
+system/browser-data-acc*/
 system/browser-scraper-data/
 system/automation-browser-data/
 system/automation-browser-data.bak/
