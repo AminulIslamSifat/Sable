@@ -243,6 +243,7 @@
     }
 
     /* scrollbars */
+    html, body { scrollbar-width: thin; scrollbar-color: #2a2a2e transparent; }
     ::-webkit-scrollbar { width: 8px; height: 8px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: #2a2a2e; border-radius: 8px; }
