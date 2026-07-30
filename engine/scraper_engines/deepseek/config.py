@@ -36,7 +36,7 @@ with open(CONFIG_PATH, "r", encoding="utf-8") as f:
 active_key = os.environ.get("GHOST_PLATFORM") or PLATFORMS_CONFIG.get("active_platform", "deepseek")
 PLATFORM = PLATFORMS_CONFIG[active_key]
 
-OUTPUT_ROOT = os.environ.get("SABLE_SCRAPER_OUTPUT", str(SABLE_ROOT / "scraper_output"))
+OUTPUT_ROOT = os.environ.get("SABLE_SCRAPER_OUTPUT", str(SABLE_ROOT / "output"))
 if OUTPUT_ROOT.startswith("~"):
     OUTPUT_ROOT = os.path.expanduser(OUTPUT_ROOT)
 elif not os.path.isabs(OUTPUT_ROOT):
