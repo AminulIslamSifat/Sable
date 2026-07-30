@@ -1,0 +1,23 @@
+{
+  "name": "Video Downloader",
+  "key": "youtube_downloader",
+  "version": "1.0.0",
+  "category": "data",
+  "description": "Download videos or extract audio from media platforms.",
+  "trigger": "Downloading videos or extracting audio from YouTube, Twitter, Instagram, or any media platform.",
+  "not_this_if": "Analyzing video content without downloading it.",
+  "tags": [
+    "execute_command",
+    "execute_background_command",
+    "check_command"
+  ],
+  "default": false,
+  "inline": false,
+  "priority": 40,
+  "scope": [
+    "*"
+  ],
+  "config": {},
+  "dependencies": [],
+  "$schema": "skill-v1"
+}

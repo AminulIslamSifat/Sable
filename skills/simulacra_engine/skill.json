@@ -1,0 +1,22 @@
+{
+  "name": "Simulacra Engine",
+  "key": "simulacra_engine",
+  "version": "1.0.0",
+  "category": "visuals",
+  "description": "Dynamic, animated, interactive visualizations of physical/mathematical systems.",
+  "trigger": "Dynamic, animated, interactive visualizations of physical or mathematical systems.",
+  "not_this_if": "A static graph suffices -> use Graph Master. Node/edge structure -> use SVG Creator.",
+  "tags": [
+    "create_note",
+    "execute_command"
+  ],
+  "default": false,
+  "inline": false,
+  "priority": 45,
+  "scope": [
+    "*"
+  ],
+  "config": {},
+  "dependencies": [],
+  "$schema": "skill-v1"
+}

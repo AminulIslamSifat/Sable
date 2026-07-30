@@ -337,10 +337,19 @@ class BrowserManager:
         if maria_path.exists():
             instructions += maria_path.read_text(encoding="utf-8") + "\n\n"
 
-        for fname in ["output_format.md", "skills.md"]:
-            fpath = instruction_dir / fname
-            if fpath.exists():
-                instructions += fpath.read_text(encoding="utf-8") + "\n\n"
+        of_path = instruction_dir / "output_format.md"
+        if of_path.exists():
+            instructions += of_path.read_text(encoding="utf-8") + "\n\n"
+
+        # Auto-generated skill registry (replaces static skills.md)
+        from engine.skills import SkillEngine
+        from engine.skills.handlers import HANDLER_MAP
+        _engine = SkillEngine(
+            skills_dir=Path(__file__).resolve().parent.parent / "skills",
+            handlers=HANDLER_MAP,
+            agent_id="maria",
+        )
+        instructions += _engine.get_registry_prompt() + "\n\n"
 
         PROJECT_ROOT = Path(__file__).resolve().parent.parent
         OUTPUT_ROOT = PROJECT_ROOT / "output"

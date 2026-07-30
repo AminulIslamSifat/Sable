@@ -1,0 +1,21 @@
+{
+  "name": "Testing & Debugging",
+  "key": "testing_debugging",
+  "version": "1.0.0",
+  "category": "core",
+  "description": "Systematic bug investigation methodology. Measure before you theorize.",
+  "trigger": "ANY bug report, error, or unexpected behavior \u2014 and BEFORE claiming any fix is done.",
+  "not_this_if": "Writing new features from scratch with no bug to investigate.",
+  "tags": [
+    "execute_command"
+  ],
+  "default": true,
+  "inline": false,
+  "priority": 90,
+  "scope": [
+    "*"
+  ],
+  "config": {},
+  "dependencies": [],
+  "$schema": "skill-v1"
+}

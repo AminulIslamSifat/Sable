@@ -39,7 +39,7 @@ CLIENT_HEADERS = {
 
 # Instruction files prepended to the first message of each session
 _INSTRUCTION_DIR = Path(__file__).resolve().parent.parent.parent / "instruction"
-_INSTRUCTION_FILES = ["Maria.md", "output_format.md", "skills.md"]
+_INSTRUCTION_FILES = ["Maria.md", "output_format.md"]
 _instruction_cache: str | None = None
 
 
@@ -53,6 +53,16 @@ def _load_instructions() -> str:
         fpath = _INSTRUCTION_DIR / fname
         if fpath.exists():
             parts.append(fpath.read_text(encoding="utf-8"))
+    # Append auto-generated skill registry
+    from engine.skills import SkillEngine
+    from engine.skills.handlers import HANDLER_MAP
+    _engine = SkillEngine(
+        skills_dir=Path(__file__).resolve().parent.parent.parent / "skills",
+        handlers=HANDLER_MAP,
+        agent_id="maria",
+    )
+    parts.append(_engine.get_registry_prompt())
+
     _instruction_cache = "\n\n".join(parts)
     return _instruction_cache
 

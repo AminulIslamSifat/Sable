@@ -1,0 +1,22 @@
+{
+  "name": "Document Skills",
+  "key": "document_skills",
+  "version": "1.0.0",
+  "category": "data",
+  "description": "Create, edit, analyze DOCX, PDF, PPTX, XLSX documents.",
+  "trigger": "Creating, editing, or analyzing professional documents \u2014 DOCX, PDF, PPTX, XLSX.",
+  "not_this_if": "Output is study material -> use Study Suite.",
+  "tags": [
+    "execute_command",
+    "get_file"
+  ],
+  "default": false,
+  "inline": false,
+  "priority": 65,
+  "scope": [
+    "*"
+  ],
+  "config": {},
+  "dependencies": [],
+  "$schema": "skill-v1"
+}

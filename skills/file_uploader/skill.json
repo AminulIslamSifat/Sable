@@ -1,0 +1,21 @@
+{
+  "name": "File Uploader",
+  "key": "file_uploader",
+  "version": "1.0.0",
+  "category": "core",
+  "description": "Load non-text files (PDF, images, Office) into LLM context.",
+  "trigger": "Loading PDFs, images, Office files, or other non-text files into context.",
+  "not_this_if": "You need to edit/create/mutate files -> use Code Editor.",
+  "tags": [
+    "get_file"
+  ],
+  "default": true,
+  "inline": true,
+  "priority": 60,
+  "scope": [
+    "*"
+  ],
+  "config": {},
+  "dependencies": [],
+  "$schema": "skill-v1"
+}

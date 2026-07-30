@@ -1,0 +1,22 @@
+{
+  "name": "Graph Master",
+  "key": "graph_master",
+  "version": "1.0.0",
+  "category": "visuals",
+  "description": "Mathematical function plots with labeled Cartesian/polar axes.",
+  "trigger": "Mathematical function plots and labeled Cartesian/polar coordinate graphs.",
+  "not_this_if": "Node/edge structure with no axes -> use SVG Creator.",
+  "tags": [
+    "save_svg",
+    "execute_command"
+  ],
+  "default": false,
+  "inline": false,
+  "priority": 50,
+  "scope": [
+    "*"
+  ],
+  "config": {},
+  "dependencies": [],
+  "$schema": "skill-v1"
+}
