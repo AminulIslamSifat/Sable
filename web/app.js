@@ -762,6 +762,10 @@ function autoResize() {
 
 inputEl.addEventListener("input", autoResize);
 
+// Shared skill-card DOM builders — used both for live streaming (inside
+// addBotStreaming) and for replaying persisted skill_events when a chat's
+// history is reloaded (addHistoryMessage). Keeping one implementation
+// means history looks identical to what was shown live.
 function createSkillCard(evt) {
   const card = document.createElement("div");
   card.className = "skill-card";
