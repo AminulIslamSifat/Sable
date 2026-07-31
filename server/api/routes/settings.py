@@ -177,7 +177,7 @@ async def delete_account(payload: dict[str, str]) -> dict[str, Any]:
     return {"status": "ok", "deleted": target_name}
 
 
-_SERVICE_NAME = "sable-test.service"
+_SERVICE_NAME = "sable.service"
 
 
 @router.post("/api/settings/service/stop")
