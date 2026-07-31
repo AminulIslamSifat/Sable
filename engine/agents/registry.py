@@ -50,7 +50,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         ),
         allowed_skills=["execute_command", "code_editor", "background_command", "search_online"],
         default_skills=["code_editor", "background_command"],
-        default_model="qwen-max",
+        default_model="qwen3.7-max",
         default_timeout=180,
         max_parallel=1,
         required_json_keys=["description", "files_modified"],

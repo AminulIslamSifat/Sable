@@ -6,12 +6,18 @@ from typing import Any
 from .config import DB_PATH
 from .utils import utcnow
 
+_conn: sqlite3.Connection | None = None
+
+
 def get_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    return conn
+    """Return a persistent module-level connection (WAL mode, safe for concurrent access)."""
+    global _conn
+    if _conn is None:
+        _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        _conn.row_factory = sqlite3.Row
+        _conn.execute("PRAGMA journal_mode=WAL")
+        _conn.execute("PRAGMA busy_timeout=5000")
+    return _conn
 
 def init_db() -> None:
     with get_db() as conn:
@@ -218,23 +224,21 @@ def update_message(
         )
 
 def append_skill_event(chat_id: str, event: dict[str, Any]) -> None:
-    """Append a single event to the last assistant message's skill_events."""
+    """Append a single event to the last assistant message's skill_events.
+
+    Uses a single atomic UPDATE with SQLite JSON1 functions — no read-modify-write race.
+    """
+    event_json = json.dumps(event, ensure_ascii=False)
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT id, skill_events FROM messages WHERE chat_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1",
-            (chat_id,),
-        ).fetchone()
-        if not row:
-            return
-        msg_id = row["id"]
-        try:
-            events = json.loads(row["skill_events"]) if row["skill_events"] else []
-        except (json.JSONDecodeError, TypeError):
-            events = []
-        events.append(event)
         conn.execute(
-            "UPDATE messages SET skill_events = ? WHERE id = ?",
-            (json.dumps(events, ensure_ascii=False), msg_id),
+            """UPDATE messages SET skill_events = CASE
+                WHEN skill_events IS NULL OR skill_events = '' THEN json_array(json(?))
+                ELSE json_insert(skill_events, '$[' || json_array_length(skill_events) || ']', json(?))
+            END
+            WHERE id = (
+                SELECT id FROM messages WHERE chat_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1
+            )""",
+            (event_json, event_json, chat_id),
         )
 
 

@@ -357,8 +357,8 @@ async def _call_qwen(
     from server.api.dependencies import service
     headers = await service._ensure_headers()
 
-    # Create chat on first turn
-    chat_id = agent.browser_data_dir  # reuse field to store qwen chat_id
+    # Create or reuse upstream Qwen session
+    chat_id = agent.qwen_session_id
     if is_first_turn or not chat_id:
         chat_id = await create_new_chat(headers, model=agent.model)
         if not chat_id:
@@ -366,7 +366,7 @@ async def _call_qwen(
             chat_id = await create_new_chat(headers, model=agent.model)
         if not chat_id:
             raise RuntimeError("Could not create Qwen chat session for agent")
-        agent.browser_data_dir = chat_id  # stash for subsequent turns
+        agent.qwen_session_id = chat_id
 
     body = build_body(message, chat_id, parent_id, model=agent.model)
     params = {"chat_id": chat_id}
