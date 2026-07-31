@@ -116,7 +116,11 @@ async def chat(request: ChatRequest):
     title = make_title(request.message)
     ensure_chat(active_chat_id, title, request.parent_id, mode=current_mode, provider=current_provider)
     set_title_if_default(active_chat_id, title)
-    parent_id = get_parent_id(active_chat_id, request.parent_id)
+    # Server tail is authoritative — client leaf is fallback for first-message only
+    parent_id = get_parent_id(active_chat_id, None) or request.parent_id
+    # Reject bare integer parent_ids (DB row id leak from frontend — invalid upstream token)
+    if parent_id and parent_id.isdigit():
+        parent_id = None
     # Stash conversation settings for auto-turn delivery
     try:
         from engine.agents.auto_turn import auto_turn as _at

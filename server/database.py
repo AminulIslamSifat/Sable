@@ -151,15 +151,26 @@ def save_injected_memory_keys(chat_id: str, keys: set[str]) -> None:
         )
 
 def touch_chat(chat_id: str, parent_id: str | None = None) -> None:
+    """Update chat timestamp and optionally advance the cached tail pointer.
+
+    When parent_id is None, derives it from the latest message in the chat so
+    chats.parent_id never goes stale after auto-turns or mid-stream crashes.
+    """
     now = utcnow()
     with get_db() as conn:
         if parent_id is None:
-            conn.execute("UPDATE chats SET updated_at = ? WHERE id = ?", (now, chat_id))
-        else:
+            row = conn.execute(
+                "SELECT id FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 1",
+                (chat_id,),
+            ).fetchone()
+            parent_id = str(row["id"]) if row else None
+        if parent_id is not None:
             conn.execute(
                 "UPDATE chats SET updated_at = ?, parent_id = ? WHERE id = ?",
                 (now, parent_id, chat_id),
             )
+        else:
+            conn.execute("UPDATE chats SET updated_at = ? WHERE id = ?", (now, chat_id))
 
 def save_chat_url(chat_id: str, url: str) -> None:
     with get_db() as conn:
@@ -262,6 +273,21 @@ def delete_chat(chat_id: str) -> bool:
         conn.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
         cur = conn.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
         return cur.rowcount > 0
+
+def get_chat_tail_id(chat_id: str) -> str | None:
+    """Return the id of the latest message in a chat (server-side canonical tail).
+
+    Used by chat route and auto-turn as the authoritative parent for new messages,
+    instead of trusting client-supplied parent_id or the cached chats.parent_id.
+    Returns None if the chat has no messages yet.
+    """
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT id FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 1",
+            (chat_id,),
+        ).fetchone()
+        return str(row["id"]) if row else None
+
 
 def get_parent_id(chat_id: str, requested_parent_id: str | None) -> str | None:
     if requested_parent_id:
