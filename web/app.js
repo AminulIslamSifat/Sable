@@ -133,10 +133,9 @@
     let chatList    = [];
     let activeChatId = null;
     let parentId    = null;
-    let sending     = false;
+    const activeStreams = new Map(); // chatId → AbortController
     let creating    = false;
     let syncing     = false;
-    let abortController = null;
 
     const attachBtn     = document.getElementById("attachBtn");
     const fileInput     = document.getElementById("fileInput");
@@ -257,7 +256,7 @@
         const meta = CALLOUT_META[type] || CALLOUT_META.default;
         const bodyHtml = rest.trim() ? parseBlocks(rest.split("\n")) : "";
         return `<div class="callout callout-${type}" style="--callout-color:${meta.color}">`
-          + `<div class="callout-title"><span class="callout-icon">${meta.icon}</span>${inlineMd(title)}</div>`
+          + `<div class="callout-title"><span class="callout-icon">${lucideIcon(meta.icon)}</span>${inlineMd(title)}</div>`
           + (bodyHtml ? `<div class="callout-content">${bodyHtml}</div>` : "")
           + `</div>`;
       }
@@ -520,6 +519,47 @@
       });
     }
 
+    // ── Emoji → Lucide mapping for chat messages ──
+    const EMOJI_LUCIDE_MAP = {
+      "⚡": "zap", "🔥": "flame", "✅": "check-circle", "❌": "x-circle",
+      "⚠️": "alert-triangle", "💡": "lightbulb", "📝": "file-text", "🔧": "wrench",
+      "🚀": "rocket", "💻": "monitor", "📁": "folder", "🔒": "lock",
+      "🌐": "globe", "⭐": "star", "❤️": "heart", "🎯": "target",
+      "📊": "bar-chart-2", "🐛": "bug", "✨": "sparkles", "🔄": "refresh-cw",
+      "📦": "package", "🗂️": "archive", "⏱️": "clock", "🧠": "cpu",
+      "💾": "hard-drive", "🛠️": "tool", "📌": "pin", "🔑": "key",
+      "🎉": "party-popper", "💬": "message-circle", "📎": "paperclip", "🖥️": "monitor",
+      "⬆️": "arrow-up", "⬇️": "arrow-down", "➡️": "arrow-right", "⬅️": "arrow-left",
+      "🔍": "search", "📋": "clipboard", "🗑️": "trash-2", "🗑": "trash-2", "⚙️": "settings",
+      "🏗️": "building", "🧪": "flask-conical", "📡": "radio", "🔗": "link",
+      "❓": "help-circle", "⛔": "ban", "❗": "alert-circle", "📄": "file",
+      "🔬": "microscope", "👁️": "eye", "✍️": "pen-tool", "🤖": "bot",
+      "⏳": "hourglass", "🐋": "database", "⟳": "refresh-cw", "✕": "x",
+      "✓": "check", "✗": "x", "⚙": "settings",
+      "ℹ️": "info", "📂": "folder-open", "🗒️": "notebook-pen", "🎨": "palette",
+    };
+    const _EMOJI_RE = new RegExp(Object.keys(EMOJI_LUCIDE_MAP).map(e => e.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
+
+    function lucideReplaceEmoji(html) {
+      if (document.documentElement.getAttribute("data-icon-style") !== "lucide") return html;
+      return html.replace(_EMOJI_RE, (match) => {
+        const icon = EMOJI_LUCIDE_MAP[match];
+        return icon ? `<i data-lucide="${icon}" class="msg-lucide-icon"></i>` : match;
+      });
+    }
+
+    function activateLucideIcons(container) {
+      if (document.documentElement.getAttribute("data-icon-style") !== "lucide") return;
+      if (window.lucide) lucide.createIcons({ nodes: (container || document).querySelectorAll("[data-lucide]") });
+    }
+
+    /** Returns emoji or lucide <i> tag depending on current icon style */
+    function lucideIcon(emoji) {
+      if (document.documentElement.getAttribute("data-icon-style") !== "lucide") return emoji;
+      const icon = EMOJI_LUCIDE_MAP[emoji];
+      return icon ? `<i data-lucide="${icon}" class="msg-lucide-icon"></i>` : emoji;
+    }
+
     function renderMarkdown(raw) {
       if (!raw) return "";
       const text = escapeNonHtmlTags(normalizeMd(String(raw).replace(/\r\n/g, "\n")));
@@ -528,14 +568,14 @@
       if (window.marked && window.DOMPurify && !usesLegacyExtras(text)) {
         try {
           const html = marked.parse(text);
-          return DOMPurify.sanitize(html, { ADD_ATTR: ["target"] });
+          return lucideReplaceEmoji(DOMPurify.sanitize(html, { ADD_ATTR: ["target", "data-lucide"] }));
         } catch (err) {
           console.error("marked render failed:", err);
         }
       }
 
       try {
-        return parseBlocks(text.split("\n"));
+        return lucideReplaceEmoji(parseBlocks(text.split("\n")));
       } catch (err) {
         console.error("Markdown render error:", err);
         return `<p>${escHtml(raw)}</p>`;
@@ -639,16 +679,17 @@
       return chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < 50;
     }
 
-    let _scrollPending = false;
+    let _scrollLast = 0;
+    let _scrollForChat = null;
     function scrollBottom(force) {
-      if (_scrollPending) return;
-      _scrollPending = true;
-      requestAnimationFrame(() => {
-        _scrollPending = false;
-        if (force || isNearBottom()) {
-          chatEl.scrollTop = chatEl.scrollHeight;
-        }
-      });
+      const now = performance.now();
+      if (_scrollForChat !== activeChatId) _scrollLast = 0;
+      _scrollForChat = activeChatId;
+      if (!force && now - _scrollLast < 100) return;
+      _scrollLast = now;
+      if (force || isNearBottom()) {
+        chatEl.scrollTop = chatEl.scrollHeight;
+      }
     }
 
     function clearEmptyState() {
@@ -656,16 +697,27 @@
       if (empty) empty.remove();
     }
 
-    function setSending(val) {
-      sending = val;
-      if (val) {
-        sendBtn.classList.remove("loading");
-        sendBtn.classList.add("stop-mode");
-        abortController = new AbortController();
-      } else {
-        sendBtn.classList.remove("stop-mode", "loading");
-        abortController = null;
-      }
+    function isStreaming(chatId) { return activeStreams.has(chatId ?? activeChatId); }
+
+    function updateSendBtn() {
+      // Always derive from the currently-viewed chat, never from a stale caller
+      const streaming = activeStreams.has(activeChatId);
+      sendBtn.classList.toggle("stop-mode", streaming);
+      sendBtn.classList.remove("loading");
+    }
+
+    function startStream(chatId) {
+      const controller = new AbortController();
+      activeStreams.set(chatId, controller);
+      if (chatId === activeChatId) updateSendBtn();
+      renderChats();
+      return controller;
+    }
+
+    function endStream(chatId) {
+      activeStreams.delete(chatId);
+      if (chatId === activeChatId) updateSendBtn();
+      renderChats();
     }
 
     function setCreating(val) {
@@ -698,13 +750,20 @@
       if (!initial && evt.data) {
         const d = evt.data.attrs || evt.data;
         const parts = [];
-        if (d.path) parts.push(d.path);
-        if (d.start != null) parts.push(`L${d.start}`);
-        if (d.end != null) parts.push(`–${d.end}`);
-        if (d.at_line != null) parts.push(`@L${d.at_line}`);
-        if (d.after_str) parts.push(`after "${d.after_str.slice(0, 40)}"`);
-        if (d.full === "true" || d.full === true) parts.push("(full)");
-        if (parts.length) initial = parts.join(" ");
+        if (name === "spawn_agent") {
+          if (d.task) parts.push(`task: ${d.task.slice(0, 80)}`);
+          if (d.model) parts.push(`model: ${d.model}`);
+          if (d.collect === "true") parts.push("collect: true");
+          if (d.timeout) parts.push(`timeout: ${d.timeout}s`);
+        } else {
+          if (d.path) parts.push(d.path);
+          if (d.start != null) parts.push(`L${d.start}`);
+          if (d.end != null) parts.push(`–${d.end}`);
+          if (d.at_line != null) parts.push(`@L${d.at_line}`);
+          if (d.after_str) parts.push(`after "${d.after_str.slice(0, 40)}"`);
+          if (d.full === "true" || d.full === true) parts.push("(full)");
+        }
+        if (parts.length) initial = parts.join("\n");
       }
 
       const header = document.createElement("div");
@@ -720,7 +779,14 @@
 
       const nameEl = document.createElement("span");
       nameEl.className = "skill-name";
-      nameEl.textContent = "⚡ " + name;
+      // Specialized header for spawn_agent
+      const _roleIcons = { researcher: "🔬", coder: "💻", reviewer: "👁️", writer: "✍️" };
+      if (name === "spawn_agent") {
+        const _r = (evt.data && (evt.data.attrs || evt.data).role) || "agent";
+        nameEl.innerHTML = `${lucideIcon(_roleIcons[_r] || "🤖")} spawn · ${_r}`;
+      } else {
+        nameEl.innerHTML = lucideIcon("⚡") + " " + escHtml(name);
+      }
 
       left.appendChild(arrow);
       left.appendChild(nameEl);
@@ -771,10 +837,15 @@
       const pre = card.querySelector(".skill-output");
       status.textContent = (evt.ok ? "done · " : "failed · ") + (evt.duration_ms ?? 0) + "ms";
       status.style.color = evt.ok ? "var(--ok)" : "var(--danger)";
+      // Show agent_id in the card name after spawn completes
+      const result = evt.result || {};
+      if (evt.name === "spawn_agent" && result.agent_id) {
+        const nameEl = card.querySelector(".skill-name");
+        if (nameEl) nameEl.textContent += `  #${result.agent_id.slice(0, 8)}`;
+      }
       if (evt.error) pre.textContent += `\n[error] ${evt.error}`;
       if (!evt.ok) pre.classList.add("error");
 
-      const result = evt.result || {};
       if (result.url && result.mime && String(result.mime).startsWith("image/")) {
         const img = document.createElement("img");
         img.src = result.url;
@@ -870,6 +941,7 @@
         content.innerHTML = renderMarkdown(text);
         renderMermaidDiagrams(content);
         renderMathJax(content);
+        activateLucideIcons(content);
         div.appendChild(content);
       }
       chatEl.appendChild(div);
@@ -881,7 +953,7 @@
     function createMemoryChip(memories) {
       const chip = document.createElement("button");
       chip.className = "memory-chip";
-      chip.textContent = `🧠 Memory Used (${memories.length})`;
+      chip.innerHTML = `${lucideIcon("🧠")} Memory Used (${memories.length})`;
       chip.title = "Show the memories injected into this message";
       chip.addEventListener("click", () => openMemoryPopup(memories));
       return chip;
@@ -907,7 +979,7 @@
       const header = document.createElement("div");
       header.className = "memory-header";
       const h = document.createElement("h2");
-      h.textContent = `🧠 Memory Used (${memories.length})`;
+      h.innerHTML = `${lucideIcon("🧠")} Memory Used (${memories.length})`;
       const closeBtn = document.createElement("button");
       closeBtn.className = "memory-close";
       closeBtn.textContent = "✕";
@@ -1026,10 +1098,12 @@
           });
           const data = await res.json().catch(() => ({}));
           if (res.ok && data.status === "ok") {
-            revertBtn.textContent = "✓ Reverted";
+            revertBtn.innerHTML = `${lucideIcon("✓")} Reverted`;
+            activateLucideIcons(revertBtn);
             showToast("File reverted successfully", "success");
           } else {
-            revertBtn.textContent = "✗ Failed";
+            revertBtn.innerHTML = `${lucideIcon("✗")} Failed`;
+            activateLucideIcons(revertBtn);
             showToast(data.detail || "Revert failed", "error");
           }
         } catch (err) {
@@ -1131,6 +1205,15 @@
           } else if (evt.type === "skill_end") {
             const card = cards[evt.id];
             if (card) finishSkillCard(card, evt);
+          } else if (evt.type === "agent_result") {
+            // Render persisted agent completion card (same as live SSE)
+            if (typeof addAgentResultCard === "function") {
+              addAgentResultCard({
+                type: evt.ok ? "agent_completed" : "agent_failed",
+                agent_id: evt.agent_id,
+                data: evt.data || {},
+              });
+            }
           } else if (evt.type === "file_edit") {
             handleFileEdit(evt, false);
           } else if (evt.type === "memory_used") {
@@ -1196,6 +1279,10 @@
     function addBotStreaming() {
       clearEmptyState();
 
+      // Capture the chat this turn belongs to — typewriter ticks and scroll
+      // calls will bail if the user has switched away before they fire.
+      const turnChatId = activeChatId;
+
       const turn = document.createElement("div");
       turn.className = "turn";
       chatEl.appendChild(turn);
@@ -1224,6 +1311,8 @@
       let _thinkQueue = "";
       let _thinkTimer = null;
       function _thinkTick() {
+        // Bail if user switched to a different chat while timer was pending
+        if (turnChatId !== activeChatId) { _thinkTimer = null; return; }
         if (!_thinkQueue || !currentThinkBody) { _thinkTimer = null; return; }
         const chunk = _thinkQueue.slice(0, TW_CHARS);
         _thinkQueue = _thinkQueue.slice(TW_CHARS);
@@ -1308,6 +1397,8 @@
       const _ANS_STRUCTURAL_RE = /[\n`|<>#*_\[~=~-]/;
 
       function _ansTick() {
+        // Bail if user switched to a different chat while timer was pending
+        if (turnChatId !== activeChatId) { _ansTimer = null; return; }
         if (!_ansQueue || !answerContent) { _ansTimer = null; return; }
         const chunk = _ansQueue.slice(0, TW_CHARS);
         _ansQueue = _ansQueue.slice(TW_CHARS);
@@ -1337,7 +1428,7 @@
 
         scrollBottom();
         _ansTimer = _ansQueue ? setTimeout(_ansTick, TW_MS) : null;
-        if (!_ansTimer) { renderMermaidDiagrams(answerContent); renderMathJax(answerContent); }
+        if (!_ansTimer) { renderMermaidDiagrams(answerContent); renderMathJax(answerContent); activateLucideIcons(answerContent); }
       }
       function _enqueueAnswer(text) {
         _ansQueue += text;
@@ -1351,6 +1442,7 @@
           answerContent.innerHTML = renderMarkdown(raw);
           renderMermaidDiagrams(answerContent);
           renderMathJax(answerContent);
+          activateLucideIcons(answerContent);
           scrollBottom();
         }
       }
@@ -1472,6 +1564,7 @@
             _flushAnswerQueue();
             raw += text;
             answerContent.innerHTML = renderMarkdown(raw);
+            activateLucideIcons(answerContent);
             scrollBottom();
           } else {
             _enqueueAnswer(text);
@@ -1549,6 +1642,7 @@
             get_file:     { icon: "📂", label: "Loading file", detail: "" },
             create_note:  { icon: "🗒️", label: "Creating note", detail: attrs.path || "" },
             save_svg:     { icon: "🎨", label: "Saving SVG", detail: attrs.path || "" },
+            spawn_agent:  { icon: "🤖", label: `Spawning ${attrs.role || "agent"}`, detail: (attrs.task || "").slice(0, 60), progress: true },
           };
           const info = meta[tag] || { icon: "⚙️", label: tag, detail: "" };
           // Reuse existing card in-place to avoid layout shift
@@ -1563,13 +1657,14 @@
             ? `<div class="tac-detail tac-detail-split"><span class="tac-path">${info.detail || ""}</span><span class="tac-count">writing…</span></div>`
             : (info.detail ? `<div class="tac-detail">${info.detail}</div>` : "");
           card.innerHTML =
-            `<div class="tac-icon">${info.icon}</div>` +
+            `<div class="tac-icon">${lucideIcon(info.icon)}</div>` +
             `<div class="tac-info"><div class="tac-title">${info.label}</div>` +
             detailHtml +
             (info.progress ? `<div class="tac-progress-track"><div class="tac-progress-fill"></div></div>` : "") +
             `</div><div class="tac-status">${info.progress ? `<div class="tac-pulse-dot"></div>` : `<div class="tac-spinner"></div>`}</div>`;
           // Always keep it as the last element
           turn.appendChild(card);
+          activateLucideIcons(card);
           scrollBottom();
         },
         showToolProgress(evt) {
@@ -1585,7 +1680,7 @@
           const card = turn.querySelector(".tool-activity-card");
           if (!card) return;
           const status = card.querySelector(".tac-status");
-          if (status) status.innerHTML = `<span class="tac-check">✓</span>`;
+          if (status) { status.innerHTML = `<span class="tac-check">${lucideIcon("✓")}</span>`; activateLucideIcons(status); }
           card.classList.add("tac-done");
           // Fade out only if no next tool reuses it (cancelled in showToolPending)
           _tacExitTimer = setTimeout(() => {
@@ -1634,7 +1729,7 @@
             const regenBtn = document.createElement("button");
             regenBtn.textContent = "Regenerate";
             regenBtn.addEventListener("click", () => {
-              if (sending) return;
+              if (isStreaming()) return;
               // Find the preceding user message in this chat
               const allMsgs = Array.from(chatEl.querySelectorAll(".msg.user"));
               const thisTurn = botEl.closest(".turn");
@@ -1695,7 +1790,7 @@
       targetDiv.appendChild(resendBar);
     }
 
-    async function consumeChatStream(res, ui, userMsgDiv) {
+    async function consumeChatStream(res, ui, userMsgDiv, streamChatId) {
       const reader  = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -1720,9 +1815,14 @@
           catch { continue; }
 
           if (evt.type === "meta") {
-            activeChatId = evt.chat_id || activeChatId;
-            parentId     = evt.parent_id || parentId;
-            saveActiveChat();
+            // Only adopt chat_id/parent_id if this stream's chat is still
+            // the one the user is viewing — prevents a background stream
+            // from hijacking activeChatId when the user has switched away.
+            if (!streamChatId || evt.chat_id === streamChatId || evt.chat_id === activeChatId) {
+              activeChatId = evt.chat_id || activeChatId;
+              parentId     = evt.parent_id || parentId;
+              saveActiveChat();
+            }
           } else if (evt.type === "status") {
             if (evt.message === "feeding_skill_results") ui.nextSkillRound();
           } else if (evt.type === "memory_used") {
@@ -1740,9 +1840,11 @@
             ui.appendAnswer(evt.text || "");
           } else if (evt.type === "done") {
             gotDone = true;
-            activeChatId = evt.chat_id || activeChatId;
-            parentId     = evt.parent_id || parentId;
-            saveActiveChat();
+            if (!streamChatId || evt.chat_id === streamChatId || evt.chat_id === activeChatId) {
+              activeChatId = evt.chat_id || activeChatId;
+              parentId     = evt.parent_id || parentId;
+              saveActiveChat();
+            }
           } else if (evt.type === "rate_limited") {
             gotError = true;
             ui.replaceWithRateLimit(evt.message, evt.hours);
@@ -1779,12 +1881,13 @@
     }
 
     async function retryLastCommand(skillEvents, bar, btn) {
-      if (sending) return;
+      if (isStreaming()) return;
       if (!activeChatId) { showToast("No active chat", "error"); return; }
 
       bar.remove();
+      const streamChatId = activeChatId;
       const ui = addBotStreaming();
-      setSending(true);
+      startStream(streamChatId);
 
       try {
         const res = await fetch("/api/retry-command", {
@@ -1807,7 +1910,7 @@
           return;
         }
 
-        const { gotAnswer, gotDone, gotError } = await consumeChatStream(res, ui);
+        const { gotAnswer, gotDone, gotError } = await consumeChatStream(res, ui, null, streamChatId);
         if (!gotAnswer && !gotError && !gotDone) {
           const msg = "Stream ended without a response";
           showToast(msg, "error");
@@ -1818,8 +1921,7 @@
         ui.appendAnswer(`\n[client error] ${err.message}`);
       } finally {
         ui.finalize();
-        setSending(false);
-        // Skip sidebar rebuild — chat list doesn't change mid-conversation.
+        endStream(streamChatId);
       }
     }
 
@@ -1852,7 +1954,8 @@
         const btn = document.createElement("button");
         btn.className = "chat-item" + (chat.id === activeChatId ? " active" : "");
         btn.textContent = chat.title || "New chat";
-        btn.onclick = () => { if (!sending) selectChat(chat.id); };
+        btn.onclick = () => selectChat(chat.id);
+        if (activeStreams.has(chat.id)) row.classList.add("streaming");
         const del = document.createElement("button");
         del.className = "chat-delete";
         del.textContent = "×";
@@ -2091,12 +2194,22 @@
       const meta = chatList.find(c => c.id === chatId);
       parentId = meta?.parent_id || null;
 
+      // Cancel any stale scroll rAF from the previous chat
+      _scrollPending = false;
+      _scrollForChat = null;
+
       // Lock model dropdown to the chat's provider (or unlock for new chats)
       lockModelDropdown(meta?.provider || null);
+
+      // Update send button: show stop-mode only if THIS chat is streaming
+      updateSendBtn();
 
       saveActiveChat();
       renderChats();
       await loadMessages(chatId);
+
+      // Connect agent SSE for this chat
+      if (typeof onChatOpened === "function") onChatOpened(chatId);
 
       inputEl.focus();
     }
@@ -2144,6 +2257,30 @@
         showToast('Delete failed: ' + err.message, 'error');
       }
     });
+
+
+    // --- Service control buttons ---
+    const stopServiceBtn = document.getElementById('stopServiceBtn');
+    const restartServiceBtn = document.getElementById('restartServiceBtn');
+    if (stopServiceBtn) {
+      stopServiceBtn.addEventListener('click', async () => {
+        if (!confirm('Stop the Sable service? The UI will go offline.')) return;
+        stopServiceBtn.textContent = 'Stopping…';
+        try { await fetch('/api/settings/service/stop', { method: 'POST' }); } catch {}
+        showToast('Service stopping — UI will go offline', 'info');
+      });
+    }
+    if (restartServiceBtn) {
+      restartServiceBtn.addEventListener('click', async () => {
+        if (!confirm('Restart the Sable service? Brief downtime (~20s).')) return;
+        restartServiceBtn.textContent = 'Restarting…';
+        try { await fetch('/api/settings/service/restart', { method: 'POST' }); } catch {}
+        showToast('Restarting — back in ~20s', 'info');
+        setTimeout(() => { restartServiceBtn.textContent = '↻ Restart Service'; }, 25000);
+      });
+    }
+
+
 
 
     // --- Consolidation queue: messages sent while consolidation is pending get queued ---
@@ -2210,7 +2347,7 @@
     }
 
     async function createChat() {
-      if (creating || sending) return null;
+      if (creating) return null;
       setCreating(true);
       const oldChatId = activeChatId;
       if (oldChatId && scraperMode) {
@@ -2270,6 +2407,7 @@
         activeChatId = data.chat_id;
         parentId = null;
         lockModelDropdown(null); // unlock dropdown for fresh chat
+        if (typeof onChatOpened === "function") onChatOpened(activeChatId);
         saveActiveChat();
         await loadChats();
         chatEl.innerHTML = `<div class="empty"><h2>New conversation</h2><p>Send the first message.</p></div>`;
@@ -2383,13 +2521,40 @@
     /* =========================== end attachments =========================== */
 
     async function sendMessage() {
-      if (sending) {
-        if (abortController) abortController.abort();
+      if (isStreaming()) {
+        const ctrl = activeStreams.get(activeChatId);
+        if (ctrl) ctrl.abort();
         return;
       }
 
       const message = inputEl.value.trim();
       if (!message) return;
+
+      // @ mention → spawn agent instead of sending chat message
+      if (typeof parseAgentMention === "function") {
+        const mention = parseAgentMention(message);
+        if (mention) {
+          if (!activeChatId) {
+            const created = await createChat();
+            if (!created) return;
+          }
+          inputEl.value = "";
+          autoResize();
+          hideMentionPopup();
+          showToast(`${mention.role === "researcher" ? "🔍" : mention.role === "coder" ? "💻" : mention.role === "reviewer" ? "📋" : mention.role === "writer" ? "✍️" : "⚙️"} Spawning ${mention.role}…`, "info");
+          try {
+            const result = await spawnAgentFromMention(mention.role, mention.task, activeChatId);
+            if (result.error) {
+              showToast(`Agent spawn failed: ${result.error}`, "error");
+            } else {
+              showToast(`✅ ${mention.role} spawned (${result.model})`, "success");
+            }
+          } catch (e) {
+            showToast(`Agent spawn error: ${e.message}`, "error");
+          }
+          return;
+        }
+      }
 
       // Queue message if consolidation is still running in SCRAPER mode only
       // API mode consolidation runs independently without blocking user input
@@ -2419,7 +2584,8 @@
         }
       }
 
-      setSending(true);
+      const streamChatId = activeChatId;
+      const controller = startStream(streamChatId);
       inputEl.value = "";
       autoResize();
 
@@ -2453,7 +2619,7 @@
             thinking_mode: selectedThinkingMode,
             stream: true
           }),
-          signal: abortController ? abortController.signal : undefined
+          signal: controller.signal
         });
 
         if (!res.ok) {
@@ -2476,7 +2642,7 @@
           return;
         }
 
-        const { gotAnswer, gotDone, gotError } = await consumeChatStream(res, ui, userMsgDiv);
+        const { gotAnswer, gotDone, gotError } = await consumeChatStream(res, ui, userMsgDiv, streamChatId);
 
         // Detect empty response: stream ended with no answer tokens,
         // or stream "done" but answer content is whitespace-only.
@@ -2504,10 +2670,10 @@
         }
       } finally {
         ui.finalize();
-        setSending(false);
+        endStream(streamChatId);
 
         // After first message, provider is now locked in DB — lock the dropdown
-        const meta = chatList.find(c => c.id === activeChatId);
+        const meta = chatList.find(c => c.id === streamChatId);
         if (meta && !meta.provider) {
           const prov = scraperMode ? "scraping"
             : (modelList.find(m => m.id === selectedModel)?.api_backend === "deepseek" ? "deepseek" : "qwen");
@@ -2521,7 +2687,7 @@
 
     inputEl.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
-        if (sending) return; // let Enter insert newline while model responds
+        if (isStreaming()) return; // let Enter insert newline while model responds
         // On touch devices Enter inserts a newline; the send button sends.
         if (window.matchMedia("(pointer: coarse)").matches) return;
         e.preventDefault();
@@ -2550,7 +2716,7 @@
     }
 
     async function syncContext() {
-      if (syncing || sending) return;
+      if (syncing || isStreaming()) return;
       syncing = true;
       syncContextBtn.disabled = true;
       syncContextBtn.classList.add("loading");
@@ -2601,6 +2767,7 @@
         saveActiveChat();
         renderChats();
         await loadMessages(savedChatId);
+        if (typeof onChatOpened === "function") onChatOpened(savedChatId);
         inputEl.focus();
       } else if (chatList.length > 0) {
         await selectChat(chatList[0].id);
@@ -2770,8 +2937,9 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ memory: _memoryCache })
         });
-        memStatus.textContent = res.ok ? "✓ Saved" : "✕ Failed";
-      } catch (e) { memStatus.textContent = "✕ Error"; }
+        memStatus.innerHTML = res.ok ? `${lucideIcon("✓")} Saved` : `${lucideIcon("✕")} Failed`;
+        activateLucideIcons(memStatus);
+      } catch (e) { memStatus.innerHTML = `${lucideIcon("✕")} Error`; activateLucideIcons(memStatus); }
       setTimeout(() => { memStatus.textContent = ""; }, 2000);
     });
 
@@ -2846,8 +3014,9 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ protected: _protectedCache })
         });
-        protStatus.textContent = res.ok ? "✓ Saved" : "✕ Failed";
-      } catch (e) { protStatus.textContent = "✕ Error"; }
+        protStatus.innerHTML = res.ok ? `${lucideIcon("✓")} Saved` : `${lucideIcon("✕")} Failed`;
+        activateLucideIcons(protStatus);
+      } catch (e) { protStatus.innerHTML = `${lucideIcon("✕")} Error`; activateLucideIcons(protStatus); }
       setTimeout(() => { protStatus.textContent = ""; }, 2000);
     });
 
@@ -2978,7 +3147,17 @@
     const skillsGrid = document.getElementById("skillsGrid");
     const skillDetailOverlay = document.getElementById("skillDetailOverlay");
     const skillDetailClose = document.getElementById("skillDetailClose");
+    const skillDisableToggle = document.getElementById("skillDisableToggle");
     let skillsLoaded = false;
+    let _currentSkillKey = null;
+
+    const DISABLED_SKILLS_KEY = "sable_disabled_skills";
+    function getDisabledSkills() {
+      try { return JSON.parse(localStorage.getItem(DISABLED_SKILLS_KEY)) || []; } catch { return []; }
+    }
+    function setDisabledSkills(arr) {
+      try { localStorage.setItem(DISABLED_SKILLS_KEY, JSON.stringify(arr)); } catch (e) {}
+    }
 
     async function loadSkills() {
       if (skillsLoaded) return;
@@ -2986,11 +3165,13 @@
         const res = await fetch("/api/skills/browse");
         const data = await res.json();
         const skills = data.skills || [];
+        const disabled = getDisabledSkills();
         skillsGrid.innerHTML = "";
         skills.forEach((sk) => {
           const chip = document.createElement("div");
-          chip.className = "skill-chip";
-          chip.innerHTML = `<div class="skill-chip-name">${sk.name}</div><div class="skill-chip-cat">${sk.category}</div>`;
+          const isDisabled = disabled.includes(sk.path);
+          chip.className = "skill-chip" + (isDisabled ? " skill-chip-disabled" : "");
+          chip.innerHTML = `<div class="skill-chip-name">${sk.name}${isDisabled ? ' <span class="skill-disabled-badge">off</span>' : ""}</div><div class="skill-chip-cat">${sk.category}</div>`;
           chip.addEventListener("click", () => showSkillDetail(sk));
           skillsGrid.appendChild(chip);
         });
@@ -2999,6 +3180,7 @@
     }
 
     function showSkillDetail(sk) {
+      _currentSkillKey = sk.path;
       document.getElementById("skillDetailName").textContent = sk.name;
       document.getElementById("skillDetailCat").textContent = sk.category || "—";
       document.getElementById("skillDetailPath").textContent = "skills/" + sk.path;
@@ -3020,10 +3202,27 @@
 
       // Render instruction.md as markdown
       const instrEl = document.getElementById("skillInstruction");
-      instrEl.innerHTML = sk.instruction ? renderMarkdown(sk.instruction) : "<em>No instruction file.</em>";
+      instrEl.innerHTML = sk.instruction_content ? renderMarkdown(sk.instruction_content) : "<em>No instruction file.</em>";
+
+      // Disable toggle state
+      skillDisableToggle.checked = getDisabledSkills().includes(sk.path);
 
       skillDetailOverlay.classList.add("show");
     }
+
+    skillDisableToggle.addEventListener("change", () => {
+      if (!_currentSkillKey) return;
+      let disabled = getDisabledSkills();
+      if (skillDisableToggle.checked) {
+        if (!disabled.includes(_currentSkillKey)) disabled.push(_currentSkillKey);
+      } else {
+        disabled = disabled.filter((k) => k !== _currentSkillKey);
+      }
+      setDisabledSkills(disabled);
+      // Update chip in grid
+      skillsLoaded = false;
+      loadSkills();
+    });
 
     skillDetailClose.addEventListener("click", () => skillDetailOverlay.classList.remove("show"));
     skillDetailOverlay.addEventListener("click", (e) => {
@@ -3181,7 +3380,10 @@
               <div style="font-size:12px;font-weight:600;color:var(--text);">${email}</div>
               <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">${acc.name}${size ? ' · ' + size : ''}${isActive ? ' · <span style="color:var(--accent);">active</span>' : ''}</div>
             </div>
-            ${isActive ? '' : `<button class="icon-btn account-switch-btn" data-profile="${acc.name}" style="width:auto;padding:5px 12px;font-size:11px;white-space:nowrap;">Switch</button>`}
+            <div style="display:flex;gap:6px;align-items:center;">
+              ${isActive ? '' : `<button class="icon-btn account-switch-btn" data-profile="${acc.name}" style="width:auto;padding:5px 12px;font-size:11px;white-space:nowrap;">Switch</button>`}
+              ${isActive ? '' : `<button class="icon-btn account-delete-btn" data-profile="${acc.name}" style="width:auto;padding:5px 10px;font-size:11px;white-space:nowrap;color:var(--danger);border-color:var(--danger);">Delete</button>`}
+            </div>
           </div>`;
         }).join("");
 
@@ -3214,6 +3416,34 @@
             }
           });
         });
+        accountProfileCards.querySelectorAll(".account-delete-btn").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const profile = btn.dataset.profile;
+            if (!confirm(`Delete ${profile}?\n\nThis permanently removes the browser data directory.`)) return;
+            btn.disabled = true;
+            btn.textContent = "Deleting…";
+            try {
+              const res = await fetch("/api/settings/accounts/delete", {
+                method: "DELETE",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ profile }),
+              });
+              const data = await res.json().catch(() => ({}));
+              if (res.ok) {
+                showToast(`🗑️ Deleted ${profile}`, "success");
+                await loadAccountProfiles();
+              } else {
+                showToast("Delete failed: " + (data.detail || "unknown"), "error");
+                btn.disabled = false;
+                btn.textContent = "Delete";
+              }
+            } catch (e) {
+              showToast("Delete error: " + e.message, "error");
+              btn.disabled = false;
+              btn.textContent = "Delete";
+            }
+          });
+        });
       } catch (e) {
         accountProfileCards.innerHTML = `<p class="muted" style="font-size:12px;margin:0;color:var(--danger);">Failed to load: ${e.message}</p>`;
       }
@@ -3222,6 +3452,27 @@
     if (refreshAccountsBtn) {
       refreshAccountsBtn.addEventListener("click", loadAccountProfiles);
     }
+
+
+    const addAccountBtn = document.getElementById("addAccountBtn");
+    if (addAccountBtn) {
+      addAccountBtn.addEventListener("click", async () => {
+        addAccountBtn.disabled = true;
+        addAccountBtn.textContent = "Opening…";
+        try {
+          const res = await fetch("/api/settings/accounts/create", { method: "POST" });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || "Failed");
+          addAccountBtn.textContent = "Opening…";
+          setTimeout(() => { addAccountBtn.textContent = "Add Account"; addAccountBtn.disabled = false; }, 3000);
+        } catch (e) {
+          addAccountBtn.textContent = "Failed";
+          setTimeout(() => { addAccountBtn.textContent = "Add Account"; addAccountBtn.disabled = false; }, 2000);
+        }
+      });
+    }
+
+
 
     // Load browser settings when settings panel opens
     const origOpenSettings = openSettings;
@@ -3254,7 +3505,99 @@
       }
     })();
 
+    // ---------- Font Family ----------
+    const FONT_FAMILY_KEY = "sable_font_family";
+    const fontFamilySelect = document.getElementById("fontFamilySelect");
+    const FONT_STACKS = {
+      maple: "'Maple Mono', ui-monospace, monospace",
+      inter: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
+      system: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+    };
+
+    function applyFontFamily(key) {
+      const stack = FONT_STACKS[key] || FONT_STACKS.maple;
+      document.documentElement.style.setProperty("--font-body", stack);
+      document.documentElement.style.setProperty("--font-mono", stack);
+      document.documentElement.style.setProperty("--font-serif", stack);
+    }
+
+    fontFamilySelect.addEventListener("change", () => {
+      applyFontFamily(fontFamilySelect.value);
+      try { localStorage.setItem(FONT_FAMILY_KEY, fontFamilySelect.value); } catch (e) {}
+    });
+
+    (function loadFontFamily() {
+      let saved = null;
+      try { saved = localStorage.getItem(FONT_FAMILY_KEY); } catch (e) {}
+      if (saved && FONT_STACKS[saved]) {
+        fontFamilySelect.value = saved;
+        applyFontFamily(saved);
+      }
+    })();
+
+    // ---------- UI Version ----------
+    const UI_VERSION_KEY = "sable_ui_version";
+    const uiVersionSelect = document.getElementById("uiVersionSelect");
+
+    const UI_DEFAULT_FONT = { ui1: "inter", ui2: "maple" };
+
+    function applyUiVersion(ver) {
+      document.documentElement.setAttribute("data-ui-version", ver);
+      // Sync font family to match UI default
+      const fontKey = UI_DEFAULT_FONT[ver] || "maple";
+      fontFamilySelect.value = fontKey;
+      applyFontFamily(fontKey);
+      try { localStorage.setItem(FONT_FAMILY_KEY, fontKey); } catch (e) {}
+    }
+
+    uiVersionSelect.addEventListener("change", () => {
+      const ver = uiVersionSelect.value;
+      try { localStorage.setItem(UI_VERSION_KEY, ver); } catch (e) {}
+      applyUiVersion(ver);
+    });
+
+    (function loadUiVersion() {
+      let saved = null;
+      try { saved = localStorage.getItem(UI_VERSION_KEY); } catch (e) {}
+      if (saved) uiVersionSelect.value = saved;
+      applyUiVersion(uiVersionSelect.value);
+    })();
+
+    // ---------- Icon Style ----------
+    const ICON_STYLE_KEY = "sable_icon_style";
+    const iconStyleSelect = document.getElementById("iconStyleSelect");
+    let _lucideLoaded = false;
+
+    function applyIconStyle(style) {
+      document.documentElement.setAttribute("data-icon-style", style);
+      if (style === "lucide" && !_lucideLoaded) {
+        const script = document.createElement("script");
+        script.src = "https://unpkg.com/lucide@latest/dist/umd/lucide.min.js";
+        script.onload = () => { _lucideLoaded = true; if (window.lucide) lucide.createIcons(); };
+        document.head.appendChild(script);
+      } else if (style === "lucide" && _lucideLoaded && window.lucide) {
+        lucide.createIcons();
+      }
+    }
+
+    iconStyleSelect.addEventListener("change", () => {
+      applyIconStyle(iconStyleSelect.value);
+      try { localStorage.setItem(ICON_STYLE_KEY, iconStyleSelect.value); } catch (e) {}
+    });
+
+    (function loadIconStyle() {
+      let saved = null;
+      try { saved = localStorage.getItem(ICON_STYLE_KEY); } catch (e) {}
+      if (saved) {
+        iconStyleSelect.value = saved;
+        applyIconStyle(saved);
+      }
+    })();
+
+
+
     // ---------- Theme ----------
+
     const THEME_KEY = "sable_theme";
     const themePicker = document.getElementById("themePicker");
 
@@ -3491,91 +3834,82 @@
     const container = document.getElementById('browserProfileCards');
     if (!container) return;
     try {
-      const res = await fetch('/api/settings/browser/profiles');
+      const res = await fetch('/api/settings/accounts/backups');
       const d = await res.json();
+      const accounts = d.accounts || [];
+      if (!accounts.length) {
+        container.innerHTML = '<p class="muted" style="font-size:12px;margin:0;">No account profiles found.</p>';
+        return;
+      }
       let html = '';
-      for (const [key, p] of Object.entries(d.profiles)) {
-        const dot = p.exists ? '\u{1F7E2}' : '\u{1F534}';
-        const bakDot = p.has_backup ? '\u{1F7E2}' : '\u{1F534}';
+      for (const acc of accounts) {
+        const bakDot = acc.has_backup ? '\u{1F7E2}' : '\u{1F534}';
         html +=
           '<div style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;">' +
             '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">' +
-              '<span style="font-size:13px;font-weight:600;color:var(--text);">' + dot + ' ' + p.label + '</span>' +
+              '<span style="font-size:13px;font-weight:600;color:var(--text);">' + escHtml(acc.name) + (acc.email ? ' <span style="font-weight:400;font-size:11px;color:var(--text-dim);">' + escHtml(acc.email) + '</span>' : '') + '</span>' +
               '<span style="display:flex;gap:6px;">' +
-                '<button data-profile="' + key + '" class="backupProfileBtn" style="background:var(--panel);color:var(--accent);border:1px solid var(--accent);border-radius:6px;padding:5px 12px;font-size:11px;cursor:pointer;font-weight:600;">📦 Backup</button>' +
-                '<button data-profile="' + key + '" class="restoreProfileBtn" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:11px;cursor:pointer;font-weight:600;' + (p.has_backup ? '' : 'opacity:0.4;pointer-events:none;') + '">♻ Restore</button>' +
+                '<button data-profile="' + escAttr(acc.name) + '" class="accBackupBtn" style="background:var(--panel);color:var(--accent);border:1px solid var(--accent);border-radius:6px;padding:5px 12px;font-size:11px;cursor:pointer;font-weight:600;">Backup</button>' +
+                '<button data-profile="' + escAttr(acc.name) + '" class="accRestoreBtn" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:11px;cursor:pointer;font-weight:600;' + (acc.has_backup ? '' : 'opacity:0.4;pointer-events:none;') + '">Restore</button>' +
               '</span>' +
             '</div>' +
             '<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-size:12px;color:var(--text-dim);">' +
-              '<span>Data</span><span style="color:var(--text);">' + p.data_dir + ' (' + p.size_mb + ' MB)</span>' +
-              '<span>Backup</span><span style="color:var(--text);">' + bakDot + ' ' + (p.has_backup ? p.backup_size_mb + ' MB' : 'No backup found') + '</span>' +
+              '<span>Size</span><span style="color:var(--text);">' + acc.size_mb + ' MB</span>' +
+              '<span>Backup</span><span style="color:var(--text);">' + bakDot + ' ' + (acc.has_backup ? acc.backup_size_mb + ' MB' : 'None') + '</span>' +
             '</div>' +
           '</div>';
       }
       container.innerHTML = html;
-      container.querySelectorAll('.restoreProfileBtn').forEach(btn => {
-        btn.addEventListener('click', () => restoreBrowserProfile(btn.dataset.profile, btn));
+      container.querySelectorAll('.accRestoreBtn').forEach(btn => {
+        btn.addEventListener('click', () => restoreAccountProfile(btn.dataset.profile, btn));
       });
-      container.querySelectorAll('.backupProfileBtn').forEach(btn => {
-        btn.addEventListener('click', () => createBrowserBackup(btn.dataset.profile, btn));
+      container.querySelectorAll('.accBackupBtn').forEach(btn => {
+        btn.addEventListener('click', () => backupAccountProfile(btn.dataset.profile, btn));
       });
     } catch {
       container.innerHTML = '<p class="muted" style="font-size:12px;margin:0;color:var(--danger);">Failed to load profiles.</p>';
     }
   }
 
-  async function restoreBrowserProfile(profile, btn) {
-    const label = { api: 'API (ChatService)', scraper: 'Scraper', automation: 'Automation' }[profile] || profile;
-    if (!confirm('Restore ' + label + ' browser data from backup?\n\nThis DELETES the current profile and replaces it with the .bak snapshot. Make sure the browser is stopped.')) return;
+  async function restoreAccountProfile(profile, btn) {
+    if (!confirm('Restore ' + profile + ' from backup?\n\nThis DELETES the current profile and replaces it with the .bak snapshot.')) return;
     btn.disabled = true;
-    btn.textContent = '⏳ Restoring…';
+    btn.textContent = 'Restoring…';
     try {
-      const res = await fetch('/api/settings/browser/restore', {
+      const res = await fetch('/api/settings/accounts/restore', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ profile })
       });
       const d = await res.json();
-      if (res.ok) {
-        showToast('♻ ' + label + ' profile restored from ' + d.restored_from, 'success');
-      } else {
-        showToast('Restore failed: ' + (d.detail || 'Unknown error'), 'error');
-      }
-    } catch {
-      showToast('Restore failed — network error', 'error');
-    }
+      if (res.ok) showToast(profile + ' restored', 'success');
+      else showToast('Restore failed: ' + (d.detail || 'Unknown'), 'error');
+    } catch { showToast('Restore failed — network error', 'error'); }
     btn.disabled = false;
-    btn.textContent = '♻ Restore';
+    btn.textContent = 'Restore';
     await loadBrowserProfiles();
   }
 
-  async function createBrowserBackup(profile, btn) {
-    const label = { api: 'API (ChatService)', scraper: 'Scraper', automation: 'Automation' }[profile] || profile;
+  async function backupAccountProfile(profile, btn) {
     btn.disabled = true;
-    const orig = btn.textContent;
-    btn.textContent = '⏳ Backing up…';
+    btn.textContent = 'Backing up…';
     try {
-      const res = await fetch('/api/settings/browser/create-backup', {
+      const res = await fetch('/api/settings/accounts/backup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ profile })
       });
       const d = await res.json();
-      if (res.ok) {
-        showToast('📦 ' + label + ' backed up (' + d.size_mb + ' MB)', 'success');
-      } else {
-        showToast('Backup failed: ' + (d.detail || 'Unknown error'), 'error');
-      }
-    } catch {
-      showToast('Backup failed — network error', 'error');
-    }
+      if (res.ok) showToast(profile + ' backed up (' + d.size_mb + ' MB)', 'success');
+      else showToast('Backup failed: ' + (d.detail || 'Unknown'), 'error');
+    } catch { showToast('Backup failed — network error', 'error'); }
     btn.disabled = false;
-    btn.textContent = orig;
+    btn.textContent = 'Backup';
     await loadBrowserProfiles();
   }
 
   document.getElementById('refreshProfilesBtn')?.addEventListener('click', loadBrowserProfiles);
   loadBrowserProfiles();
-  // ── /Browser Profile Restore ────────────────────────────────
+  // ── /Browser Profile Backup ────────────────────────────────
 
 

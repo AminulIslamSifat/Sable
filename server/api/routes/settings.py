@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
+import subprocess
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -67,13 +69,16 @@ async def refresh_deepseek_token() -> dict[str, Any]:
 async def list_accounts() -> dict[str, Any]:
     def _scan() -> list[dict[str, Any]]:
         accounts: list[dict[str, Any]] = []
-        for entry in sorted(_SYSTEM_DIR.iterdir()):
-            if entry.is_dir() and entry.name.startswith("browser-data-acc"):
+        for entry in _SYSTEM_DIR.iterdir():
+            m = re.match(r"browser-data-acc(\d+)$", entry.name)
+            if entry.is_dir() and m:
                 accounts.append({
                     "name": entry.name,
+                    "num": int(m.group(1)),
                     "email": _read_profile_email(entry),
                     "size_mb": _dir_size_mb(entry),
                 })
+        accounts.sort(key=lambda a: a["num"])
         return accounts
     accounts = await asyncio.to_thread(_scan)
     active: str | None = None
@@ -115,6 +120,145 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
     except Exception:
         pass
     return {"status": "ok", "active": target_name, "email": _read_profile_email(target_path)}
+
+
+@router.post("/api/settings/accounts/create")
+async def create_account() -> dict[str, Any]:
+    """Find next available acc integer and launch browser_opener headed."""
+    def _next_acc() -> int:
+        existing: set[int] = set()
+        for d in _SYSTEM_DIR.iterdir():
+            m = re.match(r"browser-data-acc(\d+)$", d.name)
+            if m and d.is_dir():
+                existing.add(int(m.group(1)))
+        n = 1
+        while n in existing:
+            n += 1
+        return n
+
+    acc_num = await asyncio.to_thread(_next_acc)
+    profile_name = f"browser-data-acc{acc_num}"
+
+    def _launch() -> None:
+        subprocess.Popen(
+            ["uv", "run", "python", "engine/account_login.py", profile_name],
+            cwd=str(BASE_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    try:
+        await asyncio.to_thread(_launch)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to launch browser_opener: {exc}")
+    return {"status": "ok", "profile": profile_name}
+
+
+@router.delete("/api/settings/accounts/delete")
+async def delete_account(payload: dict[str, str]) -> dict[str, Any]:
+    """Delete a browser-data-accN profile directory (and its .bak if present)."""
+    target_name = payload.get("profile", "")
+    if not re.match(r"^browser-data-acc\d+$", target_name):
+        raise HTTPException(status_code=400, detail="Invalid profile name")
+    target_path = _SYSTEM_DIR / target_name
+    if not target_path.is_dir():
+        raise HTTPException(status_code=404, detail=f"'{target_name}' not found")
+    # Block deleting the active profile
+    if _ACTIVE_PROFILE_LINK.is_symlink() and _ACTIVE_PROFILE_LINK.resolve() == target_path.resolve():
+        raise HTTPException(status_code=400, detail="Cannot delete the active profile. Switch first.")
+
+    def _remove() -> None:
+        shutil.rmtree(target_path)
+        bak = _SYSTEM_DIR / f"{target_name}.bak"
+        if bak.is_dir():
+            shutil.rmtree(bak)
+
+    await asyncio.to_thread(_remove)
+    return {"status": "ok", "deleted": target_name}
+
+
+_SERVICE_NAME = "sable-test.service"
+
+
+@router.post("/api/settings/service/stop")
+async def stop_service() -> dict[str, str]:
+    subprocess.Popen(["systemctl", "--user", "stop", _SERVICE_NAME])
+    return {"status": "stopping"}
+
+
+@router.post("/api/settings/service/restart")
+async def restart_service() -> dict[str, str]:
+    subprocess.Popen(["systemctl", "--user", "restart", _SERVICE_NAME])
+    return {"status": "restarting"}
+
+
+
+
+
+@router.get("/api/settings/accounts/backups")
+async def get_account_backups() -> dict[str, Any]:
+    """List each browser-data-accN dir with its .bak status."""
+    def _collect() -> list[dict[str, Any]]:
+        accounts: list[dict[str, Any]] = []
+        for d in _SYSTEM_DIR.iterdir():
+            m = re.match(r"browser-data-acc(\d+)$", d.name)
+            if not m or not d.is_dir():
+                continue
+            bak = _SYSTEM_DIR / f"{d.name}.bak"
+            accounts.append({
+                "name": d.name,
+                "num": int(m.group(1)),
+                "size_mb": _dir_size_mb(d),
+                "has_backup": bak.is_dir(),
+                "backup_size_mb": _dir_size_mb(bak) if bak.is_dir() else 0,
+                "email": _read_profile_email(d),
+            })
+        accounts.sort(key=lambda a: a["num"])
+        return accounts
+    result = await asyncio.to_thread(_collect)
+    return {"accounts": result}
+
+
+@router.post("/api/settings/accounts/backup")
+async def backup_account(payload: dict[str, str]) -> dict[str, Any]:
+    """Create a .bak snapshot of a specific account profile."""
+    name = payload.get("profile", "")
+    if not re.match(r"browser-data-acc\d+$", name):
+        raise HTTPException(status_code=400, detail="Profile must match 'browser-data-accN'")
+    data_path = _SYSTEM_DIR / name
+    if not data_path.is_dir():
+        raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
+    bak_path = _SYSTEM_DIR / f"{name}.bak"
+
+    def _do() -> None:
+        if bak_path.is_dir():
+            shutil.rmtree(bak_path)
+        shutil.copytree(data_path, bak_path, symlinks=True)
+
+    await asyncio.to_thread(_do)
+    return {"status": "ok", "profile": name, "size_mb": _dir_size_mb(bak_path)}
+
+
+@router.post("/api/settings/accounts/restore")
+async def restore_account(payload: dict[str, str]) -> dict[str, Any]:
+    """Restore an account profile from its .bak snapshot."""
+    name = payload.get("profile", "")
+    if not re.match(r"browser-data-acc\d+$", name):
+        raise HTTPException(status_code=400, detail="Profile must match 'browser-data-accN'")
+    data_path = _SYSTEM_DIR / name
+    bak_path = _SYSTEM_DIR / f"{name}.bak"
+    if not bak_path.is_dir():
+        raise HTTPException(status_code=404, detail=f"No backup found for '{name}'")
+
+    def _do() -> None:
+        if data_path.is_dir():
+            shutil.rmtree(data_path)
+        shutil.copytree(bak_path, data_path, symlinks=True)
+
+    await asyncio.to_thread(_do)
+    return {"status": "ok", "profile": name, "restored_from": str(bak_path)}
+
+
 
 @router.get("/api/settings/browser/profiles")
 async def get_browser_profiles() -> dict[str, Any]:

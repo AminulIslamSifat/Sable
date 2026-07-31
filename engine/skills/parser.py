@@ -21,8 +21,7 @@ KNOWN_TAGS = (
     "execute_background_command",
     "get_file",
     "read_file",
-    "search-online",
-    "search_online",
+
     "check_command",
     "openweb",
     "create_note",

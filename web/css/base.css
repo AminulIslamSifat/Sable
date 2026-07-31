@@ -59,3 +59,13 @@
 .katex-display { margin: 1em 0; overflow-x: auto; overflow-y: hidden; padding: 0.5em 0; }
 .katex { font-size: 1.1em; }
 .math-error { color: #e74c3c; font-family: monospace; font-size: 0.9em; background: rgba(231,76,60,0.1); padding: 2px 6px; border-radius: 4px; }
+
+
+/* ── Icon style swap (emoji vs lucide) ── */
+.icon-lucide { display: none; width: 16px; height: 16px; vertical-align: middle; }
+[data-icon-style="lucide"] .icon-emoji { display: none; }
+[data-icon-style="lucide"] .icon-lucide { display: inline-block; }
+
+.msg-lucide-icon { display: inline-block; width: 1em; height: 1em; vertical-align: -0.125em; }
+
+

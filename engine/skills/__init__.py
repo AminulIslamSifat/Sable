@@ -45,6 +45,23 @@ __all__ = [
 from pathlib import Path as _Path
 from engine.skills.handlers.common import BACKUP_DIR
 
+# --- Shared SkillEngine singleton (used by agents + any non-route caller) ---
+
+_shared_engine: SkillEngine | None = None
+
+
+def get_skill_engine() -> SkillEngine:
+    """Get or create the shared SkillEngine singleton."""
+    global _shared_engine
+    if _shared_engine is None:
+        from engine.skills.handlers import HANDLER_MAP
+        _shared_engine = SkillEngine(
+            skills_dir=_Path(__file__).resolve().parent.parent.parent / "skills",
+            handlers=HANDLER_MAP,
+            agent_id="maria",
+        )
+    return _shared_engine
+
 # --- Backward-compatible API shims (used by server/api/routes/misc.py) ---
 
 def list_skills() -> list[dict]:

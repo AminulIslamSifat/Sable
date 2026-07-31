@@ -16,7 +16,7 @@ from engine.memory_search import get_searcher
 from connectors.deepseek.client import get_client as get_deepseek_client
 
 from .dependencies import service
-from server.database import init_db
+from server.database import init_db, recover_stale_agents
 from server.auth import AUTH_TOKEN
 from server.config import (
     AUTH_EXEMPT_PREFIXES, WEB_DIR, UPLOAD_DIR,
@@ -34,10 +34,24 @@ from .routes.upload import router as upload_router
 from .routes.deepseek import router as deepseek_router
 from .routes.chat import router as chat_router
 from .routes.misc import router as misc_router
+from .routes.agents import router as agents_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     init_db()
+    stale = recover_stale_agents()
+    if stale:
+        logger.info("Recovered %d stale agent(s) from previous session", stale)
+    # Load saved role overrides into registry
+    try:
+        from engine.config import AGENT_CONFIG_PATH
+        from engine.agents.registry import apply_role_overrides
+        if AGENT_CONFIG_PATH.exists():
+            _acfg = json.loads(AGENT_CONFIG_PATH.read_text(encoding="utf-8"))
+            if _acfg.get("roles"):
+                apply_role_overrides(_acfg["roles"])
+    except Exception:
+        pass
     if _MEMORY_SEARCH_SETTINGS.exists():
         try:
             _ms = json.loads(_MEMORY_SEARCH_SETTINGS.read_text(encoding="utf-8"))
@@ -83,7 +97,7 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     auth_header = request.headers.get("authorization", "")
     authorized = auth_header.startswith("Bearer ") and auth_header[7:] == AUTH_TOKEN
-    if not authorized and path == "/api/logs":
+    if not authorized and (path == "/api/logs" or path.endswith("/agent-events")):
         authorized = request.query_params.get("token", "") == AUTH_TOKEN
     if not authorized:
         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
@@ -99,3 +113,79 @@ app.include_router(upload_router)
 app.include_router(deepseek_router)
 app.include_router(chat_router)
 app.include_router(misc_router)
+app.include_router(agents_router)
+
+# Wire agent runtime event callback → SSE push
+from .routes.agents import _async_push_agent_event, push_agent_event
+from engine.agents import get_runtime as _get_agent_runtime
+_get_agent_runtime().set_event_callback(_async_push_agent_event)
+
+# Wire auto-turn engine: agent results → autonomous model turns
+from engine.agents.auto_turn import auto_turn as _auto_turn
+from .dependencies import service as _chat_service
+
+
+async def _auto_turn_fn(chat_id: str, messages: list[dict], on_chunk) -> str:
+    """Run a synthetic LLM turn — plain text only, tool tags stripped."""
+    import re as _re
+    from server.database import add_message, touch_chat, get_parent_id
+    from server.utils import _is_deepseek_api_model
+
+    prompt = messages[-1]["content"] if messages else ""
+    model, thinking_mode, provider = _auto_turn.get_chat_settings(chat_id)
+    full: list[str] = []
+    parent_id: str | None = get_parent_id(chat_id, None)
+
+    # Route to the correct backend based on conversation provider
+    if provider == "deepseek" or (model and _is_deepseek_api_model(model)):
+        from connectors.deepseek.client import get_client as _get_ds
+        from engine.config import get_model_config
+        ds_cfg = get_model_config(model) if model else {}
+        api_type = ds_cfg.get("api_model_type", "default")
+        event_source = _get_ds().stream_chat(
+            message=prompt, model=api_type,
+            thinking_mode=thinking_mode, chat_id=chat_id,
+        )
+    else:
+        # Default: Qwen ChatService
+        event_source = _chat_service.stream_events(
+            prompt, chat_id=chat_id, model=model, thinking_mode=thinking_mode,
+        )
+
+    try:
+        async for ev in event_source:
+            ev_type = ev.get("type")
+            if ev_type == "answer":
+                tok = ev.get("text", "")
+                if tok:
+                    full.append(tok)
+                    await on_chunk(tok)
+            elif ev_type in ("meta", "done"):
+                parent_id = ev.get("parent_id") or parent_id
+            elif ev_type == "error":
+                raise RuntimeError(ev.get("message", "stream error"))
+    finally:
+        response_text = "".join(full)
+        if response_text:
+            # Strip leaked tool wrapper blocks — auto-turn is plain text only
+            response_text = _re.sub(r"<action>.*?</action>", "", response_text, flags=_re.DOTALL).strip()
+        if response_text:
+            add_message(chat_id, "assistant", response_text, None, parent_id,
+                        skill_events=[{"type": "auto_turn", "trigger": "agent_completion"}])
+            touch_chat(chat_id, parent_id)
+        await _auto_turn_done(chat_id)
+    return response_text
+
+
+async def _auto_turn_chunk(chat_id: str, token: str) -> None:
+    """Push auto-turn tokens to frontend via agent-events SSE."""
+    push_agent_event(chat_id, {"type": "auto_turn_chunk", "agent_id": None, "data": {"token": token}})
+
+
+async def _auto_turn_done(chat_id: str) -> None:
+    """Signal end of auto-turn stream."""
+    push_agent_event(chat_id, {"type": "auto_turn_end", "agent_id": None, "data": {}})
+
+
+_auto_turn.set_turn_fn(_auto_turn_fn)
+_auto_turn.set_chunk_callback(_auto_turn_chunk)
