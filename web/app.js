@@ -1186,9 +1186,21 @@
               </details>`;
             chatEl.appendChild(wrap);
           } else if (evt.type === "round_text") {
-            // Per-round text — render inline so it interleaves with tool cards
+            // Per-round text — render inline within the chat flow so it
+            // interleaves with tool cards instead of grouping at the bottom.
             hasRoundText = true;
-            if (evt.text) addMessage("bot", evt.text);
+            if (evt.text && evt.text.trim()) {
+              const textDiv = document.createElement("div");
+              textDiv.className = "msg bot";
+              const content = document.createElement("div");
+              content.className = "md-content";
+              content.innerHTML = renderMarkdown(evt.text);
+              renderMermaidDiagrams(content);
+              renderMathJax(content);
+              activateLucideIcons(content);
+              textDiv.appendChild(content);
+              chatEl.appendChild(textDiv);
+            }
           } else if (evt.type === "skill_start") {
             if (!group) {
               group = document.createElement("div");
@@ -1217,12 +1229,19 @@
           } else if (evt.type === "file_edit") {
             handleFileEdit(evt, false);
           } else if (evt.type === "memory_used") {
-            // Tool-round memory chip — pin after the skill stack it belongs to
+            // Tool-round memory chip — inject inline into the last skill card header
             if (Array.isArray(evt.memories) && evt.memories.length) {
               const chip = createMemoryChip(evt.memories);
               chip.classList.add("memory-chip-tool");
-              if (group) group.after(chip);
-              else chatEl.appendChild(chip);
+              const allCards = chatEl.querySelectorAll(".skill-card");
+              const target = allCards.length ? allCards[allCards.length - 1] : null;
+              if (target) {
+                const right = target.querySelector(".skill-header-right");
+                if (right) right.insertBefore(chip, right.firstChild);
+                else target.querySelector(".skill-header")?.appendChild(chip);
+              } else {
+                chatEl.appendChild(chip);
+              }
             }
           }
         }
@@ -1543,15 +1562,20 @@
           if (skillRounds[skillRounds.length - 1].length) skillRounds.push([]);
         },
         attachToolMemory(memories) {
-          // Memories injected from a tool result — pin the chip right after
-          // the skill stack of the round that triggered the injection.
+          // Memories injected from a tool result — pin the chip inline
+          // inside the last skill card's header-right.
           hidePending();
-          const stacks = turn.querySelectorAll(".skill-stack");
-          const anchor = stacks.length ? stacks[stacks.length - 1] : null;
+          const cards = turn.querySelectorAll(".skill-card");
+          const target = cards.length ? cards[cards.length - 1] : null;
           const chip = createMemoryChip(memories);
           chip.classList.add("memory-chip-tool");
-          if (anchor) anchor.after(chip);
-          else turn.appendChild(chip);
+          if (target) {
+            const right = target.querySelector(".skill-header-right");
+            if (right) right.insertBefore(chip, right.firstChild);
+            else target.querySelector(".skill-header")?.appendChild(chip);
+          } else {
+            turn.appendChild(chip);
+          }
           scrollBottom();
         },
         appendAnswer(text) {
@@ -2192,7 +2216,6 @@
     async function selectChat(chatId) {
       activeChatId = chatId;
       const meta = chatList.find(c => c.id === chatId);
-      parentId = meta?.parent_id || null;
 
       // Cancel any stale scroll rAF from the previous chat
       _scrollPending = false;
@@ -2206,7 +2229,15 @@
 
       saveActiveChat();
       renderChats();
-      await loadMessages(chatId);
+      const msgs = await loadMessages(chatId);
+      // Derive parentId from the actual message chain, not the stale chats.parent_id cache.
+      // Falls back to meta.parent_id only when the chat has no messages yet.
+      if (Array.isArray(msgs) && msgs.length) {
+        const last = msgs[msgs.length - 1];
+        parentId = last?.parent_id || last?.id || null;
+      } else {
+        parentId = meta?.parent_id || null;
+      }
 
       // Connect agent SSE for this chat
       if (typeof onChatOpened === "function") onChatOpened(chatId);
@@ -2763,10 +2794,17 @@
       if (savedChatId && chatList.some(c => c.id === savedChatId)) {
         activeChatId = savedChatId;
         const meta = chatList.find(c => c.id === savedChatId);
-        parentId = savedParentId || (meta ? meta.parent_id : null);
         saveActiveChat();
         renderChats();
-        await loadMessages(savedChatId);
+        const msgs = await loadMessages(savedChatId);
+        // Derive parentId from the actual message chain on boot too — localStorage
+        // and chats.parent_id can both be stale after auto-turns or mid-stream crashes.
+        if (Array.isArray(msgs) && msgs.length) {
+          const last = msgs[msgs.length - 1];
+          parentId = last?.parent_id || last?.id || null;
+        } else {
+          parentId = savedParentId || (meta ? meta.parent_id : null);
+        }
         if (typeof onChatOpened === "function") onChatOpened(savedChatId);
         inputEl.focus();
       } else if (chatList.length > 0) {
