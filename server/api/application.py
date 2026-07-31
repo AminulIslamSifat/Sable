@@ -126,30 +126,41 @@ from .dependencies import service as _chat_service
 
 
 async def _auto_turn_fn(chat_id: str, messages: list[dict], on_chunk) -> str:
-    """Run a synthetic LLM turn — plain text only, tool tags stripped."""
+    """Synthetic plain-text turn for agent results.
+
+    parent_id here is the UPSTREAM continuation token (Qwen UUID / DeepSeek
+    counter) returned by the stream — NEVER a DB row id. We save the reply with
+    it and advance the chat tail, then tell the frontend the tail moved so the
+    next user message chains through the auto-turn instead of forking away.
+    No extra DB rows: the upstream session already holds the notification turn.
+    """
     import re as _re
     from server.database import add_message, touch_chat, get_parent_id
     from server.utils import _is_deepseek_api_model
 
-    prompt = messages[-1]["content"] if messages else ""
+    notification_text = messages[-1]["content"] if messages else ""
     model, thinking_mode, provider = _auto_turn.get_chat_settings(chat_id)
     full: list[str] = []
     parent_id: str | None = get_parent_id(chat_id, None)
 
-    # Route to the correct backend based on conversation provider
+    # Frontend: a notification arrived (no DB row; upstream session has it)
+    push_agent_event(chat_id, {
+        "type": "auto_turn_notification", "agent_id": None,
+        "data": {"content": notification_text},
+    })
+
     if provider == "deepseek" or (model and _is_deepseek_api_model(model)):
         from connectors.deepseek.client import get_client as _get_ds
         from engine.config import get_model_config
         ds_cfg = get_model_config(model) if model else {}
         api_type = ds_cfg.get("api_model_type", "default")
         event_source = _get_ds().stream_chat(
-            message=prompt, model=api_type,
+            message=notification_text, model=api_type,
             thinking_mode=thinking_mode, chat_id=chat_id,
         )
     else:
-        # Default: Qwen ChatService
         event_source = _chat_service.stream_events(
-            prompt, chat_id=chat_id, model=model, thinking_mode=thinking_mode,
+            notification_text, chat_id=chat_id, parent_id=parent_id, model=model, thinking_mode=thinking_mode,
         )
 
     try:
@@ -167,12 +178,18 @@ async def _auto_turn_fn(chat_id: str, messages: list[dict], on_chunk) -> str:
     finally:
         response_text = "".join(full)
         if response_text:
-            # Strip leaked tool wrapper blocks — auto-turn is plain text only
             response_text = _re.sub(r"<action>.*?</action>", "", response_text, flags=_re.DOTALL).strip()
         if response_text:
-            add_message(chat_id, "assistant", response_text, None, parent_id,
-                        skill_events=[{"type": "auto_turn", "trigger": "agent_completion"}])
+            add_message(
+                chat_id, "assistant", response_text, None, parent_id,
+                skill_events=[{"type": "auto_turn", "trigger": "agent_completion"}],
+            )
             touch_chat(chat_id, parent_id)
+            # Frontend: advance parentId to this token so the next msg doesn't fork
+            push_agent_event(chat_id, {
+                "type": "auto_turn_saved", "agent_id": None,
+                "data": {"parent_id": parent_id},
+            })
         await _auto_turn_done(chat_id)
     return response_text
 
