@@ -17,6 +17,7 @@ class Agent:
     instruction: str | None = None
     model: str = "deepseek-instant"
     browser_data_dir: str | None = None
+    qwen_session_id: str | None = None  # upstream Qwen chat_id (distinct from Sable chat_id)
     status: AgentStatus = AgentStatus.SPAWNED
     messages: list[dict[str, str]] = field(default_factory=list)
     result: str | None = None

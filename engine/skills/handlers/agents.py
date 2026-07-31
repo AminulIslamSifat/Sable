@@ -15,6 +15,7 @@ import time
 from collections.abc import Generator
 from typing import Any
 
+from engine.agents import current_chat_id as _chat_id_var
 from engine.skills.handlers.common import _end_event, _output_event
 
 
@@ -59,7 +60,7 @@ def handle_spawn_agent(
             instruction=instruction,
             model=model or role_cfg.default_model,
             browser_data_dir=browser_data,
-            chat_id=getattr(runtime, "_current_chat_id", None) or "default",
+            chat_id=_chat_id_var.get(None) or "default",
             collect=collect,
         )
         runtime._agents[agent.id] = agent
@@ -120,7 +121,7 @@ def handle_agent_status(
         from engine.agents import get_runtime
 
         runtime = get_runtime()
-        chat_id = getattr(runtime, "_current_chat_id", None)
+        chat_id = _chat_id_var.get(None)
         agents = runtime.list_agents(chat_id)
 
         if not agents:
