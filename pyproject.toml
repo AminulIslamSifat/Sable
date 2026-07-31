@@ -12,7 +12,6 @@ dependencies = [
     "fastembed>=0.8.0",
     "numpy>=2.4.6",
     "pydantic>=2.0",
-    "sentence-transformers>=5.6.1",
     "lxml>=6.1.1",
 ]
 
