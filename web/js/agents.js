@@ -398,6 +398,23 @@ function handleAgentEvent(ev) {
       const doneEl = document.getElementById("_autoTurnLive");
       if (doneEl) { doneEl.removeAttribute("id"); }
       break;
+    case "auto_turn_notification":
+      // Notification persisted server-side — no visual needed
+      console.debug("[agents] notification saved as msg", ev.data?.message_id);
+      break;
+    case "auto_turn_saved": {
+      // Maria's auto-turn reply was persisted — advance the client parent
+      // Use the upstream parent_id (from the model service), NOT the DB row id
+      const upstreamParent = ev.data?.parent_id;
+      if (upstreamParent) {
+        try {
+          parentId = String(upstreamParent);
+          localStorage.setItem("sable_parent_id", parentId);
+        } catch { /* app.js not loaded yet */ }
+      }
+      console.debug("[agents] auto-turn reply saved, parent:", upstreamParent);
+      break;
+    }
     case "agent_completed":
       AgentTopBar.finishCard(ev.agent_id, ev.data?.summary || "");
       addAgentResultCard(ev);

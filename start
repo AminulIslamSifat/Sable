@@ -6,11 +6,37 @@ set -e
 
 SERVICE="sable.service"
 
+SABLE_PORT="${SABLE_PORT:-61770}"
+SABLE_URL="http://127.0.0.1:${SABLE_PORT}"
+
+print_info_box() {
+    local url="$1" port="$2" service="$3"
+    local line="─────────────────────────────────────────"
+    echo ""
+    echo "╭${line}╮"
+    printf "│ %-39s │\n" "🚀 Sable is running!"
+    printf "│ %-39s │\n" "🌐 ${url}"
+    printf "│ %-39s │\n" "📡 Port: ${port}"
+    printf "│ %-39s │\n" ""
+    printf "│ %-39s │\n" "📋 Status:  systemctl --user status ${service}"
+    printf "│ %-39s │\n" "📜 Logs:    journalctl --user -u ${service} -f"
+    echo "╰${line}╯"
+    echo ""
+}
+
 if systemctl --user cat "$SERVICE" >/dev/null 2>&1; then
     echo "Starting Sable via systemd..."
     systemctl --user start "$SERVICE"
-    systemctl --user --no-pager status "$SERVICE" || true
+    sleep 1
+    if systemctl --user is-active --quiet "$SERVICE"; then
+        print_info_box "$SABLE_URL" "$SABLE_PORT" "$SERVICE"
+    else
+        echo "⚠️  Service failed to start. Check logs:"
+        echo "   journalctl --user -u $SERVICE -n 30 --no-pager"
+        exit 1
+    fi
 else
     echo "systemd user service not found — starting the server directly with uv..."
+    print_info_box "$SABLE_URL" "$SABLE_PORT" "(direct)"
     exec uv run python server.py
 fi

@@ -62,8 +62,13 @@
       transition: background 0.15s ease, transform 0.1s ease;
     }
     .memory-chip:hover { background: #9a7d4a22; transform: translateY(-1px); }
-    /* Tool-result variant sits as a standalone element after a skill stack */
-    .memory-chip-tool { display: flex; width: fit-content; margin: 6px 0; }
+    /* Tool-result variant — inline pill inside skill card header */
+    .memory-chip-tool {
+      display: inline-flex;
+      margin: 0;
+      padding: 2px 8px;
+      font-size: 10px;
+    }
 
     .memory-overlay {
       position: fixed;
