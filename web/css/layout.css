@@ -260,6 +260,33 @@
       border-left-color: var(--accent);
     }
 
+
+    /* Streaming indicator — small spinning ring on active chat row */
+    .chat-row.streaming {
+      position: relative;
+    }
+    .chat-row.streaming .chat-item {
+      padding-right: 26px;
+    }
+    .chat-row.streaming .chat-item::after {
+      content: "";
+      position: absolute;
+      right: 28px;
+      top: 50%;
+      translate: 0 -50%;
+      width: 10px;
+      height: 10px;
+      border: 1.5px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: chat-spin 0.7s linear infinite;
+    }
+    @keyframes chat-spin {
+      to { transform: rotate(360deg); }
+    }
+
+
+
     /* skeleton loading for chat list */
     @keyframes shimmer {
       0%   { background-position: -200px 0; }

@@ -93,6 +93,7 @@ async def chat(request: ChatRequest):
                     ]
     except Exception:
         pass
+
     current_mode = "scraper" if scraper_enabled else "api"
     locked_mode = get_chat_mode(active_chat_id)
     if locked_mode and locked_mode != current_mode:
@@ -116,6 +117,12 @@ async def chat(request: ChatRequest):
     ensure_chat(active_chat_id, title, request.parent_id, mode=current_mode, provider=current_provider)
     set_title_if_default(active_chat_id, title)
     parent_id = get_parent_id(active_chat_id, request.parent_id)
+    # Stash conversation settings for auto-turn delivery
+    try:
+        from engine.agents.auto_turn import auto_turn as _at
+        _at.set_chat_settings(active_chat_id, request.model, request.thinking_mode, current_provider)
+    except Exception:
+        pass
     add_message(active_chat_id, "user", timestamped_message, None, parent_id, memory_used=_memory_used or None)
     resolved_files: list[dict[str, Any]] | None = None
     if request.files:
@@ -208,12 +215,16 @@ async def chat(request: ChatRequest):
         if _memory_used:
             yield sse({"type": "memory_used", "memories": _memory_used})
         try:
+            # Set current chat_id on agent runtime so spawn handler can route SSE events
+            from engine.agents import get_runtime as _get_agent_rt
+            _get_agent_rt()._current_chat_id = active_chat_id
+
             while True:
                 round_skill_events: list[dict[str, Any]] = []
                 round_thinking_parts: list[str] = []
                 round_answer_parts: list[str] = []
                 pending_thinking: list[str] = []
-                parser = SkillParser()
+                parser = _get_skill_engine().create_parser()
                 def _dispatch_events(items) -> Generator[str, None, None]:
                     """Shared logic: route parser events, execute tags via engine."""
                     engine = _get_skill_engine()
@@ -331,6 +342,48 @@ async def chat(request: ChatRequest):
                 else:
                     update_message(saved_message_id, stored, round_thinking, final_parent, skill_events,
                                    memory_used=_all_tool_mem_used or None)
+                # --- Collect mode: await agents spawned with collect="true" ---
+                _collect_ids: list[str] = []
+                for _sev in round_skill_events:
+                    if _sev.get("type") == "skill_end" and _sev.get("name") == "spawn_agent":
+                        _res = _sev.get("result") or {}
+                        if _res.get("collect") and _res.get("agent_id"):
+                            _collect_ids.append(_res["agent_id"])
+                if _collect_ids:
+                    try:
+                        from engine.agents import get_runtime as _get_rt
+                        _rt = _get_rt()
+                        yield sse({"type": "status", "message": "waiting_for_agents", "ids": _collect_ids})
+                        _collect_results = await _rt.wait_all(_collect_ids, timeout=300)
+                        _collect_lines = []
+                        for _cr in _collect_results:
+                            if _cr.success:
+                                _collect_lines.append(
+                                    f"[Agent {_cr.agent_id} ({_cr.role}) result]:\n{_cr.summary}"
+                                )
+                            else:
+                                _collect_lines.append(
+                                    f"[Agent {_cr.agent_id} ({_cr.role}) FAILED]: {_cr.error}"
+                                )
+                        # Inject collected results into skill events as synthetic output
+                        round_skill_events.append({
+                            "type": "skill_output",
+                            "name": "wait_agents",
+                            "output": "\n\n---\n\n".join(_collect_lines),
+                        })
+                    except asyncio.TimeoutError:
+                        round_skill_events.append({
+                            "type": "skill_output",
+                            "name": "wait_agents",
+                            "output": f"TIMEOUT: Agents {', '.join(_collect_ids)} did not complete within 300s.",
+                        })
+                    except Exception as _cexc:
+                        round_skill_events.append({
+                            "type": "skill_output",
+                            "name": "wait_agents",
+                            "output": f"COLLECT ERROR: {type(_cexc).__name__}: {_cexc}",
+                        })
+
                 feedback = build_tool_feedback(round_skill_events)
                 if stream_error or error_message or not feedback:
                     break

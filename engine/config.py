@@ -21,6 +21,7 @@ BRAIN_DIR = _ROOT / "Brain"
 MEMORY_PATH = BRAIN_DIR / "Memory.json"
 PROTECTED_PATH = BRAIN_DIR / "Protected.json"
 MEMORY_SEARCH_SETTINGS_PATH = _ROOT / "system/memory_search_settings.json"
+AGENT_CONFIG_PATH = _ROOT / "system/agent_config.json"
 
 # Maximum prompt length (chars) before memory vectorization is skipped entirely.
 # Prevents RAM spikes when huge messages are sent. Configurable via web settings.

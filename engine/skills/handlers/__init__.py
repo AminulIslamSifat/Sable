@@ -20,7 +20,11 @@ from engine.skills.handlers.io import (
 )
 from engine.skills.handlers.web import (
     handle_openweb,
-    handle_search_online,
+)
+from engine.skills.handlers.agents import (
+    handle_agent_status,
+    handle_kill_agent,
+    handle_spawn_agent,
 )
 
 HANDLER_MAP: dict[str, object] = {
@@ -28,8 +32,7 @@ HANDLER_MAP: dict[str, object] = {
     "execute_background_command": handle_execute_background_command,
     "get_file": handle_get_file,
     "read_file": handle_get_file,
-    "search-online": handle_search_online,
-    "search_online": handle_search_online,
+
     "check_command": handle_check_command,
     "openweb": handle_openweb,
     "create_note": handle_create_note,
@@ -38,6 +41,9 @@ HANDLER_MAP: dict[str, object] = {
     "edit_file": handle_edit_file,
     "create_file": handle_create_file,
     "insert_file": handle_insert_file,
+    "spawn_agent": handle_spawn_agent,
+    "agent_status": handle_agent_status,
+    "kill_agent": handle_kill_agent,
 }
 
 __all__ = [
@@ -53,6 +59,9 @@ __all__ = [
     "handle_insert_file",
     "handle_openweb",
     "handle_save_svg",
-    "handle_search_online",
+
     "handle_view_file",
+    "handle_spawn_agent",
+    "handle_agent_status",
+    "handle_kill_agent",
 ]
