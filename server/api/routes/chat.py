@@ -204,6 +204,26 @@ async def chat(request: ChatRequest):
         touch_chat(active_chat_id, final_parent)
         result["memory_used"] = _memory_used
         return result
+    async def _drain_sync_gen(gen):
+        """Run a sync generator in a thread pool, yield results back without blocking the event loop."""
+        queue: asyncio.Queue = asyncio.Queue()
+        _sentinel = object()
+
+        def _run():
+            try:
+                for item in gen:
+                    queue.put_nowait(item)
+            finally:
+                queue.put_nowait(_sentinel)
+
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(None, _run)
+        while True:
+            item = await queue.get()
+            if item is _sentinel:
+                break
+            yield item
+
     async def event_stream():
         answer_parts: list[str] = []
         thinking_parts: list[str] = []
@@ -219,9 +239,9 @@ async def chat(request: ChatRequest):
         if _memory_used:
             yield sse({"type": "memory_used", "memories": _memory_used})
         try:
-            # Set current chat_id on agent runtime so spawn handler can route SSE events
-            from engine.agents import get_runtime as _get_agent_rt
-            _get_agent_rt()._current_chat_id = active_chat_id
+            # Set per-request chat_id via contextvar (safe for concurrent requests)
+            from engine.agents import current_chat_id as _chat_id_var
+            _chat_id_var.set(active_chat_id)
 
             while True:
                 round_skill_events: list[dict[str, Any]] = []
@@ -296,7 +316,7 @@ async def chat(request: ChatRequest):
                     event_type = event.get("type")
                     if event_type == "answer":
                         pending_thinking.clear()
-                        for _sse_line in emit_parsed(str(event.get("text", ""))):
+                        async for _sse_line in _drain_sync_gen(emit_parsed(str(event.get("text", "")))):
                             yield _sse_line
                         continue
                     if event_type == "thinking":
@@ -308,19 +328,19 @@ async def chat(request: ChatRequest):
                         continue
                     elif event_type == "done":
                         pending_thinking.clear()
-                        for _sse_line in emit_flush():
+                        async for _sse_line in _drain_sync_gen(emit_flush()):
                             yield _sse_line
                         final_parent = event.get("parent_id") or final_parent
                         current_parent = final_parent
                     elif event_type == "error":
                         pending_thinking.clear()
-                        for _sse_line in emit_flush():
+                        async for _sse_line in _drain_sync_gen(emit_flush()):
                             yield _sse_line
                         error_message = str(event.get("message", "Unknown error"))
                         stream_error = True
                     elif event_type == "rate_limited":
                         pending_thinking.clear()
-                        for _sse_line in emit_flush():
+                        async for _sse_line in _drain_sync_gen(emit_flush()):
                             yield _sse_line
                         hours = event.get("hours", "?")
                         details = event.get("message", "Daily usage limit reached.")

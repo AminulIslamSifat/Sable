@@ -3504,8 +3504,8 @@
           addAccountBtn.textContent = "Opening…";
           setTimeout(() => { addAccountBtn.textContent = "Add Account"; addAccountBtn.disabled = false; }, 3000);
         } catch (e) {
-          addAccountBtn.textContent = "Failed";
-          setTimeout(() => { addAccountBtn.textContent = "Add Account"; addAccountBtn.disabled = false; }, 2000);
+          addAccountBtn.textContent = e.message?.includes("401") ? "Not logged in" : "Failed";
+          setTimeout(() => { addAccountBtn.textContent = "Add Account"; addAccountBtn.disabled = false; }, 2500);
         }
       });
     }
