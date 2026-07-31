@@ -11,15 +11,19 @@ SABLE_URL="http://127.0.0.1:${SABLE_PORT}"
 
 print_info_box() {
     local url="$1" port="$2" service="$3"
-    local line="─────────────────────────────────────────"
+    
+    # 54 horizontal box-drawing dashes
+    local line="──────────────────────────────────────────────────────"
+    
     echo ""
     echo "╭${line}╮"
-    printf "│ %-39s │\n" "🚀 Sable is running!"
-    printf "│ %-39s │\n" "🌐 ${url}"
-    printf "│ %-39s │\n" "📡 Port: ${port}"
-    printf "│ %-39s │\n" ""
-    printf "│ %-39s │\n" "📋 Status:  systemctl --user status ${service}"
-    printf "│ %-39s │\n" "📜 Logs:    journalctl --user -u ${service} -f"
+    echo "│ 🚀 Sable is running!                                 │"
+    echo "│                                                      │"
+    printf "│ 🌐 URL:    %-41s │\n" "${url}"
+    printf "│ 📡 Port:   %-41s │\n" "${port}"
+    echo "│                                                      │"
+    printf "│ 📋 Status: systemctl --user status %-15s   │\n" "${service}"
+    printf "│ 📜 Logs:   journalctl --user -u %-15s -f   │\n" "${service}"
     echo "╰${line}╯"
     echo ""
 }
