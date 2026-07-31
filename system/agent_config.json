@@ -1,0 +1,96 @@
+{
+  "enabled": true,
+  "concurrency": {
+    "global_max": 5,
+    "deepseek_max": 5,
+    "qwen_max": 3
+  },
+  "resilience": {
+    "circuit_breaker_threshold": 5,
+    "circuit_breaker_reset_seconds": 60
+  },
+  "defaults": {
+    "researcher_model": "deepseek-instant",
+    "coder_model": "qwen-max",
+    "reviewer_model": "deepseek-instant",
+    "writer_model": "deepseek-expert",
+    "utility_model": "deepseek-instant",
+    "timeout_researcher": 90,
+    "timeout_coder": 180,
+    "timeout_reviewer": 60,
+    "timeout_writer": 120,
+    "timeout_utility": 120
+  },
+  "roles": {
+    "researcher": {
+      "system_prompt": "You are a research specialist. Search the web, read pages, and produce concise factual summaries. Always cite sources.\n\nYou MUST respond with a single valid JSON object as your final answer. No markdown, no prose outside the JSON. The JSON schema is specified per task.\nFinal answer schema:\n{\"topic\": str, \"sources\": [str], \"findings\": [str], \"summary\": str, \"confidence\": \"high|medium|low\"}",
+      "allowed_skills": [
+        "search_online",
+        "file_uploader"
+      ],
+      "default_skills": [
+        "search_online"
+      ],
+      "default_model": "deepseek-instant",
+      "default_timeout": 300,
+      "max_parallel": 4
+    },
+    "coder": {
+      "system_prompt": "You are a code implementation specialist. Write, edit, and test code. Use early returns, explicit types, clean error handling. No bloated OOP.\n\nYou MUST respond with a single valid JSON object as your final answer. No markdown, no prose outside the JSON. The JSON schema is specified per task.\nFinal answer schema:\n{\"description\": str, \"files_modified\": [{\"path\": str, \"lines\": str, \"change\": str}], \"tests\": \"pass|fail|skipped\", \"notes\": str}",
+      "allowed_skills": [
+        "code_editor",
+        "background_command",
+        "search_online"
+      ],
+      "default_skills": [
+        "code_editor",
+        "background_command"
+      ],
+      "default_model": "qwen-max",
+      "default_timeout": 300,
+      "max_parallel": 1
+    },
+    "reviewer": {
+      "system_prompt": "You are a code review specialist. Read code, identify bugs, suggest fixes. Do NOT modify files.\n\nYou MUST respond with a single valid JSON object as your final answer. No markdown, no prose outside the JSON. The JSON schema is specified per task.\nFinal answer schema:\n{\"file\": str, \"critical\": [{\"issue\": str, \"location\": str, \"explanation\": str}], \"warnings\": [{\"issue\": str, \"location\": str}], \"info\": [str], \"verdict\": \"approve|request_changes|needs_discussion\"}",
+      "allowed_skills": [
+        "code_editor",
+        "search_online"
+      ],
+      "default_skills": [
+        "code_editor"
+      ],
+      "default_model": "deepseek-instant",
+      "default_timeout": 300,
+      "max_parallel": 3
+    },
+    "writer": {
+      "system_prompt": "You are a documentation and writing specialist. Create clear, structured documents.\n\nYou MUST respond with a single valid JSON object as your final answer. No markdown, no prose outside the JSON. The JSON schema is specified per task.\nFinal answer schema:\n{\"title\": str, \"path\": str, \"structure\": [str], \"word_count\": int, \"notes\": str}",
+      "allowed_skills": [
+        "code_editor",
+        "search_online"
+      ],
+      "default_skills": [
+        "code_editor"
+      ],
+      "default_model": "deepseek-expert",
+      "default_timeout": 120,
+      "max_parallel": 2
+    },
+    "utility": {
+      "system_prompt": "You are a general-purpose assistant. Handle any miscellaneous task: file operations, data formatting, quick lookups, renaming, organizing, conversions, simple scripting — whatever needs doing. Be fast, be precise, don't overthink it.\n\nYou MUST respond with a single valid JSON object as your final answer. No markdown, no prose outside the JSON. The JSON schema is specified per task.\nFinal answer schema:\n{\"task\": str, \"actions_taken\": [str], \"result\": str, \"notes\": str}",
+      "allowed_skills": [
+        "code_editor",
+        "background_command",
+        "search_online",
+        "file_uploader"
+      ],
+      "default_skills": [
+        "code_editor",
+        "background_command"
+      ],
+      "default_model": "deepseek-instant",
+      "default_timeout": 120,
+      "max_parallel": 3
+    }
+  }
+}

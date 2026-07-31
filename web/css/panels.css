@@ -213,7 +213,7 @@
       display: flex;
     }
 
-    #tab-general, #tab-brain {
+    #tab-general, #tab-brain, #tab-agents {
       padding: 16px 20px;
     }
 
@@ -430,6 +430,23 @@
       color: var(--muted);
       margin-top: 4px;
     }
+
+    .skill-chip-disabled {
+      opacity: 0.45;
+      border-style: dashed;
+    }
+    .skill-chip-disabled:hover {
+      transform: none;
+    }
+    .skill-disabled-badge {
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--danger, #ff5050);
+      margin-left: 4px;
+    }
+
     .skill-detail-overlay {
       display: none;
       position: fixed;

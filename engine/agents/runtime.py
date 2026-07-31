@@ -1,0 +1,371 @@
+
+"""AgentRuntime — spawns, tracks, and manages background agent tasks."""
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from pathlib import Path
+from typing import Any, Callable, Coroutine
+
+from engine.agents.agent import Agent
+from engine.agents.notifications import notification_queue
+from engine.agents.protocol import AgentEvent, AgentResult, AgentStatus, TaskAssignment
+from engine.agents.registry import get_role_config
+from engine.agents.auto_turn import auto_turn
+from engine.agents.resilience import CircuitBreaker
+
+logger = logging.getLogger("sable")
+
+# Agent output directory
+_AGENT_OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent / "output" / "agent"
+
+# Type for the SSE push callback: async fn(chat_id, event_dict)
+EventCallback = Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]]
+
+
+class AgentRuntime:
+    """Manages agent lifecycle: spawn → run → complete/fail.
+
+    Concurrency controlled via semaphores (per-backend + global).
+    Circuit breakers prevent hammering dead providers.
+    """
+
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
+        cfg = config or {}
+        conc = cfg.get("concurrency", {})
+        res = cfg.get("resilience", {})
+
+        self._agents: dict[str, Agent] = {}
+        self._tasks: dict[str, asyncio.Task] = {}
+        self._max_agents: int = conc.get("global_max", 5)
+        self._max_depth: int = 3
+
+        # Per-backend semaphores
+        self._ds_sem = asyncio.Semaphore(conc.get("deepseek_max", 5))
+        self._qwen_sem = asyncio.Semaphore(conc.get("qwen_max", 1))
+        self._global_sem = asyncio.Semaphore(self._max_agents)
+
+        # Circuit breakers
+        threshold = res.get("circuit_breaker_threshold", 5)
+        reset = res.get("circuit_breaker_reset_seconds", 60)
+        self._breakers: dict[str, CircuitBreaker] = {
+            "deepseek": CircuitBreaker(threshold, reset),
+            "qwen": CircuitBreaker(threshold, reset),
+        }
+
+        # SSE event callback (set by API layer)
+        self._event_callback: EventCallback | None = None
+
+    # ------------------------------------------------------------------
+    # Configuration
+    # ------------------------------------------------------------------
+
+    def set_event_callback(self, callback: EventCallback) -> None:
+        """Set the async callback that pushes events to SSE clients."""
+        self._event_callback = callback
+
+    def update_config(self, config: dict[str, Any]) -> None:
+        """Hot-reload concurrency/resilience settings."""
+        conc = config.get("concurrency", {})
+        res = config.get("resilience", {})
+        self._max_agents = conc.get("global_max", self._max_agents)
+        # Update breaker thresholds
+        for breaker in self._breakers.values():
+            breaker.threshold = res.get("circuit_breaker_threshold", breaker.threshold)
+            breaker.reset_timeout = res.get("circuit_breaker_reset_seconds", breaker.reset_timeout)
+
+    # ------------------------------------------------------------------
+    # Spawning
+    # ------------------------------------------------------------------
+
+    @property
+    def active_count(self) -> int:
+        return sum(1 for a in self._agents.values() if a.status == AgentStatus.RUNNING)
+
+    async def spawn(self, assignment: TaskAssignment, chat_id: str) -> Agent:
+        """Spawn a new agent. Non-blocking — returns immediately."""
+        if self.active_count >= self._max_agents:
+            raise RuntimeError(f"Max agents ({self._max_agents}) reached")
+
+        # Depth check
+        depth = 0
+        if assignment.parent_agent_id:
+            parent = self._agents.get(assignment.parent_agent_id)
+            depth = (parent.depth + 1) if parent else 1
+        if depth >= self._max_depth:
+            raise RuntimeError(f"Max depth ({self._max_depth}) reached")
+
+        # Resolve config: tag attrs > role_overrides > defaults
+        role_cfg = get_role_config(assignment.role)
+        agent = Agent(
+            role=assignment.role,
+            task=assignment.task,
+            context=assignment.context,
+            instruction=assignment.instruction,
+            model=assignment.model or role_cfg.default_model,
+            browser_data_dir=assignment.browser_data_dir,
+            parent_id=assignment.parent_agent_id,
+            chat_id=chat_id,
+            depth=depth,
+            collect=assignment.collect,
+        )
+        self._agents[agent.id] = agent
+
+        # DB persist
+        from server.database import insert_agent_run
+        insert_agent_run(
+            agent_id=agent.id,
+            chat_id=chat_id,
+            role=agent.role,
+            task=agent.task,
+            path=agent.path,
+            depth=depth,
+            parent_agent_id=agent.parent_id,
+            model=agent.model,
+            browser_data_dir=agent.browser_data_dir,
+        )
+
+        # Emit spawn event
+        await self._emit(chat_id, AgentEvent(
+            type="agent_spawned",
+            agent_id=agent.id,
+            data={"role": agent.role, "task": agent.task, "model": agent.model},
+        ))
+
+        # Select semaphore based on backend
+        sem = self._qwen_sem if "qwen" in agent.model else self._ds_sem
+        timeout = assignment.timeout or role_cfg.default_timeout
+
+        # Fire-and-forget
+        task = asyncio.create_task(self._run_agent(agent, sem, timeout))
+        self._tasks[agent.id] = task
+        return agent
+
+    # ------------------------------------------------------------------
+    # Agent execution
+    # ------------------------------------------------------------------
+
+    async def _run_agent(self, agent: Agent, sem: asyncio.Semaphore, timeout: float) -> None:
+        """Run agent within semaphore bounds. Handles all failure modes."""
+        async with self._global_sem, sem:
+            agent.mark_running()
+            from server.database import update_agent_status
+            update_agent_status(agent.id, "running")
+
+            try:
+                from engine.agents.loop import run_agent_llm_loop
+                result = await asyncio.wait_for(
+                    run_agent_llm_loop(agent, self._breakers),
+                    timeout=timeout,
+                )
+                agent.mark_completed(result)
+                update_agent_status(
+                    agent.id, agent.status.value,
+                    result=result, tokens_used=agent.tokens_used,
+                )
+                await self._emit(agent.chat_id, AgentEvent(
+                    type="agent_completed",
+                    agent_id=agent.id,
+                    data={
+                        "role": agent.role,
+                        "result": result,
+                        "tokens": agent.tokens_used,
+                        "duration": agent.duration,
+                        "skills_used": agent.skills_used,
+                    },
+                ))
+                # Auto-turn: feed brief notification back to model
+                if agent.chat_id:
+                    await auto_turn.on_agent_done(agent.chat_id, agent.id, agent.role, result, task=agent.task)
+
+            except asyncio.TimeoutError:
+                partial = agent.messages[-1]["content"] if agent.messages else ""
+                agent.mark_failed(f"Timed out after {timeout}s")
+                agent.result = partial
+                update_agent_status(agent.id, "timed_out", error=agent.error, result=partial)
+                # Persist failure reason into agent conversation history
+                fail_msg = f"[SYSTEM] Agent failed: {agent.error}"
+                agent.messages.append({"role": "system", "content": fail_msg})
+                await self._persist_failure(agent.id, fail_msg)
+                await self._emit(agent.chat_id, AgentEvent(
+                    type="agent_failed",
+                    agent_id=agent.id,
+                    data={"role": agent.role, "error": agent.error, "partial": partial[:300]},
+                ))
+                if agent.chat_id:
+                    await auto_turn.on_agent_failed(agent.chat_id, agent.id, agent.role, agent.error, task=agent.task)
+
+            except Exception as exc:
+                agent.mark_failed(f"{type(exc).__name__}: {exc}")
+                update_agent_status(agent.id, "failed", error=agent.error)
+                # Persist failure reason into agent conversation history
+                fail_msg = f"[SYSTEM] Agent failed: {agent.error}"
+                agent.messages.append({"role": "system", "content": fail_msg})
+                await self._persist_failure(agent.id, fail_msg)
+                await self._emit(agent.chat_id, AgentEvent(
+                    type="agent_failed",
+                    agent_id=agent.id,
+                    data={"role": agent.role, "error": agent.error},
+                ))
+                if agent.chat_id:
+                    await auto_turn.on_agent_failed(agent.chat_id, agent.id, agent.role, agent.error, task=agent.task)
+
+            # Push to notification queue regardless of outcome
+            if agent.chat_id:
+                event_type = "agent_completed" if agent.status in (AgentStatus.COMPLETED, AgentStatus.DEGRADED) else "agent_failed"
+                _evt_data = {
+                    "role": agent.role,
+                    "summary": (agent.result or "")[:500],
+                    "error": agent.error,
+                    "duration": agent.duration,
+                    "tokens": agent.tokens_used,
+                }
+                notification_queue.push(agent.chat_id, AgentEvent(
+                    type=event_type,
+                    agent_id=agent.id,
+                    data=_evt_data,
+                ))
+                # Persist into skill_events so history replay can render the card
+                try:
+                    from server.database import append_skill_event
+                    append_skill_event(agent.chat_id, {
+                        "type": "agent_result",
+                        "agent_id": agent.id,
+                        "ok": event_type == "agent_completed",
+                        "data": _evt_data,
+                    })
+                except Exception:
+                    pass
+
+            # Save full agent output to disk
+            self._save_agent_output(agent)
+
+    # ------------------------------------------------------------------
+    # Waiting (collect mode)
+    # ------------------------------------------------------------------
+
+    async def wait(self, agent_id: str, timeout: float | None = None) -> AgentResult:
+        """Wait for a single agent to finish."""
+        task = self._tasks.get(agent_id)
+        if task and not task.done():
+            await asyncio.wait_for(task, timeout=timeout)
+        return self._to_result(agent_id)
+
+    async def wait_all(self, agent_ids: list[str], timeout: float | None = None) -> list[AgentResult]:
+        """Wait for multiple agents. Returns results in order."""
+        tasks = [self._tasks[aid] for aid in agent_ids if aid in self._tasks and not self._tasks[aid].done()]
+        if tasks:
+            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=timeout)
+        return [self._to_result(aid) for aid in agent_ids if aid in self._agents]
+
+    # ------------------------------------------------------------------
+    # Control
+    # ------------------------------------------------------------------
+
+    async def kill(self, agent_id: str) -> None:
+        """Cancel a running agent."""
+        task = self._tasks.get(agent_id)
+        if task and not task.done():
+            task.cancel()
+        if agent_id in self._agents:
+            self._agents[agent_id].mark_failed("Killed by orchestrator")
+            from server.database import update_agent_status
+            update_agent_status(agent_id, "killed", error="Killed by orchestrator")
+
+    def list_agents(self, chat_id: str | None = None) -> list[Agent]:
+        agents = list(self._agents.values())
+        if chat_id:
+            agents = [a for a in agents if a.chat_id == chat_id]
+        return agents
+
+    def get_agent(self, agent_id: str) -> Agent | None:
+        return self._agents.get(agent_id)
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    async def _emit(self, chat_id: str | None, event: AgentEvent) -> None:
+        """Push event to SSE clients via callback."""
+        if chat_id and self._event_callback:
+            payload = {"type": event.type, "agent_id": event.agent_id, "data": event.data}
+            try:
+                await self._event_callback(chat_id, payload)
+            except Exception as exc:
+                logger.debug("SSE emit failed: %s", exc)
+
+    @staticmethod
+    async def _persist_failure(agent_id: str, message: str) -> None:
+        """Persist a failure message into the agent's DB conversation history."""
+        try:
+            from server.database import add_agent_message
+            add_agent_message(agent_id, "system", message)
+        except Exception as exc:
+            logger.debug("Failed to persist agent failure msg: %s", exc)
+
+    @staticmethod
+    def _save_agent_output(agent: Agent) -> None:
+        """Save full agent conversation + result to output/agent/<id>.md."""
+        try:
+            _AGENT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            lines: list[str] = [
+                f"# Agent {agent.id} — {agent.role}",
+                f"",
+                f"- **Task:** {agent.task}",
+                f"- **Model:** {agent.model}",
+                f"- **Status:** {agent.status.value}",
+                f"- **Duration:** {agent.duration:.1f}s",
+                f"- **Tokens:** {agent.tokens_used}",
+                f"- **Skills:** {', '.join(agent.skills_used) or 'none'}",
+            ]
+            if agent.error:
+                lines.append(f"- **Error:** {agent.error}")
+            lines.append("")
+            lines.append("## Conversation")
+            lines.append("")
+            for msg in agent.messages:
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                lines.append(f"### [{role}]")
+                lines.append("")
+                lines.append(content)
+                lines.append("")
+            if agent.result:
+                lines.append("## Final Result")
+                lines.append("")
+                lines.append(agent.result)
+                lines.append("")
+            out_path = _AGENT_OUTPUT_DIR / f"{agent.id}.md"
+            out_path.write_text("\n".join(lines), encoding="utf-8")
+            logger.info("Saved agent output: %s", out_path)
+        except Exception as exc:
+            logger.debug("Failed to save agent output: %s", exc)
+
+    def _to_result(self, agent_id: str) -> AgentResult:
+        agent = self._agents[agent_id]
+        return AgentResult(
+            agent_id=agent.id,
+            role=agent.role,
+            status=agent.status,
+            summary=agent.result or agent.error or "",
+            tokens_used=agent.tokens_used,
+            error=agent.error,
+            duration_seconds=agent.duration,
+            skills_used=agent.skills_used,
+        )
+
+
+# ------------------------------------------------------------------
+# Module-level singleton
+# ------------------------------------------------------------------
+
+_runtime: AgentRuntime | None = None
+
+
+def get_runtime() -> AgentRuntime:
+    """Get or create the AgentRuntime singleton."""
+    global _runtime
+    if _runtime is None:
+        _runtime = AgentRuntime()
+    return _runtime

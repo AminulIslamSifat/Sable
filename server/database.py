@@ -9,6 +9,8 @@ from .utils import utcnow
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 def init_db() -> None:
@@ -53,6 +55,51 @@ def init_db() -> None:
             conn.execute("ALTER TABLE chats ADD COLUMN mode TEXT")
         if "provider" not in chat_cols:
             conn.execute("ALTER TABLE chats ADD COLUMN provider TEXT")
+
+        # --- Multi-agent tables ---
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_runs (
+                id TEXT PRIMARY KEY,
+                chat_id TEXT NOT NULL,
+                parent_agent_id TEXT,
+                depth INTEGER NOT NULL DEFAULT 0,
+                path TEXT NOT NULL,
+                role TEXT NOT NULL,
+                task TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'spawned',
+                model TEXT,
+                browser_data_dir TEXT,
+                result TEXT,
+                error TEXT,
+                tokens_used INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                FOREIGN KEY(chat_id) REFERENCES chats(id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(agent_id) REFERENCES agent_runs(id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs(status)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_runs_chat ON agent_runs(chat_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_messages_agent ON agent_messages(agent_id)"
+        )
 
 def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = None, mode: str | None = None, provider: str | None = None) -> None:
     now = utcnow()
@@ -159,6 +206,27 @@ def update_message(
             (content, thinking, parent_id, skill_events_json, memory_used_json, message_id),
         )
 
+def append_skill_event(chat_id: str, event: dict[str, Any]) -> None:
+    """Append a single event to the last assistant message's skill_events."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT id, skill_events FROM messages WHERE chat_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1",
+            (chat_id,),
+        ).fetchone()
+        if not row:
+            return
+        msg_id = row["id"]
+        try:
+            events = json.loads(row["skill_events"]) if row["skill_events"] else []
+        except (json.JSONDecodeError, TypeError):
+            events = []
+        events.append(event)
+        conn.execute(
+            "UPDATE messages SET skill_events = ? WHERE id = ?",
+            (json.dumps(events, ensure_ascii=False), msg_id),
+        )
+
+
 def get_messages(chat_id: str) -> list[dict[str, Any]]:
     with get_db() as conn:
         rows = conn.execute(
@@ -201,3 +269,76 @@ def get_parent_id(chat_id: str, requested_parent_id: str | None) -> str | None:
     with get_db() as conn:
         row = conn.execute("SELECT parent_id FROM chats WHERE id = ?", (chat_id,)).fetchone()
         return row["parent_id"] if row else None
+
+
+# --- Agent persistence ---
+
+def recover_stale_agents() -> int:
+    """Mark any agents left in spawned/running state as failed (server restart recovery)."""
+    with get_db() as conn:
+        cur = conn.execute(
+            "UPDATE agent_runs SET status = 'failed', error = 'server_restart', completed_at = ? "
+            "WHERE status IN ('spawned', 'running')",
+            (utcnow(),),
+        )
+        return cur.rowcount
+
+
+def insert_agent_run(
+    agent_id: str,
+    chat_id: str,
+    role: str,
+    task: str,
+    path: str,
+    depth: int = 0,
+    parent_agent_id: str | None = None,
+    model: str | None = None,
+    browser_data_dir: str | None = None,
+) -> None:
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO agent_runs (id, chat_id, parent_agent_id, depth, path, role, task, status, model, browser_data_dir, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'spawned', ?, ?, ?)",
+            (agent_id, chat_id, parent_agent_id, depth, path, role, task, model, browser_data_dir, utcnow()),
+        )
+
+
+def update_agent_status(agent_id: str, status: str, result: str | None = None, error: str | None = None, tokens_used: int | None = None) -> None:
+    now = utcnow()
+    with get_db() as conn:
+        if status in ("completed", "failed", "timed_out", "killed"):
+            conn.execute(
+                "UPDATE agent_runs SET status = ?, result = ?, error = ?, tokens_used = COALESCE(?, tokens_used), completed_at = ? WHERE id = ?",
+                (status, result, error, tokens_used, now, agent_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE agent_runs SET status = ?, tokens_used = COALESCE(?, tokens_used) WHERE id = ?",
+                (status, tokens_used, agent_id),
+            )
+
+
+def add_agent_message(agent_id: str, role: str, content: str) -> None:
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO agent_messages (agent_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+            (agent_id, role, content, utcnow()),
+        )
+
+
+def get_agent_runs(chat_id: str) -> list[dict[str, Any]]:
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM agent_runs WHERE chat_id = ? ORDER BY created_at ASC",
+            (chat_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def get_agent_messages(agent_id: str) -> list[dict[str, Any]]:
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, role, content, created_at FROM agent_messages WHERE agent_id = ? ORDER BY id ASC",
+            (agent_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
