@@ -117,7 +117,7 @@
       flex-shrink: 0;
     }
 
-    #newChat:hover:not(:disabled) { background: #d6b578; }
+    #newChat:hover:not(:disabled) { background: var(--accent-text); }
 
     #newChat .spinner,
     #syncContext .spinner {

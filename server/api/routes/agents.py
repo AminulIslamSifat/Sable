@@ -99,6 +99,11 @@ DEFAULT_AGENT_CONFIG: dict[str, Any] = {
         "circuit_breaker_threshold": 5,
         "circuit_breaker_reset_seconds": 60,
     },
+    "limits": {
+        "max_iterations": 25,
+        "max_consecutive_tool_calls": 15,
+        "max_total_tool_calls": 50,
+    },
     "defaults": {
         "researcher_model": "deepseek-instant",
         "coder_model": "qwen-max",
