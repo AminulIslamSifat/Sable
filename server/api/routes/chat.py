@@ -217,7 +217,13 @@ async def chat(request: ChatRequest):
                 queue.put_nowait(_sentinel)
 
         loop = asyncio.get_running_loop()
-        loop.run_in_executor(None, _run)
+        # Cache the main loop on the agent runtime so thread-pool handlers can schedule coroutines
+        from engine.agents import get_runtime as _get_rt
+        _get_rt()._loop = loop
+        # Propagate ContextVars (chat_id etc.) into the executor thread — Python 3.14 doesn't do this automatically
+        import contextvars as _cv
+        _ctx = _cv.copy_context()
+        loop.run_in_executor(None, _ctx.run, _run)
         while True:
             item = await queue.get()
             if item is _sentinel:
@@ -242,6 +248,9 @@ async def chat(request: ChatRequest):
             # Set per-request chat_id via contextvar (safe for concurrent requests)
             from engine.agents import current_chat_id as _chat_id_var
             _chat_id_var.set(active_chat_id)
+            # Block auto-turn from firing while main stream is active
+            from engine.agents.auto_turn import auto_turn as _at_busy
+            _at_busy.mark_stream_busy(active_chat_id)
 
             while True:
                 round_skill_events: list[dict[str, Any]] = []
@@ -278,6 +287,25 @@ async def chat(request: ChatRequest):
                 def emit_flush() -> Generator[str, None, None]:
                     yield from _dispatch_events(parser.flush())
                 files_for_round = resolved_files if round_index == 0 else None
+                # Drain pending agent notifications into this turn's context
+                try:
+                    from engine.agents.notifications import notification_queue as _nq
+                    _pending_notifs = _nq.drain(active_chat_id)
+                    if _pending_notifs:
+                        _notif_lines = []
+                        for _nev in _pending_notifs:
+                            _nd = _nev.data or {}
+                            _status = "completed" if _nev.type == "agent_completed" else "failed"
+                            _notif_lines.append(
+                                f"[Agent {_nev.agent_id} ({_nd.get('role', 'agent')}) {_status}] "
+                                f"{_nd.get('summary', _nd.get('error', ''))[:200]}"
+                            )
+                        current_message = (
+                            "[Agent Notifications]\n" + "\n".join(_notif_lines)
+                            + "\n\n" + current_message
+                        )
+                except Exception:
+                    pass
                 stream_error = False
                 if _is_deepseek_api_model(request.model):
                     _ds_cfg = get_model_config(request.model)
@@ -408,8 +436,14 @@ async def chat(request: ChatRequest):
                             "output": f"COLLECT ERROR: {type(_cexc).__name__}: {_cexc}",
                         })
 
+                # ask_user pause: stop the skill loop, wait for user's next message
+                _ask_user_pause = any(
+                    ev.get("type") == "skill_end"
+                    and (ev.get("result") or {}).get("pause")
+                    for ev in round_skill_events
+                )
                 feedback = build_tool_feedback(round_skill_events)
-                if stream_error or error_message or not feedback:
+                if stream_error or error_message or not feedback or _ask_user_pause:
                     break
                 try:
                     _max_chars_tool = _ms_cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS)
@@ -486,6 +520,12 @@ async def chat(request: ChatRequest):
             else:
                 add_message(active_chat_id, "assistant", stored_content, thinking, final_parent, skill_events)
             touch_chat(active_chat_id, final_parent)
+            # Release auto-turn lock — drains any queued agent results
+            try:
+                from engine.agents.auto_turn import auto_turn as _at_done
+                _at_done.mark_stream_done(active_chat_id)
+            except Exception:
+                pass
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",

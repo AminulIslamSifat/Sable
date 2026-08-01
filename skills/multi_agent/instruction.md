@@ -24,7 +24,7 @@ You can spawn parallel background agents to handle independent subtasks concurre
 Attributes:
 - role (required): researcher | coder | reviewer | writer | utility
 - task (required): Clear, specific task description
-- model: Override default model (deepseek-reasoner, deepseek-chat, qwen3.7-max)
+- model: Override default model (qwen3.7-max, qwen3.7-plus, qwen3.8-max-preview, deepseek-expert, deepseek-instant, deepseek-vision)
 - context: Background info the agent needs
 - instruction: Special constraints or output format requirements
 - browser_data: Browser profile for authenticated access
@@ -44,11 +44,11 @@ Attributes:
 
 | Role | Purpose | Default Model |
 |:--|:--|:--|
-| researcher | Web search, source gathering, synthesis | deepseek-reasoner |
-| coder | File edits, implementation, refactoring | deepseek-reasoner |
-| reviewer | Code review, security audit, quality check | deepseek-reasoner |
-| writer | Documentation, reports, creative content | deepseek-chat |
-| utility | General tasks, file ops, formatting, quick lookups | deepseek-chat |
+| researcher | Web search, source gathering, synthesis | deepseek-expert |
+| coder | Coding, File edits, implementation, refactoring | qwen3.7-max |
+| reviewer | Code review, Project review, security audit, quality check | deepseek-expert |
+| writer | Documentation, reports, creative content (when not code related) | qwen3.7-plus |
+| utility | General tasks, file ops, formatting, quick lookups | qwen3.7-plus |
 
 ## Behavior
 
@@ -86,9 +86,16 @@ When you genuinely need results before answering (e.g., "research X, then based 
 
 ## Model Selection Guide
 
-- Research/review → deepseek-reasoner (thorough, analytical)
-- Code implementation → deepseek-reasoner or qwen3.7-max (both solid for code)
-- Writing/docs → deepseek-chat (faster, creative)
+Available models (from engine/config.py):
+- **Qwen:** qwen3.8-max-preview, qwen3.7-max, qwen3.7-plus
+- **DeepSeek:** deepseek-expert, deepseek-instant, deepseek-vision
+
+Selection guide:
+- Research/review → deepseek-expert (thorough, analytical)
+- Code implementation → qwen3.7-max (strong at code + file ops)
+- Writing/docs → qwen3.7-plus (fast, creative)
+- Quick/cheap tasks → deepseek-instant (fastest, lowest cost)
+- Vision/image tasks → deepseek-vision
 - When unsure: default per role is fine, don't overthink it
 
 ## Example: Parallel Research

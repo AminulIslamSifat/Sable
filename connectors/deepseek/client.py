@@ -28,7 +28,92 @@ logger = logging.getLogger("sable.deepseek_api")
 
 BASE_URL = "https://chat.deepseek.com"
 SOLVER_PATH = Path(__file__).resolve().parent / "pow_solver" / "pow_solver"
-TOKEN_CACHE = Path(__file__).resolve().parent / ".token_cache.json"
+
+# Per-account token store: {"browser-data-acc1": "jwt...", ...}
+_SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
+TOKEN_STORE_PATH = _SYSTEM_DIR / ".deepseek_tokens.json"
+
+# Legacy single-token cache (migrated on first access)
+_LEGACY_TOKEN_CACHE = Path(__file__).resolve().parent / ".token_cache.json"
+
+
+# --------------------------------------------------------------------------
+# Per-account token store helpers
+# --------------------------------------------------------------------------
+
+def _resolve_active_account() -> str:
+    """Get the active account name from the browser-data symlink target."""
+    symlink = _SYSTEM_DIR / "browser-data"
+    try:
+        target = symlink.resolve()
+        return target.name  # e.g. "browser-data-acc15"
+    except OSError:
+        return "browser-data"
+
+
+def _load_token_store() -> dict[str, str]:
+    """Load the per-account token store, migrating legacy cache if needed."""
+    store: dict[str, str] = {}
+    if TOKEN_STORE_PATH.exists():
+        try:
+            store = json.loads(TOKEN_STORE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    # One-time migration from legacy single-token file
+    if not store and _LEGACY_TOKEN_CACHE.exists():
+        try:
+            legacy = json.loads(_LEGACY_TOKEN_CACHE.read_text(encoding="utf-8"))
+            tok = legacy.get("token")
+            if tok and tok != "None":
+                account = _resolve_active_account()
+                store[account] = tok
+                _save_token_store(store)
+                _LEGACY_TOKEN_CACHE.unlink(missing_ok=True)
+                logger.info("Migrated legacy token to per-account store (%s)", account)
+        except Exception:
+            pass
+    return store
+
+
+def _save_token_store(store: dict[str, str]) -> None:
+    """Persist the per-account token store."""
+    try:
+        TOKEN_STORE_PATH.write_text(
+            json.dumps(store, indent=2), encoding="utf-8"
+        )
+    except Exception as exc:
+        logger.warning("Could not save token store: %s", exc)
+
+
+def get_token_for_account(account: str | None = None) -> str | None:
+    """Get token for a specific account, falling back to any available token."""
+    store = _load_token_store()
+    if not store:
+        return None
+    # Primary: requested account
+    if account and account in store:
+        tok = store[account]
+        if tok and tok != "None":
+            return tok
+    # Fallback: active account
+    active = _resolve_active_account()
+    if active in store:
+        tok = store[active]
+        if tok and tok != "None":
+            return tok
+    # Last resort: any account with a valid token
+    for tok in store.values():
+        if tok and tok != "None":
+            return tok
+    return None
+
+
+def save_token_for_account(token: str, account: str | None = None) -> None:
+    """Save a token under the given account (or active account)."""
+    acct = account or _resolve_active_account()
+    store = _load_token_store()
+    store[acct] = token
+    _save_token_store(store)
 
 CLIENT_HEADERS = {
     "x-client-version": "2.3.0",
@@ -72,52 +157,53 @@ class DeepSeekAPIError(Exception):
 
 
 class DeepSeekClient:
-    """Async DeepSeek chat client with PoW solving."""
+    """Async DeepSeek chat client with PoW solving.
+
+    Account-aware: resolves tokens from the per-account store.
+    Falls back to any available account token if the primary has none.
+    """
 
     def __init__(
         self,
         token: str | None = None,
         token_refresher: Callable[[], Awaitable[str]] | None = None,
+        account: str | None = None,
     ) -> None:
         self._token = token
         self._token_refresher = token_refresher
+        self._account = account  # e.g. "browser-data-acc15"; None = active
         self._http: httpx.AsyncClient | None = None
         self._lock = asyncio.Lock()
         # Session continuity: sable_chat_id → (deepseek_session_id, next_parent_id)
         self._sessions: dict[str, tuple[str, int | None]] = {}
+
+    @property
+    def account(self) -> str:
+        """Resolved account name for this client instance."""
+        return self._account or _resolve_active_account()
 
     def set_token_refresher(self, refresher: Callable[[], Awaitable[str]] | None) -> None:
         """Inject an external coroutine that returns a fresh DeepSeek token."""
         self._token_refresher = refresher
 
     # ------------------------------------------------------------------
-    # Token management
+    # Token management (per-account)
     # ------------------------------------------------------------------
 
     @property
     def token(self) -> str | None:
         if self._token:
             return self._token
-        # Try cache
-        if TOKEN_CACHE.exists():
-            try:
-                data = json.loads(TOKEN_CACHE.read_text(encoding="utf-8"))
-                self._token = data.get("token")
-            except Exception:
-                pass
+        # Resolve from per-account store (with fallback)
+        self._token = get_token_for_account(self._account)
         return self._token
 
-    def set_token(self, token: str) -> None:
-        """Set and persist token. Clears stale sessions when the token changes."""
+    def set_token(self, token: str, account: str | None = None) -> None:
+        """Set and persist token under the given account. Clears stale sessions."""
         if token != self._token:
             self._sessions.clear()
         self._token = token
-        try:
-            TOKEN_CACHE.write_text(
-                json.dumps({"token": token}), encoding="utf-8"
-            )
-        except Exception as exc:
-            logger.warning("Could not cache token: %s", exc)
+        save_token_for_account(token, account or self._account)
 
     def _auth_headers(self) -> dict[str, str]:
         tok = self.token
@@ -528,13 +614,22 @@ class DeepSeekClient:
         }
 
 
-# Module-level singleton
-_client: DeepSeekClient | None = None
+# Module-level client pool: account_name → DeepSeekClient
+_clients: dict[str, DeepSeekClient] = {}
+_default_client: DeepSeekClient | None = None
 
 
-def get_client() -> DeepSeekClient:
-    """Get or create the module-level DeepSeek client singleton."""
-    global _client
-    if _client is None:
-        _client = DeepSeekClient()
-    return _client
+def get_client(account: str | None = None) -> DeepSeekClient:
+    """Get or create a DeepSeek client for the given account.
+
+    account=None → default client (resolves active account dynamically).
+    account="browser-data-acc7" → dedicated client pinned to that account.
+    """
+    if account is None:
+        global _default_client
+        if _default_client is None:
+            _default_client = DeepSeekClient()
+        return _default_client
+    if account not in _clients:
+        _clients[account] = DeepSeekClient(account=account)
+    return _clients[account]
