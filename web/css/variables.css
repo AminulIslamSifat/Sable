@@ -227,9 +227,18 @@
       margin: 0;
       height: 100%;
       font-family: var(--font-body);
-      background: radial-gradient(ellipse at 50% 0%, var(--bg-glow) 0%, var(--bg) 70%);
+      background: var(--bg);
       color: var(--text);
       -webkit-font-smoothing: antialiased;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      background: radial-gradient(ellipse at 50% 0%, var(--bg-glow) 0%, var(--bg) 70%);
     }
 
     body { display: flex; }
