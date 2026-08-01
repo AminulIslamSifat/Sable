@@ -10,12 +10,12 @@
   <link href="https://fonts.googleapis.com/css2?family=Maple+Mono:wght@400;500;600;700&family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/variables.css?v=1">
   <link rel="stylesheet" href="/static/css/base.css?v=2">
-  <link rel="stylesheet" href="/static/css/layout.css?v=1">
-  <link rel="stylesheet" href="/static/css/chat.css?v=2">
-  <link rel="stylesheet" href="/static/css/panels.css?v=3">
-  <link rel="stylesheet" href="/static/css/components.css?v=1">
+  <link rel="stylesheet" href="/static/css/layout.css?v=9">
+  <link rel="stylesheet" href="/static/css/chat.css?v=12">
+  <link rel="stylesheet" href="/static/css/panels.css?v=10">
+  <link rel="stylesheet" href="/static/css/components.css?v=9">
   <link rel="stylesheet" href="/static/css/responsive.css?v=1">
-  <link rel="stylesheet" href="/static/css/agents.css?v=12">
+  <link rel="stylesheet" href="/static/css/agents.css?v=20">
   <link rel="stylesheet" href="/static/css/ui1.css?v=1">
   <link rel="manifest" href="/static/assets/manifest.json">
   <meta name="theme-color" content="#7c5cbf">
@@ -40,34 +40,42 @@
 
   <div class="sidebar-overlay"></div>
   <aside class="sidebar">
-    <div class="brand">
-      <img src="/static/assets/sable_icon.svg" alt="Sable">
-      <div class="brand-text">
-        <h1>Sable</h1>
-        <span>agentic chat</span>
+    <div class="sidebar-section sidebar-top">
+      <div class="brand-row">
+        <div class="brand">
+          <img src="/static/assets/sable_icon.svg" alt="Sable">
+          <div class="brand-text">
+            <h1>Sable</h1>
+            <span>agentic chat</span>
+          </div>
+        </div>
+        <button id="newChat" class="new-chat-icon" title="New chat">
+          <div class="spinner"></div>
+          <span class="icon-emoji">＋</span><i data-lucide="square-pen" class="icon-lucide"></i>
+        </button>
+      </div>
+      <div class="sidebar-top-content">
+        <div class="selector-wrap thinking-select-wrap">
+          <select id="thinkingModeSelect" title="Thinking mode used for new chats"></select>
+        </div>
+        <div class="mode-switcher" id="modeSwitcher">
+          <button id="modeApi" class="active" title="Direct API chat"><span class="icon-emoji">⚡</span><i data-lucide="zap" class="icon-lucide"></i> API</button>
+          <button id="modeScraper" title="Headed browser scraper chat"><span class="icon-emoji">🌐</span><i data-lucide="globe" class="icon-lucide"></i> Scraper</button>
+        </div>
+        <div class="scraper-engine-wrap" id="scraperEngineWrap">
+          <select id="scraperEngineSelect" title="Scraper engine"></select>
+        </div>
+        <div class="scraper-status" id="scraperStatus"></div>
+        <button id="syncContext">
+          <div class="spinner"></div>
+          <span class="btn-label"><span class="icon-emoji">⟳</span><i data-lucide="refresh-cw" class="icon-lucide"></i> Sync Context</span>
+        </button>
       </div>
     </div>
-    <div class="selector-wrap thinking-select-wrap">
-      <select id="thinkingModeSelect" title="Thinking mode used for new chats"></select>
+    <div class="sidebar-section sidebar-chats">
+      <div id="chats"></div>
     </div>
-    <div class="mode-switcher" id="modeSwitcher">
-      <button id="modeApi" class="active" title="Direct API chat"><span class="icon-emoji">⚡</span><i data-lucide="zap" class="icon-lucide"></i> API</button>
-      <button id="modeScraper" title="Headed browser scraper chat"><span class="icon-emoji">🌐</span><i data-lucide="globe" class="icon-lucide"></i> Scraper</button>
-    </div>
-    <div class="scraper-engine-wrap" id="scraperEngineWrap">
-      <select id="scraperEngineSelect" title="Scraper engine"></select>
-    </div>
-    <div class="scraper-status" id="scraperStatus"></div>
-    <button id="newChat">
-      <div class="spinner"></div>
-      <span class="btn-label">New chat</span>
-    </button>
-    <button id="syncContext">
-      <div class="spinner"></div>
-      <span class="btn-label"><span class="icon-emoji">⟳</span><i data-lucide="refresh-cw" class="icon-lucide"></i> Sync Context</span>
-    </button>
-    <div id="chats"></div>
-    <div class="sidebar-footer">
+    <div class="sidebar-section sidebar-bottom">
       <button id="settingsBtn" class="sidebar-footer-btn" title="Settings">
         <span class="icon-emoji">⚙</span><i data-lucide="settings" class="icon-lucide"></i> Settings
       </button>
@@ -76,16 +84,24 @@
 
   <main class="main">
     <header>
-      <div class="header-left">
-        <button id="sidebarToggle" class="icon-btn" title="Toggle sidebar"><span class="icon-emoji">☰</span><i data-lucide="menu" class="icon-lucide"></i></button>
-        <strong>Sable</strong>
-        <div class="selector-wrap header-model-wrap">
-          <select id="modelSelect" title="Model used for new chats"></select>
+      <div class="header-row">
+        <div class="header-cell header-icon-cell">
+          <button id="sidebarToggle" class="icon-btn" title="Toggle sidebar"><span class="icon-emoji">☰</span><i data-lucide="panel-left-close" class="icon-lucide"></i></button>
         </div>
-      </div>
-      <div class="header-right">
-        <button id="diffToggleBtn" class="icon-btn" title="Toggle file edit sidebar"><span class="icon-emoji">✎</span><i data-lucide="pencil" class="icon-lucide"></i></button>
-        <small>localhost:6001</small>
+        <div class="header-cell header-model-cell">
+          <div class="glass-dropdown" id="modelDropdown">
+            <button class="glass-dropdown-trigger" id="modelTrigger" title="Model used for new chats">
+              <span class="glass-dropdown-label">Model</span>
+              <span class="glass-dropdown-arrow">▾</span>
+            </button>
+            <div class="glass-dropdown-menu" id="modelMenu"></div>
+            <select id="modelSelect" hidden></select>
+          </div>
+        </div>
+        <div class="header-agent-cell" id="agentTopBarSlot"></div>
+        <div class="header-cell header-icon-cell">
+          <button id="diffToggleBtn" class="icon-btn" title="Toggle file edit sidebar"><span class="icon-emoji">✎</span><i data-lucide="file-pen-line" class="icon-lucide"></i></button>
+        </div>
       </div>
     </header>
 
@@ -99,23 +115,29 @@
     <div class="input-area" id="inputArea">
       <div class="attach-preview" id="attachPreview"></div>
       <div class="input-row">
-        <button class="attach-btn" id="attachBtn" title="Attach file"><span class="icon-emoji">+</span><i data-lucide="paperclip" class="icon-lucide"></i></button>
+        <div class="input-cell attach-cell">
+          <button class="attach-btn" id="attachBtn" title="Attach file"><span class="icon-emoji">+</span><i data-lucide="paperclip" class="icon-lucide"></i></button>
+        </div>
         <input type="file" id="fileInput" accept="image/*" multiple hidden>
-        <textarea id="input" placeholder="Chat..." rows="1"></textarea>
-        <button id="send">
-          <div class="spinner"></div>
-          <span class="btn-label"><span class="icon-emoji">➤</span><i data-lucide="send" class="icon-lucide"></i></span>
-          <span class="btn-label-stop"></span>
-        </button>
+        <div class="input-cell text-cell">
+          <textarea id="input" placeholder="Chat..." rows="1"></textarea>
+        </div>
+        <div class="input-cell send-cell">
+          <button id="send">
+            <div class="spinner"></div>
+            <span class="btn-label"><span class="icon-emoji">➤</span><i data-lucide="send" class="icon-lucide"></i></span>
+            <span class="btn-label-stop"></span>
+          </button>
+        </div>
       </div>
     </div>
   </main>
 
   <div id="toast"></div>
 
-  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/purify.min.js"></script>
+  <script src="/static/vendor/mermaid.min.js"></script>
   <script>
     window.MathJax = {
       tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [['$$','$$'],['\\[','\\]']], processEscapes: true },
@@ -123,7 +145,7 @@
       startup: { typeset: false }
     };
   </script>
-  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async></script>
+  <script src="/static/vendor/mathjax-tex-chtml.js" async></script>
 
   <aside id="diffSidebar" class="diff-sidebar" aria-label="File edit sidebar">
     <div class="diff-sidebar-header">
@@ -411,7 +433,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=19"></script>
-  <script src="/static/js/agents.js?v=10"></script>
+  <script src="/static/app.js?v=20"></script>
+  <script src="/static/js/agents.js?v=11"></script>
 </body>
 </html>

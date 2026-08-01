@@ -1,22 +1,24 @@
     /* ---------- attachments ---------- */
 
     .attach-btn {
-      width: 38px;
-      height: 38px;
+      min-width: 27px;
+      min-height: 27px;
+      padding: 8px;
       flex-shrink: 0;
-      background: var(--accent);
+      background: transparent;
       border: none;
-      color: #111;
-      font-size: 22px;
+      color: var(--accent-text);
+      font-size: 16px;
       font-weight: 700;
       line-height: 1;
       display: flex;
       align-items: center;
       justify-content: center;
       border-radius: var(--radius-lg);
-      transition: background 0.15s, transform 0.1s;
+      cursor: pointer;
+      transition: color 0.15s, transform 0.1s;
     }
-    .attach-btn:hover:not(:disabled) { background: var(--accent-text); transform: scale(1.05); }
+    .attach-btn:hover:not(:disabled) { color: var(--accent); transform: scale(1.05); }
     .attach-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
     .attach-preview {
@@ -202,21 +204,24 @@
     }
     .diff-sidebar {
       position: fixed;
-      top: 0;
-      right: 0;
-      height: 100vh;
-      height: 100dvh;
-      width: min(480px, 92vw);
-      background: var(--panel);
-      border-left: 1px solid var(--border);
+      top: 6px;
+      right: 6px;
+      bottom: 6px;
+      width: 325px;
+      background: color-mix(in srgb, var(--panel) 95%, transparent);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
       box-shadow: -18px 0 50px rgba(0, 0, 0, .45);
       transform: translateX(105%);
       transition: transform .18s ease;
-      z-index: 50;
+      z-index: 200;
       display: flex;
       flex-direction: column;
     }
     body.diff-open .diff-sidebar { transform: translateX(0); }
+    @media (min-width: 769px) {
+      body.diff-open .main { margin-right: 331px; transition: margin-right .18s ease; }
+    }
     .diff-sidebar-header {
       display: flex;
       align-items: center;
