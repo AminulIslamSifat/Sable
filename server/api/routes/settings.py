@@ -177,6 +177,44 @@ async def delete_account(payload: dict[str, str]) -> dict[str, Any]:
     return {"status": "ok", "deleted": target_name}
 
 
+@router.post("/api/settings/accounts/open")
+async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
+    """Launch a headful browser with the specified profile (like browser_opener.py)."""
+    target_name = payload.get("profile", "")
+    if not re.match(r"^browser-data-acc\d+$", target_name):
+        raise HTTPException(status_code=400, detail="Invalid profile name")
+    target_path = _SYSTEM_DIR / target_name
+    if not target_path.is_dir():
+        raise HTTPException(status_code=404, detail=f"'{target_name}' not found")
+
+    url = payload.get("url", "https://chat.qwen.ai")
+
+    async def _run_browser() -> None:
+        from playwright.async_api import async_playwright
+        try:
+            async with async_playwright() as p:
+                context = await p.chromium.launch_persistent_context(
+                    user_data_dir=str(target_path),
+                    headless=False,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-blink-features=AutomationControlled",
+                        "--disk-cache-size=2097152",
+                        "--disable-gpu-shader-cache",
+                        "--disable-component-update",
+                    ],
+                )
+                page = context.pages[0] if context.pages else await context.new_page()
+                await page.goto(url)
+                # Wait until user closes the browser window
+                await context.wait_for_event("close")
+        except Exception as e:
+            logger.warning(f"Browser for {target_name} exited: {e}")
+
+    asyncio.create_task(_run_browser())
+    return {"status": "opened", "profile": target_name, "url": url}
+
+
 _SERVICE_NAME = "sable.service"
 
 
