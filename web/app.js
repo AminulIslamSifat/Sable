@@ -2152,7 +2152,21 @@
         return row;
       };
 
-      // Scraper chats pinned to top in collapsible section
+      // API chats with date groups
+      let __lastGroup = null;
+      for (const chat of apiChats) {
+        const __g = __groupOf(chat);
+        if (__g !== __lastGroup) {
+          __lastGroup = __g;
+          const lbl = document.createElement('div');
+          lbl.className = 'chat-group-label';
+          lbl.textContent = __g;
+          chatsEl.appendChild(lbl);
+        }
+        chatsEl.appendChild(renderChatRow(chat));
+      }
+
+      // Scraper chats at bottom in collapsible section
       if (scraperChats.length > 0) {
         const header = document.createElement('div');
         header.className = 'scraper-chats-header' + (scraperChatsCollapsed ? ' collapsed' : '');
@@ -2169,20 +2183,6 @@
           body.appendChild(renderChatRow(chat));
         }
         chatsEl.appendChild(body);
-      }
-
-      // API chats with date groups
-      let __lastGroup = null;
-      for (const chat of apiChats) {
-        const __g = __groupOf(chat);
-        if (__g !== __lastGroup) {
-          __lastGroup = __g;
-          const lbl = document.createElement('div');
-          lbl.className = 'chat-group-label';
-          lbl.textContent = __g;
-          chatsEl.appendChild(lbl);
-        }
-        chatsEl.appendChild(renderChatRow(chat));
       }
 
       // Sync tab titles from chatList (backend auto-titles after first msg)
@@ -2229,6 +2229,42 @@
       try { localStorage.setItem(THINKING_MODE_KEY, selectedThinkingMode); } catch (err) {}
     }
 
+    /* ---------- Glass dropdown (custom model selector) ---------- */
+    const glassDropdown = document.getElementById("modelDropdown");
+    const glassTrigger = document.getElementById("modelTrigger");
+    const glassMenu = document.getElementById("modelMenu");
+    const glassLabel = glassTrigger.querySelector(".glass-dropdown-label");
+
+    function syncGlassDropdown() {
+      glassMenu.innerHTML = "";
+      for (const opt of modelSelectEl.options) {
+        const item = document.createElement("div");
+        item.className = "glass-dropdown-item" + (opt.selected ? " active" : "");
+        item.textContent = opt.textContent;
+        item.dataset.value = opt.value;
+        item.addEventListener("click", () => {
+          modelSelectEl.value = opt.value;
+          modelSelectEl.dispatchEvent(new Event("change"));
+          glassLabel.textContent = opt.textContent;
+          glassDropdown.classList.remove("open");
+        });
+        glassMenu.appendChild(item);
+      }
+      const sel = modelSelectEl.options[modelSelectEl.selectedIndex];
+      if (sel) glassLabel.textContent = sel.textContent;
+    }
+
+    glassTrigger.addEventListener("click", (e) => {
+      e.stopPropagation();
+      glassDropdown.classList.toggle("open");
+    });
+
+    document.addEventListener("click", (e) => {
+      if (!glassDropdown.contains(e.target)) {
+        glassDropdown.classList.remove("open");
+      }
+    });
+
     async function loadModels() {
       let models = FALLBACK_MODELS;
       try {
@@ -2259,6 +2295,7 @@
         if (m.id === selectedModel) opt.selected = true;
         modelSelectEl.appendChild(opt);
       }
+      syncGlassDropdown();
 
       populateThinkingModes(savedMode);
     }
@@ -2387,6 +2424,9 @@
 
       // Only scraping gets hard-disabled; qwen/deepseek allow within-group switching
       modelSelectEl.disabled = provider === "scraping";
+      glassTrigger.disabled = provider === "scraping";
+      glassTrigger.style.opacity = provider === "scraping" ? "0.45" : "";
+      syncGlassDropdown();
     }
 
     async function selectChat(chatId) {
@@ -2964,6 +3004,16 @@
       });
     }
     const sidebarOverlay = document.querySelector('.sidebar-overlay');
+
+    const brandRow = document.querySelector('.brand-row');
+    if (brandRow) {
+      brandRow.addEventListener('click', (e) => {
+        // Don't toggle if they clicked the new-chat button itself
+        if (e.target.closest('#newChat')) return;
+        document.querySelector('.sidebar-top-content')?.classList.toggle('collapsed');
+      });
+    }
+
     if (sidebarOverlay) {
       sidebarOverlay.addEventListener('click', () => {
         document.body.classList.remove('sidebar-open');
@@ -3049,7 +3099,7 @@
       if (e.target === settingsOverlay) closeSettings();
     });
 
-    // Tab switching
+    // Tab switching (lazy-load per tab)
     document.querySelectorAll(".settings-tab").forEach((tab) => {
       tab.addEventListener("click", () => {
         document.querySelectorAll(".settings-tab").forEach((t) => t.classList.remove("active"));
@@ -3057,6 +3107,9 @@
         tab.classList.add("active");
         const target = document.getElementById("tab-" + tab.dataset.tab);
         if (target) target.classList.add("active");
+        const tabName = tab.dataset.tab;
+        if (tabName === 'general') loadBrowserSettings();
+        else if (tabName === 'account') loadAccountProfiles();
       });
     });
 
@@ -3728,8 +3781,13 @@
     const origOpenSettings = openSettings;
     openSettings = function() {
       origOpenSettings();
-      loadBrowserSettings();
-      loadAccountProfiles();
+      // Only load the active tab's data, not everything upfront
+      const activeTab = document.querySelector('.settings-tab.active');
+      if (activeTab) {
+        const tabName = activeTab.dataset.tab;
+        if (tabName === 'general') loadBrowserSettings();
+        else if (tabName === 'account') loadAccountProfiles();
+      }
     };
 
     // ---------- Font Size ----------
