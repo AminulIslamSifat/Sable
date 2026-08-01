@@ -4,13 +4,13 @@
 
 ### Phase 1 — Search
 ```bash
-python3 SKILL_DIR/web_search_batch.py --json --search-only "your query here"
+python3 SKILL_DIR/scripts/web_search_batch.py --json --search-only "your query here"
 ```
 Add `--max-results 20` to control result count (default 10).
 
 ### Phase 2 — Fetch
 ```bash
-python3 SKILL_DIR/web_search_batch.py --json --fetch-urls url1 url2 url3
+python3 SKILL_DIR/scripts/web_search_batch.py --json --fetch-urls url1 url2 url3
 ```
 Add `--max-chars 20000` for larger page context (default 10000).
 
