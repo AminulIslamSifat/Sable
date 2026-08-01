@@ -78,16 +78,32 @@ def handle_spawn_agent(
             browser_data_dir=agent.browser_data_dir,
         )
 
-        # Schedule async execution on the running loop
-        loop = asyncio.get_running_loop()
+        # Schedule async execution on the main event loop (we may be in a thread-pool worker)
+        loop = runtime._loop
+        if loop is None:
+            raise RuntimeError("Event loop not cached on runtime — server startup issue")
         sem = runtime._qwen_sem if "qwen" in agent.model else runtime._ds_sem
         agent_timeout = timeout or role_cfg.default_timeout
-        task = loop.create_task(runtime._run_agent(agent, sem, agent_timeout))
-        runtime._tasks[agent.id] = task
+        future = asyncio.run_coroutine_threadsafe(
+            runtime._run_agent(agent, sem, agent_timeout), loop
+        )
+        runtime._tasks[agent.id] = future
 
-        # Push spawn event to SSE clients
+        # Safety: log unhandled exceptions from the background coroutine
+        def _on_done(fut, _aid=agent.id):
+            if fut.cancelled():
+                return
+            exc = fut.exception()
+            if exc:
+                import logging
+                logging.getLogger("sable").error(
+                    "[agent %s] unhandled exception in _run_agent: %s", _aid, exc
+                )
+        future.add_done_callback(_on_done)
+
+        # Push spawn event to SSE clients (thread-safe — we're in a worker thread)
         from server.api.routes.agents import push_agent_event
-        push_agent_event(agent.chat_id, {
+        loop.call_soon_threadsafe(push_agent_event, agent.chat_id, {
             "type": "agent_spawned",
             "agent_id": agent.id,
             "data": {"role": agent.role, "task": agent.task, "model": agent.model},

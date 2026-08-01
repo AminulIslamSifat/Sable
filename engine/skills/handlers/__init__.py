@@ -26,6 +26,7 @@ from engine.skills.handlers.agents import (
     handle_kill_agent,
     handle_spawn_agent,
 )
+from engine.skills.handlers.ask_user import handle_ask_user
 
 HANDLER_MAP: dict[str, object] = {
     "execute_command": handle_execute_command,
@@ -44,6 +45,7 @@ HANDLER_MAP: dict[str, object] = {
     "spawn_agent": handle_spawn_agent,
     "agent_status": handle_agent_status,
     "kill_agent": handle_kill_agent,
+    "ask_user": handle_ask_user,
 }
 
 __all__ = [
@@ -64,4 +66,5 @@ __all__ = [
     "handle_spawn_agent",
     "handle_agent_status",
     "handle_kill_agent",
+    "handle_ask_user",
 ]

@@ -35,17 +35,33 @@
       min-width: 0;
     }
 
+
+
+    /* ---------- chat wrapper + panes ---------- */
     #chat {
       flex: 1;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      --chat-width: min(88%, 860px);
+    }
+
+    .tab-pane {
+      position: absolute;
+      inset: 0;
       overflow-y: auto;
       padding: 28px 22px;
       padding-bottom: 120px;
-      display: flex;
+      display: none;
       flex-direction: column;
       gap: 14px;
       align-items: center;
-      --chat-width: min(88%, 860px);
+      background: var(--bg);
     }
+    .tab-pane.active { display: flex; }
 
     .msg {
       width: var(--chat-width);

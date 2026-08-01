@@ -13,7 +13,9 @@
     };
 
     const chatsEl  = document.getElementById("chats");
-    const chatEl   = document.getElementById("chat");
+    const chatEl   = document.getElementById("chat");  // wrapper — contains .tab-pane divs
+    const tabBarEl = null; // tab bar removed — switching via sidebar
+    let activePane = null;  // the visible .tab-pane (messages live here)
     const inputEl  = document.getElementById("input");
     const sendBtn  = document.getElementById("send");
     const newChatBtn = document.getElementById("newChat");
@@ -134,6 +136,7 @@
     let activeChatId = null;
     let parentId    = null;
     const activeStreams = new Map(); // chatId → AbortController
+    const openTabs = new Map(); // chatId → { pane: HTMLElement, title: string }
     let creating    = false;
     let syncing     = false;
 
@@ -220,7 +223,7 @@
       text = text.replace(/~~([^~]+)~~/g, "<del>$1</del>");
       text = text.replace(/==([^=]+)==/g, "<mark>$1</mark>");
 
-      text = text.replace(/\u0000C(\d+)\u0000/g, (m, i) => `<code>${escHtml(codeStore[i])}</code>`);
+      text = text.replace(/\u0000C(\d+)\u0000/g, (m, i) => `<code>${codeStore[i]}</code>`);
 
       return text;
     }
@@ -511,12 +514,20 @@
     const _HTML_TAGS = new Set("a,abbr,address,area,article,aside,audio,b,base,bdi,bdo,blockquote,body,br,button,canvas,caption,cite,code,col,colgroup,data,datalist,dd,del,details,dfn,dialog,div,dl,dt,em,embed,fieldset,figcaption,figure,footer,form,h1,h2,h3,h4,h5,h6,head,header,hr,html,i,iframe,img,input,ins,kbd,label,legend,li,link,main,map,mark,meta,meter,nav,noscript,object,ol,optgroup,option,output,p,param,picture,pre,progress,q,rp,rt,ruby,s,samp,script,section,select,slot,small,source,span,strong,style,sub,summary,sup,table,tbody,td,template,textarea,tfoot,th,thead,time,title,tr,track,u,ul,var,video,wbr,svg,path,rect,circle,ellipse,line,polyline,polygon,text,g,defs,use,symbol,linearGradient,radialGradient,stop,clipPath,mask,pattern,image,foreignObject,animate,animateTransform,animateMotion,desc,title,metadata,marker,solidColor,solidColorRef,switch,unknown".split(","));
 
     function escapeNonHtmlTags(text) {
-      // Escape angle brackets for tags that aren't valid HTML/SVG
-      // so marked + DOMPurify don't swallow them silently.
-      return text.replace(/<(\/?)([a-zA-Z_][\w.-]*)(\s[^>]*)?>/g, (match, slash, tag, rest) => {
+      // Escape angle brackets for tags that aren't valid HTML/SVG so marked +
+      // DOMPurify don't swallow them silently. Code spans and fenced blocks are
+      // shielded first: their angle brackets are literal and get escaped exactly
+      // once by marked's code renderer — pre-escaping them here double-encodes
+      // the "&" and a literal "&lt;" leaks into rendered code.
+      const stash = [];
+      const hide = (m) => { stash.push(m); return " N" + (stash.length - 1) + " "; };
+      text = text.replace(/(^|\n)(```|~~~)[^\n]*\n[\s\S]*?(?:\n\2[ \t]*(?=\n|$)|$)/g, hide);
+      text = text.replace(/(`+)([^`]*?)\1/g, hide);
+      text = text.replace(/<(\/?)([a-zA-Z_][\w.-]*)(\s[^>]*)?>/g, (match, slash, tag, rest) => {
         if (_HTML_TAGS.has(tag.toLowerCase())) return match;
         return match.replace(/</g, "&lt;").replace(/>/g, "&gt;");
       });
+      return text.replace(/ N(\d+) /g, (m, i) => stash[+i]);
     }
 
     // ── Emoji → Lucide mapping for chat messages ──
@@ -562,12 +573,15 @@
 
     function renderMarkdown(raw) {
       if (!raw) return "";
-      const text = escapeNonHtmlTags(normalizeMd(String(raw).replace(/\r\n/g, "\n")));
+      const normalized = normalizeMd(String(raw).replace(/\r\n/g, "\n"));
 
       ensureMarked();
-      if (window.marked && window.DOMPurify && !usesLegacyExtras(text)) {
+      if (window.marked && window.DOMPurify && !usesLegacyExtras(normalized)) {
         try {
-          const html = marked.parse(text);
+          // escapeNonHtmlTags only feeds the marked+DOMPurify path — it stops
+          // unknown prose tags from being swallowed. The legacy parser below
+          // escapes everything itself, so pre-escaping here would double-encode.
+          const html = marked.parse(escapeNonHtmlTags(normalized));
           return lucideReplaceEmoji(DOMPurify.sanitize(html, { ADD_ATTR: ["target", "data-lucide"] }));
         } catch (err) {
           console.error("marked render failed:", err);
@@ -575,7 +589,7 @@
       }
 
       try {
-        return lucideReplaceEmoji(parseBlocks(text.split("\n")));
+        return lucideReplaceEmoji(parseBlocks(normalized.split("\n")));
       } catch (err) {
         console.error("Markdown render error:", err);
         return `<p>${escHtml(raw)}</p>`;
@@ -675,25 +689,89 @@
       }
     }
 
+    /* ---------- Multi-tab infrastructure ---------- */
+
+    function createTabPane(chatId) {
+      // Remove the wrapper-level "Start a chat" placeholder once real panes exist
+      const wrapperEmpty = chatEl.querySelector(":scope > .empty");
+      if (wrapperEmpty) wrapperEmpty.remove();
+
+      const pane = document.createElement("div");
+      pane.className = "tab-pane";
+      pane.dataset.chatId = chatId;
+      pane.innerHTML = `<div class="empty"><h2>New conversation</h2><p>Send the first message.</p></div>`;
+      chatEl.appendChild(pane);
+      return pane;
+    }
+
+    function ensurePane(chatId) {
+      if (openTabs.has(chatId)) return openTabs.get(chatId).pane;
+      const pane = createTabPane(chatId);
+      const meta = chatList.find(c => c.id === chatId);
+      openTabs.set(chatId, { pane, title: meta?.title || "New chat" });
+      return pane;
+    }
+
+    function switchToTab(chatId) {
+      const pane = ensurePane(chatId);
+      // Hide all panes, show target
+      for (const [, tab] of openTabs) {
+        tab.pane.classList.remove("active");
+      }
+      pane.classList.add("active");
+      activePane = pane;
+      activeChatId = chatId;
+      renderTabBar();
+    }
+
+    function closeTab(chatId) {
+      const tab = openTabs.get(chatId);
+      if (!tab) return;
+      tab.pane.remove();
+      openTabs.delete(chatId);
+
+      // If we closed the active tab, focus another
+      if (activeChatId === chatId) {
+        const remaining = [...openTabs.keys()];
+        if (remaining.length > 0) {
+          selectChat(remaining[remaining.length - 1]);
+        } else {
+          activeChatId = null;
+          activePane = null;
+          parentId = null;
+          saveActiveChat();
+          chatEl.innerHTML = `<div class="empty"><h2>Start a chat</h2><p>Create a new chat and talk to Sable.</p></div>`;
+        }
+      }
+      renderTabBar();
+    }
+
+    function renderTabBar() { /* no-op: switching via sidebar */ }
+
+    /* ---------- end multi-tab ---------- */
+
     function isNearBottom() {
-      return chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < 50;
+      if (!activePane) return true;
+      return activePane.scrollHeight - activePane.scrollTop - activePane.clientHeight < activePane.clientHeight * 0.25;
     }
 
     let _scrollLast = 0;
     let _scrollForChat = null;
     function scrollBottom(force) {
+      if (!activePane) return;
       const now = performance.now();
       if (_scrollForChat !== activeChatId) _scrollLast = 0;
       _scrollForChat = activeChatId;
       if (!force && now - _scrollLast < 100) return;
       _scrollLast = now;
       if (force || isNearBottom()) {
-        chatEl.scrollTop = chatEl.scrollHeight;
+        activePane.scrollTop = activePane.scrollHeight;
       }
     }
 
     function clearEmptyState() {
-      const empty = chatEl.querySelector(".empty");
+      if (!activePane) return;
+      const empty = activePane.querySelector(".empty");
       if (empty) empty.remove();
     }
 
@@ -944,7 +1022,7 @@
         activateLucideIcons(content);
         div.appendChild(content);
       }
-      chatEl.appendChild(div);
+      activePane.appendChild(div);
       scrollBottom(true);
       return div;
     }
@@ -1165,7 +1243,7 @@
             <summary>Thinking</summary>
             <div class="thinking-body">${escHtml(message.thinking)}</div>
           </details>`;
-        chatEl.appendChild(wrap);
+        activePane.appendChild(wrap);
       }
 
       let hasRoundText = false;
@@ -1184,7 +1262,7 @@
                 <summary>Thinking</summary>
                 <div class="thinking-body">${escHtml(evt.text || "")}</div>
               </details>`;
-            chatEl.appendChild(wrap);
+            activePane.appendChild(wrap);
           } else if (evt.type === "round_text") {
             // Per-round text — render inline within the chat flow so it
             // interleaves with tool cards instead of grouping at the bottom.
@@ -1199,22 +1277,32 @@
               renderMathJax(content);
               activateLucideIcons(content);
               textDiv.appendChild(content);
-              chatEl.appendChild(textDiv);
+              activePane.appendChild(textDiv);
             }
           } else if (evt.type === "skill_start") {
+            if (evt.name === "ask_user") continue; // MCQ rendered on skill_output
             if (!group) {
               group = document.createElement("div");
               group.className = "skill-stack";
               group.style.display = "flex";
-              chatEl.appendChild(group);
+              activePane.appendChild(group);
             }
             const card = createSkillCard(evt);
             group.appendChild(card);
             cards[evt.id] = card;
           } else if (evt.type === "skill_output") {
+            if (evt.name === "ask_user") {
+              try {
+                const card = renderAskUserCard(JSON.parse(evt.text), activePane);
+                card.classList.add("answered");
+                card.querySelectorAll("button").forEach(b => b.disabled = true);
+              } catch(e) { /* skip malformed */ }
+              continue;
+            }
             const card = cards[evt.id];
             if (card) appendSkillCardOutput(card, evt.text);
           } else if (evt.type === "skill_end") {
+            if (evt.name === "ask_user") continue;
             const card = cards[evt.id];
             if (card) finishSkillCard(card, evt);
           } else if (evt.type === "agent_result") {
@@ -1233,14 +1321,14 @@
             if (Array.isArray(evt.memories) && evt.memories.length) {
               const chip = createMemoryChip(evt.memories);
               chip.classList.add("memory-chip-tool");
-              const allCards = chatEl.querySelectorAll(".skill-card");
+              const allCards = activePane.querySelectorAll(".skill-card");
               const target = allCards.length ? allCards[allCards.length - 1] : null;
               if (target) {
                 const right = target.querySelector(".skill-header-right");
                 if (right) right.insertBefore(chip, right.firstChild);
                 else target.querySelector(".skill-header")?.appendChild(chip);
               } else {
-                chatEl.appendChild(chip);
+                activePane.appendChild(chip);
               }
             }
           }
@@ -1292,6 +1380,71 @@
       }
     }
 
+    // ── Ask User MCQ Card ──
+    function renderAskUserCard(payload, container) {
+      const { question, options, multi, default: def } = payload;
+      const card = document.createElement("div");
+      card.className = "ask-user-card";
+
+      const qEl = document.createElement("div");
+      qEl.className = "ask-user-question";
+      qEl.textContent = question;
+      card.appendChild(qEl);
+
+      const optWrap = document.createElement("div");
+      optWrap.className = "ask-user-options";
+      card.appendChild(optWrap);
+
+      const manualWrap = document.createElement("div");
+      manualWrap.className = "ask-user-manual";
+      manualWrap.style.display = "none";
+      manualWrap.innerHTML = `<input type="text" placeholder="Type your answer…" /><button class="ask-user-submit">Send</button>`;
+      card.appendChild(manualWrap);
+
+      function submitAnswer(answer) {
+        card.classList.add("answered");
+        card.querySelectorAll("button").forEach(b => b.disabled = true);
+        const chosen = document.createElement("div");
+        chosen.className = "ask-user-chosen";
+        chosen.textContent = "→ " + answer;
+        card.appendChild(chosen);
+        // Send as normal user message
+        inputEl.value = answer;
+        sendMessage();
+      }
+
+      options.forEach((opt, i) => {
+        const btn = document.createElement("button");
+        btn.className = "ask-user-opt" + (i === def ? " default" : "");
+        btn.textContent = opt;
+        btn.addEventListener("click", () => {
+          if (i === options.length - 1) {
+            // Last option = manual escape hatch
+            manualWrap.style.display = "flex";
+            manualWrap.querySelector("input").focus();
+            return;
+          }
+          submitAnswer(opt);
+        });
+        optWrap.appendChild(btn);
+      });
+
+      manualWrap.querySelector(".ask-user-submit").addEventListener("click", () => {
+        const val = manualWrap.querySelector("input").value.trim();
+        if (val) submitAnswer(val);
+      });
+      manualWrap.querySelector("input").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          const val = e.target.value.trim();
+          if (val) submitAnswer(val);
+        }
+      });
+
+      container.appendChild(card);
+      scrollBottom();
+      return card;
+    }
+
     // one "turn" holds everything for a single response: thinking, then any
     // skill/tool runs it made, then the final answer — all stacked in order,
     // scoped to just this response (not shared globally).
@@ -1304,7 +1457,7 @@
 
       const turn = document.createElement("div");
       turn.className = "turn";
-      chatEl.appendChild(turn);
+      activePane.appendChild(turn);
 
       // Immediate feedback that the message was sent and a response is on
       // its way — removed as soon as any real content (thinking, a skill
@@ -1548,6 +1701,11 @@
           finishSkillCard(card, evt);
           delete skillCards[evt.id];
         },
+        addAskUser(payload) {
+          hidePending();
+          closeCurrentThinking();
+          renderAskUserCard(payload, turn);
+        },
         addEvent(text) {
           hidePending();
           const group = ensureCommandGroup();
@@ -1755,7 +1913,8 @@
             regenBtn.addEventListener("click", () => {
               if (isStreaming()) return;
               // Find the preceding user message in this chat
-              const allMsgs = Array.from(chatEl.querySelectorAll(".msg.user"));
+              const pane = botEl.closest(".tab-pane") || activePane;
+              const allMsgs = Array.from(pane.querySelectorAll(".msg.user"));
               const thisTurn = botEl.closest(".turn");
               let prevUser = null;
               for (const u of allMsgs) {
@@ -1839,12 +1998,10 @@
           catch { continue; }
 
           if (evt.type === "meta") {
-            // Only adopt chat_id/parent_id if this stream's chat is still
-            // the one the user is viewing — prevents a background stream
-            // from hijacking activeChatId when the user has switched away.
-            if (!streamChatId || evt.chat_id === streamChatId || evt.chat_id === activeChatId) {
-              activeChatId = evt.chat_id || activeChatId;
-              parentId     = evt.parent_id || parentId;
+            // Only adopt parent_id if the user is still viewing this stream's
+            // chat — prevents a background stream from hijacking state.
+            if (activeChatId === streamChatId) {
+              parentId = evt.parent_id || parentId;
               saveActiveChat();
             }
           } else if (evt.type === "status") {
@@ -1864,9 +2021,8 @@
             ui.appendAnswer(evt.text || "");
           } else if (evt.type === "done") {
             gotDone = true;
-            if (!streamChatId || evt.chat_id === streamChatId || evt.chat_id === activeChatId) {
-              activeChatId = evt.chat_id || activeChatId;
-              parentId     = evt.parent_id || parentId;
+            if (activeChatId === streamChatId) {
+              parentId = evt.parent_id || parentId;
               saveActiveChat();
             }
           } else if (evt.type === "rate_limited") {
@@ -1887,12 +2043,18 @@
           } else if (evt.type === "tool_progress") {
             ui.showToolProgress(evt);
           } else if (evt.type === "skill_start") {
+            if (evt.name === "ask_user") continue; // MCQ card rendered on skill_output
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
             ui.showToolDone();
             ui.addSkillStart(evt);
           } else if (evt.type === "skill_output") {
+            if (evt.name === "ask_user") {
+              try { ui.addAskUser(JSON.parse(evt.text)); } catch(e) { ui.appendSkillOutput(evt); }
+              continue;
+            }
             ui.appendSkillOutput(evt);
           } else if (evt.type === "skill_end") {
+            if (evt.name === "ask_user") continue;
             ui.finishSkill(evt);
           } else if (evt.type === "file_edit") {
             handleFileEdit(evt, false);
@@ -2022,6 +2184,15 @@
         }
         chatsEl.appendChild(renderChatRow(chat));
       }
+
+      // Sync tab titles from chatList (backend auto-titles after first msg)
+      for (const [id, tab] of openTabs) {
+        const meta = chatList.find(c => c.id === id);
+        if (meta && meta.title && meta.title !== tab.title) {
+          tab.title = meta.title;
+        }
+      }
+      renderTabBar();
     }
 
     function currentModelEntry() {
@@ -2160,15 +2331,20 @@
     async function loadMessages(chatId) {
       try {
         const data = await fetch(`/api/chats/${chatId}/messages`).then(r => r.json());
-        chatEl.innerHTML = "";
+        const pane = ensurePane(chatId);
+        pane.innerHTML = "";
         const messages = data.messages || [];
         if (messages.length === 0) {
-          chatEl.innerHTML = `<div class="empty"><h2>New conversation</h2><p>Send the first message.</p></div>`;
+          pane.innerHTML = `<div class="empty"><h2>New conversation</h2><p>Send the first message.</p></div>`;
           return [];
         }
+        // Temporarily point activePane at target so addHistoryMessage appends correctly
+        const prevPane = activePane;
+        activePane = pane;
         for (const msg of messages) addHistoryMessage(msg);
-        renderMathJax(chatEl);
-        scrollBottom(true);
+        activePane = prevPane;
+        renderMathJax(pane);
+        if (chatId === activeChatId) scrollBottom(true);
         return messages;
       } catch (err) {
         console.error("Failed to load messages:", err);
@@ -2214,8 +2390,11 @@
     }
 
     async function selectChat(chatId) {
-      activeChatId = chatId;
       const meta = chatList.find(c => c.id === chatId);
+      const alreadyOpen = openTabs.has(chatId);
+
+      // Switch the visible tab (creates pane if needed)
+      switchToTab(chatId);
 
       // Cancel any stale scroll rAF from the previous chat
       _scrollPending = false;
@@ -2229,13 +2408,19 @@
 
       saveActiveChat();
       renderChats();
-      const msgs = await loadMessages(chatId);
-      // Derive parentId from the actual message chain, not the stale chats.parent_id cache.
-      // Falls back to meta.parent_id only when the chat has no messages yet.
-      if (Array.isArray(msgs) && msgs.length) {
-        const last = msgs[msgs.length - 1];
-        parentId = last?.parent_id || last?.id || null;
+
+      // Only load messages from API if this tab hasn't been loaded yet
+      if (!alreadyOpen) {
+        const msgs = await loadMessages(chatId);
+        // Derive parentId from the actual message chain
+        if (Array.isArray(msgs) && msgs.length) {
+          const last = msgs[msgs.length - 1];
+          parentId = last?.parent_id || last?.id || null;
+        } else {
+          parentId = meta?.parent_id || null;
+        }
       } else {
+        // Already loaded — just derive parentId from cached meta
         parentId = meta?.parent_id || null;
       }
 
@@ -2255,12 +2440,7 @@
           return;
         }
         chatList = chatList.filter(c => c.id !== chatId);
-        if (activeChatId === chatId) {
-          activeChatId = null;
-          parentId = null;
-          saveActiveChat();
-          chatEl.innerHTML = `<div class="empty"><h2>Start a chat</h2><p>Create a new chat and talk to Sable.</p></div>`;
-        }
+        closeTab(chatId); // handles activeChatId reassignment + empty state
         renderChats();
         showToast("Chat deleted", "success");
       } catch (err) {
@@ -2278,10 +2458,18 @@
           return;
         }
         chatList = [];
+        // Close all tabs
+        for (const [id] of openTabs) {
+          const tab = openTabs.get(id);
+          if (tab) tab.pane.remove();
+        }
+        openTabs.clear();
+        activePane = null;
         activeChatId = null;
         parentId = null;
         saveActiveChat();
         renderChats();
+        renderTabBar();
         chatEl.innerHTML = `<div class="empty"><h2>Start a chat</h2><p>Create a new chat and talk to Sable.</p></div>`;
         showToast(`Deleted ${data.chats_removed} chat(s)`, 'success');
       } catch (err) {
@@ -2435,13 +2623,14 @@
           showToast(data.error || "Could not create chat", "error");
           return null;
         }
-        activeChatId = data.chat_id;
+        // Open as a new tab
+        switchToTab(data.chat_id);
         parentId = null;
         lockModelDropdown(null); // unlock dropdown for fresh chat
         if (typeof onChatOpened === "function") onChatOpened(activeChatId);
         saveActiveChat();
         await loadChats();
-        chatEl.innerHTML = `<div class="empty"><h2>New conversation</h2><p>Send the first message.</p></div>`;
+        // Pane already has empty state from createTabPane
         inputEl.focus();
         return activeChatId;
       } catch (err) {
@@ -2626,7 +2815,7 @@
         .map(p => "/system/uploads/" + p.path.split("/").pop());
 
       // Remove previous turn's file-edit summary card
-      chatEl.querySelectorAll(".file-edit-summary-card").forEach(el => el.remove());
+      if (activePane) activePane.querySelectorAll(".file-edit-summary-card").forEach(el => el.remove());
 
       const userMsgDiv = addMessage("user", message, imageUrls);
       const lastSentMessage = message;
@@ -2643,7 +2832,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             message,
-            chat_id: activeChatId,
+            chat_id: streamChatId,
             parent_id: parentId,
             files: filesPayload.length ? filesPayload : undefined,
             model: selectedModel,
@@ -2792,23 +2981,11 @@
       }
 
       if (savedChatId && chatList.some(c => c.id === savedChatId)) {
-        activeChatId = savedChatId;
-        const meta = chatList.find(c => c.id === savedChatId);
-        saveActiveChat();
-        renderChats();
-        const msgs = await loadMessages(savedChatId);
-        // Derive parentId from the actual message chain on boot too — localStorage
-        // and chats.parent_id can both be stale after auto-turns or mid-stream crashes.
-        if (Array.isArray(msgs) && msgs.length) {
-          const last = msgs[msgs.length - 1];
-          parentId = last?.parent_id || last?.id || null;
-        } else {
-          parentId = savedParentId || (meta ? meta.parent_id : null);
-        }
-        if (typeof onChatOpened === "function") onChatOpened(savedChatId);
-        inputEl.focus();
+        await selectChat(savedChatId);
       } else if (chatList.length > 0) {
         await selectChat(chatList[0].id);
+      } else {
+        chatEl.innerHTML = `<div class="empty"><h2>Start a chat</h2><p>Create a new chat and talk to Sable.</p></div>`;
       }
     });
     })();
