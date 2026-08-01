@@ -698,3 +698,85 @@
 .ask-user-card.answered .ask-user-opt { cursor: default; }
 
 
+/* ── Context Menu (glassy) ─────────────────────────────── */
+.ctx-menu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 180px;
+  padding: 5px;
+  background: rgba(23, 23, 26, 0.88);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow:
+    0 4px 12px rgba(0,0,0,0.45),
+    0 12px 32px rgba(0,0,0,0.3),
+    inset 0 1px 0 rgba(255,255,255,0.06);
+  opacity: 0;
+  transform: scale(0.94) translateY(-4px);
+  pointer-events: none;
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.ctx-menu.open {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  pointer-events: auto;
+}
+
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 11px;
+  font-size: 12.5px;
+  font-family: inherit;
+  font-weight: 500;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--radius) - 3px);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ctx-item:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.ctx-item:active {
+  background: var(--accent-dim);
+}
+
+.ctx-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  font-size: 13px;
+  opacity: 0.8;
+}
+
+.ctx-item.ctx-danger {
+  color: var(--danger);
+}
+
+.ctx-item.ctx-danger:hover {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.ctx-sep {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--border);
+  opacity: 0.6;
+}
+
+
+

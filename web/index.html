@@ -11,7 +11,7 @@
   <link rel="stylesheet" href="/static/css/layout.css?v=9">
   <link rel="stylesheet" href="/static/css/chat.css?v=12">
   <link rel="stylesheet" href="/static/css/panels.css?v=10">
-  <link rel="stylesheet" href="/static/css/components.css?v=9">
+  <link rel="stylesheet" href="/static/css/components.css?v=10">
   <link rel="stylesheet" href="/static/css/responsive.css?v=1">
   <link rel="stylesheet" href="/static/css/agents.css?v=20">
   <link rel="stylesheet" href="/static/css/ui1.css?v=1">
@@ -132,6 +132,23 @@
   </main>
 
   <div id="toast"></div>
+
+  <!-- Context Menu -->
+  <div id="contextMenu" class="ctx-menu">
+    <button class="ctx-item" data-action="new-chat">
+      <span class="ctx-icon">＋</span> New Chat
+    </button>
+    <button class="ctx-item" data-action="settings">
+      <span class="ctx-icon">⚙</span> Chat Settings
+    </button>
+    <div class="ctx-sep"></div>
+    <button class="ctx-item ctx-danger" data-action="stop-service">
+      <span class="ctx-icon">⏹</span> Stop Service
+    </button>
+    <button class="ctx-item ctx-danger" data-action="restart-service">
+      <span class="ctx-icon">↻</span> Restart Service
+    </button>
+  </div>
 
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/purify.min.js"></script>
