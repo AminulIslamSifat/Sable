@@ -28,7 +28,7 @@ _CHROME_BINARIES = [
 ]
 
 # Fallback: Playwright-bundled Chromium (check newest version first)
-_PLAYWRIGHT_CHROME_GLOB = os.path.expanduser("~/hdd/cache/ms-playwright/chromium-*/chrome-linux64/chrome")
+_PLAYWRIGHT_CHROME_GLOB = os.path.expanduser("~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome")
 
 _INPUT_SELECTORS = [
     PLATFORM["selectors"]["input"],
@@ -205,7 +205,12 @@ class GhostChat:
             candidates = sorted(_glob.glob(_PLAYWRIGHT_CHROME_GLOB), reverse=True)
             chrome_path = candidates[0] if candidates else None
         if not chrome_path:
-            console.print("[bold red]❌ No Thorium/Chrome/Playwright-Chromium found![/bold red]")
+            # Hardcoded last-resort fallback
+            _fallback = os.path.expanduser("~/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome")
+            if os.path.isfile(_fallback):
+                chrome_path = _fallback
+        if not chrome_path:
+            console.print(f"[bold red]❌ No Chrome found! Glob: {_PLAYWRIGHT_CHROME_GLOB}[/bold red]")
             sys.exit(1)
 
         console.print("[bold purple]Launching Ghost Engine...[/bold purple] 🚀")
@@ -218,6 +223,7 @@ class GhostChat:
             "--force-dark-mode",
             "--enable-features=WebUIDarkMode",
             "--ozone-platform=wayland",
+            "--no-sandbox",
             "--disable-blink-features=AutomationControlled",
         ]
         if not self.viewer:
