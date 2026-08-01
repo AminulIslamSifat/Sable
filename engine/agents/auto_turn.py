@@ -86,6 +86,25 @@ class AutoTurnEngine:
             del self._chats[chat_id]
             logger.debug("[auto_turn] cleaned up chat %s", chat_id)
 
+    def mark_stream_busy(self, chat_id: str) -> None:
+        """Called when the main chat stream starts — prevents auto-turn firing."""
+        state = self.ensure_chat(chat_id)
+        state.busy = True
+
+    def mark_stream_done(self, chat_id: str) -> None:
+        """Called when the main chat stream ends — drains queued agent results."""
+        state = self._chats.get(chat_id)
+        if not state:
+            return
+        state.busy = False
+        # Schedule drain on the event loop (this may be called from sync context)
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.drain(chat_id))
+        except RuntimeError:
+            pass  # No running loop — drain will happen on next agent event
+
     # ------------------------------------------------------------------
     # Core: agent done -> auto turn
     # ------------------------------------------------------------------
@@ -97,7 +116,7 @@ class AutoTurnEngine:
         summary = (
             f"[Agent {agent_id} ({role}) SUCCEEDED]\n"
             f"Task: {task_snippet}\n"
-            f"Full output saved to: output/agent/{agent_id}.md"
+            f"Full log + result saved to: output/agent/{agent_id}.md"
         )
 
         async with state.lock:
@@ -115,7 +134,8 @@ class AutoTurnEngine:
         summary = (
             f"[Agent {agent_id} ({role}) FAILED]\n"
             f"Task: {task_snippet}\n"
-            f"Error: {error}"
+            f"Error: {error}\n"
+            f"Full log saved to: output/agent/{agent_id}.md"
         )
 
         async with state.lock:

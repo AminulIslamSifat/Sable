@@ -590,3 +590,104 @@
     .scraper-chats-body { overflow: hidden; flex-shrink: 0; }
     .scraper-chats-body.collapsed { display: none; }
 
+
+/* ── Ask User MCQ Card ── */
+.ask-user-card {
+  width: var(--chat-width, 100%);
+  max-width: var(--chat-width, 100%);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg, 14px);
+  padding: 20px;
+  margin: 8px 0;
+  box-sizing: border-box;
+}
+.ask-user-question {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text);
+  margin-bottom: 14px;
+  line-height: 1.4;
+}
+.ask-user-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ask-user-opt {
+  display: block;
+  width: 100%;
+  padding: 12px 16px;
+  border-radius: var(--radius, 10px);
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font-size: 0.9rem;
+  font-family: inherit;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+.ask-user-opt:hover {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  box-shadow: 0 0 0 1px var(--accent-dim);
+}
+.ask-user-opt:active {
+  transform: scale(0.99);
+}
+.ask-user-opt.default {
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.ask-user-manual {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.ask-user-manual input {
+  flex: 1;
+  padding: 10px 14px;
+  border-radius: var(--radius, 10px);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.9rem;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.ask-user-manual input:focus {
+  border-color: var(--accent);
+}
+.ask-user-submit {
+  padding: 10px 20px;
+  border-radius: var(--radius, 10px);
+  border: none;
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+  font-size: 0.9rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.ask-user-submit:hover { opacity: 0.85; }
+.ask-user-chosen {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius, 10px);
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.ask-user-card.answered {
+  opacity: 0.6;
+  pointer-events: none;
+}
+.ask-user-card.answered .ask-user-opt { cursor: default; }
+
+
