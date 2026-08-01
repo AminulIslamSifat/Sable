@@ -4227,3 +4227,53 @@
   // ── /Browser Profile Backup ────────────────────────────────
 
 
+  // ── Context Menu ──────────────────────────────────────────
+  const ctxMenu = document.getElementById('contextMenu');
+
+  document.addEventListener('contextmenu', (e) => {
+    // Only on main area / sidebar, not on inputs or textareas
+    if (e.target.closest('textarea, input, select, .ctx-menu')) return;
+    e.preventDefault();
+
+    const x = Math.min(e.clientX, window.innerWidth - ctxMenu.offsetWidth - 12);
+    const y = Math.min(e.clientY, window.innerHeight - ctxMenu.offsetHeight - 12);
+    ctxMenu.style.left = x + 'px';
+    ctxMenu.style.top = y + 'px';
+    ctxMenu.classList.add('open');
+  });
+
+  function closeCtx() { ctxMenu.classList.remove('open'); }
+
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.ctx-menu')) closeCtx();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeCtx();
+  });
+  window.addEventListener('resize', closeCtx);
+  window.addEventListener('scroll', closeCtx, true);
+
+  ctxMenu.addEventListener('click', async (e) => {
+    const item = e.target.closest('.ctx-item');
+    if (!item) return;
+    closeCtx();
+    const action = item.dataset.action;
+
+    if (action === 'new-chat') {
+      document.getElementById('newChat')?.click();
+    } else if (action === 'settings') {
+      document.getElementById('settingsBtn')?.click();
+    } else if (action === 'stop-service') {
+      if (!confirm('Stop the Sable service? The UI will go offline.')) return;
+      try { await fetch('/api/settings/service/stop', { method: 'POST' }); } catch {}
+      showToast('Service stopping — UI will go offline', 'info');
+    } else if (action === 'restart-service') {
+      if (!confirm('Restart the Sable service? Brief downtime (~20s).')) return;
+      try { await fetch('/api/settings/service/restart', { method: 'POST' }); } catch {}
+      showToast('Restarting — back in ~20s', 'info');
+    }
+  });
+  // ── /Context Menu ─────────────────────────────────────────
+
+
+
