@@ -193,7 +193,7 @@
     .msg-toolbar:focus-within { opacity: 1; }
     .msg-toolbar button {
       font-size: 11px;
-      padding: 3px 8px;
+      padding: 4px 6px;
       border-radius: 6px;
       border: 1px solid var(--border);
       background: var(--panel);
@@ -201,6 +201,13 @@
       cursor: pointer;
       font-family: inherit;
       transition: background 0.12s, color 0.12s;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .msg-toolbar button svg {
+      width: 14px;
+      height: 14px;
     }
     .msg-toolbar button:hover { background: var(--panel-2); color: var(--text); border-color: var(--accent); }
 
