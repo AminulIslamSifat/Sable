@@ -982,14 +982,16 @@
           const toolbar = document.createElement("div");
           toolbar.className = "msg-toolbar";
           const copyBtn = document.createElement("button");
-          copyBtn.textContent = "Copy";
+          copyBtn.innerHTML = '<i data-lucide="copy"></i>';
+          copyBtn.title = "Copy";
           copyBtn.addEventListener("click", () => {
             // Read from DOM at click-time for reliability
             const userTextEl = div.querySelector(".user-text");
             const copyText = userTextEl ? userTextEl.textContent : text;
             const onSuccess = () => {
-              copyBtn.textContent = "Copied!";
-              setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
+              copyBtn.innerHTML = '<i data-lucide="check"></i>';
+              activateLucideIcons(copyBtn);
+              setTimeout(() => { copyBtn.innerHTML = '<i data-lucide="copy"></i>'; activateLucideIcons(copyBtn); }, 1500);
             };
             if (navigator.clipboard && window.isSecureContext) {
               navigator.clipboard.writeText(copyText).then(onSuccess).catch(() => {
@@ -1018,6 +1020,7 @@
           });
           toolbar.appendChild(copyBtn);
           div.appendChild(toolbar);
+          activateLucideIcons(toolbar);
         }
       } else {
         const content = document.createElement("div");
@@ -1375,17 +1378,20 @@
         const toolbar = document.createElement("div");
         toolbar.className = "msg-toolbar";
         const copyBtn = document.createElement("button");
-        copyBtn.textContent = "Copy";
+        copyBtn.innerHTML = '<i data-lucide="copy"></i>';
+        copyBtn.title = "Copy";
         copyBtn.addEventListener("click", () => {
           const md = msgDiv.querySelector(".md-content");
           const text = md ? md.innerText : "";
           navigator.clipboard.writeText(text).then(() => {
-            copyBtn.textContent = "Copied!";
-            setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
+            copyBtn.innerHTML = '<i data-lucide="check"></i>';
+            activateLucideIcons(copyBtn);
+            setTimeout(() => { copyBtn.innerHTML = '<i data-lucide="copy"></i>'; activateLucideIcons(copyBtn); }, 1500);
           });
         });
         toolbar.appendChild(copyBtn);
         msgDiv.appendChild(toolbar);
+        activateLucideIcons(toolbar);
       }
     }
 
@@ -1910,18 +1916,21 @@
             toolbar.className = "msg-toolbar";
 
             const copyBtn = document.createElement("button");
-            copyBtn.textContent = "Copy";
+            copyBtn.innerHTML = '<i data-lucide="copy"></i>';
+            copyBtn.title = "Copy";
             copyBtn.addEventListener("click", () => {
               const md = botEl.querySelector(".md-content");
               const text = md ? md.innerText : "";
               navigator.clipboard.writeText(text).then(() => {
-                copyBtn.textContent = "Copied!";
-                setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
+                copyBtn.innerHTML = '<i data-lucide="check"></i>';
+                activateLucideIcons(copyBtn);
+                setTimeout(() => { copyBtn.innerHTML = '<i data-lucide="copy"></i>'; activateLucideIcons(copyBtn); }, 1500);
               });
             });
 
             const regenBtn = document.createElement("button");
-            regenBtn.textContent = "Regenerate";
+            regenBtn.innerHTML = '<i data-lucide="refresh-cw"></i>';
+            regenBtn.title = "Regenerate";
             regenBtn.addEventListener("click", () => {
               if (isStreaming()) return;
               // Find the preceding user message in this chat
@@ -1947,6 +1956,7 @@
             toolbar.appendChild(copyBtn);
             toolbar.appendChild(regenBtn);
             botEl.appendChild(toolbar);
+            activateLucideIcons(toolbar);
           });
 
           // Commands ran but no normal answer ever arrived — pin a retry bar
@@ -2467,13 +2477,13 @@
         // Derive parentId from the actual message chain
         if (Array.isArray(msgs) && msgs.length) {
           const last = msgs[msgs.length - 1];
-          parentId = last?.parent_id || last?.id || null;
+          parentId = last?.parent_id ? String(last.parent_id) : last?.id ? String(last.id) : null;
         } else {
-          parentId = meta?.parent_id || null;
+          parentId = meta?.parent_id ? String(meta.parent_id) : null;
         }
       } else {
         // Already loaded — just derive parentId from cached meta
-        parentId = meta?.parent_id || null;
+        parentId = meta?.parent_id ? String(meta.parent_id) : null;
       }
 
       // Connect agent SSE for this chat
