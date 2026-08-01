@@ -205,13 +205,33 @@
     .msg-toolbar button:hover { background: var(--panel-2); color: var(--text); border-color: var(--accent); }
 
     .bot.streaming .md-content::after {
-      content: '▍';
-      color: var(--accent);
-      animation: blink 0.9s steps(1) infinite;
-      will-change: opacity;
+      content: 'processing…';
+      display: inline-block;
+      margin-left: 8px;
+      font-size: 12px;
+      font-family: var(--font-mono);
+      letter-spacing: 0.04em;
+      background: linear-gradient(
+        90deg,
+        var(--muted-2) 0%,
+        var(--accent) 40%,
+        #fff 50%,
+        var(--accent) 60%,
+        var(--muted-2) 100%
+      );
+      background-size: 200% 100%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: shimmer-text 1.2s ease-in-out infinite;
+      vertical-align: baseline;
+      will-change: background-position;
     }
 
-    @keyframes blink { 50% { opacity: 0; } }
+    @keyframes shimmer-text {
+      0% { background-position: 100% 0; }
+      100% { background-position: -100% 0; }
+    }
 
     @keyframes msg-enter {
       from { opacity: 0; transform: translateY(8px); }
@@ -298,14 +318,15 @@
     details.thinking summary:hover { color: var(--text-dim); background: var(--panel-2); }
     details.thinking[open] summary:hover { background: var(--panel); }
 
-    details.thinking summary::before {
-      content: '▸';
-      font-size: 10px;
-      transition: transform 0.15s;
+    details.thinking summary .thinking-chevron {
+      width: 14px;
+      height: 14px;
       color: var(--muted-2);
+      transition: transform 0.15s;
+      flex-shrink: 0;
     }
 
-    details.thinking[open] summary::before { transform: rotate(90deg); }
+    details.thinking[open] summary .thinking-chevron { transform: rotate(90deg); }
 
     details.thinking .thinking-body {
       margin-top: 8px;
@@ -433,9 +454,14 @@
 
     .skill-arrow {
       color: var(--muted-2);
-      font-size: 10px;
+      display: flex;
+      align-items: center;
       transition: transform 0.15s;
       flex-shrink: 0;
+    }
+    .skill-arrow svg {
+      width: 14px;
+      height: 14px;
     }
 
     .skill-card.collapsed .skill-arrow {
