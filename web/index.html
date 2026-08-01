@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-icon-style="lucide">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,14 +7,14 @@
   <link rel="icon" type="image/svg+xml" href="/static/assets/favicon.svg?v=3">
 
   <link rel="stylesheet" href="/static/css/variables.css?v=1">
-  <link rel="stylesheet" href="/static/css/base.css?v=2">
+  <link rel="stylesheet" href="/static/css/base.css?v=3">
   <link rel="stylesheet" href="/static/css/layout.css?v=9">
   <link rel="stylesheet" href="/static/css/chat.css?v=12">
   <link rel="stylesheet" href="/static/css/panels.css?v=10">
   <link rel="stylesheet" href="/static/css/components.css?v=10">
   <link rel="stylesheet" href="/static/css/responsive.css?v=1">
   <link rel="stylesheet" href="/static/css/agents.css?v=20">
-  <link rel="stylesheet" href="/static/css/ui1.css?v=1">
+
   <link rel="manifest" href="/static/assets/manifest.json">
   <meta name="theme-color" content="#7c5cbf">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -216,13 +216,7 @@
               <option value="system">System Default</option>
             </select>
           </div>
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
-            <label for="uiVersionSelect" style="font-size:13px;color:var(--text-dim);">UI Version</label>
-            <select id="uiVersionSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
-              <option value="ui1">UI 1</option>
-              <option value="ui2" selected>UI 2</option>
-            </select>
-          </div>
+
           <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
             <label for="iconStyleSelect" style="font-size:13px;color:var(--text-dim);">Icon Style</label>
             <select id="iconStyleSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
@@ -448,7 +442,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20"></script>
+  <script src="/static/app.js?v=21"></script>
   <script src="/static/js/agents.js?v=11"></script>
 </body>
 </html>
