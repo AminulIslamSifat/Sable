@@ -51,9 +51,9 @@ const AgentTopBar = {
     this.container = document.createElement("div");
     this.container.id = "agent-top-bar";
     this.container.className = "agent-top-bar hidden";
-    // Insert into header, right after the model dropdown
-    const headerLeft = document.querySelector(".header-left");
-    if (headerLeft) headerLeft.appendChild(this.container);
+    // Insert into the dedicated slot between model dropdown and diff toggle
+    const slot = document.getElementById("agentTopBarSlot");
+    if (slot) slot.appendChild(this.container);
     else document.body.appendChild(this.container);
   },
 
