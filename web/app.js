@@ -853,7 +853,7 @@
 
       const arrow = document.createElement("span");
       arrow.className = "skill-arrow";
-      arrow.textContent = "▾";
+      arrow.innerHTML = '<i data-lucide="chevron-down"></i>';
 
       const nameEl = document.createElement("span");
       nameEl.className = "skill-name";
@@ -1240,10 +1240,11 @@
         wrap.className = "thinking-wrap";
         wrap.innerHTML = `
           <details class="thinking">
-            <summary>Thinking</summary>
+            <summary><i data-lucide="chevron-right" class="thinking-chevron"></i>Thinking</summary>
             <div class="thinking-body">${escHtml(message.thinking)}</div>
           </details>`;
         activePane.appendChild(wrap);
+        activateLucideIcons(wrap);
       }
 
       let hasRoundText = false;
@@ -1259,10 +1260,11 @@
             wrap.className = "thinking-wrap";
             wrap.innerHTML = `
               <details class="thinking">
-                <summary>Thinking</summary>
+                <summary><i data-lucide="chevron-right" class="thinking-chevron"></i>Thinking</summary>
                 <div class="thinking-body">${escHtml(evt.text || "")}</div>
               </details>`;
             activePane.appendChild(wrap);
+            activateLucideIcons(wrap);
           } else if (evt.type === "round_text") {
             // Per-round text — render inline within the chat flow so it
             // interleaves with tool cards instead of grouping at the bottom.
@@ -1289,6 +1291,7 @@
             }
             const card = createSkillCard(evt);
             group.appendChild(card);
+            activateLucideIcons(card);
             cards[evt.id] = card;
           } else if (evt.type === "skill_output") {
             if (evt.name === "ask_user") {
@@ -1516,18 +1519,19 @@
         currentThinkWrap.className = "thinking-wrap";
         currentThinkWrap.innerHTML = `
           <details class="thinking" open>
-            <summary>Thinking…</summary>
+            <summary><i data-lucide="chevron-right" class="thinking-chevron"></i>Thinking…</summary>
             <div class="thinking-body"></div>
           </details>`;
         currentThinkBody = currentThinkWrap.querySelector(".thinking-body");
         currentThinkSummary = currentThinkWrap.querySelector("summary");
         turn.appendChild(currentThinkWrap);
+        activateLucideIcons(currentThinkWrap);
       }
 
       function closeCurrentThinking() {
         if (!currentThinkWrap) return;
         _flushThinkQueue();
-        if (currentThinkSummary) currentThinkSummary.textContent = "Thinking";
+        if (currentThinkSummary) { currentThinkSummary.innerHTML = '<i data-lucide="chevron-right" class="thinking-chevron"></i>Thinking'; activateLucideIcons(currentThinkSummary); }
         const det = currentThinkWrap.querySelector("details");
         if (det) det.open = false;
         currentThinkWrap = null;
@@ -1660,12 +1664,13 @@
           currentThinkWrap.className = "thinking-wrap";
           currentThinkWrap.innerHTML = `
             <details class="thinking" open>
-              <summary>Thinking…</summary>
+              <summary><i data-lucide="chevron-right" class="thinking-chevron"></i>Thinking…</summary>
               <div class="thinking-body"></div>
             </details>`;
           currentThinkBody = currentThinkWrap.querySelector(".thinking-body");
           currentThinkSummary = currentThinkWrap.querySelector("summary");
           turn.appendChild(currentThinkWrap);
+          activateLucideIcons(currentThinkWrap);
           _enqueueThink(text);
         },
         addSkillStart(evt) {
@@ -1681,6 +1686,7 @@
             group.appendChild(card);
           }
           skillCards[evt.id] = card;
+          activateLucideIcons(card);
           trackSkillEvent(evt);
           // Keep activity card as last child so its exit never causes a layout jump
           const tac = turn.querySelector(".tool-activity-card");
