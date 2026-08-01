@@ -77,6 +77,9 @@ class BrowserDaemon:
                 "--disable-blink-features=AutomationControlled",  # hide automation flag
                 "--no-first-run",
                 "--no-default-browser-check",
+                "--disk-cache-size=2097152",       # cap HTTP cache at 2MB
+                "--disable-gpu-shader-cache",      # no GPU shader accumulation
+                "--disable-component-update",     # stop component_crx_cache growth
             ],
         }
         if self.executable_path:
