@@ -286,6 +286,12 @@
         if (indent > baseIndent) {
           if (!items.length) break;
           const nested = parseList(lines, i, indent);
+          if (nested.next === i) {
+            // indented non-list text — treat as continuation of current item
+            items[items.length - 1].content += " " + line.trim();
+            i++;
+            continue;
+          }
           items[items.length - 1].sub += nested.html;
           i = nested.next;
           continue;
@@ -3690,6 +3696,7 @@
               <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">${acc.name}${size ? ' · ' + size : ''}${isActive ? ' · <span style="color:var(--accent);">active</span>' : ''}</div>
             </div>
             <div style="display:flex;gap:6px;align-items:center;">
+              <button class="icon-btn account-open-btn" data-profile="${acc.name}" style="width:auto;padding:5px 12px;font-size:11px;white-space:nowrap;">Open</button>
               ${isActive ? '' : `<button class="icon-btn account-switch-btn" data-profile="${acc.name}" style="width:auto;padding:5px 12px;font-size:11px;white-space:nowrap;">Switch</button>`}
               ${isActive ? '' : `<button class="icon-btn account-delete-btn" data-profile="${acc.name}" style="width:auto;padding:5px 10px;font-size:11px;white-space:nowrap;color:var(--danger);border-color:var(--danger);">Delete</button>`}
             </div>
@@ -3751,6 +3758,30 @@
               btn.disabled = false;
               btn.textContent = "Delete";
             }
+          });
+        });
+        accountProfileCards.querySelectorAll(".account-open-btn").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const profile = btn.dataset.profile;
+            btn.disabled = true;
+            btn.textContent = "Opening…";
+            try {
+              const res = await fetch("/api/settings/accounts/open", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ profile }),
+              });
+              const data = await res.json().catch(() => ({}));
+              if (res.ok) {
+                showToast(`🌐 Opened browser for ${profile}`, "success");
+              } else {
+                showToast("Open failed: " + (data.detail || "unknown"), "error");
+              }
+            } catch (e) {
+              showToast("Open error: " + e.message, "error");
+            }
+            btn.disabled = false;
+            btn.textContent = "Open";
           });
         });
       } catch (e) {
@@ -3849,33 +3880,7 @@
       }
     })();
 
-    // ---------- UI Version ----------
-    const UI_VERSION_KEY = "sable_ui_version";
-    const uiVersionSelect = document.getElementById("uiVersionSelect");
 
-    const UI_DEFAULT_FONT = { ui1: "inter", ui2: "maple" };
-
-    function applyUiVersion(ver) {
-      document.documentElement.setAttribute("data-ui-version", ver);
-      // Sync font family to match UI default
-      const fontKey = UI_DEFAULT_FONT[ver] || "maple";
-      fontFamilySelect.value = fontKey;
-      applyFontFamily(fontKey);
-      try { localStorage.setItem(FONT_FAMILY_KEY, fontKey); } catch (e) {}
-    }
-
-    uiVersionSelect.addEventListener("change", () => {
-      const ver = uiVersionSelect.value;
-      try { localStorage.setItem(UI_VERSION_KEY, ver); } catch (e) {}
-      applyUiVersion(ver);
-    });
-
-    (function loadUiVersion() {
-      let saved = null;
-      try { saved = localStorage.getItem(UI_VERSION_KEY); } catch (e) {}
-      if (saved) uiVersionSelect.value = saved;
-      applyUiVersion(uiVersionSelect.value);
-    })();
 
     // ---------- Icon Style ----------
     const ICON_STYLE_KEY = "sable_icon_style";
@@ -3902,10 +3907,9 @@
     (function loadIconStyle() {
       let saved = null;
       try { saved = localStorage.getItem(ICON_STYLE_KEY); } catch (e) {}
-      if (saved) {
-        iconStyleSelect.value = saved;
-        applyIconStyle(saved);
-      }
+      const style = saved || "lucide";
+      iconStyleSelect.value = style;
+      applyIconStyle(style);
     })();
 
 
