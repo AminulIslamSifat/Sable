@@ -294,6 +294,14 @@
       font-family: var(--font-mono);
       font-size: 12px;
       color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+      flex: 1;
+    }
+    .diff-card.expanded .diff-path {
+      white-space: normal;
       word-break: break-all;
     }
     .diff-stats {

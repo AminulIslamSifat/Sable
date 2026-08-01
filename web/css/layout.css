@@ -427,28 +427,24 @@
     }
 
 
-    /* Streaming indicator — small spinning ring on active chat row */
-    .chat-row.streaming {
+    /* Streaming indicator — pulsing left accent bar */
+    .chat-row.streaming .chat-item {
       position: relative;
     }
-    .chat-row.streaming .chat-item {
-      padding-right: 26px;
-    }
-    .chat-row.streaming .chat-item::after {
+    .chat-row.streaming .chat-item::before {
       content: "";
       position: absolute;
-      right: 28px;
-      top: 50%;
-      translate: 0 -50%;
-      width: 10px;
-      height: 10px;
-      border: 1.5px solid var(--border);
-      border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: chat-spin 0.7s linear infinite;
+      left: 4px;
+      top: 5px;
+      bottom: 5px;
+      width: 3px;
+      border-radius: 3px;
+      background: var(--accent);
+      animation: stream-pulse 1.4s ease-in-out infinite;
     }
-    @keyframes chat-spin {
-      to { transform: rotate(360deg); }
+    @keyframes stream-pulse {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: 0.3; }
     }
 
 

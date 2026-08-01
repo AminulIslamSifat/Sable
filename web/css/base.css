@@ -36,6 +36,11 @@
       letter-spacing: 1px;
     }
     .login-input:focus { outline: none; border-color: var(--accent); }
+
+    /* Kill mobile tap highlight */
+    * {
+      -webkit-tap-highlight-color: transparent;
+    }
     .login-btn {
       background: var(--accent);
       color: #1a1408;
