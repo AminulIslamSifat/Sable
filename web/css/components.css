@@ -506,9 +506,11 @@
     }
     .tac-progress-fill {
       height: 100%;
+      width: 100%;
       background: linear-gradient(90deg, var(--accent), var(--accent-text));
       border-radius: 2px;
       box-shadow: 0 0 8px var(--accent-dim);
+      transform-origin: left center;
       animation: tac-progress 2.4s ease-in-out infinite;
     }
     .tac-pulse-dot {
@@ -517,7 +519,7 @@
       border-radius: 50%;
       animation: tac-pulse 1.2s ease-in-out infinite;
     }
-    @keyframes tac-progress { 0% { width: 5%; } 50% { width: 70%; } 100% { width: 95%; } }
+    @keyframes tac-progress { 0% { transform: scaleX(0.05); } 50% { transform: scaleX(0.70); } 100% { transform: scaleX(0.95); } }
     @keyframes tac-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.7); } }
 
     /* ---------- mode switcher (sidebar) ---------- */
@@ -537,7 +539,7 @@
       color: var(--muted);
       border: none;
       cursor: pointer;
-      transition: all 0.15s;
+      transition: background 0.15s, color 0.15s;
     }
     .mode-switcher button.active {
       background: var(--accent);

@@ -1,3 +1,53 @@
+    /* ---------- self-hosted fonts ---------- */
+    @font-face {
+      font-family: 'Maple Mono';
+      src: url('/static/fonts/MapleMono-Regular.ttf') format('truetype');
+      font-weight: 400;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Maple Mono';
+      src: url('/static/fonts/MapleMono-Medium.ttf') format('truetype');
+      font-weight: 500;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Maple Mono';
+      src: url('/static/fonts/MapleMono-SemiBold.ttf') format('truetype');
+      font-weight: 600;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Maple Mono';
+      src: url('/static/fonts/MapleMono-Bold.ttf') format('truetype');
+      font-weight: 700;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Inter';
+      src: url('/static/fonts/latin-400-normal.woff2') format('woff2');
+      font-weight: 400;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Inter';
+      src: url('/static/fonts/latin-500-normal.woff2') format('woff2');
+      font-weight: 500;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Inter';
+      src: url('/static/fonts/latin-600-normal.woff2') format('woff2');
+      font-weight: 600;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Inter';
+      src: url('/static/fonts/latin-700-normal.woff2') format('woff2');
+      font-weight: 700;
+      font-display: swap;
+    }
+
     :root {
       --bg: #0c0c0d;
       --sidebar: #101011;
@@ -227,9 +277,18 @@
       margin: 0;
       height: 100%;
       font-family: var(--font-body);
-      background: radial-gradient(ellipse at 50% 0%, var(--bg-glow) 0%, var(--bg) 70%);
+      background: var(--bg);
       color: var(--text);
       -webkit-font-smoothing: antialiased;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      background: radial-gradient(ellipse at 50% 0%, var(--bg-glow) 0%, var(--bg) 70%);
     }
 
     body { display: flex; }
