@@ -21,7 +21,8 @@ from engine.agents.registry import get_role_config
 
 logger = logging.getLogger("sable")
 
-MAX_ITERATIONS = 10
+# Defaults — overridden by settings > agent > limits
+MAX_ITERATIONS = 25
 MAX_CONTEXT_CHARS = 12000
 
 STUCK_MESSAGE = (
@@ -146,10 +147,19 @@ def _build_tool_guide(allowed_skills: list[str], default_skills: list[str]) -> s
     return "\n".join(lines)
 
 
-async def run_agent_llm_loop(agent: Agent, breakers: dict[str, CircuitBreaker]) -> str:
+async def run_agent_llm_loop(
+    agent: Agent,
+    breakers: dict[str, CircuitBreaker],
+    limits: dict[str, int] | None = None,
+) -> str:
     """Execute the full agent loop. Returns final JSON answer text."""
     role_cfg = get_role_config(agent.role)
-    loop_detector = LoopDetector(max_consecutive=3, max_total=10)
+    lim = limits or {}
+    max_iterations = lim.get("max_iterations", MAX_ITERATIONS)
+    loop_detector = LoopDetector(
+        max_consecutive=lim.get("max_consecutive_tool_calls", 15),
+        max_total=lim.get("max_total_tool_calls", 50),
+    )
 
     backend = "qwen" if "qwen" in agent.model else "deepseek"
     breaker = breakers[backend]
@@ -184,7 +194,7 @@ async def run_agent_llm_loop(agent: Agent, breakers: dict[str, CircuitBreaker]) 
     # Main loop
     current_message = first_message
 
-    for iteration in range(MAX_ITERATIONS):
+    for iteration in range(max_iterations):
         # Call LLM
         response_text, new_parent_id = await _send_with_retry(
             agent, current_message, parent_id, breaker, is_first_turn
@@ -317,11 +327,21 @@ async def _call_llm(
 
 
 async def _call_deepseek(agent: Agent, message: str) -> tuple[str, str | None]:
-    """DeepSeek: client manages session + parent_id internally via chat_id=agent.id."""
+    """DeepSeek: client manages session + parent_id internally via chat_id=agent.id.
+
+    Resolves the account from agent.browser_data_dir. If that account has no
+    token, the client automatically falls back to any available account token.
+    """
     from connectors.deepseek.client import get_client
     from engine.config import get_model_config
+    from pathlib import Path
 
-    client = get_client()
+    # Resolve account from agent's browser profile (or None → active symlink)
+    account: str | None = None
+    if agent.browser_data_dir:
+        account = Path(agent.browser_data_dir).name  # "browser-data-acc7"
+
+    client = get_client(account=account)
     accumulated = ""
     # Resolve proper model_type from config (expert / None / vision)
     ds_cfg = get_model_config(agent.model)

@@ -51,9 +51,9 @@ const AgentTopBar = {
     this.container = document.createElement("div");
     this.container.id = "agent-top-bar";
     this.container.className = "agent-top-bar hidden";
-    // Insert into header, right after the model dropdown
-    const headerLeft = document.querySelector(".header-left");
-    if (headerLeft) headerLeft.appendChild(this.container);
+    // Insert into the dedicated slot between model dropdown and diff toggle
+    const slot = document.getElementById("agentTopBarSlot");
+    if (slot) slot.appendChild(this.container);
     else document.body.appendChild(this.container);
   },
 
@@ -164,7 +164,8 @@ function addAgentResultCard(ev) {
     };
   }
   card.querySelector(".arc-expand").onclick = () => AgentHistory.open(ev.agent_id);
-  chatEl.appendChild(card);
+  const pane = chatEl.querySelector(".tab-pane.active") || chatEl;
+  pane.appendChild(card);
 
   if (typeof scrollBottom === "function") scrollBottom(true);
 }
@@ -197,7 +198,8 @@ function addAgentBatchCard(agents) {
     el.onclick = () => AgentHistory.open(el.dataset.agentId);
   });
 
-  chatEl.appendChild(card);
+  const pane = chatEl.querySelector(".tab-pane.active") || chatEl;
+  pane.appendChild(card);
   activateLucideIcons(card);
   if (typeof scrollBottom === "function") scrollBottom(true);
   return card;
@@ -388,7 +390,7 @@ function handleAgentEvent(ev) {
       }
       const liveEl = document.getElementById("_autoTurnLive");
       if (liveEl) {
-        const contentEl = liveEl.querySelector(".msg-content") || liveEl;
+        const contentEl = liveEl.querySelector(".md-content") || liveEl;
         contentEl.textContent = _autoTurnBuffer;
         if (typeof scrollBottom === "function") scrollBottom(true);
       }
@@ -601,6 +603,9 @@ const AgentSettings = {
       document.getElementById("agentQwenMax").value = cfg.concurrency?.qwen_max ?? 1;
       document.getElementById("agentCbThreshold").value = cfg.resilience?.circuit_breaker_threshold ?? 5;
       document.getElementById("agentCbReset").value = cfg.resilience?.circuit_breaker_reset_seconds ?? 60;
+      document.getElementById("agentMaxIter").value = cfg.limits?.max_iterations ?? 25;
+      document.getElementById("agentMaxConsec").value = cfg.limits?.max_consecutive_tool_calls ?? 15;
+      document.getElementById("agentMaxTotal").value = cfg.limits?.max_total_tool_calls ?? 50;
 
       this._roles = cfg.roles || {};
       this._universalSkills = cfg.universal_skills || ["execute_command"];
@@ -766,6 +771,11 @@ const AgentSettings = {
       resilience: {
         circuit_breaker_threshold: parseInt(document.getElementById("agentCbThreshold").value) || 5,
         circuit_breaker_reset_seconds: parseInt(document.getElementById("agentCbReset").value) || 60,
+      },
+      limits: {
+        max_iterations: parseInt(document.getElementById("agentMaxIter").value) || 25,
+        max_consecutive_tool_calls: parseInt(document.getElementById("agentMaxConsec").value) || 15,
+        max_total_tool_calls: parseInt(document.getElementById("agentMaxTotal").value) || 50,
       },
       roles,
     };

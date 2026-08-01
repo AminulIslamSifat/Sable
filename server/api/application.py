@@ -38,6 +38,10 @@ from .routes.agents import router as agents_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> Generator[None, None, None]:
+    import asyncio as _aio
+    from engine.agents import get_runtime as _get_rt_startup
+    _get_rt_startup()._loop = _aio.get_running_loop()
+
     init_db()
     stale = recover_stale_agents()
     if stale:

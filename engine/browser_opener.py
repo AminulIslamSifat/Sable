@@ -104,7 +104,13 @@ def main() -> None:
             context = p.chromium.launch_persistent_context(
                 user_data_dir=str(user_data_dir),
                 headless=False,
-                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+                args=[
+                    "--no-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disk-cache-size=2097152",
+                    "--disable-gpu-shader-cache",
+                    "--disable-component-update",
+                ],
             )
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(url)

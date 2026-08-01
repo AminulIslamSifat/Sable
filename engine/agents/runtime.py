@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import time
 from pathlib import Path
@@ -54,8 +55,19 @@ class AgentRuntime:
             "qwen": CircuitBreaker(threshold, reset),
         }
 
+        # Loop limits (max iterations, tool call caps)
+        limits = cfg.get("limits", {})
+        self._limits: dict[str, int] = {
+            "max_iterations": limits.get("max_iterations", 25),
+            "max_consecutive_tool_calls": limits.get("max_consecutive_tool_calls", 15),
+            "max_total_tool_calls": limits.get("max_total_tool_calls", 50),
+        }
+
         # SSE event callback (set by API layer)
         self._event_callback: EventCallback | None = None
+
+        # Main event loop reference (set from the async layer before any thread-pool dispatch)
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     # ------------------------------------------------------------------
     # Configuration
@@ -66,14 +78,20 @@ class AgentRuntime:
         self._event_callback = callback
 
     def update_config(self, config: dict[str, Any]) -> None:
-        """Hot-reload concurrency/resilience settings."""
+        """Hot-reload concurrency/resilience/limits settings."""
         conc = config.get("concurrency", {})
         res = config.get("resilience", {})
+        limits = config.get("limits", {})
         self._max_agents = conc.get("global_max", self._max_agents)
         # Update breaker thresholds
         for breaker in self._breakers.values():
             breaker.threshold = res.get("circuit_breaker_threshold", breaker.threshold)
             breaker.reset_timeout = res.get("circuit_breaker_reset_seconds", breaker.reset_timeout)
+        # Update loop limits
+        if limits:
+            self._limits["max_iterations"] = limits.get("max_iterations", self._limits["max_iterations"])
+            self._limits["max_consecutive_tool_calls"] = limits.get("max_consecutive_tool_calls", self._limits["max_consecutive_tool_calls"])
+            self._limits["max_total_tool_calls"] = limits.get("max_total_tool_calls", self._limits["max_total_tool_calls"])
 
     # ------------------------------------------------------------------
     # Spawning
@@ -156,7 +174,7 @@ class AgentRuntime:
             try:
                 from engine.agents.loop import run_agent_llm_loop
                 result = await asyncio.wait_for(
-                    run_agent_llm_loop(agent, self._breakers),
+                    run_agent_llm_loop(agent, self._breakers, self._limits),
                     timeout=timeout,
                 )
                 agent.mark_completed(result)
@@ -245,16 +263,22 @@ class AgentRuntime:
     # Waiting (collect mode)
     # ------------------------------------------------------------------
 
+    def _to_awaitable(self, task):
+        """Convert a task/future to an asyncio-awaitable."""
+        if isinstance(task, concurrent.futures.Future):
+            return asyncio.wrap_future(task)
+        return task
+
     async def wait(self, agent_id: str, timeout: float | None = None) -> AgentResult:
         """Wait for a single agent to finish."""
         task = self._tasks.get(agent_id)
         if task and not task.done():
-            await asyncio.wait_for(task, timeout=timeout)
+            await asyncio.wait_for(self._to_awaitable(task), timeout=timeout)
         return self._to_result(agent_id)
 
     async def wait_all(self, agent_ids: list[str], timeout: float | None = None) -> list[AgentResult]:
         """Wait for multiple agents. Returns results in order."""
-        tasks = [self._tasks[aid] for aid in agent_ids if aid in self._tasks and not self._tasks[aid].done()]
+        tasks = [self._to_awaitable(self._tasks[aid]) for aid in agent_ids if aid in self._tasks and not self._tasks[aid].done()]
         if tasks:
             await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=timeout)
         return [self._to_result(aid) for aid in agent_ids if aid in self._agents]
@@ -306,12 +330,17 @@ class AgentRuntime:
 
     @staticmethod
     def _save_agent_output(agent: Agent) -> None:
-        """Save full agent conversation + result to output/agent/<id>.md."""
+        """Save agent output to two files:
+        - <id>.md: final result or error only
+        - <id>_conversation.md: full conversation (no system prompt)
+        """
         try:
             _AGENT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-            lines: list[str] = [
+
+            # --- File 1: result only ---
+            result_lines: list[str] = [
                 f"# Agent {agent.id} — {agent.role}",
-                f"",
+                "",
                 f"- **Task:** {agent.task}",
                 f"- **Model:** {agent.model}",
                 f"- **Status:** {agent.status.value}",
@@ -320,25 +349,38 @@ class AgentRuntime:
                 f"- **Skills:** {', '.join(agent.skills_used) or 'none'}",
             ]
             if agent.error:
-                lines.append(f"- **Error:** {agent.error}")
-            lines.append("")
-            lines.append("## Conversation")
-            lines.append("")
+                result_lines.append(f"- **Error:** {agent.error}")
+            result_lines.append("")
+            result_lines.append("## Result" if agent.result else "## Error")
+            result_lines.append("")
+            result_lines.append(agent.result or agent.error or "No output.")
+            result_lines.append("")
+
+            out_path = _AGENT_OUTPUT_DIR / f"{agent.id}.md"
+            out_path.write_text("\n".join(result_lines), encoding="utf-8")
+
+            # --- File 2: full conversation (skip system messages) ---
+            conv_lines: list[str] = [
+                f"# Agent {agent.id} — Conversation",
+                "",
+                f"- **Role:** {agent.role}",
+                f"- **Task:** {agent.task}",
+                "",
+            ]
             for msg in agent.messages:
                 role = msg.get("role", "unknown")
+                if role == "system":
+                    continue
                 content = msg.get("content", "")
-                lines.append(f"### [{role}]")
-                lines.append("")
-                lines.append(content)
-                lines.append("")
-            if agent.result:
-                lines.append("## Final Result")
-                lines.append("")
-                lines.append(agent.result)
-                lines.append("")
-            out_path = _AGENT_OUTPUT_DIR / f"{agent.id}.md"
-            out_path.write_text("\n".join(lines), encoding="utf-8")
-            logger.info("Saved agent output: %s", out_path)
+                conv_lines.append(f"### [{role}]")
+                conv_lines.append("")
+                conv_lines.append(content)
+                conv_lines.append("")
+
+            conv_path = _AGENT_OUTPUT_DIR / f"{agent.id}_conversation.md"
+            conv_path.write_text("\n".join(conv_lines), encoding="utf-8")
+
+            logger.info("Saved agent output: %s, %s", out_path, conv_path)
         except Exception as exc:
             logger.debug("Failed to save agent output: %s", exc)
 
