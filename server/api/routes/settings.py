@@ -297,6 +297,67 @@ async def restore_browser_profile(payload: dict[str, str]) -> dict[str, Any]:
         "restored_to": str(data_path),
     }
 
+@router.post("/api/settings/browser/strip-profiles")
+async def strip_browser_profiles() -> dict[str, Any]:
+    """Strip all browser profiles to bare session data (pure Python, no subprocess)."""
+    from pathlib import Path
+
+    KEEP = [
+        "Local State", "Last Version",
+        "Default/Cookies", "Default/Cookies-journal",
+        "Default/Local Storage", "Default/Session Storage",
+        "Default/IndexedDB", "Default/Preferences",
+        "Default/Secure Preferences", "Default/Login Data",
+        "Default/Login Data For Account", "Default/Web Data",
+        "Default/Account Web Data", "Default/Network Action Predictor",
+        "Default/Network Persistent State", "Default/TransportSecurity",
+        "Default/Trust Tokens",
+    ]
+
+    def _strip_one(profile: Path) -> tuple[str, int, int]:
+        import tempfile
+        before = _dir_size_mb(profile)
+        tmp = Path(tempfile.mkdtemp())
+        # Save essentials
+        for item in KEEP:
+            src = profile / item
+            if src.exists():
+                dest = tmp / item
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if src.is_dir():
+                    shutil.copytree(src, dest, symlinks=True)
+                else:
+                    shutil.copy2(src, dest)
+        # Wipe and restore
+        shutil.rmtree(profile)
+        profile.mkdir(parents=True)
+        for item in tmp.iterdir():
+            dest = profile / item.name
+            if item.is_dir():
+                shutil.copytree(item, dest, symlinks=True, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, dest)
+        shutil.rmtree(tmp)
+        after = _dir_size_mb(profile)
+        return (profile.name, before, after)
+
+    def _strip_all() -> list[tuple[str, int, int]]:
+        results = []
+        for entry in sorted(_SYSTEM_DIR.iterdir()):
+            if entry.is_dir() and (
+                entry.name.startswith("browser-data-acc")
+                or entry.name in ("browser-scraper-data", "automation-browser-data")
+            ):
+                results.append(_strip_one(entry))
+        return results
+
+    results = await asyncio.to_thread(_strip_all)
+    lines = [f"  {name}: {b}MB → {a}MB" for name, b, a in results]
+    total = _dir_size_mb(_SYSTEM_DIR)
+    output = f"Stripped {len(results)} profiles.\n" + "\n".join(lines) + f"\nTotal system/: {total}MB"
+    return {"status": "ok", "output": output, "profiles_stripped": len(results)}
+
+
 @router.post("/api/settings/browser/create-backup")
 async def create_browser_backup(payload: dict[str, str]) -> dict[str, Any]:
     profile = payload.get("profile", "")

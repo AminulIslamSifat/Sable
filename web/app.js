@@ -2477,6 +2477,41 @@
       }
     });
 
+    // ── Strip Browser Profiles ──────────────────────────────────
+    document.getElementById('stripProfilesBtn').addEventListener('click', async () => {
+      if (!confirm('Strip all browser profiles down to bare session data? Caches will be removed.')) return;
+      const btn = document.getElementById('stripProfilesBtn');
+      const status = document.getElementById('stripProfilesStatus');
+      btn.disabled = true;
+      btn.textContent = '⏳ Stripping…';
+      status.textContent = 'Stripping profiles…';
+      status.style.color = 'var(--text-dim)';
+      try {
+        const res = await fetch('/api/settings/browser/strip-profiles', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          status.textContent = data.detail || 'Strip failed';
+          status.style.color = 'var(--danger)';
+          showToast(data.detail || 'Strip failed', 'error');
+          return;
+        }
+        const lastLine = (data.output || '').trim().split('\n').pop() || '';
+        status.textContent = '✅ ' + lastLine;
+        status.style.color = 'var(--success, #4caf50)';
+        showToast('Browser profiles stripped', 'success');
+      } catch (err) {
+        status.textContent = 'Error: ' + err.message;
+        status.style.color = 'var(--danger)';
+        showToast('Strip failed: ' + err.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '🧹 Strip Browser Profiles';
+      }
+    });
+    // ── /Strip Browser Profiles ─────────────────────────────────
+
+
+
 
     // --- Service control buttons ---
     const stopServiceBtn = document.getElementById('stopServiceBtn');
