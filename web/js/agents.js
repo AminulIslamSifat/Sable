@@ -55,6 +55,13 @@ const AgentTopBar = {
     const slot = document.getElementById("agentTopBarSlot");
     if (slot) slot.appendChild(this.container);
     else document.body.appendChild(this.container);
+    // Vertical wheel → horizontal scroll
+    this.container.addEventListener("wheel", (e) => {
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+        e.preventDefault();
+        this.container.scrollLeft += e.deltaY;
+      }
+    }, { passive: false });
   },
 
   addCard(agentId, role, task, model) {
