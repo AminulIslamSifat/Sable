@@ -3979,7 +3979,7 @@
 <stop offset="0%" stop-color="${accent}"/>
 <stop offset="100%" stop-color="${accent}" stop-opacity="0.7"/>
 </linearGradient></defs>
-<polygon fill="#181825" stroke="url(#g)" stroke-width="6" stroke-linejoin="round" points="16,2 26,8 26,24 16,30 6,24 6,8"/>
+<polygon fill="#181825" stroke="url(#g)" stroke-width="3" stroke-linejoin="round" points="16,2 26,8 26,24 16,30 6,24 6,8"/>
 <circle cx="16" cy="2" r="3" fill="${accent}"/>
 <circle cx="26" cy="8" r="3" fill="${accent}"/>
 <circle cx="26" cy="24" r="3" fill="${accent}"/>
@@ -3992,6 +3992,27 @@
       if (!link) { link = document.createElement("link"); link.rel = "icon"; document.head.appendChild(link); }
       link.type = "image/svg+xml";
       link.href = "data:image/svg+xml," + encodeURIComponent(svg);
+
+      // --- Sidebar / login logo ---
+      const logoSvg = `<svg viewBox="0 0 64 64" width="64" height="64" xmlns="http://www.w3.org/2000/svg">
+<defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="${accent}"/>
+<stop offset="100%" stop-color="${accent}" stop-opacity="0.7"/>
+</linearGradient>
+<filter id="glow"><feGaussianBlur stdDeviation="1.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+</defs>
+<polygon fill="#181825" stroke="url(#lg)" stroke-width="4" stroke-linejoin="round" points="32,4 52,16 52,48 32,60 12,48 12,16" filter="url(#glow)"/>
+<circle cx="32" cy="4" r="4" fill="${accent}"/>
+<circle cx="52" cy="16" r="4" fill="${accent}"/>
+<circle cx="52" cy="48" r="4" fill="${accent}"/>
+<circle cx="32" cy="60" r="4" fill="${accent}"/>
+<circle cx="12" cy="48" r="4" fill="${accent}"/>
+<circle cx="12" cy="16" r="4" fill="${accent}"/>
+<circle cx="32" cy="32" r="6" fill="${accent}"/>
+</svg>`;
+      document.querySelectorAll('img[src*="sable_icon"]').forEach(img => {
+        img.src = "data:image/svg+xml," + encodeURIComponent(logoSvg);
+      });
     }
 
     themePicker.addEventListener("click", (e) => {
