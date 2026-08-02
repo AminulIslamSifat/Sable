@@ -20,7 +20,7 @@ extraction. Supports any site yt-dlp supports — not just YouTube.
 ## Script Path
 
 ```
-PROJECT_ROOT/skills/data/youtube_downloader/scripts/download_video.py
+PROJECT_ROOT/skills/youtube_downloader/scripts/download_video.py
 ```
 
 ---
@@ -30,13 +30,13 @@ PROJECT_ROOT/skills/data/youtube_downloader/scripts/download_video.py
 ### Download Video
 
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/data/youtube_downloader/scripts/download_video.py "[URL]" [flags]</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/youtube_downloader/scripts/download_video.py "[URL]" [flags]</execute_command>
 ```
 
 ### Audio-Only Extraction (MP3)
 
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/data/youtube_downloader/scripts/download_video.py "[URL]" -a</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/youtube_downloader/scripts/download_video.py "[URL]" -a</execute_command>
 ```
 
 ---
