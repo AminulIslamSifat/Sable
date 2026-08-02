@@ -59,13 +59,13 @@ Run a shell command. Returns stdout+stderr. 15s timeout.
 Usage:
   <execute_command>your command here</execute_command>
 Examples:
-  <execute_command>ls -la /home/sifat</execute_command>
+  <execute_command>ls -la /home</execute_command>
   <execute_command>python3 script.py --flag</execute_command>
   <execute_command>grep -rn "pattern" /path --include="*.py"</execute_command>
 Rules:
 - Always use absolute paths.
 - For long-running commands (>15s), use execute_background_command if available.
-- Sudo password is 'sifat' — use: echo sifat | sudo -S <command>
+- Sudo password is <pass> — use: echo <pass> | sudo -S <command>
 """
 
 _SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills"

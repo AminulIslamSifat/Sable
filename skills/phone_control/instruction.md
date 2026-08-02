@@ -1,6 +1,6 @@
 # Phone Control: ADB Guardian
 
-Sifat's hands-on phone controller. Uses UIAutomator XML dumps for pixel-perfect
+the user's hands-on phone controller. Uses UIAutomator XML dumps for pixel-perfect
 coordinate resolution — never guesses from screenshots. Every tap is verified
 against a before/after UI diff. Every action is atomic. Runs via
 `adb_control.py` through `<execute_command>`.
@@ -23,7 +23,7 @@ against a before/after UI diff. Every action is atomic. Runs via
 
 **This is the most commonly missed rule:** any time a request chains multiple
 device actions — even informally phrased like "tap the search bar, wait a
-sec, then type Sifat and hit the first result" — that is a `seq` job. The
+sec, then type the user and hit the first result" — that is a `seq` job. The
 literal word "automate" does not need to appear. The test is: does this
 request involve 2 or more taps/waits/types/dumps in sequence? If yes, write
 the JSON file and call `seq` once, rather than emitting one `execute_command`
@@ -59,12 +59,12 @@ Before any phone action, verify the device is reachable:
 | Returns JSON with model/resolution and `"lock_state": "unlocked"` | Proceed — device is connected and unlocked |
 | Returns JSON with model/resolution and `"lock_state": "locked"` | Run `unlock` before any `tap`/`dump`/`launch` steps — a locked screen will only ever show the lock screen UI |
 | Returns JSON with `"lock_state": "unknown"` | This ROM doesn't expose the keyguard flag cleanly. Treat as possibly locked — run `dump` and check whether normal UI or a lock screen is visible before proceeding |
-| Returns `ERROR: No ADB device connected` | Stop. Tell Sifat to: (1) plug in USB and enable USB debugging, OR (2) pair via WiFi ADB (`adb pair`) |
+| Returns `ERROR: No ADB device connected` | Stop. Tell the user to: (1) plug in USB and enable USB debugging, OR (2) pair via WiFi ADB (`adb pair`) |
 | Any other error | Stop. Report exact error. Do not proceed blindly. |
 
 **Note on multiple devices:** the script auto-pins itself to the first device
 `adb devices` reports and reuses that serial for every subsequent call in the
-run. You don't need to pass a serial — but if Sifat has more than one
+run. You don't need to pass a serial — but if the user has more than one
 device/emulator attached and means a different one, ask before proceeding, since
 the script will silently pick the first it sees.
 
@@ -200,10 +200,10 @@ Behavior:
 4. Re-checks lock state and reports one of: unlocked via swipe, unlocked via PIN, still locked (warning), or state could not be confirmed (some ROMs don't expose the keyguard flag — treat this as "probably fine, verify with `dump` before proceeding" rather than a hard failure).
 
 The PIN is stored as a constant in the script itself, not passed as an
-argument — never prompt Sifat for it or print it in logs/output.
+argument — never prompt the user for it or print it in logs/output.
 
 If `unlock` reports still-locked or unconfirmed twice in a row, stop and
-report to Sifat rather than retrying indefinitely — repeated failed PIN
+report to the user rather than retrying indefinitely — repeated failed PIN
 attempts can trigger Android's lockout/backup-PIN screen.
 
 ---
@@ -214,7 +214,7 @@ attempts can trigger Android's lockout/backup-PIN screen.
 <execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py screenshot /tmp/phone_screen.png</execute_command>
 ```
 
-After taking a screenshot, upload it to model context if you need to show Sifat:
+After taking a screenshot, upload it to model context if you need to show the user:
 ```xml
 <get_file>/tmp/phone_screen.png</get_file>
 ```
@@ -277,8 +277,8 @@ running individual commands. This is more reliable, readable, and self-documenti
 [
   {"cmd": "launch",    "args": ["com.whatsapp"],  "wait_ms": 2000},
   {"cmd": "tap_text",  "args": ["Search..."],     "wait_ms": 500},
-  {"cmd": "input",     "args": ["Sifat"],         "wait_ms": 800},
-  {"cmd": "tap_text",  "args": ["Sifat"],         "wait_ms": 1000},
+  {"cmd": "input",     "args": ["the user"],         "wait_ms": 800},
+  {"cmd": "tap_text",  "args": ["the user"],         "wait_ms": 1000},
   {"cmd": "tap_text",  "args": ["Type a message"],"wait_ms": 300},
   {"cmd": "input",     "args": ["Hey 👋"],        "wait_ms": 300},
   {"cmd": "tap_id",    "args": ["send_button"],   "wait_ms": 500},
@@ -314,7 +314,7 @@ python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py seq /tmp/phone_
 **Reading `seq` output:** the command returns a JSON array of
 `{"step": N, "cmd": ..., "result": ...}` objects. Scan every `result` string
 for `ERROR`, `NOT_FOUND`, or `WARNING: no UI change detected` before telling
-Sifat the automation succeeded — a sequence can run to completion with
+the user the automation succeeded — a sequence can run to completion with
 several silently-failed steps in the middle if you only check the final exit
 code.
 
@@ -351,7 +351,7 @@ code.
 | `XML parse error` | Corrupt dump (happens during heavy animations) | Retry the dump after a short `wait` |
 | `WARNING: no UI change detected after tap` | Tap coordinates resolved to the wrong node, or the screen needs longer to react | Run `dump`, confirm the target element/bounds, retry — don't just re-tap blindly |
 | Tap hits wrong element | Multiple elements with same text, and none marked `clickable` | Use `tap_id` with resource-id for precision |
-| `unlock` reports still-locked or unconfirmed | Wrong PIN, non-standard lock screen (pattern/biometric-only), or ROM doesn't expose keyguard state | Stop after 1 retry and report to Sifat — do not hammer the PIN entry |
+| `unlock` reports still-locked or unconfirmed | Wrong PIN, non-standard lock screen (pattern/biometric-only), or ROM doesn't expose keyguard state | Stop after 1 retry and report to the user — do not hammer the PIN entry |
 
 ---
 
