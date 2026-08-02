@@ -246,7 +246,7 @@
       const trs = rows.map(r =>
         `<tr>${r.map((c, idx) => `<td${aligns[idx] ? ` style="text-align:${aligns[idx]}"` : ""}>${inlineMd(c || "")}</td>`).join("")}</tr>`
       ).join("");
-      return `<table><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table>`;
+      return `<div class="table-wrap"><table><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table></div>`;
     }
 
     function renderBlockquote(lines) {
@@ -437,6 +437,11 @@
       if (!markedReady && window.marked) {
         try {
           const mdRenderer = {
+            table(header, body) {
+              const h = typeof header === "object" ? header.header : header;
+              const b = typeof header === "object" ? header.body : body;
+              return `<div class="table-wrap"><table><thead>${h}</thead><tbody>${b}</tbody></table></div>`;
+            },
             code(arg, langArg, escapedArg) {
               let text, lang, escaped;
               if (arg && typeof arg === "object") {
@@ -3733,7 +3738,7 @@
               <div style="font-size:12px;font-weight:600;color:var(--text);">${email}</div>
               <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">${acc.name}${size ? ' · ' + size : ''}${isActive ? ' · <span style="color:var(--accent);">active</span>' : ''}</div>
             </div>
-            <div style="display:flex;gap:6px;align-items:center;">
+            <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
               <button class="icon-btn account-open-btn" data-profile="${acc.name}" style="width:auto;padding:5px 12px;font-size:11px;white-space:nowrap;">Open</button>
               ${isActive ? '' : `<button class="icon-btn account-switch-btn" data-profile="${acc.name}" style="width:auto;padding:5px 12px;font-size:11px;white-space:nowrap;">Switch</button>`}
               ${isActive ? '' : `<button class="icon-btn account-delete-btn" data-profile="${acc.name}" style="width:auto;padding:5px 10px;font-size:11px;white-space:nowrap;color:var(--danger);border-color:var(--danger);">Delete</button>`}
@@ -3963,6 +3968,30 @@
       } else {
         document.documentElement.removeAttribute("data-theme");
       }
+      updateFavicon();
+    }
+
+    function updateFavicon() {
+      const cs = getComputedStyle(document.documentElement);
+      const accent = (cs.getPropertyValue("--accent-text") || "#e8cd97").trim();
+      const svg = `<svg viewBox="0 0 32 32" width="32" height="32" xmlns="http://www.w3.org/2000/svg">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="${accent}"/>
+<stop offset="100%" stop-color="${accent}" stop-opacity="0.7"/>
+</linearGradient></defs>
+<polygon fill="#181825" stroke="url(#g)" stroke-width="6" stroke-linejoin="round" points="16,2 26,8 26,24 16,30 6,24 6,8"/>
+<circle cx="16" cy="2" r="3" fill="${accent}"/>
+<circle cx="26" cy="8" r="3" fill="${accent}"/>
+<circle cx="26" cy="24" r="3" fill="${accent}"/>
+<circle cx="16" cy="30" r="3" fill="${accent}"/>
+<circle cx="6" cy="24" r="3" fill="${accent}"/>
+<circle cx="6" cy="8" r="3" fill="${accent}"/>
+<circle cx="16" cy="16" r="4" fill="${accent}"/>
+</svg>`;
+      let link = document.querySelector("link[rel='icon']");
+      if (!link) { link = document.createElement("link"); link.rel = "icon"; document.head.appendChild(link); }
+      link.type = "image/svg+xml";
+      link.href = "data:image/svg+xml," + encodeURIComponent(svg);
     }
 
     themePicker.addEventListener("click", (e) => {
@@ -3983,6 +4012,8 @@
         if (match) {
           themePicker.querySelectorAll(".theme-swatch").forEach((b) => b.classList.toggle("active", b === match));
         }
+      } else {
+        updateFavicon();
       }
     })();
 
@@ -4202,9 +4233,9 @@
         const bakDot = acc.has_backup ? '\u{1F7E2}' : '\u{1F534}';
         html +=
           '<div style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;">' +
-            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">' +
-              '<span style="font-size:13px;font-weight:600;color:var(--text);">' + escHtml(acc.name) + (acc.email ? ' <span style="font-weight:400;font-size:11px;color:var(--text-dim);">' + escHtml(acc.email) + '</span>' : '') + '</span>' +
-              '<span style="display:flex;gap:6px;">' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;">' +
+              '<span style="font-size:13px;font-weight:600;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(acc.name) + (acc.email ? ' <span style="font-weight:400;font-size:11px;color:var(--text-dim);">' + escHtml(acc.email) + '</span>' : '') + '</span>' +
+              '<span style="display:flex;gap:6px;flex-shrink:0;">' +
                 '<button data-profile="' + escAttr(acc.name) + '" class="accBackupBtn" style="background:var(--panel);color:var(--accent);border:1px solid var(--accent);border-radius:6px;padding:5px 12px;font-size:11px;cursor:pointer;font-weight:600;">Backup</button>' +
                 '<button data-profile="' + escAttr(acc.name) + '" class="accRestoreBtn" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:11px;cursor:pointer;font-weight:600;' + (acc.has_backup ? '' : 'opacity:0.4;pointer-events:none;') + '">Restore</button>' +
               '</span>' +
@@ -4265,6 +4296,55 @@
   }
 
   document.getElementById('refreshProfilesBtn')?.addEventListener('click', loadBrowserProfiles);
+
+  document.getElementById('backupAllBtn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('backupAllBtn');
+    btn.disabled = true; btn.textContent = '⬆ Backing up…';
+    try {
+      const res = await fetch('/api/settings/accounts/backups');
+      const d = await res.json();
+      const accounts = d.accounts || [];
+      let ok = 0, fail = 0;
+      for (const acc of accounts) {
+        try {
+          const r = await fetch('/api/settings/accounts/backup', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ profile: acc.name })
+          });
+          if (r.ok) ok++; else fail++;
+        } catch { fail++; }
+      }
+      showToast('Backup All: ' + ok + ' done' + (fail ? ', ' + fail + ' failed' : ''), fail ? 'error' : 'success');
+    } catch { showToast('Backup All failed — network error', 'error'); }
+    btn.disabled = false; btn.textContent = '⬆ Backup All';
+    await loadBrowserProfiles();
+  });
+
+  document.getElementById('restoreAllBtn')?.addEventListener('click', async () => {
+    if (!confirm('Restore ALL profiles from .bak snapshots?\nThis DELETES current data and replaces with backups.')) return;
+    const btn = document.getElementById('restoreAllBtn');
+    btn.disabled = true; btn.textContent = '⬇ Restoring…';
+    try {
+      const res = await fetch('/api/settings/accounts/backups');
+      const d = await res.json();
+      const accounts = (d.accounts || []).filter(a => a.has_backup);
+      if (!accounts.length) { showToast('No backups found to restore', 'error'); btn.disabled = false; btn.textContent = '⬇ Restore All'; return; }
+      let ok = 0, fail = 0;
+      for (const acc of accounts) {
+        try {
+          const r = await fetch('/api/settings/accounts/restore', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ profile: acc.name })
+          });
+          if (r.ok) ok++; else fail++;
+        } catch { fail++; }
+      }
+      showToast('Restore All: ' + ok + ' done' + (fail ? ', ' + fail + ' failed' : ''), fail ? 'error' : 'success');
+    } catch { showToast('Restore All failed — network error', 'error'); }
+    btn.disabled = false; btn.textContent = '⬇ Restore All';
+    await loadBrowserProfiles();
+  });
+
   loadBrowserProfiles();
   // ── /Browser Profile Backup ────────────────────────────────
 

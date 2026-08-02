@@ -551,3 +551,15 @@
   background: rgba(124, 92, 191, 0.08);
 }
 
+
+/* Auto-turn skill execution chip */
+.auto-turn-skill-chip {
+  display: inline-block;
+  font-size: 0.72rem;
+  padding: 1px 6px;
+  margin: 2px 4px 2px 0;
+  border-radius: 4px;
+  background: var(--bg-tertiary, #2a2a3e);
+  color: var(--text-muted, #a0a0b8);
+  border: 1px solid var(--border-color, #3a3a5e);
+}
