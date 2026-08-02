@@ -181,8 +181,8 @@ class AutoTurnEngine:
 
         prompt = (
             "The following agent(s) have completed their tasks. "
-            "Acknowledge the result briefly. Do NOT use any tool tags, action blocks, "
-            "or XML-style tags in your response. Plain text only.\n\n"
+            "Acknowledge the result and take any necessary follow-up action. "
+            "You may use tool tags wrapped in <action> blocks if needed.\n\n"
             + "\n\n".join(result_lines)
         )
         messages = [{"role": "user", "content": prompt}]

@@ -55,6 +55,13 @@ const AgentTopBar = {
     const slot = document.getElementById("agentTopBarSlot");
     if (slot) slot.appendChild(this.container);
     else document.body.appendChild(this.container);
+    // Vertical wheel → horizontal scroll
+    this.container.addEventListener("wheel", (e) => {
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+        e.preventDefault();
+        this.container.scrollLeft += e.deltaY;
+      }
+    }, { passive: false });
   },
 
   addCard(agentId, role, task, model) {
@@ -395,15 +402,37 @@ function handleAgentEvent(ev) {
         if (typeof scrollBottom === "function") scrollBottom(true);
       }
       break;
-    case "auto_turn_end":
-      _autoTurnBuffer = "";
+    case "auto_turn_end": {
       const doneEl = document.getElementById("_autoTurnLive");
+      if (doneEl && _autoTurnBuffer) {
+        const contentEl = doneEl.querySelector(".md-content") || doneEl;
+        if (typeof renderMarkdown === "function") {
+          contentEl.innerHTML = renderMarkdown(_autoTurnBuffer);
+          if (typeof renderMermaidDiagrams === "function") renderMermaidDiagrams(contentEl);
+          if (typeof renderMathJax === "function") renderMathJax(contentEl);
+          if (typeof activateLucideIcons === "function") activateLucideIcons(contentEl);
+        }
+      }
       if (doneEl) { doneEl.removeAttribute("id"); }
+      _autoTurnBuffer = "";
       break;
+    }
     case "auto_turn_notification":
       // Notification persisted server-side — no visual needed
       console.debug("[agents] notification saved as msg", ev.data?.message_id);
       break;
+    case "auto_turn_skill": {
+      const skData = ev.data || {};
+      const liveEl2 = document.getElementById("_autoTurnLive");
+      if (liveEl2 && skData.type === "skill_start") {
+        const chip = document.createElement("span");
+        chip.className = "auto-turn-skill-chip";
+        chip.textContent = "\u2699 " + (skData.name || "skill");
+        liveEl2.appendChild(chip);
+      }
+      console.debug("[agents] auto_turn_skill:", skData.type, skData.name);
+      break;
+    }
     case "auto_turn_saved": {
       // Maria's auto-turn reply was persisted — advance the client parent
       // Use the upstream parent_id (from the model service), NOT the DB row id

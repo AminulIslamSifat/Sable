@@ -49,6 +49,41 @@
     }
 
     :root {
+      --bg: #0d0c0a;
+      --sidebar: #12110e;
+      --panel: #191714;
+      --panel-2: #201d19;
+      --border: #2a2720;
+      --border-soft: #211e19;
+      --text: #eaeaea;
+      --text-dim: #c4c4c8;
+      --muted: #85858c;
+      --muted-2: #616167;
+      --accent: #9a7d4a;
+      --accent-dim: #9a7d4a0e;
+      --accent-text: #c4a66b;
+      --danger: #e5646a;
+      --danger-bg: #e5646a15;
+      --ok: #6fcf97;
+      --bg-glow: #131008;
+      --radius: 10px;
+      --radius-lg: 14px;
+      --sp-1: 2px;
+      --sp-2: 4px;
+      --sp-3: 6px;
+      --sp-4: 8px;
+      --sp-5: 12px;
+      --sp-6: 16px;
+      --sp-7: 20px;
+      --sp-8: 24px;
+      --font-body: 'Maple Mono', ui-monospace, monospace;
+      --font-serif: 'Maple Mono', ui-monospace, monospace;
+      --font-mono: 'Maple Mono', ui-monospace, monospace;
+      --font-size-response: 14.5px;
+    }
+
+    /* ---------- Theme: Default (neutral gray) ---------- */
+    [data-theme="default"] {
       --bg: #0c0c0d;
       --sidebar: #101011;
       --panel: #17171a;
@@ -66,20 +101,6 @@
       --danger-bg: #e5646a15;
       --ok: #6fcf97;
       --bg-glow: #121215;
-      --radius: 10px;
-      --radius-lg: 14px;
-      --sp-1: 2px;
-      --sp-2: 4px;
-      --sp-3: 6px;
-      --sp-4: 8px;
-      --sp-5: 12px;
-      --sp-6: 16px;
-      --sp-7: 20px;
-      --sp-8: 24px;
-      --font-body: 'Maple Mono', ui-monospace, monospace;
-      --font-serif: 'Maple Mono', ui-monospace, monospace;
-      --font-mono: 'Maple Mono', ui-monospace, monospace;
-      --font-size-response: 14.5px;
     }
 
     /* ---------- Theme: Noctalia (purple/lavender) ---------- */
@@ -273,25 +294,21 @@
 
     * { box-sizing: border-box; }
 
-    html, body {
+    html {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+    }
+
+    body {
       margin: 0;
       height: 100%;
       font-family: var(--font-body);
-      background: var(--bg);
+      background: radial-gradient(ellipse at 50% 0%, var(--bg-glow) 0%, var(--bg) 70%) fixed;
       color: var(--text);
       -webkit-font-smoothing: antialiased;
+      display: flex;
     }
-
-    body::before {
-      content: '';
-      position: fixed;
-      inset: 0;
-      z-index: -1;
-      pointer-events: none;
-      background: radial-gradient(ellipse at 50% 0%, var(--bg-glow) 0%, var(--bg) 70%);
-    }
-
-    body { display: flex; }
 
     ::selection { background: var(--accent-dim); color: var(--accent-text); }
 

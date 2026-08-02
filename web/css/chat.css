@@ -620,15 +620,17 @@
       line-height: 1.6;
     }
 
+    .md-content .table-wrap {
+      overflow-x: auto;
+      margin: 14px 0;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
     .md-content table {
       border-collapse: collapse;
       width: 100%;
-      margin: 14px 0;
       font-size: 13.5px;
-      display: block;
-      overflow-x: auto;
-      border-radius: 8px;
-      border: 1px solid var(--border);
+      display: table;
     }
     .md-content th, .md-content td {
       border: 1px solid var(--border);
