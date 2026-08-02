@@ -3,12 +3,13 @@
 
 /* --- Header slot (between model dropdown and diff toggle) --- */
 .header-agent-cell {
-  display: flex;
-  align-items: center;
-  justify-content: center;
   background: none;
   border: none;
   box-shadow: none;
+  flex: 0 1 auto;
+  max-width: 70%;
+  min-width: 0;
+  overflow: hidden;
 }
 
 
@@ -18,11 +19,21 @@
   align-items: center;
   gap: 5px;
   padding: 4px 0;
-  overflow: visible;
-  max-width: 100%;
-  flex-shrink: 1;
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  mask-image: linear-gradient(to right, black 0%, black 85%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, black 0%, black 85%, transparent 100%);
 }
-.agent-top-bar::-webkit-scrollbar { display: none; }
+.agent-top-bar:hover {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(124, 92, 191, 0.4) transparent;
+}
+.agent-top-bar::-webkit-scrollbar { height: 4px; }
+.agent-top-bar::-webkit-scrollbar-track { background: transparent; }
+.agent-top-bar::-webkit-scrollbar-thumb { background: transparent; border-radius: 2px; }
+.agent-top-bar:hover::-webkit-scrollbar-thumb { background: rgba(124, 92, 191, 0.4); }
 .agent-top-bar.hidden { display: none; }
 
 .agent-card {
