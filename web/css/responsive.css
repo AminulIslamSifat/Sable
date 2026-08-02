@@ -2,6 +2,7 @@
     @media (max-width: 860px) {
       .sidebar-section { background: color-mix(in srgb, var(--panel) 82%, transparent); }
       .diff-sidebar { background: color-mix(in srgb, var(--panel) 82%, transparent); }
+      .agent-panel { background: color-mix(in srgb, var(--panel) 82%, transparent); }
     }
 
     /* ---------- small phones (≤480px) ---------- */

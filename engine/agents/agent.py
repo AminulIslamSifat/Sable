@@ -1,9 +1,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 from engine.agents.protocol import AgentStatus
 
@@ -30,6 +32,16 @@ class Agent:
     chat_id: str | None = None
     depth: int = 0
     collect: bool = False
+
+    # Per-agent SSE stream queue — frontend panel subscribes via /api/agents/{id}/stream
+    stream_queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=200), repr=False)
+
+    def push_stream_event(self, event: dict[str, Any]) -> None:
+        """Push a chat-format SSE event to the agent's stream queue (non-blocking)."""
+        try:
+            self.stream_queue.put_nowait(event)
+        except asyncio.QueueFull:
+            pass  # Panel disconnected or too slow — skip
 
     @property
     def path(self) -> str:
