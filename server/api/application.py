@@ -124,139 +124,17 @@ from .routes.agents import _async_push_agent_event, push_agent_event
 from engine.agents import get_runtime as _get_agent_runtime
 _get_agent_runtime().set_event_callback(_async_push_agent_event)
 
-# Wire auto-turn engine: agent results → autonomous model turns
+# Wire auto-turn engine: agent results → signal frontend to run a normal chat turn
 from engine.agents.auto_turn import auto_turn as _auto_turn
-from .dependencies import service as _chat_service
 
 
-_AUTO_TURN_MAX_ROUNDS = 5
-
-
-async def _auto_turn_fn(chat_id: str, messages: list[dict], on_chunk) -> str:
-    """Skill-loop turn for agent results.
-
-    Streams model output through SkillParser, executes any tool tags,
-    and loops feedback up to _AUTO_TURN_MAX_ROUNDS times.
-    parent_id is the UPSTREAM continuation token — NEVER a DB row id.
-    """
-    from engine.skills import get_skill_engine, build_tool_feedback
-    from server.database import add_message, touch_chat, get_parent_id
-    from server.utils import _is_deepseek_api_model
-
-    notification_text = messages[-1]["content"] if messages else ""
-    model, thinking_mode, provider = _auto_turn.get_chat_settings(chat_id)
-    parent_id: str | None = get_parent_id(chat_id, None)
-
-    # Frontend: a notification arrived
+async def _auto_turn_signal(chat_id: str, message: str) -> None:
+    """Push an auto_turn_trigger event so the frontend initiates a normal /api/chat call."""
     push_agent_event(chat_id, {
-        "type": "auto_turn_notification", "agent_id": None,
-        "data": {"content": notification_text},
+        "type": "auto_turn_trigger",
+        "agent_id": None,
+        "data": {"message": message},
     })
 
-    engine = get_skill_engine()
-    all_answer_parts: list[str] = []
-    all_skill_events: list[dict] = [{"type": "auto_turn", "trigger": "agent_completion"}]
-    current_message = notification_text
-    round_index = 0
 
-    try:
-        while round_index < _AUTO_TURN_MAX_ROUNDS:
-            round_answer: list[str] = []
-            round_skill_events: list[dict] = []
-            parser = engine.create_parser()
-
-            # Build event source for this round
-            if provider == "deepseek" or (model and _is_deepseek_api_model(model)):
-                from connectors.deepseek.client import get_client as _get_ds
-                from engine.config import get_model_config
-                ds_cfg = get_model_config(model) if model else {}
-                api_type = ds_cfg.get("api_model_type", "default")
-                event_source = _get_ds().stream_chat(
-                    message=current_message, model=api_type,
-                    thinking_mode=thinking_mode, chat_id=chat_id,
-                )
-            else:
-                event_source = _chat_service.stream_events(
-                    current_message, chat_id=chat_id, parent_id=parent_id,
-                    model=model, thinking_mode=thinking_mode,
-                )
-
-            async for ev in event_source:
-                ev_type = ev.get("type")
-                if ev_type == "answer":
-                    tok = ev.get("text", "")
-                    if not tok:
-                        continue
-                    for item in parser.feed(tok):
-                        itype = item.get("type")
-                        if itype == "text":
-                            chunk = str(item.get("text", ""))
-                            if chunk:
-                                round_answer.append(chunk)
-                                await on_chunk(chunk)
-                        elif itype == "tag_found":
-                            for sev in engine.process_tag(
-                                item["name"], item.get("attrs", {}), item.get("content", "")
-                            ):
-                                if sev.get("type") in ("skill_start", "skill_output", "skill_end", "file_edit"):
-                                    round_skill_events.append(sev)
-                                push_agent_event(chat_id, {"type": "auto_turn_skill", "agent_id": None, "data": sev})
-                elif ev_type in ("meta", "done"):
-                    parent_id = ev.get("parent_id") or parent_id
-                elif ev_type == "error":
-                    raise RuntimeError(ev.get("message", "stream error"))
-
-            # Flush remaining parser buffer
-            for item in parser.flush():
-                itype = item.get("type")
-                if itype == "text":
-                    chunk = str(item.get("text", ""))
-                    if chunk:
-                        round_answer.append(chunk)
-                        await on_chunk(chunk)
-                elif itype == "tag_found":
-                    for sev in engine.process_tag(
-                        item["name"], item.get("attrs", {}), item.get("content", "")
-                    ):
-                        if sev.get("type") in ("skill_start", "skill_output", "skill_end", "file_edit"):
-                            round_skill_events.append(sev)
-                        push_agent_event(chat_id, {"type": "auto_turn_skill", "agent_id": None, "data": sev})
-
-            all_answer_parts.extend(round_answer)
-            all_skill_events.extend(round_skill_events)
-
-            # Build feedback for next round
-            feedback = build_tool_feedback(round_skill_events)
-            if not feedback:
-                break
-            round_index += 1
-            current_message = feedback
-
-    finally:
-        response_text = "".join(all_answer_parts)
-        if response_text:
-            add_message(
-                chat_id, "assistant", response_text, None, parent_id,
-                skill_events=all_skill_events,
-            )
-            touch_chat(chat_id, parent_id)
-            push_agent_event(chat_id, {
-                "type": "auto_turn_saved", "agent_id": None,
-                "data": {"parent_id": parent_id},
-            })
-        await _auto_turn_done(chat_id)
-    return response_text
-
-
-async def _auto_turn_chunk(chat_id: str, token: str) -> None:
-    """Push auto-turn tokens to frontend via agent-events SSE."""
-    push_agent_event(chat_id, {"type": "auto_turn_chunk", "agent_id": None, "data": {"token": token}})
-
-
-async def _auto_turn_done(chat_id: str) -> None:
-    """Signal end of auto-turn stream."""
-    push_agent_event(chat_id, {"type": "auto_turn_end", "agent_id": None, "data": {}})
-
-
-_auto_turn.set_turn_fn(_auto_turn_fn)
-_auto_turn.set_chunk_callback(_auto_turn_chunk)
+_auto_turn.set_signal_fn(_auto_turn_signal)
