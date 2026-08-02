@@ -36,13 +36,13 @@ JSEOF
 
 # 2. Encode and pass
 B64=
-cd PROJECT_ROOT && uv run python skills/core/browser_control/scripts/browser_control.py eval "b64:"
+cd PROJECT_ROOT && uv run python skills/browser_control/scripts/browser_control.py eval "b64:"
 ```
 
 Or skip the shell variable entirely:
 
 ```bash
-cd PROJECT_ROOT && uv run python skills/core/browser_control/scripts/browser_control.py eval --file /tmp/my_eval.js
+cd PROJECT_ROOT && uv run python skills/browser_control/scripts/browser_control.py eval --file /tmp/my_eval.js
 ```
 
 > [!CAUTION]
@@ -69,7 +69,7 @@ element exists in the DOM and `eval` works fine.
 Or use `--force=true` on click/type to skip visibility checks:
 
 ```bash
-cd PROJECT_ROOT && uv run python skills/core/browser_control/scripts/browser_control.py click "div[aria-label='Message Body']" --force=true
+cd PROJECT_ROOT && uv run python skills/browser_control/scripts/browser_control.py click "div[aria-label='Message Body']" --force=true
 ```
 
 > [!WARNING]
@@ -131,12 +131,12 @@ cd PROJECT_ROOT && uv run python skills/core/browser_control/scripts/browser_con
 
 ## Script Path
 
-`PROJECT_ROOT/skills/core/browser_control/scripts/browser_control.py`
+`PROJECT_ROOT/skills/browser_control/scripts/browser_control.py`
 
 Always call via:
 
 ```bash
-cd PROJECT_ROOT && uv run python skills/core/browser_control/scripts/browser_control.py COMMAND [args]
+cd PROJECT_ROOT && uv run python skills/browser_control/scripts/browser_control.py COMMAND [args]
 ```
 
 ---
@@ -156,7 +156,7 @@ Socket path is fixed at `/tmp/sable_browser.sock`.
 **Start command (background, headed):**
 
 ```bash
-setsid /home/sifat/hdd/projects/Sable/.venv/bin/python /home/sifat/hdd/projects/Sable/skills/core/browser_control/scripts/browser_control.py start --headed > /tmp/browser_daemon.log 2>&1 &
+setsid /home/sifat/hdd/projects/Sable/.venv/bin/python /home/sifat/hdd/projects/Sable/skills/browser_control/scripts/browser_control.py start --headed > /tmp/browser_daemon.log 2>&1 &
 sleep 5
 ```
 
