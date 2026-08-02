@@ -6,7 +6,7 @@
   <title>Sable</title>
   <link rel="icon" type="image/svg+xml" href="/static/assets/favicon.svg?v=3">
 
-  <link rel="stylesheet" href="/static/css/variables.css?v=3">
+  <link rel="stylesheet" href="/static/css/variables.css?v=4">
   <link rel="stylesheet" href="/static/css/base.css?v=3">
   <link rel="stylesheet" href="/static/css/layout.css?v=12">
   <link rel="stylesheet" href="/static/css/chat.css?v=18">
@@ -87,8 +87,9 @@
         <div class="header-cell header-model-cell">
           <div class="glass-dropdown" id="modelDropdown">
             <button class="glass-dropdown-trigger" id="modelTrigger" title="Model used for new chats">
+              <i data-lucide="cpu" style="width:14px;height:14px;opacity:.7;"></i>
               <span class="glass-dropdown-label">Model</span>
-              <span class="glass-dropdown-arrow">▾</span>
+              <span class="glass-dropdown-arrow"><i data-lucide="chevron-down" style="width:12px;height:12px;"></i></span>
             </button>
             <div class="glass-dropdown-menu" id="modelMenu"></div>
             <select id="modelSelect" hidden></select>
@@ -96,7 +97,7 @@
         </div>
         <div class="header-agent-cell" id="agentTopBarSlot"></div>
         <div class="header-cell header-icon-cell">
-          <button id="diffToggleBtn" class="icon-btn" title="Toggle file edit sidebar"><span class="icon-emoji">✎</span><i data-lucide="file-pen-line" class="icon-lucide"></i></button>
+          <button id="diffToggleBtn" class="icon-btn" title="Toggle file edit sidebar"><span class="icon-emoji">✎</span><i data-lucide="history" class="icon-lucide"></i></button>
         </div>
       </div>
     </header>
@@ -286,6 +287,9 @@
               </button>
               <button class="theme-swatch" data-theme="teal" title="Teal">
                 <span class="swatch-dot" style="background:#14b8a6;"></span>Teal
+              </button>
+              <button class="theme-swatch" data-theme="blue" title="Blue">
+                <span class="swatch-dot" style="background:#3b82f6;"></span>Blue
               </button>
             </div>
           </div>
