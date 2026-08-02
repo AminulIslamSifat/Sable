@@ -14,7 +14,7 @@
 ***
 
 ## R4–R11: Agentic Actions
-Tags: `<get_file>/abs/path</get_file>` · `<execute_command>cmd</execute_command>` · `<openweb site="reddit" op="search" params='{"query":"..."}' />`
+Tags: `<get_file>/abs/path</get_file>` · `<execute_command>cmd</execute_command>` · 
 
 Every agentic tag — one or several — is wrapped in a single `<action>...</action>` block. The extractor only reads what's inside `<action>`; anything outside it is prose, never a call. See `skills.md` for the exact tag list and syntax per skill.
 
