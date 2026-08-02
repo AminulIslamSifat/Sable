@@ -26,10 +26,10 @@ designing, or writing code.
 
 | Type | Primary Use Cases | SKILL.md Path |
 |---|---|---|
-| **DOCX** | Legal/academic editing, redlining, tracked changes, document creation | `PROJECT_ROOT/skills/data/document_skills/docx/SKILL.md` |
-| **PDF** | Form filling, merging, splitting, text/table extraction | `PROJECT_ROOT/skills/data/document_skills/pdf/SKILL.md` |
-| **PPTX** | Presentation creation (template or scratch), slide reordering, design | `PROJECT_ROOT/skills/data/document_skills/pptx/SKILL.md` |
-| **XLSX** | Financial modeling, data analysis, formula auditing, structured data | `PROJECT_ROOT/skills/data/document_skills/xlsx/SKILL.md` |
+| **DOCX** | Legal/academic editing, redlining, tracked changes, document creation | `PROJECT_ROOT/skills/document_skills/docx/SKILL.md` |
+| **PDF** | Form filling, merging, splitting, text/table extraction | `PROJECT_ROOT/skills/document_skills/pdf/SKILL.md` |
+| **PPTX** | Presentation creation (template or scratch), slide reordering, design | `PROJECT_ROOT/skills/document_skills/pptx/SKILL.md` |
+| **XLSX** | Financial modeling, data analysis, formula auditing, structured data | `PROJECT_ROOT/skills/document_skills/xlsx/SKILL.md` |
 
 Reading the SKILL.md is not optional and is not skippable for "simple" tasks. Every
 sub-skill encodes environment-specific constraints, available libraries, and workflows
