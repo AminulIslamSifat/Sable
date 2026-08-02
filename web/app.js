@@ -101,8 +101,10 @@
     const THINKING_MODE_KEY = "sable_selected_thinking_mode";
 
     // Typewriter animation config (fetched from /api/config/ui on init)
-    let TW_CHARS = 3;
-    let TW_MS = 12;
+    // Adaptive: low-memory devices get larger batches to reduce layout thrashing
+    const _lowMem = (navigator.deviceMemory || 8) < 8;
+    let TW_CHARS = _lowMem ? 12 : 3;
+    let TW_MS = _lowMem ? 50 : 12;
 
     // Used only if /api/models isn't available yet — keep in sync with
     // engine/config.py's MODELS list so the dropdowns work either way.
@@ -610,9 +612,10 @@
     /* ---------- mermaid post-render ---------- */
     let mermaidInited = false;
     async function renderMermaidDiagrams(container) {
-      if (!window.mermaid) return;
       const els = (container || document).querySelectorAll("pre.mermaid:not([data-processed])");
       if (!els.length) return;
+      if (!window.mermaid) { await window._lazyLoadMermaid(); }
+      if (!window.mermaid) return;
       if (!mermaidInited) {
         mermaid.initialize({
           startOnLoad: false,
@@ -656,8 +659,11 @@
     }
 
     /* ---------- mathjax post-render ---------- */
-    function renderMathJax(container) {
-      if (!window.MathJax || !MathJax.typesetPromise) return;
+    async function renderMathJax(container) {
+      if (!window.MathJax || !MathJax.typesetPromise) {
+        await window._lazyLoadMathJax();
+        if (!window.MathJax || !MathJax.typesetPromise) return;
+      }
       const target = container || document.body;
       MathJax.typesetPromise([target]).catch(err => console.warn("MathJax typeset error:", err));
     }
@@ -4003,16 +4009,9 @@
     // ---------- Icon Style ----------
     const ICON_STYLE_KEY = "sable_icon_style";
     const iconStyleSelect = document.getElementById("iconStyleSelect");
-    let _lucideLoaded = false;
-
     function applyIconStyle(style) {
       document.documentElement.setAttribute("data-icon-style", style);
-      if (style === "lucide" && !_lucideLoaded) {
-        const script = document.createElement("script");
-        script.src = "https://unpkg.com/lucide@latest/dist/umd/lucide.min.js";
-        script.onload = () => { _lucideLoaded = true; if (window.lucide) lucide.createIcons(); };
-        document.head.appendChild(script);
-      } else if (style === "lucide" && _lucideLoaded && window.lucide) {
+      if (style === "lucide" && window.lucide) {
         lucide.createIcons();
       }
     }
