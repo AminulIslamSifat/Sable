@@ -8,7 +8,7 @@
 
   <link rel="stylesheet" href="/static/css/variables.css?v=4">
   <link rel="stylesheet" href="/static/css/base.css?v=3">
-  <link rel="stylesheet" href="/static/css/layout.css?v=12">
+  <link rel="stylesheet" href="/static/css/layout.css?v=22">
   <link rel="stylesheet" href="/static/css/chat.css?v=19">
   <link rel="stylesheet" href="/static/css/panels.css?v=10">
   <link rel="stylesheet" href="/static/css/components.css?v=10">
@@ -69,6 +69,12 @@
       </div>
     </div>
     <div class="sidebar-section sidebar-chats">
+      <div class="chat-search-float">
+        <button id="chatSearchBtn" class="new-chat-icon chat-search-btn" title="Search chats">
+          <span class="icon-emoji">🔍</span><i data-lucide="search" class="icon-lucide"></i>
+        </button>
+        <input type="text" id="chatSearch" class="chat-search-input" placeholder="Search chats…" autocomplete="off">
+      </div>
       <div id="chats"></div>
     </div>
     <div class="sidebar-section sidebar-bottom">
@@ -97,7 +103,7 @@
         </div>
         <div class="header-agent-cell" id="agentTopBarSlot"></div>
         <div class="header-cell header-icon-cell">
-          <button id="diffToggleBtn" class="icon-btn" title="Toggle file edit sidebar"><span class="icon-emoji">✎</span><i data-lucide="history" class="icon-lucide"></i></button>
+          <button id="diffToggleBtn" class="icon-btn" title="Toggle file edit sidebar"><span class="icon-emoji">✎</span><i data-lucide="file-pen-line" class="icon-lucide"></i></button>
         </div>
       </div>
     </header>
@@ -476,7 +482,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=26"></script>
+  <script src="/static/app.js?v=29"></script>
   <script src="/static/js/agents.js?v=19"></script>
 </body>
 </html>
