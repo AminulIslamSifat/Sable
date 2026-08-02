@@ -166,10 +166,11 @@
       .skill-instruction pre { -webkit-overflow-scrolling: touch; }
 
       /* tables: horizontal scroll wrapper */
-      .md-content table {
-        display: block;
+      .md-content .table-wrap {
         overflow-x: auto;
         -webkit-overflow-scrolling: touch;
+      }
+      .md-content table {
         white-space: nowrap;
       }
 
