@@ -1,11 +1,11 @@
 # Simulacra Engine: Universal Dynamic Visualization
 
-Use this skill to generate dynamic, interactive simulations, models, and high-fidelity interactive visualizations — covering physics (SHM, fields), biology (population models), mathematics (fractals, chaos), or any concept that benefits from visual motion and real-time interaction. Outputs self-contained HTML/JS files that Sifat can open directly in a browser.
+Use this skill to generate dynamic, interactive simulations, models, and high-fidelity interactive visualizations — covering physics (SHM, fields), biology (population models), mathematics (fractals, chaos), or any concept that benefits from visual motion and real-time interaction. Outputs self-contained HTML/JS files that the user can open directly in a browser.
 
 **When NOT to use this skill:**
 - Output is a static diagram, graph, or chart with no animation → use **Graph Master** or **SVG Creator**
 - Output is a mathematical derivation or equation solving → use **Math Solver**
-- Sifat just wants a code snippet to run himself, not a browser-openable file
+- the user just wants a code snippet to run himself, not a browser-openable file
 - The concept is fully explainable with a still image — motion adds nothing
 
 ---
@@ -43,8 +43,8 @@ The dispatcher passes the tag to `sim_engine.py`, which:
 6. On `FAILED` → read the error details carefully before retrying:
    - `SyntaxError` / `IndentationError` → fix Python string escaping, usually a quote conflict inside the HTML triple-string
    - `FileNotFoundError` → `OUT_PATH` was not written to; check the `with open(OUT_PATH)` block is actually reached
-   - `PermissionError` → assets directory issue; flag to Sifat, do not retry blindly
-   - Any other error → attempt one fix and retry. If it fails again, report the raw error to Sifat rather than looping.
+   - `PermissionError` → assets directory issue; flag to the user, do not retry blindly
+   - Any other error → attempt one fix and retry. If it fails again, report the raw error to the user rather than looping.
 
 ---
 

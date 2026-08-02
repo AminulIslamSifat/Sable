@@ -220,7 +220,7 @@ Always compute SVG canvas size **after** calculating all node positions — add 
 
 ## Embedding in Final Response (MANDATORY)
 
-After the engine confirms the SVG was saved, you **MUST** embed the file in your response using an Obsidian wikilink so Sifat can see it inline:
+After the engine confirms the SVG was saved, you **MUST** embed the file in your response using an Obsidian wikilink so the user can see it inline:
 
 ```markdown
 Here's the BST visualization:
@@ -232,7 +232,7 @@ Here's the BST visualization:
 
 ### If the engine returns `FAILED`:
 1. **Parse error** (malformed XML) → validate tag nesting, check unclosed elements, fix and retry.
-2. **File write error** (path/permission) → report the exact error to Sifat. Do not retry blindly.
+2. **File write error** (path/permission) → report the exact error to the user. Do not retry blindly.
 3. **Empty output** → ensure the SVG tag is the direct body of `<create_svg>` with no wrapper.
 
 ***
@@ -247,4 +247,4 @@ Here's the BST visualization:
 6. **Calculate positions mathematically**: Use the Layout Math Guide formulas. Hardcoded positions for large structures produce misaligned, unscalable diagrams.
 7. **Semantic color usage**: Use accent colors to convey state — active, inserted, deleted, visited. A diagram where every node looks the same teaches nothing.
 8. **Descriptive Filenames**: Name files by content and state (e.g., `avl_rotation_left.svg`, `bfs_step3_visited.svg`) — not generic names like `diagram_1.svg`.
-9. **Always embed**: After success, include `![Name](relative/file/path.svg)` in your final answer so Sifat sees the visual immediately.
+9. **Always embed**: After success, include `![Name](relative/file/path.svg)` in your final answer so the user sees the visual immediately.

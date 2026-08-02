@@ -9,10 +9,10 @@ extraction. Supports any site yt-dlp supports — not just YouTube.
 
 | Condition | Action |
 |---|---|
-| Sifat shares a URL and says "download", "save", "grab", "get" | Fire this skill |
+| the user shares a URL and says "download", "save", "grab", "get" | Fire this skill |
 | URL is from any video platform (YouTube, Twitter, Instagram, etc.) | Fire this skill |
-| Sifat wants audio only / MP3 / podcast version | Fire with `-a` flag |
-| Sifat asks to download a playlist | Clarify — playlists are skipped by default. Ask if they want `--yes-playlist` added. |
+| the user wants audio only / MP3 / podcast version | Fire with `-a` flag |
+| the user asks to download a playlist | Clarify — playlists are skipped by default. Ask if they want `--yes-playlist` added. |
 | No URL is provided | Ask for the URL before firing |
 
 ---
@@ -56,11 +56,11 @@ PROJECT_ROOT/skills/youtube_downloader/scripts/download_video.py
 ## Execution Protocol
 
 ### Step 1 — Identify intent
-- Extract the URL from Sifat's message.
+- Extract the URL from the user's message.
 - Determine quality preference. If unspecified, default to **1080p** (not `best` —
-  1080p is the preferred default for Sifat's setup unless the source doesn't have it,
+  1080p is the preferred default for the user's setup unless the source doesn't have it,
   in which case fall back to `best`).
-- Determine output directory. Default is `~/hdd/Downloads`. If Sifat says
+- Determine output directory. Default is `~/hdd/Downloads`. If the user says
   "Vault", use `~/hdd/vault`.
 
 ### Step 2 — Execute
@@ -79,7 +79,7 @@ Never report "download complete" without confirming the script exited successful
 
 ## Output Directories
 
-| Sifat says | Command | Output path |
+| the user says | Command | Output path |
 |---|---|---|
 | Nothing (default) | *(no flag)* | `~/hdd/Downloads` |
 | "Vault" or "vault" | `--vault` | `~/hdd/vault` |

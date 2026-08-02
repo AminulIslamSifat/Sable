@@ -10,8 +10,8 @@ Do not attempt any document operation without first reading the relevant SKILL.m
 
 | Condition | Action |
 |---|---|
-| Sifat mentions a DOCX, PDF, PPTX, or XLSX file by name or extension | Fire this skill |
-| Sifat says "create", "edit", "fill", "merge", "analyze", "format" on any document | Fire this skill |
+| User mentions a DOCX, PDF, PPTX, or XLSX file by name or extension | Fire this skill |
+| User says "create", "edit", "fill", "merge", "analyze", "format" on any document | Fire this skill |
 | Task involves redlining, form filling, slide creation, or financial modeling | Fire this skill |
 | File type is ambiguous (e.g. "this document") | Ask for the file extension before routing |
 | File type is not DOCX, PDF, PPTX, or XLSX | Report unsupported type. Do not attempt a workaround. |
@@ -20,7 +20,7 @@ Do not attempt any document operation without first reading the relevant SKILL.m
 
 ## Sub-Skill Routing
 
-Identify the document type from the file extension or Sifat's description, then read
+Identify the document type from the file extension or the user's description, then read
 the corresponding SKILL.md **before doing anything else** — including planning,
 designing, or writing code.
 
@@ -78,11 +78,11 @@ Run the appropriate validator before delivering output:
 | **DOCX** | Open in LibreOffice headless, check exit code | Structural validity, no corrupt XML |
 
 Do not deliver output that has not passed its validator. If a validator is missing or
-fails to run, report the issue to Sifat before delivering the file.
+fails to run, report the issue to the user before delivering the file.
 
 ### Phase 4 — Output
 
-- Save all outputs to `<OUTPUT_ROOT>/assets/` unless Sifat specifies a different path.
+- Save all outputs to `<OUTPUT_ROOT>/assets/` unless the user specifies a different path.
 - Use meaningful filenames that reflect the document's content and version.
   Good: `q3_financial_model_v2.xlsx`. Bad: `output.xlsx`, `final_final.docx`.
 - Report the output path and filename explicitly after saving.
@@ -116,7 +116,7 @@ a workaround or substitute tool.
 3. **No generic templates for PPTX.** Presentations must be designed to "CEO Era"
    quality — bold palettes, intentional hierarchy, no stock layouts. Follow the palette
    and design guidance in `pptx/SKILL.md`.
-4. **Fidelity on existing documents.** When Sifat hands over a document, the output
+4. **Fidelity on existing documents.** When the user hands over a document, the output
    must be structurally and visually faithful to the original except for the requested
    changes.
 5. **Validators are not optional.** A document that hasn't been validated hasn't been
@@ -128,10 +128,10 @@ a workaround or substitute tool.
 
 | Failure type | Symptom | Action |
 |---|---|---|
-| **SKILL.md not found** | Path returns empty or error | Report to Sifat immediately. Do not proceed with assumed knowledge of the sub-skill. |
+| **SKILL.md not found** | Path returns empty or error | Report to the user immediately. Do not proceed with assumed knowledge of the sub-skill. |
 | **Missing dependency** | Command returns `not found` | Report the exact error and the install command from the dependency table. Do not substitute a different tool. |
 | **Validator failure** | Validator returns errors or non-zero exit | Do not deliver the file. Report what the validator found and fix before re-running. |
-| **Ambiguous file type** | No extension, multiple formats mentioned | Ask Sifat to clarify the target format before routing. |
+| **Ambiguous file type** | No extension, multiple formats mentioned | Ask the user to clarify the target format before routing. |
 | **Corrupt source file** | Extraction tool fails on the input file | Report the extraction error verbatim. Do not attempt to reconstruct the file from partial output. |
 
 ---
@@ -144,5 +144,5 @@ a workaround or substitute tool.
    reported before delivery.
 4. **Report dependency failures immediately.** Do not attempt workarounds. The correct
    tool is the correct tool.
-5. **One document type per turn.** If Sifat asks for DOCX and PDF output simultaneously,
+5. **One document type per turn.** If the user asks for DOCX and PDF output simultaneously,
    handle one at a time and confirm each before proceeding to the next.

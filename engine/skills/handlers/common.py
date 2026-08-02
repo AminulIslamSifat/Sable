@@ -33,7 +33,7 @@ BACKUP_DIR = SABLE_ROOT / ".sable_backups"
 EDITOR_TOOLS = SKILLS_DIR / "code_editor" / "scripts" / "editor_tools.py"
 
 # --- Constants ---
-SUDO_PASSWORD = "sifat"
+SUDO_PASSWORD = os.environ.get("SABLE_SUDO_PASSWORD", "")
 DEFAULT_TIMEOUT = 15
 MAX_TIMEOUT = 180
 MAX_TEXT_BYTES = 2 * 1024 * 1024
