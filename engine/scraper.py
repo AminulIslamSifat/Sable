@@ -82,7 +82,7 @@ def _load_settings() -> dict[str, Any]:
                 settings["engine_type"] = etype
                 break
 
-    # Hard requirement from Sifat: scraper browser must be headed.
+    # Hard requirement from ...: scraper browser must be headed.
     settings["headless"] = False
     return settings
 

@@ -18,7 +18,7 @@ def config_candidates() -> list[str | None]:
         os.environ.get("GHOSTCHAT_API_CONFIG"),
         os.path.expanduser("~/.config/ghostchat/config.json"),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "config", "config.json"),
-        "/home/sifat/ghostchat/config.json",
+        os.path.expanduser("~/ghostchat/config.json"),
     ]
 
 
@@ -32,7 +32,7 @@ def load_gemini_config() -> dict[str, Any]:
                 return json.load(f)
     raise SystemExit(
         "No API config found. Set GHOSTCHAT_API_CONFIG, use ~/.config/ghostchat/config.json, "
-        "GhostChat config/config.json, or /home/sifat/ghostchat/config.json with an 'api_keys' list."
+        "GhostChat config/config.json, or ~/ghostchat/config.json with an 'api_keys' list."
     )
 
 
@@ -41,7 +41,7 @@ def _rotation_state_path() -> str:
     explicit = os.environ.get("GHOSTCHAT_KEY_STATE")
     if explicit:
         return os.path.abspath(os.path.expanduser(explicit))
-    legacy = "/home/sifat/LLM/scratch/bridge_state.json"
+    legacy = os.path.expanduser("~/LLM/scratch/bridge_state.json")
     if os.path.isfile(legacy):
         return legacy
     base = os.path.expanduser("~/.local/share/ghostchat")
