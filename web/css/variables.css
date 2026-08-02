@@ -292,6 +292,27 @@
       --bg-glow: #0e1414;
     }
 
+    /* ---------- Theme: Blue (pure vivid blue) ---------- */
+    [data-theme="blue"] {
+      --bg: #080b12;
+      --sidebar: #0c1018;
+      --panel: #121824;
+      --panel-2: #182030;
+      --border: #243048;
+      --border-soft: #1c2638;
+      --text: #dce4f4;
+      --text-dim: #b0bcd8;
+      --muted: #7084a8;
+      --muted-2: #546484;
+      --accent: #3b82f6;
+      --accent-dim: #3b82f60e;
+      --accent-text: #60a5fa;
+      --danger: #f87171;
+      --danger-bg: #f8717115;
+      --ok: #34d399;
+      --bg-glow: #0c1220;
+    }
+
     * { box-sizing: border-box; }
 
     html {
