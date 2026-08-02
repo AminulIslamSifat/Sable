@@ -622,6 +622,42 @@
       line-height: 1.6;
     }
 
+    .md-content .code-block {
+      position: relative;
+      margin: 12px 0;
+    }
+    .md-content .code-block pre {
+      margin: 0;
+    }
+    .code-copy-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: var(--panel-hover, rgba(255,255,255,0.06));
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px;
+      cursor: pointer;
+      color: var(--text-dim);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity 0.15s, color 0.15s, background 0.15s;
+      z-index: 2;
+    }
+    .code-block:hover .code-copy-btn {
+      opacity: 1;
+    }
+    .code-copy-btn:hover {
+      color: var(--accent-text, #a78bfa);
+      background: rgba(167, 139, 250, 0.1);
+    }
+    .code-copy-btn.copied {
+      color: #4ade80;
+      opacity: 1;
+    }
+
     .md-content .table-wrap {
       overflow-x: auto;
       margin: 14px 0;

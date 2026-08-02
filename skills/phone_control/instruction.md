@@ -36,12 +36,12 @@ subprocess spin-up per step) and loses the atomicity `seq` gives you.
 ## Script Path
 
 ```
-PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py
+PROJECT_ROOT/skills/phone_control/scripts/adb_control.py
 ```
 
 Always call it as:
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py <command> [args...]</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py <command> [args...]</execute_command>
 ```
 
 ---
@@ -51,7 +51,7 @@ Always call it as:
 Before any phone action, verify the device is reachable:
 
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py info</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py info</execute_command>
 ```
 
 | Result | Action |
@@ -76,19 +76,19 @@ the script will silently pick the first it sees.
 
 **Dump full UI hierarchy** — always use before tapping if unsure what's on screen:
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py dump</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py dump</execute_command>
 ```
 Returns a JSON array of all visible elements with `text`, `desc`, `id`, `class`, `center`, `bounds`, and `clickable`.
 
 **Find element center by text** (case-insensitive, substring match):
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py find Settings</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py find Settings</execute_command>
 ```
 Returns `x y` coordinates or `NOT_FOUND`.
 
 **Check if element exists** (returns `FOUND` or `NOT_FOUND`):
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py check Allow</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py check Allow</execute_command>
 ```
 
 ---
@@ -97,22 +97,22 @@ Returns `x y` coordinates or `NOT_FOUND`.
 
 **Tap by text** (dump → find → tap in one call — preferred method):
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py tap_text Settings</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py tap_text Settings</execute_command>
 ```
 
 **Tap by content-description** (for icon buttons without visible text):
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py tap_desc "Navigate up"</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py tap_desc "Navigate up"</execute_command>
 ```
 
 **Tap by resource-id** (partial match — most stable across app versions):
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py tap_id com.whatsapp:id/send_button</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py tap_id com.whatsapp:id/send_button</execute_command>
 ```
 
 **Tap raw coordinates** (use ONLY when dump confirmed the coords):
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py tap 540 960</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py tap 540 960</execute_command>
 ```
 
 **Reading tap results:** `tap_text`, `tap_desc`, and `tap_id` all end their
@@ -135,25 +135,25 @@ coordinates in the returned string if a tap looks off.
 
 **Directional swipes** (auto-centers on screen):
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py swipe_up</execute_command>
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py swipe_down</execute_command>
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py swipe_left</execute_command>
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py swipe_right</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py swipe_up</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py swipe_down</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py swipe_left</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py swipe_right</execute_command>
 ```
 Optional args: `[distance_px] [axis_px]`
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py swipe_up 800 540</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py swipe_up 800 540</execute_command>
 ```
 
 **Custom swipe** (explicit coordinates):
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py swipe 540 1200 540 400 500</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py swipe 540 1200 540 400 500</execute_command>
 ```
 Args: `x1 y1 x2 y2 [duration_ms]`
 
 **Scroll until element is visible** (auto-swipes up to N times):
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py scroll_to "Privacy Policy" 8</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py scroll_to "Privacy Policy" 8</execute_command>
 ```
 
 ---
@@ -164,21 +164,21 @@ Args: `x1 y1 x2 y2 [duration_ms]`
 type Bangla or other non-ASCII characters, and is slow character-by-character
 for long strings):
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py input Hello World</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py input Hello World</execute_command>
 ```
 
 **Send hardware keys**:
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py back</execute_command>
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py home</execute_command>
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py recents</execute_command>
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py lock</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py back</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py home</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py recents</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py lock</execute_command>
 ```
 
 **Custom keycode**:
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py key KEYCODE_ENTER</execute_command>
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py key KEYCODE_DEL</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py key KEYCODE_ENTER</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py key KEYCODE_DEL</execute_command>
 ```
 
 ---
@@ -190,7 +190,7 @@ Check lock state anytime via `info`'s `lock_state` field (`locked` /
 lock check and no-ops if already unlocked:
 
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py unlock</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py unlock</execute_command>
 ```
 
 Behavior:
@@ -211,7 +211,7 @@ attempts can trigger Android's lockout/backup-PIN screen.
 ### 📸 Screenshot
 
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py screenshot /tmp/phone_screen.png</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py screenshot /tmp/phone_screen.png</execute_command>
 ```
 
 After taking a screenshot, upload it to model context if you need to show Sifat:
@@ -225,12 +225,12 @@ After taking a screenshot, upload it to model context if you need to show Sifat:
 
 **List installed apps**:
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py list_apps</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py list_apps</execute_command>
 ```
 
 **Launch app by package name**:
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py launch com.whatsapp</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py launch com.whatsapp</execute_command>
 ```
 
 If the primary launch method (`monkey`) is blocked by the ROM — common on
@@ -260,7 +260,7 @@ If unsure of the package name, run `list_apps` and grep for partial match.
 ### ⏱️ Waiting
 
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py wait 1500</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py wait 1500</execute_command>
 ```
 Waits 1500ms. Use between actions when app needs time to load/animate.
 
@@ -308,7 +308,7 @@ will only ever see the lock-screen UI, and every step after it will fail with
   {"cmd": "tap_text",  "args": ["Search..."],     "wait_ms": 600}
 ]
 EOF
-python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py seq /tmp/phone_seq.json</execute_command>
+python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py seq /tmp/phone_seq.json</execute_command>
 ```
 
 **Reading `seq` output:** the command returns a JSON array of
@@ -359,11 +359,11 @@ code.
 
 ### Open an app and interact
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py launch com.android.settings</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py launch com.android.settings</execute_command>
 ```
 Wait for launch, then:
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py wait 1500 && python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py tap_text "Wi-Fi"</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py wait 1500 && python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py tap_text "Wi-Fi"</execute_command>
 ```
 
 ### Verify action succeeded
@@ -371,18 +371,18 @@ After any important tap, either read the `[UI change detected]` /
 `[WARNING...]` tag already appended to the `tap_text`/`tap_desc`/`tap_id`
 result, or for extra certainty:
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py dump</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py dump</execute_command>
 ```
 Read the dump output. Confirm the expected next screen elements are visible.
 
 ### Scroll and find
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py scroll_to "About phone" 6</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py scroll_to "About phone" 6</execute_command>
 ```
 
 ### Unlock then act
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/core/phone_control/scripts/adb_control.py unlock</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py unlock</execute_command>
 ```
 Check the result string for `still appears locked` before proceeding — don't
 chain further taps onto a lock screen.
