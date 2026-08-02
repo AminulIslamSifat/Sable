@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import uuid
 from collections.abc import AsyncGenerator, Generator
 from datetime import datetime
@@ -71,6 +72,13 @@ async def chat(request: ChatRequest):
     try:
         if _MEMORY_SEARCH_SETTINGS.exists():
             _ms_cfg = json.loads(_MEMORY_SEARCH_SETTINGS.read_text(encoding="utf-8"))
+        # Auto-disable memory on low-RAM systems (< 8 GB)
+        try:
+            _total_ram_gb = (os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")) / (1024 ** 3)
+            if _total_ram_gb < 8:
+                _ms_cfg["enabled"] = False
+        except (ValueError, OSError):
+            pass
         _max_chars = _ms_cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS)
         if _ms_cfg.get("enabled", True) and len(request.message) <= _max_chars:
             _mem_results = _searcher.search(request.message, top_k=_ms_cfg.get("top_k", 10))

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import re
 import threading
@@ -205,7 +206,7 @@ class MemorySearcher:
                 if new_indices:
                     new_texts = [self._entries[i] for i in new_indices]
                     new_vecs = np.array(
-                        list(self._model.embed(new_texts)), dtype="float32"
+                        list(self._model.embed(new_texts, batch_size=32)), dtype="float32"
                     )
                     norms = np.linalg.norm(new_vecs, axis=1, keepdims=True)
                     new_vecs = new_vecs / np.where(norms == 0, 1.0, norms)
@@ -215,8 +216,10 @@ class MemorySearcher:
                 self._normed_vectors = np.vstack(reuse_vectors)
                 self._entry_tokens = [_tokenize(e) for e in self._entries]
             else:
-                # No cache at all — full embed
-                vecs = np.array(list(self._model.embed(self._entries)), dtype="float32")
+                # No cache at all — full embed (batch_size=32 to keep peak RAM low)
+                vecs = np.array(
+                    list(self._model.embed(self._entries, batch_size=32)), dtype="float32"
+                )
                 norms = np.linalg.norm(vecs, axis=1, keepdims=True)
                 self._normed_vectors = vecs / np.where(norms == 0, 1.0, norms)
                 self._entry_tokens = [_tokenize(e) for e in self._entries]
@@ -295,6 +298,7 @@ class MemorySearcher:
             self._entries = []
             self._entry_meta = []
             self._entry_tokens = []
+            gc.collect()
 
     def rebuild_cache(self) -> int:
         """Clear cache and immediately re-embed all entries. Returns entry count."""
@@ -308,6 +312,7 @@ class MemorySearcher:
             self._entries = []
             self._entry_meta = []
             self._entry_tokens = []
+            gc.collect()
 
     def search(
         self,
