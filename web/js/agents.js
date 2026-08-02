@@ -375,9 +375,6 @@ function disconnectAgentEvents() {
   }
 }
 
-// Auto-turn streaming buffer
-let _autoTurnBuffer = "";
-
 function handleAgentEvent(ev) {
   switch (ev.type) {
     case "agent_spawned":
@@ -386,66 +383,14 @@ function handleAgentEvent(ev) {
     case "agent_progress":
       AgentTopBar.updateCard(ev.agent_id, ev.data?.partial || "");
       break;
-    case "auto_turn_chunk":
-      _autoTurnBuffer += ev.data?.token || "";
-      // Flush to a live bot bubble on first chunk, then append
-      if (!document.getElementById("_autoTurnLive")) {
-        if (typeof addMessage === "function") {
-          const div = addMessage("bot", "");
-          if (div) { div.id = "_autoTurnLive"; }
-        }
-      }
-      const liveEl = document.getElementById("_autoTurnLive");
-      if (liveEl) {
-        const contentEl = liveEl.querySelector(".md-content") || liveEl;
-        contentEl.textContent = _autoTurnBuffer;
-        if (typeof scrollBottom === "function") scrollBottom(true);
+    case "auto_turn_trigger":
+      // Agent completed — fire a normal chat turn via the standard /api/chat pipeline.
+      // sendAutoTurnMessage (app.js) handles the user bubble, bot streaming, skill
+      // cards, stop button, markdown, and history replay — identical to a typed message.
+      if (typeof sendAutoTurnMessage === "function" && ev.data?.message) {
+        sendAutoTurnMessage(ev.data.message);
       }
       break;
-    case "auto_turn_end": {
-      const doneEl = document.getElementById("_autoTurnLive");
-      if (doneEl && _autoTurnBuffer) {
-        const contentEl = doneEl.querySelector(".md-content") || doneEl;
-        if (typeof renderMarkdown === "function") {
-          contentEl.innerHTML = renderMarkdown(_autoTurnBuffer);
-          if (typeof renderMermaidDiagrams === "function") renderMermaidDiagrams(contentEl);
-          if (typeof renderMathJax === "function") renderMathJax(contentEl);
-          if (typeof activateLucideIcons === "function") activateLucideIcons(contentEl);
-        }
-      }
-      if (doneEl) { doneEl.removeAttribute("id"); }
-      _autoTurnBuffer = "";
-      break;
-    }
-    case "auto_turn_notification":
-      // Notification persisted server-side — no visual needed
-      console.debug("[agents] notification saved as msg", ev.data?.message_id);
-      break;
-    case "auto_turn_skill": {
-      const skData = ev.data || {};
-      const liveEl2 = document.getElementById("_autoTurnLive");
-      if (liveEl2 && skData.type === "skill_start") {
-        const chip = document.createElement("span");
-        chip.className = "auto-turn-skill-chip";
-        chip.textContent = "\u2699 " + (skData.name || "skill");
-        liveEl2.appendChild(chip);
-      }
-      console.debug("[agents] auto_turn_skill:", skData.type, skData.name);
-      break;
-    }
-    case "auto_turn_saved": {
-      // Maria's auto-turn reply was persisted — advance the client parent
-      // Use the upstream parent_id (from the model service), NOT the DB row id
-      const upstreamParent = ev.data?.parent_id;
-      if (upstreamParent) {
-        try {
-          parentId = String(upstreamParent);
-          localStorage.setItem("sable_parent_id", parentId);
-        } catch { /* app.js not loaded yet */ }
-      }
-      console.debug("[agents] auto-turn reply saved, parent:", upstreamParent);
-      break;
-    }
     case "agent_completed":
       AgentTopBar.finishCard(ev.agent_id, ev.data?.summary || "");
       addAgentResultCard(ev);
