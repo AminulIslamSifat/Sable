@@ -148,6 +148,18 @@ def _load_instructions() -> str:
     )
     parts.append(_engine.get_registry_prompt())
 
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    OUTPUT_ROOT = PROJECT_ROOT / "output"
+    ASSETS_DIR = OUTPUT_ROOT / "assets"
+    parts.append(
+        f"\n\n***\n\n# SYSTEM DIRECTORIES\n"
+        f"PROJECT_ROOT={PROJECT_ROOT}\n"
+        f"OUTPUT_ROOT={OUTPUT_ROOT}\n"
+        f"ASSETS_DIR={ASSETS_DIR}\n"
+        f"All <OUTPUT_ROOT> tags in your instructions should be replaced with {OUTPUT_ROOT}\n"
+        f"All <PROJECT_ROOT> tags in your instructions should be replaced with {PROJECT_ROOT}\n"
+    )
+
     _instruction_cache = "\n\n".join(parts)
     return _instruction_cache
 
