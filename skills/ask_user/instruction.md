@@ -1,7 +1,7 @@
 
 # Ask User
 
-Structured question tag for getting quick, unambiguous input from Sifat during agent execution.
+Structured question tag for getting quick, unambiguous input from user during agent execution.
 
 ## Tag Format
 

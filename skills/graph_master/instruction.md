@@ -163,7 +163,7 @@ Here's the SHM displacement vs velocity plot:
 1. Read the error details returned by the engine.
 2. If it's a JSON syntax error → fix and retry immediately.
 3. If it's an equation eval error → check for unsupported symbols (remember: no `np.` prefix, no SymPy notation) and fix.
-4. If the error is engine-internal (file system, path) → report to Sifat with the exact error message. Do not retry blindly.
+4. If the error is engine-internal (file system, path) → report to user with the exact error message. Do not retry blindly.
 
 ***
 
@@ -178,4 +178,4 @@ Here's the SHM displacement vs velocity plot:
 7. **Resolution is fixed at 1000 points**: The engine always samples 1000 points. You do not need to specify this. Do not attempt to override it.
 8. **Multi-curve**: Overlay multiple plots by adding entries to the `plots` array. For curves with different units, use `"twin_axis": true` in `options`.
 9. **Descriptive Filenames**: Name by content (e.g., `wave_superposition.png`, `gaussian_distribution.png`) — not generic names like `plot1.png`.
-10. **Always embed**: After success, include `![Name](relative/file/path.png)` in your final answer so Sifat sees the graph immediately.
+10. **Always embed**: After success, include `![Name](relative/file/path.png)` in your final answer so the user sees the graph immediately.

@@ -17,7 +17,7 @@ Examples:
     uv run python engine/browser_opener.py 12
 
     # Open an absolute profile path
-    uv run python engine/browser_opener.py /home/sifat/hdd/projects/Sable/system/browser-data-acc12
+    uv run python engine/browser_opener.py /path/to/Sable/system/browser-data-acc12
 
     # Open a different starting URL
     uv run python engine/browser_opener.py 12 --url https://chat.deepseek.com

@@ -192,7 +192,7 @@ systemctl --user stop sable.service
 By default, systemd user services start only after the user logs in. To make Sable start at boot even before you log in, enable lingering for your user:
 
 ~~~bash
-sudo loginctl enable-linger sifat
+sudo loginctl enable-linger username
 ~~~
 
 After that, the service should come back automatically after reboot.
