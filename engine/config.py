@@ -11,7 +11,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 # Override with SABLE_HOST / SABLE_PORT environment variables when needed.
 # --------------------------------------------------------------------------
 HOST = os.getenv("SABLE_HOST", "0.0.0.0")
-PORT = int(os.getenv("SABLE_PORT", "61771"))
+PORT = int(os.getenv("SABLE_PORT", "61770"))
 
 # --------------------------------------------------------------------------
 # Runtime data paths — single source of truth used by server.py and any

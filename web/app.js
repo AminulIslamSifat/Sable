@@ -2288,6 +2288,7 @@
           modelSelectEl.dispatchEvent(new Event("change"));
           glassLabel.textContent = opt.textContent;
           glassDropdown.classList.remove("open");
+          syncGlassDropdown();
         });
         glassMenu.appendChild(item);
       }
@@ -3034,6 +3035,79 @@
     }
 
     sendBtn.addEventListener("click", sendMessage);
+
+
+    // Programmatic message send for auto-turn (agent completion notifications).
+    // Goes through the exact same /api/chat pipeline as a user-typed message,
+    // so skill cards, stop button, markdown, and history replay all work normally.
+    async function sendAutoTurnMessage(message) {
+      if (!message || !activeChatId) return;
+      if (isStreaming()) {
+        // Queue: retry after current stream finishes
+        setTimeout(() => sendAutoTurnMessage(message), 1500);
+        return;
+      }
+
+      const streamChatId = activeChatId;
+      const controller = startStream(streamChatId);
+
+      // Remove previous turn's file-edit summary card
+      if (activePane) activePane.querySelectorAll(".file-edit-summary-card").forEach(el => el.remove());
+
+      const userMsgDiv = addMessage("user", message);
+      const ui = addBotStreaming();
+
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message,
+            chat_id: streamChatId,
+            parent_id: parentId,
+            model: selectedModel,
+            thinking_mode: selectedThinkingMode,
+            stream: true
+          }),
+          signal: controller.signal
+        });
+
+        if (!res.ok) {
+          let detail = "";
+          try { detail = await res.text(); } catch (_) {}
+          const msg = `Auto-turn error ${res.status}${detail ? ": " + detail.slice(0, 300) : ""}`;
+          showToast(msg, "error");
+          ui.appendAnswer(`\n[error] ${msg}`);
+          ui.finalize();
+          return;
+        }
+
+        const contentType = res.headers.get("content-type") || "";
+        if (contentType.includes("application/json")) {
+          const data = await res.json();
+          const msg = data.error || "Unexpected JSON response";
+          showToast(msg, "error");
+          ui.appendAnswer(`\n[error] ${msg}`);
+          ui.finalize();
+          return;
+        }
+
+        await consumeChatStream(res, ui, userMsgDiv, streamChatId);
+      } catch (err) {
+        if (err.name === "AbortError") {
+          showToast("Auto-turn stopped", "info");
+          ui.appendAnswer("\n[stopped]");
+        } else {
+          showToast("Auto-turn connection lost: " + err.message, "error");
+          ui.appendAnswer(`\n[client error] ${err.message}`);
+        }
+      } finally {
+        ui.finalize();
+        endStream(streamChatId);
+      }
+    }
+
+
 
     inputEl.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
@@ -4424,7 +4498,14 @@
       if (!confirm('Restart the browser session?')) return;
       showToast('Restarting browser…', 'info');
       try {
-        const res = await fetch('/api/settings/browser', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+        // Get current headless state to pass back (toggle behavior)
+        let currentHeadless = false;
+        try {
+          const res2 = await fetch('/api/settings/browser');
+          const d2 = await res2.json();
+          currentHeadless = d2.headless;
+        } catch {}
+        const res = await fetch('/api/settings/browser', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ headless: currentHeadless }) });
         const d = await res.json();
         showToast(res.ok ? 'Browser restarted' : (d.error || 'Restart failed'), res.ok ? 'success' : 'error');
       } catch { showToast('Restart failed', 'error'); }
