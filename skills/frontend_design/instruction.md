@@ -6,7 +6,7 @@ description: Create distinctive, production-grade frontend interfaces with high 
 # Frontend Design: The Aesthetic Architect (v2.1)
 
 Create distinctive, production-grade frontend interfaces that avoid generic "AI slop"
-aesthetics. Use this when Sifat needs web components, pages, dashboards, landing pages,
+aesthetics. Use this when user needs web components, pages, dashboards, landing pages,
 or any UI that demands visual excellence.
 
 ---
@@ -68,9 +68,9 @@ intentional rather than default.
   AI-generated color schemes.
 - Vary between light and dark themes across generations — never converge on a default.
 
-**RICE MATCHING**: When building system components, panels, or tools for Sifat's
+**RICE MATCHING**: When building system components, panels, or tools for user's
 personal setup, default to the **Noctalia Dark / Catppuccin Mocha** aesthetic unless
-Sifat specifies a different direction for this project. For standalone UIs, landing
+user specifies a different direction for this project. For standalone UIs, landing
 pages, or anything with its own identity, treat this as irrelevant and design freely.
 
 ### ⚡ Motion & Animation
@@ -107,7 +107,7 @@ pages, or anything with its own identity, treat this as irrelevant and design fr
    require inline `@font-face` with WOFF2 — document this choice explicitly.
 3. **No other CDN dependencies**: All scripts, libraries, and assets beyond font loading
    must be inline or local. No jQuery, no Bootstrap, no utility CDNs.
-4. **Responsive**: Must look exceptional on mobile AND on Sifat's ultra-wide Hyprland
+4. **Responsive**: Must look exceptional on mobile AND on user's ultra-wide Hyprland
    setup. Test both extremes mentally before finalizing layout.
 5. **Self-Contained**: Default to a single portable HTML file unless project size
    genuinely demands a directory structure.

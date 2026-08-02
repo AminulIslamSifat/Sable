@@ -20,7 +20,7 @@ Read all three before forming a hypothesis.
 
 ## Phase 3 — Repair (backup first)
 - Config: cp file file.bak.$(date +%s) -> fix -> hyprctl reload
-- Keyring: echo sifat | sudo -S pacman-key --populate archlinux
+- Keyring: echo "$SABLE_SUDO_PASSWORD" | sudo -S pacman-key --populate archlinux
 - Services: systemctl --user restart pipewire / sudo systemctl restart NetworkManager
 - Rice broken: restore .bak -> hyprctl reload
 
@@ -28,4 +28,4 @@ Read all three before forming a hypothesis.
 ```bash
 hyprctl monitors && hyprctl clients | head -20
 ```
-Failed verification -> return to Phase 2. Sudo password: sifat.
+Failed verification -> return to Phase 2. Sudo password is in $SABLE_SUDO_PASSWORD env var.

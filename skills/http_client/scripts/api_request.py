@@ -199,7 +199,7 @@ def run_assertions(assertions: list[dict], result: dict) -> list[dict]:
     Assertion format:
       {"type": "status", "expect": 200}
       {"type": "json_path", "path": "data.id", "expect": 42}
-      {"type": "json_path", "path": "data.name", "contains": "Sifat"}
+      {"type": "json_path", "path": "data.name", "contains": "user"}
       {"type": "elapsed_ms", "max": 500}
       {"type": "body_contains", "value": "success"}
     """
