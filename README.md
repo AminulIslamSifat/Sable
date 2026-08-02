@@ -16,7 +16,7 @@ Self-hosted agentic chat platform that proxies Qwen and DeepSeek through a local
 ## Quick Start
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/sable.git && cd sable
+git clone https://github.com/AminulIslamSifat/Sable.git && cd Sable
 chmod +x init start status
 ./init    # one-time setup (deps, browser login, systemd service)
 ./start   # launch via systemd (or direct uv fallback)
