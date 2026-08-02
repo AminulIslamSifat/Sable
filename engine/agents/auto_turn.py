@@ -1,11 +1,16 @@
 
-"""Auto-turn engine: feeds agent results back to the model autonomously.
+
+"""Auto-turn engine: signals the frontend to run a normal chat turn with agent results.
 
 Lifecycle:
 - Per-chat state is created on first agent spawn, destroyed when idle + queue empty.
 - The on_agent_done callback is registered once on the runtime (permanent, zero-cost).
-- If the model is idle -> immediately fire a synthetic turn with agent results.
+- If the model is idle -> immediately signal the frontend with agent results.
 - If the model is busy -> queue results; the active stream's finally block calls drain().
+
+The frontend receives an ``auto_turn_trigger`` event via the agent-events SSE and
+initiates a normal ``POST /api/chat`` call, so the response renders identically to
+a user-initiated message (full skill cards, stop button, markdown, history replay).
 """
 
 from __future__ import annotations
@@ -13,14 +18,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine
 
 logger = logging.getLogger(__name__)
 
-# Type for the LLM turn function: async (chat_id, messages, on_chunk) -> full_response
-TurnFn = Callable[[str, list[dict[str, str]], Callable[[str], Coroutine]], Coroutine[Any, Any, str]]
+# Signal function: async (chat_id, message_text) -> None
+SignalFn = Callable[[str, str], Coroutine[Any, Any, None]]
 
 
 @dataclass
@@ -43,16 +47,11 @@ class AutoTurnEngine:
 
     def __init__(self) -> None:
         self._chats: dict[str, _ChatState] = {}
-        self._turn_fn: TurnFn | None = None
-        self._on_chunk: Callable[[str, str], Coroutine] | None = None
+        self._signal_fn: SignalFn | None = None
 
-    def set_turn_fn(self, fn: TurnFn) -> None:
-        """Set the function that runs an LLM completion turn."""
-        self._turn_fn = fn
-
-    def set_chunk_callback(self, fn: Callable[[str, str], Coroutine]) -> None:
-        """Set callback for streaming tokens to frontend. (chat_id, token)."""
-        self._on_chunk = fn
+    def set_signal_fn(self, fn: SignalFn) -> None:
+        """Set the function that signals the frontend to start a normal chat turn."""
+        self._signal_fn = fn
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -98,7 +97,6 @@ class AutoTurnEngine:
             return
         state.busy = False
         # Schedule drain on the event loop (this may be called from sync context)
-        import asyncio
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(self.drain(chat_id))
@@ -106,11 +104,11 @@ class AutoTurnEngine:
             pass  # No running loop — drain will happen on next agent event
 
     # ------------------------------------------------------------------
-    # Core: agent done -> auto turn
+    # Core: agent done -> signal frontend
     # ------------------------------------------------------------------
 
     async def on_agent_done(self, chat_id: str, agent_id: str, role: str, result: str, task: str = "") -> None:
-        """Called by runtime when an agent completes. Fires or queues a turn."""
+        """Called by runtime when an agent completes. Fires or queues a signal."""
         state = self.ensure_chat(chat_id)
         task_snippet = (task[:80] + "…") if len(task) > 80 else task
         summary = (
@@ -170,9 +168,9 @@ class AutoTurnEngine:
     # ------------------------------------------------------------------
 
     async def _fire_turn(self, chat_id: str, result_lines: list[str]) -> None:
-        """Run a synthetic model turn with agent results as context."""
-        if not self._turn_fn:
-            logger.warning("[auto_turn] no turn_fn set, dropping results for %s", chat_id)
+        """Signal the frontend to run a normal chat turn with agent results."""
+        if not self._signal_fn:
+            logger.warning("[auto_turn] no signal_fn set, dropping results for %s", chat_id)
             return
 
         state = self.ensure_chat(chat_id)
@@ -185,20 +183,15 @@ class AutoTurnEngine:
             "You may use tool tags wrapped in <action> blocks if needed.\n\n"
             + "\n\n".join(result_lines)
         )
-        messages = [{"role": "user", "content": prompt}]
 
-        turn_id = str(uuid.uuid4())[:8]
-        logger.info("[auto_turn] firing turn %s for chat %s", turn_id, chat_id)
-
-        async def _chunk_cb(token: str) -> None:
-            if self._on_chunk:
-                await self._on_chunk(chat_id, token)
+        logger.info("[auto_turn] signalling frontend for chat %s", chat_id)
 
         try:
-            await self._turn_fn(chat_id, messages, _chunk_cb)
+            await self._signal_fn(chat_id, prompt)
         except Exception as exc:
-            logger.error("[auto_turn] turn %s failed: %s", turn_id, exc)
+            logger.error("[auto_turn] signal failed for chat %s: %s", chat_id, exc)
         finally:
+            state.busy = False
             await self.drain(chat_id)
 
 
