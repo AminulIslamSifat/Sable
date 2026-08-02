@@ -157,16 +157,37 @@
 
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/purify.min.js"></script>
-  <script src="/static/vendor/mermaid.min.js"></script>
+  <script src="/static/vendor/lucide.min.js"></script>
   <script>
-    window.MathJax = {
-      tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [['$$','$$'],['\\[','\\]']], processEscapes: true },
-      options: { skipHtmlTags: ['script','noscript','style','textarea','pre','code'] },
-      startup: { typeset: false }
+    /* Lazy-load Mermaid & MathJax — only fetched when first needed */
+    window._lazyLoadMermaid = () => {
+      if (window._mermaidPromise) return window._mermaidPromise;
+      window._mermaidPromise = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = '/static/vendor/mermaid.min.js';
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+      return window._mermaidPromise;
+    };
+    window._lazyLoadMathJax = () => {
+      if (window._mathjaxPromise) return window._mathjaxPromise;
+      window.MathJax = {
+        tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [['$$','$$'],['\\[','\\]']], processEscapes: true },
+        options: { skipHtmlTags: ['script','noscript','style','textarea','pre','code'] },
+        startup: { typeset: false }
+      };
+      window._mathjaxPromise = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = '/static/vendor/mathjax-tex-chtml.js';
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+      return window._mathjaxPromise;
     };
   </script>
-  <script src="/static/vendor/mathjax-tex-chtml.js" async></script>
-  <script src="/static/vendor/lucide.min.js"></script>
 
   <aside id="diffSidebar" class="diff-sidebar" aria-label="File edit sidebar">
     <div class="diff-sidebar-header">
