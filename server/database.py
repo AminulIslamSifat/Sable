@@ -265,6 +265,30 @@ def get_messages(chat_id: str) -> list[dict[str, Any]]:
             messages.append(msg)
         return messages
 
+def search_messages(query: str, limit: int = 50) -> list[dict[str, Any]]:
+    """Search message content across all chats. Returns matching messages with chat info.
+    Strips [RELEVANT MEMORY CONTEXT] blocks and timestamp prefixes from results."""
+    import re
+    _mem_re = re.compile(r'^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n')
+    _ts_re = re.compile(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\n?')
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT m.id, m.chat_id, m.role, m.content, m.created_at, c.title "
+            "FROM messages m JOIN chats c ON m.chat_id = c.id "
+            "WHERE m.content LIKE ? ORDER BY m.id DESC LIMIT ?",
+            (f"%{query}%", limit),
+        ).fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            content = d.get("content") or ""
+            content = _mem_re.sub("", content)
+            content = _ts_re.sub("", content)
+            d["content"] = content
+            results.append(d)
+        return results
+
+
 def list_chats() -> list[dict[str, Any]]:
     with get_db() as conn:
         rows = conn.execute(

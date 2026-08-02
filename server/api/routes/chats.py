@@ -5,12 +5,18 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from engine.scraper import get_settings as get_scraper_settings
-from server.database import ensure_chat, list_chats, get_messages, delete_chat
+from server.database import ensure_chat, list_chats, get_messages, delete_chat, search_messages
 from server.utils import retry_async, make_title
 from server.models import NewChatRequest
 from ..dependencies import service
 
 router = APIRouter()
+
+@router.get("/api/chats/search")
+def search_chats(q: str = "") -> dict[str, Any]:
+    if not q.strip():
+        return {"results": []}
+    return {"results": search_messages(q.strip())}
 
 @router.get("/api/chats")
 def chats() -> dict[str, list[dict[str, Any]]]:
