@@ -1,444 +1,110 @@
-<div align="center">
 
-<img src="web/assets/sable_icon.svg" width="100">
+---
+title: Sable README
+date: 2026-08-02
+type: reference
+tags: [sable, documentation, setup]
+status: active
+---
 
-# Sable 
-Agentic Orchestration Layer
+# Sable
 
-</div>
-
-**Sable** is a personal agentic chat platform: a local FastAPI server that wraps multiple LLM backends, persists chats in SQLite, injects semantic memory into conversations, executes local skills from the model stream, and serves a vanilla-JS PWA chat UI.
-
-It is built for one user on one machine. The backend can route through:
-
-- **Qwen** via a persistent Playwright-managed Chromium browser session
-- **DeepSeek** via a direct HTTP API client with Proof-of-Work challenge solving
-- An optional **scraper mode** that drives a live browser engine instead of the normal API path
-
-Measured source size at the time of writing: **121 text source files** and roughly **42,600 lines** of Python, JS, HTML, CSS, Markdown, JSON, TOML, and Go, excluding `.git/`, `.venv/`, backup directories, browser profiles, uploads, and generated output.
-
-***
-
-## Architecture
-
-~~~
-Browser UI (web/)
-    │
-    ├── REST + SSE ──────────────── FastAPI server (server.py, 127.0.0.1:61770)
-    │                                   │
-    │                                   ├── ChatService (engine/service.py)
-    │                                   │     ├── Persistent Chromium profile for Qwen
-    │                                   │     ├── Session/header refresh
-    │                                   │     └── DeepSeek token refresh via browser session
-    │                                   │
-    │                                   ├── DeepSeek connector (connectors/deepseek/)
-    │                                   │     ├── HTTP chat + SSE streaming
-    │                                   │     ├── PoW solver written in Go
-    │                                   │     └── Vision file upload support
-    │                                   │
-    │                                   ├── SQLite persistence (system/sable.db)
-    │                                   │     ├── chats
-    │                                   │     └── messages
-    │                                   │
-    │                                   ├── Memory search (engine/memory_search.py)
-    │                                   │     ├── Brain/Memory.json
-    │                                   │     └── fastembed / sentence-transformers embeddings
-    │                                   │
-    │                                   ├── Skill engine (engine/skills/ package)
-    │                                   │     ├── Native editor tags
-    │                                   │     ├── execute_command
-    │                                   │     ├── Background jobs
-    │                                   │     └── .sable_backups/ file backups
-    │                                   │
-    │                                   └── Optional scraper service (engine/scraper.py)
-    │                                         ├── engine/scraper_engines/qwen/
-    │                                         └── engine/scraper_engines/deepseek/
-    │
-    └── PWA assets: manifest.json, service worker, icons
-~~~
-
-The web UI is served directly by the FastAPI app from `web/`. Chat responses stream over SSE. Skill events, memory chips, file-edit diffs, and tool output are rendered inline in the UI.
+Self-hosted agentic chat platform that proxies Qwen and DeepSeek through a local FastAPI server with persistent memory, 20 built-in skills, multi-agent orchestration, and a browser-based PWA UI. Runs entirely on your machine — no cloud API keys required for Qwen (browser session auth), DeepSeek uses PoW + localStorage token.
 
 ***
 
 ## Quick Start
 
-### Prerequisites
+```bash
+git clone https://github.com/YOUR_USERNAME/sable.git && cd sable
+chmod +x init start status
+./init    # one-time setup (deps, browser login, systemd service)
+./start   # launch via systemd (or direct uv fallback)
+```
 
-| Requirement | Notes |
+Open `http://127.0.0.1:61770` in your browser. First run opens a Chromium window for Qwen/DeepSeek login — tokens are stored locally in `system/.session_tokens.json`.
+
+> [!IMPORTANT] Prerequisites
+> - Python ≥ 3.11
+> - [uv](https://docs.astral.sh/uv/) package manager
+> - Go (optional, only needed to rebuild the DeepSeek PoW solver)
+> - systemd (for persistent service; optional — `./start` falls back to direct `uv run`)
+
+***
+
+## Architecture
+
+```
+server.py          → uvicorn entry point (host/port from engine/config.py)
+server/            → FastAPI app, routes, database, config, utils
+engine/            → Core logic: chat streaming, session/token mgmt, memory search, skills, scraper
+skills/            → 20 skill directories (instruction.md + skill.json + optional scripts/)
+connectors/        → DeepSeek HTTP client with Go PoW solver
+web/               → Vanilla JS frontend (app.js + modular CSS, esbuild bundle from web/src/)
+Brain/             → Memory.json + Protected.json (persistent knowledge base)
+system/            → Runtime data: SQLite DB, browser profiles, uploads, auth tokens (gitignored)
+output/            → Generated notes, assets, logs, session archives (gitignored)
+instruction/       → System prompts (Maria.md) and output format configs
+```
+
+### Key Components
+
+| Component | Purpose |
 |:--|:--|
-| Python | `>=3.11`, enforced by `pyproject.toml` |
-| `uv` | Dependency runner and package manager |
-| Playwright Chromium | Installed by the init script |
-| Go | Optional unless you need to rebuild the DeepSeek PoW solver |
-| Qwen account | Required for Qwen models |
-| DeepSeek account | Optional, required for DeepSeek models |
-
-### Automated setup
-
-The repository contains an executable init script named `init`:
-
-~~~bash
-./init
-~~~
-
-The script does the following:
-
-1. Changes into the project root
-2. Runs `uv sync`
-3. Installs Playwright Chromium
-4. Runs `python -m engine.browser_opener` so you can log into the browser profile
-5. Creates `system/`
-6. Migrates `system/browser-data` to `system/browser-data-acc1` if needed
-7. Creates the `system/browser-data -> browser-data-acc1` symlink if missing
-8. Distributes the first account profile to scraper and automation profiles
-9. Prompts for an auth token and saves it to `system/.auth_token`
-10. Copies `instruction/Maria.md.example` to `instruction/Maria.md` if missing
-11. Copies `Brain/Memory.json.example` to `Brain/Memory.json` if missing
-12. Makes `start` executable
-13. Installs and enables a systemd user service named `sable.service`
-
-### Start the server
-
-~~~bash
-./start
-~~~
-
-If `./init` has already installed the systemd user service, `start` launches Sable through systemd:
-
-~~~bash
-systemctl --user start sable.service
-~~~
-
-If the service unit is missing, it falls back to running the server directly:
-
-~~~bash
-uv run python server.py
-~~~
-
-The server binds to:
-
-~~~
-http://127.0.0.1:61770
-~~~
-
-Login uses the token saved in `system/.auth_token`. If that file is missing, the server falls back to the environment variable `SABLE_TOKEN`, then to the default value `sable`.
-
+| `engine/service.py` | ChatService: persistent Chromium session, header refresh, streaming |
+| `engine/chat.py` | Qwen SSE streaming via httpx, auto token refresh on 401/403 |
+| `engine/session.py` | Playwright-based BrowserManager for header sniffing & context sync |
+| `engine/memory_search.py` | fastembed vector search over Brain/Memory.json |
+| `engine/skills/` | SkillEngine discovery, parsing, handler dispatch, middleware pipeline |
+| `connectors/deepseek/client.py` | DeepSeek HTTP client with PoW challenge solving |
+| `server/api/routes/chat.py` | Main POST /api/chat endpoint with skill loop + memory injection |
+| `server/database.py` | Raw sqlite3 (no ORM), chats/messages/settings tables |
+| `web/app.js` | Bundled frontend (esbuild from web/src/), streaming chat UI, settings panels |
+| `web/js/agents.js` | Extracted multi-agent visualization module |
 
 ***
 
-## Run Sable Persistently
+## Supported Models
 
-`./init` automatically installs and enables a **systemd user service** named `sable.service`.
+Model definitions live in `engine/config.py` → `MODELS` list.
 
-The server always binds to:
-
-~~~
-http://127.0.0.1:61770
-~~~
-
-The service keeps Sable running in the background, restarts it if it crashes, and can start it automatically after reboot.
-
-### Service management
-
-Start it with either:
-
-~~~bash
-./start
-~~~
-
-or:
-
-~~~bash
-systemctl --user start sable.service
-~~~
-
-Enable or disable at login:
-
-~~~bash
-systemctl --user enable sable.service
-systemctl --user disable sable.service
-~~~
-
-The generated unit file is written to:
-
-~~~
-~/.config/systemd/user/sable.service
-~~~
-
-It uses the project root detected by `./init` and the absolute path to `uv` found on your `PATH`.
-
-Check status:
-
-~~~bash
-systemctl --user status sable.service
-~~~
-
-Follow logs:
-
-~~~bash
-journalctl --user -u sable.service -f
-~~~
-
-Restart or stop:
-
-~~~bash
-systemctl --user restart sable.service
-systemctl --user stop sable.service
-~~~
-
-### Start at boot without logging in
-
-By default, systemd user services start only after the user logs in. To make Sable start at boot even before you log in, enable lingering for your user:
-
-~~~bash
-sudo loginctl enable-linger username
-~~~
-
-After that, the service should come back automatically after reboot.
-
-### Desktop autostart alternative
-
-If you do not want systemd lingering, you can also autostart Sable when your graphical session starts. Create:
-
-~~~bash
-nano ~/.config/autostart/sable.desktop
-~~~
-
-Example:
-
-~~~ini
-[Desktop Entry]
-Type=Application
-Name=Sable
-Exec=./start
-Path=.
-Terminal=false
-Hidden=false
-X-GNOME-Autostart-enabled=true
-~~~
-
-This works on Cinnamon/GNOME-style desktop sessions. For Hyprland, you can instead add an exec-once rule to your Hyprland config:
-
-~~~ini
-exec-once = ./start
-~~~
-
-### Important
-
-Do not run `./start` manually while the systemd service is already running. Both will try to bind port `61770`, and the second one will fail.
-
-If the port is already in use, check what is holding it:
-
-~~~bash
-ss -ltnp | grep 61770
-~~~
-
-
-***
-
-## Models
-
-Model definitions live in `engine/config.py`.
-
-| Model ID | Label | Backend | Thinking modes |
-|:--|:--|:--|:--|
-| `qwen3.8-max-preview` | Qwen3.8 Max Preview | Qwen browser session | Thinking |
-| `qwen3.7-max` | Qwen3.7 Max | Qwen browser session | Fast, Thinking |
-| `qwen3.7-plus` | Qwen3.7 Plus | Qwen browser session | Fast, Auto, Thinking |
-| `deepseek-expert` | DeepSeek Expert | DeepSeek HTTP API | Fast, Thinking |
-| `deepseek-instant` | DeepSeek Instant | DeepSeek HTTP API | Fast, Thinking |
-| `deepseek-vision` | DeepSeek Vision | DeepSeek HTTP API | Fast, Thinking |
-
-The default model is the first entry in `MODELS`, currently `qwen3.8-max-preview`.
-
-`/api/models` exposes each model with its `api_backend` field. When scraper mode is enabled and the scraper engine is set to DeepSeek, `/api/models` instead returns scraper-side DeepSeek model types:
-
-| Scraper model type | Label | Modes |
+| Model ID | Backend | Thinking Modes |
 |:--|:--|:--|
-| `default` | Instant | DeepThink, Fast |
-| `expert` | Expert | DeepThink, Fast |
-| `vision` | Vision | DeepThink, Fast |
+| `qwen3.8-max-preview` | Qwen | Thinking |
+| `qwen3.7-max` | Qwen | Fast, Thinking |
+| `qwen3.7-plus` | Qwen | Fast, Auto, Thinking |
+| `deepseek-expert` | DeepSeek API | Fast, Thinking |
+| `deepseek-instant` | DeepSeek API | Fast, Thinking |
+| `deepseek-vision` | DeepSeek API | Fast, Thinking |
+
+Default model is the first entry (`qwen3.8-max-preview`). `/api/models` exposes each model with its `api_backend` field.
+
+### Backend Routing
+
+- **Qwen**: Routes through `ChatService` using a persistent Chromium profile. Headers are sniffed from browser sessions and refreshed automatically on auth rejection. Active profile configured via `BROWSER_DATA_DIR` in `engine/config.py`.
+- **DeepSeek**: Pure HTTP connector. Auth token extracted from browser `localStorage`, cached at `connectors/deepseek/.token_cache.json`. Each request solves a PoW challenge via the Go binary at `connectors/deepseek/pow_solver/pow_solver`. Instruction files prepended to first message of each session.
+- **Scraper mode**: Optional, disabled by default. Drives a live browser engine instead of the API path. Settings in `system/scraper_settings.json`. Chats are mode-locked (`api` or `scraper`).
 
 ***
 
-## Backend Routing
+## Skills (20)
 
-### Qwen
-
-Qwen models route through `ChatService`, which uses a persistent Chromium user data directory. The service maintains session headers and refreshes them when needed. The active API browser profile is configured in `engine/config.py`:
-
-~~~python
-BROWSER_DATA_DIR = _SYSTEM / "browser-data-acc7"
-~~~
-
-At the time of writing, the active API profile is `system/browser-data-acc7`.
-
-### DeepSeek
-
-DeepSeek models use the pure HTTP connector in `connectors/deepseek/client.py`.
-
-Key properties:
-
-- Base URL: `https://chat.deepseek.com`
-- Auth token is read from the persistent browser profile's `localStorage` key `userToken`
-- Token cache is stored at `connectors/deepseek/.token_cache.json`
-- Each chat request solves a DeepSeek Proof-of-Work challenge using the Go binary at `connectors/deepseek/pow_solver/pow_solver`
-- Session continuity is tracked per Sable chat ID
-- Instruction files are prepended to the first message of a session:
-  - `instruction/Maria.md`
-  - `instruction/output_format.md`
-  - Skill registry auto-generated from `skills/*/skill.json`
-
-DeepSeek Vision supports file references. Files are uploaded through `/api/deepseek/upload-file`, and the returned file IDs are sent in the `/api/chat` request using `ref_file_ids`.
-
-### Scraper mode
-
-Scraper mode is optional and disabled by default. Settings are stored in `system/scraper_settings.json`:
-
-~~~json
-{
-  "enabled": false,
-  "engine_type": "deepseek",
-  "port": 9333,
-  "headless": false,
-  "show_thoughts": true
-}
-~~~
-
-Scraper engines live under:
-
-~~~
-engine/scraper_engines/qwen/
-engine/scraper_engines/deepseek/
-~~~
-
-Chats are mode-locked. The `chats` table has a `mode` column, normally `api` or `scraper`. Once a chat has a mode, the server blocks sends when the current global scraper state does not match the chat's locked mode.
-
-***
-
-## Persistence
-
-SQLite database:
-
-~~~
-system/sable.db
-~~~
-
-The database is gitignored.
-
-### chats
-
-Columns created and migrated by `server.py`:
-
-| Column | Purpose |
-|:--|:--|
-| `id` | Chat ID |
-| `title` | Chat title |
-| `parent_id` | Upstream parent/chat reference |
-| `created_at` | Creation timestamp |
-| `updated_at` | Last update timestamp |
-| `memory_keys` | JSON list of memory keys already injected into this chat |
-| `chat_url` | Optional browser chat URL |
-| `mode` | Locked chat mode, such as `api` or `scraper` |
-
-### messages
-
-| Column | Purpose |
-|:--|:--|
-| `id` | Autoincrement message ID |
-| `chat_id` | Owning chat |
-| `role` | `user`, `assistant`, etc. |
-| `content` | Message content |
-| `thinking` | Optional thinking/reasoning text |
-| `skill_events` | JSON skill event log |
-| `parent_id` | Message parent reference |
-| `created_at` | Timestamp |
-| `memory_used` | JSON list of memories surfaced for this message |
-
-***
-
-## Memory System
-
-Memory files live in `Brain/`:
-
-~~~
-Brain/
-├── Memory.json
-├── Memory.json.example
-└── Protected.json
-~~~
-
-`Memory.json` supports these categories in the server:
-
-- `semantic`
-- `episodic`
-- `procedural`
-- `ephemeral`
-
-Example structure:
-
-~~~json
-{
-  "semantic": [
-    {
-      "key": "Project Name",
-      "value": "Your project name and brief description"
-    }
-  ],
-  "episodic": [
-    {
-      "key": "Setup Complete",
-      "value": "YYYY-MM-DD: Initial memory system configured"
-    }
-  ],
-  "procedural": [
-    {
-      "key": "Dev Workflow",
-      "value": "How you prefer to work"
-    }
-  ]
-}
-~~~
-
-Memory search settings are stored in `system/memory_search_settings.json`:
-
-~~~json
-{
-  "model": "jinaai/jina-embeddings-v2-small-en",
-  "top_k": 5,
-  "enabled": true,
-  "model_thresholds": {}
-}
-~~~
-
-During chat, relevant memories are searched and injected best-effort. Injected memory keys are deduplicated per chat using the `memory_keys` column in the `chats` table. The memories used for a particular message are also stored in `messages.memory_used` so the UI can display them.
-
-There are also consolidation endpoints that use an LLM to propose memory updates from conversation content:
-
-- `POST /api/memory/consolidate`
-- `POST /api/memory/consolidate-scraper`
-
-Protected memory is managed separately through `/api/settings/memory/protected`.
-
-***
-
-## Skill System
-
-Skills are **auto-discovered** from the `skills/` directory. Each skill is a folder containing a `skill.json` manifest and an optional `instruction.md`. No central registry file — drop a folder in, restart, done.
-
-At the time of writing, there are **17 skills** across 4 categories:
+Each skill is a self-contained directory under `skills/` with `instruction.md`, `skill.json`, and optional `scripts/`. Auto-discovered at startup — drop a folder in, restart, done.
 
 | Category | Skills |
 |:--|:--|
-| Core | `code_editor`, `phone_control`, `browser_control`, `testing_debugging`, `system_repair`, `background_command`, `file_uploader` |
-| Visuals | `svg_creator`, `graph_master`, `simulacra_engine`, `frontend_design` |
-| Study | `study_suite` |
-| Data | `document_skills`, `search_online`, `deep_research`, `http_client`, `youtube_downloader` |
+| **Code & System** | code_editor, background_command, system_repair, testing_debugging |
+| **Research & Web** | search_online, deep_research, http_client, browser_control |
+| **Documents** | document_skills (pdf, docx, pptx, xlsx) |
+| **Visuals** | graph_master, svg_creator, frontend_design, simulacra_engine |
+| **Study** | study_suite |
+| **Media** | youtube_downloader |
+| **Device** | phone_control |
+| **Meta** | multi_agent, ask_user, file_uploader |
 
-### Architecture
+### Skill Engine Architecture
 
-~~~
+```
 engine/skills/
 ├── __init__.py          # Public API: SkillEngine, SkillParser, HANDLER_MAP
 ├── registry.py          # discover_skills(), validate_registry(), SkillMeta
@@ -453,428 +119,199 @@ engine/skills/
     ├── file_ops.py      # view_file, edit_file, create_file, insert_file
     ├── io.py            # get_file, create_note, save_svg
     └── web.py           # openweb, search_online
-~~~
+```
 
-### skill.json schema
-
-~~~json
-{
-  "name": "Code Editor",
-  "key": "code_editor",
-  "version": "1.0.0",
-  "category": "core",
-  "description": "...",
-  "trigger": "When to use this skill",
-  "not_this_if": "When NOT to use it",
-  "tags": ["view_file", "edit_file", "create_file", "insert_file"],
-  "default": true,
-  "inline": false,
-  "priority": 100,
-  "scope": ["maria"]
-}
-~~~
-
-- `default: true` → full instruction.md injected into every system prompt
-- `priority` → higher wins tag conflicts, listed first in prompt
-- `tags` → which runtime tags this skill owns
-
-### Known runtime tags
-
-The engine recognizes 14 tag names in the model stream:
-
-`execute_command`, `execute_background_command`, `check_command`, `get_file`, `read_file`, `search-online`, `search_online`, `openweb`, `create_note`, `save_svg`, `view_file`, `edit_file`, `create_file`, `insert_file`
-
-### Execution rules
+### Execution Rules
 
 - Default command timeout: **15 seconds**, max **180 seconds**
 - File mutations backed up to `.sable_backups/`
-- Native editor tags call `skills/code_editor/scripts/editor_tools.py`
+- Native editor tags call `skills/code_editor/scripts/editor_tools.py` as fresh subprocess (no restart needed)
 - Execution emits `skill_start`, `skill_output`, `skill_end` SSE events
 - File edits revertible via `POST /api/file/revert`
 - Tag conflicts resolved by priority (higher wins, warning logged)
 
 ***
 
+## Multi-Agent Orchestration
+
+Hub-and-spoke architecture with wave-based parallel execution:
+
+- Spawn up to 5 concurrent background agents (researcher, coder, reviewer, writer, utility)
+- Each agent has isolated session context and configurable model routing
+- Results return as notifications; main thread continues chatting
+- Agent config: `system/agent_config.json`
+- Frontend visualization: `web/js/agents.js`
+
+***
+
+## Memory System
+
+Memory files live in `Brain/`:
+
+- `Memory.json` — categories: semantic, episodic, procedural, ephemeral
+- `Protected.json` — protected memories managed via `/api/settings/memory/protected`
+
+Memory search settings: `system/memory_search_settings.json` (model, top-k, thresholds, enabled flag). Editable via UI.
+
+During chat, relevant memories are searched via fastembed and injected best-effort. Injected keys are deduplicated per chat using the `memory_keys` column. Consolidation endpoints propose memory updates from conversation content:
+
+- `POST /api/memory/consolidate` (API mode)
+- `POST /api/memory/consolidate-scraper` (scraper mode)
+
+***
+
+## Persistence
+
+SQLite database at `system/sable.db` (gitignored). Raw sqlite3, no ORM.
+
+### Tables
+
+| Table | Key Columns |
+|:--|:--|
+| `chats` | id, title, parent_id, created_at, updated_at, memory_keys, chat_url, mode |
+| `messages` | id, chat_id, role, content, thinking, skill_events, parent_id, created_at, memory_used |
+
+***
+
+## Configuration
+
+| Setting | Location | Default |
+|:--|:--|:--|
+| Server port | `SABLE_PORT` env var | `61770` |
+| Server host | `SABLE_HOST` env var | `0.0.0.0` |
+| Auth token | `system/.auth_token` → `SABLE_TOKEN` env → `sable` | `sable` |
+| Memory max prompt chars | `engine/config.py` | `20000` |
+| Skill round warning threshold | `server/config.py` | configurable |
+| Memory search settings | `system/memory_search_settings.json` | runtime editable via UI |
+| Scraper settings | `system/scraper_settings.json` | runtime editable via UI |
+| Session tokens | `system/.session_tokens.json` | auto-managed by Playwright |
+| DeepSeek token cache | `connectors/deepseek/.token_cache.json` | auto-managed |
+
+***
+
+## Persistent Service (systemd)
+
+`./init` installs `~/.config/systemd/user/sable.service` automatically.
+
+```bash
+./start                              # start via systemd
+systemctl --user status sable        # check status
+journalctl --user -u sable -f        # tail logs
+systemctl --user restart sable       # restart after code changes
+```
+
+For boot-before-login: `sudo loginctl enable-linger $USER`
+
+### Desktop Autostart Alternative
+
+For Hyprland: `exec-once = ./start` in hyprland.conf. For GNOME/Cinnamon: create `~/.config/autostart/sable.desktop`.
+
+> [!WARNING] Port Conflicts
+> Don't run `./start` while the service is already active — both bind the same port. Use `systemctl --user stop sable` first if switching modes. Check with: `ss -ltnp | grep 61770`
+
+***
+
 ## Browser Profiles
 
-Runtime browser data lives under `system/`.
+Multi-account support via numbered profile directories under `system/`:
 
-The init script creates and distributes profiles from `system/browser-data-acc1`:
+- `browser-data-acc1` through `browser-data-accN` — individual account sessions
+- `browser-data` — symlink to active account (switched via UI or API)
+- `browser-scraper-data` — dedicated scraper profile
+- `automation-browser-data` — automation/testing profile
+- Each has a `.bak` counterpart for backup/restore
 
-~~~
-system/
-├── browser-data/                  # symlink, managed by account tooling
-├── browser-data-acc1/
-├── browser-data-acc2/
-├── ...
-├── browser-data-acc11/
-├── browser-data.bak/
-├── browser-scraper-data/
-├── browser-scraper-data.bak/
-├── automation-browser-data/
-├── automation-browser-data.bak/
-├── memory_search_settings.json
-├── scraper_settings.json
-└── sable.db
-~~~
+### Adding Accounts
 
-The server exposes three managed profile classes:
+1. Stop Sable (`systemctl --user stop sable`)
+2. Copy existing profile: `cp -r system/browser-data-acc1 system/browser-data-accN`
+3. Open new profile: `uv run python engine/browser_opener.py N`
+4. Log in, press ENTER to save session
+5. Restart Sable, switch via Account settings tab or `POST /api/settings/accounts/switch`
 
-| Key | Label | Data directory |
-|:--|:--|:--|
-| `api` | API / ChatService | `system/browser-data-acc7` |
-| `scraper` | Scraper | `system/browser-scraper-data` |
-| `automation` | Automation / Browser Control | `system/automation-browser-data` |
-
-Each has a `.bak` counterpart for backup and restore.
-
-Account endpoints scan directories matching `system/browser-data-acc*`, read the logged-in email from Chromium `Preferences`, and report profile sizes.
-
-
-### Adding multiple accounts
-
-Sable can keep multiple Qwen/Google accounts as separate Chromium profile directories.
-
-Profile directories must match this naming pattern:
-
-~~~
-system/browser-data-accN
-~~~
-
-Where `N` is a number, for example:
-
-~~~
-system/browser-data-acc1
-system/browser-data-acc2
-system/browser-data-acc3
-~~~
-
-The Account settings tab scans any directory matching `browser-data-acc*`.
-
-#### 1. Stop Sable first
-
-Do not copy browser profiles while Sable or Chromium is actively using them.
-
-If you use the systemd service:
-
-~~~bash
-systemctl --user stop sable.service
-~~~
-
-If you run Sable manually, stop that process too.
-
-#### 2. Copy an existing profile
-
-Start from an existing logged-in profile, usually `browser-data-acc1` or your current active profile:
-
-~~~bash
-cd system
-cp -r browser-data-acc1 browser-data-acc12
-~~~
-
-Use the next available number. For example, if you already have `acc1` through `acc11`, create `acc12`.
-
-#### 3. Open the new profile in Sable's browser opener
-
-Use `engine/browser_opener.py` instead of launching Chromium manually.
-
-From the project root:
-
-~~~bash
-uv run python engine/browser_opener.py browser-data-acc12
-~~~
-
-You can also pass just the account number:
-
-~~~bash
-uv run python engine/browser_opener.py 12
-~~~
-
-This opens the persistent profile at:
-
-~~~
-system/browser-data-acc12
-~~~
-
-When you are finished logging in, press `ENTER` in the terminal to save the session and close the browser.
-
-#### 4. Log into the new account
-
-In that browser window:
-
-1. Go to Qwen or Google login
-2. Log into the new account
-3. Make sure the account is fully signed in
-4. Close the browser completely
-
-The account email is read from:
-
-~~~
-system/browser-data-acc12/Default/Preferences
-~~~
-
-#### 5. Start Sable and switch accounts
-
-Start Sable again:
-
-~~~bash
-systemctl --user start sable.service
-~~~
-
-Or manually:
-
-~~~bash
-./start
-~~~
-
-Then open the web UI settings and go to the **Account** tab. The new profile should appear with its email and size.
-
-You can also use the API:
-
-~~~bash
-curl -s http://127.0.0.1:61770/api/settings/accounts \
-  -H "Authorization: Bearer YOUR_SABLE_TOKEN"
-~~~
-
-Switch active profile symlink:
-
-~~~bash
-curl -s -X POST http://127.0.0.1:61770/api/settings/accounts/switch \
-  -H "Authorization: Bearer YOUR_SABLE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"profile": "browser-data-acc12"}'
-~~~
-
-#### 6. Make a profile permanent for the API backend
-
-The account switcher manages the `system/browser-data` symlink. The main API backend profile path is configured in `engine/config.py`:
-
-~~~python
-BROWSER_DATA_DIR = _SYSTEM / "browser-data-acc7"
-~~~
-
-If you want the API backend to always use a specific account profile, change that line to the desired directory:
-
-~~~python
-BROWSER_DATA_DIR = _SYSTEM / "browser-data-acc12"
-~~~
-
-Then restart Sable.
-
+Profile management: `engine/browser_opener.py`, UI settings panel, or API endpoints.
 
 ***
 
 ## Web UI
 
-The frontend is a no-build vanilla JS app in `web/`:
+Vanilla JS PWA served directly by FastAPI from `web/`. Built with esbuild from `web/src/` modules.
 
-~~~
-web/
-├── index.html
-├── app.js
-├── styles.css
-├── manifest.json
-├── sw.js
-├── favicon.svg
-├── sable_icon.svg
-├── icon-192.png
-└── icon-512.png
-~~~
+```bash
+# Rebuild after editing web/src/:
+cd web && esbuild src/app.js --bundle --outfile=app.js --format=iife --allow-overwrite
+# Or just restart Sable — ExecStartPre rebuilds automatically
+```
 
-Major UI features:
-
-- SSE chat streaming
-- Model switcher
-- Thinking-mode selector
-- Chat sidebar persisted from SQLite
-- Inline skill cards
-- File-edit diff cards with revert
-- Memory-used chips
-- File upload
-- PWA manifest and service worker
-- Settings panels for logs, general browser settings, accounts, backups, memory, and skills
+Features: SSE chat streaming, model/thinking-mode switcher, inline skill cards, file-edit diffs with revert, memory chips, file upload, PWA manifest + service worker, settings panels (logs, general, accounts, backups, brain, skills).
 
 ***
 
 ## API Endpoints
 
-### Auth and health
+### Auth & Health
 
 | Method | Path | Description |
 |:--|:--|:--|
 | `POST` | `/api/login` | Validate bearer token |
-| `GET` | `/api/health` | Health check, auth-exempt |
-| `GET` | `/api/logs` | Live log stream over SSE; supports `?token=` because EventSource cannot set headers |
+| `GET` | `/api/health` | Health check (auth-exempt) |
+| `GET` | `/api/logs` | Live log stream (SSE, supports `?token=`) |
 
-### Chats and messages
+### Chats & Messages
 
 | Method | Path | Description |
 |:--|:--|:--|
 | `GET` | `/api/chats` | List chats |
-| `POST` | `/api/chat/new` | Create a new chat |
-| `GET` | `/api/chats/{chat_id}/messages` | Get messages for a chat |
-| `DELETE` | `/api/chats/{chat_id}` | Delete a chat and its messages |
-| `POST` | `/api/chat` | Send a chat message, streaming or non-streaming |
+| `POST` | `/api/chat/new` | Create new chat |
+| `GET` | `/api/chats/{chat_id}/messages` | Get messages |
+| `DELETE` | `/api/chats/{chat_id}` | Delete chat |
+| `POST` | `/api/chat` | Send message (streaming) |
 | `POST` | `/api/sync-context` | Sync browser/session context |
 
-`POST /api/chat` accepts:
-
-~~~json
-{
-  "message": "string",
-  "chat_id": "string or null",
-  "parent_id": "string or null",
-  "files": [],
-  "model": "model id or null",
-  "thinking_mode": "mode id or null",
-  "stream": true,
-  "ref_file_ids": []
-}
-~~~
-
-### Models and skills
+### Models & Skills
 
 | Method | Path | Description |
 |:--|:--|:--|
-| `GET` | `/api/models` | List available models or scraper models |
+| `GET` | `/api/models` | List available models |
 | `GET` | `/api/skills` | List registered skills |
-| `GET` | `/api/skills/browse` | List skills with instruction content and scripts |
+| `GET` | `/api/skills/browse` | Skills with instruction content |
 
-### Uploads
+### Uploads & Files
 
 | Method | Path | Description |
 |:--|:--|:--|
 | `POST` | `/api/upload` | General file upload |
-| `POST` | `/api/deepseek/upload-file` | Upload a file for DeepSeek Vision and receive file IDs |
+| `POST` | `/api/deepseek/upload-file` | DeepSeek Vision file upload |
+| `POST` | `/api/file/revert` | Restore from `.sable_backups/` |
 
-### File backups
-
-| Method | Path | Description |
-|:--|:--|:--|
-| `POST` | `/api/file/revert` | Restore a file from `.sable_backups/` |
-
-### Scraper
+### Settings & Browser
 
 | Method | Path | Description |
 |:--|:--|:--|
-| `GET` | `/api/settings/scraper` | Get scraper settings |
-| `POST` | `/api/settings/scraper` | Update scraper settings |
-| `GET` | `/api/settings/scraper/engines` | List scraper engines |
-| `GET` | `/api/scraper/sessions` | Inspect active scraper browser session |
-| `POST` | `/api/scraper/sessions/kill` | Kill scraper browser session |
-| `POST` | `/api/scraper/model` | Switch scraper model type |
-
-### Browser profiles and accounts
-
-| Method | Path | Description |
-|:--|:--|:--|
-| `GET` | `/api/settings/browser` | Get browser settings such as headless mode |
-| `POST` | `/api/settings/browser` | Update browser settings and restart browser |
-| `POST` | `/api/settings/deepseek/refresh-token` | Force-refresh DeepSeek token |
-| `GET` | `/api/settings/accounts` | List `browser-data-acc*` profiles |
-| `POST` | `/api/settings/accounts/switch` | Switch active account profile symlink |
-| `GET` | `/api/settings/browser/profiles` | Show API, scraper, and automation profile status |
-| `POST` | `/api/settings/browser/restore` | Restore a profile from its `.bak` snapshot |
-| `POST` | `/api/settings/browser/create-backup` | Snapshot a profile to its `.bak` directory |
+| `GET/POST` | `/api/settings/browser` | Browser settings |
+| `GET/POST` | `/api/settings/scraper` | Scraper settings |
+| `GET` | `/api/settings/accounts` | List account profiles |
+| `POST` | `/api/settings/accounts/switch` | Switch active profile |
+| `GET` | `/api/settings/browser/profiles` | Profile status |
+| `POST` | `/api/settings/browser/restore` | Restore from .bak |
+| `POST` | `/api/settings/browser/create-backup` | Snapshot profile |
+| `POST` | `/api/settings/deepseek/refresh-token` | Force-refresh DS token |
 
 ### Memory
 
 | Method | Path | Description |
 |:--|:--|:--|
-| `GET` | `/api/settings/memory` | Read `Memory.json` |
-| `POST` | `/api/settings/memory` | Update `Memory.json` |
-| `GET` | `/api/settings/memory/protected` | Read protected memory |
-| `POST` | `/api/settings/memory/protected` | Update protected memory |
-| `GET` | `/api/settings/memory-search` | Read memory search settings |
-| `POST` | `/api/settings/memory-search` | Update memory search settings |
-| `POST` | `/api/memory/consolidate` | Consolidate memories from chat using API mode |
-| `POST` | `/api/memory/consolidate-scraper` | Consolidate memories using scraper mode |
-
-***
-
-## Project Structure
-
-~~~
-Sable/
-├── server.py                      # FastAPI app, routes, SQLite persistence, SSE chat
-├── start                          # uv run python server.py
-├── init                           # Automated setup script
-├── pyproject.toml                 # Python project and dependencies
-├── uv.lock                        # Locked dependencies
-│
-├── engine/
-│   ├── config.py                  # Models, thinking modes, runtime paths
-│   ├── service.py                 # ChatService: browser session, streaming, uploads
-│   ├── session.py                 # Browser/session helpers
-│   ├── chat.py                    # Chat pipeline helpers
-│   ├── payloads.py                # Payload builders
-│   ├── memory_search.py           # Semantic memory search
-│   ├── skills.py                  # Skill parsing, execution, backups, background jobs
-│   ├── scraper.py                 # Optional scraper service
-│   ├── browser_opener.py          # Browser login/opener flow
-│   └── scraper_engines/
-│       ├── qwen/                  # Qwen scraper engine
-│       └── deepseek/              # DeepSeek scraper engine
-│
-├── connectors/
-│   └── deepseek/
-│       ├── client.py              # DeepSeek HTTP client with PoW and SSE
-│       ├── upload.py              # DeepSeek upload helpers
-│       └── pow_solver/
-│           ├── main.go            # Go PoW solver source
-│           ├── go.mod
-│           └── pow_solver         # Compiled solver binary
-│
-├── instruction/
-│   ├── Maria.md                   # Active persona/system instructions
-│   ├── Maria.md.example           # Template
-│   ├── output_format.md           # Output formatting rules
-│   ├── skills.md                  # Skill routing instructions
-│   ├── deepseek_instructions.md
-│   └── mem_cmd.py                 # Consolidation prompt templates
-│
-├── skills/
-│   ├── registry.json              # Registered skills
-│   ├── core/                      # Editor, browser, phone, debugging, repair, etc.
-│   ├── visuals/                   # SVG, graphs, simulations, frontend design
-│   ├── study/                     # Study suite
-│   ├── data/                      # Search, docs, HTTP, video download
-│   └── diary_creator/
-│
-├── web/
-│   ├── index.html                 # SPA shell
-│   ├── app.js                     # Chat UI, SSE client, settings, skill cards
-│   ├── styles.css                 # Styles
-│   ├── manifest.json              # PWA manifest
-│   └── sw.js                      # Service worker
-│
-├── Brain/
-│   ├── Memory.json                # Active memory
-│   ├── Memory.json.example        # Memory template
-│   └── Protected.json             # Protected memory
-│
-├── system/                        # Runtime data, gitignored
-│   ├── sable.db                   # SQLite database
-│   ├── .auth_token                # Login token
-│   ├── .session_tokens.json       # Session token seed
-│   ├── memory_search_settings.json
-│   ├── scraper_settings.json
-│   ├── browser-data-acc*/         # Account browser profiles
-│   ├── browser-scraper-data/
-│   └── automation-browser-data/
-│
-├── uploads/                       # Uploaded files, gitignored
-├── output/                        # Generated notes/assets/sessions, gitignored
-├── scraper_output/                # Scraper-generated output, gitignored
-├── test/                          # Tests and demos
-└── mockups/                       # UI mockups
-~~~
+| `GET/POST` | `/api/settings/memory` | Read/update Memory.json |
+| `GET/POST` | `/api/settings/memory/protected` | Protected memory |
+| `GET/POST` | `/api/settings/memory-search` | Search settings |
+| `POST` | `/api/memory/consolidate` | Consolidate (API mode) |
+| `POST` | `/api/memory/consolidate-scraper` | Consolidate (scraper mode) |
 
 ***
 
 ## Dependencies
 
-Runtime dependencies from `pyproject.toml`:
+From `pyproject.toml`:
 
 | Package | Purpose |
 |:--|:--|
@@ -886,112 +323,33 @@ Runtime dependencies from `pyproject.toml`:
 | `fastembed` | Embeddings for memory search |
 | `numpy` | Numerical support |
 | `pydantic` | Request/response validation |
-| `sentence-transformers` | Embedding model support |
 | `lxml` | HTML/XML parsing |
 
-The project is marked as a non-packaged `uv` project:
-
-~~~toml
-[tool.uv]
-package = false
-~~~
+Managed by `uv` (`package = false`).
 
 ***
 
 ## Testing
 
-Tests and demos live in `test/`:
+Tests live in `test/`:
 
-~~~
-test/
-├── card_demo.py
-├── card_demo_big.py
-├── card_test.py
-├── patch_benchmark.py
-├── progress_demo.py
-├── test_browser_control.py
-├── test_consolidate_parse.py
-├── test_editor_tools.py
-├── test_embedding.py
-├── test_hybrid_threshold.py
-├── test_memory_injection.py
-├── test_restore_symlinks.py
-└── test_tool_pending.py
-~~~
-
-Examples:
-
-~~~bash
-# Editor tools unit tests; pytest is not in the project venv by default
+```bash
+# Editor tools unit tests
 uv run --with pytest python -m pytest test/test_editor_tools.py -q
 
-# Browser control suite; long-running because of Playwright timeouts
+# Browser control suite (long-running)
 uv run python test/test_browser_control.py
-~~~
+```
 
 ***
 
-## Configuration and Secrets
+## Development Notes
 
-### Auth token
-
-Preferred:
-
-~~~
-system/.auth_token
-~~~
-
-Fallback environment variable:
-
-~~~bash
-export SABLE_TOKEN="your-token"
-~~~
-
-Default if neither exists:
-
-~~~
-sable
-~~~
-
-### DeepSeek token
-
-DeepSeek auth is extracted from the browser profile's `localStorage` key `userToken`. A cached copy is stored at:
-
-~~~
-connectors/deepseek/.token_cache.json
-~~~
-
-Use the endpoint below to force a refresh:
-
-~~~
-POST /api/settings/deepseek/refresh-token
-~~~
-
-### Runtime settings
-
-| File | Purpose |
-|:--|:--|
-| `system/memory_search_settings.json` | Memory search model, top-k, thresholds |
-| `system/scraper_settings.json` | Scraper enable state, engine, port, headless mode |
-| `system/.session_tokens.json` | Session token seed for Qwen |
-| `engine/config.py` | Models, thinking modes, active browser profile paths |
-
-***
-
-## Gitignore Notes
-
-The `.gitignore` excludes runtime and personal data, including:
-
-- SQLite databases
-- Python caches and virtual environments
-- Editor and Sable backup directories
-- Browser profile directories under `system/`
-- Scraper output
-- Uploads
-- Secrets such as `system/.auth_token` and `system/.session_tokens.json`
-- Logs
-- Generated `output/`
-- Personal instruction and memory files such as `instruction/Maria.md`, `Brain/Memory.json`, and `Brain/Protected.json`
+- **Frontend**: edit `web/src/*.js`, rebuild with esbuild or restart Sable (ExecStartPre auto-rebuilds)
+- **Skill edits take effect immediately** — skills run as fresh subprocesses, no server restart needed
+- **Engine/server changes require restart** — uvicorn holds imported modules in memory
+- **Database**: raw sqlite3 at `system/sable.db`, no migrations framework — schema implicit in `server/database.py`
+- **Gitignore**: excludes system/, output/, uploads/, .venv/, *.db, browser profiles, secrets, personal instruction/memory files
 
 ***
 
@@ -999,10 +357,10 @@ The `.gitignore` excludes runtime and personal data, including:
 
 Sable is intended to run locally.
 
-- Server binds to `127.0.0.1`, not `0.0.0.0`
-- API routes require a bearer token
-- `/api/health`, `/api/login`, `/static/`, and `/uploads/` are auth-exempt
-- `/api/logs` allows query-token auth because browser EventSource cannot set headers
-- File revert is restricted to the managed `.sable_backups/` directory
-- Browser profiles contain cookies and session tokens, so they are gitignored
+- Server binds to `127.0.0.1` by default (configurable via `SABLE_HOST`)
+- API routes require bearer token (except `/api/health`, `/api/login`, `/static/`, `/uploads/`)
+- `/api/logs` allows query-token auth (EventSource can't set headers)
+- File revert restricted to `.sable_backups/`
+- Browser profiles contain cookies/tokens — always gitignored
 - Skill execution has timeout guards and process-group killing
+
