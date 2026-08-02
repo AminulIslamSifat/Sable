@@ -4,6 +4,7 @@ import asyncio
 import re
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -22,6 +23,46 @@ from server.utils import _dir_size_mb, _read_profile_email, logger
 from ..dependencies import service
 
 router = APIRouter()
+
+# --- Browser profile stripping (shared by switch + manual strip endpoint) ---
+_STRIP_KEEP = [
+    "Local State", "Last Version",
+    "Default/Cookies", "Default/Cookies-journal",
+    "Default/Local Storage", "Default/Session Storage",
+    "Default/IndexedDB", "Default/Preferences",
+    "Default/Secure Preferences", "Default/Login Data",
+    "Default/Login Data For Account", "Default/Web Data",
+    "Default/Account Web Data", "Default/Network Action Predictor",
+    "Default/Network Persistent State", "Default/TransportSecurity",
+    "Default/Trust Tokens",
+]
+
+
+def _strip_one_profile(profile: Path) -> tuple[str, float, float]:
+    """Strip a single browser profile to bare session data. Returns (name, before_mb, after_mb)."""
+    import tempfile
+    before = _dir_size_mb(profile)
+    tmp = Path(tempfile.mkdtemp())
+    for item in _STRIP_KEEP:
+        src = profile / item
+        if src.exists():
+            dest = tmp / item
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_dir():
+                shutil.copytree(src, dest, symlinks=True)
+            else:
+                shutil.copy2(src, dest)
+    shutil.rmtree(profile)
+    profile.mkdir(parents=True)
+    for item in tmp.iterdir():
+        dest = profile / item.name
+        if item.is_dir():
+            shutil.copytree(item, dest, symlinks=True, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, dest)
+    shutil.rmtree(tmp)
+    after = _dir_size_mb(profile)
+    return (profile.name, before, after)
 
 @router.get("/api/settings/scraper")
 async def get_scraper_settings_route() -> dict[str, Any]:
@@ -97,6 +138,12 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
     target_path = _SYSTEM_DIR / target_name
     if not target_path.is_dir():
         raise HTTPException(status_code=404, detail=f"Profile directory '{target_name}' not found")
+    # Resolve old profile before switching (for post-switch strip)
+    old_profile: Path | None = None
+    if _ACTIVE_PROFILE_LINK.is_symlink():
+        resolved = _ACTIVE_PROFILE_LINK.resolve()
+        if resolved != target_path and resolved.is_dir():
+            old_profile = resolved
     def _do_switch() -> None:
         if _ACTIVE_PROFILE_LINK.is_dir() and not _ACTIVE_PROFILE_LINK.is_symlink():
             migration_name = "browser-data-acc1"
@@ -119,7 +166,19 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
         get_deepseek_client().set_token(ds_token)
     except Exception:
         pass
-    return {"status": "ok", "active": target_name, "email": _read_profile_email(target_path)}
+    # Strip the old profile to reclaim disk space (fire-and-forget)
+    stripped_info: str | None = None
+    if old_profile and old_profile.is_dir():
+        try:
+            name, before, after = await asyncio.to_thread(_strip_one_profile, old_profile)
+            stripped_info = f"{name}: {before:.1f}MB → {after:.1f}MB"
+            logger.info("Auto-stripped old profile %s", stripped_info)
+        except Exception as exc:
+            logger.warning("Failed to strip old profile: %s", exc)
+    result: dict[str, Any] = {"status": "ok", "active": target_name, "email": _read_profile_email(target_path)}
+    if stripped_info:
+        result["stripped"] = stripped_info
+    return result
 
 
 @router.post("/api/settings/accounts/create")
@@ -338,59 +397,19 @@ async def restore_browser_profile(payload: dict[str, str]) -> dict[str, Any]:
 @router.post("/api/settings/browser/strip-profiles")
 async def strip_browser_profiles() -> dict[str, Any]:
     """Strip all browser profiles to bare session data (pure Python, no subprocess)."""
-    from pathlib import Path
 
-    KEEP = [
-        "Local State", "Last Version",
-        "Default/Cookies", "Default/Cookies-journal",
-        "Default/Local Storage", "Default/Session Storage",
-        "Default/IndexedDB", "Default/Preferences",
-        "Default/Secure Preferences", "Default/Login Data",
-        "Default/Login Data For Account", "Default/Web Data",
-        "Default/Account Web Data", "Default/Network Action Predictor",
-        "Default/Network Persistent State", "Default/TransportSecurity",
-        "Default/Trust Tokens",
-    ]
-
-    def _strip_one(profile: Path) -> tuple[str, int, int]:
-        import tempfile
-        before = _dir_size_mb(profile)
-        tmp = Path(tempfile.mkdtemp())
-        # Save essentials
-        for item in KEEP:
-            src = profile / item
-            if src.exists():
-                dest = tmp / item
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                if src.is_dir():
-                    shutil.copytree(src, dest, symlinks=True)
-                else:
-                    shutil.copy2(src, dest)
-        # Wipe and restore
-        shutil.rmtree(profile)
-        profile.mkdir(parents=True)
-        for item in tmp.iterdir():
-            dest = profile / item.name
-            if item.is_dir():
-                shutil.copytree(item, dest, symlinks=True, dirs_exist_ok=True)
-            else:
-                shutil.copy2(item, dest)
-        shutil.rmtree(tmp)
-        after = _dir_size_mb(profile)
-        return (profile.name, before, after)
-
-    def _strip_all() -> list[tuple[str, int, int]]:
+    def _strip_all() -> list[tuple[str, float, float]]:
         results = []
         for entry in sorted(_SYSTEM_DIR.iterdir()):
             if entry.is_dir() and (
                 entry.name.startswith("browser-data-acc")
                 or entry.name in ("browser-scraper-data", "automation-browser-data")
             ):
-                results.append(_strip_one(entry))
+                results.append(_strip_one_profile(entry))
         return results
 
     results = await asyncio.to_thread(_strip_all)
-    lines = [f"  {name}: {b}MB → {a}MB" for name, b, a in results]
+    lines = [f"  {name}: {b:.1f}MB → {a:.1f}MB" for name, b, a in results]
     total = _dir_size_mb(_SYSTEM_DIR)
     output = f"Stripped {len(results)} profiles.\n" + "\n".join(lines) + f"\nTotal system/: {total}MB"
     return {"status": "ok", "output": output, "profiles_stripped": len(results)}

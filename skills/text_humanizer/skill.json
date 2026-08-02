@@ -1,0 +1,22 @@
+
+{
+  "name": "Text Humanizer",
+  "key": "text_humanizer",
+  "version": "1.0.0",
+  "category": "data",
+  "description": "Humanize AI-generated text: agent rewrites inline (persona-conditioned) + rule-based burstiness/discourse post-processing. Zero external dependencies. Bypasses GPTZero, Turnitin, Originality.ai.",
+  "trigger": "Rewriting AI-generated text to sound human, bypassing AI detectors, making LLM output undetectable.",
+  "not_this_if": "General writing/editing that isn't specifically about evading AI detection -> use normal LLM output.",
+  "tags": [
+    "execute_command"
+  ],
+  "default": false,
+  "inline": false,
+  "priority": 65,
+  "scope": [
+    "*"
+  ],
+  "config": {},
+  "dependencies": [],
+  "$schema": "skill-v1"
+}
