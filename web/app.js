@@ -21,7 +21,7 @@
     const newChatBtn = document.getElementById("newChat");
     const syncContextBtn = document.getElementById("syncContext");
     const modelSelectEl = document.getElementById("modelSelect");
-    const thinkingModeSelectEl = document.getElementById("thinkingModeSelect");
+    const thinkingSwitcherEl = document.getElementById("thinkingSwitcher");
     const toastEl  = document.getElementById("toast");
 
     /* ---------- Auth gate ---------- */
@@ -727,6 +727,7 @@
       pane.classList.add("active");
       activePane = pane;
       activeChatId = chatId;
+      updateSendBtn();
       renderTabBar();
     }
 
@@ -809,7 +810,7 @@
       newChatBtn.disabled = val;
       newChatBtn.classList.toggle("loading", val);
       modelSelectEl.disabled = val;
-      thinkingModeSelectEl.disabled = val;
+      thinkingSwitcherEl.style.display = val ? "none" : "";
     }
 
     function autoResize() {
@@ -1479,13 +1480,14 @@
       // event, or an answer token) actually arrives.
       const pending = document.createElement("div");
       pending.className = "pending-indicator";
-      pending.innerHTML = `<span class="dot"></span><span class="dot"></span><span class="dot"></span>`;
+      pending.innerHTML = `<span class="processing-text">processing…</span>`;
       turn.appendChild(pending);
       let pendingShown = true;
       function hidePending() {
         if (!pendingShown) return;
         pendingShown = false;
         pending.remove();
+        ensureAnswer();
       }
 
       // Per-round thinking: each agentic command gets its own thinking block
@@ -2235,18 +2237,30 @@
         ? preferredModeId
         : modes[0].id;
 
-      thinkingModeSelectEl.innerHTML = "";
-      for (const m of modes) {
-        const opt = document.createElement("option");
-        opt.value = m.id;
-        opt.textContent = m.label || m.id;
-        if (m.id === selectedThinkingMode) opt.selected = true;
-        thinkingModeSelectEl.appendChild(opt);
+      thinkingSwitcherEl.innerHTML = "";
+      thinkingSwitcherEl.style.setProperty('--n', modes.length);
+      for (let idx = 0; idx < modes.length; idx++) {
+        const m = modes[idx];
+        const btn = document.createElement("button");
+        btn.textContent = m.label || m.id;
+        btn.dataset.modeId = m.id;
+        if (m.id === selectedThinkingMode) {
+          btn.classList.add('active');
+          thinkingSwitcherEl.style.setProperty('--i', idx);
+        }
+        btn.addEventListener('click', () => {
+          if (btn.classList.contains('active')) return;
+          selectedThinkingMode = m.id;
+          thinkingSwitcherEl.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          thinkingSwitcherEl.style.setProperty('--i', idx);
+          try { localStorage.setItem(THINKING_MODE_KEY, selectedThinkingMode); } catch (err) {}
+        });
+        thinkingSwitcherEl.appendChild(btn);
       }
 
-      // Only one available mode — nothing meaningful to pick, so disable
-      // rather than show a dropdown with a single dead-end option.
-      thinkingModeSelectEl.disabled = modes.length <= 1;
+      // Only one available mode — hide the switcher entirely.
+      thinkingSwitcherEl.style.display = modes.length <= 1 ? 'none' : '';
 
       try { localStorage.setItem(THINKING_MODE_KEY, selectedThinkingMode); } catch (err) {}
     }
@@ -2364,10 +2378,7 @@
       }
     });
 
-    thinkingModeSelectEl.addEventListener("change", () => {
-      selectedThinkingMode = thinkingModeSelectEl.value;
-      try { localStorage.setItem(THINKING_MODE_KEY, selectedThinkingMode); } catch (err) {}
-    });
+    // thinking mode change handled inline per-button above
 
     async function loadChats(mode) {
       try {
@@ -2800,6 +2811,23 @@
     }
 
     attachBtn.addEventListener("click", () => fileInput.click());
+    // Make the whole glass pill clickable (forwards to inner button)
+    document.querySelector(".attach-cell").addEventListener("click", (e) => {
+      if (e.target === e.currentTarget) attachBtn.click();
+    });
+    document.querySelector(".send-cell").addEventListener("click", (e) => {
+      if (e.target === e.currentTarget) sendBtn.click();
+    });
+
+    // Header pill click forwarding
+    document.querySelectorAll(".header-icon-cell").forEach((cell) => {
+      cell.style.cursor = "pointer";
+      cell.addEventListener("click", (e) => {
+        if (e.target === e.currentTarget) cell.querySelector("button")?.click();
+      });
+    });
+
+
     fileInput.addEventListener("change", () => {
       if (fileInput.files.length) handleFiles(fileInput.files);
       fileInput.value = "";
@@ -4277,14 +4305,36 @@
       document.getElementById('newChat')?.click();
     } else if (action === 'settings') {
       document.getElementById('settingsBtn')?.click();
-    } else if (action === 'stop-service') {
-      if (!confirm('Stop the Sable service? The UI will go offline.')) return;
-      try { await fetch('/api/settings/service/stop', { method: 'POST' }); } catch {}
-      showToast('Service stopping — UI will go offline', 'info');
-    } else if (action === 'restart-service') {
-      if (!confirm('Restart the Sable service? Brief downtime (~20s).')) return;
-      try { await fetch('/api/settings/service/restart', { method: 'POST' }); } catch {}
-      showToast('Restarting — back in ~20s', 'info');
+    } else if (action === 'sync-context') {
+      showToast('Syncing context…', 'info');
+      try {
+        const res = await fetch('/api/sync-context', { method: 'POST' });
+        const d = await res.json();
+        showToast(res.ok ? (d.message || 'Context synced') : (d.error || 'Sync failed'), res.ok ? 'success' : 'error');
+      } catch { showToast('Sync failed', 'error'); }
+    } else if (action === 'refresh-deepseek') {
+      showToast('Refreshing DeepSeek token…', 'info');
+      try {
+        const res = await fetch('/api/settings/deepseek/refresh-token', { method: 'POST' });
+        const d = await res.json();
+        showToast(res.ok ? (d.message || 'Token refreshed') : (d.error || 'Refresh failed'), res.ok ? 'success' : 'error');
+      } catch { showToast('Refresh failed', 'error'); }
+    } else if (action === 'restart-browser') {
+      if (!confirm('Restart the browser session?')) return;
+      showToast('Restarting browser…', 'info');
+      try {
+        const res = await fetch('/api/settings/browser', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+        const d = await res.json();
+        showToast(res.ok ? 'Browser restarted' : (d.error || 'Restart failed'), res.ok ? 'success' : 'error');
+      } catch { showToast('Restart failed', 'error'); }
+    } else if (action === 'clear-browser-cache') {
+      if (!confirm('Strip all browser profile caches? This keeps session data but removes cache/junk.')) return;
+      showToast('Stripping browser profiles…', 'info');
+      try {
+        const res = await fetch('/api/settings/browser/strip-profiles', { method: 'POST' });
+        const d = await res.json();
+        showToast(res.ok ? 'Profiles stripped' : (d.error || 'Strip failed'), res.ok ? 'success' : 'error');
+      } catch { showToast('Strip failed', 'error'); }
     }
   });
   // ── /Context Menu ─────────────────────────────────────────

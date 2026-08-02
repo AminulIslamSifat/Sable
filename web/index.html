@@ -8,11 +8,11 @@
 
   <link rel="stylesheet" href="/static/css/variables.css?v=1">
   <link rel="stylesheet" href="/static/css/base.css?v=3">
-  <link rel="stylesheet" href="/static/css/layout.css?v=9">
+  <link rel="stylesheet" href="/static/css/layout.css?v=10">
   <link rel="stylesheet" href="/static/css/chat.css?v=12">
   <link rel="stylesheet" href="/static/css/panels.css?v=10">
   <link rel="stylesheet" href="/static/css/components.css?v=10">
-  <link rel="stylesheet" href="/static/css/responsive.css?v=1">
+  <link rel="stylesheet" href="/static/css/responsive.css?v=2">
   <link rel="stylesheet" href="/static/css/agents.css?v=20">
 
   <link rel="manifest" href="/static/assets/manifest.json">
@@ -53,9 +53,7 @@
         </button>
       </div>
       <div class="sidebar-top-content">
-        <div class="selector-wrap thinking-select-wrap">
-          <select id="thinkingModeSelect" title="Thinking mode used for new chats"></select>
-        </div>
+        <div class="thinking-switcher" id="thinkingSwitcher" title="Thinking mode used for new chats"></div>
         <div class="mode-switcher" id="modeSwitcher">
           <button id="modeApi" class="active" title="Direct API chat"><span class="icon-emoji">⚡</span><i data-lucide="zap" class="icon-lucide"></i> API</button>
           <button id="modeScraper" title="Headed browser scraper chat"><span class="icon-emoji">🌐</span><i data-lucide="globe" class="icon-lucide"></i> Scraper</button>
@@ -136,17 +134,24 @@
   <!-- Context Menu -->
   <div id="contextMenu" class="ctx-menu">
     <button class="ctx-item" data-action="new-chat">
-      <span class="ctx-icon">＋</span> New Chat
+      <span class="ctx-icon"><span class="icon-emoji">＋</span><i data-lucide="square-pen" class="icon-lucide"></i></span> New Chat
     </button>
     <button class="ctx-item" data-action="settings">
-      <span class="ctx-icon">⚙</span> Chat Settings
+      <span class="ctx-icon"><span class="icon-emoji">⚙</span><i data-lucide="settings" class="icon-lucide"></i></span> Chat Settings
     </button>
     <div class="ctx-sep"></div>
-    <button class="ctx-item ctx-danger" data-action="stop-service">
-      <span class="ctx-icon">⏹</span> Stop Service
+    <button class="ctx-item" data-action="sync-context">
+      <span class="ctx-icon"><span class="icon-emoji">⟳</span><i data-lucide="refresh-cw" class="icon-lucide"></i></span> Sync Context
     </button>
-    <button class="ctx-item ctx-danger" data-action="restart-service">
-      <span class="ctx-icon">↻</span> Restart Service
+    <button class="ctx-item" data-action="refresh-deepseek">
+      <span class="ctx-icon"><span class="icon-emoji">🔑</span><i data-lucide="key-round" class="icon-lucide"></i></span> Refresh DeepSeek Token
+    </button>
+    <div class="ctx-sep"></div>
+    <button class="ctx-item ctx-danger" data-action="restart-browser">
+      <span class="ctx-icon"><span class="icon-emoji">↻</span><i data-lucide="rotate-cw" class="icon-lucide"></i></span> Restart Browser
+    </button>
+    <button class="ctx-item ctx-danger" data-action="clear-browser-cache">
+      <span class="ctx-icon"><span class="icon-emoji">🧹</span><i data-lucide="trash-2" class="icon-lucide"></i></span> Clear Browser Cache
     </button>
   </div>
 

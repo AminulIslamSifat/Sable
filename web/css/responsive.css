@@ -1,3 +1,9 @@
+    /* ---------- mobile sidebar tint (≤860px, matches sidebar overlay breakpoint) ---------- */
+    @media (max-width: 860px) {
+      .sidebar-section { background: color-mix(in srgb, var(--panel) 82%, transparent); }
+      .diff-sidebar { background: color-mix(in srgb, var(--panel) 82%, transparent); }
+    }
+
     /* ---------- small phones (≤480px) ---------- */
     @media (max-width: 480px) {
       .sidebar { width: min(260px, 82vw); min-width: 0; }
