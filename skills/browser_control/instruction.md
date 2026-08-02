@@ -156,7 +156,7 @@ Socket path is fixed at `/tmp/sable_browser.sock`.
 **Start command (background, headed):**
 
 ```bash
-setsid /home/sifat/hdd/projects/Sable/.venv/bin/python /home/sifat/hdd/projects/Sable/skills/browser_control/scripts/browser_control.py start --headed > /tmp/browser_daemon.log 2>&1 &
+setsid "$PROJECT_ROOT/.venv/bin/python" "$PROJECT_ROOT/skills/browser_control/scripts/browser_control.py" start --headed > /tmp/browser_daemon.log 2>&1 &
 sleep 5
 ```
 
