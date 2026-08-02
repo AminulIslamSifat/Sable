@@ -4003,16 +4003,9 @@
     // ---------- Icon Style ----------
     const ICON_STYLE_KEY = "sable_icon_style";
     const iconStyleSelect = document.getElementById("iconStyleSelect");
-    let _lucideLoaded = false;
-
     function applyIconStyle(style) {
       document.documentElement.setAttribute("data-icon-style", style);
-      if (style === "lucide" && !_lucideLoaded) {
-        const script = document.createElement("script");
-        script.src = "https://unpkg.com/lucide@latest/dist/umd/lucide.min.js";
-        script.onload = () => { _lucideLoaded = true; if (window.lucide) lucide.createIcons(); };
-        document.head.appendChild(script);
-      } else if (style === "lucide" && _lucideLoaded && window.lucide) {
+      if (style === "lucide" && window.lucide) {
         lucide.createIcons();
       }
     }
