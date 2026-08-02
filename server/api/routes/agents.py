@@ -204,13 +204,71 @@ async def list_active_agents(chat_id: str | None = None):
     ]
 
 
+@router.get("/api/agents/{agent_id}/stream")
+async def agent_stream(agent_id: str, request: Request):
+    """Per-agent SSE stream — chat-format events for the panel view.
+
+    Drains the agent's stream_queue. Sends keepalive every 15s.
+    Closes when the agent finishes (done/error event) or client disconnects.
+    """
+    from engine.agents import get_runtime
+
+    rt = get_runtime()
+    agent = rt.get_agent(agent_id)
+    if not agent:
+        return StreamingResponse(
+            iter([f"data: {json.dumps({'type': 'error', 'message': 'Agent not found'})}\n\n"]),
+            media_type="text/event-stream",
+        )
+
+    queue = agent.stream_queue
+
+    async def generate():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                    yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+                    # Close stream on terminal events
+                    if event.get("type") in ("done", "error"):
+                        break
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    # If agent is no longer running and queue is empty, close
+                    if agent.status.value not in ("spawned", "running") and queue.empty():
+                        yield f"data: {json.dumps({'type': 'done', 'result': (agent.result or '')[:500]})}\n\n"
+                        break
+        finally:
+            pass
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.get("/api/agents/{agent_id}/messages")
 async def get_agent_history(agent_id: str):
-    """Full conversation history for an agent."""
+    """Full conversation history + status for an agent."""
     from server.database import get_agent_messages
+    from engine.agents.runtime import get_agent
 
     messages = get_agent_messages(agent_id)
-    return {"agent_id": agent_id, "messages": messages}
+    agent = get_agent(agent_id)
+    status = agent.status.value if agent else "unknown"
+    result = {
+        "agent_id": agent_id,
+        "messages": messages,
+        "status": status,
+    }
+    if agent:
+        result["created_at"] = agent.created_at
+        if agent.completed_at:
+            result["completed_at"] = agent.completed_at
+    return result
 
 
 @router.get("/api/agents/{agent_id}")
