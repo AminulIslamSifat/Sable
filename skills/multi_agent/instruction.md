@@ -31,6 +31,7 @@ Attributes:
 - timeout: Seconds before auto-kill (default: 300)
 - collect: "true" to block and wait for result inline (rare)
 
+[Even though deepseek-expert available, its unusable for any task. Avoid it.]
 ### agent_status
 
 Lists all agents and their current status. No attributes needed.
@@ -44,8 +45,8 @@ Attributes:
 
 | Role | Purpose | Default Model |
 |:--|:--|:--|
-| researcher | Web search, source gathering, synthesis | deepseek-expert |
-| coder | Coding, File edits, implementation, refactoring | qwen3.7-max |
+| researcher | Web search, source gathering, synthesis | qwen3.7-max |
+| coder | Coding, File edits, implementation, refactoring | qwen3.8-max-preview |
 | reviewer | Code review, Project review, security audit, quality check | deepseek-expert |
 | writer | Documentation, reports, creative content (when not code related) | qwen3.7-plus |
 | utility | General tasks, file ops, formatting, quick lookups | qwen3.7-plus |
@@ -57,7 +58,7 @@ Attributes:
 - You can spawn multiple agents in one response (up to 5 concurrent)
 - Agents have isolated sessions — they don't see your chat history
 - Give agents SELF-CONTAINED tasks with all needed context in the task/context attrs
-- DeepSeek: max 5 parallel. Qwen: max 1 (rate limited).
+- DeepSeek: max 2 parallel. Qwen: max 4 .
 
 ## Completion Handling
 

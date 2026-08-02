@@ -32,7 +32,7 @@ sub-question is really two questions, split it.
 Then initialize the state file, one call, topic names = your sub-questions:
 
 ```
-python3 PROJECT_ROOT/skills/data/search_online/web_search_batch.py \
+python3 PROJECT_ROOT/skills/data/search_online/scripts/web_search_batch.py \
   --research-log /tmp/ghost_research_<session_id>.json \
   --research-init "sub-question 1" "sub-question 2" "sub-question 3"
 ```

@@ -6,6 +6,11 @@
 
     /* ---------- small phones (≤480px) ---------- */
     @media (max-width: 480px) {
+      /* skill card header: let memory chip wrap below */
+      .skill-header { flex-wrap: wrap; }
+      .skill-header-right { flex-wrap: wrap; gap: 4px; }
+      .memory-chip-tool { margin-top: 2px; }
+
       .sidebar { width: min(260px, 82vw); min-width: 0; }
       #chat { padding: 10px 6px; padding-bottom: 110px; }
       .msg { padding: 10px 12px; font-size: 13.5px; }
