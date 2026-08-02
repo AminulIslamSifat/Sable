@@ -351,7 +351,7 @@
             mdUnwrapDepth--;
             out.push(`<div class="md-content md-unwrap">${inner}</div>`);
           } else {
-            out.push(`<pre><code${lang ? ` class="language-${escAttr(lang)}"` : ""}>${escHtml(codeLines.join("\n"))}</code></pre>`);
+            out.push(`<div class="code-block"><button class="code-copy-btn" title="Copy code"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button><pre><code${lang ? ` class="language-${escAttr(lang)}"` : ""}>${escHtml(codeLines.join("\n"))}</code></pre></div>`);
           }
           continue;
         }
@@ -470,7 +470,7 @@
               }
               const langAttr = lang ? ` class="language-${escAttr(lang)}"` : "";
               const body = escaped ? text : escHtml(text);
-              return `<pre><code${langAttr}>${body}</code></pre>`;
+              return `<div class="code-block"><button class="code-copy-btn" title="Copy code"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button><pre><code${langAttr}>${body}</code></pre></div>`;
             }
           };
           marked.use({ gfm: true, breaks: true, renderer: mdRenderer });
@@ -1610,7 +1610,8 @@
         }
         // Fast path: inside code fence — append to <code> directly until fence closes
         if (!fast && _ansInFence && !chunk.includes("```")) {
-          const codeEl = answerContent.querySelector("pre:last-of-type code");
+          const codeEls = answerContent.querySelectorAll(".code-block pre code");
+          const codeEl = codeEls[codeEls.length - 1];
           if (codeEl) {
             codeEl.textContent += chunk;
             fast = true;
@@ -4463,6 +4464,23 @@
 
   document.addEventListener('click', (e) => {
     if (!e.target.closest('.ctx-menu')) closeCtx();
+  });
+
+  // Code block copy button (delegated)
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.code-copy-btn');
+    if (!btn) return;
+    const block = btn.closest('.code-block');
+    const codeEl = block?.querySelector('pre code');
+    if (!codeEl) return;
+    navigator.clipboard.writeText(codeEl.textContent).then(() => {
+      btn.classList.add('copied');
+      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+      setTimeout(() => {
+        btn.classList.remove('copied');
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+      }, 1500);
+    });
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeCtx();
