@@ -1,25 +1,25 @@
     /* ---------- self-hosted fonts ---------- */
     @font-face {
       font-family: 'Maple Mono';
-      src: url('/static/fonts/MapleMono-Regular.ttf') format('truetype');
+      src: url('/static/fonts/MapleMono-Regular.woff2') format('woff2');
       font-weight: 400;
       font-display: swap;
     }
     @font-face {
       font-family: 'Maple Mono';
-      src: url('/static/fonts/MapleMono-Medium.ttf') format('truetype');
+      src: url('/static/fonts/MapleMono-Medium.woff2') format('woff2');
       font-weight: 500;
       font-display: swap;
     }
     @font-face {
       font-family: 'Maple Mono';
-      src: url('/static/fonts/MapleMono-SemiBold.ttf') format('truetype');
+      src: url('/static/fonts/MapleMono-SemiBold.woff2') format('woff2');
       font-weight: 600;
       font-display: swap;
     }
     @font-face {
       font-family: 'Maple Mono';
-      src: url('/static/fonts/MapleMono-Bold.ttf') format('truetype');
+      src: url('/static/fonts/MapleMono-Bold.woff2') format('woff2');
       font-weight: 700;
       font-display: swap;
     }

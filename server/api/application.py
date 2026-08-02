@@ -36,8 +36,23 @@ from .routes.chat import router as chat_router
 from .routes.misc import router as misc_router
 from .routes.agents import router as agents_router
 
+def _raise_nofile_limit() -> None:
+    """Raise open file limit for agentic workloads (browsers, agents, streams)."""
+    import resource
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        target = min(65536, hard)
+        if soft < target:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+            logger.info("Raised RLIMIT_NOFILE: %d → %d (hard=%d)", soft, target, hard)
+    except Exception as exc:
+        logger.warning("Could not raise RLIMIT_NOFILE: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> Generator[None, None, None]:
+    _raise_nofile_limit()
+
     import asyncio as _aio
     from engine.agents import get_runtime as _get_rt_startup
     _get_rt_startup()._loop = _aio.get_running_loop()
