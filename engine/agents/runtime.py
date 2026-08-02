@@ -178,6 +178,8 @@ class AgentRuntime:
                     timeout=timeout,
                 )
                 agent.mark_completed(result)
+                # Signal panel stream that the agent is done
+                agent.push_stream_event({"type": "done", "result": (result or "")[:500]})
                 update_agent_status(
                     agent.id, agent.status.value,
                     result=result, tokens_used=agent.tokens_used,
@@ -200,6 +202,7 @@ class AgentRuntime:
             except asyncio.TimeoutError:
                 partial = agent.messages[-1]["content"] if agent.messages else ""
                 agent.mark_failed(f"Timed out after {timeout}s")
+                agent.push_stream_event({"type": "error", "message": f"Timed out after {timeout}s"})
                 agent.result = partial
                 update_agent_status(agent.id, "timed_out", error=agent.error, result=partial)
                 # Persist failure reason into agent conversation history
@@ -216,6 +219,7 @@ class AgentRuntime:
 
             except Exception as exc:
                 agent.mark_failed(f"{type(exc).__name__}: {exc}")
+                agent.push_stream_event({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
                 update_agent_status(agent.id, "failed", error=agent.error)
                 # Persist failure reason into agent conversation history
                 fail_msg = f"[SYSTEM] Agent failed: {agent.error}"
