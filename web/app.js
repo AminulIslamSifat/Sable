@@ -135,6 +135,8 @@
     let selectedThinkingMode = null;
 
     let chatList    = [];
+    let chatSearchQuery = '';
+    let chatSearchResults = null; // null = not searched, array = search results
     let activeChatId = null;
     let parentId    = null;
     const activeStreams = new Map(); // chatId → AbortController
@@ -2153,8 +2155,47 @@
       chatsEl.innerHTML = '';
 
       // Split chats: scraper (browser-*) vs API
-      const apiChats = chatList.filter(c => !c.id.startsWith('browser-'));
-      const scraperChats = chatList.filter(c => c.id.startsWith('browser-'));
+      const q = chatSearchQuery.toLowerCase().trim();
+      // If we have server-side search results, show those instead of title filtering
+      if (q && chatSearchResults !== null) {
+        chatsEl.innerHTML = '';
+        // Group results by chat_id
+        const byChat = new Map();
+        for (const r of chatSearchResults) {
+          if (!byChat.has(r.chat_id)) byChat.set(r.chat_id, { title: r.title, messages: [] });
+          byChat.get(r.chat_id).messages.push(r);
+        }
+        for (const [chatId, group] of byChat) {
+          const lbl = document.createElement('div');
+          lbl.className = 'chat-group-label';
+          lbl.textContent = group.title || 'Untitled';
+          lbl.style.cursor = 'pointer';
+          lbl.onclick = () => selectChat(chatId);
+          chatsEl.appendChild(lbl);
+          for (const msg of group.messages.slice(0, 5)) {
+            const row = document.createElement('div');
+            row.className = 'chat-row';
+            const btn = document.createElement('button');
+            btn.className = 'chat-item';
+            const snippet = (msg.content || '').replace(/\n/g, ' ').slice(0, 120);
+            btn.textContent = `${msg.role === 'user' ? '👤' : '🤖'} ${snippet}`;
+            btn.title = msg.created_at || '';
+            btn.onclick = () => selectChat(chatId);
+            row.appendChild(btn);
+            chatsEl.appendChild(row);
+          }
+        }
+        if (byChat.size === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'chat-group-label';
+          empty.textContent = 'No matches found';
+          chatsEl.appendChild(empty);
+        }
+        return;
+      }
+      const filtered = q ? chatList.filter(c => (c.title || '').toLowerCase().includes(q)) : chatList;
+      const apiChats = filtered.filter(c => !c.id.startsWith('browser-'));
+      const scraperChats = filtered.filter(c => c.id.startsWith('browser-'));
 
       const __groupOf = (c) => {
         const raw = c.updated_at || c.created_at || c.last_message_at || null;
@@ -3127,6 +3168,51 @@
     });
 
     newChatBtn.addEventListener("click", createChat);
+
+    // Chat search toggle + filter
+    const chatSearchBtn = document.getElementById('chatSearchBtn');
+    const chatSearchInput = document.getElementById('chatSearch');
+    if (chatSearchBtn && chatSearchInput) {
+      chatSearchBtn.addEventListener('click', () => {
+        const isVisible = chatSearchInput.classList.toggle('visible');
+        chatsEl.style.marginTop = isVisible ? '36px' : '';
+        if (isVisible) {
+          chatSearchInput.focus();
+        } else {
+          chatSearchInput.value = '';
+          chatSearchQuery = '';
+          chatSearchResults = null;
+          renderChats();
+        }
+      });
+      let _searchDebounce = null;
+      chatSearchInput.addEventListener('input', () => {
+        chatSearchQuery = chatSearchInput.value;
+        clearTimeout(_searchDebounce);
+        if (!chatSearchQuery.trim()) {
+          chatSearchResults = null;
+          renderChats();
+          return;
+        }
+        _searchDebounce = setTimeout(async () => {
+          try {
+            const data = await fetch(`/api/chats/search?q=${encodeURIComponent(chatSearchQuery.trim())}`).then(r => r.json());
+            chatSearchResults = data.results || [];
+          } catch { chatSearchResults = []; }
+          renderChats();
+        }, 300);
+      });
+      chatSearchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          chatSearchInput.value = '';
+          chatSearchQuery = '';
+          chatSearchResults = null;
+          chatSearchInput.classList.remove('visible');
+          chatsEl.style.marginTop = '';
+          renderChats();
+        }
+      });
+    }
 
     const sidebarToggleBtn = document.getElementById('sidebarToggle');
     if (sidebarToggleBtn) {

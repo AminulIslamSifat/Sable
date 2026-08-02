@@ -10,7 +10,6 @@ import re
 import socket
 import urllib.request
 from datetime import datetime
-from playwright.async_api import async_playwright
 
 from config import console, PLATFORM, PLATFORMS_CONFIG, OUTPUT_ROOT, ASSETS_DIR, PROJECT_ROOT, INSTRUCTIONS_DIR
 from exceptions import ResponseCaptureError
@@ -286,6 +285,7 @@ class GhostChat:
         from config import PLATFORMS_CONFIG
         cdp_port = self.port
 
+        from playwright.async_api import async_playwright
         self.pw = await async_playwright().start()
         for attempt in range(5):
             try:
