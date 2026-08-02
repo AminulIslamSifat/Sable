@@ -195,6 +195,7 @@ async def run_agent_llm_loop(
     current_message = first_message
 
     for iteration in range(max_iterations):
+        agent.push_stream_event({"type": "iteration", "iteration": iteration + 1})
         # Call LLM
         response_text, new_parent_id = await _send_with_retry(
             agent, current_message, parent_id, breaker, is_first_turn
@@ -205,6 +206,9 @@ async def run_agent_llm_loop(
 
         agent.messages.append({"role": "assistant", "content": response_text})
         await _persist_message(agent.id, "assistant", response_text)
+
+        # Stream the response text to the panel
+        agent.push_stream_event({"type": "answer", "text": response_text})
 
         # Parse skill tags
         tags = _parse_skill_tags(response_text)
@@ -251,14 +255,27 @@ async def run_agent_llm_loop(
                 attrs_dict = parse_attrs(tag["attrs"])
                 content = tag.get("content", "")
 
+                # Stream skill_start to panel
+                agent.push_stream_event({"type": "skill_start", "name": tag_name, "attrs": tag.get("attrs", "")})
+
                 # process_tag is a sync generator yielding SSE events
                 events = list(engine.process_tag(tag_name, attrs_dict, content, namespace=agent.id))
+
+                # Forward skill events to panel stream
+                for evt in events:
+                    if isinstance(evt, dict):
+                        agent.push_stream_event(evt)
+
                 feedback = build_tool_feedback(events)
                 tool_results.append(feedback or "[no output]")
+
+                # Stream skill_end to panel
+                agent.push_stream_event({"type": "skill_end", "name": tag_name, "ok": True})
 
                 if tag_name not in agent.skills_used:
                     agent.skills_used.append(tag_name)
             except Exception as exc:
+                agent.push_stream_event({"type": "skill_end", "name": tag_name, "ok": False, "error": str(exc)})
                 tool_results.append(f"SKILL ERROR ({tag_name}): {type(exc).__name__}: {exc}")
 
         # Feed results back as next message
@@ -355,7 +372,10 @@ async def _call_deepseek(agent: Agent, message: str) -> tuple[str, str | None]:
     ):
         etype = event.get("type")
         if etype == "answer":
-            accumulated += event.get("text", "")
+            chunk_text = event.get("text", "")
+            accumulated += chunk_text
+            if chunk_text:
+                agent.push_stream_event({"type": "chunk", "text": chunk_text})
         elif etype == "error":
             raise RuntimeError(f"DeepSeek: {event.get('message', 'unknown error')}")
 
@@ -430,6 +450,7 @@ async def _call_qwen(
                     content = delta.get("content", "")
                     if content:
                         accumulated += content
+                        agent.push_stream_event({"type": "chunk", "text": content})
 
     if not accumulated.strip():
         raise RuntimeError("Qwen returned empty response")

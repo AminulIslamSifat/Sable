@@ -74,7 +74,7 @@ const AgentTopBar = {
       `<span class="agent-spinner"></span>` +
       `<span class="agent-role">${escHtml(role)}</span>` +
       `<span class="agent-task-preview" title="${escAttr(task)}">${escHtml(task.slice(0, 30))}${task.length > 30 ? "…" : ""}</span>`;
-    card.onclick = () => AgentHistory.open(agentId);
+    card.onclick = () => AgentPanel.open(agentId, role, task);
     this.cards.set(agentId, card);
     this.container.appendChild(card);
   },
@@ -93,7 +93,7 @@ const AgentTopBar = {
     const role = card.querySelector(".agent-role")?.textContent || "agent";
     card.innerHTML = `<span class="agent-check">${lucideIcon("✓")}</span><span class="agent-role">${escHtml(role)}</span>`;
     activateLucideIcons(card);
-    card.onclick = () => AgentHistory.open(agentId);
+    card.onclick = () => AgentPanel.open(agentId, role);
     setTimeout(() => this.removeCard(agentId), 60000);
   },
 
@@ -105,7 +105,7 @@ const AgentTopBar = {
     card.innerHTML = `<span class="agent-x">${lucideIcon("✗")}</span><span class="agent-role">${escHtml(role)}</span>`;
     activateLucideIcons(card);
     card.title = error || "Failed";
-    card.onclick = () => AgentHistory.open(agentId);
+    card.onclick = () => AgentPanel.open(agentId, role);
     setTimeout(() => this.removeCard(agentId), 60000);
   },
 
@@ -170,7 +170,7 @@ function addAgentResultCard(ev) {
       toggleBtn.textContent = json.classList.contains("hidden") ? "result" : "hide";
     };
   }
-  card.querySelector(".arc-expand").onclick = () => AgentHistory.open(ev.agent_id);
+  card.querySelector(".arc-expand").onclick = () => AgentPanel.open(ev.agent_id, data.role);
   const pane = chatEl.querySelector(".tab-pane.active") || chatEl;
   pane.appendChild(card);
 
@@ -202,7 +202,7 @@ function addAgentBatchCard(agents) {
 
   card.querySelectorAll(".agent-batch-item").forEach((el) => {
     el.style.cursor = "pointer";
-    el.onclick = () => AgentHistory.open(el.dataset.agentId);
+    el.onclick = () => AgentPanel.open(el.dataset.agentId);
   });
 
   const pane = chatEl.querySelector(".tab-pane.active") || chatEl;
@@ -213,129 +213,274 @@ function addAgentBatchCard(agents) {
 }
 
 // --------------------------------------------------------------------------
-// History Viewer (modal)
+// Agent Panel (slide-in chat view)
 // --------------------------------------------------------------------------
-const AgentHistory = {
-  overlay: null,
-  pollTimer: null,
+const AgentPanel = {
+  el: null,
+  bodyEl: null,
+  currentAgentId: null,
+  abortController: null,
 
-  async open(agentId) {
-    this.close(); // dismiss any existing
-
-    const overlay = document.createElement("div");
-    overlay.className = "agent-history-overlay";
-
-    const panel = document.createElement("div");
-    panel.className = "agent-history-panel";
-    panel.innerHTML =
-      `<div class="agent-history-header">` +
-        `<h3>Agent ${escHtml(agentId)}</h3>` +
-        `<button class="agent-history-close">${lucideIcon("✕")}</button>` +
+  init() {
+    if (this.el) return;
+    this.el = document.createElement("div");
+    this.el.className = "agent-panel hidden";
+    this.el.innerHTML =
+      `<div class="agent-panel-header">` +
+        `<span class="agent-panel-title">Agent</span>` +
+        `<span class="agent-panel-status"></span>` +
+        `<button class="agent-panel-close">${lucideIcon("✕")}</button>` +
       `</div>` +
-      `<div class="agent-history-body"><p style="color:var(--muted)">Loading…</p></div>` +
-      `<div class="agent-history-footer"></div>`;
+      `<div class="agent-panel-body"></div>` +
+      `<div class="agent-panel-footer">` +
+        `<span class="ap-timer">0:00</span>` +
+        `<span class="ap-iteration">loop 0</span>` +
+        `<button class="agent-panel-stop hidden">■ stop</button>` +
+      `</div>`;
+    document.body.appendChild(this.el);
+    this.bodyEl = this.el.querySelector(".agent-panel-body");
+    this.timerEl = this.el.querySelector(".ap-timer");
+    this.iterEl = this.el.querySelector(".ap-iteration");
+    this.el.querySelector(".agent-panel-close").onclick = () => this.close();
+    this.el.querySelector(".agent-panel-stop").onclick = () => this.stopAgent();
+    activateLucideIcons(this.el);
+  },
 
-    overlay.appendChild(panel);
-    document.body.appendChild(overlay);
-    activateLucideIcons(panel);
-    this.overlay = overlay;
+  async open(agentId, role, task) {
+    this.init();
+    this.close(); // dismiss any existing stream
+    this.currentAgentId = agentId;
 
-    overlay.querySelector(".agent-history-close").onclick = () => this.close();
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) this.close(); });
-    document.addEventListener("keydown", this._escHandler);
+    // Header
+    this.el.querySelector(".agent-panel-title").textContent = `${role || "agent"}`;
+    this.el.querySelector(".agent-panel-status").textContent = task ? task.slice(0, 50) : agentId;
+    this.el.classList.remove("hidden");
+    document.body.classList.add("agent-panel-open");
+    this.bodyEl.innerHTML = "";
+    if (this.iterEl) this.iterEl.textContent = "loop 0";
 
-    // Fetch messages
+    // First: load existing messages + status + timing from DB
+    let agentFinished = false;
+    let createdAt = null;
+    let completedAt = null;
     try {
       const res = await fetch(`/api/agents/${agentId}/messages`);
       const data = await res.json();
-      this.renderMessages(panel, data.messages || []);
-      this.renderFooter(panel, agentId);
-    } catch (err) {
-      panel.querySelector(".agent-history-body").innerHTML =
-        `<p style="color:var(--danger)">Failed to load: ${escHtml(err.message)}</p>`;
-    }
-  },
-
-  renderMessages(panel, messages) {
-    const body = panel.querySelector(".agent-history-body");
-    body.innerHTML = "";
-
-    if (!messages.length) {
-      body.innerHTML = `<p style="color:var(--muted)">No messages recorded.</p>`;
-      return;
-    }
-
-    for (const msg of messages) {
-      const div = document.createElement("div");
-      const role = msg.role || "user";
-      div.className = `ah-msg ah-${role}`;
-
-      // Render markdown for tool/system messages, plain text for others
-      let contentHtml;
-      if ((role === "tool" || role === "system") && typeof marked !== "undefined") {
-        const raw = DOMPurify ? DOMPurify.sanitize(marked.parse(msg.content || "")) : marked.parse(msg.content || "");
-        contentHtml = raw;
-      } else {
-        contentHtml = escHtml(msg.content || "");
+      if (data.messages && data.messages.length) {
+        this._renderHistory(data.messages);
       }
+      createdAt = data.created_at || null;
+      completedAt = data.completed_at || null;
+      if (data.status === "done" || data.status === "failed") {
+        agentFinished = true;
+        this._setDone(data.status === "done" ? "completed" : "failed");
+      }
+    } catch { /* fresh agent, no history yet */ }
 
-      div.innerHTML =
-        `<div class="ah-msg-role">${escHtml(role)}</div>` +
-        `<div class="ah-msg-content">${contentHtml}</div>`;
-      body.appendChild(div);
+    // Start timer based on actual agent start time
+    this._startTimer(createdAt, completedAt);
+
+    // Show stop button only if agent is still running
+    const stopBtn = this.el.querySelector(".agent-panel-stop");
+    if (agentFinished) {
+      stopBtn.classList.add("hidden");
+    } else {
+      stopBtn.classList.remove("hidden");
     }
-    body.scrollTop = body.scrollHeight;
+
+    // Then: subscribe to live stream
+    this._connectStream(agentId);
   },
 
-  renderFooter(panel, agentId) {
-    // Fetch agent detail for footer stats
-    fetch(`/api/agents/${agentId}`)
-      .then((r) => r.json())
-      .then((data) => {
-        const footer = panel.querySelector(".agent-history-footer");
-        if (!footer || data.error) return;
-        const isRunning = data.status === "running" || data.status === "spawned";
-        footer.innerHTML =
-          `<span>Role: ${escHtml(data.role || "?")}</span>` +
-          `<span>Model: ${escHtml(data.model || "?")}</span>` +
-          `<span>Tokens: ${data.tokens_used || 0}</span>` +
-          `<span>Duration: ${data.duration || 0}s</span>` +
-          `<span>Status: ${escHtml(data.status || "?")}</span>` +
-          (isRunning ? `<button class="agent-stop-btn" title="Stop this agent">■ stop</button>` : "");
-        if (isRunning) {
-          footer.querySelector(".agent-stop-btn").onclick = () => this.stopAgent(agentId, footer);
-        }
+  _renderHistory(messages) {
+    for (const msg of messages) {
+      const role = msg.role || "user";
+      if (role === "system") continue; // skip system prompt in panel view
+      const div = document.createElement("div");
+      div.className = `ap-msg ap-${role}`;
+      let html;
+      if (typeof marked !== "undefined" && (role === "assistant" || role === "tool")) {
+        const raw = marked.parse(msg.content || "");
+        html = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw) : raw;
+      } else {
+        html = `<p>${escHtml(msg.content || "")}</p>`;
+      }
+      div.innerHTML = `<div class="ap-msg-role">${escHtml(role)}</div><div class="ap-msg-content">${html}</div>`;
+      this.bodyEl.appendChild(div);
+    }
+    this._scrollBottom();
+  },
+
+  _connectStream(agentId) {
+    this.abortController = new AbortController();
+    const signal = this.abortController.signal;
+
+    fetch(`/api/agents/${agentId}/stream`, { signal })
+      .then((res) => {
+        if (!res.ok || !res.body) throw new Error("Stream failed");
+        return this._consumeStream(res, agentId);
       })
-      .catch(() => {});
+      .catch((err) => {
+        if (err.name !== "AbortError") {
+          console.debug("[agents] panel stream error:", err.message);
+        }
+      });
   },
 
-  async stopAgent(agentId, footer) {
-    const btn = footer.querySelector(".agent-stop-btn");
+  async _consumeStream(res, agentId) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let currentAnswerEl = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop();
+
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith("data: ")) continue;
+        let evt;
+        try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+
+        if (evt.type === "chunk") {
+          // Live token streaming — append to current answer element
+          if (!currentAnswerEl) {
+            currentAnswerEl = document.createElement("div");
+            currentAnswerEl.className = "ap-msg ap-assistant ap-streaming";
+            currentAnswerEl.innerHTML = `<div class="ap-msg-role">assistant</div><div class="ap-msg-content"><span class="ap-raw"></span></div>`;
+            this.bodyEl.appendChild(currentAnswerEl);
+          }
+          const rawSpan = currentAnswerEl.querySelector(".ap-raw");
+          if (rawSpan) rawSpan.textContent += evt.text;
+          this._scrollBottom();
+        } else if (evt.type === "answer") {
+          // Final answer — replace raw streaming with rendered markdown
+          if (currentAnswerEl) {
+            currentAnswerEl.classList.remove("ap-streaming");
+            const raw = typeof marked !== "undefined" ? marked.parse(evt.text || "") : escHtml(evt.text || "");
+            const html = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw) : raw;
+            currentAnswerEl.querySelector(".ap-msg-content").innerHTML = html;
+          } else {
+            // No chunks received (e.g. history replay) — create fresh
+            currentAnswerEl = document.createElement("div");
+            currentAnswerEl.className = "ap-msg ap-assistant";
+            const raw = typeof marked !== "undefined" ? marked.parse(evt.text || "") : escHtml(evt.text || "");
+            const html = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw) : raw;
+            currentAnswerEl.innerHTML = `<div class="ap-msg-role">assistant</div><div class="ap-msg-content">${html}</div>`;
+            this.bodyEl.appendChild(currentAnswerEl);
+          }
+          currentAnswerEl = null;
+          this._scrollBottom();
+        } else if (evt.type === "skill_start") {
+          const card = document.createElement("div");
+          card.className = "ap-skill-card";
+          card.dataset.skill = evt.name || "";
+          card.innerHTML = `<span class="ap-skill-icon">⚙</span><span class="ap-skill-name">${escHtml(evt.name || "tool")}</span><span class="ap-skill-status">running…</span>`;
+          this.bodyEl.appendChild(card);
+          this._scrollBottom();
+        } else if (evt.type === "skill_output") {
+          // Append output to last skill card
+          const cards = this.bodyEl.querySelectorAll(".ap-skill-card");
+          const last = cards[cards.length - 1];
+          if (last) {
+            const out = document.createElement("pre");
+            out.className = "ap-skill-output";
+            out.textContent = (evt.text || "").slice(0, 2000);
+            last.appendChild(out);
+            this._scrollBottom();
+          }
+        } else if (evt.type === "skill_end") {
+          const cards = this.bodyEl.querySelectorAll(".ap-skill-card");
+          const last = cards[cards.length - 1];
+          if (last) {
+            const status = last.querySelector(".ap-skill-status");
+            if (status) {
+              status.textContent = evt.ok ? "✓ done" : "✗ error";
+              status.className = `ap-skill-status ${evt.ok ? "ok" : "fail"}`;
+            }
+          }
+        } else if (evt.type === "iteration") {
+          if (this.iterEl) this.iterEl.textContent = `loop ${evt.iteration}`;
+        } else if (evt.type === "done") {
+          this._setDone("completed");
+          break;
+        } else if (evt.type === "error") {
+          const errDiv = document.createElement("div");
+          errDiv.className = "ap-msg ap-error";
+          errDiv.textContent = evt.message || "Agent failed";
+          this.bodyEl.appendChild(errDiv);
+          this._setDone("failed");
+          break;
+        }
+      }
+    }
+  },
+
+  _setDone(status) {
+    const stopBtn = this.el.querySelector(".agent-panel-stop");
+    if (stopBtn) stopBtn.classList.add("hidden");
+    this._stopTimer();
+    const statusEl = this.el.querySelector(".agent-panel-status");
+    if (statusEl) statusEl.textContent = status === "completed" ? "✓ completed" : "✗ failed";
+    this.el.classList.add(status === "completed" ? "panel-done" : "panel-failed");
+  },
+
+  async stopAgent() {
+    if (!this.currentAgentId) return;
+    const btn = this.el.querySelector(".agent-panel-stop");
     if (btn) { btn.disabled = true; btn.textContent = "…"; }
     try {
-      const res = await fetch(`/api/agents/${agentId}/kill`, { method: "POST" });
-      const data = await res.json();
-      if (data.status === "killed") {
-        if (btn) { btn.textContent = "stopped"; btn.classList.add("stopped"); }
-        // Update status text in footer
-        const spans = footer.querySelectorAll("span");
-        for (const s of spans) {
-          if (s.textContent.startsWith("Status:")) s.textContent = "Status: stopped";
-        }
-      }
+      await fetch(`/api/agents/${this.currentAgentId}/kill`, { method: "POST" });
+      if (btn) { btn.textContent = "stopped"; }
     } catch {
       if (btn) { btn.disabled = false; btn.textContent = "■ stop"; }
     }
   },
 
-  close() {
-    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
-    if (this.overlay) { this.overlay.remove(); this.overlay = null; }
-    document.removeEventListener("keydown", this._escHandler);
+  _scrollBottom() {
+    if (this.bodyEl) this.bodyEl.scrollTop = this.bodyEl.scrollHeight;
   },
 
-  _escHandler(e) {
-    if (e.key === "Escape") AgentHistory.close();
+  close() {
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+    this._stopTimer();
+    if (this.el) {
+      this.el.classList.add("hidden");
+      this.el.classList.remove("panel-done", "panel-failed");
+    }
+    document.body.classList.remove("agent-panel-open");
+    this.currentAgentId = null;
+  },
+
+  _startTimer(createdAt, completedAt) {
+    // Use agent's actual start time (seconds epoch) or fall back to now
+    this._timerStart = createdAt ? createdAt * 1000 : Date.now();
+    const endTime = completedAt ? completedAt * 1000 : null;
+
+    const update = () => {
+      const now = endTime || Date.now();
+      const s = Math.max(0, Math.floor((now - this._timerStart) / 1000));
+      const m = Math.floor(s / 60);
+      const sec = s % 60;
+      if (this.timerEl) this.timerEl.textContent = `${m}:${String(sec).padStart(2, "0")}`;
+    };
+
+    update(); // show correct time immediately
+    if (!endTime) {
+      this._timerInterval = setInterval(update, 1000);
+    }
+  },
+
+  _stopTimer() {
+    if (this._timerInterval) { clearInterval(this._timerInterval); this._timerInterval = null; }
   },
 };
 
