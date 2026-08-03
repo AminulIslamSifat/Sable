@@ -57,12 +57,20 @@ class ChatService:
         # Slow path: first-time fetch — serialize to avoid duplicate browser launches
         async with self._lock:
             if not self._headers:
-                self._headers = await self._browser.get_fresh_headers()
+                await self._browser.start()
+                try:
+                    self._headers = await self._browser.get_fresh_headers()
+                finally:
+                    await self._browser.close()
             return self._headers
 
     async def _refresh_headers(self) -> dict[str, str]:
         async with self._lock:
-            self._headers = await self._browser.get_fresh_headers()
+            await self._browser.start()
+            try:
+                self._headers = await self._browser.get_fresh_headers()
+            finally:
+                await self._browser.close()
             return self._headers
 
     async def warmup(self) -> None:
@@ -74,11 +82,20 @@ class ChatService:
             except Exception as exc:
                 logger.warning("Warmup failed: %s: %s", type(exc).__name__, exc)
                 self._headers = None
+            finally:
+                # Browser is only needed for token extraction at startup.
+                # All chat/upload operations now use pure httpx.
+                await self._browser.close()
+                logger.info("Browser closed after warmup (httpx-only mode)")
 
     async def refresh_deepseek_token(self) -> str:
-        """Extract a fresh DeepSeek token from the shared browser profile."""
+        """Extract a fresh DeepSeek token. Re-launches browser if closed."""
         async with self._lock:
-            return await self._browser.extract_deepseek_token()
+            await self._browser.start()
+            try:
+                return await self._browser.extract_deepseek_token()
+            finally:
+                await self._browser.close()
 
     async def create_chat(self, model: str | None = None) -> str | None:
         headers = await self._ensure_headers()
@@ -89,7 +106,13 @@ class ChatService:
         return chat_id
 
     async def upload_image(self, image_path: str) -> dict[str, Any] | None:
-        return await self._browser.upload_image(image_path)
+        headers = await self._ensure_headers()
+        return await self._browser.upload_image(
+            image_path,
+            cookies=headers.get("Cookie"),
+            bx_ua=headers.get("bx-ua"),
+            bx_umidtoken=headers.get("bx-umidtoken"),
+        )
 
     async def upload_deepseek_file(
         self,
@@ -97,16 +120,14 @@ class ChatService:
         model_type: str = "vision",
         thinking_enabled: bool = False,
     ) -> dict[str, Any]:
-        """Upload a file for DeepSeek Vision via the shared browser context."""
-        from connectors.deepseek.upload import upload_file_via_browser_manager
+        """Upload a file for DeepSeek Vision via pure httpx (no browser)."""
+        from connectors.deepseek.upload import upload_file
 
-        async with self._lock:
-            return await upload_file_via_browser_manager(
-                self._browser,
-                file_path,
-                model_type=model_type,
-                thinking_enabled=thinking_enabled,
-            )
+        return await upload_file(
+            file_path,
+            model_type=model_type,
+            thinking_enabled=thinking_enabled,
+        )
 
     async def sync_context(self) -> bool:
         return await self._browser.sync_context()

@@ -22,6 +22,8 @@ from typing import Any
 
 import httpx
 
+from connectors.common.media import prepare_inline_file, to_openai_image
+
 logger = logging.getLogger("sable.mistral_api")
 
 BASE_URL = "https://api.mistral.ai/v1"
@@ -156,18 +158,38 @@ class MistralClient:
         return self._http
 
     @staticmethod
+    def _model_supports_thinking(model_id: str) -> bool:
+        """Check if a model supports thinking/reasoning based on its config.
+
+        Returns True only if the model has at least one thinking mode with
+        thinking_enabled=True. Models with only 'fast' mode don't support it.
+        """
+        try:
+            from engine.config import get_model_config
+            cfg = get_model_config(model_id)
+            modes = cfg.get("thinking_modes", [])
+            return any(m.get("thinking_enabled", False) for m in modes)
+        except Exception:
+            return False
+
+    @staticmethod
     def _resolve_reasoning_effort(thinking_mode: str | None) -> str | None:
-        """Map Sable thinking mode to Mistral reasoning_effort parameter."""
+        """Map Sable thinking mode to Mistral reasoning_effort parameter.
+
+        Returns None for fast/disabled modes (param is simply omitted).
+        Mistral accepts: low, medium, high. No 'none' value exists.
+        """
         if not thinking_mode:
             return None
         mode = thinking_mode.lower()
-        if mode in ("thinking", "high", "deepthink"):
-            return "high"
         if mode in ("fast", "none"):
-            return "none"
-        # low/medium → still "high" (Mistral only has high/none)
-        if mode in ("low", "medium"):
+            return None  # Omit param entirely — no reasoning
+        if mode in ("thinking", "deepthink", "high"):
             return "high"
+        if mode == "medium":
+            return "medium"
+        if mode == "low":
+            return "low"
         return None
 
     def _get_or_create_session(
@@ -204,6 +226,7 @@ class MistralClient:
         thinking_mode: str | None = None,
         chat_id: str | None = None,
         inject_instructions: bool = True,
+        files: list[str] | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat completion, yielding Sable-standard events."""
@@ -215,7 +238,19 @@ class MistralClient:
         url = f"{BASE_URL}/chat/completions"
 
         history = self._get_or_create_session(chat_id, inject_instructions)
-        history.append({"role": "user", "content": message})
+
+        # Build multimodal content when files are attached
+        if files:
+            content: list[dict[str, Any]] = [{"type": "text", "text": message}]
+            for fpath in files:
+                pf = prepare_inline_file(fpath)
+                if pf and pf.category == "image":
+                    content.append(to_openai_image(pf))
+                elif pf:
+                    content[0]["text"] += f"\n\n[Attached file: {Path(fpath).name} ({pf.mime_type}, {pf.size_bytes} bytes)]"
+            history.append({"role": "user", "content": content})
+        else:
+            history.append({"role": "user", "content": message})
 
         payload: dict[str, Any] = {
             "model": model_id,
@@ -223,10 +258,11 @@ class MistralClient:
             "stream": True,
         }
 
-        # Map thinking_mode to Mistral reasoning_effort
-        reasoning = self._resolve_reasoning_effort(thinking_mode)
-        if reasoning:
-            payload["reasoning_effort"] = reasoning
+        # Map thinking_mode to Mistral reasoning_effort (only for thinking-capable models)
+        if self._model_supports_thinking(model_id):
+            reasoning = self._resolve_reasoning_effort(thinking_mode)
+            if reasoning:
+                payload["reasoning_effort"] = reasoning
 
         # Try each key with rotation on failure
         attempts = len(self._keys)
@@ -322,6 +358,7 @@ class MistralClient:
         chat_id: str | None = None,
         ref_file_ids: list[str] | None = None,
         inject_instructions: bool = True,
+        files: list[str] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Non-streaming chat. Returns {answer, thinking, parent_id, error}."""
@@ -336,6 +373,7 @@ class MistralClient:
             thinking_mode=thinking_mode,
             chat_id=chat_id,
             inject_instructions=inject_instructions,
+            files=files,
         ):
             etype = event.get("type")
             if etype == "answer":

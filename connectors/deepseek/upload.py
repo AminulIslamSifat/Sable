@@ -1,147 +1,144 @@
 
-"""Standalone DeepSeek file-upload helper for Sable.
+"""DeepSeek file upload via pure httpx + PoW. No browser required.
 
-This module intentionally avoids modifying engine/session.py. It accepts an
-already-managed BrowserManager-like object and uses its shared persistent
-browser context to upload a file through the real DeepSeek web client.
-
-The web client generates the actual upload request, including any anti-bot
-headers. We only intercept the response and optionally enforce model headers.
+Flow: request PoW challenge → solve nonce (Go binary, ~84ms) → multipart POST.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from typing import Any
 
-UPLOAD_ENDPOINT_SUFFIX = "/api/v0/file/upload_file"
+logger = logging.getLogger(__name__)
+
+UPLOAD_TARGET_PATH = "/api/v0/file/upload_file"
+
+# Guess content-type from extension
+_MIME_MAP: dict[str, str] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".svg": "image/svg+xml",
+    ".pdf": "application/pdf",
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+    ".csv": "text/csv",
+    ".json": "application/json",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
 
 
-async def upload_file_via_browser_manager(
-    browser_manager: Any,
+async def upload_file(
     file_path: str,
     model_type: str = "vision",
     thinking_enabled: bool = False,
 ) -> dict[str, Any]:
-    """Upload a file through DeepSeek's web UI using the shared browser context.
+    """Upload a file to DeepSeek via httpx multipart POST with PoW.
 
     Args:
-        browser_manager: Object exposing async start() and a Playwright context
-            as ``context``. Sable's ``engine.session.BrowserManager`` satisfies this.
         file_path: Local path of the file to upload.
-        model_type: DeepSeek model type header to enforce, default ``vision``.
-        thinking_enabled: Thinking header to enforce for the upload request.
+        model_type: DeepSeek model type header, default ``vision``.
+        thinking_enabled: Whether thinking mode is active.
 
     Returns:
-        Dict with at least ``file_id``, plus raw metadata from DeepSeek.
+        Dict with ``file_id``, ``status``, ``file_name``, ``file_size``,
+        ``model_kind``, ``is_image``, and ``raw`` metadata.
     """
-    await browser_manager.start()
-    context = getattr(browser_manager, "context", None)
-    if context is None:
-        raise RuntimeError("Browser session is not available")
+    from connectors.deepseek.client import get_client
 
     abs_path = os.path.abspath(os.path.expanduser(file_path))
     if not os.path.exists(abs_path):
         raise FileNotFoundError(f"Upload file not found: {abs_path}")
 
     file_size = os.path.getsize(abs_path)
-    page = await context.new_page()
+    file_name = os.path.basename(abs_path)
+    ext = os.path.splitext(file_name)[1].lower()
+    mime = _MIME_MAP.get(ext, "application/octet-stream")
 
-    try:
-        async def _add_upload_headers(route: Any) -> None:
-            headers = {
-                **route.request.headers,
-                "x-model-type": model_type,
-                "x-thinking-enabled": "1" if thinking_enabled else "0",
-                "x-file-size": str(file_size),
-            }
-            await route.continue_(headers=headers)
+    client = get_client()
 
-        await page.route(f"**{UPLOAD_ENDPOINT_SUFFIX}", _add_upload_headers)
-
-        await page.goto(
-            "https://chat.deepseek.com",
-            wait_until="domcontentloaded",
-            timeout=30000,
+    # Step 1: Get PoW challenge for upload endpoint
+    http = await client._get_http()
+    resp = await http.post(
+        "/api/v0/chat/create_pow_challenge",
+        json={"target_path": UPLOAD_TARGET_PATH},
+        headers=client._auth_headers(),
+    )
+    if resp.status_code == 401:
+        await client._refresh_token()
+        resp = await http.post(
+            "/api/v0/chat/create_pow_challenge",
+            json={"target_path": UPLOAD_TARGET_PATH},
+            headers=client._auth_headers(),
         )
-        await page.wait_for_timeout(3000)
+    resp.raise_for_status()
 
-        async with page.expect_response(
-            lambda r: r.url.rstrip("/").endswith(UPLOAD_ENDPOINT_SUFFIX)
-            and r.request.method == "POST",
-            timeout=90000,
-        ) as upload_info:
-            uploaded = False
+    data = resp.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"Challenge failed: {data.get('msg', 'unknown')}")
+    challenge = data["data"]["biz_data"]["challenge"]
 
-            # Preferred path: a real file input exists in the DOM.
-            try:
-                await page.wait_for_selector(
-                    "input[type=file]",
-                    state="attached",
-                    timeout=8000,
-                )
-                file_inputs = await page.query_selector_all("input[type=file]")
-                if file_inputs:
-                    # Prefer an input that explicitly accepts images when available.
-                    chosen = file_inputs[0]
-                    for handle in file_inputs:
-                        accept = (await handle.get_attribute("accept")) or ""
-                        if "image" in accept.lower():
-                            chosen = handle
-                            break
-                    await chosen.set_input_files(abs_path)
-                    uploaded = True
-            except Exception:
-                uploaded = False
+    # Step 2: Solve PoW in thread pool
+    loop = asyncio.get_event_loop()
+    nonce = await loop.run_in_executor(None, client._solve_pow, challenge)
 
-            # Fallback: trigger a file chooser from common attach controls.
-            if not uploaded:
-                attach_selectors = [
-                    '[aria-label*="Attach" i]',
-                    '[aria-label*="Upload" i]',
-                    '[data-testid*="attach" i]',
-                    '[data-testid*="upload" i]',
-                    '[data-testid*="file" i]',
-                    'button[aria-haspopup="dialog"]',
-                ]
-                for selector in attach_selectors:
-                    locator = page.locator(selector).first
-                    if await locator.count() == 0:
-                        continue
-                    try:
-                        async with page.expect_file_chooser(timeout=5000) as fc_info:
-                            await locator.click(force=True, timeout=5000)
-                        file_chooser = await fc_info.value
-                        await file_chooser.set_files(abs_path)
-                        uploaded = True
-                        break
-                    except Exception:
-                        continue
+    # Step 3: Build header and upload
+    pow_header = client._build_pow_header(challenge, nonce)
 
-            if not uploaded:
-                raise RuntimeError(
-                    "Could not find a DeepSeek attach/upload control in the browser page."
-                )
+    headers = {
+        **client._auth_headers(),
+        "x-ds-pow-response": pow_header,
+        "x-model-type": model_type,
+        "x-thinking-enabled": "1" if thinking_enabled else "0",
+        "x-file-size": str(file_size),
+    }
 
-        response = await upload_info.value
-        payload = await response.json()
+    with open(abs_path, "rb") as f:
+        file_bytes = f.read()
 
-        if payload.get("code") != 0:
-            raise RuntimeError(f"DeepSeek upload failed: {payload}")
+    upload_resp = await http.post(
+        UPLOAD_TARGET_PATH,
+        headers=headers,
+        files={"file": (file_name, file_bytes, mime)},
+    )
+    upload_resp.raise_for_status()
 
-        biz = payload.get("data", {}).get("biz_data", {})
-        file_id = biz.get("id")
-        if not file_id:
-            raise RuntimeError(f"DeepSeek upload response missing file id: {payload}")
+    payload = upload_resp.json()
+    if payload.get("code") != 0:
+        raise RuntimeError(f"DeepSeek upload failed: {payload}")
 
-        return {
-            "file_id": str(file_id),
-            "status": biz.get("status"),
-            "file_name": biz.get("file_name") or os.path.basename(abs_path),
-            "file_size": biz.get("file_size") or file_size,
-            "model_kind": biz.get("model_kind"),
-            "is_image": bool(biz.get("is_image", False)),
-            "raw": biz,
-        }
-    finally:
-        await page.close()
+    biz = payload.get("data", {}).get("biz_data", {})
+    file_id = biz.get("id")
+    if not file_id:
+        raise RuntimeError(f"DeepSeek upload response missing file id: {payload}")
+
+    logger.info("DeepSeek upload OK: %s → %s", file_name, file_id)
+
+    return {
+        "file_id": str(file_id),
+        "status": biz.get("status"),
+        "file_name": biz.get("file_name") or file_name,
+        "file_size": biz.get("file_size") or file_size,
+        "model_kind": biz.get("model_kind"),
+        "is_image": bool(biz.get("is_image", False)),
+        "raw": biz,
+    }
+
+
+# Backward compat alias — old callers pass browser_manager as first arg
+async def upload_file_via_browser_manager(
+    browser_manager: Any,
+    file_path: str,
+    model_type: str = "vision",
+    thinking_enabled: bool = False,
+) -> dict[str, Any]:
+    """Legacy wrapper. Ignores browser_manager, uses pure httpx."""
+    return await upload_file(file_path, model_type=model_type, thinking_enabled=thinking_enabled)

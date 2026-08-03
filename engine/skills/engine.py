@@ -117,11 +117,16 @@ class SkillEngine:
         """Return all registered tag names (for parser initialization)."""
         return tuple(self._tag_ownership.keys()) or KNOWN_TAGS
 
-    def get_registry_prompt(self) -> str:
+    def get_registry_prompt(self, include_defaults: bool = True) -> str:
         """Generate the skills section for the LLM system prompt.
 
-        Default skills get their full instruction.md injected inline.
-        Non-default skills get a compact trigger/path listing.
+        Args:
+            include_defaults: If True, default skills get full instruction.md injected.
+                              If False, ALL skills (including defaults) get compact
+                              trigger/path listing only — for models that can't handle
+                              large system prompts.
+
+        Non-default skills always get a compact trigger/path listing.
         Includes routing protocol and action wrapper rules.
         """
         lines: list[str] = []
@@ -147,22 +152,27 @@ class SkillEngine:
         lines.append("***")
         lines.append("")
 
-        # Default skills: inject full instruction.md
+        # Default skills
         default_skills = [s for s in self._skills if s.default]
-        for skill in default_skills:
-            lines.append(f"## {skill.name} (DEFAULT — always active)")
-            lines.append("")
-            if skill.instruction_path and skill.instruction_path.exists():
-                content = skill.instruction_path.read_text(encoding="utf-8", errors="replace")
-                lines.append(content.strip())
-            else:
-                lines.append(f"*Trigger: {skill.trigger}*")
-            lines.append("")
-            lines.append("***")
-            lines.append("")
+        if include_defaults:
+            # Full instruction.md injection for capable models
+            for skill in default_skills:
+                lines.append(f"## {skill.name} (DEFAULT — always active)")
+                lines.append("")
+                if skill.instruction_path and skill.instruction_path.exists():
+                    content = skill.instruction_path.read_text(encoding="utf-8", errors="replace")
+                    lines.append(content.strip())
+                else:
+                    lines.append(f"*Trigger: {skill.trigger}*")
+                lines.append("")
+                lines.append("***")
+                lines.append("")
+        else:
+            # Compact listing only — treat defaults same as non-defaults
+            pass  # They'll be included in the unified listing below
 
-        # Non-default skills: compact listing grouped by category
-        non_default = [s for s in self._skills if not s.default]
+        # Non-default skills (or ALL skills when include_defaults=False): compact listing grouped by category
+        non_default = self._skills if not include_defaults else [s for s in self._skills if not s.default]
         if non_default:
             categories: dict[str, list[SkillMeta]] = {}
             for skill in non_default:

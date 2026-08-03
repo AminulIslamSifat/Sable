@@ -107,6 +107,25 @@ async def refresh_deepseek_token() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Refresh failed: {exc}")
 
 
+@router.post("/api/settings/browser/refresh-waf")
+async def refresh_waf_token() -> dict[str, Any]:
+    """Re-launch browser briefly to extract fresh Qwen WAF/cookie headers."""
+    try:
+        svc = service
+        headers = await svc._refresh_headers()
+        has_cookie = bool(headers.get("Cookie"))
+        has_bx = bool(headers.get("bx-ua"))
+        return {
+            "status": "ok",
+            "message": "WAF tokens refreshed",
+            "has_cookie": has_cookie,
+            "has_bx_ua": has_bx,
+        }
+    except Exception as exc:
+        logger.error("WAF token refresh failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Refresh failed: {exc}")
+
+
 @router.post("/api/settings/gemini/api-key")
 async def add_gemini_api_key(request: Request) -> dict[str, Any]:
     """Add a Gemini API key to the pool."""
@@ -324,15 +343,28 @@ async def add_model(request: Request) -> dict[str, Any]:
     backend = body.get("api_backend", "").strip()
     if not mid or not label or not backend:
         raise HTTPException(status_code=400, detail="Missing id, label, or api_backend")
+
+    # Thinking support: explicit flag from UI, or derive from provided thinking_modes
+    supports_thinking = body.get("supports_thinking", False)
+    if "thinking_modes" in body:
+        thinking_modes = body["thinking_modes"]
+    elif supports_thinking:
+        thinking_modes = [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+            {"id": "high", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "High"},
+        ]
+    else:
+        thinking_modes = [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+        ]
+
     model_def = {
         "id": mid,
         "label": label,
         "api_backend": backend,
         "api_model_type": body.get("api_model_type", mid),
         "capabilities": body.get("capabilities", {"image": False, "video": False, "document": False, "audio": False}),
-        "thinking_modes": body.get("thinking_modes", [
-            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
-        ]),
+        "thinking_modes": thinking_modes,
         "_custom": True,
     }
     add_custom_model(model_def)
