@@ -1,5 +1,5 @@
 
-"""Web handlers: openweb, search_online."""
+"""Web handlers: openweb, online_search."""
 
 from __future__ import annotations
 
@@ -19,10 +19,10 @@ from engine.skills.handlers.common import (
     strip_html,
 )
 
-_SEARCH_SCRIPT = SKILLS_DIR / "search_online" / "scripts" / "web_search_batch.py"
+_SEARCH_SCRIPT = SKILLS_DIR / "online_search" / "scripts" / "web_search_batch.py"
 
 
-def handle_search_online(
+def handle_online_search(
     tag_id: str, name: str, attrs: dict[str, str], content: str
 ) -> Generator[dict[str, Any], None, None]:
     started = time.time()

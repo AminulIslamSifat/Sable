@@ -32,8 +32,8 @@ AGENT_ROLES: dict[str, RoleConfig] = {
             + "\nFinal answer schema:\n"
             '{"topic": str, "sources": [str], "findings": [str], "summary": str, "confidence": "high|medium|low"}'
         ),
-        allowed_skills=["execute_command", "search_online", "file_uploader"],
-        default_skills=["search_online"],
+        allowed_skills=["execute_command", "online_search", "file_uploader"],
+        default_skills=["online_search"],
         default_model="deepseek-instant",
         default_timeout=90,
         max_parallel=4,
@@ -48,7 +48,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
             '{"description": str, "files_modified": [{"path": str, "lines": str, "change": str}], '
             '"tests": "pass|fail|skipped", "notes": str}'
         ),
-        allowed_skills=["execute_command", "code_editor", "background_command", "search_online"],
+        allowed_skills=["execute_command", "code_editor", "background_command", "online_search"],
         default_skills=["code_editor", "background_command"],
         default_model="qwen3.7-max",
         default_timeout=180,
@@ -65,7 +65,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
             '"warnings": [{"issue": str, "location": str}], "info": [str], '
             '"verdict": "approve|request_changes|needs_discussion"}'
         ),
-        allowed_skills=["execute_command", "code_editor", "search_online"],
+        allowed_skills=["execute_command", "code_editor", "online_search"],
         default_skills=["code_editor"],
         default_model="deepseek-instant",
         default_timeout=60,
@@ -79,7 +79,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
             + "\nFinal answer schema:\n"
             '{"title": str, "path": str, "structure": [str], "word_count": int, "notes": str}'
         ),
-        allowed_skills=["execute_command", "code_editor", "search_online"],
+        allowed_skills=["execute_command", "code_editor", "online_search"],
         default_skills=["code_editor"],
         default_model="deepseek-expert",
         default_timeout=120,
@@ -96,7 +96,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
             + "\nFinal answer schema:\n"
             '{"task": str, "actions_taken": [str], "result": str, "notes": str}'
         ),
-        allowed_skills=["execute_command", "code_editor", "background_command", "search_online", "file_uploader"],
+        allowed_skills=["execute_command", "code_editor", "background_command", "online_search", "file_uploader"],
         default_skills=["code_editor", "background_command"],
         default_model="deepseek-instant",
         default_timeout=120,

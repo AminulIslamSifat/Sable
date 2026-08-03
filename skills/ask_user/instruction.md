@@ -40,5 +40,5 @@ Confirmation:
 
 Multi-select:
 ```xml
-<ask_user question="Which skills to enable for this agent?" options='["code_editor", "browser_control", "search_online", "Other (type manually)"]' multi="true" />
+<ask_user question="Which skills to enable for this agent?" options='["code_editor", "browser_control", "online_search", "Other (type manually)"]' multi="true" />
 ```
