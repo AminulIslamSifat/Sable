@@ -11,7 +11,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 # Override with SABLE_HOST / SABLE_PORT environment variables when needed.
 # --------------------------------------------------------------------------
 HOST = os.getenv("SABLE_HOST", "0.0.0.0")
-PORT = int(os.getenv("SABLE_PORT", "61770"))
+PORT = int(os.getenv("SABLE_PORT", "61771"))
 
 # --------------------------------------------------------------------------
 # Runtime data paths — single source of truth used by server.py and any
@@ -47,6 +47,7 @@ MODELS = [
     {
         "id": "qwen3.8-max-preview",
         "label": "Qwen3.8 Max Preview",
+        "capabilities": {"image": True, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {
                 "id": "thinking",
@@ -60,6 +61,7 @@ MODELS = [
     {
         "id": "qwen3.7-max",
         "label": "Qwen3.7 Max",
+        "capabilities": {"image": True, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {
                 "id": "fast",
@@ -80,6 +82,7 @@ MODELS = [
     {
         "id": "qwen3.7-plus",
         "label": "Qwen3.7 Plus",
+        "capabilities": {"image": True, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {
                 "id": "fast",
@@ -109,6 +112,7 @@ MODELS = [
         "label": "DeepSeek Expert",
         "api_backend": "deepseek",
         "api_model_type": "expert",
+        "capabilities": {"image": False, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {
                 "id": "fast",
@@ -131,6 +135,7 @@ MODELS = [
         "label": "DeepSeek Instant",
         "api_backend": "deepseek",
         "api_model_type": None,
+        "capabilities": {"image": False, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {
                 "id": "fast",
@@ -153,6 +158,7 @@ MODELS = [
         "label": "DeepSeek Vision",
         "api_backend": "deepseek",
         "api_model_type": "vision",
+        "capabilities": {"image": True, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {
                 "id": "fast",
@@ -170,25 +176,128 @@ MODELS = [
             },
         ],
     },
+    {
+        "id": "gemini-2.5-flash",
+        "label": "Gemini 2.5 Flash",
+        "api_backend": "gemini",
+        "api_model_type": "gemini-2.5-flash",
+        "capabilities": {"image": True, "video": False, "document": True, "audio": False},
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+            {"id": "low", "label": "Low", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Low"},
+            {"id": "medium", "label": "Medium", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Medium"},
+            {"id": "high", "label": "High", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "High"},
+        ],
+    },
+    {
+        "id": "gemini-2.5-pro",
+        "label": "Gemini 2.5 Pro",
+        "api_backend": "gemini",
+        "api_model_type": "gemini-2.5-pro",
+        "capabilities": {"image": True, "video": False, "document": True, "audio": False},
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+            {"id": "low", "label": "Low", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Low"},
+            {"id": "medium", "label": "Medium", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Medium"},
+            {"id": "high", "label": "High", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "High"},
+        ],
+    },
 ]
 
 # Default/current model id — kept for backward compatibility with code that
 # imports MODEL directly (chat.py, session.py create_new_chat, etc.)
 MODEL = MODELS[0]["id"]
 
+# ---------------------------------------------------------------------------
+# Dynamic model registry — user-added models from Providers UI
+# ---------------------------------------------------------------------------
+_CUSTOM_MODELS_PATH = _SYSTEM / ".custom_models.json"
+_HIDDEN_MODELS_PATH = _SYSTEM / ".hidden_models.json"
+
+
+def _load_hidden_models() -> list[str]:
+    """Load list of hidden (user-deleted) static model IDs."""
+    if not _HIDDEN_MODELS_PATH.exists():
+        return []
+    try:
+        import json as _json
+        data = _json.loads(_HIDDEN_MODELS_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return []
+
+
+def _save_hidden_models(ids: list[str]) -> None:
+    """Persist hidden model IDs."""
+    import json as _json
+    _HIDDEN_MODELS_PATH.write_text(_json.dumps(ids, indent=2), encoding="utf-8")
+
+
+def _load_custom_models() -> list[dict]:
+    """Load user-added model definitions."""
+    if not _CUSTOM_MODELS_PATH.exists():
+        return []
+    try:
+        import json as _json
+        data = _json.loads(_CUSTOM_MODELS_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return []
+
+
+def _save_custom_models(models: list[dict]) -> None:
+    """Persist user-added model definitions."""
+    import json as _json
+    _CUSTOM_MODELS_PATH.write_text(_json.dumps(models, indent=2), encoding="utf-8")
+
+
+def get_all_models() -> list[dict]:
+    """Return static + custom models merged, excluding hidden/deleted ones."""
+    hidden = set(_load_hidden_models())
+    custom = _load_custom_models()
+    custom_ids = {m["id"] for m in custom}
+    # Static models: exclude hidden and custom-overridden
+    merged = [m for m in MODELS if m["id"] not in custom_ids and m["id"] not in hidden]
+    # Custom models: exclude hidden
+    merged.extend(m for m in custom if m.get("id") not in hidden)
+    return merged
+
+
+def add_custom_model(model_def: dict) -> None:
+    """Add or update a custom model definition."""
+    customs = _load_custom_models()
+    mid = model_def.get("id", "")
+    # Replace if exists, else append
+    customs = [m for m in customs if m.get("id") != mid]
+    customs.append(model_def)
+    _save_custom_models(customs)
+
+
+def remove_custom_model(model_id: str) -> bool:
+    """Remove a custom model. Returns True if removed."""
+    customs = _load_custom_models()
+    new = [m for m in customs if m.get("id") != model_id]
+    if len(new) < len(customs):
+        _save_custom_models(new)
+        return True
+    return False
+
 
 def get_model_config(model_id: str | None = None) -> dict:
     """Return the model config dict for model_id, falling back to the default MODEL.
 
-    If model_id isn't found in MODELS, falls back to the first entry rather
-    than raising, so an unrecognized/legacy model string doesn't crash payload
-    building — it just won't get thinking mode toggled correctly.
+    Searches both static MODELS and user-added custom models.
+    Falls back to the first entry rather than raising.
     """
     target = model_id or MODEL
-    for entry in MODELS:
+    for entry in get_all_models():
         if entry["id"] == target:
             return entry
-    return MODELS[0]
+    return get_all_models()[0]
 
 
 def get_thinking_mode_config(model_id: str | None = None, thinking_mode_id: str | None = None) -> dict:

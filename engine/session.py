@@ -8,7 +8,6 @@ import json
 from pathlib import Path
 
 import httpx
-from playwright.async_api import async_playwright
 from engine.config import COOKIES, BX_UA, BX_UMIDTOKEN, NEW_CHAT_URL, get_model_config
 
 
@@ -67,6 +66,7 @@ class BrowserManager:
         if not self.playwright:
             self._check_profile_lock()
             print(f"[DEBUG] Launching persistent browser context (headless={self.headless})...")
+            from playwright.async_api import async_playwright
             self.playwright = await async_playwright().start()
             self.context = await self.playwright.chromium.launch_persistent_context(
                 user_data_dir=self.user_data_dir,

@@ -16,6 +16,7 @@ from engine.memory_search import get_searcher
 from engine.scraper import get_settings as get_scraper_settings, scraper as scraper_service
 from engine.skills import SkillEngine, SkillParser, build_tool_feedback
 from engine.skills.handlers import HANDLER_MAP
+from connectors import get_connector
 from connectors.deepseek.client import get_client as get_deepseek_client
 
 _skill_engine: SkillEngine | None = None
@@ -42,7 +43,7 @@ from server.database import (
     touch_chat, save_chat_url, get_chat_url,
     add_message, update_message, get_messages, list_chats, delete_chat, get_parent_id,
 )
-from server.utils import retry_async, retry_stream, make_title, _is_deepseek_api_model, logger
+from server.utils import retry_async, retry_stream, make_title, _is_deepseek_api_model, _resolve_api_backend, _is_api_model, logger
 from server.models import ChatRequest
 from ..dependencies import service, sse
 
@@ -111,8 +112,8 @@ async def chat(request: ChatRequest):
         }
     if scraper_enabled:
         current_provider = "scraping"
-    elif _is_deepseek_api_model(request.model):
-        current_provider = "deepseek"
+    elif _is_api_model(request.model):
+        current_provider = _resolve_api_backend(request.model)
     else:
         current_provider = "qwen"
     locked_provider = get_chat_provider(active_chat_id)
@@ -172,17 +173,25 @@ async def chat(request: ChatRequest):
         touch_chat(active_chat_id, final_parent)
         result["memory_used"] = _memory_used
         return result
-    if not request.stream and _is_deepseek_api_model(request.model):
-        ds_cfg = get_model_config(request.model)
-        api_model_type = ds_cfg.get("api_model_type", "default")
-        ds_ephemeral = api_model_type == "vision" and bool(request.ref_file_ids)
-        result = await get_deepseek_client().chat(
+    if not request.stream and _is_api_model(request.model):
+        _backend = _resolve_api_backend(request.model)
+        _connector = get_connector(_backend)
+        _cfg = get_model_config(request.model)
+        _api_model = _cfg.get("api_model_type", _cfg["id"])
+        # DeepSeek Vision ephemeral: one-shot side request, no session continuity
+        _ephemeral = (_backend == "deepseek" and _api_model == "vision" and bool(request.ref_file_ids))
+        # Collect local file paths for Gemini inline attachment
+        _gemini_files = None
+        if _backend == 'gemini' and resolved_files:
+            _gemini_files = [f.get('path') for f in resolved_files if f.get('path')]
+        result = await _connector.chat(
             message=timestamped_message,
-            model=api_model_type,
+            model=_api_model,
             thinking_mode=request.thinking_mode,
-            chat_id=None if ds_ephemeral else active_chat_id,
+            chat_id=None if _ephemeral else active_chat_id,
             ref_file_ids=request.ref_file_ids,
-            inject_instructions=not ds_ephemeral,
+            inject_instructions=not _ephemeral,
+            files=_gemini_files,
         )
         answer = str(result.get("answer", ""))
         thinking = str(result.get("thinking", ""))
@@ -315,17 +324,24 @@ async def chat(request: ChatRequest):
                 except Exception:
                     pass
                 stream_error = False
-                if _is_deepseek_api_model(request.model):
-                    _ds_cfg = get_model_config(request.model)
-                    _ds_api_type = _ds_cfg.get("api_model_type", "default")
-                    _ds_ephemeral = _ds_api_type == "vision" and bool(request.ref_file_ids)
-                    round_event_source = get_deepseek_client().stream_chat(
+                if _is_api_model(request.model):
+                    _backend = _resolve_api_backend(request.model)
+                    _connector = get_connector(_backend)
+                    _cfg = get_model_config(request.model)
+                    _api_model = _cfg.get("api_model_type", _cfg["id"])
+                    _ephemeral = (_backend == "deepseek" and _api_model == "vision" and bool(request.ref_file_ids))
+                    # Collect local file paths for Gemini inline attachment (first round only)
+                    _gemini_files = None
+                    if _backend == 'gemini' and round_index == 0 and resolved_files:
+                        _gemini_files = [f.get('path') for f in resolved_files if f.get('path')]
+                    round_event_source = _connector.stream_chat(
                         message=current_message,
-                        model=_ds_api_type,
+                        model=_api_model,
                         thinking_mode=request.thinking_mode,
-                        chat_id=None if _ds_ephemeral else active_chat_id,
+                        chat_id=None if _ephemeral else active_chat_id,
                         ref_file_ids=request.ref_file_ids if round_index == 0 else None,
-                        inject_instructions=not _ds_ephemeral,
+                        inject_instructions=not _ephemeral,
+                        files=_gemini_files,
                     )
                 elif scraper_enabled:
                     round_event_source = scraper_service.stream_events(

@@ -28,8 +28,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
-
 from engine.config import BROWSER_DATA_DIR
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -100,6 +98,7 @@ def main() -> None:
     print("When done, press ENTER in this terminal to save session & close.\n")
 
     try:
+        from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             context = p.chromium.launch_persistent_context(
                 user_data_dir=str(user_data_dir),
