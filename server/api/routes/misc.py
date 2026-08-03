@@ -49,20 +49,24 @@ async def stream_logs():
 
 @router.get("/api/models")
 def models() -> dict[str, list[dict[str, Any]]]:
+    from engine.config import get_all_models
     scraper_cfg = get_scraper_settings()
     if scraper_cfg.get("enabled") and scraper_cfg.get("engine_type") == "deepseek":
         return {"models": DEEPSEEK_MODELS}
+    all_models = get_all_models()
     return {
         "models": [
             {
                 "id": m["id"],
                 "label": m["label"],
                 "api_backend": m.get("api_backend"),
+                "capabilities": m.get("capabilities", {}),
                 "thinking_modes": [
-                    {"id": tm["id"], "label": tm["label"]} for tm in m["thinking_modes"]
+                    {"id": tm["id"], "label": tm["label"]} for tm in m.get("thinking_modes", [])
                 ],
+                "custom": m.get("_custom", False),
             }
-            for m in MODELS
+            for m in all_models
         ]
     }
 

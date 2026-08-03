@@ -111,10 +111,12 @@
     const FALLBACK_MODELS = [
       {
         id: "qwen3.8-max-preview", label: "Qwen3.8 Max Preview",
+        capabilities: { image: true, video: false, document: false, audio: false },
         thinking_modes: [{ id: "thinking", label: "Thinking" }],
       },
       {
         id: "qwen3.7-max", label: "Qwen3.7 Max",
+        capabilities: { image: true, video: false, document: false, audio: false },
         thinking_modes: [
           { id: "fast", label: "Fast" },
           { id: "thinking", label: "Thinking" },
@@ -122,6 +124,7 @@
       },
       {
         id: "qwen3.7-plus", label: "Qwen3.7 Plus",
+        capabilities: { image: true, video: false, document: false, audio: false },
         thinking_modes: [
           { id: "fast", label: "Fast" },
           { id: "auto", label: "Auto" },
@@ -149,6 +152,41 @@
     const attachPreview = document.getElementById("attachPreview");
     const inputArea     = document.getElementById("inputArea");
     let pendingFiles = []; // { file: File, path: string|null, chip: HTMLElement }
+
+    /* ---- Model capabilities → attach button ---- */
+    const CAP_ACCEPT = {
+      image: "image/*",
+      video: "video/*",
+      audio: "audio/*",
+      document: ".pdf,.doc,.docx,.txt,.md,.csv,.xlsx,.xls,.pptx,.ppt",
+    };
+
+    function getActiveCapabilities() {
+      const entry = modelList.find(m => m.id === selectedModel);
+      return entry?.capabilities || {};
+    }
+
+    function updateAttachUI() {
+      const caps = getActiveCapabilities();
+      const accepts = Object.entries(CAP_ACCEPT)
+        .filter(([key]) => caps[key])
+        .map(([, accept]) => accept);
+
+      if (accepts.length === 0) {
+        // Model supports no attachments — disable the button
+        attachBtn.style.display = "";
+        attachBtn.disabled = true;
+        attachBtn.style.opacity = "0.35";
+        attachBtn.style.cursor = "not-allowed";
+        fileInput.accept = "";
+      } else {
+        attachBtn.disabled = false;
+        attachBtn.style.opacity = "";
+        attachBtn.style.cursor = "";
+        attachBtn.style.display = "";
+        fileInput.accept = accepts.join(",");
+      }
+    }
 
     /* =========================================================================
        Self-contained markdown renderer (no CDN dependency — works fully offline)
@@ -2388,6 +2426,7 @@
       syncGlassDropdown();
 
       populateThinkingModes(savedMode);
+      updateAttachUI();
     }
 
     modelSelectEl.addEventListener("change", async () => {
@@ -2395,9 +2434,9 @@
       const activeMeta = chatList.find(c => c.id === activeChatId);
       if (activeMeta?.provider) {
         const newEntry = modelList.find(m => m.id === modelSelectEl.value);
-        const newIsDs = newEntry?.api_backend === "deepseek";
-        const chatIsDs = activeMeta.provider === "deepseek" || activeMeta.provider === "scraping";
-        if (newIsDs !== chatIsDs) {
+        const newProvider = newEntry?.api_backend || "qwen";
+        const chatProvider = activeMeta.provider === "scraping" ? "deepseek" : activeMeta.provider;
+        if (newProvider !== chatProvider) {
           modelSelectEl.value = selectedModel; // revert
           showToast("This chat is locked to " + activeMeta.provider + " — start a new chat to switch providers.", "error");
           return;
@@ -2408,6 +2447,7 @@
       // Switching models resets the thinking mode to that model's default,
       // since the previous mode may not exist on the newly selected model.
       populateThinkingModes(null);
+      updateAttachUI();
 
       // In scraper mode the model selector maps to browser model buttons
       // (e.g. DeepSeek Instant/Expert/Vision) — switch immediately and
@@ -2487,6 +2527,8 @@
       const allowed = provider
         ? modelList.filter(m => {
             if (provider === "deepseek" || provider === "scraping") return m.api_backend === "deepseek";
+            if (provider === "gemini") return m.api_backend === "gemini";
+            if (provider === "groq") return m.api_backend === "groq";
             return !m.api_backend; // qwen
           })
         : modelList;
@@ -2858,9 +2900,14 @@
     }
 
     function handleFiles(files) {
+      const caps = getActiveCapabilities();
       for (const f of files) {
-        if (f.type.startsWith("image/")) uploadFile(f);
-        else showToast("Only images supported", "error");
+        const kind = f.type.startsWith("image/") ? "image"
+          : f.type.startsWith("video/") ? "video"
+          : f.type.startsWith("audio/") ? "audio"
+          : "document";
+        if (caps[kind]) uploadFile(f);
+        else showToast(`${kind} files not supported by this model`, "error");
       }
     }
 
@@ -2890,8 +2937,13 @@
     inputEl.addEventListener("paste", (e) => {
       const items = e.clipboardData?.items;
       if (!items) return;
+      const caps = getActiveCapabilities();
       for (const item of items) {
-        if (item.type.startsWith("image/")) {
+        const kind = item.type.startsWith("image/") ? "image"
+          : item.type.startsWith("video/") ? "video"
+          : item.type.startsWith("audio/") ? "audio"
+          : null;
+        if (kind && caps[kind]) {
           e.preventDefault();
           handleFiles([item.getAsFile()]);
         }
@@ -3075,7 +3127,7 @@
         const meta = chatList.find(c => c.id === streamChatId);
         if (meta && !meta.provider) {
           const prov = scraperMode ? "scraping"
-            : (modelList.find(m => m.id === selectedModel)?.api_backend === "deepseek" ? "deepseek" : "qwen");
+            : (modelList.find(m => m.id === selectedModel)?.api_backend || "qwen");
           meta.provider = prov; // update local cache
           lockModelDropdown(prov);
         }
@@ -3756,6 +3808,268 @@
 
     document.querySelector('[data-tab="skills"]').addEventListener("click", loadSkills);
     document.querySelector('[data-tab="account"]').addEventListener("click", loadAccountProfiles);
+
+    // --- Providers tab: API key management (Gemini + Groq) ---
+    function _buildKeyManager({ listId, statusId, inputId, btnId, apiBase, providerName }) {
+      const listEl = document.getElementById(listId);
+      const statusEl = document.getElementById(statusId);
+      const inputEl = document.getElementById(inputId);
+      const btnEl = document.getElementById(btnId);
+      if (!listEl || !inputEl || !btnEl) return;
+
+      async function loadKeys() {
+        try {
+          const res = await fetch(`${apiBase}/keys`);
+          const data = await res.json();
+          const keys = data.keys || [];
+          listEl.innerHTML = "";
+          if (keys.length === 0) {
+            listEl.innerHTML = '<div style="font-size:12px;color:var(--text);padding:8px 0;">No keys configured yet.</div>';
+            statusEl.textContent = "";
+            return;
+          }
+          keys.forEach((k) => {
+            const row = document.createElement("div");
+            row.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-radius:8px;background:color-mix(in srgb, var(--panel) 60%, transparent);border:1px solid var(--border);";
+            const label = document.createElement("span");
+            label.style.cssText = "font-size:12px;font-family:monospace;color:var(--text);";
+            label.textContent = k.masked + (k.active ? " ●" : "");
+            const delBtn = document.createElement("button");
+            delBtn.textContent = "✕";
+            delBtn.style.cssText = "background:transparent;border:none;color:var(--danger);cursor:pointer;font-size:13px;padding:2px 6px;border-radius:4px;";
+            delBtn.title = "Remove key";
+            delBtn.addEventListener("click", async () => {
+              if (!confirm(`Remove this ${providerName} API key?`)) return;
+              try {
+                await fetch(`${apiBase}/api-key/${k.index}`, { method: "DELETE" });
+                loadKeys();
+              } catch (e) { showToast("Failed to remove key", "error"); }
+            });
+            row.appendChild(label);
+            row.appendChild(delBtn);
+            listEl.appendChild(row);
+          });
+          statusEl.textContent = `${keys.length} key${keys.length !== 1 ? "s" : ""} configured · auto-rotation enabled`;
+        } catch (e) {
+          statusEl.textContent = "Failed to load keys";
+        }
+      }
+
+      btnEl.addEventListener("click", async () => {
+        const key = inputEl.value.trim();
+        if (!key) { showToast("Paste an API key first", "error"); return; }
+        try {
+          const res = await fetch(`${apiBase}/api-key`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ api_key: key }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            const detail = typeof err.detail === "string" ? err.detail : (Array.isArray(err.detail) ? err.detail[0]?.msg : JSON.stringify(err.detail));
+            showToast(detail || "Failed to add key", "error");
+            return;
+          }
+          inputEl.value = "";
+          showToast(`${providerName} key added ✓`, "success");
+          loadKeys();
+        } catch (e) { showToast("Failed to add key", "error"); }
+      });
+      inputEl.addEventListener("keydown", (e) => { if (e.key === "Enter") btnEl.click(); });
+
+      return { loadKeys };
+    }
+
+    const geminiKeyMgr = _buildKeyManager({
+      listId: "geminiKeyList", statusId: "geminiKeyStatus",
+      inputId: "geminiKeyInput", btnId: "addGeminiKeyBtn",
+      apiBase: "/api/settings/gemini", providerName: "Gemini",
+    });
+    const groqKeyMgr = _buildKeyManager({
+      listId: "groqKeyList", statusId: "groqKeyStatus",
+      inputId: "groqKeyInput", btnId: "addGroqKeyBtn",
+      apiBase: "/api/settings/groq", providerName: "Groq",
+    });
+    const mistralKeyMgr = _buildKeyManager({
+      listId: "mistralKeyList", statusId: "mistralKeyStatus",
+      inputId: "mistralKeyInput", btnId: "addMistralKeyBtn",
+      apiBase: "/api/settings/mistral", providerName: "Mistral",
+    });
+
+
+    // --- Provider model fetching ---
+    const providerSelect = document.getElementById("customModelBackend");
+    const modelSelect = document.getElementById("customModelId");
+    const modelLabelInput = document.getElementById("customModelLabel");
+    let _fetchedModels = []; // cache of {id, label} from last fetch
+
+    async function fetchProviderModels(provider) {
+      if (!provider) {
+        modelSelect.disabled = true;
+        modelSelect.innerHTML = '<option value="">Select provider first…</option>';
+        return;
+      }
+      modelSelect.disabled = true;
+      modelSelect.innerHTML = '<option value="">Loading models…</option>';
+      modelLabelInput.value = "";
+      try {
+        const res = await fetch(`/api/settings/providers/${provider}/models`);
+        const data = await res.json();
+        _fetchedModels = data.models || [];
+        if (!data.available) {
+          modelSelect.innerHTML = '<option value="">⚠️ No API key configured for this provider</option>';
+          modelSelect.disabled = true;
+          return;
+        }
+        if (_fetchedModels.length === 0) {
+          modelSelect.innerHTML = '<option value="">No models found</option>';
+          modelSelect.disabled = true;
+          return;
+        }
+        modelSelect.innerHTML = '<option value="">— Choose a model —</option>';
+        const provLabel = provider.charAt(0).toUpperCase() + provider.slice(1);
+        _fetchedModels.forEach((m) => {
+          const opt = document.createElement("option");
+          opt.value = m.id;
+          opt.textContent = `${provLabel}: ${m.label}`;
+          modelSelect.appendChild(opt);
+        });
+        modelSelect.disabled = false;
+      } catch (e) {
+        modelSelect.innerHTML = '<option value="">Failed to fetch models</option>';
+        modelSelect.disabled = true;
+      }
+    }
+
+    if (providerSelect) {
+      providerSelect.addEventListener("change", () => fetchProviderModels(providerSelect.value));
+    }
+    if (modelSelect) {
+      modelSelect.addEventListener("change", () => {
+        const selected = _fetchedModels.find((m) => m.id === modelSelect.value);
+        modelLabelInput.value = selected ? selected.label : "";
+      });
+    }
+
+    document.querySelector('[data-tab="providers"]')?.addEventListener("click", () => {
+      geminiKeyMgr?.loadKeys();
+      groqKeyMgr?.loadKeys();
+      mistralKeyMgr?.loadKeys();
+
+      loadCustomModels();
+    });
+
+    // --- Model management (all models: static + custom) ---
+    async function loadCustomModels() {
+      const listEl = document.getElementById("customModelList");
+      const statusEl = document.getElementById("customModelStatus");
+      if (!listEl) return;
+      try {
+        const res = await fetch("/api/models");
+        const data = await res.json();
+        const allModels = data.models || [];
+        listEl.innerHTML = "";
+        if (allModels.length === 0) {
+          listEl.innerHTML = '<div style="font-size:12px;color:var(--text);padding:8px 0;">No models available.</div>';
+          statusEl.textContent = "";
+          return;
+        }
+        allModels.forEach((m) => {
+          const row = document.createElement("div");
+          row.style.cssText = "display:flex;flex-direction:column;border-radius:8px;background:color-mix(in srgb, var(--panel) 60%, transparent);border:1px solid var(--border);overflow:hidden;";
+          // Top bar (clickable)
+          const topBar = document.createElement("div");
+          topBar.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:6px 10px;cursor:pointer;";
+          topBar.addEventListener("mouseenter", () => topBar.style.background = "color-mix(in srgb, var(--accent) 6%, transparent)");
+          topBar.addEventListener("mouseleave", () => topBar.style.background = "transparent");
+          const info = document.createElement("span");
+          info.style.cssText = "font-size:12px;color:var(--text);";
+          const badge = m.custom ? '<span style="color:var(--accent);font-size:9px;background:color-mix(in srgb, var(--accent) 15%, transparent);padding:1px 5px;border-radius:4px;margin-left:6px;">CUSTOM</span>' : '';
+          info.innerHTML = `<b>${m.label}</b> <span style="color:var(--text);font-family:monospace;font-size:11px;">${m.id}</span> <span style="color:var(--text);font-size:10px;text-transform:uppercase;">${m.api_backend || 'local'}</span>${badge}`;
+          topBar.appendChild(info);
+          // Expandable detail panel
+          const detail = document.createElement("div");
+          detail.style.cssText = "display:none;padding:6px 12px 10px;font-size:11px;color:var(--text);border-top:1px solid var(--border);";
+          const caps = m.capabilities || {};
+          const capIcons = [];
+          if (caps.image) capIcons.push("🖼️ Image");
+          if (caps.video) capIcons.push("🎬 Video");
+          if (caps.document) capIcons.push("📄 Document");
+          if (caps.audio) capIcons.push("🎧 Audio");
+          detail.innerHTML = `<span style="color:var(--text);font-weight:500;">Capabilities:</span> ${capIcons.length ? capIcons.join(" · ") : '<span style="opacity:0.6;">None</span>'}`;
+          topBar.addEventListener("click", () => {
+            const open = detail.style.display !== "none";
+            detail.style.display = open ? "none" : "block";
+          });
+          row.appendChild(topBar);
+          row.appendChild(detail);
+          // Delete button (stop propagation so it doesn't toggle detail)
+          const delBtn = document.createElement("button");
+          delBtn.textContent = "✕";
+          delBtn.style.cssText = "background:transparent;border:none;color:var(--danger);cursor:pointer;font-size:13px;padding:2px 6px;border-radius:4px;position:absolute;right:8px;top:50%;transform:translateY(-50%);";
+          delBtn.title = "Remove model";
+          delBtn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            if (!confirm(`Remove "${m.label}" from your model list?`)) return;
+            try {
+              await fetch(`/api/settings/models/${encodeURIComponent(m.id)}`, { method: "DELETE" });
+              showToast("Model removed", "success");
+              loadCustomModels();
+              loadModels();
+            } catch (e2) { showToast("Failed to remove model", "error"); }
+          });
+          topBar.style.position = "relative";
+          topBar.appendChild(delBtn);
+          listEl.appendChild(row);
+        });
+        const customCount = allModels.filter((m) => m.custom).length;
+        statusEl.textContent = `${allModels.length} model${allModels.length !== 1 ? "s" : ""} active${customCount ? ` · ${customCount} custom` : ""}`;
+      } catch (e) {
+        statusEl.textContent = "Failed to load models";
+        setTimeout(() => { if (statusEl.textContent === "Failed to load models") statusEl.textContent = ""; }, 4000);
+      }
+    }
+
+    const addCustomModelBtn = document.getElementById("addCustomModelBtn");
+    if (addCustomModelBtn) {
+      addCustomModelBtn.addEventListener("click", async () => {
+        const mid = document.getElementById("customModelId")?.value;
+        const label = document.getElementById("customModelLabel")?.value.trim();
+        const backend = document.getElementById("customModelBackend")?.value;
+        const capabilities = {
+          image: document.getElementById("capImage")?.checked || false,
+          video: document.getElementById("capVideo")?.checked || false,
+          document: document.getElementById("capDocument")?.checked || false,
+          audio: document.getElementById("capAudio")?.checked || false,
+        };
+        if (!backend) { showToast("Select a provider first", "error"); return; }
+        if (!mid) { showToast("Select a model from the dropdown", "error"); return; }
+        if (!label) { showToast("Enter a display name", "error"); return; }
+        try {
+          const res = await fetch("/api/settings/models", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: mid, label, api_backend: backend, capabilities }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            const detail = typeof err.detail === "string" ? err.detail : (Array.isArray(err.detail) ? err.detail[0]?.msg : JSON.stringify(err.detail));
+            showToast(detail || "Failed to add model", "error");
+            return;
+          }
+          // Reset form
+          modelSelect.value = "";
+          modelLabelInput.value = "";
+          document.getElementById("capImage").checked = false;
+          document.getElementById("capVideo").checked = false;
+          document.getElementById("capDocument").checked = false;
+          document.getElementById("capAudio").checked = false;
+          showToast("Model added ✓", "success");
+          loadCustomModels();
+          loadModels();
+        } catch (e) { showToast("Failed to add model", "error"); }
+      });
+    }
 
     function appendLogLine(msg) {
       const span = document.createElement("span");
