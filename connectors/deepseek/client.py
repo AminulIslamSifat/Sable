@@ -210,6 +210,11 @@ class DeepSeekClient:
         self._token = get_token_for_account(self._account)
         return self._token
 
+    @property
+    def is_available(self) -> bool:
+        """Whether the connector has valid credentials."""
+        return self.token is not None
+
     def set_token(self, token: str, account: str | None = None) -> None:
         """Set and persist token under the given account. Clears stale sessions."""
         if token != self._token:
