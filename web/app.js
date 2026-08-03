@@ -624,17 +624,43 @@
       return icon ? `<i data-lucide="${icon}" class="msg-lucide-icon"></i>` : emoji;
     }
 
+    function closeUnclosedFences(text) {
+      // Count fence openers/closers to detect unclosed code blocks.
+      // A line is a fence opener/closer only if it matches ^(```|~~~) at start.
+      // We track state properly so nested or mismatched fences don't confuse us.
+      let inFence = false;
+      let fenceChar = "";
+      const lines = text.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const m = lines[i].match(/^(```|~~~)\s*(\S*)\s*$/);
+        if (m) {
+          if (!inFence) {
+            inFence = true;
+            fenceChar = m[1];
+          } else if (lines[i].trim() === fenceChar) {
+            inFence = false;
+            fenceChar = "";
+          }
+        }
+      }
+      if (inFence) {
+        return text + "\n" + fenceChar;
+      }
+      return text;
+    }
+
     function renderMarkdown(raw) {
       if (!raw) return "";
       const normalized = normalizeMd(String(raw).replace(/\r\n/g, "\n"));
+      const safe = closeUnclosedFences(normalized);
 
       ensureMarked();
-      if (window.marked && window.DOMPurify && !usesLegacyExtras(normalized)) {
+      if (window.marked && window.DOMPurify && !usesLegacyExtras(safe)) {
         try {
           // escapeNonHtmlTags only feeds the marked+DOMPurify path — it stops
           // unknown prose tags from being swallowed. The legacy parser below
           // escapes everything itself, so pre-escaping here would double-encode.
-          const html = marked.parse(escapeNonHtmlTags(normalized));
+          const html = marked.parse(escapeNonHtmlTags(safe));
           return lucideReplaceEmoji(DOMPurify.sanitize(html, { ADD_ATTR: ["target", "data-lucide"] }));
         } catch (err) {
           console.error("marked render failed:", err);
@@ -642,7 +668,7 @@
       }
 
       try {
-        return lucideReplaceEmoji(parseBlocks(normalized.split("\n")));
+        return lucideReplaceEmoji(parseBlocks(safe.split("\n")));
       } catch (err) {
         console.error("Markdown render error:", err);
         return `<p>${escHtml(raw)}</p>`;

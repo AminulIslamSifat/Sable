@@ -143,7 +143,7 @@ async def chat(request: ChatRequest):
     add_message(active_chat_id, "user", timestamped_message, None, parent_id, memory_used=_memory_used or None)
     # Inject title instruction on first message (model-only, not saved to DB)
     if parent_id is None:
-        timestamped_message += '\n\n[SYSTEM: First message of a new chat. Respond normally, but also emit <chat_title>Short descriptive title</chat_title> inside an <action> block at the end of your response. Under 80 chars.]'
+        timestamped_message += '\n\n[SYSTEM: First message of a new chat. Respond normally, but also emit <ation><chat_title>Short descriptive title</chat_title></action> at the end of your response. If you are running another command, then put chat_title and that command in one action block.]'
     resolved_files: list[dict[str, Any]] | None = None
     _backend = _resolve_api_backend(request.model) if _is_api_model(request.model) else None
     if request.files:
