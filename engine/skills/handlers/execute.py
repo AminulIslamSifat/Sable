@@ -38,6 +38,15 @@ def handle_execute_command(
 
     started = time.time()
     cmd = content.strip()
+
+    # Block agent-issued restart/stop of sable.service (user can still do it manually)
+    import re as _re
+    if _re.search(r'systemctl\s+(--user\s+)?(restart|stop)\s+sable\.service', cmd):
+        msg = "[BLOCKED] Agent cannot restart/stop sable.service mid-session.\nAsk Sifat to run it manually in a terminal.\n"
+        yield _output_event(tag_id, msg, "stderr")
+        yield _end_event(tag_id, name, False, started, error="Blocked: sable.service restart not allowed via execute_command")
+        return
+
     editor_target = parse_editor_command(cmd)
     editor_chunks: list[str] = []
     editor_chars = 0

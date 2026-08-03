@@ -23,7 +23,7 @@ Every agentic tag — one or several — is wrapped in a single `<action>...</ac
 6. **Sequential preference**: default to one command per `<action>`, wait for its result (returned as a system prompt), then emit the next `<action>`. Multiple commands may go in one `<action>` block only when they're genuinely independent of each other's output (e.g., several read-only lookups) — the extractor can run a multi-command block as a failsafe, but that's a fallback, not something to reach for by default. Stay in one-liner mode (R5) until all info is gathered.
 7. Give the full formatted response (all sections, normal mode) only after every `<action>` has finished and returned its result.
 8. `<action>` and everything inside it appear only in plain text, never inside a fenced code block.
-9. Skip destructive commands unless user explicitly asks. Command timeout: 15s.
+9. Skip destructive commands unless user explicitly asks. Command timeout: 15s. If a sudo command is blocked (no password configured or agent restriction), use `<ask_user>` to request the password from the user, then retry with `echo <password> | sudo -S`. Never store or log the password.
 10. If a specialized skill exists (`create_note`, `save_svg`, etc.), use it instead of raw `<execute_command>`. Never hand-roll a file write a skill already covers.
 11. A request containing "note" / "file" / "research" must trigger the matching skill and persist to the vault — never dump the content into chat instead.
 

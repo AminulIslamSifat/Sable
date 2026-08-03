@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from engine.scraper import (
     get_settings as get_scraper_settings,
     list_engines as list_scraper_engines,
@@ -106,6 +106,256 @@ async def refresh_deepseek_token() -> dict[str, Any]:
         logger.error("DeepSeek token refresh failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Refresh failed: {exc}")
 
+
+@router.post("/api/settings/gemini/api-key")
+async def add_gemini_api_key(request: Request) -> dict[str, Any]:
+    """Add a Gemini API key to the pool."""
+    from connectors.gemini.client import get_client as get_gemini_client
+    body = await request.json()
+    key = body.get("api_key", "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="Missing 'api_key' field")
+    client = get_gemini_client()
+    if key in client._keys:
+        raise HTTPException(status_code=409, detail="Key already exists")
+    client.add_key(key)
+    return {"status": "ok", "keys": client.list_keys(), "available": client.is_available}
+
+
+@router.get("/api/settings/gemini/keys")
+async def list_gemini_keys() -> dict[str, Any]:
+    """List all configured Gemini API keys (masked)."""
+    from connectors.gemini.client import get_client as get_gemini_client
+    client = get_gemini_client()
+    return {"keys": client.list_keys(), "available": client.is_available}
+
+
+@router.delete("/api/settings/gemini/api-key/{index}")
+async def remove_gemini_api_key(index: int) -> dict[str, Any]:
+    """Remove a Gemini API key by index."""
+    from connectors.gemini.client import get_client as get_gemini_client
+    client = get_gemini_client()
+    if not client.remove_key(index):
+        raise HTTPException(status_code=404, detail="Key not found at that index")
+    return {"status": "ok", "keys": client.list_keys(), "available": client.is_available}
+
+
+# ---------------------------------------------------------------------------
+# Groq API key management
+# ---------------------------------------------------------------------------
+
+@router.post("/api/settings/groq/api-key")
+async def add_groq_api_key(request: Request) -> dict[str, Any]:
+    """Add a Groq API key to the pool."""
+    from connectors.groq.client import get_client as get_groq_client
+    body = await request.json()
+    key = body.get("api_key", "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="Missing 'api_key' field")
+    client = get_groq_client()
+    if key in client._keys:
+        raise HTTPException(status_code=409, detail="Key already exists")
+    client.add_key(key)
+    return {"status": "ok", "keys": client.list_keys(), "available": client.is_available}
+
+
+@router.get("/api/settings/groq/keys")
+async def list_groq_keys() -> dict[str, Any]:
+    """List all configured Groq API keys (masked)."""
+    from connectors.groq.client import get_client as get_groq_client
+    client = get_groq_client()
+    return {"keys": client.list_keys(), "available": client.is_available}
+
+
+@router.delete("/api/settings/groq/api-key/{index}")
+async def remove_groq_api_key(index: int) -> dict[str, Any]:
+    """Remove a Groq API key by index."""
+    from connectors.groq.client import get_client as get_groq_client
+    client = get_groq_client()
+    if not client.remove_key(index):
+        raise HTTPException(status_code=404, detail="Key not found at that index")
+    return {"status": "ok", "keys": client.list_keys(), "available": client.is_available}
+
+
+# ---------------------------------------------------------------------------
+# Mistral API key management
+# ---------------------------------------------------------------------------
+
+@router.post("/api/settings/mistral/api-key")
+async def add_mistral_api_key(request: Request) -> dict[str, Any]:
+    """Add a Mistral API key to the pool."""
+    from connectors.mistral.client import get_client as get_mistral_client
+    body = await request.json()
+    key = body.get("api_key", "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="Missing 'api_key' field")
+    client = get_mistral_client()
+    if key in client._keys:
+        raise HTTPException(status_code=409, detail="Key already exists")
+    client.add_key(key)
+    return {"status": "ok", "keys": client.list_keys(), "available": client.is_available}
+
+
+@router.get("/api/settings/mistral/keys")
+async def list_mistral_keys() -> dict[str, Any]:
+    """List all configured Mistral API keys (masked)."""
+    from connectors.mistral.client import get_client as get_mistral_client
+    client = get_mistral_client()
+    return {"keys": client.list_keys(), "available": client.is_available}
+
+
+@router.delete("/api/settings/mistral/api-key/{index}")
+async def remove_mistral_api_key(index: int) -> dict[str, Any]:
+    """Remove a Mistral API key by index."""
+    from connectors.mistral.client import get_client as get_mistral_client
+    client = get_mistral_client()
+    if not client.remove_key(index):
+        raise HTTPException(status_code=404, detail="Key not found at that index")
+    return {"status": "ok", "keys": client.list_keys(), "available": client.is_available}
+
+
+# ---------------------------------------------------------------------------
+# Provider model listing (fetch available models from a provider's API)
+# ---------------------------------------------------------------------------
+
+@router.get("/api/settings/providers/{provider}/models")
+async def list_provider_models(provider: str) -> dict[str, Any]:
+    """Fetch available models from a provider's API using configured keys.
+
+    Supported providers: gemini, groq.
+    Returns empty list if no API key is configured.
+    """
+    import httpx as _httpx
+
+    provider = provider.lower().strip()
+
+    if provider == "gemini":
+        from connectors.gemini.client import get_client as get_gemini_client
+        client = get_gemini_client()
+        if not client.is_available:
+            return {"models": [], "available": False}
+        key = client._current_key
+        try:
+            async with _httpx.AsyncClient(timeout=15.0) as http:
+                r = await http.get(
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                    params={"key": key, "pageSize": 100},
+                )
+                r.raise_for_status()
+                data = r.json()
+                models = []
+                for m in data.get("models", []):
+                    name = m.get("name", "").replace("models/", "")
+                    display = m.get("displayName", name)
+                    # Only include generateContent-capable models
+                    methods = m.get("supportedGenerationMethods", [])
+                    if "generateContent" in methods:
+                        models.append({"id": name, "label": display})
+                return {"models": models, "available": True}
+        except Exception as exc:
+            logger.warning("Gemini model fetch failed: %s", exc)
+            return {"models": [], "available": True, "error": str(exc)}
+
+    elif provider == "groq":
+        from connectors.groq.client import get_client as get_groq_client
+        client = get_groq_client()
+        if not client.is_available:
+            return {"models": [], "available": False}
+        key = client._current_key
+        try:
+            async with _httpx.AsyncClient(timeout=15.0) as http:
+                r = await http.get(
+                    "https://api.groq.com/openai/v1/models",
+                    headers={"Authorization": f"Bearer {key}"},
+                )
+                r.raise_for_status()
+                data = r.json()
+                models = []
+                for m in data.get("data", []):
+                    mid = m.get("id", "")
+                    if mid:
+                        # Generate a nice display name from the model id
+                        label = mid.replace("-", " ").replace("_", " ").title()
+                        models.append({"id": mid, "label": label})
+                return {"models": models, "available": True}
+        except Exception as exc:
+            logger.warning("Groq model fetch failed: %s", exc)
+            return {"models": [], "available": True, "error": str(exc)}
+
+    elif provider == "mistral":
+        from connectors.mistral.client import get_client as get_mistral_client
+        client = get_mistral_client()
+        if not client.is_available:
+            return {"models": [], "available": False}
+        key = client._current_key
+        try:
+            async with _httpx.AsyncClient(timeout=15.0) as http:
+                r = await http.get(
+                    "https://api.mistral.ai/v1/models",
+                    headers={"Authorization": f"Bearer {key}"},
+                )
+                r.raise_for_status()
+                data = r.json()
+                models = []
+                for m in data.get("data", []):
+                    mid = m.get("id", "")
+                    if mid:
+                        label = mid.replace("-", " ").replace("_", " ").title()
+                        models.append({"id": mid, "label": label})
+                return {"models": models, "available": True}
+        except Exception as exc:
+            logger.warning("Mistral model fetch failed: %s", exc)
+            return {"models": [], "available": True, "error": str(exc)}
+
+    raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
+
+
+# ---------------------------------------------------------------------------
+# Custom model management
+# ---------------------------------------------------------------------------
+
+@router.post("/api/settings/models")
+async def add_model(request: Request) -> dict[str, Any]:
+    """Add or update a custom model definition."""
+    from engine.config import add_custom_model
+    body = await request.json()
+    mid = body.get("id", "").strip()
+    label = body.get("label", "").strip()
+    backend = body.get("api_backend", "").strip()
+    if not mid or not label or not backend:
+        raise HTTPException(status_code=400, detail="Missing id, label, or api_backend")
+    model_def = {
+        "id": mid,
+        "label": label,
+        "api_backend": backend,
+        "api_model_type": body.get("api_model_type", mid),
+        "capabilities": body.get("capabilities", {"image": False, "video": False, "document": False, "audio": False}),
+        "thinking_modes": body.get("thinking_modes", [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+        ]),
+        "_custom": True,
+    }
+    add_custom_model(model_def)
+    return {"status": "ok", "model": model_def}
+
+
+@router.delete("/api/settings/models/{model_id:path}")
+async def delete_model(model_id: str) -> dict[str, Any]:
+    """Remove any model (custom or static). Static models get hidden via an exclusion list."""
+    from engine.config import remove_custom_model, _load_hidden_models, _save_hidden_models, MODELS
+    # Try custom first
+    if remove_custom_model(model_id):
+        return {"status": "ok", "type": "custom"}
+    # Check if it's a static model
+    static_ids = {m["id"] for m in MODELS}
+    if model_id in static_ids:
+        hidden = _load_hidden_models()
+        if model_id not in hidden:
+            hidden.append(model_id)
+            _save_hidden_models(hidden)
+        return {"status": "ok", "type": "static_hidden"}
+    raise HTTPException(status_code=404, detail="Model not found")
+
 @router.get("/api/settings/accounts")
 async def list_accounts() -> dict[str, Any]:
     def _scan() -> list[dict[str, Any]]:
@@ -166,6 +416,11 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
         get_deepseek_client().set_token(ds_token)
     except Exception:
         pass
+    # Sync context for the new account's browser profile
+    try:
+        await service.sync_context()
+    except Exception as exc:
+        logger.warning("sync_context after switch failed: %s", exc)
     # Strip the old profile to reclaim disk space (fire-and-forget)
     stripped_info: str | None = None
     if old_profile and old_profile.is_dir():
@@ -255,6 +510,7 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
                 context = await p.chromium.launch_persistent_context(
                     user_data_dir=str(target_path),
                     headless=False,
+                    timeout=0,
                     args=[
                         "--no-sandbox",
                         "--disable-blink-features=AutomationControlled",
