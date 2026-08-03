@@ -45,6 +45,13 @@ system/uploads
 *.pem
 system/.session_tokens.json
 system/.auth_token
+system/.gemini_api_key
+system/.gemini_api_keys.json
+system/.groq_api_keys.json
+system/.cerebras_api_keys.json
+system/.deepseek_tokens.json
+system/.custom_models.json
+system/.hidden_models.json
 .sable_backups
 
 # OS junk

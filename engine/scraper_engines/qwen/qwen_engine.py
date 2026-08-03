@@ -15,7 +15,6 @@ import urllib.request
 import threading
 import websockets
 from datetime import datetime
-from playwright.async_api import async_playwright
 
 from config import console, PLATFORM, PLATFORMS_CONFIG, OUTPUT_ROOT, ASSETS_DIR, PROJECT_ROOT, INSTRUCTIONS_DIR
 from exceptions import ResponseCaptureError
@@ -410,6 +409,7 @@ class GhostChat:
             await asyncio.sleep(0.5)  # Let servers settle
             cdp_port = http_port
 
+        from playwright.async_api import async_playwright
         self.pw = await async_playwright().start()
         for attempt in range(5):
             try:

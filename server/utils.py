@@ -9,6 +9,7 @@ from typing import Any, Callable
 from collections.abc import AsyncGenerator
 
 from engine.config import get_model_config
+from connectors import resolve_backend, get_connector, is_backend_available
 from connectors.deepseek.client import get_client as get_deepseek_client
 from .config import MAX_RETRIES, RETRY_BASE_DELAY
 from .logging_setup import logger   # <-- added re‑export
@@ -93,13 +94,22 @@ def _build_conversation_summary(messages: list[dict[str, Any]], max_chars: int =
         total += len(line)
     return "\n\n".join(parts)
 
+def _resolve_api_backend(model_id: str | None = None) -> str | None:
+    """Return the api_backend name for a model if its connector is available."""
+    backend = resolve_backend(model_id)
+    if backend and is_backend_available(backend):
+        return backend
+    return None
+
+
+def _is_api_model(model_id: str | None = None) -> bool:
+    """True if model routes to any API connector (deepseek, gemini, etc.)."""
+    return _resolve_api_backend(model_id) is not None
+
+
 def _is_deepseek_api_model(model_id: str | None = None) -> bool:
-    if not model_id:
-        return False
-    cfg = get_model_config(model_id)
-    if cfg.get("api_backend") != "deepseek":
-        return False
-    return get_deepseek_client().token is not None
+    """Legacy check — kept for backward compat. Prefer _resolve_api_backend."""
+    return _resolve_api_backend(model_id) == "deepseek"
 
 def _dir_size_mb(path: Path) -> float:
     if not path.is_dir():

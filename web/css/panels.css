@@ -840,12 +840,16 @@ textarea:disabled {
   padding: 9px 18px;
   border-radius: var(--radius);
   font-size: 13px;
-  transition: transform 0.3s ease;
+  opacity: 0;
+  visibility: hidden;
+  transition: transform 0.3s ease, opacity 0.3s ease, visibility 0.3s ease;
   z-index: 999;
   pointer-events: none;
 }
 #toast.show {
   transform: translateX(-50%) translateY(0);
+  opacity: 1;
+  visibility: visible;
 }
 #toast.error {
   border-color: var(--danger);
