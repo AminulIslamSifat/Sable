@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/static/css/base.css?v=3">
   <link rel="stylesheet" href="/static/css/layout.css?v=22">
   <link rel="stylesheet" href="/static/css/chat.css?v=19">
-  <link rel="stylesheet" href="/static/css/panels.css?v=10">
+  <link rel="stylesheet" href="/static/css/panels.css?v=11">
   <link rel="stylesheet" href="/static/css/components.css?v=10">
   <link rel="stylesheet" href="/static/css/responsive.css?v=3">
   <link rel="stylesheet" href="/static/css/agents.css?v=30">
@@ -78,6 +78,9 @@
       <div id="chats"></div>
     </div>
     <div class="sidebar-section sidebar-bottom">
+      <button id="libraryBtn" class="sidebar-footer-btn" title="Library">
+        <span class="icon-emoji">📚</span><i data-lucide="book-open" class="icon-lucide"></i> Library
+      </button>
       <button id="settingsBtn" class="sidebar-footer-btn" title="Settings">
         <span class="icon-emoji">⚙</span><i data-lucide="settings" class="icon-lucide"></i> Settings
       </button>
@@ -339,44 +342,23 @@
           </div>
         </div>
         <div id="tab-providers" class="settings-tab-content">
-          <!-- Gemini API Keys -->
+          <!-- API Keys (unified) -->
           <div style="margin-bottom:20px;">
             <label style="font-size:14px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-              <span class="icon-emoji">✦</span> Gemini API Keys
+              <span class="icon-emoji">🔑</span> API Keys
             </label>
-            <p style="font-size:11.5px;color:var(--text);margin:0 0 10px 0;">Multiple keys supported — auto-rotates on rate limit or failure.</p>
-            <div style="display:flex;gap:6px;margin-bottom:10px;">
-              <input id="geminiKeyInput" type="password" placeholder="Paste API key (AIza...)" style="flex:1;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
-              <button id="addGeminiKeyBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">Add</button>
+            <p style="font-size:11.5px;color:var(--text);margin:0 0 10px 0;">Multiple keys per provider — auto-rotates on rate limit or failure.</p>
+            <div style="display:flex;gap:6px;margin-bottom:10px;align-items:center;">
+              <select id="keyProviderSelect" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
+                <option value="gemini">Gemini</option>
+                <option value="groq">Groq</option>
+                <option value="mistral">Mistral</option>
+              </select>
+              <input id="apiKeyInput" type="password" placeholder="Paste API key…" style="flex:1;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
+              <button id="addApiKeyBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">Add</button>
             </div>
-            <div id="geminiKeyList" style="display:flex;flex-direction:column;gap:6px;"></div>
-            <div id="geminiKeyStatus" style="font-size:11px;color:var(--text);margin-top:8px;"></div>
-          </div>
-          <!-- Groq API Keys -->
-          <div style="margin-bottom:20px;border-top:1px solid var(--border);padding-top:16px;">
-            <label style="font-size:14px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-              <span class="icon-emoji">⚡</span> Groq API Keys
-            </label>
-            <p style="font-size:11.5px;color:var(--text);margin:0 0 10px 0;">Ultra-fast inference. Multiple keys supported with auto-rotation.</p>
-            <div style="display:flex;gap:6px;margin-bottom:10px;">
-              <input id="groqKeyInput" type="password" placeholder="Paste API key (gsk_...)" style="flex:1;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
-              <button id="addGroqKeyBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">Add</button>
-            </div>
-            <div id="groqKeyList" style="display:flex;flex-direction:column;gap:6px;"></div>
-            <div id="groqKeyStatus" style="font-size:11px;color:var(--text);margin-top:8px;"></div>
-          </div>
-          <!-- Mistral API Keys -->
-          <div style="margin-bottom:20px;border-top:1px solid var(--border);padding-top:16px;">
-            <label style="font-size:14px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-              <span class="icon-emoji">🌬️</span> Mistral API Keys
-            </label>
-            <p style="font-size:11.5px;color:var(--text);margin:0 0 10px 0;">La Plateforme keys. Multiple keys supported with auto-rotation.</p>
-            <div style="display:flex;gap:6px;margin-bottom:10px;">
-              <input id="mistralKeyInput" type="password" placeholder="Paste API key (key: ...)" style="flex:1;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
-              <button id="addMistralKeyBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">Add</button>
-            </div>
-            <div id="mistralKeyList" style="display:flex;flex-direction:column;gap:6px;"></div>
-            <div id="mistralKeyStatus" style="font-size:11px;color:var(--text);margin-top:8px;"></div>
+            <div id="apiKeyList" style="display:flex;flex-direction:column;gap:6px;"></div>
+            <div id="apiKeyStatus" style="font-size:11px;color:var(--text);margin-top:8px;"></div>
           </div>
           <!-- Add Model -->
           <div style="margin-bottom:16px;border-top:1px solid var(--border);padding-top:16px;">
@@ -540,6 +522,30 @@
     </div>
   </div>
 
+  <!-- Library Panel -->
+  <div id="libraryOverlay" class="settings-overlay hidden">
+    <div class="settings-panel library-panel">
+      <div class="settings-header">
+        <h2><span class="icon-emoji">📚</span><i data-lucide="book-open" class="icon-lucide" style="width:18px;height:18px;margin-right:6px;"></i> Library</h2>
+        <button id="libraryClose" class="icon-btn" title="Close"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
+      </div>
+      <div class="settings-tabs" id="libraryTabs">
+        <button class="settings-tab active" data-tab="lib-agents">Agents</button>
+        <button class="settings-tab" data-tab="lib-research">Research</button>
+        <button class="settings-tab" data-tab="lib-notes">Notes</button>
+        <button class="settings-tab" data-tab="lib-gallery">Gallery</button>
+        <button class="settings-tab" data-tab="lib-skills">Skills</button>
+      </div>
+      <div class="settings-body library-body" id="libraryBody">
+        <div id="tab-lib-agents" class="settings-tab-content active"></div>
+        <div id="tab-lib-research" class="settings-tab-content"></div>
+        <div id="tab-lib-notes" class="settings-tab-content"></div>
+        <div id="tab-lib-gallery" class="settings-tab-content"></div>
+        <div id="tab-lib-skills" class="settings-tab-content"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Skill Detail Overlay -->
   <div id="skillDetailOverlay" class="skill-detail-overlay">
     <div class="skill-detail-card">
@@ -558,7 +564,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=29"></script>
+  <script src="/static/app.js?v=30"></script>
   <script src="/static/js/agents.js?v=19"></script>
 </body>
 </html>

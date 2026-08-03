@@ -15,6 +15,7 @@ import numpy as np
 _BRAIN_DIR = Path(__file__).resolve().parent.parent / "Brain"
 _MEMORY_PATH = _BRAIN_DIR / "Memory.json"
 _PROTECTED_PATH = _BRAIN_DIR / "Protected.json"
+_SKILLS_PATH = _BRAIN_DIR / "skills.json"
 _CACHE_PATH = Path(__file__).resolve().parent.parent / "system" / "memory_cache.npz"
 
 # Empirically calibrated (2026-07-27) against the hybrid score
@@ -285,6 +286,27 @@ class MemorySearcher:
                     continue
                 text = f"{k}: {v}" if k else v
                 self._add_entry(text, k, v, "protected")
+
+        # Load user-created skills (same pattern as protected)
+        if _SKILLS_PATH.exists():
+            try:
+                sdata = json.loads(_SKILLS_PATH.read_text(encoding="utf-8"))
+            except Exception:
+                sdata = {}
+            skills = sdata.get("skills", []) if isinstance(sdata, dict) else []
+            for s in skills:
+                if not isinstance(s, dict):
+                    continue
+                name = str(s.get("name", "")).strip()
+                desc = str(s.get("description", "")).strip()
+                trigger = str(s.get("trigger", "")).strip()
+                prompt = str(s.get("prompt", "")).strip()
+                if not name:
+                    continue
+                text = f"[SKILL] {name}: {desc}"
+                if trigger:
+                    text += f" | Trigger: {trigger}"
+                self._add_entry(text, name, prompt or desc, "skill")
 
     def clear_cache(self) -> None:
         """Delete the .npz cache file and force a full re-embed on next search."""
