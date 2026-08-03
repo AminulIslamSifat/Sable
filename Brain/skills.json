@@ -1,3 +1,11 @@
 {
-  "skills": []
+  "skills": [
+    {
+      "name": "download-file",
+      "description": "Download files from the internet using curl/wget with progress tracking, resume support, and output path control.",
+      "trigger": "When user asks to download a file, fetch a URL to disk, save remote content, or grab media/documents from the web.",
+      "prompt": "Use curl or wget to download files. Prefer curl -L -O --progress-bar for standard downloads. Use -C - for resume. Always specify output path if user provides one. For large files (>100MB), use background execution and report PID. Verify download with file size check after completion. Never download to /tmp unless explicitly asked — default to ~/Downloads or user-specified path.",
+      "created": "2026-08-03"
+    }
+  ]
 }
