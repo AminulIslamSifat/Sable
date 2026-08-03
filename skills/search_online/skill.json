@@ -1,6 +1,6 @@
 {
   "name": "Online Search",
-  "key": "search_online",
+  "key": "online_search",
   "version": "1.0.0",
   "category": "data",
   "description": "Two-phase web search: query then fetch relevant pages.",
