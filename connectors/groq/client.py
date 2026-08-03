@@ -22,6 +22,8 @@ from typing import Any
 
 import httpx
 
+from connectors.common.media import prepare_inline_file, to_openai_image
+
 logger = logging.getLogger("sable.groq_api")
 
 BASE_URL = "https://api.groq.com/openai/v1"
@@ -33,7 +35,7 @@ _MAX_SESSION_MESSAGES = 60
 
 # Instruction files to prepend on first message
 _INSTRUCTION_DIR = Path(__file__).resolve().parent.parent.parent / "instruction"
-_INSTRUCTION_FILES = ["Maria.md", "output_format.md"]
+_INSTRUCTION_FILES: list[str] = []  # Groq: no system prompt injection (8k TPM limit)
 
 
 def _load_keys() -> list[str]:
@@ -60,28 +62,9 @@ def _load_instructions() -> str:
         fpath = _INSTRUCTION_DIR / fname
         if fpath.exists():
             parts.append(fpath.read_text(encoding="utf-8").strip())
-    # Append auto-generated skill registry
-    from engine.skills import SkillEngine
-    from engine.skills.handlers import HANDLER_MAP
-    _engine = SkillEngine(
-        skills_dir=Path(__file__).resolve().parent.parent.parent / "skills",
-        handlers=HANDLER_MAP,
-        agent_id="maria",
-    )
-    parts.append(_engine.get_registry_prompt())
 
-    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-    OUTPUT_ROOT = PROJECT_ROOT / "output"
-    ASSETS_DIR = OUTPUT_ROOT / "assets"
-    parts.append(
-        f"\n\n***\n\n# SYSTEM DIRECTORIES\n"
-        f"PROJECT_ROOT={PROJECT_ROOT}\n"
-        f"OUTPUT_ROOT={OUTPUT_ROOT}\n"
-        f"ASSETS_DIR={ASSETS_DIR}\n"
-        f"All <OUTPUT_ROOT> tags in your instructions should be replaced with {OUTPUT_ROOT}\n"
-        f"All <PROJECT_ROOT> tags in your instructions should be replaced with {PROJECT_ROOT}\n"
-    )
-    return "\n\n".join(parts)
+    # Groq: zero system prompt bloat. 8k TPM can't handle it.
+    return ""
 
 
 class GroqClient:
@@ -189,6 +172,7 @@ class GroqClient:
         thinking_mode: str | None = None,
         chat_id: str | None = None,
         inject_instructions: bool = True,
+        files: list[str] | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat completion, yielding Sable-standard events."""
@@ -200,7 +184,20 @@ class GroqClient:
         url = f"{BASE_URL}/chat/completions"
 
         history = self._get_or_create_session(chat_id, inject_instructions)
-        history.append({"role": "user", "content": message})
+
+        # Build multimodal content when files are attached
+        if files:
+            content: list[dict[str, Any]] = [{"type": "text", "text": message}]
+            for fpath in files:
+                pf = prepare_inline_file(fpath)
+                if pf and pf.category == "image":
+                    content.append(to_openai_image(pf))
+                elif pf:
+                    # Non-image files: embed as text note
+                    content[0]["text"] += f"\n\n[Attached file: {Path(fpath).name} ({pf.mime_type}, {pf.size_bytes} bytes)]"
+            history.append({"role": "user", "content": content})
+        else:
+            history.append({"role": "user", "content": message})
 
         payload: dict[str, Any] = {
             "model": model_id,
@@ -274,6 +271,7 @@ class GroqClient:
         chat_id: str | None = None,
         ref_file_ids: list[str] | None = None,
         inject_instructions: bool = True,
+        files: list[str] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Non-streaming chat. Returns {answer, thinking, parent_id, error}."""
@@ -288,6 +286,7 @@ class GroqClient:
             thinking_mode=thinking_mode,
             chat_id=chat_id,
             inject_instructions=inject_instructions,
+            files=files,
         ):
             etype = event.get("type")
             if etype == "answer":

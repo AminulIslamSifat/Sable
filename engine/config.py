@@ -23,6 +23,16 @@ PROTECTED_PATH = BRAIN_DIR / "Protected.json"
 MEMORY_SEARCH_SETTINGS_PATH = _ROOT / "system/memory_search_settings.json"
 AGENT_CONFIG_PATH = _ROOT / "system/agent_config.json"
 
+# Output directories — where generated content lands
+OUTPUT_ROOT = _ROOT / "output"
+RESEARCH_DIR = OUTPUT_ROOT / "research"
+NOTES_DIR = OUTPUT_ROOT / "notes"
+AGENT_OUTPUT_DIR = OUTPUT_ROOT / "agent"
+ASSETS_DIR = OUTPUT_ROOT / "assets"
+
+# User-created skills (managed via memory consolidation)
+SKILLS_JSON_PATH = BRAIN_DIR / "skills.json"
+
 # Maximum prompt length (chars) before memory vectorization is skipped entirely.
 # Prevents RAM spikes when huge messages are sent. Configurable via web settings.
 MEMORY_SEARCH_MAX_PROMPT_CHARS = 20000

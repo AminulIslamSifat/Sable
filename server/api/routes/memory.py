@@ -7,14 +7,44 @@ from fastapi import APIRouter, HTTPException
 from engine.config import get_model_config
 from engine.memory_search import get_searcher, list_available_models
 from connectors.deepseek.client import get_client as get_deepseek_client
+from connectors import get_connector
 from instruction.mem_cmd import _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY, _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE
 
 from server.config import _MEMORY_PATH, _PROTECTED_PATH, _MEMORY_SEARCH_SETTINGS, _DEFAULT_MAX_PROMPT_CHARS
 from server.database import get_messages, get_injected_memory_keys, get_parent_id
-from server.utils import retry_async, _is_deepseek_api_model, logger
+from server.utils import retry_async, _is_deepseek_api_model, _resolve_api_backend, logger
 from ..dependencies import service
 
 router = APIRouter()
+
+import re as _re
+_MEM_BLOCK_RE = _re.compile(r'^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n')
+_TS_RE = _re.compile(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\n?')
+
+_CONSOLIDATION_BACKENDS = frozenset({"groq", "gemini", "mistral"})
+
+
+def _format_conversation(messages: list[dict[str, Any]], max_chars: int = 50_000) -> str:
+    """Format DB messages into a readable conversation block for consolidation."""
+    parts: list[str] = []
+    total = 0
+    for i, msg in enumerate(messages):
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if not content:
+            continue
+        # Strip injected memory blocks and timestamp prefixes from user messages
+        if role == "user":
+            content = _MEM_BLOCK_RE.sub("", content)
+            content = _TS_RE.sub("", content)
+        label = "User" if role == "user" else "Assistant"
+        line = f"[{label}]: {content}"
+        if total + len(line) > max_chars:
+            parts.append(f"...[{len(messages) - i} more messages truncated]")
+            break
+        parts.append(line)
+        total += len(line)
+    return "\n\n".join(parts)
 
 @router.get("/api/settings/memory")
 async def get_memory() -> dict[str, Any]:
@@ -129,6 +159,34 @@ async def refresh_memory_cache() -> dict[str, Any]:
     count = get_searcher().rebuild_cache()
     return {"status": "ok", "detail": f"Cache rebuilt. {count} entries re-embedded."}
 
+def _save_user_skill(skill_data: dict[str, Any]) -> bool:
+    """Persist a user-created skill to Brain/skills.json (same pattern as Protected.json)."""
+    from engine.config import SKILLS_JSON_PATH
+    try:
+        existing: dict[str, list] = {"skills": []}
+        if SKILLS_JSON_PATH.exists():
+            existing = json.loads(SKILLS_JSON_PATH.read_text(encoding="utf-8"))
+            if not isinstance(existing, dict) or "skills" not in existing:
+                existing = {"skills": []}
+        # Deduplicate by name
+        names = {s.get("name") for s in existing["skills"] if isinstance(s, dict)}
+        if skill_data["name"] in names:
+            # Update existing
+            existing["skills"] = [
+                skill_data if s.get("name") == skill_data["name"] else s
+                for s in existing["skills"]
+            ]
+        else:
+            from datetime import datetime
+            skill_data.setdefault("created", datetime.now().strftime("%Y-%m-%d"))
+            existing["skills"].append(skill_data)
+        SKILLS_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SKILLS_JSON_PATH.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
 @router.post("/api/memory/consolidate")
 async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     chat_id = payload.get("chat_id")
@@ -156,10 +214,24 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     if mode == "api":
         prompt = _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE
         prompt = prompt.replace("<<CURRENT_MEMORY>>", current_memory)
-        prompt = prompt.replace("<<CONVERSATION_SUMMARY>>", "(See conversation thread above — do not request more context.)")
-        parent_id = get_parent_id(chat_id, None)
+        backend = _resolve_api_backend(model)
         try:
-            if _is_deepseek_api_model(model):
+            if backend in _CONSOLIDATION_BACKENDS:
+                # Groq / Gemini / Mistral: pass full conversation inline, one-shot call
+                conv_text = _format_conversation(messages)
+                prompt = prompt.replace("<<CONVERSATION_SUMMARY>>", conv_text)
+                connector = get_connector(backend)
+                result = await retry_async(
+                    lambda: connector.chat(
+                        message=prompt,
+                        model=model,
+                        inject_instructions=False,
+                        chat_id=None,
+                    ),
+                    label=f"memory_consolidate_{backend}",
+                )
+            elif _is_deepseek_api_model(model):
+                prompt = prompt.replace("<<CONVERSATION_SUMMARY>>", "(See conversation thread above — do not request more context.)")
                 _ds_cfg = get_model_config(model)
                 _ds_api_type = _ds_cfg.get("api_model_type")
                 result = await retry_async(
@@ -173,6 +245,8 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
                     label="memory_consolidate_api_ds",
                 )
             else:
+                prompt = prompt.replace("<<CONVERSATION_SUMMARY>>", "(See conversation thread above — do not request more context.)")
+                parent_id = get_parent_id(chat_id, None)
                 result = await retry_async(
                     lambda: service.chat(
                         message=prompt,
@@ -300,8 +374,16 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     _MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
     _MEMORY_PATH.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
     get_searcher().reload_memory()
+    # Handle optional skill creation
+    skill_created = False
+    skill_data = new_entries.get("create_skill")
+    if isinstance(skill_data, dict) and skill_data.get("name"):
+        skill_created = _save_user_skill(skill_data)
     total_added = added_count + prot_added + eph_added
-    return {"status": "ok", "added": total_added, "deleted": deleted_count}
+    result: dict[str, Any] = {"status": "ok", "added": total_added, "deleted": deleted_count}
+    if skill_created:
+        result["skill_created"] = skill_data["name"]
+    return result
 
 @router.post("/api/memory/consolidate-scraper")
 async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:

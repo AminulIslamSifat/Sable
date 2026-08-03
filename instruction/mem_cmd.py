@@ -39,7 +39,12 @@ _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY = (
     '  "delete": ["exact_key_string"]\n'
     '}\n'
     'Delete list must NEVER contain keys from the protected category.\n'
-    'If nothing qualifies, return exactly: {"add": {"semantic": [], "episodic": [], "procedural": [], "protected": [], "ephemeral": []}, "delete": []}'
+    'If nothing qualifies, return exactly: {"add": {"semantic": [], "episodic": [], "procedural": [], "protected": [], "ephemeral": []}, "delete": []}\n\n'
+    'SKILL CREATION (optional):\n'
+    'If the user explicitly asks to remember a repeatable workflow or says "create a skill",\n'
+    'include a "create_skill" field in the JSON:\n'
+    '  "create_skill": {"name": "skill-name", "description": "...", "trigger": "when to use it", "prompt": "full instruction text"}\n'
+    'Only include this when the user explicitly requests it — never auto-create skills from normal conversation.'
 )
 
 _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE = (
@@ -83,5 +88,10 @@ _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE = (
     '  "delete": ["exact_key_string"]\n'
     '}\n'
     'Delete list must NEVER contain keys from the protected category.\n'
-    'If nothing qualifies, return exactly: {"add": {"semantic": [], "episodic": [], "procedural": [], "protected": [], "ephemeral": []}, "delete": []}'
+    'If nothing qualifies, return exactly: {"add": {"semantic": [], "episodic": [], "procedural": [], "protected": [], "ephemeral": []}, "delete": []}\n\n'
+    'SKILL CREATION (optional):\n'
+    'If the user explicitly asks to remember a repeatable workflow or says "create a skill",\n'
+    'include a "create_skill" field in the JSON:\n'
+    '  "create_skill": {"name": "skill-name", "description": "...", "trigger": "when to use it", "prompt": "full instruction text"}\n'
+    'Only include this when the user explicitly requests it — never auto-create skills from normal conversation.'
 )

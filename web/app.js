@@ -2529,7 +2529,8 @@
             if (provider === "deepseek" || provider === "scraping") return m.api_backend === "deepseek";
             if (provider === "gemini") return m.api_backend === "gemini";
             if (provider === "groq") return m.api_backend === "groq";
-            return !m.api_backend; // qwen
+            if (provider === "mistral") return m.api_backend === "mistral";
+            return m.api_backend === "qwen" || !m.api_backend; // qwen fallback
           })
         : modelList;
 
@@ -3389,6 +3390,174 @@
 
     logClear.addEventListener("click", () => { logViewer.textContent = ""; });
 
+    /* ---------- Library Panel ---------- */
+    const libraryOverlay = document.getElementById("libraryOverlay");
+    const libraryBtn = document.getElementById("libraryBtn");
+    const libraryClose = document.getElementById("libraryClose");
+    const libraryTabs = document.getElementById("libraryTabs");
+    const libraryBody = document.getElementById("libraryBody");
+    let _libLoaded = { agents: false, research: false, notes: false, gallery: false, skills: false };
+
+    function openLibrary() {
+      libraryOverlay.classList.remove("hidden");
+      // Load active tab if not yet loaded
+      const activeTab = libraryTabs.querySelector(".settings-tab.active");
+      if (activeTab) loadLibraryTab(activeTab.dataset.tab);
+    }
+
+    function closeLibrary() {
+      libraryOverlay.classList.add("hidden");
+    }
+
+    libraryBtn.addEventListener("click", openLibrary);
+    libraryClose.addEventListener("click", closeLibrary);
+    libraryOverlay.addEventListener("click", (e) => {
+      if (e.target === libraryOverlay) closeLibrary();
+    });
+
+    // Library tab switching
+    libraryTabs.querySelectorAll(".settings-tab").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        libraryTabs.querySelectorAll(".settings-tab").forEach((t) => t.classList.remove("active"));
+        libraryBody.querySelectorAll(".settings-tab-content").forEach((c) => c.classList.remove("active"));
+        tab.classList.add("active");
+        const target = document.getElementById("tab-" + tab.dataset.tab);
+        if (target) target.classList.add("active");
+        loadLibraryTab(tab.dataset.tab);
+      });
+    });
+
+    async function loadLibraryTab(tabId) {
+      const section = tabId.replace("lib-", "");
+      if (_libLoaded[section]) return;
+      _libLoaded[section] = true;
+      const container = document.getElementById("tab-" + tabId);
+      if (!container) return;
+      container.innerHTML = '<div class="library-loading">Loading…</div>';
+      try {
+        if (section === "gallery") {
+          const res = await fetch("/api/library/gallery");
+          const items = await res.json();
+          renderGallery(container, items);
+        } else if (section === "skills") {
+          const res = await fetch("/api/library/skills");
+          const items = await res.json();
+          renderSkills(container, items);
+        } else {
+          const res = await fetch(`/api/library/${section}`);
+          const items = await res.json();
+          renderMdCards(container, items, section);
+        }
+      } catch (e) {
+        container.innerHTML = '<div class="library-empty">Failed to load.</div>';
+      }
+    }
+
+    function renderMdCards(container, items, section) {
+      if (!items.length) {
+        container.innerHTML = '<div class="library-empty">Nothing here yet.</div>';
+        return;
+      }
+      container.innerHTML = "";
+      const grid = document.createElement("div");
+      grid.className = "library-card-grid";
+      items.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "library-card";
+        card.innerHTML = `
+          <div class="library-card-title">${escHtml(item.title)}</div>
+          <div class="library-card-date">${item.date || ""}</div>
+          <div class="library-card-preview">${escHtml(item.preview || "")}</div>
+        `;
+        card.addEventListener("click", () => openLibraryReader(section, item.filename, item.title));
+        grid.appendChild(card);
+      });
+      container.appendChild(grid);
+    }
+
+    function renderGallery(container, items) {
+      if (!items.length) {
+        container.innerHTML = '<div class="library-empty">No images uploaded yet.</div>';
+        return;
+      }
+      container.innerHTML = "";
+      const grid = document.createElement("div");
+      grid.className = "library-gallery-grid";
+      items.forEach((item) => {
+        const cell = document.createElement("div");
+        cell.className = "library-gallery-item";
+        cell.innerHTML = `<img src="${item.url}" alt="${escHtml(item.filename)}" loading="lazy">`;
+        cell.title = item.filename;
+        cell.addEventListener("click", () => window.open(item.url, "_blank"));
+        grid.appendChild(cell);
+      });
+      container.appendChild(grid);
+    }
+
+    function renderSkills(container, items) {
+      if (!items.length) {
+        container.innerHTML = '<div class="library-empty">No user-created skills yet. They\'ll appear here once consolidated from conversations.</div>';
+        return;
+      }
+      container.innerHTML = "";
+      const list = document.createElement("div");
+      list.className = "library-skill-list";
+      items.forEach((skill) => {
+        const card = document.createElement("div");
+        card.className = "library-card library-skill-card";
+        card.innerHTML = `
+          <div class="library-card-title">${escHtml(skill.name || "unnamed")}</div>
+          <div class="library-card-preview">${escHtml(skill.description || "")}</div>
+          <div class="library-card-date">Trigger: ${escHtml(skill.trigger || "—")}</div>
+        `;
+        list.appendChild(card);
+      });
+      container.appendChild(list);
+    }
+
+    async function openLibraryReader(section, filename, title) {
+      try {
+        const res = await fetch(`/api/library/read/${section}/${encodeURIComponent(filename)}`);
+        const data = await res.json();
+        if (data.error) { showToast(data.error, "error"); return; }
+        // Show in a simple modal overlay
+        const existing = document.getElementById("libraryReaderOverlay");
+        if (existing) existing.remove();
+        const overlay = document.createElement("div");
+        overlay.id = "libraryReaderOverlay";
+        overlay.className = "settings-overlay";
+        overlay.innerHTML = `
+          <div class="settings-panel library-reader-panel">
+            <div class="settings-header">
+              <h2>${escHtml(title)}</h2>
+              <button class="icon-btn" id="libraryReaderClose"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
+            </div>
+            <div class="library-reader-content">${renderMarkdownSimple(data.content)}</div>
+          </div>
+        `;
+        document.body.appendChild(overlay);
+        overlay.querySelector("#libraryReaderClose").addEventListener("click", () => overlay.remove());
+        overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+        lucide.createIcons({ nodes: overlay.querySelectorAll("[data-lucide]") });
+      } catch { showToast("Failed to load file", "error"); }
+    }
+
+    function renderMarkdownSimple(md) {
+      // Minimal markdown → HTML for library reader
+      let html = escHtml(md);
+      html = html.replace(/^### (.+)$/gm, "<h4>$1</h4>");
+      html = html.replace(/^## (.+)$/gm, "<h3>$1</h3>");
+      html = html.replace(/^# (.+)$/gm, "<h2>$1</h2>");
+      html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+      html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
+      html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+      html = html.replace(/^- (.+)$/gm, "<li>$1</li>");
+      html = html.replace(/(<li>.*<\/li>\n?)+/g, "<ul>$&</ul>");
+      html = html.replace(/^---$/gm, "<hr>");
+      html = html.replace(/\n{2,}/g, "</p><p>");
+      return "<p>" + html + "</p>";
+    }
+
     // === Brain / Memory Panel ===
     const CATEGORIES = ["semantic", "episodic", "procedural", "ephemeral"];
     const CAT_LABELS = { semantic: "Facts & Knowledge", episodic: "Events & Experiences", procedural: "Skills & Processes", ephemeral: "⏳ Temporary" };
@@ -3809,57 +3978,80 @@
     document.querySelector('[data-tab="skills"]').addEventListener("click", loadSkills);
     document.querySelector('[data-tab="account"]').addEventListener("click", loadAccountProfiles);
 
-    // --- Providers tab: API key management (Gemini + Groq) ---
-    function _buildKeyManager({ listId, statusId, inputId, btnId, apiBase, providerName }) {
-      const listEl = document.getElementById(listId);
-      const statusEl = document.getElementById(statusId);
-      const inputEl = document.getElementById(inputId);
-      const btnEl = document.getElementById(btnId);
-      if (!listEl || !inputEl || !btnEl) return;
+    // --- Providers tab: Unified API key manager ---
+    const _keyProviderMeta = {
+      gemini:  { apiBase: "/api/settings/gemini",  name: "Gemini",  placeholder: "Paste API key (AIza…)" },
+      groq:    { apiBase: "/api/settings/groq",    name: "Groq",    placeholder: "Paste API key (gsk_…)" },
+      mistral: { apiBase: "/api/settings/mistral", name: "Mistral", placeholder: "Paste API key (key: …)" },
+    };
+    const _keyEls = {
+      select: document.getElementById("keyProviderSelect"),
+      input:  document.getElementById("apiKeyInput"),
+      btn:    document.getElementById("addApiKeyBtn"),
+      list:   document.getElementById("apiKeyList"),
+      status: document.getElementById("apiKeyStatus"),
+    };
+    let _currentKeyProvider = "gemini";
 
-      async function loadKeys() {
-        try {
-          const res = await fetch(`${apiBase}/keys`);
-          const data = await res.json();
-          const keys = data.keys || [];
-          listEl.innerHTML = "";
-          if (keys.length === 0) {
-            listEl.innerHTML = '<div style="font-size:12px;color:var(--text);padding:8px 0;">No keys configured yet.</div>';
-            statusEl.textContent = "";
-            return;
-          }
-          keys.forEach((k) => {
-            const row = document.createElement("div");
-            row.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-radius:8px;background:color-mix(in srgb, var(--panel) 60%, transparent);border:1px solid var(--border);";
-            const label = document.createElement("span");
-            label.style.cssText = "font-size:12px;font-family:monospace;color:var(--text);";
-            label.textContent = k.masked + (k.active ? " ●" : "");
-            const delBtn = document.createElement("button");
-            delBtn.textContent = "✕";
-            delBtn.style.cssText = "background:transparent;border:none;color:var(--danger);cursor:pointer;font-size:13px;padding:2px 6px;border-radius:4px;";
-            delBtn.title = "Remove key";
-            delBtn.addEventListener("click", async () => {
-              if (!confirm(`Remove this ${providerName} API key?`)) return;
-              try {
-                await fetch(`${apiBase}/api-key/${k.index}`, { method: "DELETE" });
-                loadKeys();
-              } catch (e) { showToast("Failed to remove key", "error"); }
-            });
-            row.appendChild(label);
-            row.appendChild(delBtn);
-            listEl.appendChild(row);
-          });
-          statusEl.textContent = `${keys.length} key${keys.length !== 1 ? "s" : ""} configured · auto-rotation enabled`;
-        } catch (e) {
-          statusEl.textContent = "Failed to load keys";
+    async function _loadKeysFor(provider) {
+      const meta = _keyProviderMeta[provider];
+      if (!meta || !_keyEls.list) return;
+      try {
+        const res = await fetch(`${meta.apiBase}/keys`);
+        const data = await res.json();
+        const keys = data.keys || [];
+        _keyEls.list.innerHTML = "";
+        if (keys.length === 0) {
+          _keyEls.list.innerHTML = '<div style="font-size:12px;color:var(--text);padding:8px 0;">No keys configured yet.</div>';
+          _keyEls.status.textContent = "";
+          return;
         }
+        keys.forEach((k) => {
+          const row = document.createElement("div");
+          row.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-radius:8px;background:color-mix(in srgb, var(--panel) 60%, transparent);border:1px solid var(--border);";
+          const label = document.createElement("span");
+          label.style.cssText = "font-size:12px;font-family:monospace;color:var(--text);";
+          label.textContent = k.masked + (k.active ? " ●" : "");
+          const delBtn = document.createElement("button");
+          delBtn.textContent = "✕";
+          delBtn.style.cssText = "background:transparent;border:none;color:var(--danger);cursor:pointer;font-size:13px;padding:2px 6px;border-radius:4px;";
+          delBtn.title = "Remove key";
+          delBtn.addEventListener("click", async () => {
+            if (!confirm(`Remove this ${meta.name} API key?`)) return;
+            try {
+              await fetch(`${meta.apiBase}/api-key/${k.index}`, { method: "DELETE" });
+              _loadKeysFor(_currentKeyProvider);
+            } catch (e) { showToast("Failed to remove key", "error"); }
+          });
+          row.appendChild(label);
+          row.appendChild(delBtn);
+          _keyEls.list.appendChild(row);
+        });
+        _keyEls.status.textContent = `${keys.length} key${keys.length !== 1 ? "s" : ""} configured · auto-rotation enabled`;
+      } catch (e) {
+        _keyEls.status.textContent = "Failed to load keys";
       }
+    }
 
-      btnEl.addEventListener("click", async () => {
-        const key = inputEl.value.trim();
+    function _switchKeyProvider(provider) {
+      _currentKeyProvider = provider;
+      const meta = _keyProviderMeta[provider];
+      if (_keyEls.input && meta) _keyEls.input.placeholder = meta.placeholder;
+      if (_keyEls.input) _keyEls.input.value = "";
+      _loadKeysFor(provider);
+    }
+
+    if (_keyEls.select) {
+      _keyEls.select.addEventListener("change", () => _switchKeyProvider(_keyEls.select.value));
+    }
+    if (_keyEls.btn) {
+      _keyEls.btn.addEventListener("click", async () => {
+        const key = _keyEls.input?.value?.trim();
         if (!key) { showToast("Paste an API key first", "error"); return; }
+        const meta = _keyProviderMeta[_currentKeyProvider];
+        if (!meta) return;
         try {
-          const res = await fetch(`${apiBase}/api-key`, {
+          const res = await fetch(`${meta.apiBase}/api-key`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ api_key: key }),
@@ -3870,31 +4062,15 @@
             showToast(detail || "Failed to add key", "error");
             return;
           }
-          inputEl.value = "";
-          showToast(`${providerName} key added ✓`, "success");
-          loadKeys();
+          if (_keyEls.input) _keyEls.input.value = "";
+          showToast(`${meta.name} key added ✓`, "success");
+          _loadKeysFor(_currentKeyProvider);
         } catch (e) { showToast("Failed to add key", "error"); }
       });
-      inputEl.addEventListener("keydown", (e) => { if (e.key === "Enter") btnEl.click(); });
-
-      return { loadKeys };
     }
-
-    const geminiKeyMgr = _buildKeyManager({
-      listId: "geminiKeyList", statusId: "geminiKeyStatus",
-      inputId: "geminiKeyInput", btnId: "addGeminiKeyBtn",
-      apiBase: "/api/settings/gemini", providerName: "Gemini",
-    });
-    const groqKeyMgr = _buildKeyManager({
-      listId: "groqKeyList", statusId: "groqKeyStatus",
-      inputId: "groqKeyInput", btnId: "addGroqKeyBtn",
-      apiBase: "/api/settings/groq", providerName: "Groq",
-    });
-    const mistralKeyMgr = _buildKeyManager({
-      listId: "mistralKeyList", statusId: "mistralKeyStatus",
-      inputId: "mistralKeyInput", btnId: "addMistralKeyBtn",
-      apiBase: "/api/settings/mistral", providerName: "Mistral",
-    });
+    if (_keyEls.input) {
+      _keyEls.input.addEventListener("keydown", (e) => { if (e.key === "Enter") _keyEls.btn?.click(); });
+    }
 
 
     // --- Provider model fetching ---
@@ -3952,10 +4128,7 @@
     }
 
     document.querySelector('[data-tab="providers"]')?.addEventListener("click", () => {
-      geminiKeyMgr?.loadKeys();
-      groqKeyMgr?.loadKeys();
-      mistralKeyMgr?.loadKeys();
-
+      _switchKeyProvider(_keyEls.select?.value || "gemini");
       loadCustomModels();
     });
 
@@ -3996,7 +4169,9 @@
           if (caps.video) capIcons.push("🎬 Video");
           if (caps.document) capIcons.push("📄 Document");
           if (caps.audio) capIcons.push("🎧 Audio");
-          detail.innerHTML = `<span style="color:var(--text);font-weight:500;">Capabilities:</span> ${capIcons.length ? capIcons.join(" · ") : '<span style="opacity:0.6;">None</span>'}`;
+          const hasThinking = (m.thinking_modes || []).some(tm => tm.thinking_enabled);
+          const thinkingBadge = hasThinking ? ' · 🧠 Thinking' : '';
+          detail.innerHTML = `<span style="color:var(--text);font-weight:500;">Capabilities:</span> ${capIcons.length ? capIcons.join(" · ") : '<span style="opacity:0.6;">None</span>'}${thinkingBadge}`;
           topBar.addEventListener("click", () => {
             const open = detail.style.display !== "none";
             detail.style.display = open ? "none" : "block";
@@ -4042,6 +4217,7 @@
           document: document.getElementById("capDocument")?.checked || false,
           audio: document.getElementById("capAudio")?.checked || false,
         };
+        const supportsThinking = document.getElementById("capThinking")?.checked || false;
         if (!backend) { showToast("Select a provider first", "error"); return; }
         if (!mid) { showToast("Select a model from the dropdown", "error"); return; }
         if (!label) { showToast("Enter a display name", "error"); return; }
@@ -4049,7 +4225,7 @@
           const res = await fetch("/api/settings/models", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: mid, label, api_backend: backend, capabilities }),
+            body: JSON.stringify({ id: mid, label, api_backend: backend, capabilities, supports_thinking: supportsThinking }),
           });
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
@@ -4064,6 +4240,7 @@
           document.getElementById("capVideo").checked = false;
           document.getElementById("capDocument").checked = false;
           document.getElementById("capAudio").checked = false;
+          document.getElementById("capThinking").checked = false;
           showToast("Model added ✓", "success");
           loadCustomModels();
           loadModels();
@@ -4107,11 +4284,16 @@
       };
     }
 
-    // Keyboard shortcut: Escape closes settings / skill detail
+    // Keyboard shortcut: Escape closes settings / library / skill detail
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
-        if (skillDetailOverlay.classList.contains("show")) {
+        const readerOverlay = document.getElementById("libraryReaderOverlay");
+        if (readerOverlay) {
+          readerOverlay.remove();
+        } else if (skillDetailOverlay.classList.contains("show")) {
           skillDetailOverlay.classList.remove("show");
+        } else if (!libraryOverlay.classList.contains("hidden")) {
+          closeLibrary();
         } else if (!settingsOverlay.classList.contains("hidden")) {
           closeSettings();
         }
@@ -4120,7 +4302,7 @@
 
     // Browser headless toggle
     const headlessToggle = document.getElementById("headlessToggle");
-    const restartBrowserBtn = document.getElementById("restartBrowser");
+    const refreshWafBtn = document.getElementById("refreshWafBtn");
 
     async function loadBrowserSettings() {
       try {
@@ -4132,26 +4314,22 @@
       } catch {}
     }
 
-    restartBrowserBtn.addEventListener("click", async () => {
-      restartBrowserBtn.disabled = true;
-      restartBrowserBtn.textContent = "↻ Restarting...";
+    refreshWafBtn.addEventListener("click", async () => {
+      refreshWafBtn.disabled = true;
+      refreshWafBtn.textContent = "🛡️ Refreshing…";
       try {
-        const res = await fetch("/api/settings/browser", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ headless: headlessToggle.checked })
-        });
+        const res = await fetch("/api/settings/browser/refresh-waf", { method: "POST" });
         if (res.ok) {
-          showToast("Browser restarted successfully!", "success");
+          showToast("WAF token refreshed!", "success");
         } else {
           const err = await res.json();
-          showToast(err.detail || "Restart failed", "error");
+          showToast(err.detail || "Refresh failed", "error");
         }
       } catch (e) {
-        showToast("Restart error: " + e.message, "error");
+        showToast("Refresh error: " + e.message, "error");
       } finally {
-        restartBrowserBtn.disabled = false;
-        restartBrowserBtn.textContent = "↻ Restart";
+        refreshWafBtn.disabled = false;
+        refreshWafBtn.textContent = "🛡️ Refresh WAF";
       }
     });
 
@@ -4171,9 +4349,9 @@
           const res = await fetch("/api/settings/deepseek/refresh-token", { method: "POST" });
           const data = await res.json().catch(() => ({}));
           if (res.ok) {
-            const preview = data.token_preview ? " (" + data.token_preview + ")" : "";
-            setDsStatus("✅ Token refreshed successfully" + preview, "var(--success, #3daa5c)");
-            showToast("DeepSeek token refreshed", "success");
+            const preview = data.token_preview || "none";
+            setDsStatus("✅ Token refreshed: " + preview, "var(--success, #3daa5c)");
+            showToast("DeepSeek token: " + preview, "success");
             await loadModels();
           } else {
             const msg = data.detail || data.error || "DeepSeek token refresh failed";
@@ -4911,21 +5089,13 @@
         const d = await res.json();
         showToast(res.ok ? (d.message || 'Token refreshed') : (d.error || 'Refresh failed'), res.ok ? 'success' : 'error');
       } catch { showToast('Refresh failed', 'error'); }
-    } else if (action === 'restart-browser') {
-      if (!confirm('Restart the browser session?')) return;
-      showToast('Restarting browser…', 'info');
+    } else if (action === 'refresh-waf') {
+      showToast('Refreshing WAF token…', 'info');
       try {
-        // Get current headless state to pass back (toggle behavior)
-        let currentHeadless = false;
-        try {
-          const res2 = await fetch('/api/settings/browser');
-          const d2 = await res2.json();
-          currentHeadless = d2.headless;
-        } catch {}
-        const res = await fetch('/api/settings/browser', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ headless: currentHeadless }) });
+        const res = await fetch('/api/settings/browser/refresh-waf', { method: 'POST' });
         const d = await res.json();
-        showToast(res.ok ? 'Browser restarted' : (d.error || 'Restart failed'), res.ok ? 'success' : 'error');
-      } catch { showToast('Restart failed', 'error'); }
+        showToast(res.ok ? (d.message || 'WAF token refreshed') : (d.detail || 'Refresh failed'), res.ok ? 'success' : 'error');
+      } catch { showToast('Refresh failed', 'error'); }
     } else if (action === 'clear-browser-cache') {
       if (!confirm('Strip all browser profile caches? This keeps session data but removes cache/junk.')) return;
       showToast('Stripping browser profiles…', 'info');
