@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import uuid
 from collections.abc import AsyncGenerator, Generator
 from datetime import datetime
@@ -39,7 +40,7 @@ from server.config import (
 )
 from server.database import (
     ensure_chat, get_chat_mode, get_chat_provider,
-    set_title_if_default, get_injected_memory_keys, save_injected_memory_keys,
+    set_title_if_default, update_chat_title, get_injected_memory_keys, save_injected_memory_keys,
     touch_chat, save_chat_url, get_chat_url,
     add_message, update_message, get_messages, list_chats, delete_chat, get_parent_id,
 )
@@ -140,6 +141,9 @@ async def chat(request: ChatRequest):
     except Exception:
         pass
     add_message(active_chat_id, "user", timestamped_message, None, parent_id, memory_used=_memory_used or None)
+    # Inject title instruction on first message (model-only, not saved to DB)
+    if parent_id is None:
+        timestamped_message += '\n\n[SYSTEM: First message of a new chat. Respond normally, but also emit <chat_title>Short descriptive title</chat_title> inside an <action> block at the end of your response. Under 80 chars.]'
     resolved_files: list[dict[str, Any]] | None = None
     _backend = _resolve_api_backend(request.model) if _is_api_model(request.model) else None
     if request.files:
@@ -298,18 +302,47 @@ async def chat(request: ChatRequest):
                 round_answer_parts: list[str] = []
                 pending_thinking: list[str] = []
                 parser = _get_skill_engine().create_parser()
+                _title_buf = ""  # buffer for partial <title> tags in text stream
+                _TITLE_RE = re.compile(r"<chat_title>(.*?)</chat_title>", re.S | re.I)
                 def _dispatch_events(items) -> Generator[str, None, None]:
                     """Shared logic: route parser events, execute tags via engine."""
+                    nonlocal _title_buf
                     engine = _get_skill_engine()
                     for item in items:
                         itype = item.get("type")
                         if itype == "text":
                             chunk = str(item.get("text", ""))
+                            if not chunk:
+                                continue
+                            # Detect <title> tag in plain text stream (model may emit outside action block)
+                            _title_buf += chunk
+                            m = _TITLE_RE.search(_title_buf)
+                            if m:
+                                _t = m.group(1).strip()
+                                if _t:
+                                    update_chat_title(active_chat_id, _t[:80])
+                                    yield sse({"type": "chat_title", "title": _t[:80]})
+                                _title_buf = _title_buf[:m.start()] + _title_buf[m.end():]
+                            # Hold back partial <title at end of buffer
+                            lt = _title_buf.rfind("<")
+                            if lt >= 0 and ">" not in _title_buf[lt:] and "chat_title".startswith(_title_buf[lt:].lstrip("<").lower()):
+                                chunk = _title_buf[:lt]
+                                _title_buf = _title_buf[lt:]
+                            else:
+                                chunk = _title_buf
+                                _title_buf = ""
                             if chunk:
                                 answer_parts.append(chunk)
                                 round_answer_parts.append(chunk)
                                 yield sse({"type": "answer", "text": chunk})
                         elif itype == "tag_found":
+                            # Meta tags: intercept before skill dispatch
+                            if item["name"] == "chat_title":
+                                _title_text = str(item.get("content", "")).strip()
+                                if _title_text:
+                                    update_chat_title(active_chat_id, _title_text[:80])
+                                    yield sse({"type": "chat_title", "title": _title_text[:80]})
+                                continue
                             # Execute the tag through the middleware pipeline
                             for ev in engine.process_tag(
                                 item["name"], item.get("attrs", {}), item.get("content", "")
@@ -325,7 +358,15 @@ async def chat(request: ChatRequest):
                 def emit_parsed(text: str) -> Generator[str, None, None]:
                     yield from _dispatch_events(parser.feed(text))
                 def emit_flush() -> Generator[str, None, None]:
+                    nonlocal _title_buf
                     yield from _dispatch_events(parser.flush())
+                    # Flush any remaining title buffer text
+                    if _title_buf:
+                        leftover = _title_buf
+                        _title_buf = ""
+                        answer_parts.append(leftover)
+                        round_answer_parts.append(leftover)
+                        yield sse({"type": "answer", "text": leftover})
                 files_for_round = resolved_files if round_index == 0 else None
                 # Drain pending agent notifications into this turn's context
                 try:
