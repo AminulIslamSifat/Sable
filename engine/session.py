@@ -202,9 +202,8 @@ class BrowserManager:
             raise RuntimeError("DeepSeek userToken was empty after parsing.")
         return token
 
-    async def upload_image(self, image_path: str) -> dict | None:
-        """Upload an image via Aliyun OSS JS SDK using the running browser context."""
-        await self.start()
+    async def upload_image(self, image_path: str, cookies: str | None = None, bx_ua: str | None = None, bx_umidtoken: str | None = None) -> dict | None:
+        """Upload an image via direct HTTP (STS token + Aliyun OSS PUT). No Playwright JS needed."""
         if not os.path.exists(image_path):
             print(f"[ERROR] File not found: {image_path}")
             return None
@@ -214,114 +213,104 @@ class BrowserManager:
         ext = filename.split(".")[-1].lower()
         mime_type = "image/png" if ext == "png" else ("image/jpeg" if ext in ("jpg", "jpeg") else "image/webp")
 
-        with open(image_path, "rb") as f:
-            img_b64 = base64.b64encode(f.read()).decode("utf-8")
+        # Fallback to config constants if caller didn't provide credentials
+        cookies = cookies or COOKIES
+        bx_ua = bx_ua or BX_UA
+        bx_umidtoken = bx_umidtoken or BX_UMIDTOKEN
 
-        print(f"[DEBUG] Uploading '{filename}' ({filesize} bytes) to Aliyun OSS...")
+        print(f"[DEBUG] Uploading '{filename}' ({filesize} bytes) via direct HTTP...")
 
-        # Navigate to Qwen chat to ensure fresh session cookies + re-inject OSS SDK
+        # Step 1: Get STS token
+        sts_headers = {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:153.0) Gecko/20100101 Firefox/153.0",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "source": "web",
+            "version": "0.2.81",
+            "x-request-id": str(uuid.uuid4()),
+            "Cookie": cookies,
+            "bx-ua": bx_ua or "",
+            "bx-umidtoken": bx_umidtoken or "",
+            "bx-v": "2.5.37",
+            "Origin": "https://chat.qwen.ai",
+            "Referer": "https://chat.qwen.ai/",
+        }
+        sts_payload = {"filename": filename, "filesize": str(filesize), "filetype": "image"}
+
         try:
-            current_url = self.page.url
-            if "chat.qwen.ai" not in current_url:
-                await self.page.goto("https://chat.qwen.ai", wait_until="domcontentloaded", timeout=15000)
-            else:
-                await self.page.reload(wait_until="domcontentloaded", timeout=15000)
-            await self.page.wait_for_timeout(2000)
-            await self.page.add_script_tag(url="https://gosspublic.alicdn.com/aliyun-oss-sdk-6.18.1.min.js")
-            await self.page.wait_for_timeout(1000)
-            print(f"[DEBUG] Browser refreshed at {self.page.url} for fresh session cookies")
+            async with httpx.AsyncClient(timeout=15) as client:
+                sts_resp = await client.post(
+                    "https://chat.qwen.ai/api/v2/files/getstsToken",
+                    headers=sts_headers,
+                    json=sts_payload,
+                )
+            if sts_resp.status_code != 200:
+                print(f"[ERROR] STS token request failed: HTTP {sts_resp.status_code} — {sts_resp.text[:300]}")
+                return None
+            sts_data = sts_resp.json()
+            if not sts_data.get("success"):
+                print(f"[ERROR] STS token rejected: {json.dumps(sts_data)[:300]}")
+                return None
+            sts = sts_data["data"]
         except Exception as e:
-            print(f"[WARN] Browser refresh failed (continuing anyway): {e}")
+            print(f"[ERROR] STS token request exception: {e}")
+            return None
 
+        # Step 2: Upload to Aliyun OSS
         try:
-            js_script = """async ({ b64, filesize, filename, mimeType }) => {
-                let tokenRes;
-                try {
-                    tokenRes = await fetch("https://chat.qwen.ai/api/v2/files/getstsToken", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ filename, filesize: String(filesize), filetype: "image" })
-                    });
-                } catch (fetchErr) {
-                    return { error: "STS fetch failed: " + fetchErr.message };
-                }
-                if (!tokenRes.ok) {
-                    const text = await tokenRes.text().catch(() => "(no body)");
-                    return { error: "STS HTTP " + tokenRes.status + ": " + text.slice(0, 300) };
-                }
-                const stsData = await tokenRes.json();
-                if (!stsData.success) return { error: "STS rejected: " + JSON.stringify(stsData).slice(0, 300) };
-                const sts = stsData.data;
+            import oss2
+            auth = oss2.StsAuth(sts["access_key_id"], sts["access_key_secret"], sts["security_token"])
+            bucket = oss2.Bucket(auth, f"https://{sts['endpoint']}", sts["bucketname"])
 
-                const byteCharacters = atob(b64);
-                const byteNumbers = new Array(byteCharacters.length);
-                for (let i = 0; i < byteCharacters.length; i++) {
-                    byteNumbers[i] = byteCharacters.charCodeAt(i);
-                }
-                const blob = new Blob([new Uint8Array(byteNumbers)], { type: mimeType });
+            with open(image_path, "rb") as f:
+                put_result = bucket.put_object(sts["file_path"], f)
 
-                const client = new OSS({
-                    region: sts.region,
-                    accessKeyId: sts.access_key_id,
-                    accessKeySecret: sts.access_key_secret,
-                    stsToken: sts.security_token,
-                    bucket: sts.bucketname,
-                    endpoint: sts.endpoint,
-                    secure: true
-                });
-
-                const result = await client.put(sts.file_path, blob);
-                return { status: result.res.status, sts: sts };
-            }"""
-
-            res = await self.page.evaluate(js_script, {"b64": img_b64, "filesize": filesize, "filename": filename, "mimeType": mime_type})
-
-            if res and res.get("status") in (200, 204) and "sts" in res:
-                sts = res["sts"]
-                now_ms = int(time.time() * 1000)
-                file_id = sts["file_id"]
-                file_url = sts["file_url"]
-
-                file_obj = {
-                    "type": "image",
-                    "file": {
-                        "created_at": now_ms,
-                        "data": {},
-                        "filename": filename,
-                        "hash": None,
-                        "id": file_id,
-                        "user_id": sts["file_path"].split("/")[0],
-                        "meta": {"name": filename, "size": filesize, "content_type": mime_type},
-                        "update_at": now_ms,
-                        "lastModified": now_ms,
-                        "name": filename,
-                        "webkitRelativePath": "",
-                        "size": filesize,
-                        "type": mime_type
-                    },
-                    "id": file_id,
-                    "url": file_url,
-                    "name": filename,
-                    "collection_name": "",
-                    "progress": 0,
-                    "status": "uploaded",
-                    "greenNet": "success",
-                    "size": filesize,
-                    "error": "",
-                    "itemId": str(uuid.uuid4()),
-                    "file_type": mime_type,
-                    "showType": "image",
-                    "file_class": "vision",
-                    "uploadTaskId": str(uuid.uuid4())
-                }
-                print(f"[DEBUG] Image uploaded successfully! File ID: {file_id}")
-                return file_obj
-            else:
-                print(f"[ERROR] Image upload failed: {res}")
+            if put_result.status not in (200, 204):
+                print(f"[ERROR] OSS PUT failed with status {put_result.status}")
+                return None
         except Exception as e:
-            print(f"[ERROR] upload_image exception: {e}")
+            print(f"[ERROR] OSS upload failed: {e}")
+            return None
 
-        return None
+        # Step 3: Build file object
+        now_ms = int(time.time() * 1000)
+        file_id = sts["file_id"]
+        file_url = sts.get("file_url", "")
+
+        file_obj = {
+            "type": "image",
+            "file": {
+                "created_at": now_ms,
+                "data": {},
+                "filename": filename,
+                "hash": None,
+                "id": file_id,
+                "user_id": sts["file_path"].split("/")[0],
+                "meta": {"name": filename, "size": filesize, "content_type": mime_type},
+                "update_at": now_ms,
+                "lastModified": now_ms,
+                "name": filename,
+                "webkitRelativePath": "",
+                "size": filesize,
+                "type": mime_type
+            },
+            "id": file_id,
+            "url": file_url,
+            "name": filename,
+            "collection_name": "",
+            "progress": 0,
+            "status": "uploaded",
+            "greenNet": "success",
+            "size": filesize,
+            "error": "",
+            "itemId": str(uuid.uuid4()),
+            "file_type": mime_type,
+            "showType": "image",
+            "file_class": "vision",
+            "uploadTaskId": str(uuid.uuid4())
+        }
+        print(f"[DEBUG] Image uploaded successfully! File ID: {file_id}")
+        return file_obj
 
     async def sync_context(self) -> bool:
         """Sync persona instructions to Qwen via settings/update API (no Playwright DOM)."""
