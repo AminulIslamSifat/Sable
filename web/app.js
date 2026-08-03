@@ -2529,7 +2529,8 @@
             if (provider === "deepseek" || provider === "scraping") return m.api_backend === "deepseek";
             if (provider === "gemini") return m.api_backend === "gemini";
             if (provider === "groq") return m.api_backend === "groq";
-            return !m.api_backend; // qwen
+            if (provider === "mistral") return m.api_backend === "mistral";
+            return m.api_backend === "qwen" || !m.api_backend; // qwen fallback
           })
         : modelList;
 
@@ -4168,7 +4169,9 @@
           if (caps.video) capIcons.push("🎬 Video");
           if (caps.document) capIcons.push("📄 Document");
           if (caps.audio) capIcons.push("🎧 Audio");
-          detail.innerHTML = `<span style="color:var(--text);font-weight:500;">Capabilities:</span> ${capIcons.length ? capIcons.join(" · ") : '<span style="opacity:0.6;">None</span>'}`;
+          const hasThinking = (m.thinking_modes || []).some(tm => tm.thinking_enabled);
+          const thinkingBadge = hasThinking ? ' · 🧠 Thinking' : '';
+          detail.innerHTML = `<span style="color:var(--text);font-weight:500;">Capabilities:</span> ${capIcons.length ? capIcons.join(" · ") : '<span style="opacity:0.6;">None</span>'}${thinkingBadge}`;
           topBar.addEventListener("click", () => {
             const open = detail.style.display !== "none";
             detail.style.display = open ? "none" : "block";
@@ -4214,6 +4217,7 @@
           document: document.getElementById("capDocument")?.checked || false,
           audio: document.getElementById("capAudio")?.checked || false,
         };
+        const supportsThinking = document.getElementById("capThinking")?.checked || false;
         if (!backend) { showToast("Select a provider first", "error"); return; }
         if (!mid) { showToast("Select a model from the dropdown", "error"); return; }
         if (!label) { showToast("Enter a display name", "error"); return; }
@@ -4221,7 +4225,7 @@
           const res = await fetch("/api/settings/models", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: mid, label, api_backend: backend, capabilities }),
+            body: JSON.stringify({ id: mid, label, api_backend: backend, capabilities, supports_thinking: supportsThinking }),
           });
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
@@ -4236,6 +4240,7 @@
           document.getElementById("capVideo").checked = false;
           document.getElementById("capDocument").checked = false;
           document.getElementById("capAudio").checked = false;
+          document.getElementById("capThinking").checked = false;
           showToast("Model added ✓", "success");
           loadCustomModels();
           loadModels();
@@ -4297,7 +4302,7 @@
 
     // Browser headless toggle
     const headlessToggle = document.getElementById("headlessToggle");
-    const restartBrowserBtn = document.getElementById("restartBrowser");
+    const refreshWafBtn = document.getElementById("refreshWafBtn");
 
     async function loadBrowserSettings() {
       try {
@@ -4309,26 +4314,22 @@
       } catch {}
     }
 
-    restartBrowserBtn.addEventListener("click", async () => {
-      restartBrowserBtn.disabled = true;
-      restartBrowserBtn.textContent = "↻ Restarting...";
+    refreshWafBtn.addEventListener("click", async () => {
+      refreshWafBtn.disabled = true;
+      refreshWafBtn.textContent = "🛡️ Refreshing…";
       try {
-        const res = await fetch("/api/settings/browser", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ headless: headlessToggle.checked })
-        });
+        const res = await fetch("/api/settings/browser/refresh-waf", { method: "POST" });
         if (res.ok) {
-          showToast("Browser restarted successfully!", "success");
+          showToast("WAF token refreshed!", "success");
         } else {
           const err = await res.json();
-          showToast(err.detail || "Restart failed", "error");
+          showToast(err.detail || "Refresh failed", "error");
         }
       } catch (e) {
-        showToast("Restart error: " + e.message, "error");
+        showToast("Refresh error: " + e.message, "error");
       } finally {
-        restartBrowserBtn.disabled = false;
-        restartBrowserBtn.textContent = "↻ Restart";
+        refreshWafBtn.disabled = false;
+        refreshWafBtn.textContent = "🛡️ Refresh WAF";
       }
     });
 
@@ -4348,9 +4349,9 @@
           const res = await fetch("/api/settings/deepseek/refresh-token", { method: "POST" });
           const data = await res.json().catch(() => ({}));
           if (res.ok) {
-            const preview = data.token_preview ? " (" + data.token_preview + ")" : "";
-            setDsStatus("✅ Token refreshed successfully" + preview, "var(--success, #3daa5c)");
-            showToast("DeepSeek token refreshed", "success");
+            const preview = data.token_preview || "none";
+            setDsStatus("✅ Token refreshed: " + preview, "var(--success, #3daa5c)");
+            showToast("DeepSeek token: " + preview, "success");
             await loadModels();
           } else {
             const msg = data.detail || data.error || "DeepSeek token refresh failed";
@@ -5088,21 +5089,13 @@
         const d = await res.json();
         showToast(res.ok ? (d.message || 'Token refreshed') : (d.error || 'Refresh failed'), res.ok ? 'success' : 'error');
       } catch { showToast('Refresh failed', 'error'); }
-    } else if (action === 'restart-browser') {
-      if (!confirm('Restart the browser session?')) return;
-      showToast('Restarting browser…', 'info');
+    } else if (action === 'refresh-waf') {
+      showToast('Refreshing WAF token…', 'info');
       try {
-        // Get current headless state to pass back (toggle behavior)
-        let currentHeadless = false;
-        try {
-          const res2 = await fetch('/api/settings/browser');
-          const d2 = await res2.json();
-          currentHeadless = d2.headless;
-        } catch {}
-        const res = await fetch('/api/settings/browser', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ headless: currentHeadless }) });
+        const res = await fetch('/api/settings/browser/refresh-waf', { method: 'POST' });
         const d = await res.json();
-        showToast(res.ok ? 'Browser restarted' : (d.error || 'Restart failed'), res.ok ? 'success' : 'error');
-      } catch { showToast('Restart failed', 'error'); }
+        showToast(res.ok ? (d.message || 'WAF token refreshed') : (d.detail || 'Refresh failed'), res.ok ? 'success' : 'error');
+      } catch { showToast('Refresh failed', 'error'); }
     } else if (action === 'clear-browser-cache') {
       if (!confirm('Strip all browser profile caches? This keeps session data but removes cache/junk.')) return;
       showToast('Stripping browser profiles…', 'info');

@@ -198,7 +198,12 @@ async def main() -> None:
                 img_path = parts[1]
                 prompt = parts[2] if len(parts) > 2 else "What is in this image?"
 
-                file_meta = await bm.upload_image(img_path)
+                file_meta = await bm.upload_image(
+                    img_path,
+                    cookies=headers.get("Cookie"),
+                    bx_ua=headers.get("bx-ua"),
+                    bx_umidtoken=headers.get("bx-umidtoken"),
+                )
                 if not file_meta:
                     continue
 
