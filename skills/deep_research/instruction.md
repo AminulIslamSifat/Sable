@@ -100,10 +100,22 @@ Produce the final report:
   section instead of papering over it
 
 ### Phase 6 — Delivery
-- If the user wants it saved as a file, hand the finished markdown to the
-  **Code Editor** skill (`<create_file>`) — per the registry's mutation lock,
-  Deep Research itself never writes files.
-- Otherwise return the report inline, inside the global markdown wrapper.
+- **Always save** the finished report to `OUTPUT_ROOT/research/` using the
+  **Code Editor** skill (`<create_file>`). Filename: kebab-case of the topic
+  (e.g. `rust-vs-go-backend.md`). Include frontmatter:
+  ```yaml
+  ---
+  title: Research Title
+  date: YYYY-MM-DD
+  type: research
+  tags: [topic1, topic2]
+  status: active
+  ---
+  ```
+  Per the registry's mutation lock, Deep Research itself never writes files —
+  delegate to Code Editor.
+- If the user also wants it inline, return the report in the global markdown
+  wrapper as well. Otherwise confirm the save path briefly.
 
 ---
 

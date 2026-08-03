@@ -346,3 +346,8 @@
     ::-webkit-scrollbar-thumb { background: #2a2a2e; border-radius: 8px; }
     ::-webkit-scrollbar-thumb:hover { background: #34343a; }
 
+    /* Hide number input spinners */
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+
