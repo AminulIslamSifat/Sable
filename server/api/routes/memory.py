@@ -129,6 +129,34 @@ async def refresh_memory_cache() -> dict[str, Any]:
     count = get_searcher().rebuild_cache()
     return {"status": "ok", "detail": f"Cache rebuilt. {count} entries re-embedded."}
 
+def _save_user_skill(skill_data: dict[str, Any]) -> bool:
+    """Persist a user-created skill to Brain/skills.json (same pattern as Protected.json)."""
+    from engine.config import SKILLS_JSON_PATH
+    try:
+        existing: dict[str, list] = {"skills": []}
+        if SKILLS_JSON_PATH.exists():
+            existing = json.loads(SKILLS_JSON_PATH.read_text(encoding="utf-8"))
+            if not isinstance(existing, dict) or "skills" not in existing:
+                existing = {"skills": []}
+        # Deduplicate by name
+        names = {s.get("name") for s in existing["skills"] if isinstance(s, dict)}
+        if skill_data["name"] in names:
+            # Update existing
+            existing["skills"] = [
+                skill_data if s.get("name") == skill_data["name"] else s
+                for s in existing["skills"]
+            ]
+        else:
+            from datetime import datetime
+            skill_data.setdefault("created", datetime.now().strftime("%Y-%m-%d"))
+            existing["skills"].append(skill_data)
+        SKILLS_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SKILLS_JSON_PATH.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
 @router.post("/api/memory/consolidate")
 async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     chat_id = payload.get("chat_id")
@@ -300,8 +328,16 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     _MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
     _MEMORY_PATH.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
     get_searcher().reload_memory()
+    # Handle optional skill creation
+    skill_created = False
+    skill_data = new_entries.get("create_skill")
+    if isinstance(skill_data, dict) and skill_data.get("name"):
+        skill_created = _save_user_skill(skill_data)
     total_added = added_count + prot_added + eph_added
-    return {"status": "ok", "added": total_added, "deleted": deleted_count}
+    result: dict[str, Any] = {"status": "ok", "added": total_added, "deleted": deleted_count}
+    if skill_created:
+        result["skill_created"] = skill_data["name"]
+    return result
 
 @router.post("/api/memory/consolidate-scraper")
 async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
