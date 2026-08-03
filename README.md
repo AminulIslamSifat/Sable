@@ -94,7 +94,7 @@ Each skill is a self-contained directory under `skills/` with `instruction.md`, 
 | Category | Skills |
 |:--|:--|
 | **Code & System** | code_editor, background_command, system_repair, testing_debugging |
-| **Research & Web** | search_online, deep_research, http_client, browser_control |
+| **Research & Web** | online_search, deep_research, http_client, browser_control |
 | **Documents** | document_skills (pdf, docx, pptx, xlsx) |
 | **Visuals** | graph_master, svg_creator, frontend_design, simulacra_engine |
 | **Study** | study_suite |
@@ -118,7 +118,7 @@ engine/skills/
     ├── execute.py       # execute_command, background, check_command
     ├── file_ops.py      # view_file, edit_file, create_file, insert_file
     ├── io.py            # get_file, create_note, save_svg
-    └── web.py           # openweb, search_online
+    └── web.py           # openweb, online_search
 ```
 
 ### Execution Rules
