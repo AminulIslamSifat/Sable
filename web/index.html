@@ -157,8 +157,8 @@
       <span class="ctx-icon"><span class="icon-emoji">🔑</span><i data-lucide="key-round" class="icon-lucide"></i></span> Refresh DeepSeek Token
     </button>
     <div class="ctx-sep"></div>
-    <button class="ctx-item ctx-danger" data-action="restart-browser">
-      <span class="ctx-icon"><span class="icon-emoji">↻</span><i data-lucide="rotate-cw" class="icon-lucide"></i></span> Restart Browser
+    <button class="ctx-item" data-action="refresh-waf">
+      <span class="ctx-icon"><span class="icon-emoji">🛡️</span><i data-lucide="shield-check" class="icon-lucide"></i></span> Refresh WAF Token
     </button>
     <button class="ctx-item ctx-danger" data-action="clear-browser-cache">
       <span class="ctx-icon"><span class="icon-emoji">🧹</span><i data-lucide="trash-2" class="icon-lucide"></i></span> Clear Browser Cache
@@ -307,7 +307,7 @@
             <label for="headlessToggle" style="font-size:13px;color:var(--text-dim);">Headless Browser</label>
             <div style="display:flex;align-items:center;gap:10px;">
               <input type="checkbox" id="headlessToggle" style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;">
-              <button id="restartBrowser" class="icon-btn" title="Restart browser session" style="width:auto;padding:6px 12px;font-size:12px;">↻ Restart</button>
+              <button id="refreshWafBtn" class="icon-btn" title="Refresh Qwen WAF/cookie tokens" style="width:auto;padding:6px 12px;font-size:12px;">🛡️ Refresh WAF</button>
             </div>
           </div>
           <p class="muted" style="font-size:11px;margin-top:4px;">Toggle headless mode and restart to apply. Session cookies are preserved via persistent profile.</p>
@@ -387,6 +387,7 @@
               <label style="font-size:11px;color:var(--text);display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="capVideo" style="accent-color:var(--accent);width:13px;height:13px;"> <span class="icon-emoji">🎬</span><i data-lucide="video" class="icon-lucide" style="width:13px;height:13px;"></i> Video</label>
               <label style="font-size:11px;color:var(--text);display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="capDocument" style="accent-color:var(--accent);width:13px;height:13px;"> <span class="icon-emoji">📄</span><i data-lucide="file-text" class="icon-lucide" style="width:13px;height:13px;"></i> Document</label>
               <label style="font-size:11px;color:var(--text);display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="capAudio" style="accent-color:var(--accent);width:13px;height:13px;"> <span class="icon-emoji">🎧</span><i data-lucide="headphones" class="icon-lucide" style="width:13px;height:13px;"></i> Audio</label>
+              <label style="font-size:11px;color:var(--text);display:flex;align-items:center;gap:4px;cursor:pointer;margin-left:8px;padding-left:8px;border-left:1px solid var(--border);"><input type="checkbox" id="capThinking" style="accent-color:var(--accent);width:13px;height:13px;"> <span class="icon-emoji">🧠</span><i data-lucide="brain" class="icon-lucide" style="width:13px;height:13px;"></i> Thinking</label>
             </div>
             <div style="display:flex;justify-content:flex-end;">
               <button id="addCustomModelBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">Add Model</button>
@@ -411,7 +412,11 @@
         <div id="tab-backup" class="settings-tab-content">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
             <label style="font-size:14px;color:var(--text);font-weight:600;">Account Backups</label>
-            <button id="refreshProfilesBtn" class="icon-btn" title="Refresh profile info" style="width:auto;padding:4px 10px;font-size:11px;">↻ Refresh</button>
+            <span style="display:flex;gap:6px;">
+              <button id="backupAllBtn" style="background:var(--panel);color:var(--accent);border:1px solid var(--accent);border-radius:6px;padding:4px 12px;font-size:11px;cursor:pointer;font-weight:600;">⬆ Backup All</button>
+              <button id="restoreAllBtn" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:11px;cursor:pointer;font-weight:600;">⬇ Restore All</button>
+              <button id="refreshProfilesBtn" class="icon-btn" title="Refresh profile info" style="width:auto;padding:4px 10px;font-size:11px;">↻ Refresh</button>
+            </span>
           </div>
           <div id="browserProfileCards" style="display:flex;flex-direction:column;gap:10px;">
             <p class="muted" style="font-size:12px;margin:0;">Loading profiles…</p>
@@ -419,28 +424,7 @@
           <p class="muted" style="font-size:11px;margin-top:10px;">Restores from the .bak snapshot (clean login state). Deletes current data first. Stop the browser before restoring.</p>
         </div>
         <div id="tab-brain" class="settings-tab-content">
-          <h3 class="mem-title">Memory Search</h3>
-          <p class="muted mem-desc">Semantic retrieval model for per-message memory injection.</p>
-          <div class="mem-input-row" style="flex-wrap:wrap;gap:8px;align-items:center;">
-            <label class="muted" style="font-size:12px;">Model:</label>
-            <select id="msModelSelect" class="mem-input" style="flex:1;min-width:200px;"></select>
-            <label class="muted" style="font-size:12px;">Top-K:</label>
-            <input type="number" id="msTopK" class="mem-input" style="width:60px;" min="1" max="50" value="10">
-            <label class="muted" style="font-size:12px;">Max Chars:</label>
-            <input type="number" id="msMaxChars" class="mem-input" style="width:90px;" min="1000" max="200000" step="1000" value="20000" title="Skip vectorization if prompt exceeds this length">
-            <label class="muted" style="font-size:12px;display:flex;align-items:center;gap:4px;">
-              <input type="checkbox" id="msEnabled" checked style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;"> Enabled
-            </label>
-            <button id="msSaveBtn" class="icon-btn" style="width:auto;padding:6px 12px;font-size:12px;"><span class="icon-emoji">💾</span><i data-lucide="hard-drive" class="icon-lucide"></i> Save</button>
-          </div>
-          <div id="msThresholdEditor" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
-          <p id="msInfo" class="muted" style="font-size:11px;margin-top:6px;"></p>
-          <div style="margin-top:8px;display:flex;align-items:center;gap:8px;">
-            <button id="msRefreshCache" class="icon-btn" style="width:auto;padding:6px 12px;font-size:12px;"><span class="icon-emoji">🔄</span><i data-lucide="refresh-cw" class="icon-lucide"></i> Refresh Cache</button>
-            <span id="msCacheStatus" class="muted" style="font-size:11px;"></span>
-          </div>
-
-          <h3 class="mem-title" style="margin-top:16px;"><span class="icon-emoji">🔒</span><i data-lucide="lock" class="icon-lucide"></i> Protected Memory</h3>
+          <h3 class="mem-title"><span class="icon-emoji">🔒</span><i data-lucide="lock" class="icon-lucide"></i> Protected Memory</h3>
           <p class="muted mem-desc">Stored in Brain/Protected.json. Cannot be deleted by consolidation. Boosted in search.</p>
           <div id="protectedList" class="mem-list"></div>
           <div class="mem-input-row">
@@ -470,6 +454,46 @@
             <span id="memStatus" class="muted mem-status"></span>
           </div>
 
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">⚙️</span><i data-lucide="settings" class="icon-lucide"></i> Memory Engine Config</h3>
+          <p class="muted mem-desc">Controls how memories are retrieved and injected into conversations. Changes here affect response quality.</p>
+
+          <div style="display:flex;flex-direction:column;gap:14px;margin-top:10px;">
+            <div>
+              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Embedding Model</label>
+              <select id="msModelSelect" class="mem-input" style="width:100%;max-width:320px;"></select>
+              <p class="muted" style="font-size:11px;margin:3px 0 0;">The AI model that converts your memories into searchable vectors. Changing this requires re-indexing all memories.</p>
+            </div>
+
+            <div>
+              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Top-K Results</label>
+              <input type="number" id="msTopK" class="mem-input" style="width:80px;" min="1" max="50" value="10">
+              <p class="muted" style="font-size:11px;margin:3px 0 0;">How many relevant memories to inject per message. Higher = more context but uses more tokens. 5–15 is typical.</p>
+            </div>
+
+            <div>
+              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Max Prompt Length (chars)</label>
+              <input type="number" id="msMaxChars" class="mem-input" style="width:120px;" min="1000" max="200000" step="1000" value="20000">
+              <p class="muted" style="font-size:11px;margin:3px 0 0;">Skip memory search entirely if the conversation exceeds this length. Prevents slowdowns on very long chats. Default: 20,000 chars.</p>
+            </div>
+
+            <div id="msThresholdEditor" style="display:flex;flex-direction:column;gap:6px;"></div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+              <label class="muted" style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="checkbox" id="msEnabled" checked style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;"> Memory search enabled
+              </label>
+              <button id="msSaveBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;"><span class="icon-emoji">💾</span><i data-lucide="hard-drive" class="icon-lucide"></i> Save Config</button>
+            </div>
+
+            <p id="msInfo" class="muted" style="font-size:11px;margin:0;"></p>
+
+            <div style="display:flex;align-items:center;gap:8px;">
+              <button id="msRefreshCache" class="icon-btn" style="width:auto;padding:6px 12px;font-size:12px;"><span class="icon-emoji">🔄</span><i data-lucide="refresh-cw" class="icon-lucide"></i> Rebuild Vector Cache</button>
+              <span id="msCacheStatus" class="muted" style="font-size:11px;"></span>
+            </div>
+            <p class="muted" style="font-size:11px;margin:0;">Force-reindex all memories. Only needed after editing Memory.json manually or changing the embedding model.</p>
+          </div>
+
         </div>
         <div id="tab-skills" class="settings-tab-content">
           <h3 class="mem-title">Skills</h3>
@@ -477,43 +501,75 @@
           <div id="skillsGrid" class="skills-grid"></div>
         </div>
         <div id="tab-agents" class="settings-tab-content">
-          <h3 class="mem-title">Agent Configuration</h3>
-          <p class="muted mem-desc">Multi-agent runtime settings. Changes apply immediately.</p>
+          <h3 class="mem-title"><span class="icon-emoji">🤖</span><i data-lucide="bot" class="icon-lucide"></i> Agent Roles</h3>
+          <p class="muted mem-desc">Define what each agent role does. These are injected into the system prompt when an agent is spawned with that role.</p>
+          <div id="agentRolesContainer"></div>
 
-          <div class="mem-input-row" style="align-items:center;">
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">⚙️</span><i data-lucide="settings" class="icon-lucide"></i> Runtime Configuration</h3>
+          <p class="muted mem-desc">Controls concurrency, safety limits, and circuit breaker behavior. Changes apply immediately without restart.</p>
+
+          <div class="mem-input-row" style="align-items:center;margin-top:10px;">
             <label class="muted" style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer;">
               <input type="checkbox" id="agentEnabled" checked style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;"> Agents enabled
             </label>
           </div>
 
-          <h3 class="mem-title" style="margin-top:16px;">Concurrency & Resilience</h3>
-          <div class="mem-input-row" style="flex-wrap:wrap;gap:8px;align-items:center;">
-            <label class="muted" style="font-size:12px;">Global max:</label>
-            <input type="number" id="agentGlobalMax" class="mem-input" style="width:60px;" min="1" max="20" value="5">
-            <label class="muted" style="font-size:12px;">DeepSeek:</label>
-            <input type="number" id="agentDeepseekMax" class="mem-input" style="width:60px;" min="1" max="20" value="5">
-            <label class="muted" style="font-size:12px;">Qwen:</label>
-            <input type="number" id="agentQwenMax" class="mem-input" style="width:60px;" min="1" max="5" value="1">
-            <label class="muted" style="font-size:12px;">CB threshold:</label>
-            <input type="number" id="agentCbThreshold" class="mem-input" style="width:60px;" min="1" max="20" value="5">
-            <label class="muted" style="font-size:12px;">CB reset (s):</label>
-            <input type="number" id="agentCbReset" class="mem-input" style="width:60px;" min="10" max="300" value="60">
+          <h3 class="mem-title" style="margin-top:16px;">Concurrency Limits</h3>
+          <p class="muted" style="font-size:11px;margin:-4px 0 8px;">How many agents can run simultaneously. Prevents API rate limits and resource exhaustion.</p>
+          <div style="display:flex;flex-direction:column;gap:12px;">
+            <div>
+              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Global Max Concurrent</label>
+              <input type="number" id="agentGlobalMax" class="mem-input" style="width:80px;" min="1" max="20" value="5">
+              <p class="muted" style="font-size:11px;margin:3px 0 0;">Total agents allowed across all providers at once.</p>
+            </div>
+            <div>
+              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">DeepSeek Max</label>
+              <input type="number" id="agentDeepseekMax" class="mem-input" style="width:80px;" min="1" max="20" value="5">
+              <p class="muted" style="font-size:11px;margin:3px 0 0;">Max concurrent DeepSeek agents. Lower this if you hit rate limits.</p>
+            </div>
+            <div>
+              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Qwen Max</label>
+              <input type="number" id="agentQwenMax" class="mem-input" style="width:80px;" min="1" max="5" value="1">
+              <p class="muted" style="font-size:11px;margin:3px 0 0;">Max concurrent Qwen agents. Keep low — Qwen is used for fallback/orchestration.</p>
+            </div>
           </div>
 
-          <h3 class="mem-title" style="margin-top:16px;">Loop Limits</h3>
-          <div class="mem-input-row" style="flex-wrap:wrap;gap:8px;align-items:center;">
-            <label class="muted" style="font-size:12px;">Max iterations:</label>
-            <input type="number" id="agentMaxIter" class="mem-input" style="width:60px;" min="5" max="100" value="25">
-            <label class="muted" style="font-size:12px;">Consecutive tools:</label>
-            <input type="number" id="agentMaxConsec" class="mem-input" style="width:60px;" min="3" max="50" value="15">
-            <label class="muted" style="font-size:12px;">Total tools:</label>
-            <input type="number" id="agentMaxTotal" class="mem-input" style="width:60px;" min="10" max="200" value="50">
+          <h3 class="mem-title" style="margin-top:16px;">Circuit Breaker</h3>
+          <p class="muted" style="font-size:11px;margin:-4px 0 8px;">Auto-pauses a provider after repeated failures to avoid burning tokens on a broken endpoint.</p>
+          <div style="display:flex;flex-direction:column;gap:12px;">
+            <div>
+              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Failure Threshold</label>
+              <input type="number" id="agentCbThreshold" class="mem-input" style="width:80px;" min="1" max="20" value="5">
+              <p class="muted" style="font-size:11px;margin:3px 0 0;">Number of consecutive failures before the provider is temporarily disabled.</p>
+            </div>
+            <div>
+              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Reset Time (seconds)</label>
+              <input type="number" id="agentCbReset" class="mem-input" style="width:80px;" min="10" max="300" value="60">
+              <p class="muted" style="font-size:11px;margin:3px 0 0;">How long to wait before retrying a tripped provider. 60s is a good default.</p>
+            </div>
           </div>
 
-          <h3 class="mem-title" style="margin-top:20px;">Role Configuration</h3>
-          <div id="agentRolesContainer"></div>
+          <h3 class="mem-title" style="margin-top:16px;">Loop Safety Limits</h3>
+          <p class="muted" style="font-size:11px;margin:-4px 0 8px;">Prevents runaway agents from looping forever or hammering tools endlessly.</p>
+          <div style="display:flex;flex-direction:column;gap:12px;">
+            <div>
+              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Max Iterations</label>
+              <input type="number" id="agentMaxIter" class="mem-input" style="width:80px;" min="5" max="100" value="25">
+              <p class="muted" style="font-size:11px;margin:3px 0 0;">Maximum LLM call cycles per agent task. Each iteration = one model response + optional tool calls. 25 handles most tasks.</p>
+            </div>
+            <div>
+              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Max Consecutive Tool Calls</label>
+              <input type="number" id="agentMaxConsec" class="mem-input" style="width:80px;" min="3" max="50" value="15">
+              <p class="muted" style="font-size:11px;margin:3px 0 0;">Stops the agent if it calls tools this many times in a row without producing a text response. Catches stuck tool loops.</p>
+            </div>
+            <div>
+              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Max Total Tool Calls</label>
+              <input type="number" id="agentMaxTotal" class="mem-input" style="width:80px;" min="10" max="200" value="50">
+              <p class="muted" style="font-size:11px;margin:3px 0 0;">Hard cap on total tool invocations per task. Prevents infinite file reads or API calls even across multiple iterations.</p>
+            </div>
+          </div>
 
-          <div class="mem-input-row mem-save-row" style="margin-top:16px;">
+          <div class="mem-input-row mem-save-row" style="margin-top:20px;padding-top:14px;border-top:1px solid var(--border);">
             <button id="agentConfigSave" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">💾</span><i data-lucide="hard-drive" class="icon-lucide"></i> &nbsp;Save Config</button>
             <span id="agentConfigStatus" class="muted mem-status"></span>
           </div>

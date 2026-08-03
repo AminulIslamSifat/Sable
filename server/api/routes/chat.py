@@ -47,6 +47,9 @@ from server.utils import retry_async, retry_stream, make_title, _is_deepseek_api
 from server.models import ChatRequest
 from ..dependencies import service, sse
 
+# Backends that read local files directly (base64 inline) — no Playwright upload needed
+_DIRECT_READ_BACKENDS = frozenset({"gemini", "groq", "mistral"})
+
 router = APIRouter()
 
 @router.post("/api/chat")
@@ -138,13 +141,30 @@ async def chat(request: ChatRequest):
         pass
     add_message(active_chat_id, "user", timestamped_message, None, parent_id, memory_used=_memory_used or None)
     resolved_files: list[dict[str, Any]] | None = None
+    _backend = _resolve_api_backend(request.model) if _is_api_model(request.model) else None
     if request.files:
         resolved_files = []
         for f in request.files:
             if scraper_enabled:
+                # Scraper mode: engine handles Playwright upload internally
                 if "path" in f or "url" in f:
                     resolved_files.append(f)
                 continue
+            # Direct-read backends: connector reads local file, no server upload needed
+            if _backend in _DIRECT_READ_BACKENDS:
+                if "path" in f:
+                    resolved_files.append({"path": f["path"]})
+                continue
+            # Provider-specific upload: DeepSeek has its own endpoint
+            if _backend == "deepseek":
+                if "path" in f:
+                    meta = await service.upload_deepseek_file(f["path"])
+                    if meta:
+                        resolved_files.append(meta)
+                    else:
+                        logger.warning("DeepSeek upload failed for: %s", f["path"])
+                continue
+            # Qwen / others: upload to Qwen OSS
             if "id" in f and "url" in f:
                 resolved_files.append(f)
             elif "path" in f:
@@ -174,25 +194,28 @@ async def chat(request: ChatRequest):
         result["memory_used"] = _memory_used
         return result
     if not request.stream and _is_api_model(request.model):
-        _backend = _resolve_api_backend(request.model)
-        _connector = get_connector(_backend)
+        # _backend already resolved above at file resolution stage
+        _api_backend = _backend or _resolve_api_backend(request.model)
+        _connector = get_connector(_api_backend)
         _cfg = get_model_config(request.model)
         _api_model = _cfg.get("api_model_type", _cfg["id"])
         # DeepSeek Vision ephemeral: one-shot side request, no session continuity
-        _ephemeral = (_backend == "deepseek" and _api_model == "vision" and bool(request.ref_file_ids))
-        # Collect local file paths for Gemini inline attachment
-        _gemini_files = None
-        if _backend == 'gemini' and resolved_files:
-            _gemini_files = [f.get('path') for f in resolved_files if f.get('path')]
-        result = await _connector.chat(
+        _ephemeral = (_api_backend == "deepseek" and _api_model == "vision" and bool(request.ref_file_ids))
+        # Collect local file paths for direct-read backends (base64 inline)
+        _inline_files = None
+        if _api_backend in _DIRECT_READ_BACKENDS and resolved_files:
+            _inline_files = [f.get('path') for f in resolved_files if f.get('path')]
+        _chat_kwargs: dict[str, Any] = dict(
             message=timestamped_message,
             model=_api_model,
             thinking_mode=request.thinking_mode,
             chat_id=None if _ephemeral else active_chat_id,
             ref_file_ids=request.ref_file_ids,
             inject_instructions=not _ephemeral,
-            files=_gemini_files,
         )
+        if _inline_files:
+            _chat_kwargs['files'] = _inline_files
+        result = await _connector.chat(**_chat_kwargs)
         answer = str(result.get("answer", ""))
         thinking = str(result.get("thinking", ""))
         final_parent = result.get("parent_id") or parent_id
@@ -325,24 +348,26 @@ async def chat(request: ChatRequest):
                     pass
                 stream_error = False
                 if _is_api_model(request.model):
-                    _backend = _resolve_api_backend(request.model)
-                    _connector = get_connector(_backend)
+                    _api_backend = _backend or _resolve_api_backend(request.model)
+                    _connector = get_connector(_api_backend)
                     _cfg = get_model_config(request.model)
                     _api_model = _cfg.get("api_model_type", _cfg["id"])
-                    _ephemeral = (_backend == "deepseek" and _api_model == "vision" and bool(request.ref_file_ids))
-                    # Collect local file paths for Gemini inline attachment (first round only)
-                    _gemini_files = None
-                    if _backend == 'gemini' and round_index == 0 and resolved_files:
-                        _gemini_files = [f.get('path') for f in resolved_files if f.get('path')]
-                    round_event_source = _connector.stream_chat(
+                    _ephemeral = (_api_backend == "deepseek" and _api_model == "vision" and bool(request.ref_file_ids))
+                    # Collect local file paths for direct-read backends (first round only)
+                    _inline_files = None
+                    if _api_backend in _DIRECT_READ_BACKENDS and round_index == 0 and resolved_files:
+                        _inline_files = [f.get('path') for f in resolved_files if f.get('path')]
+                    _stream_kwargs: dict[str, Any] = dict(
                         message=current_message,
                         model=_api_model,
                         thinking_mode=request.thinking_mode,
                         chat_id=None if _ephemeral else active_chat_id,
                         ref_file_ids=request.ref_file_ids if round_index == 0 else None,
                         inject_instructions=not _ephemeral,
-                        files=_gemini_files,
                     )
+                    if _inline_files:
+                        _stream_kwargs['files'] = _inline_files
+                    round_event_source = _connector.stream_chat(**_stream_kwargs)
                 elif scraper_enabled:
                     round_event_source = scraper_service.stream_events(
                         message=current_message,
