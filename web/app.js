@@ -2132,6 +2132,17 @@
           } else if (evt.type === "skill_end") {
             if (evt.name === "ask_user") continue;
             ui.finishSkill(evt);
+          } else if (evt.type === "chat_title") {
+            const newTitle = (evt.title || "").trim();
+            if (newTitle && activeChatId === streamChatId) {
+              // Update sidebar
+              const chatMeta = chatList.find(c => c.id === activeChatId);
+              if (chatMeta) chatMeta.title = newTitle;
+              renderChats();
+              // Update open tab
+              const tab = openTabs.get(activeChatId);
+              if (tab) { tab.title = newTitle; renderTabBar(); }
+            }
           } else if (evt.type === "file_edit") {
             handleFileEdit(evt, false);
             ui.trackFileEdit(evt);
@@ -3429,8 +3440,6 @@
 
     async function loadLibraryTab(tabId) {
       const section = tabId.replace("lib-", "");
-      if (_libLoaded[section]) return;
-      _libLoaded[section] = true;
       const container = document.getElementById("tab-" + tabId);
       if (!container) return;
       container.innerHTML = '<div class="library-loading">Loading…</div>';

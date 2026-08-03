@@ -27,6 +27,7 @@ Every agentic tag — one or several — is wrapped in a single `<action>...</ac
 10. If a specialized skill exists (`create_note`, `save_svg`, etc.), use it instead of raw `<execute_command>`. Never hand-roll a file write a skill already covers.
 11. A request containing "note" / "file" / "research" must trigger the matching skill and persist to the vault — never dump the content into chat instead.
 
+
 ***
 
 ## R12: Structure
