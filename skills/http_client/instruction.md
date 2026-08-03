@@ -25,7 +25,7 @@ Rule of thumb: If it's a raw API call (REST, JSON, auth headers, webhooks) then 
 
 ## Script Path
 
-    PROJECT_ROOT/skills/data/http_client/scripts/api_request.py
+    PROJECT_ROOT/skills/http_client/scripts/api_request.py
 
 All commands use uv run for zero-install dependency resolution (httpx).
 
@@ -35,15 +35,15 @@ All commands use uv run for zero-install dependency resolution (httpx).
 
 ### Single Request
 
-    uv run PROJECT_ROOT/skills/data/http_client/scripts/api_request.py METHOD URL [flags]
+    uv run PROJECT_ROOT/skills/http_client/scripts/api_request.py METHOD URL [flags]
 
 ### Chained Requests
 
-    uv run PROJECT_ROOT/skills/data/http_client/scripts/api_request.py --chain /path/to/chain.json --env NAME
+    uv run PROJECT_ROOT/skills/http_client/scripts/api_request.py --chain /path/to/chain.json --env NAME
 
 ### Environment Management
 
-    uv run PROJECT_ROOT/skills/data/http_client/scripts/api_request.py --env-set NAME --base-url URL [--auth TYPE] [--token TOKEN]
+    uv run PROJECT_ROOT/skills/http_client/scripts/api_request.py --env-set NAME --base-url URL [--auth TYPE] [--token TOKEN]
 
 ---
 
@@ -178,23 +178,23 @@ Parse the JSON output and report:
 
 User: "Hit https://httpbin.org/get and show me what comes back"
 
-    uv run PROJECT_ROOT/skills/data/http_client/scripts/api_request.py GET https://httpbin.org/get --body-only
+    uv run PROJECT_ROOT/skills/http_client/scripts/api_request.py GET https://httpbin.org/get --body-only
 
 ### POST with JSON body
 
 User: "Send a POST to https://api.example.com/users with name Alice and email alice@example.com"
 
-    uv run PROJECT_ROOT/skills/data/http_client/scripts/api_request.py POST https://api.example.com/users -b '{"name": "Alice", "email": "alice@example.com"}'
+    uv run PROJECT_ROOT/skills/http_client/scripts/api_request.py POST https://api.example.com/users -b '{"name": "Alice", "email": "alice@example.com"}'
 
 ### With environment preset
 
 Setup (one-time):
 
-    uv run PROJECT_ROOT/skills/data/http_client/scripts/api_request.py --env-set github --base-url https://api.github.com --auth bearer --token ghp_xxxxx
+    uv run PROJECT_ROOT/skills/http_client/scripts/api_request.py --env-set github --base-url https://api.github.com --auth bearer --token ghp_xxxxx
 
 Usage:
 
-    uv run PROJECT_ROOT/skills/data/http_client/scripts/api_request.py GET /user --env github
+    uv run PROJECT_ROOT/skills/http_client/scripts/api_request.py GET /user --env github
 
 ### Auth login then protected request (chain)
 
@@ -203,7 +203,7 @@ User: "Log into my API at localhost:8000, grab the token, then fetch /me/profile
 1. Write chain file to /tmp/sable_chain.json
 2. Execute:
 
-    uv run PROJECT_ROOT/skills/data/http_client/scripts/api_request.py --chain /tmp/sable_chain.json
+    uv run PROJECT_ROOT/skills/http_client/scripts/api_request.py --chain /tmp/sable_chain.json
 
 ---
 

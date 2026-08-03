@@ -30,6 +30,9 @@ KNOWN_TAGS = (
     "edit_file",
     "create_file",
     "insert_file",
+
+    # Meta tags — parsed but NOT dispatched as skills
+    "chat_title",
 )
 
 TAG_ALTERNATION = "|".join(re.escape(tag) for tag in KNOWN_TAGS)
