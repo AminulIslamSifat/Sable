@@ -35,6 +35,7 @@ from .routes.deepseek import router as deepseek_router
 from .routes.chat import router as chat_router
 from .routes.misc import router as misc_router
 from .routes.agents import router as agents_router
+from .routes.library import router as library_router
 
 def _raise_nofile_limit() -> None:
     """Raise open file limit for agentic workloads (browsers, agents, streams)."""
@@ -133,6 +134,7 @@ app.include_router(deepseek_router)
 app.include_router(chat_router)
 app.include_router(misc_router)
 app.include_router(agents_router)
+app.include_router(library_router)
 
 # Wire agent runtime event callback → SSE push
 from .routes.agents import _async_push_agent_event, push_agent_event

@@ -11,7 +11,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 # Override with SABLE_HOST / SABLE_PORT environment variables when needed.
 # --------------------------------------------------------------------------
 HOST = os.getenv("SABLE_HOST", "0.0.0.0")
-PORT = int(os.getenv("SABLE_PORT", "61770"))
+PORT = int(os.getenv("SABLE_PORT", "61771"))
 
 # --------------------------------------------------------------------------
 # Runtime data paths — single source of truth used by server.py and any
@@ -22,6 +22,16 @@ MEMORY_PATH = BRAIN_DIR / "Memory.json"
 PROTECTED_PATH = BRAIN_DIR / "Protected.json"
 MEMORY_SEARCH_SETTINGS_PATH = _ROOT / "system/memory_search_settings.json"
 AGENT_CONFIG_PATH = _ROOT / "system/agent_config.json"
+
+# Output directories — where generated content lands
+OUTPUT_ROOT = _ROOT / "output"
+RESEARCH_DIR = OUTPUT_ROOT / "research"
+NOTES_DIR = OUTPUT_ROOT / "notes"
+AGENT_OUTPUT_DIR = OUTPUT_ROOT / "agent"
+ASSETS_DIR = OUTPUT_ROOT / "assets"
+
+# User-created skills (managed via memory consolidation)
+SKILLS_JSON_PATH = BRAIN_DIR / "skills.json"
 
 # Maximum prompt length (chars) before memory vectorization is skipped entirely.
 # Prevents RAM spikes when huge messages are sent. Configurable via web settings.
