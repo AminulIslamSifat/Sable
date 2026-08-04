@@ -139,7 +139,8 @@ class GroqClient:
         return self._http
 
     def _get_or_create_session(
-        self, chat_id: str | None, inject_instructions: bool
+        self, chat_id: str | None, inject_instructions: bool,
+        system_instruction: str | None = None,
     ) -> list[dict[str, Any]]:
         """Get existing session history or create a new one (sliding window)."""
         if chat_id and chat_id in self._sessions:
@@ -151,10 +152,10 @@ class GroqClient:
             return self._sessions[chat_id]
 
         history: list[dict[str, Any]] = []
-        if inject_instructions:
-            instructions = _load_instructions()
-            if instructions:
-                history.append({"role": "system", "content": instructions})
+        # Explicit system_instruction takes priority over default inject
+        instructions = system_instruction if system_instruction else (_load_instructions() if inject_instructions else None)
+        if instructions:
+            history.append({"role": "system", "content": instructions})
 
         if chat_id:
             self._sessions[chat_id] = history
@@ -183,7 +184,8 @@ class GroqClient:
         model_id = model or "llama-3.3-70b-versatile"
         url = f"{BASE_URL}/chat/completions"
 
-        history = self._get_or_create_session(chat_id, inject_instructions)
+        system_instruction = kwargs.pop("system_instruction", None)
+        history = self._get_or_create_session(chat_id, inject_instructions, system_instruction=system_instruction)
 
         # Build multimodal content when files are attached
         if files:

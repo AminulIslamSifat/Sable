@@ -13,7 +13,7 @@
   <link rel="stylesheet" href="/static/css/panels.css?v=11">
   <link rel="stylesheet" href="/static/css/components.css?v=10">
   <link rel="stylesheet" href="/static/css/responsive.css?v=3">
-  <link rel="stylesheet" href="/static/css/agents.css?v=30">
+  <link rel="stylesheet" href="/static/css/agents.css?v=31">
 
   <link rel="manifest" href="/static/assets/manifest.json">
   <meta name="theme-color" content="#7c5cbf">
@@ -336,6 +336,14 @@
             <button id="stripProfilesBtn" style="background:var(--panel);color:var(--accent);border:1px solid var(--accent);padding:8px 16px;font-size:12px;font-weight:600;width:100%;cursor:pointer;border-radius:8px;">🧹 Strip Browser Profiles</button>
             <p id="stripProfilesStatus" class="muted" style="font-size:11px;margin-top:6px;min-height:14px;">Removes all cache/junk from browser profiles, keeping only session data.</p>
           </div>
+          <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
+            <label style="font-size:13px;color:var(--text-dim);font-weight:600;display:block;margin-bottom:10px;">📦 Data Export / Import</label>
+            <div style="display:flex;gap:10px;">
+              <button id="exportDataBtn" style="flex:1;background:var(--panel);color:var(--accent);border:1px solid var(--accent);border-radius:8px;padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;">⬆ Export Data</button>
+              <button id="importDataBtn" style="flex:1;background:var(--panel);color:var(--accent);border:1px solid var(--accent);border-radius:8px;padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;">⬇ Import Data</button>
+            </div>
+            <p id="dataExportStatus" class="muted" style="font-size:11px;margin-top:6px;min-height:14px;">Exports system/, output/, instruction/, Brain/, .sable_backups/ to ~/.sable/backup/</p>
+          </div>
           <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;flex-direction:column;align-items:center;gap:10px;">
             <button id="stopServiceBtn" style="background:transparent;color:var(--danger);border:1.5px solid var(--danger);border-radius:8px;padding:9px 28px;font-size:12px;font-weight:600;cursor:pointer;">⏻ Stop Service</button>
             <button id="restartServiceBtn" style="background:transparent;color:var(--danger);border:1.5px solid var(--danger);border-radius:8px;padding:9px 28px;font-size:12px;font-weight:600;cursor:pointer;">↻ Restart Service</button>
@@ -620,7 +628,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=30"></script>
-  <script src="/static/js/agents.js?v=19"></script>
+  <script src="/static/app.js?v=33"></script>
+  <script src="/static/js/agents.js?v=20"></script>
 </body>
 </html>

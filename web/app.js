@@ -624,17 +624,43 @@
       return icon ? `<i data-lucide="${icon}" class="msg-lucide-icon"></i>` : emoji;
     }
 
+    function closeUnclosedFences(text) {
+      // Count fence openers/closers to detect unclosed code blocks.
+      // A line is a fence opener/closer only if it matches ^(```|~~~) at start.
+      // We track state properly so nested or mismatched fences don't confuse us.
+      let inFence = false;
+      let fenceChar = "";
+      const lines = text.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const m = lines[i].match(/^(```|~~~)\s*(\S*)\s*$/);
+        if (m) {
+          if (!inFence) {
+            inFence = true;
+            fenceChar = m[1];
+          } else if (lines[i].trim() === fenceChar) {
+            inFence = false;
+            fenceChar = "";
+          }
+        }
+      }
+      if (inFence) {
+        return text + "\n" + fenceChar;
+      }
+      return text;
+    }
+
     function renderMarkdown(raw) {
       if (!raw) return "";
       const normalized = normalizeMd(String(raw).replace(/\r\n/g, "\n"));
+      const safe = closeUnclosedFences(normalized);
 
       ensureMarked();
-      if (window.marked && window.DOMPurify && !usesLegacyExtras(normalized)) {
+      if (window.marked && window.DOMPurify && !usesLegacyExtras(safe)) {
         try {
           // escapeNonHtmlTags only feeds the marked+DOMPurify path — it stops
           // unknown prose tags from being swallowed. The legacy parser below
           // escapes everything itself, so pre-escaping here would double-encode.
-          const html = marked.parse(escapeNonHtmlTags(normalized));
+          const html = marked.parse(escapeNonHtmlTags(safe));
           return lucideReplaceEmoji(DOMPurify.sanitize(html, { ADD_ATTR: ["target", "data-lucide"] }));
         } catch (err) {
           console.error("marked render failed:", err);
@@ -642,7 +668,7 @@
       }
 
       try {
-        return lucideReplaceEmoji(parseBlocks(normalized.split("\n")));
+        return lucideReplaceEmoji(parseBlocks(safe.split("\n")));
       } catch (err) {
         console.error("Markdown render error:", err);
         return `<p>${escHtml(raw)}</p>`;
@@ -1178,7 +1204,11 @@
 
     if (diffCloseBtn) diffCloseBtn.addEventListener("click", () => document.body.classList.remove("diff-open"));
     if (diffClearBtn) diffClearBtn.addEventListener("click", () => { if (diffCardsEl) diffCardsEl.innerHTML = ""; });
-    if (diffToggleBtn) diffToggleBtn.addEventListener("click", () => document.body.classList.toggle("diff-open"));
+    if (diffToggleBtn) diffToggleBtn.addEventListener("click", () => {
+      const opening = !document.body.classList.contains("diff-open");
+      document.body.classList.toggle("diff-open");
+      if (opening && typeof AgentPanel !== "undefined") AgentPanel.close();
+    });
 
     function diffLineEl(cls, text) {
       const d = document.createElement("div");
@@ -1285,7 +1315,10 @@
       while (diffCardsEl.children.length > MAX_DIFF_CARDS) {
         diffCardsEl.lastElementChild.remove();
       }
-      if (autoOpen) document.body.classList.add("diff-open");
+      if (autoOpen) {
+        document.body.classList.add("diff-open");
+        if (typeof AgentPanel !== "undefined") AgentPanel.close();
+      }
     }
 
     function addHistoryMessage(message) {
@@ -1864,7 +1897,10 @@
           if (!fileEditSummary.card) {
             const card = document.createElement("div");
             card.className = "file-edit-summary-card";
-            card.addEventListener("click", () => document.body.classList.add("diff-open"));
+            card.addEventListener("click", () => {
+            document.body.classList.add("diff-open");
+            if (typeof AgentPanel !== "undefined") AgentPanel.close();
+          });
             fileEditSummary.card = card;
           }
           // Always re-parent to the current answerEl so the card follows the
@@ -2132,6 +2168,17 @@
           } else if (evt.type === "skill_end") {
             if (evt.name === "ask_user") continue;
             ui.finishSkill(evt);
+          } else if (evt.type === "chat_title") {
+            const newTitle = (evt.title || "").trim();
+            if (newTitle && activeChatId === streamChatId) {
+              // Update sidebar
+              const chatMeta = chatList.find(c => c.id === activeChatId);
+              if (chatMeta) chatMeta.title = newTitle;
+              renderChats();
+              // Update open tab
+              const tab = openTabs.get(activeChatId);
+              if (tab) { tab.title = newTitle; renderTabBar(); }
+            }
           } else if (evt.type === "file_edit") {
             handleFileEdit(evt, false);
             ui.trackFileEdit(evt);
@@ -2681,6 +2728,91 @@
     // ── /Strip Browser Profiles ─────────────────────────────────
 
 
+    // ── Data Export / Import ─────────────────────────────────────
+    async function _streamDataOp(url, btnId, statusEl, confirmMsg, busyLabel, doneFn) {
+      if (!confirm(confirmMsg)) return;
+      const btn = document.getElementById(btnId);
+      btn.disabled = true;
+      btn.textContent = '⏳ ' + busyLabel + '…';
+      statusEl.textContent = busyLabel + '…';
+      statusEl.style.color = 'var(--text-dim)';
+      try {
+        const res = await fetch(url, { method: 'POST' });
+        if (!res.ok || !res.body) {
+          const err = await res.json().catch(() => ({}));
+          statusEl.textContent = err.detail || 'Failed';
+          statusEl.style.color = 'var(--danger)';
+          showToast(err.detail || 'Operation failed', 'error');
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop();
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const ev = JSON.parse(line);
+              if (ev.type === 'progress') {
+                statusEl.textContent = `⏳ [${ev.step}/${ev.total}] ${ev.dir} — ${ev.status}`;
+              } else if (ev.type === 'done') {
+                doneFn(ev);
+              } else if (ev.type === 'error') {
+                statusEl.textContent = '❌ ' + (ev.detail || 'Unknown error');
+                statusEl.style.color = 'var(--danger)';
+                showToast(ev.detail || 'Operation failed', 'error');
+              }
+            } catch {}
+          }
+        }
+      } catch (err) {
+        statusEl.textContent = 'Error: ' + err.message;
+        statusEl.style.color = 'var(--danger)';
+        showToast('Failed: ' + err.message, 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    document.getElementById('exportDataBtn').addEventListener('click', () => {
+      const status = document.getElementById('dataExportStatus');
+      const btn = document.getElementById('exportDataBtn');
+      _streamDataOp(
+        '/api/settings/data/export', 'exportDataBtn', status,
+        'Export all data to ~/.sable/backup/? This overwrites any existing backup.',
+        'Exporting',
+        (ev) => {
+          const dirs = Object.keys(ev.exported || {});
+          status.textContent = `✅ Exported ${dirs.length} dirs → ~/.sable/backup/`;
+          status.style.color = 'var(--success, #4caf50)';
+          showToast('Data exported successfully', 'success');
+          btn.textContent = '⬆ Export Data';
+        }
+      );
+    });
+
+    document.getElementById('importDataBtn').addEventListener('click', () => {
+      const status = document.getElementById('dataExportStatus');
+      const btn = document.getElementById('importDataBtn');
+      _streamDataOp(
+        '/api/settings/data/import', 'importDataBtn', status,
+        'Import data from ~/.sable/backup/? This will overwrite current files.',
+        'Importing',
+        (ev) => {
+          const dirs = ev.imported || [];
+          status.textContent = `✅ Imported ${dirs.length} dirs from backup`;
+          status.style.color = 'var(--success, #4caf50)';
+          showToast('Data imported successfully', 'success');
+          btn.textContent = '⬇ Import Data';
+        }
+      );
+    });
+    // ── /Data Export / Import ────────────────────────────────────
 
 
     // --- Service control buttons ---
@@ -3429,8 +3561,6 @@
 
     async function loadLibraryTab(tabId) {
       const section = tabId.replace("lib-", "");
-      if (_libLoaded[section]) return;
-      _libLoaded[section] = true;
       const container = document.getElementById("tab-" + tabId);
       if (!container) return;
       container.innerHTML = '<div class="library-loading">Loading…</div>';

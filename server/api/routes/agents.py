@@ -116,6 +116,7 @@ DEFAULT_AGENT_CONFIG: dict[str, Any] = {
         "timeout_writer": 120,
         "timeout_utility": 120,
     },
+    "account_assignments": {},
 }
 
 
@@ -139,10 +140,18 @@ def _save_agent_config(config: dict[str, Any]) -> None:
 async def get_agent_config():
     """Get current agent configuration including per-role details."""
     from engine.agents.registry import export_roles, get_universal_skills
+    from engine.config import get_all_models
 
     config = _load_agent_config()
     config["roles"] = export_roles()
     config["universal_skills"] = get_universal_skills()
+    # Include account assignments (may not exist in older configs)
+    config.setdefault("account_assignments", {})
+    # Include all available models for the dropdown
+    config["available_models"] = [
+        {"id": m["id"], "label": m["label"], "api_backend": m.get("api_backend")}
+        for m in get_all_models()
+    ]
     return config
 
 
@@ -174,8 +183,14 @@ async def update_agent_config(request: Request):
     get_runtime().update_config(current)
 
     # Hot-reload role overrides + universal skills
-    from engine.agents.registry import apply_role_overrides
+    from engine.agents.registry import apply_role_overrides, apply_account_assignments
     apply_role_overrides(current.get("roles", {}), current.get("universal_skills"))
+
+    # Hot-reload per-role account pools (list-based)
+    if "account_assignments" in config:
+        current["account_assignments"] = config["account_assignments"]
+        _save_agent_config(current)
+    apply_account_assignments(current.get("account_assignments", {}))
 
     return {"status": "updated", "config": current}
 
@@ -205,11 +220,14 @@ async def list_active_agents(chat_id: str | None = None):
 
 
 @router.get("/api/agents/{agent_id}/stream")
-async def agent_stream(agent_id: str, request: Request):
+async def agent_stream(agent_id: str, request: Request, since: int = 0):
     """Per-agent SSE stream — chat-format events for the panel view.
 
     Drains the agent's stream_queue. Sends keepalive every 15s.
     Closes when the agent finishes (done/error event) or client disconnects.
+
+    Reconnect support: pass ?since=N to replay missed events from the
+    agent's history buffer before switching to live events.
     """
     from engine.agents import get_runtime
 
@@ -225,6 +243,11 @@ async def agent_stream(agent_id: str, request: Request):
 
     async def generate():
         try:
+            # Replay missed events on reconnect
+            if since > 0:
+                for evt in agent.get_stream_history(since_index=since):
+                    yield f"data: {json.dumps(evt, ensure_ascii=False, default=str)}\n\n"
+
             while True:
                 if await request.is_disconnected():
                     break
@@ -254,10 +277,11 @@ async def agent_stream(agent_id: str, request: Request):
 async def get_agent_history(agent_id: str):
     """Full conversation history + status for an agent."""
     from server.database import get_agent_messages
-    from engine.agents.runtime import get_agent
+    from engine.agents import get_runtime
 
     messages = get_agent_messages(agent_id)
-    agent = get_agent(agent_id)
+    rt = get_runtime()
+    agent = rt.get_agent(agent_id)
     status = agent.status.value if agent else "unknown"
     result = {
         "agent_id": agent_id,
