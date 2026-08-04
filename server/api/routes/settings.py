@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncGenerator
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from engine.scraper import (
     get_settings as get_scraper_settings,
     list_engines as list_scraper_engines,
@@ -442,12 +444,23 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
         await asyncio.to_thread(_do_switch)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Switch failed: {exc}")
+
+    # Load cached DeepSeek token for new account (no browser needed if cached)
+    from connectors.deepseek.client import get_token_for_account as get_ds_token
+    ds_cached = get_ds_token(target_name)
+    if ds_cached:
+        get_deepseek_client().set_token(ds_cached, account=target_name)
+        logger.info("Loaded cached DeepSeek token for %s", target_name)
+    else:
+        # No cached token — extract from browser
+        try:
+            ds_token = await service.refresh_deepseek_token()
+            get_deepseek_client().set_token(ds_token)
+        except Exception:
+            pass
+
+    # Warmup loads cached Qwen WAF tokens or fetches fresh via browser
     await service.warmup()
-    try:
-        ds_token = await service.refresh_deepseek_token()
-        get_deepseek_client().set_token(ds_token)
-    except Exception:
-        pass
     # Sync context for the new account's browser profile
     try:
         await service.sync_context()
@@ -723,3 +736,112 @@ async def create_browser_backup(payload: dict[str, str]) -> dict[str, Any]:
         "backup_to": str(bak_path),
         "size_mb": _dir_size_mb(bak_path),
     }
+
+
+# ---------------------------------------------------------------------------
+# Data Export / Import (full project backup to ~/.sable/backup/)
+# ---------------------------------------------------------------------------
+
+_EXPORT_DIRS = ["system", "output", "instruction", "Brain", ".sable_backups"]
+_BACKUP_ROOT = Path.home() / ".sable" / "backup"
+
+# Skip massive browser profile dirs inside system/ during export
+_SKIP_PATTERNS = ("browser-data", "browser-scraper-data", "automation-browser-data",
+                  "component_crx_cache", "extensions_crx_cache", "GPUPersistentCache",
+                  "GraphiteDawnCache")
+
+
+def _copy_dir_filtered(src: Path, dst: Path, skip_patterns: tuple[str, ...] = ()) -> None:
+    """Copy a directory tree, skipping entries matching skip_patterns."""
+    dst.mkdir(parents=True, exist_ok=True)
+    for item in src.iterdir():
+        if any(item.name.startswith(p) for p in skip_patterns):
+            continue
+        target = dst / item.name
+        if item.is_dir():
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(item, target, symlinks=True)
+        else:
+            shutil.copy2(item, target)
+
+
+@router.post("/api/settings/data/export")
+async def export_data() -> StreamingResponse:
+    """Export project data dirs to ~/.sable/backup/ with streaming progress."""
+
+    async def _stream() -> AsyncGenerator[str, None]:
+        _BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
+        exported: dict[str, str] = {}
+        errors: list[str] = []
+        total = len(_EXPORT_DIRS)
+
+        for i, dirname in enumerate(_EXPORT_DIRS, 1):
+            yield json.dumps({"type": "progress", "dir": dirname, "step": i, "total": total, "status": "copying"}) + "\n"
+            src = BASE_DIR / dirname
+            if not src.exists():
+                errors.append(f"{dirname}/ not found")
+                yield json.dumps({"type": "progress", "dir": dirname, "step": i, "total": total, "status": "skipped"}) + "\n"
+                continue
+            dst = _BACKUP_ROOT / dirname
+            try:
+                def _copy() -> None:
+                    if dirname == "system":
+                        if dst.exists():
+                            shutil.rmtree(dst)
+                        _copy_dir_filtered(src, dst, _SKIP_PATTERNS)
+                    else:
+                        if dst.exists():
+                            shutil.rmtree(dst)
+                        shutil.copytree(src, dst, symlinks=True)
+
+                await asyncio.to_thread(_copy)
+                exported[dirname] = str(dst)
+                yield json.dumps({"type": "progress", "dir": dirname, "step": i, "total": total, "status": "done"}) + "\n"
+            except Exception as exc:
+                errors.append(f"{dirname}: {exc}")
+                yield json.dumps({"type": "progress", "dir": dirname, "step": i, "total": total, "status": "error", "error": str(exc)}) + "\n"
+
+        yield json.dumps({"type": "done", "exported": exported, "errors": errors, "backup_root": str(_BACKUP_ROOT)}) + "\n"
+
+    return StreamingResponse(_stream(), media_type="application/x-ndjson")
+
+
+@router.post("/api/settings/data/import")
+async def import_data() -> StreamingResponse:
+    """Import data from ~/.sable/backup/ back into the project with streaming progress."""
+
+    async def _stream() -> AsyncGenerator[str, None]:
+        if not _BACKUP_ROOT.exists():
+            yield json.dumps({"type": "error", "detail": f"No backup found at {_BACKUP_ROOT}"}) + "\n"
+            return
+
+        imported: list[str] = []
+        errors: list[str] = []
+        total = len(_EXPORT_DIRS)
+
+        for i, dirname in enumerate(_EXPORT_DIRS, 1):
+            src = _BACKUP_ROOT / dirname
+            if not src.exists():
+                continue
+            yield json.dumps({"type": "progress", "dir": dirname, "step": i, "total": total, "status": "restoring"}) + "\n"
+            dst = BASE_DIR / dirname
+            try:
+                def _restore() -> None:
+                    if dirname == "system":
+                        _copy_dir_filtered(src, dst)
+                    else:
+                        if dst.exists():
+                            shutil.rmtree(dst)
+                        shutil.copytree(src, dst, symlinks=True)
+
+                await asyncio.to_thread(_restore)
+                imported.append(dirname)
+                yield json.dumps({"type": "progress", "dir": dirname, "step": i, "total": total, "status": "done"}) + "\n"
+            except Exception as exc:
+                errors.append(f"{dirname}: {exc}")
+                yield json.dumps({"type": "progress", "dir": dirname, "step": i, "total": total, "status": "error", "error": str(exc)}) + "\n"
+
+        yield json.dumps({"type": "done", "imported": imported, "errors": errors}) + "\n"
+
+    return StreamingResponse(_stream(), media_type="application/x-ndjson")

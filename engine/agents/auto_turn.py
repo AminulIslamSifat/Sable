@@ -19,6 +19,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Coroutine
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,8 @@ class _ChatState:
     queue: list[dict[str, str]] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     created_at: float = field(default_factory=time.time)
+    # Agent IDs spawned during the current active stream — results delivered via skill cards
+    current_stream_agents: set[str] = field(default_factory=set)
     # Conversation settings (set by chat route on each message)
     model: str | None = None
     thinking_mode: str | None = None
@@ -89,6 +92,12 @@ class AutoTurnEngine:
         """Called when the main chat stream starts — prevents auto-turn firing."""
         state = self.ensure_chat(chat_id)
         state.busy = True
+        state.current_stream_agents.clear()
+
+    def register_stream_agent(self, chat_id: str, agent_id: str) -> None:
+        """Track an agent spawned during the current stream (result via skill card)."""
+        state = self.ensure_chat(chat_id)
+        state.current_stream_agents.add(agent_id)
 
     def mark_stream_done(self, chat_id: str) -> None:
         """Called when the main chat stream ends — drains queued agent results."""
@@ -96,6 +105,7 @@ class AutoTurnEngine:
         if not state:
             return
         state.busy = False
+        state.current_stream_agents.clear()
         # Schedule drain on the event loop (this may be called from sync context)
         try:
             loop = asyncio.get_running_loop()
@@ -111,10 +121,11 @@ class AutoTurnEngine:
         """Called by runtime when an agent completes. Fires or queues a signal."""
         state = self.ensure_chat(chat_id)
         task_snippet = (task[:80] + "…") if len(task) > 80 else task
+        _output_dir = str(Path(__file__).resolve().parent.parent.parent / "output" / "agent")
         summary = (
             f"[Agent {agent_id} ({role}) SUCCEEDED]\n"
             f"Task: {task_snippet}\n"
-            f"Full log + result saved to: output/agent/{agent_id}.md"
+            f"Full log + result saved to: {_output_dir}/{agent_id}.md"
         )
 
         async with state.lock:
@@ -129,11 +140,12 @@ class AutoTurnEngine:
         """Called by runtime when an agent fails."""
         state = self.ensure_chat(chat_id)
         task_snippet = (task[:80] + "…") if len(task) > 80 else task
+        _output_dir = str(Path(__file__).resolve().parent.parent.parent / "output" / "agent")
         summary = (
             f"[Agent {agent_id} ({role}) FAILED]\n"
             f"Task: {task_snippet}\n"
             f"Error: {error}\n"
-            f"Full log saved to: output/agent/{agent_id}.md"
+            f"Full log saved to: {_output_dir}/{agent_id}.md"
         )
 
         async with state.lock:
@@ -175,6 +187,11 @@ class AutoTurnEngine:
 
         state = self.ensure_chat(chat_id)
         async with state.lock:
+            if state.busy:
+                # Another turn started while we were preparing — queue instead
+                for line in result_lines:
+                    state.queue.append({"role": "user", "content": line})
+                return
             state.busy = True
 
         prompt = (
@@ -190,9 +207,8 @@ class AutoTurnEngine:
             await self._signal_fn(chat_id, prompt)
         except Exception as exc:
             logger.error("[auto_turn] signal failed for chat %s: %s", chat_id, exc)
-        finally:
             state.busy = False
-            await self.drain(chat_id)
+            # Don't drain on failure — let next agent event or stream-done handle it
 
 
 # Singleton
