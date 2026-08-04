@@ -10,7 +10,7 @@ from connectors.deepseek.client import get_client as get_deepseek_client
 from connectors import get_connector
 from instruction.mem_cmd import _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY, _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE
 
-from server.config import _MEMORY_PATH, _PROTECTED_PATH, _MEMORY_SEARCH_SETTINGS, _DEFAULT_MAX_PROMPT_CHARS
+from server.config import _MEMORY_PATH, _PROTECTED_PATH, _PERSONAL_PATH, _MEMORY_SEARCH_SETTINGS, _DEFAULT_MAX_PROMPT_CHARS
 from server.database import get_messages, get_injected_memory_keys, get_parent_id
 from server.utils import retry_async, _is_deepseek_api_model, _resolve_api_backend, logger
 from ..dependencies import service
@@ -186,6 +186,25 @@ def _save_user_skill(skill_data: dict[str, Any]) -> bool:
     except Exception:
         return False
 
+
+
+@router.get("/api/settings/personal")
+async def get_personal_preferences() -> dict[str, Any]:
+    """Load user preferences from instruction/personal.md."""
+    if not _PERSONAL_PATH.exists():
+        return {"content": ""}
+    try:
+        return {"content": _PERSONAL_PATH.read_text(encoding="utf-8")}
+    except Exception:
+        return {"content": ""}
+
+@router.post("/api/settings/personal")
+async def update_personal_preferences(payload: dict[str, Any]) -> dict[str, str]:
+    """Save user preferences to instruction/personal.md."""
+    content = payload.get("content", "")
+    _PERSONAL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _PERSONAL_PATH.write_text(content, encoding="utf-8")
+    return {"status": "ok"}
 
 @router.post("/api/memory/consolidate")
 async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
