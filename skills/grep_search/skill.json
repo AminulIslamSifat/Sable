@@ -1,0 +1,14 @@
+
+{
+  "key": "grep_search",
+  "name": "Grep Search",
+  "version": "1.0.0",
+  "category": "core",
+  "description": "Search file contents with ripgrep, find files by glob pattern, list directory entries. Sandboxed to allowed roots.",
+  "trigger": "Searching file contents, finding code patterns, locating text across directories, finding files by name/pattern, listing directory contents",
+  "not_this_if": "Reading a known file → use code_editor view_file. Web search → use online_search",
+  "tags": ["grep", "glob", "list_dir"],
+  "default": true,
+  "priority": 500,
+  "scope": ["maria", "agent"]
+}

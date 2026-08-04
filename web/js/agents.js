@@ -254,6 +254,8 @@ const AgentPanel = {
     // Header
     this.el.querySelector(".agent-panel-title").textContent = `${role || "agent"}`;
     this.el.querySelector(".agent-panel-status").textContent = task ? task.slice(0, 50) : agentId;
+    // Close diff viewer if open (mutual exclusion)
+    document.body.classList.remove("diff-open");
     this.el.classList.remove("hidden");
     document.body.classList.add("agent-panel-open");
     this.bodyEl.innerHTML = "";
@@ -271,9 +273,9 @@ const AgentPanel = {
       }
       createdAt = data.created_at || null;
       completedAt = data.completed_at || null;
-      if (data.status === "done" || data.status === "failed") {
+      if (data.status === "completed" || data.status === "degraded" || data.status === "failed") {
         agentFinished = true;
-        this._setDone(data.status === "done" ? "completed" : "failed");
+        this._setDone(data.status === "failed" ? "failed" : "completed");
       }
     } catch { /* fresh agent, no history yet */ }
 
@@ -709,6 +711,7 @@ const AgentSettings = {
   _roles: {},             // current role data from API
   _universalSkills: [],   // universal skills (applied to all agents)
   _allSkills: [],         // all available skill keys (for the add-skill picker)
+  _availableModels: [],   // all models from /api/models (for dropdown)
 
   async load() {
     try {
@@ -728,6 +731,7 @@ const AgentSettings = {
 
       this._roles = cfg.roles || {};
       this._universalSkills = cfg.universal_skills || ["execute_command"];
+      this._availableModels = cfg.available_models || [];
       // Build allSkills from role skills + universal + known registry keys
       const skillSet = new Set(this._universalSkills);
       for (const r of Object.values(this._roles)) {
@@ -746,8 +750,8 @@ const AgentSettings = {
     if (!container) return;
     container.innerHTML = "";
 
-
     const roleIcons = { researcher: "🔍", coder: "💻", reviewer: "👁️", writer: "✍️", utility: "🔧" };
+    const models = this._availableModels || [];
 
     for (const [role, data] of Object.entries(this._roles)) {
       const card = document.createElement("div");
@@ -755,6 +759,16 @@ const AgentSettings = {
       card.dataset.role = role;
 
       const icon = roleIcons[role] || "🤖";
+      const modelOptions = models.map((m) =>
+        `<option value="${escAttr(m.id)}" ${m.id === data.default_model ? "selected" : ""}>${escHtml(m.label)}${m.api_backend ? ` (${m.api_backend})` : ""}</option>`
+      ).join("");
+
+      // Account pool chips
+      const pool = data.account_pool || [];
+      const poolHtml = pool.map((acc) =>
+        `<span class="arc-acct-chip">${escHtml(acc)}<button class="arc-chip-x" title="Remove">×</button></span>`
+      ).join("");
+
       card.innerHTML =
         `<div class="arc-header" data-role="${role}">` +
           `<span class="arc-icon">${lucideIcon(icon)}</span>` +
@@ -780,15 +794,49 @@ const AgentSettings = {
             `<div class="arc-skills-list arc-allowed-skills"></div>` +
           `</div>` +
           `<div class="arc-field arc-inline-fields">` +
-            `<div><label>Model</label><input type="text" class="arc-model mem-input" value="${escAttr(data.default_model)}"></div>` +
+            `<div style="flex:2;"><label>Model</label><select class="arc-model mem-input">${modelOptions}</select></div>` +
             `<div><label>Timeout (s)</label><input type="number" class="arc-timeout mem-input" value="${data.default_timeout}" min="10" max="600"></div>` +
             `<div><label>Max Parallel</label><input type="number" class="arc-parallel mem-input" value="${data.max_parallel}" min="1" max="10"></div>` +
+          `</div>` +
+          `<div class="arc-field">` +
+            `<label>Browser Account Pool <span class="arc-hint">(round-robin per spawn, qwen/deepseek only)</span></label>` +
+            `<div class="arc-acct-pool">${poolHtml}</div>` +
+            `<div class="arc-acct-add-row">` +
+              `<input type="text" class="arc-acct-input mem-input" placeholder="browser-data-accN" style="width:180px;">` +
+              `<button class="arc-acct-add">+ add</button>` +
+            `</div>` +
           `</div>` +
         `</div>`;
 
       // Render skill chips (two tiers)
       this._renderSkillChips(card.querySelector(".arc-default-skills"), data.default_skills || [], role + ":default");
       this._renderSkillChips(card.querySelector(".arc-allowed-skills"), data.allowed_skills || [], role + ":allowed");
+
+      // Account pool interactions
+      const poolEl = card.querySelector(".arc-acct-pool");
+      const acctInput = card.querySelector(".arc-acct-input");
+      const acctAddBtn = card.querySelector(".arc-acct-add");
+
+      // Remove chips
+      poolEl.querySelectorAll(".arc-chip-x").forEach((btn) => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          btn.parentElement.remove();
+        };
+      });
+
+      // Add account
+      acctAddBtn.onclick = () => {
+        const val = acctInput.value.trim();
+        if (!val) return;
+        const chip = document.createElement("span");
+        chip.className = "arc-acct-chip";
+        chip.innerHTML = `${escHtml(val)}<button class="arc-chip-x" title="Remove">×</button>`;
+        chip.querySelector(".arc-chip-x").onclick = (e) => { e.stopPropagation(); chip.remove(); };
+        poolEl.appendChild(chip);
+        acctInput.value = "";
+      };
+      acctInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); acctAddBtn.click(); } });
 
       // Toggle collapse
       card.querySelector(".arc-header").onclick = () => {
@@ -866,18 +914,25 @@ const AgentSettings = {
   async save() {
     const status = document.getElementById("agentConfigStatus");
 
-    // Collect role overrides from DOM
+    // Collect role overrides + account pools from DOM
     const roles = {};
+    const accountAssignments = {};
     document.querySelectorAll(".agent-role-card[data-role]").forEach((card) => {
       const role = card.dataset.role;
+      const modelSel = card.querySelector(".arc-model");
       roles[role] = {
         system_prompt: card.querySelector(".arc-prompt").value,
         allowed_skills: this._roles[role]?.allowed_skills || [],
         default_skills: this._roles[role]?.default_skills || [],
-        default_model: card.querySelector(".arc-model").value.trim(),
+        default_model: modelSel.value.trim(),
         default_timeout: parseInt(card.querySelector(".arc-timeout").value) || 90,
         max_parallel: parseInt(card.querySelector(".arc-parallel").value) || 1,
       };
+      // Collect account pool chips
+      const chips = card.querySelectorAll(".arc-acct-pool .arc-acct-chip");
+      if (chips.length) {
+        accountAssignments[role] = [...chips].map((c) => c.textContent.replace("×", "").trim());
+      }
     });
 
     const config = {
@@ -897,6 +952,7 @@ const AgentSettings = {
         max_total_tool_calls: parseInt(document.getElementById("agentMaxTotal").value) || 50,
       },
       roles,
+      account_assignments: accountAssignments,
     };
 
     try {

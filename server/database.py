@@ -138,6 +138,11 @@ def set_title_if_default(chat_id: str, title: str) -> None:
         if row and row["title"] in ("New chat", ""):
             conn.execute("UPDATE chats SET title = ? WHERE id = ?", (title, chat_id))
 
+def update_chat_title(chat_id: str, title: str) -> None:
+    """Unconditionally set chat title (used by model-driven title tag)."""
+    with get_db() as conn:
+        conn.execute("UPDATE chats SET title = ? WHERE id = ?", (title, chat_id))
+
 def get_injected_memory_keys(chat_id: str) -> set[str]:
     with get_db() as conn:
         row = conn.execute("SELECT memory_keys FROM chats WHERE id = ?", (chat_id,)).fetchone()

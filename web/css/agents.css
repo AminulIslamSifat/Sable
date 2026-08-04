@@ -492,6 +492,9 @@
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  position: relative;
+  z-index: 10;
+  background: var(--panel, #1a1a2e);
 }
 .agent-panel-title {
   font-size: 13px;
@@ -701,5 +704,52 @@
   50% { opacity: 0; }
   100% { opacity: 1; }
 }
+
+
+
+/* Account Pool Chips */
+.arc-acct-pool {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-height: 24px;
+}
+.arc-acct-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(80, 200, 120, 0.1);
+  border: 1px solid rgba(80, 200, 120, 0.3);
+  color: var(--text, #e0e0e0);
+  font-family: monospace;
+}
+.arc-acct-add-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.arc-acct-add {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px dashed var(--border, #2e2e3e);
+  background: transparent;
+  color: var(--muted, #85858c);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.arc-acct-add:hover {
+  border-color: var(--accent, #7c5cbf);
+  color: var(--accent, #7c5cbf);
+}
+.arc-model {
+  width: 100%;
+}
+
 
 

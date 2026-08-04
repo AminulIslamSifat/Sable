@@ -18,7 +18,17 @@ class NotificationQueue:
         try:
             q.put_nowait(event)
         except asyncio.QueueFull:
-            pass  # Drop oldest? For now just skip.
+            # Drop oldest to make room, log the eviction
+            import logging
+            logging.getLogger("sable").warning(
+                "[notifications] Queue full for chat %s — dropping oldest, adding agent %s (%s)",
+                chat_id, event.agent_id, event.type,
+            )
+            try:
+                q.get_nowait()  # evict oldest
+                q.put_nowait(event)
+            except (asyncio.QueueEmpty, asyncio.QueueFull):
+                pass
 
     def drain(self, chat_id: str) -> list[AgentEvent]:
         """Called at start of Maria's next turn. Returns all pending notifications."""

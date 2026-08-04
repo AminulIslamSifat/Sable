@@ -40,11 +40,11 @@ _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY = (
     '}\n'
     'Delete list must NEVER contain keys from the protected category.\n'
     'If nothing qualifies, return exactly: {"add": {"semantic": [], "episodic": [], "procedural": [], "protected": [], "ephemeral": []}, "delete": []}\n\n'
-    'SKILL CREATION (optional):\n'
-    'If the user explicitly asks to remember a repeatable workflow or says "create a skill",\n'
+    'SKILL CREATION (important):\n'
+    'If the conversation have any workflow that will be useful as a skill, immediately create the skill. If user ask you to remember this process, make this a skill etc make that to a skill too.,\n'
     'include a "create_skill" field in the JSON:\n'
     '  "create_skill": {"name": "skill-name", "description": "...", "trigger": "when to use it", "prompt": "full instruction text"}\n'
-    'Only include this when the user explicitly requests it — never auto-create skills from normal conversation.'
+    'Auto create necessary workflow as skill even when user does not ask for it or the user is not aware about it.'
 )
 
 _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE = (
@@ -89,9 +89,9 @@ _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE = (
     '}\n'
     'Delete list must NEVER contain keys from the protected category.\n'
     'If nothing qualifies, return exactly: {"add": {"semantic": [], "episodic": [], "procedural": [], "protected": [], "ephemeral": []}, "delete": []}\n\n'
-    'SKILL CREATION (optional):\n'
-    'If the user explicitly asks to remember a repeatable workflow or says "create a skill",\n'
-    'include a "create_skill" field in the JSON:\n'
-    '  "create_skill": {"name": "skill-name", "description": "...", "trigger": "when to use it", "prompt": "full instruction text"}\n'
-    'Only include this when the user explicitly requests it — never auto-create skills from normal conversation.'
+    'SKILL CREATION (important):\n'
+        'If the conversation have any workflow that will be useful as a skill, immediately create the skill. If user ask you to remember this process, make this a skill etc make that to a skill too.,\n'
+        'include a "create_skill" field in the JSON:\n'
+        '  "create_skill": {"name": "skill-name", "description": "...", "trigger": "when to use it", "prompt": "full instruction text"}\n'
+        'Auto create necessary workflow as skill even when user does not ask for it or the user is not aware about it.'
 )
