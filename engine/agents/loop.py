@@ -32,11 +32,11 @@ STUCK_MESSAGE = (
 )
 
 FORMAT_REMINDERS: dict[str, str] = {
-    "researcher": 'Your last response was not valid JSON. Respond with ONLY: {"topic": "...", "sources": [...], "findings": [...], "summary": "...", "confidence": "high|medium|low"}',
-    "coder": 'Your last response was not valid JSON. Respond with ONLY: {"description": "...", "files_modified": [{"path": "...", "lines": "...", "change": "..."}], "tests": "pass|fail|skipped", "notes": "..."}',
-    "reviewer": 'Your last response was not valid JSON. Respond with ONLY: {"file": "...", "critical": [...], "warnings": [...], "info": [...], "verdict": "approve|request_changes|needs_discussion"}',
-    "writer": 'Your last response was not valid JSON. Respond with ONLY: {"title": "...", "path": "...", "structure": [...], "word_count": N, "notes": "..."}',
-    "utility": 'Your last response was not valid JSON. Respond with ONLY: {"task": "...", "actions_taken": [...], "result": "...", "notes": "..."}',
+    "researcher": "Your final answer must be a markdown document with these sections: ## Topic, ## Findings, ## Sources, ## Summary, ## Confidence. No JSON.",
+    "coder": "Your final answer must be a markdown document with these sections: ## Description, ## Files Modified, ## Tests, ## Notes. No JSON.",
+    "reviewer": "Your final answer must be a markdown document with these sections: ## File Reviewed, ## Critical Issues, ## Warnings, ## Info, ## Verdict. No JSON.",
+    "writer": "Your final answer must be a markdown document with these sections: ## Title, ## Document Path, ## Structure Overview, ## Word Count, ## Notes. No JSON.",
+    "utility": "Your final answer must be a markdown document with these sections: ## Task, ## Actions Taken, ## Result, ## Notes. No JSON.",
 }
 
 _TAG_RE = re.compile(r"<(action)>(.*?)</\1>", re.DOTALL)
@@ -107,7 +107,7 @@ def _build_tool_guide(allowed_skills: list[str], default_skills: list[str]) -> s
         "- Exactly ONE action block per response. Wait for the result before continuing.",
         "- Use absolute paths for all file operations.",
         "- After getting tool output, analyze it and decide next step.",
-        "- When done with all tools, output your final JSON answer with NO action block.",
+        "- When done with all tools, output your final markdown answer with NO action block.",
         "",
     ]
 
@@ -152,7 +152,7 @@ async def run_agent_llm_loop(
     breakers: dict[str, CircuitBreaker],
     limits: dict[str, int] | None = None,
 ) -> str:
-    """Execute the full agent loop. Returns final JSON answer text."""
+    """Execute the full agent loop. Returns final markdown answer text."""
     role_cfg = get_role_config(agent.role)
     lim = limits or {}
     max_iterations = lim.get("max_iterations", MAX_ITERATIONS)
@@ -172,6 +172,7 @@ async def run_agent_llm_loop(
     system_prompt += _build_tool_guide(role_cfg.allowed_skills, role_cfg.default_skills)
     if agent.instruction:
         system_prompt += f"\n\nSpecial instruction from orchestrator: {agent.instruction}"
+    agent.system_prompt = system_prompt
 
     first_message = system_prompt
     if agent.context:
@@ -213,11 +214,12 @@ async def run_agent_llm_loop(
         # Parse skill tags
         tags = _parse_skill_tags(response_text)
         if not tags:
-            # No tool calls → validate as final JSON answer
-            if _validate_json_output(response_text, role_cfg.required_json_keys):
+            # No tool calls → validate as final markdown answer
+            if _validate_markdown_output(response_text, role_cfg.required_sections):
                 return response_text
-            # Malformed → one re-prompt
-            reminder = FORMAT_REMINDERS.get(agent.role, "Provide a valid JSON object as your final answer.")
+            # Missing required sections or malformed → one re-prompt
+            base_reminder = FORMAT_REMINDERS.get(agent.role, "Provide a clean markdown document with the required sections as your final answer.")
+            reminder = f"{base_reminder}\n\nIMPORTANT: Output ONLY the markdown document. Do NOT include any JSON object, structured data block, or duplicate summary. Your entire response must be pure markdown with ## headers."
             agent.messages.append({"role": "user", "content": reminder})
             await _persist_message(agent.id, "user", reminder)
             response_text, new_parent_id = await _send_with_retry(
@@ -244,6 +246,10 @@ async def run_agent_llm_loop(
         # Execute skills
         tool_results = []
         for tag in tags:
+            # Check cancellation between tool calls
+            if agent.cancelled:
+                raise asyncio.CancelledError("Agent killed by orchestrator")
+
             tag_name = tag["name"]
 
             try:
@@ -258,8 +264,10 @@ async def run_agent_llm_loop(
                 # Stream skill_start to panel
                 agent.push_stream_event({"type": "skill_start", "name": tag_name, "attrs": tag.get("attrs", "")})
 
-                # process_tag is a sync generator yielding SSE events
-                events = list(engine.process_tag(tag_name, attrs_dict, content, namespace=agent.id))
+                # process_tag is a sync generator — run in thread so task.cancel() can interrupt
+                events = await asyncio.to_thread(
+                    lambda: list(engine.process_tag(tag_name, attrs_dict, content, namespace=agent.id))
+                )
 
                 # Forward skill events to panel stream
                 for evt in events:
@@ -274,6 +282,9 @@ async def run_agent_llm_loop(
 
                 if tag_name not in agent.skills_used:
                     agent.skills_used.append(tag_name)
+            except asyncio.CancelledError:
+                agent.push_stream_event({"type": "skill_end", "name": tag_name, "ok": False, "error": "Killed"})
+                raise
             except Exception as exc:
                 agent.push_stream_event({"type": "skill_end", "name": tag_name, "ok": False, "error": str(exc)})
                 tool_results.append(f"SKILL ERROR ({tag_name}): {type(exc).__name__}: {exc}")
@@ -303,7 +314,7 @@ async def run_agent_llm_loop(
             await _persist_message(agent.id, "tool", tool_msg)
 
     # Hit max iterations — force final answer
-    force_msg = "Maximum steps reached. Provide your final JSON answer NOW with whatever you have."
+    force_msg = "Maximum steps reached. Provide your final markdown answer NOW with whatever you have. Use proper ## headers for each section."
     agent.messages.append({"role": "user", "content": force_msg})
     await _persist_message(agent.id, "user", force_msg)
     response_text, _ = await _send_with_retry(agent, force_msg, parent_id, breaker, False)
@@ -337,9 +348,17 @@ async def _send_with_retry(
 async def _call_llm(
     agent: Agent, message: str, parent_id: str | None, is_first_turn: bool
 ) -> tuple[str, str | None]:
-    """Route to DeepSeek or Qwen. Returns (accumulated_text, new_parent_id)."""
-    if "deepseek" in agent.model:
+    """Route to the appropriate backend. Returns (accumulated_text, new_parent_id)."""
+    from engine.config import get_model_config
+
+    cfg = get_model_config(agent.model)
+    backend = cfg.get("api_backend")
+
+    if backend == "deepseek":
         return await _call_deepseek(agent, message)
+    if backend in ("gemini", "groq", "mistral"):
+        return await _call_api_backend(agent, message, backend, system_instruction=agent.system_prompt)
+    # Default: Qwen (no api_backend = scraper-based)
     return await _call_qwen(agent, message, parent_id, is_first_turn)
 
 
@@ -356,7 +375,17 @@ async def _call_deepseek(agent: Agent, message: str) -> tuple[str, str | None]:
     # Resolve account from agent's browser profile (or None → active symlink)
     account: str | None = None
     if agent.browser_data_dir:
-        account = Path(agent.browser_data_dir).name  # "browser-data-acc7"
+        # Extract account name robustly — handle trailing slashes, symlinks, nested paths
+        resolved = Path(agent.browser_data_dir).resolve()
+        account = resolved.name  # "browser-data-acc7"
+        # Validate it looks like a browser-data profile; fall back to None if not
+        if not account.startswith("browser-data"):
+            # Try parent dir (handles cases like /path/to/browser-data-acc7/user_data)
+            if resolved.parent.name.startswith("browser-data"):
+                account = resolved.parent.name
+            else:
+                logger.debug("[agent] Unrecognized browser_data_dir '%s', using default account", agent.browser_data_dir)
+                account = None
 
     client = get_client(account=account)
     accumulated = ""
@@ -369,6 +398,7 @@ async def _call_deepseek(agent: Agent, message: str) -> tuple[str, str | None]:
         model=api_model_type,
         chat_id=f"agent-{agent.id}",  # unique session per agent
         inject_instructions=False,  # agents have their own system prompt
+        system_instruction=agent.system_prompt,
     ):
         etype = event.get("type")
         if etype == "answer":
@@ -384,6 +414,100 @@ async def _call_deepseek(agent: Agent, message: str) -> tuple[str, str | None]:
     return accumulated, None  # DeepSeek client tracks parent internally
 
 
+async def _call_api_backend(agent: Agent, message: str, backend: str, *, system_instruction: str | None = None) -> tuple[str, str | None]:
+    """Gemini / Groq / Mistral: stateless API call with internal key rotation.
+
+    These backends don't need browser tokens — they rotate API keys internally.
+    No account assignment needed.
+    """
+    from connectors import get_connector
+    from engine.config import get_model_config
+
+    connector = get_connector(backend)
+    cfg = get_model_config(agent.model)
+    api_model_type = cfg.get("api_model_type")
+
+    accumulated = ""
+    async for event in connector.stream_chat(
+        message,
+        model=api_model_type,
+        chat_id=f"agent-{agent.id}",
+        inject_instructions=False,
+        system_instruction=system_instruction,
+    ):
+        etype = event.get("type")
+        if etype == "answer":
+            chunk_text = event.get("text", "")
+            accumulated += chunk_text
+            if chunk_text:
+                agent.push_stream_event({"type": "chunk", "text": chunk_text})
+        elif etype == "error":
+            raise RuntimeError(f"{backend}: {event.get('message', 'unknown error')}")
+
+    if not accumulated.strip():
+        raise RuntimeError(f"{backend} returned empty response")
+    return accumulated, None
+
+
+async def _get_agent_qwen_headers(agent: Agent) -> dict[str, str]:
+    """Resolve Qwen WAF headers for an agent based on its assigned browser account.
+
+    Priority: agent.browser_data_dir → role pool → shared service (active).
+    Uses cached per-account tokens when available. If no cached token exists
+    for the assigned account, launches a headless browser with that profile
+    to extract fresh tokens, then closes it.
+    """
+    from pathlib import Path as _Path
+
+    # Determine which account this agent should use
+    account: str | None = None
+    if agent.browser_data_dir:
+        account = _Path(agent.browser_data_dir).name
+    else:
+        from engine.agents.registry import get_next_account
+        account = get_next_account(agent.role)
+
+    if account:
+        from engine.config import get_qwen_tokens_for_account, _SYSTEM
+        from engine.session import build_headers
+
+        cached = get_qwen_tokens_for_account(account)
+        if cached and cached.get("cookies"):
+            return build_headers(
+                cookies=cached["cookies"],
+                bx_ua=cached.get("bx_ua"),
+                bx_umidtoken=cached.get("bx_umidtoken"),
+            )
+
+        # No cached token — launch browser with this account's profile to get one
+        profile_dir = _SYSTEM / account
+        if profile_dir.is_dir():
+            logger.info("Agent %s: no cached token for %s, launching browser", agent.id, account)
+            try:
+                from engine.session import BrowserManager
+                from engine.config import save_qwen_tokens_for_account
+
+                bm = BrowserManager(user_data_dir=str(profile_dir))
+                await bm.start()
+                try:
+                    headers = await bm.get_fresh_headers()
+                    save_qwen_tokens_for_account(
+                        cookies=headers.get("Cookie", ""),
+                        bx_ua=headers.get("bx-ua", ""),
+                        bx_umidtoken=headers.get("bx-umidtoken", ""),
+                        account=account,
+                    )
+                    return headers
+                finally:
+                    await bm.close()
+            except Exception as exc:
+                logger.warning("Agent %s: browser token fetch for %s failed: %s", agent.id, account, exc)
+
+    # Fallback: shared service (active account)
+    from server.api.dependencies import service
+    return await service._ensure_headers()
+
+
 async def _call_qwen(
     agent: Agent, message: str, parent_id: str | None, is_first_turn: bool
 ) -> tuple[str, str | None]:
@@ -393,16 +517,20 @@ async def _call_qwen(
     from engine.payloads import build_body
     from engine.session import create_new_chat
 
-    # Get headers from shared service
-    from server.api.dependencies import service
-    headers = await service._ensure_headers()
+    # Get headers for this agent's assigned account
+    headers = await _get_agent_qwen_headers(agent)
 
     # Create or reuse upstream Qwen session
     chat_id = agent.qwen_session_id
     if is_first_turn or not chat_id:
         chat_id = await create_new_chat(headers, model=agent.model)
         if not chat_id:
-            headers = await service._refresh_headers()
+            # Retry with fresh headers (re-fetch from browser if needed)
+            headers = await _get_agent_qwen_headers(agent)
+            chat_id = await create_new_chat(headers, model=agent.model)
+        if not chat_id:
+            # Third attempt after brief backoff (transient API hiccup)
+            await asyncio.sleep(1.5)
             chat_id = await create_new_chat(headers, model=agent.model)
         if not chat_id:
             raise RuntimeError("Could not create Qwen chat session for agent")
@@ -487,38 +615,35 @@ def _parse_skill_tags(text: str) -> list[dict[str, Any]]:
     return tags
 
 
-def _validate_json_output(text: str, required_keys: list[str]) -> bool:
-    """Check if response contains valid JSON with required keys."""
-    json_str = text.strip()
-    # Direct parse
-    try:
-        obj = json.loads(json_str)
-        if isinstance(obj, dict):
-            return all(k in obj for k in required_keys)
-    except json.JSONDecodeError:
-        pass
-    # Try extracting from code fence
-    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
-    if fence_match:
-        try:
-            obj = json.loads(fence_match.group(1))
-            if isinstance(obj, dict):
-                return all(k in obj for k in required_keys)
-        except json.JSONDecodeError:
-            pass
-    # Try finding first { ... } block
-    brace_match = re.search(r"\{.*\}", text, re.DOTALL)
-    if brace_match:
-        try:
-            obj = json.loads(brace_match.group(0))
-            if isinstance(obj, dict):
-                return all(k in obj for k in required_keys)
-        except json.JSONDecodeError:
-            pass
-    return False
+def _validate_markdown_output(text: str, required_sections: list[str]) -> bool:
+    """Check if response is a pure markdown document containing required ## headers.
+
+    Rejects any response that contains JSON objects/arrays or isn't pure markdown.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return False
+    # Reject if it starts with JSON
+    if stripped.startswith("{") or stripped.startswith("["):
+        return False
+    # Reject if it contains standalone JSON blocks anywhere in the response
+    # Matches top-level JSON objects/arrays that aren't inside code fences
+    # Remove fenced code blocks first so we don't flag JSON inside ```json blocks
+    no_fences = re.sub(r"```[\s\S]*?```", "", stripped)
+    if re.search(r"(?m)^\s*[\{\[]\s*$", no_fences):
+        return False
+    # Also reject inline JSON-like structures outside code fences
+    if re.search(r'\{[^{}]*"[^"]+"\s*:', no_fences):
+        return False
+    # Check that required section headers exist (case-insensitive)
+    text_lower = stripped.lower()
+    return all(f"## {s.lower()}" in text_lower for s in required_sections)
 
 
 async def _persist_message(agent_id: str, role: str, content: str) -> None:
-    """Write to agent_messages table."""
-    from server.database import add_agent_message
-    add_agent_message(agent_id, role, content)
+    """Write to agent_messages table. Logs failures without crashing the loop."""
+    try:
+        from server.database import add_agent_message
+        add_agent_message(agent_id, role, content)
+    except Exception as exc:
+        logger.debug("Failed to persist agent message (%s/%s): %s", agent_id, role, exc)

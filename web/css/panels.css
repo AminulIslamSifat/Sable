@@ -649,7 +649,7 @@
 
 /* --- individual floating cells (liquid glass) --- */
 .input-cell {
-  background: rgba(23, 23, 26, 0.82);
+  background: rgba(23, 23, 26, 0.95);
   border: none;
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.06),

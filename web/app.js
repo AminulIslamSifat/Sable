@@ -1204,7 +1204,11 @@
 
     if (diffCloseBtn) diffCloseBtn.addEventListener("click", () => document.body.classList.remove("diff-open"));
     if (diffClearBtn) diffClearBtn.addEventListener("click", () => { if (diffCardsEl) diffCardsEl.innerHTML = ""; });
-    if (diffToggleBtn) diffToggleBtn.addEventListener("click", () => document.body.classList.toggle("diff-open"));
+    if (diffToggleBtn) diffToggleBtn.addEventListener("click", () => {
+      const opening = !document.body.classList.contains("diff-open");
+      document.body.classList.toggle("diff-open");
+      if (opening && typeof AgentPanel !== "undefined") AgentPanel.close();
+    });
 
     function diffLineEl(cls, text) {
       const d = document.createElement("div");
@@ -1311,7 +1315,10 @@
       while (diffCardsEl.children.length > MAX_DIFF_CARDS) {
         diffCardsEl.lastElementChild.remove();
       }
-      if (autoOpen) document.body.classList.add("diff-open");
+      if (autoOpen) {
+        document.body.classList.add("diff-open");
+        if (typeof AgentPanel !== "undefined") AgentPanel.close();
+      }
     }
 
     function addHistoryMessage(message) {
@@ -1890,7 +1897,10 @@
           if (!fileEditSummary.card) {
             const card = document.createElement("div");
             card.className = "file-edit-summary-card";
-            card.addEventListener("click", () => document.body.classList.add("diff-open"));
+            card.addEventListener("click", () => {
+            document.body.classList.add("diff-open");
+            if (typeof AgentPanel !== "undefined") AgentPanel.close();
+          });
             fileEditSummary.card = card;
           }
           // Always re-parent to the current answerEl so the card follows the
@@ -2718,6 +2728,91 @@
     // ── /Strip Browser Profiles ─────────────────────────────────
 
 
+    // ── Data Export / Import ─────────────────────────────────────
+    async function _streamDataOp(url, btnId, statusEl, confirmMsg, busyLabel, doneFn) {
+      if (!confirm(confirmMsg)) return;
+      const btn = document.getElementById(btnId);
+      btn.disabled = true;
+      btn.textContent = '⏳ ' + busyLabel + '…';
+      statusEl.textContent = busyLabel + '…';
+      statusEl.style.color = 'var(--text-dim)';
+      try {
+        const res = await fetch(url, { method: 'POST' });
+        if (!res.ok || !res.body) {
+          const err = await res.json().catch(() => ({}));
+          statusEl.textContent = err.detail || 'Failed';
+          statusEl.style.color = 'var(--danger)';
+          showToast(err.detail || 'Operation failed', 'error');
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop();
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const ev = JSON.parse(line);
+              if (ev.type === 'progress') {
+                statusEl.textContent = `⏳ [${ev.step}/${ev.total}] ${ev.dir} — ${ev.status}`;
+              } else if (ev.type === 'done') {
+                doneFn(ev);
+              } else if (ev.type === 'error') {
+                statusEl.textContent = '❌ ' + (ev.detail || 'Unknown error');
+                statusEl.style.color = 'var(--danger)';
+                showToast(ev.detail || 'Operation failed', 'error');
+              }
+            } catch {}
+          }
+        }
+      } catch (err) {
+        statusEl.textContent = 'Error: ' + err.message;
+        statusEl.style.color = 'var(--danger)';
+        showToast('Failed: ' + err.message, 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    document.getElementById('exportDataBtn').addEventListener('click', () => {
+      const status = document.getElementById('dataExportStatus');
+      const btn = document.getElementById('exportDataBtn');
+      _streamDataOp(
+        '/api/settings/data/export', 'exportDataBtn', status,
+        'Export all data to ~/.sable/backup/? This overwrites any existing backup.',
+        'Exporting',
+        (ev) => {
+          const dirs = Object.keys(ev.exported || {});
+          status.textContent = `✅ Exported ${dirs.length} dirs → ~/.sable/backup/`;
+          status.style.color = 'var(--success, #4caf50)';
+          showToast('Data exported successfully', 'success');
+          btn.textContent = '⬆ Export Data';
+        }
+      );
+    });
+
+    document.getElementById('importDataBtn').addEventListener('click', () => {
+      const status = document.getElementById('dataExportStatus');
+      const btn = document.getElementById('importDataBtn');
+      _streamDataOp(
+        '/api/settings/data/import', 'importDataBtn', status,
+        'Import data from ~/.sable/backup/? This will overwrite current files.',
+        'Importing',
+        (ev) => {
+          const dirs = ev.imported || [];
+          status.textContent = `✅ Imported ${dirs.length} dirs from backup`;
+          status.style.color = 'var(--success, #4caf50)';
+          showToast('Data imported successfully', 'success');
+          btn.textContent = '⬇ Import Data';
+        }
+      );
+    });
+    // ── /Data Export / Import ────────────────────────────────────
 
 
     // --- Service control buttons ---

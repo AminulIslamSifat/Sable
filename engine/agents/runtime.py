@@ -32,6 +32,9 @@ class AgentRuntime:
     Circuit breakers prevent hammering dead providers.
     """
 
+    # Agents older than this are pruned on next spawn/completion cycle
+    _PRUNE_AFTER_SECONDS: float = 3600.0  # 1 hour
+
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         cfg = config or {}
         conc = cfg.get("concurrency", {})
@@ -39,6 +42,7 @@ class AgentRuntime:
 
         self._agents: dict[str, Agent] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        self._spawn_lock = asyncio.Lock()
         self._max_agents: int = conc.get("global_max", 5)
         self._max_depth: int = 3
 
@@ -101,34 +105,53 @@ class AgentRuntime:
     def active_count(self) -> int:
         return sum(1 for a in self._agents.values() if a.status == AgentStatus.RUNNING)
 
+    def _prune_stale_agents(self) -> None:
+        """Remove completed/failed agents older than _PRUNE_AFTER_SECONDS."""
+        cutoff = time.time() - self._PRUNE_AFTER_SECONDS
+        stale_ids = [
+            aid for aid, a in self._agents.items()
+            if a.status != AgentStatus.RUNNING
+            and a.completed_at is not None
+            and a.completed_at < cutoff
+        ]
+        for aid in stale_ids:
+            del self._agents[aid]
+            self._tasks.pop(aid, None)
+        if stale_ids:
+            logger.debug("Pruned %d stale agents", len(stale_ids))
+
     async def spawn(self, assignment: TaskAssignment, chat_id: str) -> Agent:
         """Spawn a new agent. Non-blocking — returns immediately."""
-        if self.active_count >= self._max_agents:
-            raise RuntimeError(f"Max agents ({self._max_agents}) reached")
+        async with self._spawn_lock:
+            # Prune old agents to free slots
+            self._prune_stale_agents()
 
-        # Depth check
-        depth = 0
-        if assignment.parent_agent_id:
-            parent = self._agents.get(assignment.parent_agent_id)
-            depth = (parent.depth + 1) if parent else 1
-        if depth >= self._max_depth:
-            raise RuntimeError(f"Max depth ({self._max_depth}) reached")
+            if self.active_count >= self._max_agents:
+                raise RuntimeError(f"Max agents ({self._max_agents}) reached")
 
-        # Resolve config: tag attrs > role_overrides > defaults
-        role_cfg = get_role_config(assignment.role)
-        agent = Agent(
-            role=assignment.role,
-            task=assignment.task,
-            context=assignment.context,
-            instruction=assignment.instruction,
-            model=assignment.model or role_cfg.default_model,
-            browser_data_dir=assignment.browser_data_dir,
-            parent_id=assignment.parent_agent_id,
-            chat_id=chat_id,
-            depth=depth,
-            collect=assignment.collect,
-        )
-        self._agents[agent.id] = agent
+            # Depth check
+            depth = 0
+            if assignment.parent_agent_id:
+                parent = self._agents.get(assignment.parent_agent_id)
+                depth = (parent.depth + 1) if parent else 1
+            if depth >= self._max_depth:
+                raise RuntimeError(f"Max depth ({self._max_depth}) reached")
+
+            # Resolve config: tag attrs > role_overrides > defaults
+            role_cfg = get_role_config(assignment.role)
+            agent = Agent(
+                role=assignment.role,
+                task=assignment.task,
+                context=assignment.context,
+                instruction=assignment.instruction,
+                model=assignment.model or role_cfg.default_model,
+                browser_data_dir=assignment.browser_data_dir,
+                parent_id=assignment.parent_agent_id,
+                chat_id=chat_id,
+                depth=depth,
+                collect=assignment.collect,
+            )
+            self._agents[agent.id] = agent
 
         # DB persist
         from server.database import insert_agent_run
@@ -184,13 +207,15 @@ class AgentRuntime:
                     agent.id, agent.status.value,
                     result=result, tokens_used=agent.tokens_used,
                 )
+                # Agent produces markdown natively — result is already a string
+                final_result = result or "No result"
                 await self._emit(agent.chat_id, AgentEvent(
                     type="agent_completed",
                     agent_id=agent.id,
                     data={
                         "role": agent.role,
-                        "result": result,
-                        "tokens": agent.tokens_used,
+                        "result": final_result,
+                        "words": agent.word_count,
                         "duration": agent.duration,
                         "skills_used": agent.skills_used,
                     },
@@ -233,22 +258,38 @@ class AgentRuntime:
                 if agent.chat_id:
                     await auto_turn.on_agent_failed(agent.chat_id, agent.id, agent.role, agent.error, task=agent.task)
 
-            # Push to notification queue regardless of outcome
-            if agent.chat_id:
+            # Single-path notification: only queue if auto_turn won't handle it
+            # Collect-mode agents are handled inline by chat.py — skip both paths
+            if agent.chat_id and not agent.collect:
                 event_type = "agent_completed" if agent.status in (AgentStatus.COMPLETED, AgentStatus.DEGRADED) else "agent_failed"
                 _evt_data = {
                     "role": agent.role,
                     "summary": (agent.result or "")[:500],
                     "error": agent.error,
                     "duration": agent.duration,
-                    "tokens": agent.tokens_used,
+                    "words": agent.word_count,
+                    "skills_used": agent.skills_used,
                 }
-                notification_queue.push(agent.chat_id, AgentEvent(
-                    type=event_type,
-                    agent_id=agent.id,
-                    data=_evt_data,
-                ))
-                # Persist into skill_events so history replay can render the card
+                # Check if auto_turn considers the chat busy (model mid-stream)
+                from engine.agents.auto_turn import auto_turn as _at
+                _at_state = _at._chats.get(agent.chat_id)
+                _is_busy = _at_state and _at_state.busy
+                # Check if this agent was spawned during the current stream
+                _in_current_stream = _at_state and agent.id in getattr(_at_state, 'current_stream_agents', set())
+
+                if _in_current_stream:
+                    # Result will appear as a skill card in the current turn — no notification needed
+                    pass
+                elif _is_busy:
+                    # Model is mid-stream but agent wasn't spawned this turn → queue for next turn
+                    notification_queue.push(agent.chat_id, AgentEvent(
+                        type=event_type,
+                        agent_id=agent.id,
+                        data=_evt_data,
+                    ))
+                # else: not busy → auto_turn.on_agent_done/on_agent_failed handles delivery exclusively
+
+                # Always persist into skill_events for history replay
                 try:
                     from server.database import append_skill_event
                     append_skill_event(agent.chat_id, {
@@ -260,8 +301,8 @@ class AgentRuntime:
                 except Exception:
                     pass
 
-            # Save full agent output to disk
-            self._save_agent_output(agent)
+            # Save full agent output to disk (non-blocking)
+            await asyncio.to_thread(self._save_agent_output, agent)
 
     # ------------------------------------------------------------------
     # Waiting (collect mode)
@@ -293,11 +334,14 @@ class AgentRuntime:
 
     async def kill(self, agent_id: str) -> None:
         """Cancel a running agent."""
+        agent = self._agents.get(agent_id)
+        if agent:
+            agent.cancelled = True  # Checked between tool calls in the loop
         task = self._tasks.get(agent_id)
         if task and not task.done():
             task.cancel()
-        if agent_id in self._agents:
-            self._agents[agent_id].mark_failed("Killed by orchestrator")
+        if agent:
+            agent.mark_failed("Killed by orchestrator")
             from server.database import update_agent_status
             update_agent_status(agent_id, "killed", error="Killed by orchestrator")
 
@@ -349,7 +393,7 @@ class AgentRuntime:
                 f"- **Model:** {agent.model}",
                 f"- **Status:** {agent.status.value}",
                 f"- **Duration:** {agent.duration:.1f}s",
-                f"- **Tokens:** {agent.tokens_used}",
+                f"- **Words:** {agent.word_count}",
                 f"- **Skills:** {', '.join(agent.skills_used) or 'none'}",
             ]
             if agent.error:

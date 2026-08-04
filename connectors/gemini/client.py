@@ -187,7 +187,8 @@ class GeminiClient:
         return None
 
     def _get_or_create_session(
-        self, chat_id: str | None, inject_instructions: bool
+        self, chat_id: str | None, inject_instructions: bool,
+        system_instruction: str | None = None,
     ) -> list[dict[str, Any]]:
         """Get existing session history or create a new one (sliding window)."""
         if chat_id and chat_id in self._sessions:
@@ -199,14 +200,14 @@ class GeminiClient:
             return self._sessions[chat_id]
 
         history: list[dict[str, Any]] = []
-        if inject_instructions:
-            instructions = _load_instructions()
-            if instructions:
-                history.append({
+        # Explicit system_instruction takes priority over default inject
+        instructions = system_instruction if system_instruction else (_load_instructions() if inject_instructions else None)
+        if instructions:
+            history.append({
                     "role": "user",
                     "parts": [{"text": f"[System Instructions]\n{instructions}"}],
                 })
-                history.append({
+            history.append({
                     "role": "model",
                     "parts": [{"text": "Understood. I'll follow these instructions."}],
                 })
@@ -239,7 +240,8 @@ class GeminiClient:
         model_id = model or "gemini-2.5-flash"
         url = f"{BASE_URL}/models/{model_id}:streamGenerateContent"
 
-        history = self._get_or_create_session(chat_id, inject_instructions)
+        system_instruction = kwargs.pop("system_instruction", None)
+        history = self._get_or_create_session(chat_id, inject_instructions, system_instruction=system_instruction)
         parts: list[dict[str, Any]] = [{"text": message}]
         if files:
             for fpath in files:

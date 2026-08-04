@@ -17,6 +17,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import subprocess
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
@@ -29,16 +30,20 @@ logger = logging.getLogger("sable.deepseek_api")
 BASE_URL = "https://chat.deepseek.com"
 SOLVER_PATH = Path(__file__).resolve().parent / "pow_solver" / "pow_solver"
 
-# Per-account token store: {"browser-data-acc1": "jwt...", ...}
+# Per-account token store: {"browser-data-acc1": ["jwt1", "jwt2", ...], ...}
+# Tokens never expire, so we accumulate them in a list per account.
+# Capped at MAX_TOKENS_PER_ACCOUNT to prevent unbounded file growth.
 _SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
 TOKEN_STORE_PATH = _SYSTEM_DIR / ".deepseek_tokens.json"
+MAX_TOKENS_PER_ACCOUNT = 10
 
 # Legacy single-token cache (migrated on first access)
 _LEGACY_TOKEN_CACHE = Path(__file__).resolve().parent / ".token_cache.json"
+_LEGACY_MIGRATED = False  # guard so migration only runs once
 
 
 # --------------------------------------------------------------------------
-# Per-account token store helpers
+# Per-account token store helpers (list-based — tokens accumulate)
 # --------------------------------------------------------------------------
 
 def _resolve_active_account() -> str:
@@ -51,68 +56,121 @@ def _resolve_active_account() -> str:
         return "browser-data"
 
 
-def _load_token_store() -> dict[str, str]:
-    """Load the per-account token store, migrating legacy cache if needed."""
-    store: dict[str, str] = {}
+def _load_token_store() -> dict[str, list[str]]:
+    """Load the per-account token store, migrating legacy formats if needed.
+
+    Returns {account: [token, ...]}. Handles migration from:
+      - Old flat format {account: "token"} → {account: ["token"]}
+      - Legacy single-token .token_cache.json (runs once only)
+    """
+    global _LEGACY_MIGRATED
+    raw: dict = {}
     if TOKEN_STORE_PATH.exists():
         try:
-            store = json.loads(TOKEN_STORE_PATH.read_text(encoding="utf-8"))
+            raw = json.loads(TOKEN_STORE_PATH.read_text(encoding="utf-8"))
         except Exception:
             pass
-    # One-time migration from legacy single-token file
-    if not store and _LEGACY_TOKEN_CACHE.exists():
+
+    store: dict[str, list[str]] = {}
+    for key, val in raw.items():
+        if isinstance(val, list):
+            store[key] = [t for t in val if t and t != "None"]
+        elif isinstance(val, str) and val and val != "None":
+            # Migrate old flat format → list
+            store[key] = [val]
+        else:
+            store[key] = []
+
+    # One-time migration from legacy single-token file (guarded)
+    if not store and not _LEGACY_MIGRATED and _LEGACY_TOKEN_CACHE.exists():
+        _LEGACY_MIGRATED = True
         try:
             legacy = json.loads(_LEGACY_TOKEN_CACHE.read_text(encoding="utf-8"))
             tok = legacy.get("token")
             if tok and tok != "None":
                 account = _resolve_active_account()
-                store[account] = tok
+                store[account] = [tok]
                 _save_token_store(store)
                 _LEGACY_TOKEN_CACHE.unlink(missing_ok=True)
-                logger.info("Migrated legacy token to per-account store (%s)", account)
+                logger.info("Migrated legacy token to per-account list store (%s)", account)
         except Exception:
             pass
     return store
 
 
-def _save_token_store(store: dict[str, str]) -> None:
-    """Persist the per-account token store."""
+def _save_token_store(store: dict[str, list[str]]) -> None:
+    """Persist the per-account token store atomically (write-to-tmp + rename)."""
+    import tempfile
     try:
-        TOKEN_STORE_PATH.write_text(
-            json.dumps(store, indent=2), encoding="utf-8"
+        data = json.dumps(store, indent=2)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(TOKEN_STORE_PATH.parent), suffix=".tmp"
         )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+            os.replace(tmp_path, str(TOKEN_STORE_PATH))
+        except BaseException:
+            # Clean up temp file on any failure
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
     except Exception as exc:
         logger.warning("Could not save token store: %s", exc)
 
 
 def get_token_for_account(account: str | None = None) -> str | None:
-    """Get token for a specific account, falling back to any available token."""
+    """Get the most recent token for an account, falling back to any available.
+
+    Returns the last token in the list (most recently added) since tokens
+    don't expire and newer ones are preferred.
+    """
     store = _load_token_store()
     if not store:
         return None
+
+    def _latest(tokens: list[str]) -> str | None:
+        valid = [t for t in tokens if t and t != "None"]
+        return valid[-1] if valid else None
+
     # Primary: requested account
     if account and account in store:
-        tok = store[account]
-        if tok and tok != "None":
+        tok = _latest(store[account])
+        if tok:
             return tok
     # Fallback: active account
     active = _resolve_active_account()
     if active in store:
-        tok = store[active]
-        if tok and tok != "None":
+        tok = _latest(store[active])
+        if tok:
             return tok
     # Last resort: any account with a valid token
-    for tok in store.values():
-        if tok and tok != "None":
+    for tokens in store.values():
+        tok = _latest(tokens)
+        if tok:
             return tok
     return None
 
 
 def save_token_for_account(token: str, account: str | None = None) -> None:
-    """Save a token under the given account (or active account)."""
+    """Append a token to the account's list (deduped, capped). Never replaces old tokens.
+
+    Keeps at most MAX_TOKENS_PER_ACCOUNT entries per account (FIFO eviction of oldest).
+    Uses atomic write to prevent corruption from concurrent saves.
+    """
+    if not token or token == "None":
+        return
     acct = account or _resolve_active_account()
     store = _load_token_store()
-    store[acct] = token
+    existing = store.get(acct, [])
+    if token not in existing:
+        existing.append(token)
+    # Cap: keep only the most recent N tokens
+    if len(existing) > MAX_TOKENS_PER_ACCOUNT:
+        existing = existing[-MAX_TOKENS_PER_ACCOUNT:]
+    store[acct] = existing
     _save_token_store(store)
 
 CLIENT_HEADERS = {
@@ -448,6 +506,8 @@ class DeepSeekClient:
         chat_id: str | None = None,
         ref_file_ids: list[str] | None = None,
         inject_instructions: bool = True,
+        system_instruction: str | None = None,
+        **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat completion. Yields Sable-compatible event dicts."""
         thinking_enabled = str(thinking_mode or "").lower() in ("thinking", "deepthink")
@@ -465,18 +525,22 @@ class DeepSeekClient:
 
         # First message in session → prepend instruction context
         prompt = message
-        if parent_id is None and inject_instructions:
-            instructions = _load_instructions()
-            if instructions:
-                prompt = f"{instructions}\n\n{message}"
+        if parent_id is None:
+            if system_instruction:
+                prompt = f"[System Instructions]\n{system_instruction}\n\n{message}"
+            elif inject_instructions:
+                instructions = _load_instructions()
+                if instructions:
+                    prompt = f"{instructions}\n\n{message}"
 
-        # Always append compact reminders to every message
-        _REMINDERS = (
-            "\n\n[REMINDERS: Do NOT break character. Follow skills strictly, "
-            "step by step. Never alter tag format. Keep responses concise. "
-            "No generic/AI-speak — stay in Maria persona.]"
-        )
-        prompt += _REMINDERS
+        # Append compact reminders only for non-agent sessions (agents have their own format)
+        if not system_instruction:
+            _REMINDERS = (
+                "\n\n[REMINDERS: Do NOT break character. Follow skills strictly, "
+                "step by step. Never alter tag format. Keep responses concise. "
+                "No generic/AI-speak — stay in Maria persona.]"
+            )
+            prompt += _REMINDERS
 
         body = {
             "chat_session_id": session_id,
