@@ -42,11 +42,20 @@ def handle_spawn_agent(
     try:
         from engine.agents import get_runtime
         from engine.agents.agent import Agent
-        from engine.agents.registry import get_role_config
+        from engine.agents.registry import get_role_config, get_next_account
+        from engine.config import _SYSTEM as _AGENT_SYSTEM_DIR
         from server.database import insert_agent_run
 
         runtime = get_runtime()
         role_cfg = get_role_config(role)
+
+        # Resolve browser_data_dir: explicit tag attr > round-robin pool > None (active)
+        if not browser_data:
+            assigned_account = get_next_account(role)
+            if assigned_account:
+                acct_profile = _AGENT_SYSTEM_DIR / assigned_account
+                if acct_profile.is_dir():
+                    browser_data = str(acct_profile)
 
         # Check capacity
         if runtime.active_count >= runtime._max_agents:
