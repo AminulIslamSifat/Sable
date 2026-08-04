@@ -79,3 +79,4 @@ mockups/
 .safe_backups/skills/_cache/
 system/
 system/memory_cache.npz
+instruction/personal.md

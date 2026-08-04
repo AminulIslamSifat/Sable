@@ -4012,8 +4012,40 @@
       }
     });
 
+    // === Personal Preferences (Brain tab top section) ===
+    const personalPrefs = document.getElementById("personalPrefs");
+    const prefsSaveBtn = document.getElementById("prefsSaveBtn");
+    const prefsStatus = document.getElementById("prefsStatus");
+
+    async function loadPreferences() {
+      try {
+        const res = await fetch("/api/settings/personal");
+        const data = await res.json();
+        personalPrefs.value = data.content || "";
+      } catch (e) { console.warn("Failed to load preferences:", e); }
+    }
+
+    prefsSaveBtn.addEventListener("click", async () => {
+      prefsStatus.textContent = "Saving…";
+      try {
+        const res = await fetch("/api/settings/personal", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: personalPrefs.value }),
+        });
+        const data = await res.json();
+        prefsStatus.textContent = data.status === "ok" ? "✓ Saved" : "✗ Failed";
+        prefsStatus.style.color = data.status === "ok" ? "var(--success, #4caf50)" : "var(--error, #f44336)";
+        setTimeout(() => { prefsStatus.textContent = ""; }, 3000);
+      } catch (e) {
+        prefsStatus.textContent = "✗ Error";
+        prefsStatus.style.color = "var(--error, #f44336)";
+      }
+    });
+
     // Load memory + search settings when Brain tab is clicked
     document.querySelector('[data-tab="brain"]').addEventListener("click", () => {
+      loadPreferences();
       loadMemory();
       loadProtected();
       loadMemorySearchSettings();

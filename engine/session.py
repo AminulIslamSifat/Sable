@@ -326,6 +326,10 @@ class BrowserManager:
         if maria_path.exists():
             instructions += maria_path.read_text(encoding="utf-8") + "\n\n"
 
+        personal_path = instruction_dir / "personal.md"
+        if personal_path.exists():
+            instructions += personal_path.read_text(encoding="utf-8") + "\n\n"
+
         of_path = instruction_dir / "output_format.md"
         if of_path.exists():
             instructions += of_path.read_text(encoding="utf-8") + "\n\n"

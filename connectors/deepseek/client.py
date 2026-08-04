@@ -182,7 +182,7 @@ CLIENT_HEADERS = {
 
 # Instruction files prepended to the first message of each session
 _INSTRUCTION_DIR = Path(__file__).resolve().parent.parent.parent / "instruction"
-_INSTRUCTION_FILES = ["Maria.md", "output_format.md"]
+_INSTRUCTION_FILES = ["Maria.md", "personal.md", "output_format.md"]
 _instruction_cache: str | None = None
 
 
