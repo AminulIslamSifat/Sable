@@ -32,6 +32,10 @@ class AgentResult:
     def success(self) -> bool:
         return self.status in (AgentStatus.COMPLETED, AgentStatus.DEGRADED)
 
+    def to_plaintext(self) -> str:
+        """Return the raw result as-is. Agents now produce markdown natively."""
+        return self.summary or "No output."
+
 
 @dataclass
 class TaskAssignment:

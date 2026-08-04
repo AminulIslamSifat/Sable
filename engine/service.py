@@ -11,7 +11,11 @@ from typing import Any
 
 import httpx
 
-from engine.config import URL
+from engine.config import (
+    URL,
+    get_qwen_tokens_for_account,
+    save_qwen_tokens_for_account,
+)
 from engine.payloads import build_body
 from engine.session import BrowserManager, create_new_chat
 
@@ -51,15 +55,35 @@ class ChatService:
         return self._browser.headless
 
     async def _ensure_headers(self) -> dict[str, str]:
-        # Fast path: headers already cached — no lock needed (dict read is atomic in CPython)
+        # Fast path: headers already cached in memory
         if self._headers:
             return self._headers
-        # Slow path: first-time fetch — serialize to avoid duplicate browser launches
+        # Medium path: check per-account token cache before launching browser
+        from engine.config import _resolve_active_account
+        account = _resolve_active_account()
+        cached = get_qwen_tokens_for_account(account)
+        if cached and cached.get("cookies"):
+            from engine.session import build_headers
+            self._headers = build_headers(
+                cookies=cached["cookies"],
+                bx_ua=cached.get("bx_ua"),
+                bx_umidtoken=cached.get("bx_umidtoken"),
+            )
+            logger.info("Loaded cached Qwen WAF tokens for %s", account)
+            return self._headers
+        # Slow path: launch browser to fetch fresh headers
         async with self._lock:
             if not self._headers:
                 await self._browser.start()
                 try:
                     self._headers = await self._browser.get_fresh_headers()
+                    # Save to per-account cache
+                    save_qwen_tokens_for_account(
+                        cookies=self._headers.get("Cookie", ""),
+                        bx_ua=self._headers.get("bx-ua", ""),
+                        bx_umidtoken=self._headers.get("bx-umidtoken", ""),
+                        account=account,
+                    )
                 finally:
                     await self._browser.close()
             return self._headers
@@ -69,6 +93,14 @@ class ChatService:
             await self._browser.start()
             try:
                 self._headers = await self._browser.get_fresh_headers()
+                # Save refreshed tokens to per-account cache
+                from engine.config import _resolve_active_account
+                save_qwen_tokens_for_account(
+                    cookies=self._headers.get("Cookie", ""),
+                    bx_ua=self._headers.get("bx-ua", ""),
+                    bx_umidtoken=self._headers.get("bx-umidtoken", ""),
+                    account=_resolve_active_account(),
+                )
             finally:
                 await self._browser.close()
             return self._headers

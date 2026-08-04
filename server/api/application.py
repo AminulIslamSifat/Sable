@@ -62,14 +62,16 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     stale = recover_stale_agents()
     if stale:
         logger.info("Recovered %d stale agent(s) from previous session", stale)
-    # Load saved role overrides into registry
+    # Load saved role overrides + account assignments into registry
     try:
         from engine.config import AGENT_CONFIG_PATH
-        from engine.agents.registry import apply_role_overrides
+        from engine.agents.registry import apply_role_overrides, apply_account_assignments
         if AGENT_CONFIG_PATH.exists():
             _acfg = json.loads(AGENT_CONFIG_PATH.read_text(encoding="utf-8"))
             if _acfg.get("roles"):
                 apply_role_overrides(_acfg["roles"])
+            if _acfg.get("account_assignments"):
+                apply_account_assignments(_acfg["account_assignments"])
     except Exception:
         pass
     if _MEMORY_SEARCH_SETTINGS.exists():
@@ -102,6 +104,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Static assets must always revalidate — a stale cached app.js once served a
+# broken markdown renderer while the server already had the fixed file.
+@app.middleware("http")
+async def no_cache_static(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/static/") or request.url.path in ("/", "/index.html"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 if WEB_DIR.exists():
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")

@@ -11,7 +11,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 # Override with SABLE_HOST / SABLE_PORT environment variables when needed.
 # --------------------------------------------------------------------------
 HOST = os.getenv("SABLE_HOST", "0.0.0.0")
-PORT = int(os.getenv("SABLE_PORT", "61771"))
+PORT = int(os.getenv("SABLE_PORT", "61770"))
 
 # --------------------------------------------------------------------------
 # Runtime data paths — single source of truth used by server.py and any
@@ -345,3 +345,143 @@ _SESSION_TOKENS = _load_session_tokens()
 COOKIES: str = _SESSION_TOKENS.get("COOKIES", "")
 BX_UA: str = _SESSION_TOKENS.get("BX_UA", "")
 BX_UMIDTOKEN: str = _SESSION_TOKENS.get("BX_UMIDTOKEN", "")
+
+
+# --------------------------------------------------------------------------
+# Per-account Qwen WAF token store (list-based — tokens accumulate).
+# Format: {"browser-data-acc1": [{"cookies": "...", "bx_ua": "...", "bx_umidtoken": "..."}, ...]}
+# Tokens don't expire, so we keep all of them and use the most recent.
+# --------------------------------------------------------------------------
+
+_QWEN_TOKENS_PATH = _SYSTEM / ".qwen_tokens.json"
+_QWEN_MAX_TOKENS_PER_ACCOUNT = 10
+_QWEN_LEGACY_MIGRATED = False  # guard so migration only runs once
+
+
+def _resolve_active_account() -> str:
+    """Get the active account name from the browser-data symlink target."""
+    symlink = _SYSTEM / "browser-data"
+    try:
+        target = symlink.resolve()
+        return target.name
+    except OSError:
+        return "browser-data"
+
+
+def load_qwen_token_store() -> dict[str, list[dict[str, str]]]:
+    """Load per-account Qwen WAF token store.
+
+    Returns {account: [{cookies, bx_ua, bx_umidtoken}, ...]}.
+    Handles migration from old flat .session_tokens.json format (runs once only).
+    """
+    global _QWEN_LEGACY_MIGRATED
+    import json as _json
+    raw: dict = {}
+    if _QWEN_TOKENS_PATH.exists():
+        try:
+            raw = _json.loads(_QWEN_TOKENS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    store: dict[str, list[dict[str, str]]] = {}
+    for key, val in raw.items():
+        if isinstance(val, list):
+            store[key] = [v for v in val if isinstance(v, dict) and v.get("cookies")]
+        elif isinstance(val, dict) and val.get("cookies"):
+            # Migrate old flat format → list
+            store[key] = [val]
+        else:
+            store[key] = []
+
+    # One-time migration from global .session_tokens.json (guarded)
+    if not store and not _QWEN_LEGACY_MIGRATED and _SESSION_TOKENS.get("COOKIES"):
+        _QWEN_LEGACY_MIGRATED = True
+        account = _resolve_active_account()
+        entry = {
+            "cookies": _SESSION_TOKENS.get("COOKIES", ""),
+            "bx_ua": _SESSION_TOKENS.get("BX_UA", ""),
+            "bx_umidtoken": _SESSION_TOKENS.get("BX_UMIDTOKEN", ""),
+        }
+        store[account] = [entry]
+        save_qwen_token_store(store)
+
+    return store
+
+
+def save_qwen_token_store(store: dict[str, list[dict[str, str]]]) -> None:
+    """Persist the per-account Qwen WAF token store atomically (write-to-tmp + rename)."""
+    import json as _json
+    import tempfile
+    import os as _os
+    try:
+        data = _json.dumps(store, indent=2)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(_QWEN_TOKENS_PATH.parent), suffix=".tmp"
+        )
+        try:
+            with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+            _os.replace(tmp_path, str(_QWEN_TOKENS_PATH))
+        except BaseException:
+            try:
+                _os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except Exception:
+        pass
+
+
+def get_qwen_tokens_for_account(account: str | None = None) -> dict[str, str] | None:
+    """Get the most recent Qwen WAF tokens for an account.
+
+    Returns {cookies, bx_ua, bx_umidtoken} or None if nothing cached.
+    """
+    store = load_qwen_token_store()
+    if not store:
+        return None
+
+    def _latest(entries: list[dict[str, str]]) -> dict[str, str] | None:
+        valid = [e for e in entries if e.get("cookies")]
+        return valid[-1] if valid else None
+
+    if account and account in store:
+        tok = _latest(store[account])
+        if tok:
+            return tok
+    active = _resolve_active_account()
+    if active in store:
+        tok = _latest(store[active])
+        if tok:
+            return tok
+    for entries in store.values():
+        tok = _latest(entries)
+        if tok:
+            return tok
+    return None
+
+
+def save_qwen_tokens_for_account(
+    cookies: str,
+    bx_ua: str,
+    bx_umidtoken: str,
+    account: str | None = None,
+) -> None:
+    """Append Qwen WAF tokens to the account's list (deduped by cookies, capped).
+
+    Keeps at most _QWEN_MAX_TOKENS_PER_ACCOUNT entries per account (FIFO eviction).
+    """
+    if not cookies:
+        return
+    acct = account or _resolve_active_account()
+    store = load_qwen_token_store()
+    existing = store.get(acct, [])
+    entry = {"cookies": cookies, "bx_ua": bx_ua, "bx_umidtoken": bx_umidtoken}
+    # Dedupe by cookies value
+    if not any(e.get("cookies") == cookies for e in existing):
+        existing.append(entry)
+    # Cap: keep only the most recent N entries
+    if len(existing) > _QWEN_MAX_TOKENS_PER_ACCOUNT:
+        existing = existing[-_QWEN_MAX_TOKENS_PER_ACCOUNT:]
+    store[acct] = existing
+    save_qwen_token_store(store)

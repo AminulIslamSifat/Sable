@@ -377,9 +377,14 @@ async def chat(request: ChatRequest):
                         for _nev in _pending_notifs:
                             _nd = _nev.data or {}
                             _status = "completed" if _nev.type == "agent_completed" else "failed"
+                            _skill_list = ', '.join(_nd.get('skills_used', [])) or 'none'
+                            _summary = (_nd.get('result', '') or _nd.get('summary', '') or _nd.get('error', ''))[:500]
                             _notif_lines.append(
-                                f"[Agent {_nev.agent_id} ({_nd.get('role', 'agent')}) {_status}] "
-                                f"{_nd.get('summary', _nd.get('error', ''))[:200]}"
+                                f"### Agent {_nev.agent_id} ({_nd.get('role', 'agent')}) — {_status}\n\n"
+                                f"- **Words:** {_nd.get('words', 0)}\n"
+                                f"- **Duration:** {_nd.get('duration', 0):.1f}s\n"
+                                f"- **Skills:** {_skill_list}\n\n"
+                                f"{_summary}"
                             )
                         current_message = (
                             "[Agent Notifications]\n" + "\n".join(_notif_lines)
@@ -489,6 +494,13 @@ async def chat(request: ChatRequest):
                 for _sev in round_skill_events:
                     if _sev.get("type") == "skill_end" and _sev.get("name") == "spawn_agent":
                         _res = _sev.get("result") or {}
+                        # Register ALL spawned agents in current stream for notification dedup
+                        if _res.get("agent_id"):
+                            try:
+                                from engine.agents.auto_turn import auto_turn as _at_ref
+                                _at_ref.register_stream_agent(active_chat_id, _res["agent_id"])
+                            except Exception:
+                                pass
                         if _res.get("collect") and _res.get("agent_id"):
                             _collect_ids.append(_res["agent_id"])
                 if _collect_ids:
