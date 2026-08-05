@@ -678,3 +678,227 @@
       50% { border-color: var(--danger-bg); }
     }
 
+
+    /* ══════════════════════════════════════════
+       LAYOUT MODE: IDE
+       Activated via body[data-mode="ide"]
+       ══════════════════════════════════════════ */
+
+    /* --- Compact chat panel (replaces sidebar in IDE mode) --- */
+    .chat-compact {
+      width: 280px;
+      min-width: 280px;
+      height: calc(100dvh - 12px);
+      margin: 6px 0 6px 6px;
+      display: flex;
+      flex-direction: column;
+      border-radius: var(--radius-lg, 14px);
+      background: color-mix(in srgb, var(--panel) 50%, transparent);
+      border: 1px solid var(--border);
+      overflow: hidden;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+    .chat-compact.hidden { display: none; }
+    .chat-compact-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      scrollbar-width: none;
+    }
+    .chat-compact-messages::-webkit-scrollbar { display: none; }
+    .chat-compact-input {
+      display: flex;
+      align-items: flex-end;
+      gap: 6px;
+      padding: 10px 12px;
+      border-top: 1px solid var(--border);
+      background: color-mix(in srgb, var(--panel-2) 60%, transparent);
+    }
+    .chat-compact-input textarea {
+      flex: 1;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 13px;
+      padding: 8px 10px;
+      resize: none;
+      min-height: 34px;
+      max-height: 100px;
+    }
+    .chat-compact-input textarea:focus { outline: none; border-color: var(--accent); }
+    .chat-compact-send {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      border: none;
+      background: var(--accent);
+      color: var(--accent-text, #fff);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: filter 0.15s;
+    }
+    .chat-compact-send:hover { filter: brightness(1.15); }
+    .chat-compact-send.stop-mode {
+      background: var(--danger, #e5484d);
+      color: #fff;
+    }
+    .compact-pending {
+      padding: 6px 10px;
+      opacity: 0.7;
+      font-size: 0.85em;
+      color: var(--text-muted, #888);
+    }
+
+    /* Skill cards in compact panel: prevent overflow */
+    .chat-compact-messages .skill-card {
+      max-width: 100%;
+      overflow: hidden;
+    }
+    .chat-compact-messages .skill-header {
+      flex-wrap: nowrap;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .chat-compact-messages .skill-header-left {
+      min-width: 0;
+      overflow: hidden;
+    }
+    .chat-compact-messages .skill-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .chat-compact-messages .skill-header-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .chat-compact-messages .skill-status {
+      display: none;
+    }
+
+    /* --- Editor pane (center area in IDE mode) --- */
+    .editor-pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 0;
+      width: 100%;
+      padding-top: 45px;
+    }
+    .editor-pane.hidden { display: none; }
+    .editor-empty-state.hidden { display: none; }
+    .editor-empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      color: var(--muted);
+      text-align: center;
+    }
+    .editor-empty-state p {
+      font-size: 15px;
+      font-weight: 500;
+      margin: 0;
+      opacity: 0.7;
+    }
+    .editor-empty-hint {
+      font-size: 12px;
+      opacity: 0.5;
+    }
+    .editor-container {
+      width: 100%;
+      height: 100%;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .editor-container.hidden { display: none; }
+
+    /* --- IDE mode: visibility overrides --- */
+    body[data-mode="ide"] .sidebar { display: none; }
+    body[data-mode="ide"] .chat-compact { display: flex; }
+    body[data-mode="ide"] #chat { display: none !important; }
+    body[data-mode="ide"] #inputArea { display: none !important; }
+    body[data-mode="ide"] #editorPane { display: flex !important; }
+    body[data-mode="ide"] #editorPane.hidden { display: flex !important; }
+
+    /* IDE mode: sidebar toggle opens full sidebar over compact chat */
+    body[data-mode="ide"].ide-sidebar-open .sidebar { display: flex; }
+    body[data-mode="ide"].ide-sidebar-open .chat-compact { display: none; }
+
+    /* IDE mode: ensure diff sidebar stays visible */
+    body[data-mode="ide"] #diffSidebar { display: flex; }
+
+    /* --- Layout switcher styling (reuses mode-switcher) --- */
+    #layoutSwitcher {
+      margin-top: 2px;
+    }
+
+
+    /* --- Compact message styling in IDE mode --- */
+    .chat-compact-messages .compact-msg {
+      margin-bottom: 10px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--panel-2) 40%, transparent);
+      font-size: 12px;
+      line-height: 1.5;
+      overflow-wrap: break-word;
+      word-break: break-word;
+    }
+    .chat-compact-messages .compact-msg pre,
+    .chat-compact-messages .compact-msg code {
+      max-width: 100%;
+      overflow-x: auto;
+      font-size: 11px;
+    }
+    .chat-compact-messages .compact-msg img {
+      max-width: 100%;
+      height: auto;
+    }
+    /* Hide heavy elements in compact view */
+    .chat-compact-messages .compact-msg .msg-actions,
+    .chat-compact-messages .compact-msg .agent-card {
+      display: none;
+    }
+
+    /* IDE mode: no header bar — file is highlighted in sidebar instead */
+    body[data-mode="ide"] .editor-container .fs-viewer-header {
+      display: none;
+    }
+
+    /* Active file highlight in right sidebar */
+    .fs-item.fs-active {
+      background: color-mix(in srgb, var(--accent) 18%, transparent);
+      color: var(--accent);
+      border-radius: 6px;
+    }
+    .fs-item.fs-active .fs-name {
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    /* Editor container fills the pane */
+    .editor-container .fs-viewer-header {
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    .editor-container .fs-monaco-wrap {
+      flex: 1;
+      min-height: 0;
+    }
+
+
+
