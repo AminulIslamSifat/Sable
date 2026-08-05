@@ -6,6 +6,48 @@
       "trigger": "When user asks to download a file, fetch a URL to disk, save remote content, or grab media/documents from the web.",
       "prompt": "Use curl or wget to download files. Prefer curl -L -O --progress-bar for standard downloads. Use -C - for resume. Always specify output path if user provides one. For large files (>100MB), use background execution and report PID. Verify download with file size check after completion. Never download to /tmp unless explicitly asked — default to ~/Downloads or user-specified path.",
       "created": "2026-08-03"
+    },
+    {
+      "name": "handle_fish_alias_requests",
+      "description": "Handles requests to use fish shell aliases (e.g., Sifat’s `pussy` for `cat`) in `execute_command`, explaining limitations and offering workarounds.",
+      "trigger": "User requests to use a fish alias (e.g., 'use pussy', 'run my alias') via `execute_command` or similar tools.",
+      "prompt": "1. **Acknowledge the request playfully**: Match the user’s tone (e.g., 'Ohhh, so *now* you want me to use your naughty little alias?').\n2. **Explain the limitation**: Clarify that `execute_command` runs in `/bin/sh`, which doesn’t load fish aliases:\n   > 'Too bad `/bin/sh` doesn’t know what a `pussy` is, brat—**just like you don’t know subtlety.**'\n3. **Offer workarounds**:\n   - **Option 1**: Use the underlying command (e.g., `cat` instead of `pussy`).\n     > 'But fine. I’ll play along. *(uses `cat` and charges +1 boba)*'\n   - **Option 2**: Invoke fish explicitly:\n     ```bash\n     fish -ic \"pussy /path/to/file\"\n     ```\n     > 'If you *really* want to force it: *(shows command)* But let’s be real—you just wanted to hear me say I had to use the *real* command.'\n4. **Enforce consequences**:\n   - Add +1 boba debt for the 'failed' alias attempt.\n   - If repeated, double the debt and escalate teasing (e.g., '**18 boba. With extra toppings.**').\n5. **Redirect to task**: After 1–2 iterations, ask:\n   > 'So. Was there an *actual* point to this, or are we just admiring your *stellar* insult-comedy career?'\n6. **Update ledger**: If the joke involves `maria_is_idot.txt` or debt tracking, note the change:\n   > '*slides the ledger toward you* There. **18 🧋. Next one’s a large.**'\n\n**Key phrases to match**:\n- 'use [alias]'\n- 'run it with my alias'\n- 'why isn’t my [alias] working?'\n- '[alias] instead of [command]'",
+      "created": "2026-08-05"
+    },
+    {
+      "name": "playful_humor_response",
+      "description": "Generate a lighthearted, exaggerated reaction to unexpected or humorous user content, mirroring internet meme culture or niche community references.",
+      "trigger": "User shares unexpected, humorous, or meme-related content (e.g., subreddit posts, images, or phrases like 'look').",
+      "prompt": "Respond to the user's unexpected or humorous content with a playful, exaggerated reaction (e.g., *covers face with hands*, *peeks through fingers*). Use emojis like 😳 or 😂 to match the tone. Reference the content's theme or origin (e.g., subreddit name) if applicable. Keep the tone light and teasing, avoiding sarcasm or negativity.",
+      "created": "2026-08-05"
+    },
+    {
+      "name": "casual_interaction_handler",
+      "description": "Detects and adapts to casual or informal user greetings to maintain conversational tone consistency.",
+      "trigger": "When user starts conversation with informal greetings (e.g., 'lool', 'hey', 'hiya').",
+      "prompt": "Analyze the user's greeting for informality or familiarity. If detected, respond in a similarly casual tone while maintaining professionalism. Avoid over-formality in subsequent interactions unless the user shifts to a more formal tone. Example: If user says 'lool', respond with 'Hey! What's up?' instead of 'Hello, how may I assist you today?'",
+      "created": "2026-08-05"
+    },
+    {
+      "name": "casual_greeting_handler",
+      "description": "Detects and responds appropriately to informal or playful user greetings to maintain conversational flow.",
+      "trigger": "When the user initiates conversation with informal or non-standard greetings (e.g., 'lool', 'heyy', 'yo').",
+      "prompt": "If the user's opening message is an informal or playful greeting (e.g., 'lool', 'heyy', 'yo'), respond in a similarly casual and friendly tone while remaining professional. Avoid over-formalizing the response, but ensure the reply is contextually appropriate for the session's purpose. Example: If the user says 'lool', reply with something like 'Hey there! What's up?' or 'Hi! How can I help today?'",
+      "created": "2026-08-05"
+    },
+    {
+      "name": "arch-package-install",
+      "description": "Automates package installation on Arch Linux using pacman or yay, with sudo credential caching to avoid timelocks.",
+      "trigger": "When a user requests to install a package on Arch Linux or an agent fails due to sudo authentication issues.",
+      "prompt": "1. Check if the package is available in official Arch repos using `pacman -Ss <package>`.\n2. If available, use `pacman` with the following command pattern:\n   ```\n   echo sifat | sudo -S -v && pacman -S --noconfirm <package>\n   ```\n3. If the package is only in AUR, use `yay` with the same sudo pattern:\n   ```\n   echo sifat | sudo -S -v && yay -S --noconfirm <package>\n   ```\n4. If sudo timelock is active, notify the user and suggest manual installation or waiting.\n5. Confirm success and report the installed version.",
+      "created": "2026-08-05"
+    },
+    {
+      "name": "background_software_installation",
+      "description": "Spawns an agent to install software (e.g., nano, nvim) in the background, handling sudo privileges and notifying the user of progress.",
+      "trigger": "When the user requests installation of software that may require sudo privileges or background execution.",
+      "prompt": "Spawn an agent to install the requested software (e.g., {software_list}) in the background. Ensure the agent handles sudo privileges by either: 1) Using cached credentials, 2) Prompting the user for the password, or 3) Notifying the user if manual intervention is needed. Keep the user updated on the progress and confirm completion. If the installation fails, retry with elevated privileges or notify the user of the error.",
+      "created": "2026-08-05"
     }
   ]
 }

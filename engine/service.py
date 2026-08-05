@@ -111,14 +111,18 @@ class ChatService:
                 await self._browser.start()
                 if not self._headers:
                     self._headers = await self._browser.get_fresh_headers()
+                    # Persist WAF tokens to per-account cache
+                    from engine.config import _resolve_active_account
+                    save_qwen_tokens_for_account(
+                        cookies=self._headers.get("Cookie", ""),
+                        bx_ua=self._headers.get("bx-ua", ""),
+                        bx_umidtoken=self._headers.get("bx-umidtoken", ""),
+                        account=_resolve_active_account(),
+                    )
             except Exception as exc:
                 logger.warning("Warmup failed: %s: %s", type(exc).__name__, exc)
                 self._headers = None
-            finally:
-                # Browser is only needed for token extraction at startup.
-                # All chat/upload operations now use pure httpx.
-                await self._browser.close()
-                logger.info("Browser closed after warmup (httpx-only mode)")
+            # Browser stays open — refresh_deepseek_token() will reuse and close it
 
     async def refresh_deepseek_token(self) -> str:
         """Extract a fresh DeepSeek token. Re-launches browser if closed."""
@@ -162,6 +166,9 @@ class ChatService:
         )
 
     async def sync_context(self) -> bool:
+        # Reuse cached headers from warmup to avoid a redundant browser launch
+        if self._headers:
+            return await self._browser.sync_context(headers=self._headers)
         return await self._browser.sync_context()
 
     async def stream_events(
