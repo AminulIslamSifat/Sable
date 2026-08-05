@@ -12,7 +12,7 @@ from typing import Any
 
 from engine.skills.handlers.common import _end_event, _output_event
 
-_SCRIPT = str(Path(__file__).resolve().parent.parent.parent / "skills" / "grep_search" / "scripts" / "grep_search.py")
+_SCRIPT = str(Path(__file__).resolve().parent.parent.parent.parent / "skills" / "grep_search" / "scripts" / "grep_search.py")
 
 
 def _run_script(command: str, args: dict[str, str]) -> list[str]:

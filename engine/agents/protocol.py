@@ -48,6 +48,7 @@ class TaskAssignment:
     timeout: float | None = None
     collect: bool = False
     parent_agent_id: str | None = None
+    todos: list[str] | None = None  # Optional task plan — each string becomes a TodoItem
 
 
 @dataclass

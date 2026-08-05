@@ -547,6 +547,8 @@ async def chat(request: ChatRequest):
                 feedback = build_tool_feedback(round_skill_events)
                 if stream_error or error_message or not feedback or _ask_user_pause:
                     break
+
+
                 try:
                     _max_chars_tool = _ms_cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS)
                     if _ms_cfg.get("enabled", True) and feedback and len(feedback) <= _max_chars_tool:
@@ -555,7 +557,7 @@ async def chat(request: ChatRequest):
                         if _new_mem:
                             _tool_block = _searcher.format_for_prompt(_new_mem)
                             if _tool_block:
-                                feedback = f"{_tool_block}\n\n{feedback}"
+                                feedback = f"{_tool_block}\n\n{feedback}"  # memory stays unwrapped, tool part is already wrapped
                                 for r in _new_mem:
                                     _injected_memory_keys.add(r["key"])
                                 save_injected_memory_keys(active_chat_id, _injected_memory_keys)

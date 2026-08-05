@@ -39,6 +39,16 @@ def handle_spawn_agent(
     timeout = float(attrs["timeout"]) if "timeout" in attrs else None
     collect = attrs.get("collect", "false").lower() == "true"
 
+    # Parse todo list: pipe-separated steps in the "todos" attribute
+    # Use \| as escaped pipe within a step; split on unescaped |
+    todos_raw = attrs.get("todos", "")
+    todos_list: list[str] | None = None
+    if todos_raw:
+        import re as _re_pipe
+        # Split on | that is NOT preceded by backslash
+        parts = _re_pipe.split(r"(?<!\\)\|", todos_raw)
+        todos_list = [t.strip().replace("\\|", "|") for t in parts if t.strip()]
+
     try:
         from engine.agents import get_runtime
         from engine.agents.agent import Agent
@@ -72,6 +82,12 @@ def handle_spawn_agent(
             chat_id=_chat_id_var.get(None) or "default",
             collect=collect,
         )
+
+        # Attach todo list if provided
+        if todos_list:
+            from engine.agents.agent import AgentTodoList
+            agent.todos = AgentTodoList.build_from_list(todos_list)
+
         runtime._agents[agent.id] = agent
 
         # DB insert (sync — sqlite3)
@@ -124,6 +140,7 @@ def handle_spawn_agent(
             "model": agent.model,
             "status": "spawned",
             "collect": collect,
+            "todos_raw": todos_raw or None,
         }
         yield _output_event(tag_id, f"Agent spawned: {agent.id} ({role}) — running in background.")
         yield _end_event(tag_id, name, True, started, result=result)
@@ -190,8 +207,18 @@ def handle_kill_agent(
         if task and not task.done():
             task.cancel()
         if agent_id in runtime._agents:
-            runtime._agents[agent_id].mark_failed("Killed by orchestrator")
+            agent = runtime._agents[agent_id]
+            agent.mark_failed("Killed by orchestrator")
             update_agent_status(agent_id, "killed", error="Killed by orchestrator")
+            # Emit SSE event so frontend updates top bar + panel
+            from server.api.routes.agents import push_agent_event
+            loop = runtime._loop
+            if loop:
+                loop.call_soon_threadsafe(push_agent_event, agent.chat_id, {
+                    "type": "agent_failed",
+                    "agent_id": agent_id,
+                    "data": {"role": agent.role, "error": "Killed by orchestrator"},
+                })
             yield _output_event(tag_id, f"Agent {agent_id} killed.")
             yield _end_event(tag_id, name, True, started, result={"killed": agent_id})
         else:

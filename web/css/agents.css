@@ -503,6 +503,15 @@
   color: var(--accent-text);
   font-weight: 600;
 }
+.agent-panel-model {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(124, 92, 191, 0.12);
+  white-space: nowrap;
+}
 .agent-panel-status {
   flex: 1;
   font-size: 11px;
@@ -559,6 +568,19 @@
   padding: 2px 8px;
   border-radius: 999px;
   background: rgba(124, 92, 191, 0.1);
+}
+.ap-browser-data {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(124, 92, 191, 0.08);
 }
 .agent-panel-stop {
   margin-left: auto;
@@ -753,3 +775,47 @@
 
 
 
+
+/* === Todo Widget in Agent Panel === */
+.ap-todo-widget {
+  padding: 8px 12px;
+  background: rgba(255,255,255,0.03);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-size: 0.82rem;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.ap-todo-header {
+  font-weight: 600;
+  margin-bottom: 4px;
+  opacity: 0.7;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.ap-todo-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+  line-height: 1.4;
+}
+.ap-todo-icon { flex-shrink: 0; font-size: 0.8rem; }
+.ap-todo-text { word-break: break-word; }
+.ap-todo-completed .ap-todo-text { opacity: 0.5; text-decoration: line-through; }
+.ap-todo-in_progress .ap-todo-text { font-weight: 600; color: var(--accent, #7c9aff); }
+.ap-todo-pending .ap-todo-text { opacity: 0.6; }
+.ap-todo-skipped .ap-todo-text { opacity: 0.35; font-style: italic; }
+.ap-todo-sub {
+  padding-left: 22px;
+  font-size: 0.78rem;
+  opacity: 0.65;
+  line-height: 1.3;
+}
+
+/* Spawn card todos line (inline in skill-name) */
+.ap-spawn-todos {
+  font-size: 0.78rem;
+  opacity: 0.7;
+  font-weight: 400;
+}
