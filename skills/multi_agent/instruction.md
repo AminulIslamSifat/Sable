@@ -9,13 +9,16 @@ Spawn background agents for independent subtasks while you keep chatting.
 Attributes:
 - role (required): researcher | coder | reviewer | writer | utility
 - task (required): clear, specific task description
-- model: default unless user specifies or default fails (qwen3.7-max, qwen3.7-plus, qwen3.8-max-preview, deepseek-expert, deepseek-instant, deepseek-vision — avoid deepseek unless asked)
+- model: default unless user specifies or default fails. (default means no mention of model)
 - context: background info the agent needs
 - instruction: special constraints or output format requirements
 - browser_data: browser profile for authenticated access
 - timeout: seconds before auto-kill (default 300)
 - collect: "true" to block and wait for result inline (use sparingly)
 - todos: pipe-separated step list, for tasks with 3+ distinct steps only
+
+[In case of failure of fallback (qwen3.7-max, qwen3.7-plus, qwen3.8-max-preview, deepseek-expert, deepseek-instant, deepseek-vision — avoid deepseek unless asked)]
+
 
 Example:
 <spawn_agent role="researcher" model="qwen3.7-max"

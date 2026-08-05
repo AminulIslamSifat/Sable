@@ -744,6 +744,7 @@
       clearTimeout(toastTimer);
       toastTimer = setTimeout(() => toastEl.classList.remove("show"), 3500);
     }
+    window.showToast = showToast; // expose for filesystem.js
 
     // mobile: tap to dismiss toast immediately
     toastEl.addEventListener("click", () => {
@@ -1219,46 +1220,34 @@
 
     function handleFileEdit(evt, autoOpen) {
       if (!diffCardsEl || !evt) return;
-      const card = document.createElement("div");
-      card.className = "diff-card";
+      const item = document.createElement("div");
+      item.className = "diff-item";
 
-      const header = document.createElement("div");
-      header.className = "diff-card-header";
+      const name = document.createElement("div");
+      name.className = "diff-item-name";
+      name.textContent = evt.name || evt.path || "file";
+      name.title = evt.path || "";
+      name.addEventListener("click", () => {
+        if (evt.backup_path && typeof window.openDiffEditor === "function") {
+          window.openDiffEditor(evt.path, evt.backup_path, evt.name || evt.path);
+        }
+      });
 
-      const op = document.createElement("span");
-      op.className = `diff-op ${evt.op || "edit"}`;
-      op.textContent = evt.op || "edit";
-
-      const path = document.createElement("span");
-      path.className = "diff-path";
-      path.textContent = evt.name || evt.path || "file";
-      path.title = evt.path || "";
-
-      const stats = document.createElement("span");
-      stats.className = "diff-stats";
-      const addStat = document.createElement("span");
-      addStat.className = "diff-add-stat";
-      addStat.textContent = `+${evt.added || 0}`;
-      const sep = document.createTextNode(" / ");
-      const delStat = document.createElement("span");
-      delStat.className = "diff-del-stat";
-      delStat.textContent = `-${evt.removed || 0}`;
-      stats.append(addStat, sep, delStat);
-
-      const arrow = document.createElement("span");
-      arrow.className = "diff-card-arrow";
-      arrow.textContent = "▶";
+      const stats = document.createElement("div");
+      stats.className = "diff-item-stats";
+      const added = evt.added || 0;
+      const removed = evt.removed || 0;
+      stats.innerHTML = `<span class="diff-add-stat">+${added}</span><span class="diff-sep"> / </span><span class="diff-del-stat">-${removed}</span>`;
 
       const revertBtn = document.createElement("button");
       revertBtn.className = "diff-revert-btn";
-      revertBtn.textContent = "↩ Revert";
-      revertBtn.title = evt.backup_path ? "Restore from backup" : "No backup available";
+      revertBtn.textContent = "\u21a9 Revert";
       if (!evt.backup_path) revertBtn.disabled = true;
       revertBtn.addEventListener("click", async (e) => {
         e.stopPropagation();
         if (!evt.backup_path || revertBtn.disabled) return;
         revertBtn.disabled = true;
-        revertBtn.textContent = "Reverting…";
+        revertBtn.textContent = "Reverting\u2026";
         try {
           const res = await fetch("/api/file/revert", {
             method: "POST",
@@ -1267,51 +1256,21 @@
           });
           const data = await res.json().catch(() => ({}));
           if (res.ok && data.status === "ok") {
-            revertBtn.innerHTML = `${lucideIcon("✓")} Reverted`;
-            activateLucideIcons(revertBtn);
+            revertBtn.textContent = "\u2713 Reverted";
             showToast("File reverted successfully", "success");
           } else {
-            revertBtn.innerHTML = `${lucideIcon("✗")} Failed`;
-            activateLucideIcons(revertBtn);
+            revertBtn.textContent = "\u2717 Failed";
             showToast(data.detail || "Revert failed", "error");
           }
         } catch (err) {
-          revertBtn.textContent = "✗ Error";
+          revertBtn.textContent = "\u2717 Error";
           showToast("Revert error: " + err.message, "error");
         }
-        setTimeout(() => { revertBtn.textContent = "↩ Revert"; revertBtn.disabled = false; }, 2000);
+        setTimeout(() => { revertBtn.textContent = "\u21a9 Revert"; revertBtn.disabled = false; }, 2000);
       });
 
-      header.append(arrow, op, path, stats, revertBtn);
-
-      // Toggle expand/collapse on header click
-      header.addEventListener("click", () => {
-        const wasExpanded = card.classList.contains("expanded");
-        diffCardsEl.querySelectorAll(".diff-card.expanded").forEach((c) => {
-          c.classList.remove("expanded");
-        });
-        if (!wasExpanded) {
-          card.classList.add("expanded");
-          setTimeout(() => card.scrollIntoView({ behavior: "smooth", block: "nearest" }), 100);
-        }
-      });
-
-      const body = document.createElement("pre");
-      body.className = "diff-body";
-      const lines = Array.isArray(evt.lines) ? evt.lines : [];
-      if (!lines.length) {
-        body.appendChild(diffLineEl("meta", "No diff preview available."));
-      } else {
-        const frag = document.createDocumentFragment();
-        for (const line of lines) {
-          frag.appendChild(diffLineEl(line.t || "ctx", line.text ?? ""));
-        }
-        if (evt.truncated) frag.appendChild(diffLineEl("meta", "… preview truncated for performance"));
-        body.appendChild(frag);
-      }
-
-      card.append(header, body);
-      diffCardsEl.prepend(card);
+      item.append(name, stats, revertBtn);
+      diffCardsEl.prepend(item);
       while (diffCardsEl.children.length > MAX_DIFF_CARDS) {
         diffCardsEl.lastElementChild.remove();
       }
@@ -2182,6 +2141,10 @@
           } else if (evt.type === "file_edit") {
             handleFileEdit(evt, false);
             ui.trackFileEdit(evt);
+            // Live-refresh the Monaco editor if the edited file is currently open
+            if (typeof window.refreshIdeFile === "function" && evt.path) {
+              window.refreshIdeFile(evt.path);
+            }
           }
         }
         if (gotError) break;
@@ -3498,6 +3461,18 @@
         else if (tabName === 'mcp') loadMcpServers();
       });
     });
+
+
+    // Horizontal scroll on mouse wheel for settings tab bars
+    document.querySelectorAll(".settings-tabs").forEach((bar) => {
+      bar.addEventListener("wheel", (e) => {
+        if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+          e.preventDefault();
+          bar.scrollLeft += e.deltaY;
+        }
+      }, { passive: false });
+    });
+
 
     logClear.addEventListener("click", () => { logViewer.textContent = ""; });
 
@@ -5594,7 +5569,7 @@
 
   document.addEventListener('contextmenu', (e) => {
     // Only on main area / sidebar, not on inputs or textareas
-    if (e.target.closest('textarea, input, select, .ctx-menu')) return;
+    if (e.target.closest('textarea, input, select, .ctx-menu, #fsOverlay')) return;
     e.preventDefault();
 
     const x = Math.min(e.clientX, window.innerWidth - ctxMenu.offsetWidth - 12);
