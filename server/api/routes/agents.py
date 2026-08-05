@@ -105,17 +105,60 @@ DEFAULT_AGENT_CONFIG: dict[str, Any] = {
         "max_total_tool_calls": 50,
     },
     "defaults": {
-        "researcher_model": "deepseek-instant",
-        "coder_model": "qwen-max",
-        "reviewer_model": "deepseek-instant",
-        "writer_model": "deepseek-expert",
-        "utility_model": "deepseek-instant",
+        "researcher_model": "qwen3.7-max",
+        "coder_model": "qwen3.7-max",
+        "reviewer_model": "qwen3.7-max",
+        "writer_model": "qwen3.7-max",
+        "utility_model": "qwen3.7-max",
         "timeout_researcher": 90,
         "timeout_coder": 180,
         "timeout_reviewer": 60,
         "timeout_writer": 120,
         "timeout_utility": 120,
     },
+    "roles": {
+        "researcher": {
+            "default_model": "qwen3.7-max",
+            "default_timeout": 90,
+            "max_parallel": 4,
+            "allowed_skills": ["execute_command", "online_search", "file_uploader"],
+            "default_skills": ["online_search"],
+            "required_sections": ["Topic", "Findings", "Summary"],
+        },
+        "coder": {
+            "default_model": "qwen3.7-max",
+            "default_timeout": 180,
+            "max_parallel": 1,
+            "allowed_skills": ["execute_command", "code_editor", "background_command", "online_search"],
+            "default_skills": ["code_editor", "background_command"],
+            "required_sections": ["Description", "Files Modified"],
+        },
+        "reviewer": {
+            "default_model": "qwen3.7-max",
+            "default_timeout": 60,
+            "max_parallel": 3,
+            "allowed_skills": ["execute_command", "code_editor", "online_search"],
+            "default_skills": ["code_editor"],
+            "required_sections": ["File Reviewed", "Verdict"],
+        },
+        "writer": {
+            "default_model": "qwen3.7-max",
+            "default_timeout": 120,
+            "max_parallel": 2,
+            "allowed_skills": ["execute_command", "code_editor", "online_search"],
+            "default_skills": ["code_editor"],
+            "required_sections": ["Title", "Structure Overview"],
+        },
+        "utility": {
+            "default_model": "qwen3.7-max",
+            "default_timeout": 120,
+            "max_parallel": 3,
+            "allowed_skills": ["execute_command", "code_editor", "background_command", "online_search", "file_uploader"],
+            "default_skills": ["code_editor", "background_command"],
+            "required_sections": ["Task", "Result"],
+        },
+    },
+    "universal_skills": ["execute_command"],
     "account_assignments": {},
 }
 
@@ -290,8 +333,15 @@ async def get_agent_history(agent_id: str):
     }
     if agent:
         result["created_at"] = agent.created_at
+        result["model"] = agent.model
+        result["browser_data_dir"] = agent.browser_data_dir
         if agent.completed_at:
             result["completed_at"] = agent.completed_at
+        if agent.todos and agent.todos.todos:
+            result["todos"] = [
+                {"id": t.id, "content": t.content, "status": t.status, "subtasks": t.subtasks, "result": t.result}
+                for t in agent.todos.todos
+            ]
     return result
 
 

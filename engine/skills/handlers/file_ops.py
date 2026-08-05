@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from engine.skills.handlers.common import (
+    is_ssd_tree_write,
     RESULT_PREVIEW_CHARS,
     _end_event,
     _output_event,
@@ -61,6 +62,11 @@ def handle_edit_file(
 
     path = os.path.expandvars(os.path.expanduser(path))
 
+    if is_ssd_tree_write(path):
+        yield _output_event(tag_id, "[BLOCKED] Cannot edit files in /home/sifat/Projects/Sable directly.\nEdit in /home/sifat/hdd/projects/Sable first, then cp to sync.\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Blocked: SSD tree write guard")
+        return
+
     if not content.strip():
         yield _output_event(tag_id, "No SEARCH/REPLACE blocks in edit_file body\n", "stderr")
         yield _end_event(tag_id, name, False, started, error="Empty edit body")
@@ -98,6 +104,11 @@ def handle_create_file(
         return
 
     path = os.path.expandvars(os.path.expanduser(path))
+
+    if is_ssd_tree_write(path):
+        yield _output_event(tag_id, "[BLOCKED] Cannot edit files in /home/sifat/Projects/Sable directly.\nEdit in /home/sifat/hdd/projects/Sable first, then cp to sync.\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Blocked: SSD tree write guard")
+        return
     overwrite = attrs.get("overwrite", "").lower() in ("true", "1", "yes")
 
     args = ["create", path]
@@ -128,6 +139,11 @@ def handle_insert_file(
         return
 
     path = os.path.expandvars(os.path.expanduser(path))
+
+    if is_ssd_tree_write(path):
+        yield _output_event(tag_id, "[BLOCKED] Cannot edit files in /home/sifat/Projects/Sable directly.\nEdit in /home/sifat/hdd/projects/Sable first, then cp to sync.\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Blocked: SSD tree write guard")
+        return
 
     at_line = attrs.get("at_line") or attrs.get("at-line")
     after_str = attrs.get("after_str") or attrs.get("after-str")

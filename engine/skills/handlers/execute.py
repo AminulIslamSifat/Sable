@@ -47,6 +47,29 @@ def handle_execute_command(
         yield _end_event(tag_id, name, False, started, error="Blocked: sable.service restart not allowed via execute_command")
         return
 
+    # --- SSD tree write guard: block edits to /home/sifat/Projects/Sable ---
+    # Only allow reads and explicit cp from HDD tree (the sanctioned sync path).
+    _SSD_TREE = r'/home/sifat/Projects/Sable'
+    _HDD_TREE = r'/home/sifat/hdd/projects/Sable'
+    _ssd_pattern = _re.compile(
+        r'(/home/sifat/Projects/Sable|~/Projects/Sable|$PROJECT_ROOT)'
+    )
+    if _ssd_pattern.search(cmd):
+        # Read-only commands are always fine
+        _read_cmds = r'^\s*(cat|grep|rg|find|ls|head|tail|file|wc|stat|du|tree|less|more|which|type|diff|md5sum|sha256sum)'
+        is_read = bool(_re.match(_read_cmds, cmd))
+        # Allow cp FROM hdd TO Projects (the sync workflow)
+        _sync_pattern = _re.compile(
+            r'^\s*cp\s+.*(/home/sifat/hdd/projects/Sable|~/hdd/projects/Sable)\S*\s+.*(/home/sifat/Projects/Sable|~/Projects/Sable)'
+        )
+        is_sync = bool(_sync_pattern.search(cmd))
+        if not is_read and not is_sync:
+            msg = "[BLOCKED] Direct write to /home/sifat/Projects/Sable is not allowed.\nEdit in /home/sifat/hdd/projects/Sable first, then cp to sync.\n"
+            yield _output_event(tag_id, msg, 'stderr')
+            yield _end_event(tag_id, name, False, started, error='Blocked: SSD tree write guard')
+            return
+
+
     editor_target = parse_editor_command(cmd)
     editor_chunks: list[str] = []
     editor_chars = 0

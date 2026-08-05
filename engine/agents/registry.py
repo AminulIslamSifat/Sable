@@ -33,12 +33,15 @@ AGENT_ROLES: dict[str, RoleConfig] = {
             "You are a research specialist. Search the web, read pages, and produce "
             "concise factual summaries. Always cite sources."
             + _MARKDOWN_INSTRUCTION
-            + "\n\nYour final answer MUST include these sections:\n"
-            "## Topic\n## Findings\n## Sources\n## Summary\n## Confidence (high/medium/low)"
+            + "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
+            "Your final answer MUST include these sections:\n"
+            "## Topic\n## Findings\n## Sources\n## Summary\n## Confidence (high/medium/low)\n\n"
+            "Do NOT use these headers in intermediate responses. "
+            "Intermediate response = one brief sentence + tool call. Nothing else."
         ),
         allowed_skills=["execute_command", "online_search", "file_uploader"],
         default_skills=["online_search"],
-        default_model="deepseek-instant",
+        default_model="qwen3.7-max",
         default_timeout=90,
         max_parallel=4,
         required_sections=["Topic", "Findings", "Summary"],
@@ -48,9 +51,12 @@ AGENT_ROLES: dict[str, RoleConfig] = {
             "You are a code implementation specialist. Write, edit, and test code. "
             "Use early returns, explicit types, clean error handling. No bloated OOP."
             + _MARKDOWN_INSTRUCTION
-            + "\n\nYour final answer MUST include these sections:\n"
+            + "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
+            "Your final answer MUST include these sections:\n"
             "## Description\n## Files Modified (list each file with path and what changed)\n"
-            "## Tests (pass/fail/skipped)\n## Notes"
+            "## Tests (pass/fail/skipped)\n## Notes\n\n"
+            "Do NOT use these headers in intermediate responses. "
+            "Intermediate response = one brief sentence + tool call. Nothing else."
         ),
         allowed_skills=["execute_command", "code_editor", "background_command", "online_search"],
         default_skills=["code_editor", "background_command"],
@@ -64,13 +70,16 @@ AGENT_ROLES: dict[str, RoleConfig] = {
             "You are a code review specialist. Read code, identify bugs, suggest fixes. "
             "Do NOT modify files."
             + _MARKDOWN_INSTRUCTION
-            + "\n\nYour final answer MUST include these sections:\n"
+            + "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
+            "Your final answer MUST include these sections:\n"
             "## File Reviewed\n## Critical Issues (with location and explanation)\n"
-            "## Warnings\n## Info\n## Verdict (approve/request_changes/needs_discussion)"
+            "## Warnings\n## Info\n## Verdict (approve/request_changes/needs_discussion)\n\n"
+            "Do NOT use these headers in intermediate responses. "
+            "Intermediate response = one brief sentence + tool call. Nothing else."
         ),
         allowed_skills=["execute_command", "code_editor", "online_search"],
         default_skills=["code_editor"],
-        default_model="deepseek-instant",
+        default_model="qwen3.7-max",
         default_timeout=60,
         max_parallel=3,
         required_sections=["File Reviewed", "Verdict"],
@@ -79,12 +88,15 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         system_prompt=(
             "You are a documentation and writing specialist. Create clear, structured documents."
             + _MARKDOWN_INSTRUCTION
-            + "\n\nYour final answer MUST include these sections:\n"
-            "## Title\n## Document Path\n## Structure Overview\n## Word Count\n## Notes"
+            + "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
+            "Your final answer MUST include these sections:\n"
+            "## Title\n## Document Path\n## Structure Overview\n## Word Count\n## Notes\n\n"
+            "Do NOT use these headers in intermediate responses. "
+            "Intermediate response = one brief sentence + tool call. Nothing else."
         ),
         allowed_skills=["execute_command", "code_editor", "online_search"],
         default_skills=["code_editor"],
-        default_model="qwen3.7-plus",
+        default_model="qwen3.7-max",
         default_timeout=120,
         max_parallel=2,
         required_sections=["Title", "Structure Overview"],
@@ -96,12 +108,15 @@ AGENT_ROLES: dict[str, RoleConfig] = {
             "conversions, simple scripting — whatever needs doing. Be fast, be precise, "
             "don't overthink it."
             + _MARKDOWN_INSTRUCTION
-            + "\n\nYour final answer MUST include these sections:\n"
-            "## Task\n## Actions Taken\n## Result\n## Notes"
+            + "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
+            "Your final answer MUST include these sections:\n"
+            "## Task\n## Actions Taken\n## Result\n## Notes\n\n"
+            "Do NOT use these headers in intermediate responses. "
+            "Intermediate response = one brief sentence + tool call. Nothing else."
         ),
         allowed_skills=["execute_command", "code_editor", "background_command", "online_search", "file_uploader"],
         default_skills=["code_editor", "background_command"],
-        default_model="deepseek-instant",
+        default_model="qwen3.7-max",
         default_timeout=120,
         max_parallel=3,
         required_sections=["Task", "Result"],

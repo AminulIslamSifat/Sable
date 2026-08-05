@@ -255,6 +255,14 @@ class GeminiClient:
         if thinking_config:
             body["generationConfig"] = thinking_config
 
+        # Disable all adjustable safety filters (BLOCK_NONE)
+        body["safetySettings"] = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ]
+
         # Try each key with rotation on failure
         attempts = len(self._keys)
         for attempt in range(attempts):

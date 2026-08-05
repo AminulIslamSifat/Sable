@@ -390,6 +390,159 @@ async def delete_model(model_id: str) -> dict[str, Any]:
         return {"status": "ok", "type": "static_hidden"}
     raise HTTPException(status_code=404, detail="Model not found")
 
+
+# ---------------------------------------------------------------------------
+# MCP (Model Context Protocol) server management
+# ---------------------------------------------------------------------------
+
+def _persist_mcp_enabled(name: str, enabled: bool) -> None:
+    """Persist enabled flag so restarts restore the last live state."""
+    import json as _json
+    from engine.mcp.manager import MCP_CONFIG_PATH
+    try:
+        data = _json.loads(MCP_CONFIG_PATH.read_text())
+        data.setdefault("servers", {}).setdefault(name, {})["enabled"] = enabled
+        MCP_CONFIG_PATH.write_text(_json.dumps(data, indent=2) + "\n")
+    except Exception:
+        pass
+
+
+@router.get("/api/settings/mcp")
+async def list_mcp_servers() -> dict[str, Any]:
+    """List all configured MCP servers with connection status and tools."""
+    from engine.mcp.manager import get_mcp_manager
+    manager = get_mcp_manager()
+    return {"servers": manager.list_servers()}
+
+
+@router.post("/api/settings/mcp")
+async def add_mcp_server(request: Request) -> dict[str, Any]:
+    """Add a new MCP server configuration."""
+    from engine.mcp.manager import get_mcp_manager
+    body = await request.json()
+    name = body.get("name", "").strip()
+    command = body.get("command", "").strip()
+    args = body.get("args", [])
+    env = body.get("env", {})
+    enabled = body.get("enabled", True)
+
+    if not name or not command:
+        raise HTTPException(status_code=400, detail="Missing 'name' or 'command'")
+
+    manager = get_mcp_manager()
+    configs = manager.get_server_configs()
+    if name in configs:
+        raise HTTPException(status_code=409, detail=f"Server '{name}' already exists")
+
+    manager.add_server(name, {
+        "command": command,
+        "args": args,
+        "env": env,
+        "enabled": enabled,
+    })
+    return {"status": "ok", "name": name}
+
+
+@router.put("/api/settings/mcp/{name}")
+async def update_mcp_server(name: str, request: Request) -> dict[str, Any]:
+    """Update an existing MCP server configuration."""
+    from engine.mcp.manager import get_mcp_manager
+    body = await request.json()
+    manager = get_mcp_manager()
+
+    existing = manager.get_server_configs().get(name)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+
+    # Merge: only override fields that were explicitly sent
+    for key in ("command", "args", "env", "enabled"):
+        if key in body:
+            existing[key] = body[key]
+
+    if not manager.update_server(name, existing):
+        raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+
+    # Disconnect if connected (config changed)
+    await manager.disconnect_server(name)
+    _persist_mcp_enabled(name, False)
+    return {"status": "ok", "name": name}
+
+
+@router.delete("/api/settings/mcp/{name}")
+async def remove_mcp_server(name: str) -> dict[str, Any]:
+    """Remove an MCP server configuration."""
+    from engine.mcp.manager import get_mcp_manager
+    manager = get_mcp_manager()
+
+    # Disconnect first
+    await manager.disconnect_server(name)
+
+    if not manager.remove_server(name):
+        raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+    return {"status": "ok", "name": name}
+
+
+@router.post("/api/settings/mcp/{name}/connect")
+async def connect_mcp_server(name: str) -> dict[str, Any]:
+    """Connect to a configured MCP server."""
+    from engine.mcp.manager import get_mcp_manager
+    manager = get_mcp_manager()
+
+    conn = await manager.connect_server(name)
+    if conn is None:
+        raise HTTPException(status_code=404, detail=f"Server '{name}' not found in config")
+
+    if conn.connected:
+        _persist_mcp_enabled(name, True)
+
+    return {
+        "status": "ok" if conn.connected else "error",
+        "name": name,
+        "connected": conn.connected,
+        "error": conn.error,
+        "tools": conn.tools,
+    }
+
+
+@router.post("/api/settings/mcp/{name}/disconnect")
+async def disconnect_mcp_server(name: str) -> dict[str, Any]:
+    """Disconnect from an MCP server."""
+    from engine.mcp.manager import get_mcp_manager
+    manager = get_mcp_manager()
+    await manager.disconnect_server(name)
+    _persist_mcp_enabled(name, False)
+    return {"status": "ok", "name": name}
+
+
+@router.post("/api/settings/mcp/{name}/call")
+async def call_mcp_tool(name: str, request: Request) -> dict[str, Any]:
+    """Call a tool on a connected MCP server."""
+    from engine.mcp.manager import get_mcp_manager
+    body = await request.json()
+    tool_name = body.get("tool", "").strip()
+    arguments = body.get("arguments", {})
+
+    if not tool_name:
+        raise HTTPException(status_code=400, detail="Missing 'tool' field")
+
+    manager = get_mcp_manager()
+    try:
+        result = await manager.call_tool(name, tool_name, arguments)
+        return {"status": "ok", "result": result}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Tool call failed: {exc}")
+
+
+@router.get("/api/settings/mcp/tools")
+async def list_all_mcp_tools() -> dict[str, Any]:
+    """Get all tools from all connected MCP servers."""
+    from engine.mcp.manager import get_mcp_manager
+    manager = get_mcp_manager()
+    return {"tools": manager.get_all_tools()}
+
+
 @router.get("/api/settings/accounts")
 async def list_accounts() -> dict[str, Any]:
     def _scan() -> list[dict[str, Any]]:
@@ -567,7 +720,7 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
                 page = context.pages[0] if context.pages else await context.new_page()
                 await page.goto(url)
                 # Wait until user closes the browser window
-                await context.wait_for_event("close")
+                await context.wait_for_event("close", timeout=0)
         except Exception as e:
             logger.warning(f"Browser for {target_name} exited: {e}")
 
