@@ -8,7 +8,7 @@
 
   <link rel="stylesheet" href="/static/css/variables.css?v=4">
   <link rel="stylesheet" href="/static/css/base.css?v=3">
-  <link rel="stylesheet" href="/static/css/layout.css?v=22">
+  <link rel="stylesheet" href="/static/css/layout.css?v=33">
   <link rel="stylesheet" href="/static/css/chat.css?v=19">
   <link rel="stylesheet" href="/static/css/panels.css?v=12">
   <link rel="stylesheet" href="/static/css/components.css?v=10">
@@ -21,7 +21,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="apple-touch-icon" href="/static/assets/icon-192.png">
 </head>
-<body>
+<body data-mode="agent">
   <!-- Login gate -->
   <div id="loginOverlay" class="login-overlay">
     <div class="login-card">
@@ -37,6 +37,16 @@
   </div>
 
   <div class="sidebar-overlay"></div>
+
+  <!-- IDE mode: compact chat panel (replaces sidebar position) -->
+  <aside id="chatCompact" class="chat-compact hidden">
+    <div class="chat-compact-messages" id="chatCompactMessages"></div>
+    <div class="chat-compact-input">
+      <textarea id="chatCompactInput" placeholder="Chat..." rows="1"></textarea>
+      <button id="chatCompactSend" class="chat-compact-send" title="Send"><span class="icon-emoji">➤</span><i data-lucide="send" class="icon-lucide"></i></button>
+    </div>
+  </aside>
+
   <aside class="sidebar">
     <div class="sidebar-section sidebar-top">
       <div class="brand-row">
@@ -57,6 +67,10 @@
         <div class="mode-switcher" id="modeSwitcher">
           <button id="modeApi" class="active" title="Direct API chat"><span class="icon-emoji">⚡</span><i data-lucide="zap" class="icon-lucide"></i> API</button>
           <button id="modeScraper" title="Headed browser scraper chat"><span class="icon-emoji">🌐</span><i data-lucide="globe" class="icon-lucide"></i> Scraper</button>
+        </div>
+        <div class="mode-switcher" id="layoutSwitcher">
+          <button id="layoutAgent" class="active" title="Agent chat mode"><span class="icon-emoji">💬</span><i data-lucide="message-square" class="icon-lucide"></i> Agent</button>
+          <button id="layoutIde" title="IDE / editor mode"><span class="icon-emoji">🖥</span><i data-lucide="code-2" class="icon-lucide"></i> IDE</button>
         </div>
         <div class="scraper-engine-wrap" id="scraperEngineWrap">
           <select id="scraperEngineSelect" title="Scraper engine"></select>
@@ -114,6 +128,16 @@
     <!-- #chat is now a wrapper containing per-tab .tab-pane divs.
          Each pane scrolls independently. Only the active pane is visible. -->
     <div id="chat"></div>
+
+    <!-- IDE mode: file editor pane (hidden in agent mode) -->
+    <div id="editorPane" class="editor-pane hidden">
+      <div class="editor-empty-state" id="editorEmptyState">
+        <i data-lucide="file-code-2" style="width:48px;height:48px;opacity:.3;"></i>
+        <p>Open a file to start editing</p>
+        <span class="editor-empty-hint">Use the file browser on the right</span>
+      </div>
+      <div id="editorContainer" class="editor-container hidden"></div>
+    </div>
 
     <div class="input-area" id="inputArea">
       <div class="attach-preview" id="attachPreview"></div>
@@ -196,15 +220,26 @@
     };
   </script>
 
-  <aside id="diffSidebar" class="diff-sidebar" aria-label="File edit sidebar">
+  <aside id="diffSidebar" class="diff-sidebar" aria-label="File sidebar">
     <div class="diff-sidebar-header">
-      <span class="diff-sidebar-title">File edits</span>
-      <div style="display: flex; align-items: center; gap: 8px;">
-  <button id="diffClear" class="icon-btn" title="Clear file edits"><span class="icon-emoji">🗑</span><i data-lucide="trash-2" class="icon-lucide"></i></button>
-  <button id="diffClose" class="icon-btn" title="Close file edits"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
-</div>
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <div class="fs-sidebar-tabs">
+          <button class="fs-sidebar-tab active" data-panel="files">Files</button>
+          <button class="fs-sidebar-tab" data-panel="diff">Diff</button>
+        </div>
+        <button id="sbOpenFolderBtn" class="icon-btn" title="Open Folder"><span class="icon-emoji">📂</span><i data-lucide="folder-open" class="icon-lucide"></i> <span style="font-size:11px;">Open</span></button>
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <button id="diffClear" class="icon-btn" title="Clear"><span class="icon-emoji">🗑</span><i data-lucide="trash-2" class="icon-lucide"></i></button>
+        <button id="diffClose" class="icon-btn" title="Close"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
+      </div>
     </div>
-    <div id="diffCards"></div>
+    <div id="sidebarFilesPanel" class="fs-sidebar-panel active">
+      <div id="fsSidebarTree" class="fs-sidebar-tree"></div>
+    </div>
+    <div id="sidebarDiffPanel" class="fs-sidebar-panel">
+      <div id="diffCards"></div>
+    </div>
   </aside>
 
   <!-- Settings Panel -->
@@ -691,7 +726,38 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=36"></script>
+  <!-- File Manager Panel -->
+  <div id="fsOverlay" class="settings-overlay hidden">
+    <div class="settings-panel fs-panel">
+      <div class="settings-header">
+        <h2><i data-lucide="folder-tree" style="width:18px;height:18px;margin-right:6px;"></i> Files</h2>
+        <div class="fs-path-bar" id="fsPathBar"></div>
+        <button id="fsSwitchRoot" class="icon-btn" title="Change folder"><i data-lucide="folder-input" style="width:16px;height:16px;"></i></button>
+        <button id="fsClose" class="icon-btn" title="Close"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
+      </div>
+      <div class="fs-body">
+        <div class="fs-tree" id="fsTree"></div>
+        <div class="fs-viewer" id="fsViewer">
+          <div class="fs-viewer-empty">Select a file to view</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/vendor/monaco/vs/loader.js"></script>
+  <script>
+    if (window.require) {
+      require.config({ paths: { vs: "/static/vendor/monaco/vs" } });
+    }
+    window.MonacoEnvironment = {
+      getWorkerUrl: function () {
+        return "/static/vendor/monaco/vs/base/worker/workerMain.js";
+      },
+    };
+  </script>
+  <script src="/static/app.js?v=37"></script>
   <script src="/static/js/agents.js?v=20"></script>
+  <script src="/static/js/filesystem.js?v=10"></script>
+  <script src="/static/js/mode.js?v=16"></script>
 </body>
 </html>

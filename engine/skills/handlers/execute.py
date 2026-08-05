@@ -64,7 +64,7 @@ def handle_execute_command(
         )
         is_sync = bool(_sync_pattern.search(cmd))
         if not is_read and not is_sync:
-            msg = "[BLOCKED] Direct write to /home/sifat/Projects/Sable is not allowed.\nEdit in /home/sifat/hdd/projects/Sable first, then cp to sync.\n"
+            msg = "[BLOCKED] Direct write to /home/sifat/Projects/Sable is not allowed.\nEdit in /home/sifat/hdd/projects/Sable first, dont touch ssd Sable.\n"
             yield _output_event(tag_id, msg, 'stderr')
             yield _end_event(tag_id, name, False, started, error='Blocked: SSD tree write guard')
             return

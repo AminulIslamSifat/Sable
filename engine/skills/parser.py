@@ -72,7 +72,9 @@ class SkillParser:
         alternation = "|".join(re.escape(tag) for tag in tags)
         self._known_tags = tags
         self.buf = ""
-        self.open_re = re.compile(r"<\s*(" + alternation + r")\b([^>]*)>", re.I)
+        self.open_re = re.compile(r"<\s*(" + alternation + r")\b((?:[^>\"']|\"[^\"]*\"|'[^']*')*)\s*(/?)\s*>", re.I)
+        # Fallback regex for malformed hybrid: <tag attrs...</tag> (no proper > close)
+        self._hybrid_re = re.compile(r"<\s*(" + alternation + r")\b(.*?)<\s*/\s*(?:" + alternation + r")\s*>", re.I | re.S)
         self._in_action = False
         self._pending_tag: str | None = None
         self._last_progress: tuple[int, int] = (0, 0)
@@ -188,8 +190,14 @@ class SkillParser:
 
             name = match.group(1).lower()
             attrs = match.group(2) or ""
-            stripped_attrs = attrs.rstrip()
-            if stripped_attrs.endswith("/") or stripped_attrs == "/":
+            self_close = match.group(3) or ""
+            # Safeguard: malformed hybrid like <tag attrs...</tag>
+            # where closing tag got swallowed into attrs
+            _trail = re.search(r"<\s*/\s*" + re.escape(name) + r"\s*$", attrs.rstrip())
+            if _trail:
+                attrs = attrs[:_trail.start()].rstrip()
+                return match.start(), match.end(), name, attrs, ""
+            if self_close == "/" or attrs.rstrip().endswith("/"):
                 return match.start(), match.end(), name, attrs, ""
             close_re = re.compile(r"<\s*/\s*" + re.escape(name) + r"\s*>", re.I)
             close_match = close_re.search(self.buf, match.end())
@@ -202,6 +210,15 @@ class SkillParser:
                     self.buf[match.end():close_match.start()],
                 )
             unclosed.append(match.start())
+
+        # Fallback: try hybrid pattern for malformed <tag attrs...</tag>
+        for m in self._hybrid_re.finditer(self.buf):
+            name = m.group(1).lower()
+            attrs_raw = m.group(2).strip()
+            if attrs_raw.endswith('/'):
+                attrs_raw = attrs_raw[:-1].strip()
+            return m.start(), m.end(), name, attrs_raw, ""
+
         return None
 
     def _hold_start(self) -> int | None:
