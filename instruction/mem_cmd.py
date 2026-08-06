@@ -7,7 +7,7 @@ _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY = (
     "WHAT TO CAPTURE:\n"
     "- Architecture decisions, design patterns, project structure\n"
     "- User preferences, workflows, tool configs, environment details\n"
-    "- Bugs found, fixes applied, workarounds discovered\n"
+    "- Bugs found, workarounds discovered\n"
     "- API behaviors, quirks, gotchas, version-specific notes\n"
     "- File paths, command patterns, dependency relationships\n"
     "- Anything that would save time or prevent confusion in a future session\n\n"

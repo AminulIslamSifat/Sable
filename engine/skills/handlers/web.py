@@ -19,6 +19,9 @@ from engine.skills.handlers.common import (
     strip_html,
 )
 
+
+from engine.security.prompt_guard import wrap_untrusted
+
 _SEARCH_SCRIPT = SKILLS_DIR / "online_search" / "scripts" / "web_search_batch.py"
 
 
@@ -56,7 +59,7 @@ def handle_online_search(
         for item in items:
             context = item.get("context", "")
             if context:
-                yield _output_event(tag_id, context + "\n")
+                yield _output_event(tag_id, wrap_untrusted(context, source="web_search") + "\n")
             elif not item.get("ok"):
                 yield _output_event(tag_id, f"Error: {item.get('error', 'unknown')}\n", "stderr")
 
@@ -116,7 +119,7 @@ def handle_openweb(
             for item in items:
                 context = item.get("context", "")
                 if context:
-                    yield _output_event(tag_id, context + "\n")
+                    yield _output_event(tag_id, wrap_untrusted(context, source="web_search") + "\n")
             yield _end_event(tag_id, name, True, started, {"site": site, "op": op, "results": items})
         except Exception as exc:
             yield _output_event(tag_id, f"Search error: {exc}\n", "stderr")
@@ -149,7 +152,7 @@ def handle_openweb(
         else:
             text = strip_html(res.text)
         preview = text[:RESULT_PREVIEW_CHARS]
-        yield _output_event(tag_id, preview + "\n")
+        yield _output_event(tag_id, wrap_untrusted(preview, source="web_fetch") + "\n")
         yield _end_event(
             tag_id,
             name,

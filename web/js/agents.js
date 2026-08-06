@@ -228,6 +228,7 @@ const AgentPanel = {
     this.el.innerHTML =
       `<div class="agent-panel-header">` +
         `<span class="agent-panel-title">Agent</span>` +
+        `<span class="agent-panel-model"></span>` +
         `<span class="agent-panel-status"></span>` +
         `<button class="agent-panel-close">${lucideIcon("✕")}</button>` +
       `</div>` +
@@ -235,6 +236,7 @@ const AgentPanel = {
       `<div class="agent-panel-footer">` +
         `<span class="ap-timer">0:00</span>` +
         `<span class="ap-iteration">loop 0</span>` +
+        `<span class="ap-browser-data">None</span>` +
         `<button class="agent-panel-stop hidden">■ stop</button>` +
       `</div>`;
     document.body.appendChild(this.el);
@@ -253,12 +255,14 @@ const AgentPanel = {
 
     // Header
     this.el.querySelector(".agent-panel-title").textContent = `${role || "agent"}`;
+    this.el.querySelector(".agent-panel-model").textContent = "";
     this.el.querySelector(".agent-panel-status").textContent = task ? task.slice(0, 50) : agentId;
     // Close diff viewer if open (mutual exclusion)
     document.body.classList.remove("diff-open");
     this.el.classList.remove("hidden");
     document.body.classList.add("agent-panel-open");
     this.bodyEl.innerHTML = "";
+    this._clearTodos();
     if (this.iterEl) this.iterEl.textContent = "loop 0";
 
     // First: load existing messages + status + timing from DB
@@ -277,6 +281,21 @@ const AgentPanel = {
         agentFinished = true;
         this._setDone(data.status === "failed" ? "failed" : "completed");
       }
+      // Populate model + browser_data from API
+      if (data.model) {
+        this.el.querySelector(".agent-panel-model").textContent = data.model;
+      }
+      const bdEl = this.el.querySelector(".ap-browser-data");
+      if (bdEl) {
+        const raw = data.browser_data_dir || "";
+        // Extract just the last path segment (e.g. "browser-data-acc3")
+        const label = raw ? raw.split("/").pop() : "None";
+        bdEl.textContent = label;
+      }
+      // Render initial todos from API response (must be inside try — data is block-scoped)
+      if (data.todos && data.todos.length) {
+        this._renderTodos(data.todos);
+      }
     } catch { /* fresh agent, no history yet */ }
 
     // Start timer based on actual agent start time
@@ -288,7 +307,10 @@ const AgentPanel = {
       stopBtn.classList.add("hidden");
     } else {
       stopBtn.classList.remove("hidden");
+      stopBtn.disabled = false;
+      stopBtn.textContent = "■ stop";
     }
+
 
     // Then: subscribe to live stream
     this._connectStream(agentId);
@@ -406,6 +428,8 @@ const AgentPanel = {
               status.className = `ap-skill-status ${evt.ok ? "ok" : "fail"}`;
             }
           }
+        } else if (evt.type === "todo_progress") {
+          if (evt.todos) this._renderTodos(evt.todos);
         } else if (evt.type === "iteration") {
           if (this.iterEl) this.iterEl.textContent = `loop ${evt.iteration}`;
         } else if (evt.type === "done") {
@@ -425,7 +449,7 @@ const AgentPanel = {
 
   _setDone(status) {
     const stopBtn = this.el.querySelector(".agent-panel-stop");
-    if (stopBtn) stopBtn.classList.add("hidden");
+    if (stopBtn) { stopBtn.classList.add("hidden"); stopBtn.disabled = false; stopBtn.textContent = "■ stop"; }
     this._stopTimer();
     const statusEl = this.el.querySelector(".agent-panel-status");
     if (statusEl) statusEl.textContent = status === "completed" ? "✓ completed" : "✗ failed";
@@ -442,6 +466,40 @@ const AgentPanel = {
     } catch {
       if (btn) { btn.disabled = false; btn.textContent = "■ stop"; }
     }
+  },
+
+  _renderTodos(todos) {
+    // Create or update todo widget in panel header area
+    let widget = this.el.querySelector(".ap-todo-widget");
+    if (!widget) {
+      widget = document.createElement("div");
+      widget.className = "ap-todo-widget";
+      // Insert after header, before body
+      const header = this.el.querySelector(".agent-panel-header");
+      if (header && header.nextSibling) {
+        this.el.insertBefore(widget, header.nextSibling);
+      } else {
+        this.el.appendChild(widget);
+      }
+    }
+    const icons = { completed: "✅", in_progress: "🔧", pending: "⏳", skipped: "⏭️" };
+    let html = `<div class="ap-todo-header">📋 Plan</div>`;
+    for (const t of todos) {
+      const icon = icons[t.status] || "⏳";
+      const cls = `ap-todo-item ap-todo-${t.status}`;
+      html += `<div class="${cls}"><span class="ap-todo-icon">${icon}</span><span class="ap-todo-text">${escHtml(t.content)}</span></div>`;
+      if (t.subtasks && t.subtasks.length) {
+        for (const sub of t.subtasks) {
+          html += `<div class="ap-todo-sub">• ${escHtml(sub)}</div>`;
+        }
+      }
+    }
+    widget.innerHTML = html;
+  },
+
+  _clearTodos() {
+    const widget = this.el.querySelector(".ap-todo-widget");
+    if (widget) widget.remove();
   },
 
   _scrollBottom() {
@@ -522,10 +580,21 @@ function disconnectAgentEvents() {
   }
 }
 
+// Track todos from agent_spawned events for spawn-card injection
+const _agentTodosRaw = new Map(); // agent_id -> raw pipe-separated string
+
 function handleAgentEvent(ev) {
   switch (ev.type) {
     case "agent_spawned":
       AgentTopBar.addCard(ev.agent_id, ev.data?.role || "agent", ev.data?.task || "", ev.data?.model || "");
+      // Capture todos for spawn-card injection
+      if (ev.data?.todos && ev.data.todos.length) {
+        _agentTodosRaw.set(ev.agent_id, ev.data.todos.map(t => t.content).join(" | "));
+      }
+      // If panel is open for this agent, render initial todos
+      if (AgentPanel.currentAgentId === ev.agent_id && ev.data?.todos) {
+        AgentPanel._renderTodos(ev.data.todos);
+      }
       break;
     case "agent_progress":
       AgentTopBar.updateCard(ev.agent_id, ev.data?.partial || "");
@@ -732,6 +801,26 @@ const AgentSettings = {
       this._roles = cfg.roles || {};
       this._universalSkills = cfg.universal_skills || ["execute_command"];
       this._availableModels = cfg.available_models || [];
+
+      // Teacher config
+      const teacher = cfg.teacher || {};
+      document.getElementById("teacherEnabled").checked = teacher.enabled !== false;
+      const teacherModelSel = document.getElementById("teacherModel");
+      if (teacher.model) {
+        // Ensure the model option exists
+        let found = false;
+        for (const opt of teacherModelSel.options) {
+          if (opt.value === teacher.model) { found = true; break; }
+        }
+        if (!found) {
+          const opt = document.createElement("option");
+          opt.value = teacher.model;
+          opt.textContent = teacher.model;
+          teacherModelSel.appendChild(opt);
+        }
+        teacherModelSel.value = teacher.model;
+      }
+      document.getElementById("teacherBrowserData").value = teacher.browser_data_dir || "";
       // Build allSkills from role skills + universal + known registry keys
       const skillSet = new Set(this._universalSkills);
       for (const r of Object.values(this._roles)) {
@@ -951,6 +1040,11 @@ const AgentSettings = {
         max_consecutive_tool_calls: parseInt(document.getElementById("agentMaxConsec").value) || 15,
         max_total_tool_calls: parseInt(document.getElementById("agentMaxTotal").value) || 50,
       },
+      teacher: {
+        enabled: document.getElementById("teacherEnabled").checked,
+        model: document.getElementById("teacherModel").value,
+        browser_data_dir: document.getElementById("teacherBrowserData").value.trim(),
+      },
       roles,
       account_assignments: accountAssignments,
     };
@@ -1002,3 +1096,59 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 });
+
+// --------------------------------------------------------------------------
+// Inject raw todos into spawn_agent skill cards in chat
+// --------------------------------------------------------------------------
+(function() {
+  // Uses the module-level _agentTodosRaw Map populated by handleAgentEvent.
+  // app.js appends #<8char_id> to .skill-name via textContent mutation on skill_end,
+  // so we need both a MutationObserver AND a periodic sweep to handle timing races.
+
+  function tryInjectTodos(card) {
+    if (card.querySelector(".ap-spawn-todos")) return; // already injected
+    const nameEl = card.querySelector(".skill-name");
+    if (!nameEl) return;
+    const nameText = nameEl.textContent || "";
+    const idMatch = nameText.match(/#([a-f0-9]{6,8})$/);
+    if (!idMatch) return;
+    const shortId = idMatch[1];
+    for (const [fullId, raw] of _agentTodosRaw) {
+      if (fullId.startsWith(shortId)) {
+        const todoLine = document.createElement("span");
+        todoLine.className = "ap-spawn-todos";
+        todoLine.textContent = " · 📋 " + raw;
+        nameEl.appendChild(todoLine);
+        break;
+      }
+    }
+  }
+
+  // MutationObserver catches new cards being added
+  const obs = new MutationObserver(() => {
+    const chatEl = document.getElementById("chat");
+    if (!chatEl) return;
+    chatEl.querySelectorAll(".skill-card").forEach(tryInjectTodos);
+  });
+
+  const startObs = () => {
+    const el = document.getElementById("chat");
+    if (el) {
+      obs.observe(el, { childList: true, subtree: true, characterData: true });
+    } else {
+      setTimeout(startObs, 500);
+    }
+  };
+  startObs();
+
+  // Periodic sweep handles the race where agent_spawned arrives after card render
+  // Runs for 30s then stops (agents spawn quickly)
+  let sweeps = 0;
+  const sweepInterval = setInterval(() => {
+    const chatEl = document.getElementById("chat");
+    if (chatEl) {
+      chatEl.querySelectorAll(".skill-card").forEach(tryInjectTodos);
+    }
+    if (++sweeps > 30) clearInterval(sweepInterval);
+  }, 1000);
+})();

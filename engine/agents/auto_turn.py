@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 
+
 logger = logging.getLogger(__name__)
 
 # Signal function: async (chat_id, message_text) -> None

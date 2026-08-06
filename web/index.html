@@ -8,12 +8,13 @@
 
   <link rel="stylesheet" href="/static/css/variables.css?v=4">
   <link rel="stylesheet" href="/static/css/base.css?v=3">
-  <link rel="stylesheet" href="/static/css/layout.css?v=22">
+  <link rel="stylesheet" href="/static/css/layout.css?v=46">
   <link rel="stylesheet" href="/static/css/chat.css?v=19">
-  <link rel="stylesheet" href="/static/css/panels.css?v=11">
-  <link rel="stylesheet" href="/static/css/components.css?v=10">
+  <link rel="stylesheet" href="/static/css/panels.css?v=20">
+  <link rel="stylesheet" href="/static/css/components.css?v=12">
   <link rel="stylesheet" href="/static/css/responsive.css?v=3">
   <link rel="stylesheet" href="/static/css/agents.css?v=31">
+  <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v=2">
 
   <link rel="manifest" href="/static/assets/manifest.json">
   <meta name="theme-color" content="#7c5cbf">
@@ -21,7 +22,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="apple-touch-icon" href="/static/assets/icon-192.png">
 </head>
-<body>
+<body data-mode="agent">
   <!-- Login gate -->
   <div id="loginOverlay" class="login-overlay">
     <div class="login-card">
@@ -37,6 +38,24 @@
   </div>
 
   <div class="sidebar-overlay"></div>
+
+  <!-- IDE mode: compact chat panel (replaces sidebar position) -->
+  <aside id="chatCompact" class="chat-compact hidden">
+    <div class="chat-compact-header">
+      <span class="chat-compact-title" id="chatCompactTitle">New chat</span>
+    </div>
+    <div class="chat-compact-messages" id="chatCompactMessages">
+      <div class="chat-compact-empty" id="chatCompactEmpty">
+        <p>New chat ready</p>
+        <span class="editor-empty-hint">Type something to get started</span>
+      </div>
+    </div>
+    <div class="chat-compact-input">
+      <textarea id="chatCompactInput" placeholder="Chat..." rows="1"></textarea>
+      <button id="chatCompactSend" class="chat-compact-send" title="Send"><span class="icon-emoji">➤</span><i data-lucide="send" class="icon-lucide"></i><span class="btn-label-stop"></span></button>
+    </div>
+  </aside>
+
   <aside class="sidebar">
     <div class="sidebar-section sidebar-top">
       <div class="brand-row">
@@ -47,29 +66,31 @@
             <span>agentic chat</span>
           </div>
         </div>
-        <button id="newChat" class="new-chat-icon" title="New chat">
-          <div class="spinner"></div>
-          <span class="icon-emoji">＋</span><i data-lucide="square-pen" class="icon-lucide"></i>
-        </button>
+        <div class="sidebar-icon-row">
+          <div class="mode-toggle-compact" id="modeSwitcher" title="Switch between API and Scraper mode" onclick="event.stopPropagation()" style="--n:2; --i:0;">
+            <button id="modeApi" class="active" aria-label="API mode"><span class="icon-emoji">⚡</span><i data-lucide="zap" class="icon-lucide"></i></button>
+            <button id="modeScraper" aria-label="Scraper mode"><span class="icon-emoji">🌐</span><i data-lucide="globe" class="icon-lucide"></i></button>
+          </div>
+        </div>
       </div>
       <div class="sidebar-top-content">
         <div class="thinking-switcher" id="thinkingSwitcher" title="Thinking mode used for new chats"></div>
-        <div class="mode-switcher" id="modeSwitcher">
-          <button id="modeApi" class="active" title="Direct API chat"><span class="icon-emoji">⚡</span><i data-lucide="zap" class="icon-lucide"></i> API</button>
-          <button id="modeScraper" title="Headed browser scraper chat"><span class="icon-emoji">🌐</span><i data-lucide="globe" class="icon-lucide"></i> Scraper</button>
+                <div class="mode-switcher" id="layoutSwitcher">
+          <button id="layoutAgent" class="active" title="Agent chat mode"><span class="icon-emoji">💬</span><i data-lucide="message-square" class="icon-lucide"></i> Agent</button>
+          <button id="layoutIde" title="IDE / editor mode"><span class="icon-emoji">🖥</span><i data-lucide="code-2" class="icon-lucide"></i> IDE</button>
         </div>
         <div class="scraper-engine-wrap" id="scraperEngineWrap">
           <select id="scraperEngineSelect" title="Scraper engine"></select>
         </div>
         <div class="scraper-status" id="scraperStatus"></div>
-        <button id="syncContext">
-          <div class="spinner"></div>
-          <span class="btn-label"><span class="icon-emoji">⟳</span><i data-lucide="refresh-cw" class="icon-lucide"></i> Sync Context</span>
-        </button>
+
       </div>
     </div>
     <div class="sidebar-section sidebar-chats">
       <div class="chat-search-float">
+        <button id="newChatFloat" class="new-chat-icon" title="New chat">
+          <span class="icon-emoji">＋</span><i data-lucide="square-pen" class="icon-lucide"></i>
+        </button>
         <button id="chatSearchBtn" class="new-chat-icon chat-search-btn" title="Search chats">
           <span class="icon-emoji">🔍</span><i data-lucide="search" class="icon-lucide"></i>
         </button>
@@ -78,6 +99,9 @@
       <div id="chats"></div>
     </div>
     <div class="sidebar-section sidebar-bottom">
+      <button id="scheduleBtn" class="sidebar-footer-btn" title="Schedule">
+        <span class="icon-emoji">🗓</span><i data-lucide="calendar-clock" class="icon-lucide"></i> Schedule
+      </button>
       <button id="libraryBtn" class="sidebar-footer-btn" title="Library">
         <span class="icon-emoji">📚</span><i data-lucide="book-open" class="icon-lucide"></i> Library
       </button>
@@ -93,18 +117,22 @@
         <div class="header-cell header-icon-cell">
           <button id="sidebarToggle" class="icon-btn" title="Toggle sidebar"><span class="icon-emoji">☰</span><i data-lucide="panel-left-close" class="icon-lucide"></i></button>
         </div>
-        <div class="header-cell header-model-cell">
-          <div class="glass-dropdown" id="modelDropdown">
-            <button class="glass-dropdown-trigger" id="modelTrigger" title="Model used for new chats">
-              <i data-lucide="cpu" style="width:14px;height:14px;opacity:.7;"></i>
-              <span class="glass-dropdown-label">Model</span>
-              <span class="glass-dropdown-arrow"><i data-lucide="chevron-down" style="width:12px;height:12px;"></i></span>
-            </button>
-            <div class="glass-dropdown-menu" id="modelMenu"></div>
-            <select id="modelSelect" hidden></select>
+        <div class="header-center-group">
+          <div class="header-cell header-model-cell">
+            <div class="glass-dropdown" id="modelDropdown">
+              <button class="glass-dropdown-trigger" id="modelTrigger" title="Model used for new chats">
+                <span class="glass-dropdown-label">Model</span>
+                <span class="glass-dropdown-arrow"><i data-lucide="chevron-down" style="width:12px;height:12px;"></i></span>
+              </button>
+              <div class="glass-dropdown-menu" id="modelMenu"></div>
+              <select id="modelSelect" hidden></select>
+            </div>
           </div>
+          <div class="header-agent-cell" id="agentTopBarSlot"></div>
         </div>
-        <div class="header-agent-cell" id="agentTopBarSlot"></div>
+        <div class="header-cell header-icon-cell">
+          <button id="terminalToggle" class="icon-btn" title="Toggle terminal"><span class="icon-emoji">🖥</span><i data-lucide="terminal" class="icon-lucide"></i></button>
+        </div>
         <div class="header-cell header-icon-cell">
           <button id="diffToggleBtn" class="icon-btn" title="Toggle file edit sidebar"><span class="icon-emoji">✎</span><i data-lucide="file-pen-line" class="icon-lucide"></i></button>
         </div>
@@ -117,6 +145,54 @@
     <!-- #chat is now a wrapper containing per-tab .tab-pane divs.
          Each pane scrolls independently. Only the active pane is visible. -->
     <div id="chat"></div>
+
+    <!-- IDE mode: file editor pane (hidden in agent mode) -->
+    <div id="editorPane" class="editor-pane hidden">
+      <div class="editor-empty-state" id="editorEmptyState">
+        <i data-lucide="file-code-2" style="width:48px;height:48px;opacity:.3;"></i>
+        <p>Open a file to start editing</p>
+        <span class="editor-empty-hint">Use the file browser on the right</span>
+      </div>
+      <div id="editorContainer" class="editor-container hidden"></div>
+    </div>
+
+    <!-- Integrated terminal panel (VS Code style, docked bottom, resizable) -->
+    <div id="terminalPanel" class="terminal-panel hidden">
+      <div id="terminalResizeHandle" class="terminal-resize-handle" title="Drag to resize"></div>
+      <div class="terminal-bar">
+        <div class="terminal-tabs">
+          <button class="terminal-tab" data-view="problems">Problems<span id="problemsBadge" class="term-badge" hidden>0</span></button>
+          <button class="terminal-tab" data-view="output">Output</button>
+          <button class="terminal-tab active" data-view="terminal">Terminal</button>
+        </div>
+        <div class="terminal-bar-actions">
+          <div class="term-menu-wrap">
+            <button id="termMenuBtn" class="term-bar-btn" title="Terminal actions">
+              <span class="icon-emoji">⋯</span><i data-lucide="more-horizontal" class="icon-lucide"></i>
+            </button>
+            <div id="termMenu" class="term-menu" hidden>
+              <button data-term-act="new"><i data-lucide="plus"></i>New terminal</button>
+              <button data-term-act="clear"><i data-lucide="eraser"></i>Clear terminal</button>
+              <button data-term-act="kill"><i data-lucide="trash-2"></i>Kill terminal</button>
+            </div>
+          </div>
+          <button id="terminalClose" class="term-bar-btn" title="Close panel">
+            <span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i>
+          </button>
+        </div>
+      </div>
+      <div class="terminal-body">
+        <div class="terminal-views">
+          <div id="problemsView" class="terminal-view" hidden></div>
+          <div id="outputView" class="terminal-view" hidden><div id="outputLog" class="output-log"></div></div>
+          <div id="terminalContainer" class="terminal-view terminal-container"></div>
+          <div id="terminalEmpty" class="terminal-empty" hidden>
+            <button id="terminalEmptyNew" class="term-new-big"><i data-lucide="plus"></i>New terminal</button>
+          </div>
+        </div>
+        <div id="terminalSessions" class="terminal-sessions" hidden></div>
+      </div>
+    </div>
 
     <div class="input-area" id="inputArea">
       <div class="attach-preview" id="attachPreview"></div>
@@ -150,6 +226,9 @@
       <span class="ctx-icon"><span class="icon-emoji">⚙</span><i data-lucide="settings" class="icon-lucide"></i></span> Chat Settings
     </button>
     <div class="ctx-sep"></div>
+    <button class="ctx-item" data-action="context-pass">
+      <span class="ctx-icon"><span class="icon-emoji">🔀</span><i data-lucide="arrow-right-left" class="icon-lucide"></i></span> Pass Context
+    </button>
     <button class="ctx-item" data-action="sync-context">
       <span class="ctx-icon"><span class="icon-emoji">⟳</span><i data-lucide="refresh-cw" class="icon-lucide"></i></span> Sync Context
     </button>
@@ -199,15 +278,26 @@
     };
   </script>
 
-  <aside id="diffSidebar" class="diff-sidebar" aria-label="File edit sidebar">
+  <aside id="diffSidebar" class="diff-sidebar" aria-label="File sidebar">
     <div class="diff-sidebar-header">
-      <span class="diff-sidebar-title">File edits</span>
-      <div style="display: flex; align-items: center; gap: 8px;">
-  <button id="diffClear" class="icon-btn" title="Clear file edits"><span class="icon-emoji">🗑</span><i data-lucide="trash-2" class="icon-lucide"></i></button>
-  <button id="diffClose" class="icon-btn" title="Close file edits"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
-</div>
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <div class="fs-sidebar-tabs">
+          <button class="fs-sidebar-tab active" data-panel="files">Files</button>
+          <button class="fs-sidebar-tab" data-panel="diff">Diff</button>
+        </div>
+        <button id="sbOpenFolderBtn" class="icon-btn" title="Open Folder"><span class="icon-emoji">📂</span><i data-lucide="folder-open" class="icon-lucide"></i> <span style="font-size:11px;">Open</span></button>
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <button id="diffClear" class="icon-btn" title="Clear"><span class="icon-emoji">🗑</span><i data-lucide="trash-2" class="icon-lucide"></i></button>
+        <button id="diffClose" class="icon-btn" title="Close"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
+      </div>
     </div>
-    <div id="diffCards"></div>
+    <div id="sidebarFilesPanel" class="fs-sidebar-panel active">
+      <div id="fsSidebarTree" class="fs-sidebar-tree"></div>
+    </div>
+    <div id="sidebarDiffPanel" class="fs-sidebar-panel">
+      <div id="diffCards"></div>
+    </div>
   </aside>
 
   <!-- Settings Panel -->
@@ -226,6 +316,7 @@
         <button class="settings-tab" data-tab="skills">Skills</button>
         <button class="settings-tab" data-tab="agents">Agents</button>
         <button class="settings-tab" data-tab="providers">Providers</button>
+        <button class="settings-tab" data-tab="mcp">MCP</button>
       </div>
       <div class="settings-body">
         <div id="tab-logs" class="settings-tab-content active">
@@ -244,6 +335,37 @@
               <option value="14.5px" selected>Medium (14.5px)</option>
               <option value="16px">Large (16px)</option>
               <option value="18px">Extra Large (18px)</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+            <label for="systemFontSizeSelect" style="font-size:13px;color:var(--text-dim);">System Font Size</label>
+            <select id="systemFontSizeSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
+              <option value="12px">Small (12px)</option>
+              <option value="13px" selected>Default (13px)</option>
+              <option value="14px">Medium (14px)</option>
+              <option value="15px">Large (15px)</option>
+              <option value="16px">Extra Large (16px)</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+            <label for="editorFontSizeSelect" style="font-size:13px;color:var(--text-dim);">Editor Font Size</label>
+            <select id="editorFontSizeSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
+              <option value="11">Small (11px)</option>
+              <option value="12">Compact (12px)</option>
+              <option value="13" selected>Default (13px)</option>
+              <option value="14">Medium (14px)</option>
+              <option value="15">Large (15px)</option>
+              <option value="16">Extra Large (16px)</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+            <label for="ideChatFontSizeSelect" style="font-size:13px;color:var(--text-dim);">IDE Chat Font Size</label>
+            <select id="ideChatFontSizeSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
+              <option value="11px">Small (11px)</option>
+              <option value="12px">Compact (12px)</option>
+              <option value="13px" selected>Default (13px)</option>
+              <option value="14px">Medium (14px)</option>
+              <option value="15px">Large (15px)</option>
             </select>
           </div>
           <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
@@ -311,6 +433,25 @@
             </div>
           </div>
           <p class="muted" style="font-size:11px;margin-top:4px;">Toggle headless mode and restart to apply. Session cookies are preserved via persistent profile.</p>
+
+          <!-- Context Pass Settings -->
+          <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
+            <label style="font-size:13px;color:var(--text-dim);font-weight:600;display:block;margin-bottom:10px;"><span class="icon-emoji">🔀</span><i data-lucide="arrow-right-left" class="icon-lucide"></i> Context Pass</label>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;">
+              <label for="ctxPassModel" style="font-size:12px;color:var(--text-dim);">Summarizer Model</label>
+              <select id="ctxPassModel" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;width:200px;">
+                <option value="">Default (current model)</option>
+              </select>
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;">
+              <label for="ctxPassBrowserAcc" style="font-size:12px;color:var(--text-dim);">Browser Profile</label>
+              <select id="ctxPassBrowserAcc" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;width:200px;">
+                <option value="">Default (current)</option>
+              </select>
+            </div>
+            <p class="muted" style="font-size:11px;margin-top:6px;">Model and browser profile used for context summarization. Leave empty to use current defaults.</p>
+          </div>
+
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
               <label style="font-size:13px;color:var(--text-dim);font-weight:600;"><span class="icon-emoji">🐋</span><i data-lucide="database" class="icon-lucide"></i> DeepSeek API Token</label>
@@ -404,6 +545,39 @@
             <div id="customModelStatus" style="font-size:11px;color:var(--text-dim);margin-top:8px;"></div>
           </div>
         </div>
+
+        <!-- MCP Tab -->
+        <div id="tab-mcp" class="settings-tab-content">
+          <div style="margin-bottom:20px;">
+            <label style="font-size:14px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+              <span class="icon-emoji">🔌</span> MCP Servers
+            </label>
+            <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 12px 0;">Model Context Protocol — connect external tool servers (email, calendar, databases, etc.) to extend Sable's capabilities dynamically.</p>
+
+            <!-- Add Server Form -->
+            <div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:16px;background:var(--panel);">
+              <p style="font-size:12px;font-weight:600;color:var(--text);margin:0 0 10px 0;">Add MCP Server</p>
+              <div style="display:flex;gap:6px;margin-bottom:8px;">
+                <input id="mcpName" type="text" placeholder="Server name (e.g. gmail)" style="flex:1;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px;">
+              </div>
+              <div style="display:flex;gap:6px;margin-bottom:8px;">
+                <input id="mcpCommand" type="text" placeholder="Command (e.g. npx)" style="width:120px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px;">
+                <input id="mcpArgs" type="text" placeholder="Args, comma-separated (e.g. -y,@modelcontextprotocol/server-gmail)" style="flex:1;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px;">
+              </div>
+              <div style="display:flex;gap:6px;margin-bottom:10px;">
+                <input id="mcpEnv" type="text" placeholder="Env vars as JSON (optional, e.g. {&quot;KEY&quot;:&quot;val&quot;})" style="flex:1;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px;">
+              </div>
+              <div style="display:flex;justify-content:flex-end;">
+                <button id="mcpAddBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">Add Server</button>
+              </div>
+            </div>
+
+            <!-- Server List -->
+            <div id="mcpServerList" style="display:flex;flex-direction:column;gap:8px;"></div>
+            <div id="mcpStatus" style="font-size:11px;color:var(--text-dim);margin-top:10px;"></div>
+          </div>
+        </div>
+
         <div id="tab-account" class="settings-tab-content">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
             <label style="font-size:14px;color:var(--text);font-weight:600;">Account Profiles</label>
@@ -432,18 +606,15 @@
           <p class="muted" style="font-size:11px;margin-top:10px;">Restores from the .bak snapshot (clean login state). Deletes current data first. Stop the browser before restoring.</p>
         </div>
         <div id="tab-brain" class="settings-tab-content">
-          <h3 class="mem-title"><span class="icon-emoji">👤</span><i data-lucide="user" class="icon-lucide"></i> Personal Preferences</h3>
-          <p class="muted mem-desc">Stored in instruction/personal.md. Loaded into context after Maria.md. Add your name, hobbies, preferences, and any additional information.</p>
-          <textarea id="personalPrefs" class="mem-input" style="width:100%;min-height:140px;resize:vertical;font-family:inherit;font-size:13px;line-height:1.5;padding:10px;" placeholder="Name: 
-Hobbies: 
-Preferences: 
-Additional info: "></textarea>
+          <h3 class="mem-title"><span class="icon-emoji">👤</span><i data-lucide="user" class="icon-lucide"></i> Personal Context</h3>
+          <p class="muted mem-desc">Your name, preferences, hobbies, and context. Saved to instruction/personal.md and loaded into every conversation.</p>
+          <textarea id="personalContextArea" class="mem-input" style="width:100%;min-height:120px;font-family:var(--font-mono);font-size:12px;line-height:1.5;resize:vertical;padding:10px;border-radius:8px;background:var(--bg-secondary);color:var(--text);border:1px solid var(--border);" placeholder="Name, preferences, hobbies, context..."></textarea>
           <div class="mem-input-row mem-save-row" style="margin-top:8px;">
-            <button id="prefsSaveBtn" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">💾</span><i data-lucide="hard-drive" class="icon-lucide"></i>&nbsp; Save Preferences</button>
-            <span id="prefsStatus" class="muted mem-status"></span>
+            <button id="personalSaveBtn" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">💾</span><i data-lucide="hard-drive" class="icon-lucide"></i> Save</button>
+            <span id="personalStatus" class="muted mem-status"></span>
           </div>
 
-          <h3 class="mem-title" style="margin-top:20px;"><span class="icon-emoji">🔒</span><i data-lucide="lock" class="icon-lucide"></i> Protected Memory</h3>
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🔒</span><i data-lucide="lock" class="icon-lucide"></i> Protected Memory</h3>
           <p class="muted mem-desc">Stored in Brain/Protected.json. Cannot be deleted by consolidation. Boosted in search.</p>
           <div id="protectedList" class="mem-list"></div>
           <div class="mem-input-row">
@@ -588,6 +759,28 @@ Additional info: "></textarea>
             </div>
           </div>
 
+          <h3 class="mem-title" style="margin-top:16px;">🎓 Teacher (Escalation)</h3>
+          <p class="muted" style="font-size:11px;margin:-4px 0 8px;">When an agent gets stuck or loops, the teacher model intervenes with guidance and can restructure the agent's todo list. Uses its own browser profile for authentication.</p>
+          <div style="display:flex;flex-direction:column;gap:12px;">
+            <div class="mem-input-row" style="align-items:center;">
+              <label class="muted" style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="checkbox" id="teacherEnabled" checked style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;"> Teacher escalation enabled
+              </label>
+            </div>
+            <div>
+              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Teacher Model</label>
+              <select id="teacherModel" class="mem-input" style="width:220px;">
+                <option value="qwen3.8-max">qwen3.8-max</option>
+              </select>
+              <p class="muted" style="font-size:11px;margin:3px 0 0;">The model that intervenes when agents are stuck. Should be your strongest model.</p>
+            </div>
+            <div>
+              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Browser Data Profile</label>
+              <input type="text" id="teacherBrowserData" class="mem-input" style="width:220px;" placeholder="browser-data-accN">
+              <p class="muted" style="font-size:11px;margin:3px 0 0;">Browser profile the teacher uses for Qwen authentication. Leave empty for default/active profile.</p>
+            </div>
+          </div>
+
           <div class="mem-input-row mem-save-row" style="margin-top:20px;padding-top:14px;border-top:1px solid var(--border);">
             <button id="agentConfigSave" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">💾</span><i data-lucide="hard-drive" class="icon-lucide"></i> &nbsp;Save Config</button>
             <span id="agentConfigStatus" class="muted mem-status"></span>
@@ -610,6 +803,7 @@ Additional info: "></textarea>
         <button class="settings-tab" data-tab="lib-notes">Notes</button>
         <button class="settings-tab" data-tab="lib-gallery">Gallery</button>
         <button class="settings-tab" data-tab="lib-skills">Skills</button>
+        <button class="settings-tab" data-tab="lib-email"><span class="icon-emoji">📧</span><i data-lucide="mail" class="icon-lucide"></i> Email</button>
       </div>
       <div class="settings-body library-body" id="libraryBody">
         <div id="tab-lib-agents" class="settings-tab-content active"></div>
@@ -617,6 +811,7 @@ Additional info: "></textarea>
         <div id="tab-lib-notes" class="settings-tab-content"></div>
         <div id="tab-lib-gallery" class="settings-tab-content"></div>
         <div id="tab-lib-skills" class="settings-tab-content"></div>
+        <div id="tab-lib-email" class="settings-tab-content"></div>
       </div>
     </div>
   </div>
@@ -639,7 +834,60 @@ Additional info: "></textarea>
     </div>
   </div>
 
-  <script src="/static/app.js?v=33"></script>
+  <!-- File Manager Panel -->
+  <div id="fsOverlay" class="settings-overlay hidden">
+    <div class="settings-panel fs-panel">
+      <div class="settings-header">
+        <h2><i data-lucide="folder-tree" style="width:18px;height:18px;margin-right:6px;"></i> Files</h2>
+        <div class="fs-path-bar" id="fsPathBar"></div>
+        <button id="fsSwitchRoot" class="icon-btn" title="Change folder"><i data-lucide="folder-input" style="width:16px;height:16px;"></i></button>
+        <button id="fsClose" class="icon-btn" title="Close"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
+      </div>
+      <div class="fs-body">
+        <div class="fs-tree" id="fsTree"></div>
+        <div class="fs-viewer" id="fsViewer">
+          <div class="fs-viewer-empty">Select a file to view</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/vendor/xterm/xterm.js?v=2"></script>
+  <script src="/static/vendor/xterm/xterm-addon-fit.js?v=2"></script>
+  <script src="/static/vendor/xterm/xterm-addon-web-links.js?v=2"></script>
+  <script src="/static/vendor/monaco/vs/loader.js"></script>
+  <script>
+    if (window.require) {
+      require.config({ paths: { vs: "/static/vendor/monaco/vs" } });
+    }
+    window.MonacoEnvironment = {
+      getWorkerUrl: function () {
+        return "/static/vendor/monaco/vs/base/worker/workerMain.js";
+      },
+    };
+  </script>
+  <script src="/static/app.js?v=37"></script>
   <script src="/static/js/agents.js?v=20"></script>
+  <script src="/static/js/filesystem.js?v=24"></script>
+  <script src="/static/js/mode.js?v=18"></script>
+  <script src="/static/js/resize-panels.js?v=1"></script>
+  <script src="/static/js/terminal.js?v=4"></script>
+
+  <script>
+    /* Keep mode-toggle-compact pill indicator in sync with active button */
+    (function() {
+      const wrap = document.getElementById('modeSwitcher');
+      if (!wrap) return;
+      const btns = wrap.querySelectorAll('button');
+      function syncPill() {
+        btns.forEach((b, i) => { if (b.classList.contains('active')) wrap.style.setProperty('--i', i); });
+      }
+      // Observe class changes (app.js toggles .active)
+      const obs = new MutationObserver(syncPill);
+      btns.forEach(b => obs.observe(b, { attributes: true, attributeFilter: ['class'] }));
+      syncPill();
+    })();
+  </script>
+
 </body>
 </html>

@@ -62,6 +62,18 @@ def safe_under(base: Path, raw: str) -> Path:
     return candidate
 
 
+
+# --- SSD tree write guard ---
+_SSD_TREE_PREFIXES = (
+    "/home/sifat/Projects/Sable",
+)
+
+def is_ssd_tree_write(path: str) -> bool:
+    """Return True if the resolved path falls inside the SSD live tree."""
+    resolved = str(Path(path).resolve()) if not path.startswith("/") else path
+    return any(resolved.startswith(p) for p in _SSD_TREE_PREFIXES)
+
+
 def strip_html(text: str) -> str:
     """Remove HTML tags and unescape entities."""
     return html_lib.unescape(re.sub(r"<[^>]+>", "", text)).strip()

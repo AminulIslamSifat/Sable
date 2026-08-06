@@ -32,11 +32,11 @@ STUCK_MESSAGE = (
 )
 
 FORMAT_REMINDERS: dict[str, str] = {
-    "researcher": "Your final answer must be a markdown document with these sections: ## Topic, ## Findings, ## Sources, ## Summary, ## Confidence. No JSON.",
-    "coder": "Your final answer must be a markdown document with these sections: ## Description, ## Files Modified, ## Tests, ## Notes. No JSON.",
-    "reviewer": "Your final answer must be a markdown document with these sections: ## File Reviewed, ## Critical Issues, ## Warnings, ## Info, ## Verdict. No JSON.",
-    "writer": "Your final answer must be a markdown document with these sections: ## Title, ## Document Path, ## Structure Overview, ## Word Count, ## Notes. No JSON.",
-    "utility": "Your final answer must be a markdown document with these sections: ## Task, ## Actions Taken, ## Result, ## Notes. No JSON.",
+    "researcher": "This is your FINAL response. Output ONLY a markdown document with these sections: ## Topic, ## Findings, ## Sources, ## Summary, ## Confidence. No JSON. No action block.",
+    "coder": "This is your FINAL response. Output ONLY a markdown document with these sections: ## Description, ## Files Modified, ## Tests, ## Notes. No JSON. No action block.",
+    "reviewer": "This is your FINAL response. Output ONLY a markdown document with these sections: ## File Reviewed, ## Critical Issues, ## Warnings, ## Info, ## Verdict. No JSON. No action block.",
+    "writer": "This is your FINAL response. Output ONLY a markdown document with these sections: ## Title, ## Document Path, ## Structure Overview, ## Word Count, ## Notes. No JSON. No action block.",
+    "utility": "This is your FINAL response. Output ONLY a markdown document with these sections: ## Task, ## Actions Taken, ## Result, ## Notes. No JSON. No action block.",
 }
 
 _TAG_RE = re.compile(r"<(action)>(.*?)</\1>", re.DOTALL)
@@ -105,9 +105,10 @@ def _build_tool_guide(allowed_skills: list[str], default_skills: list[str]) -> s
         "",
         "Rules:",
         "- Exactly ONE action block per response. Wait for the result before continuing.",
+        "- For INTERMEDIATE responses: briefly state your next step (1 sentence max), then output the action block. Do NOT use final format headers.",
         "- Use absolute paths for all file operations.",
         "- After getting tool output, analyze it and decide next step.",
-        "- When done with all tools, output your final markdown answer with NO action block.",
+        "- ONLY when ALL tool work is done, output your final markdown answer using the required sections. No action block on the final answer.",
         "",
     ]
 
@@ -180,6 +181,25 @@ async def run_agent_llm_loop(
     else:
         first_message += f"\n\nTask: {agent.task}"
 
+    # Inject todo plan into first message if present
+    if agent.todos and agent.todos.todos:
+        # Emit initial todo state so panel sees it immediately (even before first <todo_done>)
+        agent.push_stream_event({
+            "type": "todo_progress",
+            "progress": agent.todos.progress,
+            "current": agent.todos.current.content if agent.todos.current else None,
+            "todos": [
+                {"id": t.id, "content": t.content, "status": t.status, "subtasks": t.subtasks, "result": t.result}
+                for t in agent.todos.todos
+            ],
+        })
+        plan_lines = "\n".join(f"{t.id}. {t.content}" for t in agent.todos.todos)
+        first_message += (
+            f"\n\nYour execution plan:\n{plan_lines}\n\n"
+            f"Work through these steps in order. Start with step 1.\n\n"
+            f"You must follow the todo list strictly. When completing a task, mark it done with <todo_done summary=\"...\"/> before progressing to the next task."
+        )
+
     # Track conversation for DB/history (not sent to API)
     agent.messages = [
         {"role": "system", "content": system_prompt},
@@ -211,6 +231,52 @@ async def run_agent_llm_loop(
         # Stream the response text to the panel
         agent.push_stream_event({"type": "answer", "text": response_text})
 
+        # --- Todo progression: parse <todo_done> and <todo_sub> tags ---
+        if agent.todos and agent.todos.current:
+            # Parse <todo_sub content="..." /> tags
+            for sub_match in re.finditer(
+                r'<todo_sub\s+content="([^"]*)"', response_text
+            ):
+                sub_desc = sub_match.group(1).strip()
+                if sub_desc and sub_desc not in agent.todos.current.subtasks:
+                    agent.todos.current.subtasks.append(sub_desc)
+
+            # Parse <todo_done summary="..." /> tag
+            done_match = re.search(r'<todo_done\s+summary="([^"]*)"', response_text)
+            if done_match:
+                agent.todos.current.result = done_match.group(1).strip()
+                nxt = agent.todos.advance()
+                agent.push_stream_event({
+                    "type": "todo_progress",
+                    "progress": agent.todos.progress,
+                    "current": nxt.content if nxt else None,
+                    "todos": [
+                        {
+                            "id": t.id,
+                            "content": t.content,
+                            "status": t.status,
+                            "subtasks": t.subtasks,
+                            "result": t.result,
+                        }
+                        for t in agent.todos.todos
+                    ],
+                })
+                if agent.todos.all_done:
+                    # All todos complete — next response should be the final answer
+                    current_message = (
+                        "All tasks in your plan are complete. "
+                        "Provide your final markdown answer now."
+                    )
+                    agent.messages.append({"role": "user", "content": current_message})
+                    await _persist_message(agent.id, "user", current_message)
+                    continue
+                # More todos remain — continue loop, next iteration gets updated context
+
+            # Strip todo tags from response so they don't leak into skill parsing or message history
+            response_text = re.sub(r'<todo_done\s+summary="[^"]*"\s*/?>', '', response_text)
+            response_text = re.sub(r'<todo_sub\s+content="[^"]*"\s*/?>', '', response_text)
+            response_text = re.sub(r'\n{3,}', '\n\n', response_text).strip()
+
         # Parse skill tags
         tags = _parse_skill_tags(response_text)
         if not tags:
@@ -238,9 +304,16 @@ async def run_agent_llm_loop(
                 stuck = True
                 break
         if stuck:
-            agent.messages.append({"role": "user", "content": STUCK_MESSAGE})
-            await _persist_message(agent.id, "user", STUCK_MESSAGE)
-            current_message = STUCK_MESSAGE
+            # Try teacher escalation before generic stuck message
+            teacher_guidance = await _try_teacher_escalation(
+                agent, "Agent is repeating the same tool calls with identical arguments."
+            )
+            if teacher_guidance:
+                current_message = f"[MENTOR INTERVENTION]\n{teacher_guidance}"
+            else:
+                current_message = STUCK_MESSAGE
+            agent.messages.append({"role": "user", "content": current_message})
+            await _persist_message(agent.id, "user", current_message)
             continue
 
         # Execute skills
@@ -292,6 +365,11 @@ async def run_agent_llm_loop(
         # Feed results back as next message
         combined = "\n---\n".join(tool_results)
         current_message = f"[Tool Results]\n{combined}"
+
+        # Append todo context if agent has an active todo list (compact: skip completed items)
+        if agent.todos and agent.todos.current:
+            current_message += f"\n\n{agent.todos.format_progress(compact=True)}"
+
         agent.messages.append({"role": "user", "content": current_message})
 
         # Persist each tool call with clear structure for history viewing
@@ -313,12 +391,47 @@ async def run_agent_llm_loop(
             )
             await _persist_message(agent.id, "tool", tool_msg)
 
-    # Hit max iterations — force final answer
+    # Hit max iterations — try teacher before forcing final answer
+    teacher_guidance = await _try_teacher_escalation(
+        agent, f"Agent hit max iterations ({max_iterations}) without completing."
+    )
+    if teacher_guidance:
+        # Give the agent one more chance with teacher guidance
+        guided_msg = f"[MENTOR INTERVENTION]\n{teacher_guidance}\n\nYou have ONE final attempt. Provide your best markdown answer now."
+        agent.messages.append({"role": "user", "content": guided_msg})
+        await _persist_message(agent.id, "user", guided_msg)
+        response_text, _ = await _send_with_retry(agent, guided_msg, parent_id, breaker, False)
+        return response_text
+
+    # No teacher or teacher failed — force final answer
     force_msg = "Maximum steps reached. Provide your final markdown answer NOW with whatever you have. Use proper ## headers for each section."
     agent.messages.append({"role": "user", "content": force_msg})
     await _persist_message(agent.id, "user", force_msg)
     response_text, _ = await _send_with_retry(agent, force_msg, parent_id, breaker, False)
     return response_text
+
+
+async def _try_teacher_escalation(agent: Agent, stuck_reason: str) -> str | None:
+    """Attempt teacher intervention. Returns guidance text or None.
+
+    Respects the max intervention limit to avoid infinite escalation loops.
+    """
+    from engine.agents.teacher import escalate_to_teacher, MAX_TEACHER_INTERVENTIONS
+
+    if agent.teacher_interventions >= MAX_TEACHER_INTERVENTIONS:
+        return None
+
+    agent.teacher_interventions += 1
+    agent.push_stream_event({
+        "type": "teacher_escalation",
+        "intervention": agent.teacher_interventions,
+        "reason": stuck_reason,
+    })
+
+    guidance = await escalate_to_teacher(agent, stuck_reason)
+    if guidance:
+        logger.info("[agent %s] Teacher intervened (#%d)", agent.id, agent.teacher_interventions)
+    return guidance
 
 
 async def _send_with_retry(

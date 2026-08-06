@@ -43,7 +43,7 @@
   height: 40px;
   padding: 0 14px;
   border-radius: 22px;
-  font-size: 12.5px;
+  font-size: var(--font-size-system);
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
@@ -122,20 +122,20 @@
 .agent-result-card.arc-failure { border-color: rgba(255, 80, 80, 0.4); }
 
 .arc-title {
-  font-size: 14px;
+  font-size: var(--font-size-system);
   font-weight: 600;
 }
 .arc-success .arc-title { color: #50c878; }
 .arc-failure .arc-title { color: #ff5050; }
 
 .arc-detail {
-  font-size: 13px;
+  font-size: var(--font-size-system);
   color: var(--text-dim, #b0b0b8);
   line-height: 1.5;
 }
 
 .arc-meta {
-  font-size: 12px;
+  font-size: var(--font-size-system);
   color: var(--muted, #85858c);
 }
 
@@ -145,7 +145,7 @@
   border-radius: 6px;
   padding: 10px 12px;
   font-family: "Maple Mono", ui-monospace, monospace;
-  font-size: 12px;
+  font-size: var(--font-size-system);
   line-height: 1.5;
   overflow-x: auto;
   max-height: 250px;
@@ -169,7 +169,7 @@
 }
 .arc-actions button {
   padding: 3px 10px;
-  font-size: 11px;
+  font-size: var(--font-size-system);
   background: transparent;
   border: 1px solid var(--border, #2a2a2e);
   border-radius: 4px;
@@ -189,7 +189,7 @@
   border-radius: 8px;
   border: 1px solid var(--border, #2a2a2e);
   background: var(--bg-secondary, #1a1a1e);
-  font-size: 13px;
+  font-size: var(--font-size-system);
 }
 .agent-batch-header {
   display: flex;
@@ -203,12 +203,12 @@
   align-items: center;
   gap: 8px;
   padding: 3px 0;
-  font-size: 12px;
+  font-size: var(--font-size-system);
 }
 .agent-batch-item .abi-status { width: 16px; text-align: center; }
 .agent-batch-item .abi-role { font-weight: 500; }
 .agent-batch-item .abi-task { color: var(--muted, #85858c); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-batch-item .abi-time { color: var(--muted, #85858c); font-size: 11px; }
+.agent-batch-item .abi-time { color: var(--muted, #85858c); font-size: var(--font-size-system); }
 
 /* --- History Modal --- */
 /* (old agent-history modal removed — replaced by .agent-panel) */
@@ -238,8 +238,8 @@
   background: var(--bg-hover, #2a2a3e);
 }
 .mention-icon { font-size: 16px; }
-.mention-label { font-weight: 600; font-size: 13px; color: var(--text, #e0e0e0); }
-.mention-desc { font-size: 11px; color: var(--text-muted, #888); margin-left: auto; }
+.mention-label { font-weight: 600; font-size: var(--font-size-system); color: var(--text, #e0e0e0); }
+.mention-desc { font-size: var(--font-size-system); color: var(--text-muted, #888); margin-left: auto; }
 .mention-item.active {
   background: var(--bg-hover, #2a2a3e);
 }
@@ -267,12 +267,12 @@
 .arc-icon { font-size: 15px; }
 .arc-name {
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--font-size-system);
   text-transform: capitalize;
   color: var(--text, #e0e0e0);
 }
 .arc-model-badge {
-  font-size: 10px;
+  font-size: var(--font-size-system);
   padding: 2px 7px;
   border-radius: 4px;
   background: rgba(124, 92, 191, 0.15);
@@ -281,7 +281,7 @@
 }
 .arc-chevron {
   margin-left: auto;
-  font-size: 11px;
+  font-size: var(--font-size-system);
   color: var(--muted, #85858c);
   transition: transform 0.15s;
 }
@@ -295,7 +295,7 @@
 .arc-body.hidden { display: none; }
 .arc-field label {
   display: block;
-  font-size: 11px;
+  font-size: var(--font-size-system);
   font-weight: 600;
   color: var(--muted, #85858c);
   margin-bottom: 4px;
@@ -303,7 +303,7 @@
   letter-spacing: 0.3px;
 }
 .arc-readonly-tag {
-  font-size: 9px;
+  font-size: var(--font-size-system);
   font-weight: 400;
   text-transform: none;
   opacity: 0.6;
@@ -312,14 +312,14 @@
 .arc-prompt {
   width: 100%;
   resize: vertical;
-  font-size: 12px;
+  font-size: var(--font-size-system);
   font-family: inherit;
   line-height: 1.5;
   min-height: 60px;
 }
 .arc-output-fmt {
   display: block;
-  font-size: 11px;
+  font-size: var(--font-size-system);
   padding: 8px 10px;
   background: var(--bg-primary, #16161e);
   border: 1px solid var(--border, #2e2e3e);
@@ -343,7 +343,7 @@
 
 
 .arc-hint {
-  font-size: 10px;
+  font-size: var(--font-size-system);
   font-weight: 400;
   color: var(--text-dim, #888);
   margin-left: 4px;
@@ -366,7 +366,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: var(--font-size-system);
   padding: 3px 8px;
   border-radius: 4px;
   background: rgba(124, 92, 191, 0.12);
@@ -379,7 +379,7 @@
   border: none;
   color: var(--muted, #85858c);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--font-size-system);
   line-height: 1;
   padding: 0 2px;
   border-radius: 2px;
@@ -387,7 +387,7 @@
 .arc-chip-x:hover { color: #ff5050; }
 .arc-skill-add {
   align-self: flex-start;
-  font-size: 11px;
+  font-size: var(--font-size-system);
   padding: 3px 8px;
   border-radius: 4px;
   border: 1px dashed var(--border, #2e2e3e);
@@ -413,7 +413,7 @@
   overflow-y: auto;
 }
 .arc-pick-item {
-  font-size: 10px;
+  font-size: var(--font-size-system);
   padding: 3px 7px;
   border-radius: 3px;
   border: 1px solid var(--border, #2e2e3e);
@@ -497,15 +497,24 @@
   background: var(--panel, #1a1a2e);
 }
 .agent-panel-title {
-  font-size: 13px;
+  font-size: var(--font-size-system);
   letter-spacing: .08em;
   text-transform: uppercase;
   color: var(--accent-text);
   font-weight: 600;
 }
+.agent-panel-model {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-system);
+  color: var(--muted);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(124, 92, 191, 0.12);
+  white-space: nowrap;
+}
 .agent-panel-status {
   flex: 1;
-  font-size: 11px;
+  font-size: var(--font-size-system);
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -516,7 +525,7 @@
   background: transparent;
   border: 0;
   color: var(--muted);
-  font-size: 18px;
+  font-size: var(--font-size-system);
   cursor: pointer;
   padding: 2px;
   line-height: 1;
@@ -548,17 +557,30 @@
 }
 .ap-timer {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--font-size-system);
   color: var(--accent-text);
   font-weight: 600;
 }
 .ap-iteration {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--font-size-system);
   color: var(--muted);
   padding: 2px 8px;
   border-radius: 999px;
   background: rgba(124, 92, 191, 0.1);
+}
+.ap-browser-data {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-system);
+  color: var(--muted);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(124, 92, 191, 0.08);
 }
 .agent-panel-stop {
   margin-left: auto;
@@ -568,7 +590,7 @@
   padding: 3px 10px;
   border-radius: 999px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--font-size-system);
   transition: all 0.15s;
 }
 .agent-panel-stop:hover {
@@ -585,12 +607,12 @@
   border-radius: 12px;
   background: var(--panel-2);
   padding: 10px 12px;
-  font-size: 12px;
+  font-size: var(--font-size-system);
   line-height: 1.5;
   flex-shrink: 0;
 }
 .ap-msg-role {
-  font-size: 10px;
+  font-size: var(--font-size-system);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--muted);
@@ -601,7 +623,7 @@
   color: var(--text);
   word-break: break-word;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--font-size-system);
 }
 .ap-msg-content p { margin: 0 0 6px; }
 .ap-msg-content p:last-child { margin-bottom: 0; }
@@ -610,14 +632,14 @@
   padding: 8px 10px;
   border-radius: 8px;
   overflow-x: auto;
-  font-size: 11px;
+  font-size: var(--font-size-system);
   margin: 4px 0;
 }
 .ap-msg-content code {
   background: rgba(0, 0, 0, 0.2);
   padding: 1px 4px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--font-size-system);
   font-family: var(--font-mono);
 }
 
@@ -629,7 +651,7 @@
 }
 .ap-tool {
   border-left: 2px solid #50c878;
-  font-size: 11px;
+  font-size: var(--font-size-system);
 }
 .ap-error {
   border-left: 2px solid #ff5050;
@@ -645,7 +667,7 @@
   border-radius: 12px;
   background: var(--panel-2);
   border: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--font-size-system);
   flex-wrap: wrap;
   flex-shrink: 0;
 }
@@ -655,7 +677,7 @@
 }
 .ap-skill-name {
   font-weight: 700;
-  font-size: 11px;
+  font-size: var(--font-size-system);
   padding: 2px 8px;
   border-radius: 999px;
   background: rgba(124, 92, 191, 0.14);
@@ -664,7 +686,7 @@
 }
 .ap-skill-status {
   margin-left: auto;
-  font-size: 11px;
+  font-size: var(--font-size-system);
   color: var(--muted);
 }
 .ap-skill-status.ok { color: #7dffab; }
@@ -675,7 +697,7 @@
   padding: 8px 10px;
   background: rgba(0, 0, 0, 0.25);
   border-radius: 8px;
-  font-size: 11px;
+  font-size: var(--font-size-system);
   font-family: var(--font-mono);
   color: var(--text-dim);
   overflow-x: auto;
@@ -719,7 +741,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: var(--font-size-system);
   padding: 3px 8px;
   border-radius: 4px;
   background: rgba(80, 200, 120, 0.1);
@@ -734,7 +756,7 @@
   margin-top: 6px;
 }
 .arc-acct-add {
-  font-size: 11px;
+  font-size: var(--font-size-system);
   padding: 3px 8px;
   border-radius: 4px;
   border: 1px dashed var(--border, #2e2e3e);
@@ -753,3 +775,47 @@
 
 
 
+
+/* === Todo Widget in Agent Panel === */
+.ap-todo-widget {
+  padding: 8px 12px;
+  background: rgba(255,255,255,0.03);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-size: 0.82rem;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.ap-todo-header {
+  font-weight: 600;
+  margin-bottom: 4px;
+  opacity: 0.7;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.ap-todo-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+  line-height: 1.4;
+}
+.ap-todo-icon { flex-shrink: 0; font-size: 0.8rem; }
+.ap-todo-text { word-break: break-word; }
+.ap-todo-completed .ap-todo-text { opacity: 0.5; text-decoration: line-through; }
+.ap-todo-in_progress .ap-todo-text { font-weight: 600; color: var(--accent, #7c9aff); }
+.ap-todo-pending .ap-todo-text { opacity: 0.6; }
+.ap-todo-skipped .ap-todo-text { opacity: 0.35; font-style: italic; }
+.ap-todo-sub {
+  padding-left: 22px;
+  font-size: 0.78rem;
+  opacity: 0.65;
+  line-height: 1.3;
+}
+
+/* Spawn card todos line (inline in skill-name) */
+.ap-spawn-todos {
+  font-size: 0.78rem;
+  opacity: 0.7;
+  font-weight: 400;
+}

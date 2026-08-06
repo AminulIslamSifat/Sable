@@ -19,7 +19,7 @@
     const inputEl  = document.getElementById("input");
     const sendBtn  = document.getElementById("send");
     const newChatBtn = document.getElementById("newChat");
-    const syncContextBtn = document.getElementById("syncContext");
+
     const modelSelectEl = document.getElementById("modelSelect");
     const thinkingSwitcherEl = document.getElementById("thinkingSwitcher");
     const toastEl  = document.getElementById("toast");
@@ -145,7 +145,7 @@
     const activeStreams = new Map(); // chatId → AbortController
     const openTabs = new Map(); // chatId → { pane: HTMLElement, title: string }
     let creating    = false;
-    let syncing     = false;
+
 
     const attachBtn     = document.getElementById("attachBtn");
     const fileInput     = document.getElementById("fileInput");
@@ -651,7 +651,9 @@
 
     function renderMarkdown(raw) {
       if (!raw) return "";
-      const normalized = normalizeMd(String(raw).replace(/\r\n/g, "\n"));
+      // Strip agentic <action>...</action> blocks — metadata, not user-visible content
+      raw = String(raw).replace(/<action>[\s\S]*?<\/action>/gi, "").trim();
+      const normalized = normalizeMd(raw.replace(/\r\n/g, "\n"));
       const safe = closeUnclosedFences(normalized);
 
       ensureMarked();
@@ -744,6 +746,7 @@
       clearTimeout(toastTimer);
       toastTimer = setTimeout(() => toastEl.classList.remove("show"), 3500);
     }
+    window.showToast = showToast; // expose for filesystem.js
 
     // mobile: tap to dismiss toast immediately
     toastEl.addEventListener("click", () => {
@@ -806,6 +809,10 @@
       activeChatId = chatId;
       updateSendBtn();
       renderTabBar();
+      if (typeof window.updateCompactTitle === "function") {
+        const tab = openTabs.get(chatId);
+        window.updateCompactTitle(tab?.title || "New chat");
+      }
     }
 
     function closeTab(chatId) {
@@ -884,8 +891,15 @@
 
     function setCreating(val) {
       creating = val;
-      newChatBtn.disabled = val;
-      newChatBtn.classList.toggle("loading", val);
+      if (newChatBtn) {
+        newChatBtn.disabled = val;
+        newChatBtn.classList.toggle("loading", val);
+      }
+      const floatBtn = document.getElementById("newChatFloat");
+      if (floatBtn) {
+        floatBtn.disabled = val;
+        floatBtn.classList.toggle("loading", val);
+      }
       modelSelectEl.disabled = val;
       thinkingSwitcherEl.style.display = val ? "none" : "";
     }
@@ -1219,46 +1233,34 @@
 
     function handleFileEdit(evt, autoOpen) {
       if (!diffCardsEl || !evt) return;
-      const card = document.createElement("div");
-      card.className = "diff-card";
+      const item = document.createElement("div");
+      item.className = "diff-item";
 
-      const header = document.createElement("div");
-      header.className = "diff-card-header";
+      const name = document.createElement("div");
+      name.className = "diff-item-name";
+      name.textContent = evt.name || evt.path || "file";
+      name.title = evt.path || "";
+      name.addEventListener("click", () => {
+        if (evt.backup_path && typeof window.openDiffEditor === "function") {
+          window.openDiffEditor(evt.path, evt.backup_path, evt.name || evt.path);
+        }
+      });
 
-      const op = document.createElement("span");
-      op.className = `diff-op ${evt.op || "edit"}`;
-      op.textContent = evt.op || "edit";
-
-      const path = document.createElement("span");
-      path.className = "diff-path";
-      path.textContent = evt.name || evt.path || "file";
-      path.title = evt.path || "";
-
-      const stats = document.createElement("span");
-      stats.className = "diff-stats";
-      const addStat = document.createElement("span");
-      addStat.className = "diff-add-stat";
-      addStat.textContent = `+${evt.added || 0}`;
-      const sep = document.createTextNode(" / ");
-      const delStat = document.createElement("span");
-      delStat.className = "diff-del-stat";
-      delStat.textContent = `-${evt.removed || 0}`;
-      stats.append(addStat, sep, delStat);
-
-      const arrow = document.createElement("span");
-      arrow.className = "diff-card-arrow";
-      arrow.textContent = "▶";
+      const stats = document.createElement("div");
+      stats.className = "diff-item-stats";
+      const added = evt.added || 0;
+      const removed = evt.removed || 0;
+      stats.innerHTML = `<span class="diff-add-stat">+${added}</span><span class="diff-sep"> / </span><span class="diff-del-stat">-${removed}</span>`;
 
       const revertBtn = document.createElement("button");
       revertBtn.className = "diff-revert-btn";
-      revertBtn.textContent = "↩ Revert";
-      revertBtn.title = evt.backup_path ? "Restore from backup" : "No backup available";
+      revertBtn.textContent = "\u21a9 Revert";
       if (!evt.backup_path) revertBtn.disabled = true;
       revertBtn.addEventListener("click", async (e) => {
         e.stopPropagation();
         if (!evt.backup_path || revertBtn.disabled) return;
         revertBtn.disabled = true;
-        revertBtn.textContent = "Reverting…";
+        revertBtn.textContent = "Reverting\u2026";
         try {
           const res = await fetch("/api/file/revert", {
             method: "POST",
@@ -1267,51 +1269,21 @@
           });
           const data = await res.json().catch(() => ({}));
           if (res.ok && data.status === "ok") {
-            revertBtn.innerHTML = `${lucideIcon("✓")} Reverted`;
-            activateLucideIcons(revertBtn);
+            revertBtn.textContent = "\u2713 Reverted";
             showToast("File reverted successfully", "success");
           } else {
-            revertBtn.innerHTML = `${lucideIcon("✗")} Failed`;
-            activateLucideIcons(revertBtn);
+            revertBtn.textContent = "\u2717 Failed";
             showToast(data.detail || "Revert failed", "error");
           }
         } catch (err) {
-          revertBtn.textContent = "✗ Error";
+          revertBtn.textContent = "\u2717 Error";
           showToast("Revert error: " + err.message, "error");
         }
-        setTimeout(() => { revertBtn.textContent = "↩ Revert"; revertBtn.disabled = false; }, 2000);
+        setTimeout(() => { revertBtn.textContent = "\u21a9 Revert"; revertBtn.disabled = false; }, 2000);
       });
 
-      header.append(arrow, op, path, stats, revertBtn);
-
-      // Toggle expand/collapse on header click
-      header.addEventListener("click", () => {
-        const wasExpanded = card.classList.contains("expanded");
-        diffCardsEl.querySelectorAll(".diff-card.expanded").forEach((c) => {
-          c.classList.remove("expanded");
-        });
-        if (!wasExpanded) {
-          card.classList.add("expanded");
-          setTimeout(() => card.scrollIntoView({ behavior: "smooth", block: "nearest" }), 100);
-        }
-      });
-
-      const body = document.createElement("pre");
-      body.className = "diff-body";
-      const lines = Array.isArray(evt.lines) ? evt.lines : [];
-      if (!lines.length) {
-        body.appendChild(diffLineEl("meta", "No diff preview available."));
-      } else {
-        const frag = document.createDocumentFragment();
-        for (const line of lines) {
-          frag.appendChild(diffLineEl(line.t || "ctx", line.text ?? ""));
-        }
-        if (evt.truncated) frag.appendChild(diffLineEl("meta", "… preview truncated for performance"));
-        body.appendChild(frag);
-      }
-
-      card.append(header, body);
-      diffCardsEl.prepend(card);
+      item.append(name, stats, revertBtn);
+      diffCardsEl.prepend(item);
       while (diffCardsEl.children.length > MAX_DIFF_CARDS) {
         diffCardsEl.lastElementChild.remove();
       }
@@ -1900,6 +1872,14 @@
             card.addEventListener("click", () => {
             document.body.classList.add("diff-open");
             if (typeof AgentPanel !== "undefined") AgentPanel.close();
+            // Switch sidebar tab to Diff mode
+            document.querySelectorAll(".fs-sidebar-tab").forEach((t) => t.classList.remove("active"));
+            const diffTab = document.querySelector('.fs-sidebar-tab[data-panel="diff"]');
+            if (diffTab) diffTab.classList.add("active");
+            const filesPanel = document.getElementById("sidebarFilesPanel");
+            const diffPanel = document.getElementById("sidebarDiffPanel");
+            if (filesPanel) filesPanel.classList.remove("active");
+            if (diffPanel) diffPanel.classList.add("active");
           });
             fileEditSummary.card = card;
           }
@@ -2178,10 +2158,15 @@
               // Update open tab
               const tab = openTabs.get(activeChatId);
               if (tab) { tab.title = newTitle; renderTabBar(); }
+              if (typeof window.updateCompactTitle === "function") window.updateCompactTitle(newTitle);
             }
           } else if (evt.type === "file_edit") {
             handleFileEdit(evt, false);
             ui.trackFileEdit(evt);
+            // Live-refresh the Monaco editor if the edited file is currently open
+            if (typeof window.refreshIdeFile === "function" && evt.path) {
+              window.refreshIdeFile(evt.path);
+            }
           }
         }
         if (gotError) break;
@@ -3352,7 +3337,15 @@
       }
     });
 
-    newChatBtn.addEventListener("click", createChat);
+    if (newChatBtn) newChatBtn.addEventListener("click", createChat);
+    const newChatSidebarBtn = document.getElementById("newChatSidebar");
+    if (newChatSidebarBtn) {
+        newChatSidebarBtn.addEventListener("click", createChat);
+    }
+    const newChatFloatBtn = document.getElementById("newChatFloat");
+    if (newChatFloatBtn) {
+        newChatFloatBtn.addEventListener("click", createChat);
+    }
 
     // Chat search toggle + filter
     const chatSearchBtn = document.getElementById('chatSearchBtn');
@@ -3427,29 +3420,7 @@
       });
     }
 
-    async function syncContext() {
-      if (syncing || isStreaming()) return;
-      syncing = true;
-      syncContextBtn.disabled = true;
-      syncContextBtn.classList.add("loading");
-      try {
-        const res = await fetch("/api/sync-context", { method: "POST" });
-        const data = await res.json();
-        if (res.ok) {
-          showToast("Context synced successfully!", "success");
-        } else {
-          showToast(data.detail || "Sync failed", "error");
-        }
-      } catch (err) {
-        showToast("Sync error: " + err.message, "error");
-      } finally {
-        syncing = false;
-        syncContextBtn.disabled = false;
-        syncContextBtn.classList.remove("loading");
-      }
-    }
 
-    syncContextBtn.addEventListener("click", syncContext);
 
     (async () => {
     await ensureAuth();
@@ -3517,8 +3488,21 @@
         const tabName = tab.dataset.tab;
         if (tabName === 'general') loadBrowserSettings();
         else if (tabName === 'account') loadAccountProfiles();
+        else if (tabName === 'mcp') loadMcpServers();
       });
     });
+
+
+    // Horizontal scroll on mouse wheel for settings tab bars
+    document.querySelectorAll(".settings-tabs").forEach((bar) => {
+      bar.addEventListener("wheel", (e) => {
+        if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+          e.preventDefault();
+          bar.scrollLeft += e.deltaY;
+        }
+      }, { passive: false });
+    });
+
 
     logClear.addEventListener("click", () => { logViewer.textContent = ""; });
 
@@ -3563,6 +3547,8 @@
       const section = tabId.replace("lib-", "");
       const container = document.getElementById("tab-" + tabId);
       if (!container) return;
+      // Email: skip reload if already cached
+      if (section === "email" && _emailState.loaded) return;
       container.innerHTML = '<div class="library-loading">Loading…</div>';
       try {
         if (section === "gallery") {
@@ -3573,6 +3559,8 @@
           const res = await fetch("/api/library/skills");
           const items = await res.json();
           renderSkills(container, items);
+        } else if (section === "email") {
+          renderEmailPanel(container);
         } else {
           const res = await fetch(`/api/library/${section}`);
           const items = await res.json();
@@ -3643,6 +3631,263 @@
         list.appendChild(card);
       });
       container.appendChild(list);
+    }
+
+    /* ---------- Email Panel ---------- */
+
+    let _emailState = { folder: 'INBOX', messages: [], configured: false, loaded: false };
+
+    async function renderEmailPanel(container, force) {
+      if (_emailState.loaded && !force) return;
+      container.innerHTML = '<div class="library-loading">Loading…</div>';
+      try {
+        const res = await fetch('/api/email/configured');
+        const cfg = await res.json();
+        _emailState.configured = cfg.configured;
+        if (!cfg.configured) {
+          renderEmailSetup(container);
+        } else {
+          renderEmailInbox(container, cfg);
+        }
+        _emailState.loaded = true;
+      } catch {
+        container.innerHTML = '<div class="library-empty">Failed to connect to email service.</div>';
+      }
+    }
+
+    function refreshEmailPanel() {
+      const container = document.getElementById('tab-lib-email');
+      if (!container) return;
+      _emailState.loaded = false;
+      renderEmailPanel(container, true);
+    }
+
+    function renderEmailSetup(container) {
+      container.innerHTML = `
+        <div class="email-setup">
+          <h3 style="margin-bottom:12px;font-size:15px;"><span class="icon-emoji">📧</span><i data-lucide="mail" class="icon-lucide" style="width:16px;height:16px;margin-right:4px;"></i> Configure Email</h3>
+          <p style="font-size:12px;color:var(--muted);margin-bottom:16px;">Connect via IMAP/SMTP. Use an app-specific password for Gmail/Outlook.</p>
+          <div class="email-form-grid">
+            <label>IMAP Host<input id="em-imap-host" placeholder="imap.gmail.com" /></label>
+            <label>IMAP Port<input id="em-imap-port" type="number" value="993" /></label>
+            <label>SMTP Host<input id="em-smtp-host" placeholder="smtp.gmail.com" /></label>
+            <label>SMTP Port<input id="em-smtp-port" type="number" value="587" /></label>
+            <label>Email / Username<input id="em-username" placeholder="you@gmail.com" /></label>
+            <label>App Password<input id="em-password" type="password" placeholder="••••••••" /></label>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:14px;">
+            <button class="icon-btn" id="em-save-cfg" style="padding:6px 16px;">Save & Connect</button>
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);">
+              <input type="checkbox" id="em-use-ssl" checked /> Use SSL
+            </label>
+          </div>
+          <div id="em-setup-error" style="color:var(--danger,#ff5050);font-size:12px;margin-top:8px;"></div>
+        </div>
+      `;
+      if (window.lucide) lucide.createIcons({ nodes: container.querySelectorAll('[data-lucide]') });
+      container.querySelector('#em-save-cfg').addEventListener('click', async () => {
+        const body = {
+          imap_host: container.querySelector('#em-imap-host').value.trim(),
+          imap_port: parseInt(container.querySelector('#em-imap-port').value) || 993,
+          smtp_host: container.querySelector('#em-smtp-host').value.trim(),
+          smtp_port: parseInt(container.querySelector('#em-smtp-port').value) || 587,
+          username: container.querySelector('#em-username').value.trim(),
+          password: container.querySelector('#em-password').value,
+          use_ssl: container.querySelector('#em-use-ssl').checked,
+        };
+        if (!body.imap_host || !body.smtp_host || !body.username || !body.password) {
+          container.querySelector('#em-setup-error').textContent = 'All fields are required.';
+          return;
+        }
+        try {
+          const res = await fetch('/api/email/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            container.querySelector('#em-setup-error').textContent = data.detail || 'Connection failed';
+            return;
+          }
+          showToast('Email connected ✓');
+          renderEmailPanel(container);
+        } catch (e) {
+          container.querySelector('#em-setup-error').textContent = 'Network error';
+        }
+      });
+    }
+
+    async function renderEmailInbox(container, cfg) {
+      container.innerHTML = `
+        <div class="email-toolbar">
+          <select id="em-folder-select" class="email-folder-select">
+            <option value="INBOX">Inbox</option>
+          </select>
+          <input id="em-search" class="email-search" placeholder="Search…" />
+          <button class="icon-btn email-compose-btn" id="em-compose-btn" title="Compose"><span class="icon-emoji">✉</span><i data-lucide="pen-line" class="icon-lucide"></i> New</button>
+          <button class="icon-btn" id="em-refresh-btn" title="Refresh"><span class="icon-emoji">↻</span><i data-lucide="refresh-cw" class="icon-lucide"></i></button>
+          <button class="icon-btn" id="em-disconnect-btn" title="Disconnect" style="margin-left:auto;"><span class="icon-emoji">⚙</span><i data-lucide="settings" class="icon-lucide"></i></button>
+        </div>
+        <div id="em-message-list" class="email-message-list"><div class="library-loading">Loading…</div></div>
+        <div id="em-compose-area" class="email-compose-area" style="display:none;"></div>
+      `;
+
+      // Load folders
+      try {
+        const fRes = await fetch('/api/email/folders');
+        if (fRes.ok) {
+          const folders = await fRes.json();
+          const sel = container.querySelector('#em-folder-select');
+          sel.innerHTML = '';
+          folders.forEach(f => {
+            const opt = document.createElement('option');
+            opt.value = f;
+            opt.textContent = f;
+            if (f === _emailState.folder) opt.selected = true;
+            sel.appendChild(opt);
+          });
+        }
+      } catch {}
+
+      // Events
+      container.querySelector('#em-folder-select').addEventListener('change', (e) => {
+        _emailState.folder = e.target.value;
+        loadEmailMessages(container);
+      });
+      container.querySelector('#em-refresh-btn').addEventListener('click', () => refreshEmailPanel());
+      container.querySelector('#em-compose-btn').addEventListener('click', () => showComposeForm(container));
+      container.querySelector('#em-disconnect-btn').addEventListener('click', async () => {
+        if (confirm('Disconnect email?')) {
+          await fetch('/api/email/config', { method: 'DELETE' });
+          renderEmailPanel(container);
+        }
+      });
+      let searchTimeout;
+      container.querySelector('#em-search').addEventListener('input', (e) => {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => loadEmailMessages(container, e.target.value.trim()), 400);
+      });
+
+      if (window.lucide) lucide.createIcons({ nodes: container.querySelectorAll('[data-lucide]') });
+      loadEmailMessages(container);
+    }
+
+    async function loadEmailMessages(container, search) {
+      const listEl = container.querySelector('#em-message-list');
+      if (!listEl) return;
+      listEl.innerHTML = '<div class="library-loading">Loading…</div>';
+      try {
+        let url = '/api/email/messages?folder=' + encodeURIComponent(_emailState.folder) + '&limit=50';
+        if (search) url += '&search=' + encodeURIComponent(search);
+        const res = await fetch(url);
+        if (!res.ok) { const d = await res.json(); listEl.innerHTML = '<div class="library-empty">' + escHtml(d.detail || 'Error') + '</div>'; return; }
+        const data = await res.json();
+        _emailState.messages = data.messages;
+        if (!data.messages.length) {
+          listEl.innerHTML = '<div class="library-empty">No messages.</div>';
+          return;
+        }
+        listEl.innerHTML = '';
+        data.messages.forEach(msg => {
+          const row = document.createElement('div');
+          row.className = 'email-msg-row';
+          row.innerHTML = `
+            <div class="email-msg-from">${escHtml(msg.from || 'Unknown')}</div>
+            <div class="email-msg-subject">${msg.has_attachments ? '<i data-lucide="paperclip" style="width:12px;height:12px;display:inline;vertical-align:middle;margin-right:2px;"></i> ' : ''}${escHtml(msg.subject || '(no subject)')}</div>
+            <div class="email-msg-date">${formatEmailDate(msg.date)}</div>
+          `;
+          row.addEventListener('click', () => openEmailMessage(container, msg.uid));
+          listEl.appendChild(row);
+        });
+        if (window.lucide) lucide.createIcons({ nodes: listEl.querySelectorAll('[data-lucide]') });
+      } catch {
+        listEl.innerHTML = '<div class="library-empty">Failed to load messages.</div>';
+      }
+    }
+
+    async function openEmailMessage(container, uid) {
+      const listEl = container.querySelector('#em-message-list');
+      if (!listEl) return;
+      listEl.innerHTML = '<div class="library-loading">Loading message…</div>';
+      try {
+        const res = await fetch('/api/email/message/' + uid + '?folder=' + encodeURIComponent(_emailState.folder));
+        if (!res.ok) { const d = await res.json(); listEl.innerHTML = '<div class="library-empty">' + escHtml(d.detail || 'Not found') + '</div>'; return; }
+        const msg = await res.json();
+        listEl.innerHTML = `
+          <div class="email-reader">
+            <div class="email-reader-header">
+              <button class="icon-btn email-back-btn" id="em-back"><span class="icon-emoji">←</span><i data-lucide="arrow-left" class="icon-lucide"></i> Back</button>
+              <div class="email-reader-meta">
+                <div class="email-reader-subject">${escHtml(msg.subject)}</div>
+                <div class="email-reader-from">From: ${escHtml(msg.from)}</div>
+                <div class="email-reader-to">To: ${escHtml(msg.to)}${msg.cc ? ' | Cc: ' + escHtml(msg.cc) : ''}</div>
+                <div class="email-reader-date">${msg.date}</div>
+              </div>
+            </div>
+            <div class="email-reader-body">${escHtml(msg.body).replace(/\n/g, '<br>')}</div>
+            ${msg.attachments && msg.attachments.length ? '<div class="email-attachments"><strong>Attachments:</strong> ' + msg.attachments.map(a => escHtml(a.filename) + ' (' + (a.size/1024).toFixed(1) + ' KB)').join(', ') + '</div>' : ''}
+          </div>
+        `;
+        if (window.lucide) lucide.createIcons({ nodes: listEl.querySelectorAll('[data-lucide]') });
+        listEl.querySelector('#em-back').addEventListener('click', () => loadEmailMessages(container));
+      } catch {
+        listEl.innerHTML = '<div class="library-empty">Failed to load message.</div>';
+      }
+    }
+
+    function showComposeForm(container) {
+      const area = container.querySelector('#em-compose-area');
+      if (!area) return;
+      area.style.display = 'block';
+      area.innerHTML = `
+        <div class="email-compose-form">
+          <h4 style="margin-bottom:10px;font-size:13px;"><span class="icon-emoji">✉</span><i data-lucide="send" class="icon-lucide" style="width:14px;height:14px;margin-right:4px;"></i> Compose</h4>
+          <input id="em-to" class="email-input" placeholder="To (email)" />
+          <input id="em-cc" class="email-input" placeholder="Cc (optional)" />
+          <input id="em-subject" class="email-input" placeholder="Subject" />
+          <textarea id="em-body" class="email-textarea" rows="8" placeholder="Message body…"></textarea>
+          <div style="display:flex;gap:8px;margin-top:8px;">
+            <button class="icon-btn" id="em-send" style="padding:6px 16px;">Send</button>
+            <button class="icon-btn" id="em-cancel-compose" style="padding:6px 12px;">Cancel</button>
+          </div>
+          <div id="em-compose-status" style="font-size:12px;margin-top:6px;"></div>
+        </div>
+      `;
+      if (window.lucide) lucide.createIcons({ nodes: area.querySelectorAll('[data-lucide]') });
+      area.querySelector('#em-cancel-compose').addEventListener('click', () => { area.style.display = 'none'; });
+      area.querySelector('#em-send').addEventListener('click', async () => {
+        const to = area.querySelector('#em-to').value.trim();
+        const subject = area.querySelector('#em-subject').value.trim();
+        const body = area.querySelector('#em-body').value;
+        const cc = area.querySelector('#em-cc').value.trim();
+        const statusEl = area.querySelector('#em-compose-status');
+        if (!to || !subject) { statusEl.textContent = 'To and Subject required.'; statusEl.style.color = 'var(--danger,#ff5050)'; return; }
+        statusEl.textContent = 'Sending…'; statusEl.style.color = 'var(--muted)';
+        try {
+          const res = await fetch('/api/email/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ to, subject, body, cc: cc || null }),
+          });
+          const data = await res.json();
+          if (!res.ok) { statusEl.textContent = data.detail || 'Send failed'; statusEl.style.color = 'var(--danger,#ff5050)'; return; }
+          statusEl.textContent = '✓ Sent!'; statusEl.style.color = 'var(--success,#4caf50)';
+          setTimeout(() => { area.style.display = 'none'; }, 1200);
+        } catch { statusEl.textContent = 'Network error'; statusEl.style.color = 'var(--danger,#ff5050)'; }
+      });
+    }
+
+    function formatEmailDate(dateStr) {
+      if (!dateStr) return '';
+      try {
+        const d = new Date(dateStr);
+        const now = new Date();
+        if (d.toDateString() === now.toDateString()) {
+          return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        }
+        return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      } catch { return dateStr.slice(0, 16); }
     }
 
     async function openLibraryReader(section, filename, title) {
@@ -4012,40 +4257,47 @@
       }
     });
 
-    // === Personal Preferences (Brain tab top section) ===
-    const personalPrefs = document.getElementById("personalPrefs");
-    const prefsSaveBtn = document.getElementById("prefsSaveBtn");
-    const prefsStatus = document.getElementById("prefsStatus");
+    // === Personal Context (instruction/personal.md) ===
+    const personalArea = document.getElementById("personalContextArea");
+    const personalSaveBtn = document.getElementById("personalSaveBtn");
+    const personalStatus = document.getElementById("personalStatus");
 
-    async function loadPreferences() {
+    async function loadPersonal() {
       try {
         const res = await fetch("/api/settings/personal");
         const data = await res.json();
-        personalPrefs.value = data.content || "";
-      } catch (e) { console.warn("Failed to load preferences:", e); }
+        personalArea.value = data.content || "";
+      } catch (e) { console.error("loadPersonal failed", e); }
     }
 
-    prefsSaveBtn.addEventListener("click", async () => {
-      prefsStatus.textContent = "Saving…";
+    personalSaveBtn.addEventListener("click", async () => {
+      personalSaveBtn.disabled = true;
+      personalStatus.textContent = "Saving...";
       try {
         const res = await fetch("/api/settings/personal", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: personalPrefs.value }),
+          body: JSON.stringify({ content: personalArea.value }),
         });
-        const data = await res.json();
-        prefsStatus.textContent = data.status === "ok" ? "✓ Saved" : "✗ Failed";
-        prefsStatus.style.color = data.status === "ok" ? "var(--success, #4caf50)" : "var(--error, #f44336)";
-        setTimeout(() => { prefsStatus.textContent = ""; }, 3000);
+        if (res.ok) {
+          personalStatus.textContent = "✓ Saved";
+          showToast("👤 Personal context saved", "success");
+        } else {
+          personalStatus.textContent = "Failed to save.";
+          showToast("✕ Failed to save personal context", "error");
+        }
       } catch (e) {
-        prefsStatus.textContent = "✗ Error";
-        prefsStatus.style.color = "var(--error, #f44336)";
+        personalStatus.textContent = "Error.";
+        showToast("✕ Error saving personal context", "error");
+      } finally {
+        personalSaveBtn.disabled = false;
+        setTimeout(() => { personalStatus.textContent = ""; }, 3000);
       }
     });
 
     // Load memory + search settings when Brain tab is clicked
     document.querySelector('[data-tab="brain"]').addEventListener("click", () => {
-      loadPreferences();
+      loadPersonal();
       loadMemory();
       loadProtected();
       loadMemorySearchSettings();
@@ -4474,7 +4726,75 @@
           headlessToggle.checked = data.headless;
         }
       } catch {}
+      // Also load context pass settings
+      loadContextPassSettings();
     }
+
+    // ── Context Pass Settings ──
+    const ctxPassModel = document.getElementById("ctxPassModel");
+    const ctxPassBrowserAcc = document.getElementById("ctxPassBrowserAcc");
+
+    function populateCtxPassModels() {
+      if (!ctxPassModel) return;
+      const current = ctxPassModel.value;
+      ctxPassModel.innerHTML = '<option value="">Default (current model)</option>';
+      for (const m of modelList) {
+        const opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = m.name || m.id;
+        ctxPassModel.appendChild(opt);
+      }
+      ctxPassModel.value = current;
+    }
+
+    async function populateCtxPassProfiles() {
+      if (!ctxPassBrowserAcc) return;
+      const current = ctxPassBrowserAcc.value;
+      ctxPassBrowserAcc.innerHTML = '<option value="">Default (current)</option>';
+      try {
+        const res = await fetch("/api/settings/accounts");
+        if (res.ok) {
+          const data = await res.json();
+          for (const acc of (data.accounts || [])) {
+            const opt = document.createElement("option");
+            opt.value = acc.name;
+            opt.textContent = acc.email ? `${acc.name} (${acc.email})` : acc.name;
+            ctxPassBrowserAcc.appendChild(opt);
+          }
+        }
+      } catch {}
+      ctxPassBrowserAcc.value = current;
+    }
+
+    async function loadContextPassSettings() {
+      populateCtxPassModels();
+      await populateCtxPassProfiles();
+      try {
+        const res = await fetch("/api/settings/context-pass");
+        if (res.ok) {
+          const d = await res.json();
+          if (ctxPassModel) ctxPassModel.value = d.summarizer_model || "";
+          if (ctxPassBrowserAcc) ctxPassBrowserAcc.value = d.browser_data_acc || "";
+        }
+      } catch {}
+    }
+
+    async function saveContextPassSettings() {
+      try {
+        await fetch("/api/settings/context-pass", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            summarizer_model: ctxPassModel ? ctxPassModel.value : "",
+            browser_data_acc: ctxPassBrowserAcc ? ctxPassBrowserAcc.value : "",
+          }),
+        });
+      } catch {}
+    }
+
+    if (ctxPassModel) ctxPassModel.addEventListener("change", saveContextPassSettings);
+    if (ctxPassBrowserAcc) ctxPassBrowserAcc.addEventListener("change", saveContextPassSettings);
+    // ── /Context Pass Settings ──
 
     refreshWafBtn.addEventListener("click", async () => {
       refreshWafBtn.disabled = true;
@@ -4714,6 +5034,71 @@
       }
     })();
 
+    // ---------- System Font Size ----------
+    const SYS_FONT_KEY = "sable_system_font_size";
+    const systemFontSizeSelect = document.getElementById("systemFontSizeSelect");
+
+    function applySystemFontSize(size) {
+      document.documentElement.style.setProperty("--font-size-system", size);
+    }
+
+    systemFontSizeSelect.addEventListener("change", () => {
+      const size = systemFontSizeSelect.value;
+      applySystemFontSize(size);
+      try { localStorage.setItem(SYS_FONT_KEY, size); } catch (e) {}
+    });
+
+    (function loadSystemFontSize() {
+      let saved = null;
+      try { saved = localStorage.getItem(SYS_FONT_KEY); } catch (e) {}
+      if (saved) { systemFontSizeSelect.value = saved; applySystemFontSize(saved); }
+    })();
+
+    // ---------- Editor Font Size ----------
+    const EDITOR_FONT_KEY = "sable_editor_font_size";
+    const editorFontSizeSelect = document.getElementById("editorFontSizeSelect");
+
+    function applyEditorFontSize(size) {
+      const px = parseInt(size, 10);
+      document.documentElement.style.setProperty("--editor-font-size", px + "px");
+      // Update all active Monaco editors (instances are local to filesystem.js IIFE)
+      if (typeof monaco !== "undefined" && monaco.editor && monaco.editor.getEditors) {
+        monaco.editor.getEditors().forEach(ed => ed.updateOptions({ fontSize: px }));
+      }
+    }
+
+    editorFontSizeSelect.addEventListener("change", () => {
+      const size = editorFontSizeSelect.value;
+      applyEditorFontSize(size);
+      try { localStorage.setItem(EDITOR_FONT_KEY, size); } catch (e) {}
+    });
+
+    (function loadEditorFontSize() {
+      let saved = null;
+      try { saved = localStorage.getItem(EDITOR_FONT_KEY); } catch (e) {}
+      if (saved) { editorFontSizeSelect.value = saved; applyEditorFontSize(saved); }
+    })();
+
+    // ---------- IDE Chat Font Size ----------
+    const IDE_CHAT_FONT_KEY = "sable_ide_chat_font_size";
+    const ideChatFontSizeSelect = document.getElementById("ideChatFontSizeSelect");
+
+    function applyIdeChatFontSize(size) {
+      document.documentElement.style.setProperty("--ide-chat-font-size", size);
+    }
+
+    ideChatFontSizeSelect.addEventListener("change", () => {
+      const size = ideChatFontSizeSelect.value;
+      applyIdeChatFontSize(size);
+      try { localStorage.setItem(IDE_CHAT_FONT_KEY, size); } catch (e) {}
+    });
+
+    (function loadIdeChatFontSize() {
+      let saved = null;
+      try { saved = localStorage.getItem(IDE_CHAT_FONT_KEY); } catch (e) {}
+      if (saved) { ideChatFontSizeSelect.value = saved; applyIdeChatFontSize(saved); }
+    })();
+
     // ---------- Font Family ----------
     const FONT_FAMILY_KEY = "sable_font_family";
     const fontFamilySelect = document.getElementById("fontFamilySelect");
@@ -4744,6 +5129,164 @@
       }
     })();
 
+
+    // ---------- MCP Server Management ----------
+    async function loadMcpServers() {
+      const listEl = document.getElementById("mcpServerList");
+      const statusEl = document.getElementById("mcpStatus");
+      if (!listEl) return;
+      try {
+        const res = await fetch("/api/settings/mcp");
+        const data = await res.json();
+        const servers = data.servers || [];
+        if (servers.length === 0) {
+          listEl.innerHTML = '<p style="font-size:12px;color:var(--text-dim);padding:8px 0;">No MCP servers configured yet. Add one above to get started.</p>';
+          return;
+        }
+        listEl.innerHTML = servers.map(s => `
+          <div style="border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--panel);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span style="width:8px;height:8px;border-radius:50%;background:${s.connected ? '#4ade80' : '#f87171'};display:inline-block;"></span>
+                <span style="font-size:13px;font-weight:600;color:var(--text);">${s.name}</span>
+                <span style="font-size:11px;color:var(--text-dim);">${s.command} ${(s.args||[]).join(' ')}</span>
+              </div>
+              <div style="display:flex;gap:4px;">
+                ${s.connected
+                  ? `<button onclick="mcpDisconnect('${s.name}')" class="icon-btn" style="width:auto;padding:4px 10px;font-size:11px;">Disconnect</button>`
+                  : `<button onclick="mcpConnect('${s.name}')" class="icon-btn" style="width:auto;padding:4px 10px;font-size:11px;">Connect</button>`
+                }
+                <button onclick="mcpRemove('${s.name}')" class="icon-btn" style="width:auto;padding:4px 10px;font-size:11px;color:#f87171;">Remove</button>
+              </div>
+            </div>
+            <div style="margin-top:6px;display:flex;gap:4px;align-items:center;">
+              <input type="password" id="mcpEnv_${s.name}" placeholder="GITHUB_PERSONAL_ACCESS_TOKEN" value="${(s.env && Object.values(s.env)[0]) || ''}" style="flex:1;padding:4px 8px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);" />
+              <button onclick="mcpUpdateEnv('${s.name}')" class="icon-btn" style="width:auto;padding:4px 10px;font-size:11px;">Save Env</button>
+            </div>
+            ${s.error ? `<p style="font-size:11px;color:#f87171;margin:4px 0 0 0;">⚠️ ${s.error}</p>` : ''}
+            ${s.tools && s.tools.length > 0 ? `
+              <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);">
+                <p style="font-size:11px;color:var(--text-dim);margin:0 0 4px 0;">Tools (${s.tools.length}):</p>
+                <div style="display:flex;flex-wrap:wrap;gap:4px;">
+                  ${s.tools.map(t => `<span style="font-size:10px;padding:2px 8px;border-radius:6px;background:var(--bg);border:1px solid var(--border);color:var(--text);" title="${t.description || ''}">${t.name}</span>`).join('')}
+                </div>
+              </div>
+            ` : ''}
+          </div>
+        `).join('');
+        statusEl.textContent = `${servers.length} server(s) configured, ${servers.filter(s=>s.connected).length} connected`;
+      } catch (e) {
+        statusEl.textContent = "Failed to load MCP servers: " + e.message;
+      }
+    }
+
+    async function mcpAddServer() {
+      const name = document.getElementById("mcpName").value.trim();
+      const command = document.getElementById("mcpCommand").value.trim();
+      const argsRaw = document.getElementById("mcpArgs").value.trim();
+      const envRaw = document.getElementById("mcpEnv").value.trim();
+      const statusEl = document.getElementById("mcpStatus");
+
+      if (!name || !command) {
+        statusEl.textContent = "❌ Name and command are required.";
+        return;
+      }
+
+      const args = argsRaw ? argsRaw.split(',').map(a => a.trim()).filter(Boolean) : [];
+      let env = {};
+      if (envRaw) {
+        try { env = JSON.parse(envRaw); } catch (e) {
+          statusEl.textContent = "❌ Invalid env JSON.";
+          return;
+        }
+      }
+
+      try {
+        const res = await fetch("/api/settings/mcp", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({name, command, args, env}),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          statusEl.textContent = `✅ Server '${name}' added.`;
+          document.getElementById("mcpName").value = "";
+          document.getElementById("mcpCommand").value = "";
+          document.getElementById("mcpArgs").value = "";
+          document.getElementById("mcpEnv").value = "";
+          loadMcpServers();
+        } else {
+          statusEl.textContent = "❌ " + (data.detail || "Failed to add server");
+        }
+      } catch (e) {
+        statusEl.textContent = "❌ " + e.message;
+      }
+    }
+
+    async function mcpConnect(name) {
+      const statusEl = document.getElementById("mcpStatus");
+      statusEl.textContent = `Connecting to '${name}'…`;
+      try {
+        const res = await fetch(`/api/settings/mcp/${name}/connect`, {method: "POST"});
+        const data = await res.json();
+        if (data.connected) {
+          statusEl.textContent = `✅ '${name}' connected — ${data.tools.length} tools discovered.`;
+        } else {
+          statusEl.textContent = `❌ '${name}' failed: ${data.error || 'unknown error'}`;
+        }
+        loadMcpServers();
+      } catch (e) {
+        statusEl.textContent = "❌ " + e.message;
+      }
+    }
+
+    async function mcpDisconnect(name) {
+      try {
+        await fetch(`/api/settings/mcp/${name}/disconnect`, {method: "POST"});
+        loadMcpServers();
+      } catch (e) {
+        document.getElementById("mcpStatus").textContent = "❌ " + e.message;
+      }
+    }
+
+    async function mcpRemove(name) {
+      if (!confirm(`Remove MCP server '${name}'?`)) return;
+      try {
+        const res = await fetch(`/api/settings/mcp/${name}`, {method: "DELETE"});
+        if (res.ok) {
+          document.getElementById("mcpStatus").textContent = `Server '${name}' removed.`;
+          loadMcpServers();
+        }
+      } catch (e) {
+        document.getElementById("mcpStatus").textContent = "❌ " + e.message;
+      }
+    }
+
+    async function mcpUpdateEnv(name) {
+      const input = document.getElementById(`mcpEnv_${name}`);
+      const statusEl = document.getElementById("mcpStatus");
+      if (!input || !statusEl) return;
+      const val = input.value.trim();
+      try {
+        const res = await fetch(`/api/settings/mcp/${name}`, {
+          method: "PUT",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({env: {GITHUB_PERSONAL_ACCESS_TOKEN: val}}),
+        });
+        if (res.ok) {
+          statusEl.textContent = `✅ Env updated for '${name}'. Reconnect to apply.`;
+        } else {
+          const err = await res.json().catch(() => ({detail: res.statusText}));
+          statusEl.textContent = "❌ " + (err.detail || "Failed to update env");
+        }
+      } catch (e) {
+        statusEl.textContent = "❌ " + e.message;
+      }
+    }
+
+    // Wire up the Add button
+    const mcpAddBtn = document.getElementById("mcpAddBtn");
+    if (mcpAddBtn) mcpAddBtn.addEventListener("click", mcpAddServer);
 
 
     // ---------- Icon Style ----------
@@ -5189,7 +5732,7 @@
 
   document.addEventListener('contextmenu', (e) => {
     // Only on main area / sidebar, not on inputs or textareas
-    if (e.target.closest('textarea, input, select, .ctx-menu')) return;
+    if (e.target.closest('textarea, input, select, .ctx-menu, #fsOverlay')) return;
     e.preventDefault();
 
     const x = Math.min(e.clientX, window.innerWidth - ctxMenu.offsetWidth - 12);
@@ -5237,6 +5780,27 @@
       document.getElementById('newChat')?.click();
     } else if (action === 'settings') {
       document.getElementById('settingsBtn')?.click();
+    } else if (action === 'context-pass') {
+      if (!activeChatId) { showToast('No active chat to pass context from', 'error'); return; }
+      showToast('Summarizing context…', 'info');
+      try {
+        const res = await fetch('/api/context/pass', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: activeChatId, model: selectedModel }),
+        });
+        const d = await res.json();
+        if (!res.ok || d.error) { showToast(d.error || 'Context pass failed', 'error'); return; }
+        const summary = d.summary;
+        if (!summary) { showToast('Empty summary returned', 'error'); return; }
+        // Create new chat and auto-send the summary as first message
+        const created = await createChat();
+        if (!created) { showToast('Failed to create new chat', 'error'); return; }
+        inputEl.value = summary;
+        autoResize();
+        await sendMessage();
+        showToast('Context passed to new chat', 'success');
+      } catch (e) { showToast('Context pass error: ' + e.message, 'error'); }
     } else if (action === 'sync-context') {
       showToast('Syncing context…', 'info');
       try {

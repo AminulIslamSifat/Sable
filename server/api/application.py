@@ -36,6 +36,9 @@ from .routes.chat import router as chat_router
 from .routes.misc import router as misc_router
 from .routes.agents import router as agents_router
 from .routes.library import router as library_router
+from .routes.email import router as email_router
+from .routes.filesystem import router as filesystem_router
+from .routes.terminal import router as terminal_router
 
 def _raise_nofile_limit() -> None:
     """Raise open file limit for agentic workloads (browsers, agents, streams)."""
@@ -57,6 +60,13 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     import asyncio as _aio
     from engine.agents import get_runtime as _get_rt_startup
     _get_rt_startup()._loop = _aio.get_running_loop()
+
+    # Auto-connect enabled MCP servers in the background
+    try:
+        from engine.mcp.manager import get_mcp_manager
+        _aio.create_task(get_mcp_manager().connect_all_enabled())
+    except Exception as exc:
+        logger.warning("MCP auto-connect failed: %s: %s", type(exc).__name__, exc)
 
     init_db()
     stale = recover_stale_agents()
@@ -90,10 +100,22 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
         get_deepseek_client().set_token(ds_token)
     except Exception as exc:
         logger.warning("DeepSeek startup token refresh failed: %s: %s", type(exc).__name__, exc)
+    # Auto-sync context for the active browser profile on startup
+    try:
+        await service.sync_context()
+        logger.info("Context synced on startup")
+    except Exception as exc:
+        logger.warning("Startup sync_context failed: %s: %s", type(exc).__name__, exc)
     yield
     await service.close()
     from engine.scraper import scraper as scraper_service
     await scraper_service.stop(kill_browser=True)
+    # Shutdown MCP connections
+    try:
+        from engine.mcp.manager import get_mcp_manager
+        await get_mcp_manager().shutdown()
+    except Exception:
+        pass
 
 app = FastAPI(title="Sable API", version="0.4.0", lifespan=lifespan)
 
@@ -146,6 +168,9 @@ app.include_router(chat_router)
 app.include_router(misc_router)
 app.include_router(agents_router)
 app.include_router(library_router)
+app.include_router(email_router)
+app.include_router(filesystem_router)
+app.include_router(terminal_router)
 
 # Wire agent runtime event callback → SSE push
 from .routes.agents import _async_push_agent_event, push_agent_event

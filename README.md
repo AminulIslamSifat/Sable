@@ -1,15 +1,7 @@
 
----
-title: Sable README
-date: 2026-08-02
-type: reference
-tags: [sable, documentation, setup]
-status: active
----
-
 # Sable
 
-Self-hosted agentic chat platform that proxies Qwen and DeepSeek through a local FastAPI server with persistent memory, 20 built-in skills, multi-agent orchestration, and a browser-based PWA UI. Runs entirely on your machine — no cloud API keys required for Qwen (browser session auth), DeepSeek uses PoW + localStorage token.
+Self-hosted agentic development companion combining AI chat, a full web IDE, browser automation, multi-agent orchestration, persistent memory, and a content library into one personal platform. Proxies Qwen and DeepSeek through browser session auth (no API keys required for Qwen), supports Gemini/Groq/Mistral via API keys, and runs entirely on your machine.
 
 ***
 
@@ -35,140 +27,317 @@ Open `http://127.0.0.1:61770` in your browser. First run opens a Chromium window
 ## Architecture
 
 ```
-server.py          → uvicorn entry point (host/port from engine/config.py)
-server/            → FastAPI app, routes, database, config, utils
-engine/            → Core logic: chat streaming, session/token mgmt, memory search, skills, scraper
-skills/            → 20 skill directories (instruction.md + skill.json + optional scripts/)
-connectors/        → DeepSeek HTTP client with Go PoW solver
-web/               → Vanilla JS frontend (app.js + modular CSS, esbuild bundle from web/src/)
-Brain/             → Memory.json + Protected.json (persistent knowledge base)
-system/            → Runtime data: SQLite DB, browser profiles, uploads, auth tokens (gitignored)
-output/            → Generated notes, assets, logs, session archives (gitignored)
-instruction/       → System prompts (Maria.md) and output format configs
+server.py              → uvicorn entry point (host/port from engine/config.py)
+server/                → FastAPI app, routes, database, config, utils
+  api/routes/          → chat, settings, memory, agents, filesystem, email,
+                         terminal, library, scraper, upload, misc
+engine/                → Core logic
+  chat.py              → Qwen SSE streaming via httpx, auto token refresh
+  session.py           → Playwright BrowserManager: header sniffing, WAF capture,
+                         Aliyun OSS upload, DeepSeek token extraction
+  service.py           → ChatService: persistent Chromium session, streaming
+  config.py            → Models, endpoints, paths, custom model registry
+  memory_search.py     → fastembed vector search over Brain/Memory.json
+  scraper.py           → Browser scraper orchestrator (engine loading, lifecycle)
+  scraper_engines/     → CDP-based browser engines (Qwen 103KB, DeepSeek 50KB)
+  skills/              → SkillEngine: registry, parser, middleware, handlers, bg jobs
+  agents/              → Multi-agent: loop, runtime, teacher, auto-turn, resilience
+  mcp/                 → MCP client: stdio subprocess manager, tool routing
+  diary/               → Gemini-powered session summarization + synthesis
+  security/            → Prompt guard, middleware
+skills/                → 22 skill directories (instruction.md + skill.json + scripts/)
+connectors/            → API backend clients (DeepSeek, Gemini, Groq, Mistral)
+web/                   → Frontend: vanilla JS PWA with embedded IDE
+  app.js               → Main application (241KB): markdown renderer, SSE, auth, chat
+  js/agents.js         → Multi-agent visualization (top bar, panel, todos)
+  js/filesystem.js     → File tree explorer + Monaco editor + diff review
+  js/terminal.js       → xterm.js integrated terminal
+  js/mode.js           → Agent ↔ IDE layout switching
+  css/                 → 8 stylesheets, 11 themes, glassmorphism design system
+  vendor/              → Bundled: Monaco, xterm.js, Mermaid, MathJax, Lucide, DOMPurify
+Brain/                 → Memory.json + Protected.json + skills.json (persistent knowledge)
+system/                → Runtime data: SQLite DB (108MB), 115+ browser profiles,
+                         auth tokens, agent config, MCP config (gitignored)
+output/                → Generated notes, research, agent logs, assets (gitignored)
+instruction/           → System prompts (Maria.md), output format, personal context
 ```
 
-### Key Components
+***
 
-| Component | Purpose |
+## Core Systems
+
+### Chat & Streaming
+
+SSE-based streaming with typewriter animation (adaptive: low-memory devices get larger batches). Supports thinking modes (Fast/Auto/Thinking) per model. Multi-tab chat with independent scroll positions. Context injection includes timestamp, cwd, and open file metadata.
+
+- **Qwen backend**: Browser session auth via Playwright. WAF tokens (`bx-ua`, `bx-umidtoken`) sniffed from live Chromium requests. Auto-refresh on 401/403. Aliyun OSS image upload with STS token flow.
+- **DeepSeek backend**: Pure HTTP connector. Auth token extracted from browser `localStorage`. Each request solves a PoW challenge via Go binary (`connectors/deepseek/pow_solver/`).
+- **API connectors**: Gemini, Groq, Mistral — all with multi-key rotation and streaming.
+
+### Multi-Account Browser Profiles
+
+115+ browser profile directories under `system/` for multi-account management:
+
+- `browser-data-acc1` through `browser-data-accN` — individual sessions
+- `browser-data` — symlink to active account
+- `browser-scraper-data` — dedicated scraper profile
+- `automation-browser-data` — automation/testing profile
+- Each has a `.bak` counterpart for backup/restore
+
+Profile stripping removes cache/GPU data while preserving cookies, localStorage, and session state. Switch via UI, API (`POST /api/settings/accounts/switch`), or `engine/browser_opener.py`.
+
+### Scraper Engines (Browser Automation)
+
+Two dedicated CDP-based browser engines for driving live chat interfaces:
+
+| Engine | Size | Target |
+|:--|:--|:--|
+| `scraper_engines/qwen/qwen_engine.py` | 103KB | chat.qwen.ai |
+| `scraper_engines/deepseek/deepseek_engine.py` | 50KB | chat.deepseek.com |
+
+**Capabilities:**
+- Chrome/Thorium/Playwright-Chromium launch with remote debugging
+- WebSocket proxy that intercepts CDP messages (webview→page type rewriting)
+- HTTP proxy for CDP endpoint discovery
+- DOM mutation observer response capture + clipboard fallback (`wl-paste`/`xclip`)
+- Instruction injection with SHA256 hash tracking (re-injects only on change)
+- Thought expansion automation (clicks expand buttons periodically)
+- Session markdown archival organized by date folders
+- CSS injection to hide UI garbage
+- Obsidian port conflict detection (diverts to alternate port)
+- Headed/headless mode switching with profile lock management
+
+The scraper orchestrator (`engine/scraper.py`) dynamically loads engine modules, manages browser lifecycle, probes existing CDP sessions before spawning duplicates, and exposes the same async interface as the HTTP ChatService.
+
+### Multi-Agent Orchestration
+
+Hub-and-spoke architecture with wave-based parallel execution:
+
+- **Roles**: researcher, coder, reviewer, writer, utility
+- **Concurrency**: Up to 5 simultaneous agents
+- **Resilience**: Circuit breakers per backend, loop detection (consecutive + total call limits)
+- **Todo tracking**: `<todo_done>` / `<todo_sub>` tags with live progress visualization
+- **Auto-turn**: Agent completions signal the frontend to run a normal chat turn, rendering results identically to user-initiated messages
+- **Decomposer**: Heuristic pre-filter suggesting when messages benefit from parallel agents
+- **Teacher escalation**: Escalate difficult subtasks to a more capable model
+- **Notifications**: Per-chat async queue; Maria drains pending events at turn start
+- **Output**: Agent results saved as markdown to `output/agent/`, browsable via Library
+
+Each agent gets isolated session context, role-specific skill scoping (`allowed_skills` + `default_skills`), and configurable model routing. Skill instructions are injected dynamically from `instruction.md` files.
+
+### Memory System
+
+- **Storage**: `Brain/Memory.json` (categories: semantic, episodic, procedural, ephemeral) + `Brain/Protected.json`
+- **Search**: fastembed vector search with configurable top-k, thresholds, and max prompt chars (auto-disables on <8GB RAM)
+- **Deduplication**: Injected memory keys tracked per chat session
+- **Consolidation**: Endpoints propose memory updates from conversation content
+- **Human-readable**: JSON you can edit by hand — no opaque vector DB
+
+### Skill Engine (22 Skills)
+
+Self-contained skill directories with auto-discovery:
+
+```
+skills/<name>/
+├── instruction.md    # Routing protocol + usage docs
+├── skill.json        # Manifest: name, key, version, tags, priority, scope
+└── scripts/          # Optional helper scripts
+```
+
+**Architecture:**
+- **Registry** (`registry.py`): Discovery, validation, priority-based tag ownership
+- **Parser** (`parser.py`): Streaming XML tag extraction within `<action>` blocks, malformed tag recovery, live progress events
+- **Middleware** (`middleware.py`): Validation → Permission → Execution → Logging pipeline
+- **Engine** (`engine.py`): Orchestrates dispatch, emits SSE events
+- **Background jobs** (`bg_jobs.py`): Namespaced process tracking with log files
+- **Handlers** (`handlers/`): execute, file_ops, io, web implementations
+
+| Category | Skills |
 |:--|:--|
-| `engine/service.py` | ChatService: persistent Chromium session, header refresh, streaming |
-| `engine/chat.py` | Qwen SSE streaming via httpx, auto token refresh on 401/403 |
-| `engine/session.py` | Playwright-based BrowserManager for header sniffing & context sync |
-| `engine/memory_search.py` | fastembed vector search over Brain/Memory.json |
-| `engine/skills/` | SkillEngine discovery, parsing, handler dispatch, middleware pipeline |
-| `connectors/deepseek/client.py` | DeepSeek HTTP client with PoW challenge solving |
-| `server/api/routes/chat.py` | Main POST /api/chat endpoint with skill loop + memory injection |
-| `server/database.py` | Raw sqlite3 (no ORM), chats/messages/settings tables |
-| `web/app.js` | Bundled frontend (esbuild from web/src/), streaming chat UI, settings panels |
-| `web/js/agents.js` | Extracted multi-agent visualization module |
+| Code & System | code_editor, background_command, system_repair, testing_debugging, grep_search |
+| Research & Web | online_search, deep_research, http_client, browser_control |
+| Documents | document_skills (pdf, docx, pptx, xlsx) |
+| Visuals | graph_master, svg_creator, frontend_design, simulacra_engine |
+| Study | study_suite |
+| Media | youtube_downloader |
+| Device | phone_control |
+| Meta | multi_agent, ask_user, file_uploader, mcp, text_humanizer |
+
+### MCP Client Integration
+
+Full Model Context Protocol client (`engine/mcp/manager.py`):
+
+- Spawns MCP servers as subprocesses over stdio
+- Tool discovery via `list_tools()`
+- Auto-routing: `call_tool_auto()` finds which server owns a tool
+- Event loop isolation (separate asyncio tasks avoid anyio cancel scope conflicts)
+- System prompt section generation listing all connected tools
+- Config persistence in `system/mcp_servers.json`
+- Handler bridges worker threads to main event loop via `run_coroutine_threadsafe`
+
+### Diary System
+
+Gemini-powered reflective session synthesis (`engine/diary/`):
+
+- **Summarizer** (`summarizer.py`): Summarizes individual session logs via Gemini API
+- **Synthesizer** (`synthesizer.py`): Merges per-session summaries into cohesive diary entries with structured sections (Arc & snapshot, Highlights, Technical/work, Threads & next steps, Closing note)
+- **Key rotation** (`gemini_helpers.py`): Multi-API-key rotation with persistent state tracking across calls. Uses `gemini-3.1-flash-lite` with configurable temperature per task. Handles up to 900K chars input.
+
+### Email (IMAP/SMTP Client)
+
+Full email client (`server/api/routes/email.py`):
+
+- IMAP connection with SSL/TLS, folder listing, message search
+- MIME header decoding, multipart body extraction (plain → HTML fallback)
+- Attachment listing with size/content-type metadata
+- SMTP send with MIMEMultipart, HTML support, CC, attachments
+- Sent folder auto-detection (Gmail, Outlook, Yahoo naming conventions)
+- Configuration persistence with connection testing before save
+
+***
+
+## Web IDE
+
+Sable includes a complete browser-based development environment alongside the chat.
+
+### Monaco Editor
+
+- Full VS Code editor loaded from `/static/vendor/monaco/`
+- Language detection by file extension (Python, JS, TS, HTML, CSS, JSON, YAML, Markdown, TOML, SQL, XML, SVG, shell scripts)
+- Configurable font size (persisted to localStorage)
+- Dirty state tracking with auto-save on file switch
+- Ctrl+S keyboard shortcut
+- Binary file detection with placeholder display
+
+### File Tree Explorer
+
+- Recursive directory browsing with expand/collapse
+- 30+ file type icon mappings (Lucide icons)
+- Root picker with server-side folder selection (`/api/filesystem/pick-folder`)
+- Recent folders history (localStorage, max 8)
+- Quick access roots from server API
+- New file/folder creation from toolbar
+- File size display, active file highlighting, path bar
+
+### Integrated Terminal
+
+- **Real PTY** via `os.forkpty()` (same mechanism as VS Code/node-pty)
+- **Fish shell** with terminal capability probe interception:
+  - Kitty keyboard, XTVERSION, OSC11 background, DA1, Cursor Position Report
+  - Deliberately skips XTGETTCAP to prevent fish leaking replies as typed text
+- **WebSocket bridge**: JSON protocol (input/output/resize/exit)
+- **Window resize**: SIGWINCH forwarding + TIOCSWINSZ ioctl
+- **xterm.js frontend** with resizable panel (VS Code-style)
+- **Multiple views**: Terminal, Output, Problems tabs
+- **Session management**: new/clear/kill actions
+
+### Diff Review System
+
+- Monaco's built-in diff viewer for pending file edits
+- Per-file revert button (restores from `.sable_backups/`)
+- Accept/reject workflow for AI-generated changes
+- Slide-in sidebar with smooth animation
+
+### Layout Modes
+
+| Mode | Description |
+|:--|:--|
+| **Agent** | Full-width chat with sidebar |
+| **IDE** | Compact chat panel + Monaco editor + file tree + terminal |
+
+IDE mode features:
+- Compact chat mirrors main messages via MutationObserver (adaptive: 16ms during streaming, 80ms idle)
+- Session persistence (restores last folder + file)
+- Sidebar toggle opens full chat history overlay
+- Independent resize handles for chat width and diff sidebar
+
+***
+
+## Library
+
+Centralized content browser (`/api/library/`):
+
+| Section | Source | Content |
+|:--|:--|:--|
+| Agents | `output/agent/` | Agent result markdown (excludes `_conversation` logs) |
+| Research | `output/research/` | Deep research reports |
+| Notes | `output/notes/` | Generated notes |
+| Gallery | `system/uploads/` | Uploaded/generated images (png, jpg, svg, webp, gif) |
+| Skills | `Brain/skills.json` | User-created skill definitions |
+
+Features:
+- YAML frontmatter parsing (title, date, tags)
+- Preview extraction (first meaningful paragraph)
+- Date-sorted display
+- Inline content reading with path traversal protection
 
 ***
 
 ## Supported Models
 
-Model definitions live in `engine/config.py` → `MODELS` list.
+Model definitions live in `engine/config.py` → `MODELS` list + custom models from `system/.custom_models.json`.
 
 | Model ID | Backend | Thinking Modes |
 |:--|:--|:--|
-| `qwen3.8-max-preview` | Qwen | Thinking |
-| `qwen3.7-max` | Qwen | Fast, Thinking |
-| `qwen3.7-plus` | Qwen | Fast, Auto, Thinking |
-| `deepseek-expert` | DeepSeek API | Fast, Thinking |
-| `deepseek-instant` | DeepSeek API | Fast, Thinking |
-| `deepseek-vision` | DeepSeek API | Fast, Thinking |
+| `qwen3.8-max` | Qwen (browser) | Fast / Auto / Thinking |
+| `qwen3.7-max` | Qwen (browser) | Fast / Thinking |
+| `qwen3.7-plus` | Qwen (browser) | Fast / Auto / Thinking |
+| `deepseek-expert` | DeepSeek API | Fast / Thinking |
+| `deepseek-instant` | DeepSeek API | Fast / Thinking |
+| `deepseek-vision` | DeepSeek API | Fast / Thinking |
+| `gemini-2.5-flash` | Gemini API | Fast / Low / Medium / High |
+| `gemini-2.5-pro` | Gemini API | Fast / Low / Medium / High |
 
-Default model is the first entry (`qwen3.8-max-preview`). `/api/models` exposes each model with its `api_backend` field.
-
-### Backend Routing
-
-- **Qwen**: Routes through `ChatService` using a persistent Chromium profile. Headers are sniffed from browser sessions and refreshed automatically on auth rejection. Active profile configured via `BROWSER_DATA_DIR` in `engine/config.py`.
-- **DeepSeek**: Pure HTTP connector. Auth token extracted from browser `localStorage`, cached at `connectors/deepseek/.token_cache.json`. Each request solves a PoW challenge via the Go binary at `connectors/deepseek/pow_solver/pow_solver`. Instruction files prepended to first message of each session.
-- **Scraper mode**: Optional, disabled by default. Drives a live browser engine instead of the API path. Settings in `system/scraper_settings.json`. Chats are mode-locked (`api` or `scraper`).
+Custom models can be added/hidden via the Providers UI. The connector registry (`connectors/__init__.py`) lazy-loads backend clients and exposes `resolve_backend()` + `get_connector()` + `is_backend_available()`.
 
 ***
 
-## Skills (20)
+## Frontend
 
-Each skill is a self-contained directory under `skills/` with `instruction.md`, `skill.json`, and optional `scripts/`. Auto-discovered at startup — drop a folder in, restart, done.
+Vanilla JS PWA — zero framework dependencies, fully offline-capable.
 
-| Category | Skills |
-|:--|:--|
-| **Code & System** | code_editor, background_command, system_repair, testing_debugging |
-| **Research & Web** | online_search, deep_research, http_client, browser_control |
-| **Documents** | document_skills (pdf, docx, pptx, xlsx) |
-| **Visuals** | graph_master, svg_creator, frontend_design, simulacra_engine |
-| **Study** | study_suite |
-| **Media** | youtube_downloader |
-| **Device** | phone_control |
-| **Meta** | multi_agent, ask_user, file_uploader |
+### Application (app.js — 241KB)
 
-### Skill Engine Architecture
+- **Custom markdown renderer**: Headers, bold/italic/strikethrough, `==highlight==`, code, tables, nested lists, Obsidian-style callouts (20+ types), links, images. HTML-escaped by construction.
+- **MathJax**: Inline `$...$` and block `$$...$$` math
+- **Mermaid**: Flowcharts, sequence diagrams, Gantt charts
+- **Auth gate**: Token-based login, auto-inject bearer into all requests, 401 → re-login without reload
+- **SSE streaming**: Real-time with typewriter animation
+- **Model/thinking switchers**: Glass dropdown UI, capability-aware attachments
+- **File attachment**: Drag-and-drop, preview chips, upload progress
+- **Context menu**: Right-click for new/settings/sync/archive/delete
+- **Chat search**: Floating animated search input
 
-```
-engine/skills/
-├── __init__.py          # Public API: SkillEngine, SkillParser, HANDLER_MAP
-├── registry.py          # discover_skills(), validate_registry(), SkillMeta
-├── engine.py            # SkillEngine orchestrator
-├── parser.py            # SkillParser (action-gated tag extraction)
-├── middleware.py        # Validation → Permission → Execution → Logging pipeline
-├── events.py            # SSE event builders
-├── bg_jobs.py           # BackgroundJobManager
-└── handlers/            # Tag handler implementations
-    ├── common.py        # Shared constants, paths, helpers
-    ├── execute.py       # execute_command, background, check_command
-    ├── file_ops.py      # view_file, edit_file, create_file, insert_file
-    ├── io.py            # get_file, create_note, save_svg
-    └── web.py           # openweb, online_search
-```
+### Design System
 
-### Execution Rules
+- **11 themes**: Default, Noctalia, Ember, Ocean, Forest, Rosé, Indigo, Crimson, Mono, Teal, Blue
+- **Glassmorphism**: `color-mix()` with multi-layer inset box-shadows
+- **Self-hosted fonts**: Maple Mono (4 weights) + Inter (4 weights)
+- **Dual icon system**: Emoji fallbacks + Lucide icons
+- **Responsive**: Mobile sidebar overlay, touch targets, horizontal scroll panels
+- **PWA**: Manifest + service worker + Apple mobile meta tags
 
-- Default command timeout: **15 seconds**, max **180 seconds**
-- File mutations backed up to `.sable_backups/`
-- Native editor tags call `skills/code_editor/scripts/editor_tools.py` as fresh subprocess (no restart needed)
-- Execution emits `skill_start`, `skill_output`, `skill_end` SSE events
-- File edits revertible via `POST /api/file/revert`
-- Tag conflicts resolved by priority (higher wins, warning logged)
+### Bundled Libraries
 
-***
-
-## Multi-Agent Orchestration
-
-Hub-and-spoke architecture with wave-based parallel execution:
-
-- Spawn up to 5 concurrent background agents (researcher, coder, reviewer, writer, utility)
-- Each agent has isolated session context and configurable model routing
-- Results return as notifications; main thread continues chatting
-- Agent config: `system/agent_config.json`
-- Frontend visualization: `web/js/agents.js`
-
-***
-
-## Memory System
-
-Memory files live in `Brain/`:
-
-- `Memory.json` — categories: semantic, episodic, procedural, ephemeral
-- `Protected.json` — protected memories managed via `/api/settings/memory/protected`
-
-Memory search settings: `system/memory_search_settings.json` (model, top-k, thresholds, enabled flag). Editable via UI.
-
-During chat, relevant memories are searched via fastembed and injected best-effort. Injected keys are deduplicated per chat using the `memory_keys` column. Consolidation endpoints propose memory updates from conversation content:
-
-- `POST /api/memory/consolidate` (API mode)
-- `POST /api/memory/consolidate-scraper` (scraper mode)
+| Library | Size | Purpose |
+|:--|:--|:--|
+| Mermaid | 3.4MB | Diagram rendering |
+| MathJax | 1.1MB | Math rendering |
+| Lucide | 404KB | Icon library |
+| Monaco | (vendor dir) | Code editor |
+| xterm.js | (vendor dir) | Terminal emulator |
+| Marked | 34.6KB | Markdown fallback |
+| DOMPurify | 28.5KB | HTML sanitization |
 
 ***
 
 ## Persistence
 
-SQLite database at `system/sable.db` (gitignored). Raw sqlite3, no ORM.
-
-### Tables
+SQLite database at `system/sable.db` (108MB, WAL journaling). Raw sqlite3, no ORM.
 
 | Table | Key Columns |
 |:--|:--|
-| `chats` | id, title, parent_id, created_at, updated_at, memory_keys, chat_url, mode |
+| `chats` | id, title, parent_id, created_at, updated_at, memory_keys, chat_url, mode, provider |
 | `messages` | id, chat_id, role, content, thinking, skill_events, parent_id, created_at, memory_used |
 
 ***
@@ -181,69 +350,16 @@ SQLite database at `system/sable.db` (gitignored). Raw sqlite3, no ORM.
 | Server host | `SABLE_HOST` env var | `0.0.0.0` |
 | Auth token | `system/.auth_token` → `SABLE_TOKEN` env → `sable` | `sable` |
 | Memory max prompt chars | `engine/config.py` | `20000` |
-| Skill round warning threshold | `server/config.py` | configurable |
-| Memory search settings | `system/memory_search_settings.json` | runtime editable via UI |
-| Scraper settings | `system/scraper_settings.json` | runtime editable via UI |
-| Session tokens | `system/.session_tokens.json` | auto-managed by Playwright |
-| DeepSeek token cache | `connectors/deepseek/.token_cache.json` | auto-managed |
-
-***
-
-## Persistent Service (systemd)
-
-`./init` installs `~/.config/systemd/user/sable.service` automatically.
-
-```bash
-./start                              # start via systemd
-systemctl --user status sable        # check status
-journalctl --user -u sable -f        # tail logs
-systemctl --user restart sable       # restart after code changes
-```
-
-For boot-before-login: `sudo loginctl enable-linger $USER`
-
-### Desktop Autostart Alternative
-
-For Hyprland: `exec-once = ./start` in hyprland.conf. For GNOME/Cinnamon: create `~/.config/autostart/sable.desktop`.
-
-> [!WARNING] Port Conflicts
-> Don't run `./start` while the service is already active — both bind the same port. Use `systemctl --user stop sable` first if switching modes. Check with: `ss -ltnp | grep 61770`
-
-***
-
-## Browser Profiles
-
-Multi-account support via numbered profile directories under `system/`:
-
-- `browser-data-acc1` through `browser-data-accN` — individual account sessions
-- `browser-data` — symlink to active account (switched via UI or API)
-- `browser-scraper-data` — dedicated scraper profile
-- `automation-browser-data` — automation/testing profile
-- Each has a `.bak` counterpart for backup/restore
-
-### Adding Accounts
-
-1. Stop Sable (`systemctl --user stop sable`)
-2. Copy existing profile: `cp -r system/browser-data-acc1 system/browser-data-accN`
-3. Open new profile: `uv run python engine/browser_opener.py N`
-4. Log in, press ENTER to save session
-5. Restart Sable, switch via Account settings tab or `POST /api/settings/accounts/switch`
-
-Profile management: `engine/browser_opener.py`, UI settings panel, or API endpoints.
-
-***
-
-## Web UI
-
-Vanilla JS PWA served directly by FastAPI from `web/`. Built with esbuild from `web/src/` modules.
-
-```bash
-# Rebuild after editing web/src/:
-cd web && esbuild src/app.js --bundle --outfile=app.js --format=iife --allow-overwrite
-# Or just restart Sable — ExecStartPre rebuilds automatically
-```
-
-Features: SSE chat streaming, model/thinking-mode switcher, inline skill cards, file-edit diffs with revert, memory chips, file upload, PWA manifest + service worker, settings panels (logs, general, accounts, backups, brain, skills).
+| Memory search settings | `system/memory_search_settings.json` | Runtime editable via UI |
+| Scraper settings | `system/scraper_settings.json` | Runtime editable via UI |
+| Agent config | `system/agent_config.json` | Role overrides, account assignments |
+| MCP servers | `system/mcp_servers.json` | Server configs with enable/disable |
+| Email config | `system/.email_config.json` | IMAP/SMTP credentials |
+| Session tokens | `system/.session_tokens.json` | Auto-managed by Playwright |
+| DeepSeek token cache | `connectors/deepseek/.token_cache.json` | Auto-managed |
+| Custom models | `system/.custom_models.json` | User-added model definitions |
+| Hidden models | `system/.hidden_models.json` | User-deleted static model IDs |
+| Provider API keys | `system/.gemini_api_keys.json`, `.groq_api_keys.json`, `.mistral_api_keys.json` | Multi-key pools |
 
 ***
 
@@ -254,8 +370,9 @@ Features: SSE chat streaming, model/thinking-mode switcher, inline skill cards, 
 | Method | Path | Description |
 |:--|:--|:--|
 | `POST` | `/api/login` | Validate bearer token |
-| `GET` | `/api/health` | Health check (auth-exempt) |
-| `GET` | `/api/logs` | Live log stream (SSE, supports `?token=`) |
+| `GET` | `/api/health` | Health check |
+| `GET` | `/api/logs` | Live log stream (SSE) |
+| `GET` | `/api/config/ui` | UI config (typewriter settings) |
 
 ### Chats & Messages
 
@@ -263,9 +380,10 @@ Features: SSE chat streaming, model/thinking-mode switcher, inline skill cards, 
 |:--|:--|:--|
 | `GET` | `/api/chats` | List chats |
 | `POST` | `/api/chat/new` | Create new chat |
-| `GET` | `/api/chats/{chat_id}/messages` | Get messages |
-| `DELETE` | `/api/chats/{chat_id}` | Delete chat |
+| `GET` | `/api/chats/{id}/messages` | Get messages |
+| `DELETE` | `/api/chats/{id}` | Delete chat |
 | `POST` | `/api/chat` | Send message (streaming) |
+| `GET` | `/api/chats/search` | Full-text search across messages |
 | `POST` | `/api/sync-context` | Sync browser/session context |
 
 ### Models & Skills
@@ -276,6 +394,87 @@ Features: SSE chat streaming, model/thinking-mode switcher, inline skill cards, 
 | `GET` | `/api/skills` | List registered skills |
 | `GET` | `/api/skills/browse` | Skills with instruction content |
 
+### Agents
+
+| Method | Path | Description |
+|:--|:--|:--|
+| `GET` | `/api/agents/{id}/messages` | Agent conversation history |
+| `GET` | `/api/agents/events` | SSE stream for agent events |
+| `POST` | `/api/agents/{id}/stop` | Stop a running agent |
+
+### Filesystem & Editor
+
+| Method | Path | Description |
+|:--|:--|:--|
+| `GET` | `/api/filesystem/list` | Directory listing |
+| `GET` | `/api/filesystem/read` | Read file content |
+| `POST` | `/api/filesystem/write` | Write/create file |
+| `POST` | `/api/filesystem/mkdir` | Create directory |
+| `POST` | `/api/filesystem/pick-folder` | Server-side folder picker |
+| `GET` | `/api/filesystem/roots` | Quick access root directories |
+
+### Terminal
+
+| Method | Path | Description |
+|:--|:--|:--|
+| `WS` | `/ws/terminal` | PTY WebSocket (fish/bash) |
+
+### Library
+
+| Method | Path | Description |
+|:--|:--|:--|
+| `GET` | `/api/library/agents` | Agent output markdown |
+| `GET` | `/api/library/research` | Research reports |
+| `GET` | `/api/library/notes` | Generated notes |
+| `GET` | `/api/library/gallery` | Uploaded images |
+| `GET` | `/api/library/skills` | User-created skills |
+| `GET` | `/api/library/read/{section}/{file}` | Read full content inline |
+
+### Email
+
+| Method | Path | Description |
+|:--|:--|:--|
+| `GET` | `/api/email/configured` | Check if email is set up |
+| `POST` | `/api/email/config` | Save credentials (tests connection) |
+| `DELETE` | `/api/email/config` | Remove email config |
+| `GET` | `/api/email/folders` | List IMAP folders |
+| `GET` | `/api/email/messages` | Fetch headers (search, paginate) |
+| `GET` | `/api/email/message/{uid}` | Read full message + attachments |
+| `POST` | `/api/email/send` | Send via SMTP |
+
+### Memory
+
+| Method | Path | Description |
+|:--|:--|:--|
+| `GET` | `/api/settings/memory` | Get memory entries |
+| `POST` | `/api/settings/memory` | Add memory entry |
+| `PUT` | `/api/settings/memory/{key}` | Update memory entry |
+| `DELETE` | `/api/settings/memory/{key}` | Delete memory entry |
+| `GET/POST` | `/api/settings/memory/protected` | Protected memories CRUD |
+| `POST` | `/api/memory/consolidate` | Propose memory updates from conversation |
+
+### Settings & Browser
+
+| Method | Path | Description |
+|:--|:--|:--|
+| `GET/POST` | `/api/settings/browser` | Headless toggle |
+| `GET/POST` | `/api/settings/scraper` | Scraper enable/engine/port |
+| `GET` | `/api/settings/scraper/engines` | List available scraper engines |
+| `POST` | `/api/settings/browser/refresh-waf` | Re-sniff Qwen WAF tokens |
+| `POST` | `/api/settings/deepseek/refresh-token` | Refresh DeepSeek token |
+| `GET` | `/api/settings/accounts` | List account profiles |
+| `POST` | `/api/settings/accounts/switch` | Switch active profile |
+| `POST` | `/api/settings/accounts/strip` | Strip profiles to bare session data |
+
+### Provider API Keys
+
+| Method | Path | Description |
+|:--|:--|:--|
+| `POST/GET/DELETE` | `/api/settings/gemini/api-key` | Gemini key pool management |
+| `POST/GET/DELETE` | `/api/settings/groq/api-key` | Groq key pool management |
+| `POST/GET/DELETE` | `/api/settings/mistral/api-key` | Mistral key pool management |
+| `GET` | `/api/settings/providers/{name}/models` | Fetch available models from provider API |
+
 ### Uploads & Files
 
 | Method | Path | Description |
@@ -284,83 +483,37 @@ Features: SSE chat streaming, model/thinking-mode switcher, inline skill cards, 
 | `POST` | `/api/deepseek/upload-file` | DeepSeek Vision file upload |
 | `POST` | `/api/file/revert` | Restore from `.sable_backups/` |
 
-### Settings & Browser
-
-| Method | Path | Description |
-|:--|:--|:--|
-| `GET/POST` | `/api/settings/browser` | Browser settings |
-| `GET/POST` | `/api/settings/scraper` | Scraper settings |
-| `GET` | `/api/settings/accounts` | List account profiles |
-| `POST` | `/api/settings/accounts/switch` | Switch active profile |
-| `GET` | `/api/settings/browser/profiles` | Profile status |
-| `POST` | `/api/settings/browser/restore` | Restore from .bak |
-| `POST` | `/api/settings/browser/create-backup` | Snapshot profile |
-| `POST` | `/api/settings/deepseek/refresh-token` | Force-refresh DS token |
-
-### Memory
-
-| Method | Path | Description |
-|:--|:--|:--|
-| `GET/POST` | `/api/settings/memory` | Read/update Memory.json |
-| `GET/POST` | `/api/settings/memory/protected` | Protected memory |
-| `GET/POST` | `/api/settings/memory-search` | Search settings |
-| `POST` | `/api/memory/consolidate` | Consolidate (API mode) |
-| `POST` | `/api/memory/consolidate-scraper` | Consolidate (scraper mode) |
-
 ***
 
-## Dependencies
-
-From `pyproject.toml`:
-
-| Package | Purpose |
-|:--|:--|
-| `fastapi` | Web framework |
-| `uvicorn[standard]` | ASGI server |
-| `httpx` | Async HTTP client |
-| `python-multipart` | File upload parsing |
-| `playwright` | Browser automation and persistent sessions |
-| `fastembed` | Embeddings for memory search |
-| `numpy` | Numerical support |
-| `pydantic` | Request/response validation |
-| `lxml` | HTML/XML parsing |
-
-Managed by `uv` (`package = false`).
-
-***
-
-## Testing
-
-Tests live in `test/`:
+## Persistent Service (systemd)
 
 ```bash
-# Editor tools unit tests
-uv run --with pytest python -m pytest test/test_editor_tools.py -q
-
-# Browser control suite (long-running)
-uv run python test/test_browser_control.py
+./start                              # start via systemd
+systemctl --user status sable        # check status
+journalctl --user -u sable -f        # tail logs
+systemctl --user restart sable       # restart after code changes
 ```
 
-***
+For boot-before-login: `sudo loginctl enable-linger $USER`
 
-## Development Notes
-
-- **Frontend**: edit `web/src/*.js`, rebuild with esbuild or restart Sable (ExecStartPre auto-rebuilds)
-- **Skill edits take effect immediately** — skills run as fresh subprocesses, no server restart needed
-- **Engine/server changes require restart** — uvicorn holds imported modules in memory
-- **Database**: raw sqlite3 at `system/sable.db`, no migrations framework — schema implicit in `server/database.py`
-- **Gitignore**: excludes system/, output/, uploads/, .venv/, *.db, browser profiles, secrets, personal instruction/memory files
+> [!WARNING] Port Conflicts
+> Don't run `./start` while the service is already active — both bind the same port. Check with: `ss -ltnp | grep 61770`
 
 ***
 
-## Security Model
+## Project Scale
 
-Sable is intended to run locally.
-
-- Server binds to `127.0.0.1` by default (configurable via `SABLE_HOST`)
-- API routes require bearer token (except `/api/health`, `/api/login`, `/static/`, `/uploads/`)
-- `/api/logs` allows query-token auth (EventSource can't set headers)
-- File revert restricted to `.sable_backups/`
-- Browser profiles contain cookies/tokens — always gitignored
-- Skill execution has timeout guards and process-group killing
-
+| Component | Size | Notes |
+|:--|:--|:--|
+| Scraper engines | 153KB | Qwen (103KB) + DeepSeek (50KB) CDP orchestration |
+| Web frontend | ~500KB | app.js (241KB) + JS modules (123KB) + CSS (156KB) |
+| Server routes | ~170KB | 15 route modules |
+| Engine core | ~130KB | Chat, session, config, memory, scraper, skills |
+| Connectors | ~65KB | DeepSeek + Gemini + Groq + Mistral + base protocol |
+| Agent system | ~80KB | Loop, runtime, teacher, auto-turn, resilience, registry |
+| MCP client | ~16KB | Manager + handler |
+| Database | 108MB | SQLite with WAL journaling |
+| Browser profiles | 115+ | Multi-account session management |
+| Skills | 22 dirs | Modular drop-in architecture |
+| Themes | 11 | Complete CSS variable sets |
+| Vendor libs | ~5MB | Mermaid + MathJax + Lucide + Monaco + xterm |
