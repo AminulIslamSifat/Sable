@@ -32,17 +32,40 @@
       align-items: center;
       gap: 10px;
       width: 100%;
-      justify-content: center;
       position: relative;
     }
 
-    .header-row > .header-icon-cell:first-child {
-      position: absolute;
-      left: 0;
+    .header-row > .header-icon-cell {
+      flex: 0 0 34px;
+      width: 34px;
+      height: 34px;
     }
-    .header-row > .header-icon-cell:last-child {
-      position: absolute;
-      right: 0;
+
+    /* Left button pins left, center group stays centered, right buttons pin right */
+    .header-row > .header-icon-cell:first-child { margin-right: auto; }
+
+    /* Center zone: Model selector centered */
+    .header-center-group {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex: 0 0 auto;
+      margin: 0 auto;
+    }
+
+    /* Right-side icon cells cluster together at the end */
+    .header-row > .header-icon-cell:nth-last-child(2) { margin-left: auto; }
+    /* The Model pill's glass fills its box edge-to-edge while the round buttons
+       have dark margin inside their 40px cells, so the pill->terminal seam looks
+       tighter than newchat->pill at equal gaps. Nudge the terminal right to match. */
+    .header-center-group > .header-icon-cell:last-child {
+      margin-left: 8px;
+    }
+
+    /* Empty agent-status slot must not leave a phantom gap inside the center cluster */
+    .header-agent-cell:empty {
+      flex: 0 0 0;
+      margin-inline: -10px;
     }
 
     .header-cell {
@@ -69,9 +92,9 @@
 
     .header-icon-cell {
       border-radius: 50%;
-      padding: 7px;
-      width: 40px;
-      height: 40px;
+      padding: 5px;
+      width: 34px;
+      height: 34px;
     }
     .header-icon-cell .icon-btn {
       border-radius: 50%;
@@ -92,7 +115,7 @@
     .header-model-cell {
       border-radius: 22px;
       padding: 5px 12px;
-      flex: 0 1 auto;
+      flex: 0 0 auto;
     }
     .header-model-cell:active {
       transform: scale(0.985);
@@ -104,7 +127,7 @@
       background: transparent;
       border: none;
       box-shadow: none;
-      font-size: 12.5px;
+      font-size: var(--font-size-system);
       color: var(--text);
     }
 
@@ -143,7 +166,7 @@
       line-height: 1.6;
       word-wrap: break-word;
       border: 1px solid transparent;
-      font-size: 14.5px;
+      font-size: var(--font-size-system);
     }
 
     .user {
@@ -157,7 +180,7 @@
     }
     .user.collapsed .user-text { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
     .user-expand-btn {
-      font-size: 11px;
+      font-size: var(--font-size-system);
       color: var(--accent);
       background: none;
       border: none;
@@ -169,7 +192,7 @@
 
     .msg-timestamp {
       font-family: var(--font-mono);
-      font-size: 11px;
+      font-size: var(--font-size-system);
       color: var(--muted-2);
       margin-bottom: 4px;
       font-weight: 400;
@@ -207,7 +230,7 @@
     .msg.user:hover .msg-toolbar,
     .msg-toolbar:focus-within { opacity: 1; }
     .msg-toolbar button {
-      font-size: 11px;
+      font-size: var(--font-size-system);
       padding: 4px 6px;
       border-radius: 6px;
       border: 1px solid var(--border);
@@ -230,7 +253,7 @@
       content: 'processing…';
       display: inline-block;
       margin-left: 8px;
-      font-size: 12px;
+      font-size: var(--font-size-system);
       font-family: var(--font-mono);
       letter-spacing: 0.04em;
       background: linear-gradient(
@@ -275,7 +298,7 @@
     }
 
     .pending-indicator .processing-text {
-      font-size: 12px;
+      font-size: var(--font-size-system);
       font-family: var(--font-mono);
       letter-spacing: 0.04em;
       background: linear-gradient(
@@ -322,7 +345,7 @@
       background: color-mix(in srgb, var(--panel) 50%, transparent);
       padding: 9px 12px;
       border-radius: 14px;
-      font-size: 12.5px;
+      font-size: var(--font-size-system);
       color: var(--muted);
       transition: background 0.15s;
       box-shadow:
@@ -375,12 +398,12 @@
       white-space: pre-wrap;
       line-height: 1.55;
       font-family: var(--font-mono);
-      font-size: 12px;
+      font-size: var(--font-size-system);
     }
 
     .event {
       color: var(--muted-2);
-      font-size: 12px;
+      font-size: var(--font-size-system);
       font-family: var(--font-mono);
       padding: 2px 8px;
     }
@@ -401,7 +424,7 @@
       margin: 8px 0 2px;
     }
     .retry-command-bar button {
-      font-size: 12px;
+      font-size: var(--font-size-system);
       font-weight: 600;
       letter-spacing: .02em;
       padding: 6px 14px;
@@ -422,7 +445,7 @@
       background: color-mix(in srgb, var(--panel) 50%, transparent);
       border-radius: 14px;
       padding: 10px 12px;
-      font-size: 13px;
+      font-size: var(--font-size-system);
       flex-shrink: 0;
       box-shadow:
         inset 0 0 0 1px rgba(255, 255, 255, 0.05),
@@ -454,7 +477,7 @@
       white-space: pre-wrap;
       word-break: break-word;
       font-family: var(--font-mono);
-      font-size: 12px;
+      font-size: var(--font-size-system);
       color: var(--text-dim);
     }
 
@@ -471,7 +494,7 @@
     }
 
     .skill-toggle-btn {
-      font-size: 11px;
+      font-size: var(--font-size-system);
       font-family: var(--font-mono);
       color: var(--muted);
       background: var(--panel-2);
@@ -525,13 +548,13 @@
       font-weight: 600;
       color: var(--accent-text);
       font-family: var(--font-mono);
-      font-size: 12.5px;
+      font-size: var(--font-size-system);
     }
 
     .skill-status {
       color: var(--muted);
       white-space: nowrap;
-      font-size: 12px;
+      font-size: var(--font-size-system);
       font-family: var(--font-mono);
     }
 
@@ -546,7 +569,7 @@
       white-space: pre-wrap;
       word-break: break-word;
       font-family: var(--font-mono);
-      font-size: 12px;
+      font-size: var(--font-size-system);
       color: var(--text-dim);
     }
 
@@ -575,18 +598,18 @@
     }
 
     .md-content h1 {
-      font-size: 26px;
+      font-size: calc(var(--font-size-response) * 1.8);
       padding-bottom: 8px;
       border-bottom: 1px solid var(--border);
     }
     .md-content h2 {
-      font-size: 21px;
+      font-size: calc(var(--font-size-response) * 1.45);
       padding-bottom: 6px;
       border-bottom: 1px solid var(--border-soft);
     }
-    .md-content h3 { font-size: 18px; color: var(--accent-text); }
-    .md-content h4 { font-size: 15.5px; }
-    .md-content h5, .md-content h6 { font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
+    .md-content h3 { font-size: calc(var(--font-size-response) * 1.25); color: var(--accent-text); }
+    .md-content h4 { font-size: calc(var(--font-size-response) * 1.07); }
+    .md-content h5, .md-content h6 { font-size: calc(var(--font-size-response) * 0.97); color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
 
     .md-content p { margin: 10px 0; white-space: pre-wrap; }
 
@@ -650,7 +673,7 @@
       border: none;
       padding: 0;
       color: var(--text-dim);
-      font-size: 12.5px;
+      font-size: var(--font-size-response);
       line-height: 1.6;
     }
 
@@ -699,7 +722,7 @@
     .md-content table {
       border-collapse: collapse;
       width: 100%;
-      font-size: 13.5px;
+      font-size: var(--font-size-response);
       display: table;
     }
     .md-content th, .md-content td {
@@ -734,11 +757,11 @@
       font-weight: 700;
       color: var(--callout-color);
       font-family: var(--font-body);
-      font-size: 13.5px;
+      font-size: var(--font-size-response);
       text-transform: capitalize;
     }
     .md-content .callout-icon { font-size: 14px; line-height: 1; }
-    .md-content .callout-content { margin-top: 6px; color: var(--text-dim); font-size: 14px; }
+    .md-content .callout-content { margin-top: 6px; color: var(--text-dim); font-size: var(--font-size-response); }
     .md-content .callout-content p { margin: 4px 0; }
     .md-content .callout-content > *:first-child { margin-top: 0; }
     .md-content .callout-content > *:last-child { margin-bottom: 0; }
@@ -763,7 +786,7 @@
     }
     .md-content .mermaid-error {
       color: var(--danger);
-      font-size: 12px;
+      font-size: var(--font-size-response);
       padding: 8px 12px;
       background: var(--danger-bg);
       border-radius: 6px;

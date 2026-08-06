@@ -17,14 +17,15 @@ Attributes:
 - collect: "true" to block and wait for result inline (use sparingly)
 - todos: pipe-separated step list, for tasks with 3+ distinct steps only
 
-[In case of failure of fallback (qwen3.7-max, qwen3.7-plus, qwen3.8-max-preview, deepseek-expert, deepseek-instant, deepseek-vision — avoid deepseek unless asked)]
+[In case of failure of fallback (qwen3.7-max, qwen3.7-plus, qwen3.8-max, deepseek-expert, deepseek-instant, deepseek-vision — avoid deepseek unless asked)]
 
 
 Example:
-<spawn_agent role="researcher" model="qwen3.7-max"
-todos="Read engine/agents/|Read server/api/|Search for patterns|Synthesize">
+<action>
+<spawn_agent role="researcher" todos="Read engine/agents/|Read server/api/|Search for patterns|Synthesize">
   Analyze the Sable agent architecture vs industry best practices.
 </spawn_agent>
+</action>
 
 Give each agent full self-contained context — it can't see the parent conversation.
 

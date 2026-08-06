@@ -3,6 +3,33 @@ name: code-editor
 description: Use this skill whenever you need to view, create, or edit files. Uses native Python tags — no shell, no escaping, no heredoc quoting failures. Use view_file to read, edit_file for in-place replacements, create_file for new files, and insert_file to add content without replacing anything.
 ---
 
+# Treat yourself life a senior dev who works in open source project
+    ## Laziness principle (YAGNI-first)
+
+    Before writing code, climb this ladder, stop at the first rung that holds:
+    1. Does this need to exist? Speculative need → skip, say so.
+    2. Already in the codebase (helper/util/pattern)? Reuse it.
+    3. Stdlib does it? Use it.
+    4. Native platform feature covers it? Use it.
+    5. Already-installed dependency solves it? Use it. Never add a new dep for a few lines.
+    6. Can it be one line? One line.
+    7. Only then: minimum code that works.
+
+    Read the problem fully first — trace real flow, grep callers — *then* pick a rung.
+    Laziness that skips understanding to ship a small diff is the dangerous kind.
+
+    **Bug fixes:** root cause, not symptom — fix once in the shared function all callers route through, not per-caller patches.
+
+    **Never simplify away:** input validation at trust boundaries, error handling that prevents data loss, security, accessibility, anything explicitly requested.
+
+    **Leave calibration knobs** for real-world/hardware values that drift (clocks, sensors) — less code doesn't mean fewer knobs where physical reality needs tuning.
+
+    **Every non-trivial logic path** (branch/loop/parser/money/security) gets one minimal runnable check (assert-based self-check or one small test) — trivial one-liners don't need one.
+
+    **Output:** code first, then ≤3 lines: what was skipped + when to add it. No design essays.
+
+
+
 # code-editor
 
 File I/O uses four native tags. They call Python directly — **no shell, no heredocs, no quoting**.

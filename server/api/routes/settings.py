@@ -998,3 +998,42 @@ async def import_data() -> StreamingResponse:
         yield json.dumps({"type": "done", "imported": imported, "errors": errors}) + "\n"
 
     return StreamingResponse(_stream(), media_type="application/x-ndjson")
+
+
+# ── Context Pass Settings ──────────────────────────────────────────
+_CONTEXT_PASS_SETTINGS_PATH = BASE_DIR / "system/context_pass_settings.json"
+_CONTEXT_PASS_DEFAULTS: dict[str, Any] = {
+    "summarizer_model": "",   # empty = use current model
+    "browser_data_acc": "",   # empty = use current/default account
+}
+
+def _load_context_pass_settings() -> dict[str, Any]:
+    settings = dict(_CONTEXT_PASS_DEFAULTS)
+    if _CONTEXT_PASS_SETTINGS_PATH.exists():
+        try:
+            with open(_CONTEXT_PASS_SETTINGS_PATH, "r", encoding="utf-8") as f:
+                stored = json.load(f)
+            if isinstance(stored, dict):
+                settings.update(stored)
+        except Exception:
+            pass
+    return settings
+
+def _save_context_pass_settings(settings: dict[str, Any]) -> None:
+    _CONTEXT_PASS_SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+
+@router.get("/api/settings/context-pass")
+async def get_context_pass_settings() -> dict[str, Any]:
+    return _load_context_pass_settings()
+
+@router.post("/api/settings/context-pass")
+async def set_context_pass_settings(request: Request) -> dict[str, Any]:
+    body = await request.json()
+    settings = _load_context_pass_settings()
+    if "summarizer_model" in body:
+        settings["summarizer_model"] = str(body["summarizer_model"]).strip()
+    if "browser_data_acc" in body:
+        settings["browser_data_acc"] = str(body["browser_data_acc"]).strip()
+    _save_context_pass_settings(settings)
+    return {"status": "ok", **settings}
+# ── /Context Pass Settings ─────────────────────────────────────────
