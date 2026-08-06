@@ -8,12 +8,13 @@
 
   <link rel="stylesheet" href="/static/css/variables.css?v=4">
   <link rel="stylesheet" href="/static/css/base.css?v=3">
-  <link rel="stylesheet" href="/static/css/layout.css?v=33">
+  <link rel="stylesheet" href="/static/css/layout.css?v=46">
   <link rel="stylesheet" href="/static/css/chat.css?v=19">
-  <link rel="stylesheet" href="/static/css/panels.css?v=12">
-  <link rel="stylesheet" href="/static/css/components.css?v=10">
+  <link rel="stylesheet" href="/static/css/panels.css?v=20">
+  <link rel="stylesheet" href="/static/css/components.css?v=12">
   <link rel="stylesheet" href="/static/css/responsive.css?v=3">
   <link rel="stylesheet" href="/static/css/agents.css?v=31">
+  <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v=2">
 
   <link rel="manifest" href="/static/assets/manifest.json">
   <meta name="theme-color" content="#7c5cbf">
@@ -40,10 +41,18 @@
 
   <!-- IDE mode: compact chat panel (replaces sidebar position) -->
   <aside id="chatCompact" class="chat-compact hidden">
-    <div class="chat-compact-messages" id="chatCompactMessages"></div>
+    <div class="chat-compact-header">
+      <span class="chat-compact-title" id="chatCompactTitle">New chat</span>
+    </div>
+    <div class="chat-compact-messages" id="chatCompactMessages">
+      <div class="chat-compact-empty" id="chatCompactEmpty">
+        <p>New chat ready</p>
+        <span class="editor-empty-hint">Type something to get started</span>
+      </div>
+    </div>
     <div class="chat-compact-input">
       <textarea id="chatCompactInput" placeholder="Chat..." rows="1"></textarea>
-      <button id="chatCompactSend" class="chat-compact-send" title="Send"><span class="icon-emoji">➤</span><i data-lucide="send" class="icon-lucide"></i></button>
+      <button id="chatCompactSend" class="chat-compact-send" title="Send"><span class="icon-emoji">➤</span><i data-lucide="send" class="icon-lucide"></i><span class="btn-label-stop"></span></button>
     </div>
   </aside>
 
@@ -57,18 +66,16 @@
             <span>agentic chat</span>
           </div>
         </div>
-        <button id="newChat" class="new-chat-icon" title="New chat">
-          <div class="spinner"></div>
-          <span class="icon-emoji">＋</span><i data-lucide="square-pen" class="icon-lucide"></i>
-        </button>
+        <div class="sidebar-icon-row">
+          <div class="mode-toggle-compact" id="modeSwitcher" title="Switch between API and Scraper mode" onclick="event.stopPropagation()" style="--n:2; --i:0;">
+            <button id="modeApi" class="active" aria-label="API mode"><span class="icon-emoji">⚡</span><i data-lucide="zap" class="icon-lucide"></i></button>
+            <button id="modeScraper" aria-label="Scraper mode"><span class="icon-emoji">🌐</span><i data-lucide="globe" class="icon-lucide"></i></button>
+          </div>
+        </div>
       </div>
       <div class="sidebar-top-content">
         <div class="thinking-switcher" id="thinkingSwitcher" title="Thinking mode used for new chats"></div>
-        <div class="mode-switcher" id="modeSwitcher">
-          <button id="modeApi" class="active" title="Direct API chat"><span class="icon-emoji">⚡</span><i data-lucide="zap" class="icon-lucide"></i> API</button>
-          <button id="modeScraper" title="Headed browser scraper chat"><span class="icon-emoji">🌐</span><i data-lucide="globe" class="icon-lucide"></i> Scraper</button>
-        </div>
-        <div class="mode-switcher" id="layoutSwitcher">
+                <div class="mode-switcher" id="layoutSwitcher">
           <button id="layoutAgent" class="active" title="Agent chat mode"><span class="icon-emoji">💬</span><i data-lucide="message-square" class="icon-lucide"></i> Agent</button>
           <button id="layoutIde" title="IDE / editor mode"><span class="icon-emoji">🖥</span><i data-lucide="code-2" class="icon-lucide"></i> IDE</button>
         </div>
@@ -81,6 +88,9 @@
     </div>
     <div class="sidebar-section sidebar-chats">
       <div class="chat-search-float">
+        <button id="newChatFloat" class="new-chat-icon" title="New chat">
+          <span class="icon-emoji">＋</span><i data-lucide="square-pen" class="icon-lucide"></i>
+        </button>
         <button id="chatSearchBtn" class="new-chat-icon chat-search-btn" title="Search chats">
           <span class="icon-emoji">🔍</span><i data-lucide="search" class="icon-lucide"></i>
         </button>
@@ -89,6 +99,9 @@
       <div id="chats"></div>
     </div>
     <div class="sidebar-section sidebar-bottom">
+      <button id="scheduleBtn" class="sidebar-footer-btn" title="Schedule">
+        <span class="icon-emoji">🗓</span><i data-lucide="calendar-clock" class="icon-lucide"></i> Schedule
+      </button>
       <button id="libraryBtn" class="sidebar-footer-btn" title="Library">
         <span class="icon-emoji">📚</span><i data-lucide="book-open" class="icon-lucide"></i> Library
       </button>
@@ -104,18 +117,22 @@
         <div class="header-cell header-icon-cell">
           <button id="sidebarToggle" class="icon-btn" title="Toggle sidebar"><span class="icon-emoji">☰</span><i data-lucide="panel-left-close" class="icon-lucide"></i></button>
         </div>
-        <div class="header-cell header-model-cell">
-          <div class="glass-dropdown" id="modelDropdown">
-            <button class="glass-dropdown-trigger" id="modelTrigger" title="Model used for new chats">
-              <i data-lucide="cpu" style="width:14px;height:14px;opacity:.7;"></i>
-              <span class="glass-dropdown-label">Model</span>
-              <span class="glass-dropdown-arrow"><i data-lucide="chevron-down" style="width:12px;height:12px;"></i></span>
-            </button>
-            <div class="glass-dropdown-menu" id="modelMenu"></div>
-            <select id="modelSelect" hidden></select>
+        <div class="header-center-group">
+          <div class="header-cell header-model-cell">
+            <div class="glass-dropdown" id="modelDropdown">
+              <button class="glass-dropdown-trigger" id="modelTrigger" title="Model used for new chats">
+                <span class="glass-dropdown-label">Model</span>
+                <span class="glass-dropdown-arrow"><i data-lucide="chevron-down" style="width:12px;height:12px;"></i></span>
+              </button>
+              <div class="glass-dropdown-menu" id="modelMenu"></div>
+              <select id="modelSelect" hidden></select>
+            </div>
           </div>
+          <div class="header-agent-cell" id="agentTopBarSlot"></div>
         </div>
-        <div class="header-agent-cell" id="agentTopBarSlot"></div>
+        <div class="header-cell header-icon-cell">
+          <button id="terminalToggle" class="icon-btn" title="Toggle terminal"><span class="icon-emoji">🖥</span><i data-lucide="terminal" class="icon-lucide"></i></button>
+        </div>
         <div class="header-cell header-icon-cell">
           <button id="diffToggleBtn" class="icon-btn" title="Toggle file edit sidebar"><span class="icon-emoji">✎</span><i data-lucide="file-pen-line" class="icon-lucide"></i></button>
         </div>
@@ -137,6 +154,44 @@
         <span class="editor-empty-hint">Use the file browser on the right</span>
       </div>
       <div id="editorContainer" class="editor-container hidden"></div>
+    </div>
+
+    <!-- Integrated terminal panel (VS Code style, docked bottom, resizable) -->
+    <div id="terminalPanel" class="terminal-panel hidden">
+      <div id="terminalResizeHandle" class="terminal-resize-handle" title="Drag to resize"></div>
+      <div class="terminal-bar">
+        <div class="terminal-tabs">
+          <button class="terminal-tab" data-view="problems">Problems<span id="problemsBadge" class="term-badge" hidden>0</span></button>
+          <button class="terminal-tab" data-view="output">Output</button>
+          <button class="terminal-tab active" data-view="terminal">Terminal</button>
+        </div>
+        <div class="terminal-bar-actions">
+          <div class="term-menu-wrap">
+            <button id="termMenuBtn" class="term-bar-btn" title="Terminal actions">
+              <span class="icon-emoji">⋯</span><i data-lucide="more-horizontal" class="icon-lucide"></i>
+            </button>
+            <div id="termMenu" class="term-menu" hidden>
+              <button data-term-act="new"><i data-lucide="plus"></i>New terminal</button>
+              <button data-term-act="clear"><i data-lucide="eraser"></i>Clear terminal</button>
+              <button data-term-act="kill"><i data-lucide="trash-2"></i>Kill terminal</button>
+            </div>
+          </div>
+          <button id="terminalClose" class="term-bar-btn" title="Close panel">
+            <span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i>
+          </button>
+        </div>
+      </div>
+      <div class="terminal-body">
+        <div class="terminal-views">
+          <div id="problemsView" class="terminal-view" hidden></div>
+          <div id="outputView" class="terminal-view" hidden><div id="outputLog" class="output-log"></div></div>
+          <div id="terminalContainer" class="terminal-view terminal-container"></div>
+          <div id="terminalEmpty" class="terminal-empty" hidden>
+            <button id="terminalEmptyNew" class="term-new-big"><i data-lucide="plus"></i>New terminal</button>
+          </div>
+        </div>
+        <div id="terminalSessions" class="terminal-sessions" hidden></div>
+      </div>
     </div>
 
     <div class="input-area" id="inputArea">
@@ -171,6 +226,9 @@
       <span class="ctx-icon"><span class="icon-emoji">⚙</span><i data-lucide="settings" class="icon-lucide"></i></span> Chat Settings
     </button>
     <div class="ctx-sep"></div>
+    <button class="ctx-item" data-action="context-pass">
+      <span class="ctx-icon"><span class="icon-emoji">🔀</span><i data-lucide="arrow-right-left" class="icon-lucide"></i></span> Pass Context
+    </button>
     <button class="ctx-item" data-action="sync-context">
       <span class="ctx-icon"><span class="icon-emoji">⟳</span><i data-lucide="refresh-cw" class="icon-lucide"></i></span> Sync Context
     </button>
@@ -280,6 +338,37 @@
             </select>
           </div>
           <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+            <label for="systemFontSizeSelect" style="font-size:13px;color:var(--text-dim);">System Font Size</label>
+            <select id="systemFontSizeSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
+              <option value="12px">Small (12px)</option>
+              <option value="13px" selected>Default (13px)</option>
+              <option value="14px">Medium (14px)</option>
+              <option value="15px">Large (15px)</option>
+              <option value="16px">Extra Large (16px)</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+            <label for="editorFontSizeSelect" style="font-size:13px;color:var(--text-dim);">Editor Font Size</label>
+            <select id="editorFontSizeSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
+              <option value="11">Small (11px)</option>
+              <option value="12">Compact (12px)</option>
+              <option value="13" selected>Default (13px)</option>
+              <option value="14">Medium (14px)</option>
+              <option value="15">Large (15px)</option>
+              <option value="16">Extra Large (16px)</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+            <label for="ideChatFontSizeSelect" style="font-size:13px;color:var(--text-dim);">IDE Chat Font Size</label>
+            <select id="ideChatFontSizeSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
+              <option value="11px">Small (11px)</option>
+              <option value="12px">Compact (12px)</option>
+              <option value="13px" selected>Default (13px)</option>
+              <option value="14px">Medium (14px)</option>
+              <option value="15px">Large (15px)</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
             <label for="fontFamilySelect" style="font-size:13px;color:var(--text-dim);">Font Family</label>
             <select id="fontFamilySelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
               <option value="maple" selected>Maple Mono</option>
@@ -344,6 +433,25 @@
             </div>
           </div>
           <p class="muted" style="font-size:11px;margin-top:4px;">Toggle headless mode and restart to apply. Session cookies are preserved via persistent profile.</p>
+
+          <!-- Context Pass Settings -->
+          <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
+            <label style="font-size:13px;color:var(--text-dim);font-weight:600;display:block;margin-bottom:10px;"><span class="icon-emoji">🔀</span><i data-lucide="arrow-right-left" class="icon-lucide"></i> Context Pass</label>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;">
+              <label for="ctxPassModel" style="font-size:12px;color:var(--text-dim);">Summarizer Model</label>
+              <select id="ctxPassModel" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;width:200px;">
+                <option value="">Default (current model)</option>
+              </select>
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;">
+              <label for="ctxPassBrowserAcc" style="font-size:12px;color:var(--text-dim);">Browser Profile</label>
+              <select id="ctxPassBrowserAcc" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;width:200px;">
+                <option value="">Default (current)</option>
+              </select>
+            </div>
+            <p class="muted" style="font-size:11px;margin-top:6px;">Model and browser profile used for context summarization. Leave empty to use current defaults.</p>
+          </div>
+
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
               <label style="font-size:13px;color:var(--text-dim);font-weight:600;"><span class="icon-emoji">🐋</span><i data-lucide="database" class="icon-lucide"></i> DeepSeek API Token</label>
@@ -662,7 +770,7 @@
             <div>
               <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Teacher Model</label>
               <select id="teacherModel" class="mem-input" style="width:220px;">
-                <option value="qwen3.8-max-preview">qwen3.8-max-preview</option>
+                <option value="qwen3.8-max">qwen3.8-max</option>
               </select>
               <p class="muted" style="font-size:11px;margin:3px 0 0;">The model that intervenes when agents are stuck. Should be your strongest model.</p>
             </div>
@@ -744,6 +852,9 @@
     </div>
   </div>
 
+  <script src="/static/vendor/xterm/xterm.js?v=2"></script>
+  <script src="/static/vendor/xterm/xterm-addon-fit.js?v=2"></script>
+  <script src="/static/vendor/xterm/xterm-addon-web-links.js?v=2"></script>
   <script src="/static/vendor/monaco/vs/loader.js"></script>
   <script>
     if (window.require) {
@@ -757,7 +868,26 @@
   </script>
   <script src="/static/app.js?v=37"></script>
   <script src="/static/js/agents.js?v=20"></script>
-  <script src="/static/js/filesystem.js?v=10"></script>
-  <script src="/static/js/mode.js?v=16"></script>
+  <script src="/static/js/filesystem.js?v=24"></script>
+  <script src="/static/js/mode.js?v=18"></script>
+  <script src="/static/js/resize-panels.js?v=1"></script>
+  <script src="/static/js/terminal.js?v=4"></script>
+
+  <script>
+    /* Keep mode-toggle-compact pill indicator in sync with active button */
+    (function() {
+      const wrap = document.getElementById('modeSwitcher');
+      if (!wrap) return;
+      const btns = wrap.querySelectorAll('button');
+      function syncPill() {
+        btns.forEach((b, i) => { if (b.classList.contains('active')) wrap.style.setProperty('--i', i); });
+      }
+      // Observe class changes (app.js toggles .active)
+      const obs = new MutationObserver(syncPill);
+      btns.forEach(b => obs.observe(b, { attributes: true, attributeFilter: ['class'] }));
+      syncPill();
+    })();
+  </script>
+
 </body>
 </html>

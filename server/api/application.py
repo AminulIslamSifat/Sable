@@ -38,6 +38,7 @@ from .routes.agents import router as agents_router
 from .routes.library import router as library_router
 from .routes.email import router as email_router
 from .routes.filesystem import router as filesystem_router
+from .routes.terminal import router as terminal_router
 
 def _raise_nofile_limit() -> None:
     """Raise open file limit for agentic workloads (browsers, agents, streams)."""
@@ -169,6 +170,7 @@ app.include_router(agents_router)
 app.include_router(library_router)
 app.include_router(email_router)
 app.include_router(filesystem_router)
+app.include_router(terminal_router)
 
 # Wire agent runtime event callback → SSE push
 from .routes.agents import _async_push_agent_event, push_agent_event

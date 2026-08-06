@@ -3,7 +3,7 @@
 ## execute_command (inline)
 Runs a shell command and streams output back. Default timeout: 15s.
 - Custom timeout: set the timeout attribute (seconds, max 180) — use when a command legitimately needs more time (compilation, large test suites, package installs).
-- Example: <execute_command timeout="60">uv run pytest test/ -x</execute_command>
+- Example: <action><execute_command timeout="60">uv run pytest test/ -x</execute_command></action>
 - If a command will exceed 180s or run indefinitely, use background instead.
 
 ## Launching Background

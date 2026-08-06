@@ -41,6 +41,19 @@
     } else {
       // Leaving IDE mode: close the right sidebar
       body.classList.remove('diff-open');
+      // Clear inline sizes set by IDE resize handles so agent-mode CSS
+      // defaults (325px sidebar / 331px main margin) stay in sync —
+      // otherwise a custom IDE width leaks into agent mode and creates
+      // a gap or overlap between .main and the right panel.
+      const diffSidebar = document.getElementById('diffSidebar');
+      if (diffSidebar) diffSidebar.style.width = '';
+      const chatCompactEl = document.getElementById('chatCompact');
+      if (chatCompactEl) {
+        chatCompactEl.style.width = '';
+        chatCompactEl.style.minWidth = '';
+      }
+      const main = document.querySelector('.main');
+      if (main) main.style.marginRight = '';
     }
 
     // Re-render lucide icons for newly visible elements
@@ -128,6 +141,10 @@
   let chatObserver = null;
   let mirrorRafId = null;
 
+  // Maps each compact mirror clone -> its live source message in the main chat.
+  // cloneNode(true) strips listeners, so we forward toolbar clicks to the source.
+  const cloneToSource = new WeakMap();
+
   function getActivePane() {
     const chat = document.getElementById('chat');
     if (!chat) return null;
@@ -154,12 +171,17 @@
     if (!compactMsgs || !source) return;
 
     const messages = Array.from(source.querySelectorAll('.msg, .skill-card, .thinking-wrap'));
+    const emptyState = document.getElementById('chatCompactEmpty');
+    if (emptyState) {
+      emptyState.style.display = messages.length === 0 ? '' : 'none';
+    }
     const existingClones = compactMsgs.querySelectorAll('.compact-msg');
 
     // Fast path: same count — patch the last (streaming) message
     if (messages.length === existingClones.length && messages.length > 0) {
       const lastSrc = messages[messages.length - 1];
       const lastClone = existingClones[existingClones.length - 1];
+      cloneToSource.set(lastClone, lastSrc);
       // Sync content
       if (lastSrc.innerHTML !== lastClone.innerHTML) {
         lastClone.innerHTML = lastSrc.innerHTML;
@@ -177,11 +199,13 @@
     }
 
     // Slow path: count changed — full rebuild
-    compactMsgs.innerHTML = '';
+    // Remove only cloned messages and pending indicators, preserve empty-state element
+    compactMsgs.querySelectorAll('.compact-msg, .compact-pending').forEach(el => el.remove());
     messages.forEach(msg => {
       const clone = msg.cloneNode(true);
       clone.classList.add('compact-msg');
       clone.classList.remove('streaming');
+      cloneToSource.set(clone, msg);
       compactMsgs.appendChild(clone);
     });
     compactMsgs.scrollTop = compactMsgs.scrollHeight;
@@ -285,8 +309,16 @@
 
   // ─── Public API ───
 
+  // ─── Compact Chat Title Sync ───
+
+  function updateCompactTitle(title) {
+    const el = document.getElementById('chatCompactTitle');
+    if (el) el.textContent = title || 'New chat';
+  }
+
   window.setLayoutMode = setLayoutMode;
   window.getLayoutMode = getLayoutMode;
+  window.updateCompactTitle = updateCompactTitle;
 
   // ─── Button Click Handlers ───
 
@@ -336,6 +368,53 @@
     });
   }
 
+  // ─── Toolbar Button Forwarding for IDE Compact Chat ───
+  // cloneNode(true) strips listeners from mirrored .msg-toolbar / .retry-command-bar
+  // buttons (Copy, Regenerate, Resend, Resend tool results). Instead of duplicating
+  // app.js logic, forward each click to the matching live button in the source message.
+  function setupCompactToolbarDelegation() {
+    const compactMsgs = document.getElementById('chatCompactMessages');
+    if (!compactMsgs) return;
+
+    compactMsgs.addEventListener('click', function (e) {
+      // Skill-card Output/Command toggle is a pure local visual toggle — handle
+      // it on the visible compact card directly (forwarding to the hidden source
+      // would flip a card the user can't see).
+      const skillToggle = e.target.closest('.skill-toggle-btn');
+      if (skillToggle) {
+        e.preventDefault();
+        e.stopPropagation();
+        const card = skillToggle.closest('.skill-card');
+        if (!card) return;
+        const showing = card.classList.toggle('show-output');
+        skillToggle.textContent = showing ? 'Command' : 'Output';
+        return;
+      }
+
+      const btn = e.target.closest('.msg-toolbar button, .retry-command-bar button');
+      if (!btn) return;
+      const cloneMsg = btn.closest('.compact-msg');
+      const sourceMsg = cloneMsg && cloneToSource.get(cloneMsg);
+      if (!sourceMsg) return;
+
+      const container = btn.closest('.msg-toolbar, .retry-command-bar');
+      if (!container) return;
+      const selector = container.classList.contains('retry-command-bar') ? '.retry-command-bar' : '.msg-toolbar';
+
+      const btnIndex = Array.from(container.querySelectorAll('button')).indexOf(btn);
+      const cloneContainers = Array.from(cloneMsg.querySelectorAll(selector));
+      const containerIndex = cloneContainers.indexOf(container);
+      const sourceContainers = Array.from(sourceMsg.querySelectorAll(selector));
+      const sourceContainer = sourceContainers[containerIndex];
+      const sourceBtn = sourceContainer && sourceContainer.querySelectorAll('button')[btnIndex];
+      if (!sourceBtn) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      sourceBtn.click();
+    });
+  }
+
   // ─── Init ───
 
   function init() {
@@ -345,6 +424,7 @@
     patchSidebarToggle();
     setupCompactInput();
     setupCompactCopyDelegation();
+    setupCompactToolbarDelegation();
     startChatObserver();
     startSendBtnObserver();
     // Initial mirror if starting in IDE mode
@@ -369,10 +449,13 @@
       try {
         const body = JSON.parse(opts.body);
         const cwd = window.getIdeCwd ? window.getIdeCwd() : '';
-        const openFile = window.getIdeOpenFile ? window.getIdeOpenFile() : '';
         let changed = false;
         if (cwd && !body.cwd) { body.cwd = cwd; changed = true; }
-        if (openFile && !body.open_file) { body.open_file = openFile; changed = true; }
+        // Only inject open_file in IDE mode
+        if (document.body.dataset.mode === 'ide') {
+          const openFile = window.getIdeOpenFile ? window.getIdeOpenFile() : '';
+          if (openFile && !body.open_file) { body.open_file = openFile; changed = true; }
+        }
         if (changed) opts.body = JSON.stringify(body);
       } catch { /* non-JSON body, skip */ }
     }

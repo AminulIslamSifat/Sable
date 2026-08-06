@@ -651,7 +651,9 @@
 
     function renderMarkdown(raw) {
       if (!raw) return "";
-      const normalized = normalizeMd(String(raw).replace(/\r\n/g, "\n"));
+      // Strip agentic <action>...</action> blocks — metadata, not user-visible content
+      raw = String(raw).replace(/<action>[\s\S]*?<\/action>/gi, "").trim();
+      const normalized = normalizeMd(raw.replace(/\r\n/g, "\n"));
       const safe = closeUnclosedFences(normalized);
 
       ensureMarked();
@@ -807,6 +809,10 @@
       activeChatId = chatId;
       updateSendBtn();
       renderTabBar();
+      if (typeof window.updateCompactTitle === "function") {
+        const tab = openTabs.get(chatId);
+        window.updateCompactTitle(tab?.title || "New chat");
+      }
     }
 
     function closeTab(chatId) {
@@ -885,8 +891,15 @@
 
     function setCreating(val) {
       creating = val;
-      newChatBtn.disabled = val;
-      newChatBtn.classList.toggle("loading", val);
+      if (newChatBtn) {
+        newChatBtn.disabled = val;
+        newChatBtn.classList.toggle("loading", val);
+      }
+      const floatBtn = document.getElementById("newChatFloat");
+      if (floatBtn) {
+        floatBtn.disabled = val;
+        floatBtn.classList.toggle("loading", val);
+      }
       modelSelectEl.disabled = val;
       thinkingSwitcherEl.style.display = val ? "none" : "";
     }
@@ -1859,6 +1872,14 @@
             card.addEventListener("click", () => {
             document.body.classList.add("diff-open");
             if (typeof AgentPanel !== "undefined") AgentPanel.close();
+            // Switch sidebar tab to Diff mode
+            document.querySelectorAll(".fs-sidebar-tab").forEach((t) => t.classList.remove("active"));
+            const diffTab = document.querySelector('.fs-sidebar-tab[data-panel="diff"]');
+            if (diffTab) diffTab.classList.add("active");
+            const filesPanel = document.getElementById("sidebarFilesPanel");
+            const diffPanel = document.getElementById("sidebarDiffPanel");
+            if (filesPanel) filesPanel.classList.remove("active");
+            if (diffPanel) diffPanel.classList.add("active");
           });
             fileEditSummary.card = card;
           }
@@ -2137,6 +2158,7 @@
               // Update open tab
               const tab = openTabs.get(activeChatId);
               if (tab) { tab.title = newTitle; renderTabBar(); }
+              if (typeof window.updateCompactTitle === "function") window.updateCompactTitle(newTitle);
             }
           } else if (evt.type === "file_edit") {
             handleFileEdit(evt, false);
@@ -3315,7 +3337,15 @@
       }
     });
 
-    newChatBtn.addEventListener("click", createChat);
+    if (newChatBtn) newChatBtn.addEventListener("click", createChat);
+    const newChatSidebarBtn = document.getElementById("newChatSidebar");
+    if (newChatSidebarBtn) {
+        newChatSidebarBtn.addEventListener("click", createChat);
+    }
+    const newChatFloatBtn = document.getElementById("newChatFloat");
+    if (newChatFloatBtn) {
+        newChatFloatBtn.addEventListener("click", createChat);
+    }
 
     // Chat search toggle + filter
     const chatSearchBtn = document.getElementById('chatSearchBtn');
@@ -4696,7 +4726,75 @@
           headlessToggle.checked = data.headless;
         }
       } catch {}
+      // Also load context pass settings
+      loadContextPassSettings();
     }
+
+    // ── Context Pass Settings ──
+    const ctxPassModel = document.getElementById("ctxPassModel");
+    const ctxPassBrowserAcc = document.getElementById("ctxPassBrowserAcc");
+
+    function populateCtxPassModels() {
+      if (!ctxPassModel) return;
+      const current = ctxPassModel.value;
+      ctxPassModel.innerHTML = '<option value="">Default (current model)</option>';
+      for (const m of modelList) {
+        const opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = m.name || m.id;
+        ctxPassModel.appendChild(opt);
+      }
+      ctxPassModel.value = current;
+    }
+
+    async function populateCtxPassProfiles() {
+      if (!ctxPassBrowserAcc) return;
+      const current = ctxPassBrowserAcc.value;
+      ctxPassBrowserAcc.innerHTML = '<option value="">Default (current)</option>';
+      try {
+        const res = await fetch("/api/settings/accounts");
+        if (res.ok) {
+          const data = await res.json();
+          for (const acc of (data.accounts || [])) {
+            const opt = document.createElement("option");
+            opt.value = acc.name;
+            opt.textContent = acc.email ? `${acc.name} (${acc.email})` : acc.name;
+            ctxPassBrowserAcc.appendChild(opt);
+          }
+        }
+      } catch {}
+      ctxPassBrowserAcc.value = current;
+    }
+
+    async function loadContextPassSettings() {
+      populateCtxPassModels();
+      await populateCtxPassProfiles();
+      try {
+        const res = await fetch("/api/settings/context-pass");
+        if (res.ok) {
+          const d = await res.json();
+          if (ctxPassModel) ctxPassModel.value = d.summarizer_model || "";
+          if (ctxPassBrowserAcc) ctxPassBrowserAcc.value = d.browser_data_acc || "";
+        }
+      } catch {}
+    }
+
+    async function saveContextPassSettings() {
+      try {
+        await fetch("/api/settings/context-pass", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            summarizer_model: ctxPassModel ? ctxPassModel.value : "",
+            browser_data_acc: ctxPassBrowserAcc ? ctxPassBrowserAcc.value : "",
+          }),
+        });
+      } catch {}
+    }
+
+    if (ctxPassModel) ctxPassModel.addEventListener("change", saveContextPassSettings);
+    if (ctxPassBrowserAcc) ctxPassBrowserAcc.addEventListener("change", saveContextPassSettings);
+    // ── /Context Pass Settings ──
 
     refreshWafBtn.addEventListener("click", async () => {
       refreshWafBtn.disabled = true;
@@ -4934,6 +5032,71 @@
         fontSizeSelect.value = saved;
         applyFontSize(saved);
       }
+    })();
+
+    // ---------- System Font Size ----------
+    const SYS_FONT_KEY = "sable_system_font_size";
+    const systemFontSizeSelect = document.getElementById("systemFontSizeSelect");
+
+    function applySystemFontSize(size) {
+      document.documentElement.style.setProperty("--font-size-system", size);
+    }
+
+    systemFontSizeSelect.addEventListener("change", () => {
+      const size = systemFontSizeSelect.value;
+      applySystemFontSize(size);
+      try { localStorage.setItem(SYS_FONT_KEY, size); } catch (e) {}
+    });
+
+    (function loadSystemFontSize() {
+      let saved = null;
+      try { saved = localStorage.getItem(SYS_FONT_KEY); } catch (e) {}
+      if (saved) { systemFontSizeSelect.value = saved; applySystemFontSize(saved); }
+    })();
+
+    // ---------- Editor Font Size ----------
+    const EDITOR_FONT_KEY = "sable_editor_font_size";
+    const editorFontSizeSelect = document.getElementById("editorFontSizeSelect");
+
+    function applyEditorFontSize(size) {
+      const px = parseInt(size, 10);
+      document.documentElement.style.setProperty("--editor-font-size", px + "px");
+      // Update all active Monaco editors (instances are local to filesystem.js IIFE)
+      if (typeof monaco !== "undefined" && monaco.editor && monaco.editor.getEditors) {
+        monaco.editor.getEditors().forEach(ed => ed.updateOptions({ fontSize: px }));
+      }
+    }
+
+    editorFontSizeSelect.addEventListener("change", () => {
+      const size = editorFontSizeSelect.value;
+      applyEditorFontSize(size);
+      try { localStorage.setItem(EDITOR_FONT_KEY, size); } catch (e) {}
+    });
+
+    (function loadEditorFontSize() {
+      let saved = null;
+      try { saved = localStorage.getItem(EDITOR_FONT_KEY); } catch (e) {}
+      if (saved) { editorFontSizeSelect.value = saved; applyEditorFontSize(saved); }
+    })();
+
+    // ---------- IDE Chat Font Size ----------
+    const IDE_CHAT_FONT_KEY = "sable_ide_chat_font_size";
+    const ideChatFontSizeSelect = document.getElementById("ideChatFontSizeSelect");
+
+    function applyIdeChatFontSize(size) {
+      document.documentElement.style.setProperty("--ide-chat-font-size", size);
+    }
+
+    ideChatFontSizeSelect.addEventListener("change", () => {
+      const size = ideChatFontSizeSelect.value;
+      applyIdeChatFontSize(size);
+      try { localStorage.setItem(IDE_CHAT_FONT_KEY, size); } catch (e) {}
+    });
+
+    (function loadIdeChatFontSize() {
+      let saved = null;
+      try { saved = localStorage.getItem(IDE_CHAT_FONT_KEY); } catch (e) {}
+      if (saved) { ideChatFontSizeSelect.value = saved; applyIdeChatFontSize(saved); }
     })();
 
     // ---------- Font Family ----------
@@ -5617,6 +5780,27 @@
       document.getElementById('newChat')?.click();
     } else if (action === 'settings') {
       document.getElementById('settingsBtn')?.click();
+    } else if (action === 'context-pass') {
+      if (!activeChatId) { showToast('No active chat to pass context from', 'error'); return; }
+      showToast('Summarizing context…', 'info');
+      try {
+        const res = await fetch('/api/context/pass', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: activeChatId, model: selectedModel }),
+        });
+        const d = await res.json();
+        if (!res.ok || d.error) { showToast(d.error || 'Context pass failed', 'error'); return; }
+        const summary = d.summary;
+        if (!summary) { showToast('Empty summary returned', 'error'); return; }
+        // Create new chat and auto-send the summary as first message
+        const created = await createChat();
+        if (!created) { showToast('Failed to create new chat', 'error'); return; }
+        inputEl.value = summary;
+        autoResize();
+        await sendMessage();
+        showToast('Context passed to new chat', 'success');
+      } catch (e) { showToast('Context pass error: ' + e.message, 'error'); }
     } else if (action === 'sync-context') {
       showToast('Syncing context…', 'info');
       try {

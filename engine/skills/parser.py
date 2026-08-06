@@ -39,18 +39,28 @@ TAG_ALTERNATION = "|".join(re.escape(tag) for tag in KNOWN_TAGS)
 
 
 def parse_attrs(raw: str) -> dict[str, str]:
-    """Parse XML-style attributes from a tag's attribute string."""
+    """Parse XML-style attributes from a tag's attribute string.
+
+    Handles quoted values (single/double) and unquoted multi-word values.
+    Unquoted values extend until the next attribute key= pattern or end of
+    string, rather than stopping at the first whitespace — this prevents
+    truncation when LLMs omit quotes around multi-word attribute values.
+    """
     raw = raw.strip()
     if raw.endswith("/"):
         raw = raw[:-1]
     attrs: dict[str, str] = {}
-    for match in re.finditer(r'([\w-]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+))', raw):
+    # For unquoted values: capture everything until next \b\w+= (next attr) or end
+    pattern = r'([\w-]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|((?:(?!\s+[\w-]+\s*=).)+))'
+    for match in re.finditer(pattern, raw, re.DOTALL):
         key = match.group(1).lower()
         value = match.group(2)
         if value is None:
             value = match.group(3)
         if value is None:
             value = match.group(4)
+        if value is not None:
+            value = value.strip()
         attrs[key] = value or ""
     return attrs
 

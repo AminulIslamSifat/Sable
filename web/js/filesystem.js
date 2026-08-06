@@ -22,6 +22,11 @@
   let isDirty = false;
   let monacoEditor = null; // current Monaco editor instance
   let monacoReady = null;  // promise that resolves when Monaco is loaded
+  let diffReviewEditor = null; // inline diff review editor
+
+  function getEditorFontSize() {
+    return parseInt(localStorage.getItem("sable_editor_font_size") || "13", 10);
+  }
 
   /* ---------- Lucide helpers ---------- */
   function icon(name, size) {
@@ -53,7 +58,15 @@
   }
   function closeFS() {
     hideFsCtx();
-    if (monacoEditor) { monacoEditor.dispose(); monacoEditor = null; }
+    if (isDiffOpen) {
+      // Closing diff popup — dispose diff editor only, preserve main editor
+      if (diffEditor) { diffEditor.dispose(); diffEditor = null; }
+      isDiffOpen = false;
+    } else {
+      // Closing file manager — safe to dispose main editor
+      if (monacoEditor) { monacoEditor.dispose(); monacoEditor = null; }
+      if (diffReviewEditor) { diffReviewEditor.dispose(); diffReviewEditor = null; }
+    }
     overlay.classList.add("hidden");
   }
 
@@ -64,6 +77,7 @@
     expandedDirs.clear();
     activeFileEl = null;
     if (monacoEditor) { monacoEditor.dispose(); monacoEditor = null; }
+    if (diffReviewEditor) { diffReviewEditor.dispose(); diffReviewEditor = null; }
     viewerEl.innerHTML = '<div class="fs-viewer-empty">Select a file to view</div>';
     showRootPicker();
   });
@@ -292,6 +306,17 @@
         refreshIcons();
         return;
       }
+
+      // Check for pending diff (recent edit with backup)
+      try {
+        const diffRes = await fetch(`/api/filesystem/pending-diff?path=${encodeURIComponent(filePath)}`);
+        const diffData = await diffRes.json();
+        if (diffData.has_diff) {
+          renderDiffReview(data, diffData);
+          return;
+        }
+      } catch { /* diff check failed — fall through to normal editor */ }
+
       renderEditor(data);
     } catch {
       viewerEl.innerHTML = '<div class="fs-viewer-error">Network error</div>';
@@ -395,8 +420,14 @@
         "peekView.border": accent + "40",
         "peekViewEditor.background": bg,
         "peekViewResult.background": panel,
-        "diffEditor.insertedTextBackground": "6fcf9718",
-        "diffEditor.removedTextBackground": "e5646a18",
+        "diffEditor.insertedTextBackground": "#6fcf9730",
+        "diffEditor.insertedLineBackground": "#6fcf9720",
+        "diffEditor.removedTextBackground": "#e5646a30",
+        "diffEditor.removedLineBackground": "#e5646a20",
+        "diffEditorGutter.insertedLineBackground": "#6fcf9740",
+        "diffEditorGutter.removedLineBackground": "#e5646a40",
+        "diffEditorOverview.insertedForeground": "#6fcf9780",
+        "diffEditorOverview.removedForeground": "#e5646a80",
       },
     });
   }
@@ -405,6 +436,7 @@
   const themeObserver = new MutationObserver(() => {
     if (typeof monaco !== "undefined" && monaco.editor) {
       defineSableMonacoTheme();
+      monaco.editor.setTheme("sable-dark");
     }
   });
   themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "class"] });
@@ -416,6 +448,7 @@
       require(["vs/editor/editor.main"], () => {
         // Define Sable theme — reads live CSS variables so it follows theme switches
         defineSableMonacoTheme();
+        monaco.editor.setTheme("sable-dark");
         resolve(monaco);
       });
     });
@@ -440,8 +473,18 @@
     const ext = (data.ext || "").replace(".", "");
     const lines = data.content.split("\n");
 
-    // Dispose previous editor
-    if (monacoEditor) { monacoEditor.dispose(); monacoEditor = null; }
+    // Dispose previous editor + its model to avoid duplicate-URI errors on re-open
+    if (monacoEditor) {
+      const oldModel = monacoEditor.getModel();
+      monacoEditor.dispose();
+      if (oldModel) oldModel.dispose();
+      monacoEditor = null;
+    }
+    // Also dispose any orphaned model matching the current file URI
+    if (currentFilePath && typeof monaco !== "undefined" && monaco.editor) {
+      const orphan = monaco.editor.getModel(monaco.Uri.file(currentFilePath));
+      if (orphan) orphan.dispose();
+    }
 
     el.innerHTML = `
       <div class="fs-viewer-header">
@@ -472,6 +515,7 @@
         if (result.error) { alert(result.error); return; }
         isDirty = false;
         dirtyDot.style.display = "none";
+        syncSidebarDirty();
       } catch { alert("Save failed"); }
     }
 
@@ -480,12 +524,24 @@
     // Wait for Monaco to be ready
     await loadMonaco();
 
-    // Create editor
-    const model = monaco.editor.createModel(data.content, monacoLang(ext));
+    // Create editor — reuse existing model if URI still registered (prevents duplicate-URI crash on re-open)
+    const uri = currentFilePath ? monaco.Uri.file(currentFilePath) : undefined;
+    let model;
+    if (uri) {
+      const existing = monaco.editor.getModel(uri);
+      if (existing) {
+        existing.setValue(data.content);
+        model = existing;
+      } else {
+        model = monaco.editor.createModel(data.content, monacoLang(ext), uri);
+      }
+    } else {
+      model = monaco.editor.createModel(data.content, monacoLang(ext));
+    }
     monacoEditor = monaco.editor.create(wrapEl, {
       model,
       theme: "sable-dark",
-      fontSize: 13,
+      fontSize: getEditorFontSize(),
       fontFamily: "JetBrains Mono, Fira Code, monospace",
       minimap: { enabled: false },
       lineNumbers: "on",
@@ -504,11 +560,82 @@
       if (!isDirty) {
         isDirty = true;
         dirtyDot.style.display = "inline";
+        syncSidebarDirty();
       }
     });
 
     // Ctrl+S binding
     monacoEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, doSave);
+
+    refreshIcons();
+  }
+
+  /* ---------- Inline Diff Review (accept/reject) ---------- */
+  async function renderDiffReview(fileData, diffData, targetEl) {
+    const el = targetEl || viewerEl;
+    const ext = (fileData.ext || "").replace(".", "");
+    const fileName = fileData.name;
+
+    // Dispose previous editors
+    if (monacoEditor) { monacoEditor.dispose(); monacoEditor = null; }
+    if (diffReviewEditor) { diffReviewEditor.dispose(); diffReviewEditor = null; }
+
+    el.innerHTML = `
+      <div class="fs-monaco-wrap" id="fsDiffReviewWrap">
+        <div class="fs-diff-float-actions">
+          <button class="fs-action-btn fs-reject-btn" id="fsRejectBtn" title="Reject — restore previous version">${icon("x", 13)} Reject</button>
+          <button class="fs-action-btn fs-accept-btn" id="fsAcceptBtn" title="Accept — dismiss diff view">${icon("check", 13)} Accept</button>
+        </div>
+      </div>
+    `;
+
+    const wrapEl = el.querySelector("#fsDiffReviewWrap");
+    const acceptBtn = el.querySelector("#fsAcceptBtn");
+    const rejectBtn = el.querySelector("#fsRejectBtn");
+
+    await loadMonaco();
+    defineSableMonacoTheme();
+    monaco.editor.setTheme("sable-dark");
+
+    const originalModel = monaco.editor.createModel(diffData.original_content, monacoLang(ext));
+    const modifiedModel = monaco.editor.createModel(diffData.modified_content, monacoLang(ext));
+
+    diffReviewEditor = monaco.editor.createDiffEditor(wrapEl, {
+      fontSize: getEditorFontSize(),
+      fontFamily: "JetBrains Mono, Fira Code, monospace",
+      readOnly: true,
+      renderSideBySide: true,
+      minimap: { enabled: false },
+      scrollBeyondLastLine: false,
+      automaticLayout: true,
+      padding: { top: 8 },
+    });
+    diffReviewEditor.setModel({ original: originalModel, modified: modifiedModel });
+
+    // Accept handler — just dismiss diff, show normal editor, keep backup
+    acceptBtn.addEventListener("click", () => {
+      if (diffReviewEditor) { diffReviewEditor.dispose(); diffReviewEditor = null; }
+      renderEditor(fileData, targetEl);
+    });
+
+    // Reject handler
+    rejectBtn.addEventListener("click", async () => {
+      try {
+        const res = await fetch("/api/filesystem/reject-edit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: currentFilePath, backup_path: diffData.backup_path }),
+        });
+        const result = await res.json();
+        if (result.error) { showToast(result.error, "error"); return; }
+
+        // Dispose diff editor, reload file with restored content
+        if (diffReviewEditor) { diffReviewEditor.dispose(); diffReviewEditor = null; }
+        const restoredData = { ...fileData, content: diffData.original_content };
+        renderEditor(restoredData, targetEl);
+        showToast("Edit rejected — restored previous version", "success");
+      } catch { showToast("Reject failed", "error"); }
+    });
 
     refreshIcons();
   }
@@ -764,6 +891,29 @@
     for (const it of items) frag.appendChild(buildSidebarNode(it, 0));
     inner.appendChild(frag);
     refreshIcons();
+
+    // Recursively expand directories already in sidebarExpanded
+    await expandSidebarDirs(inner, 0);
+  }
+
+  async function expandSidebarDirs(container, depth) {
+    const dirs = container.querySelectorAll(":scope > .fs-item.fs-dir");
+    for (const row of dirs) {
+      const path = row.dataset.path;
+      if (!sidebarExpanded.has(path)) continue;
+      // Already rendered children? skip
+      if (container.querySelector(`:scope > [data-children="${CSS.escape(path)}"]`)) continue;
+      const data = await sbApi("/list?path=" + encodeURIComponent(path));
+      const children = data.items || [];
+      if (!children.length) continue;
+      const childWrap = document.createElement("div");
+      childWrap.dataset.children = path;
+      for (const it of children) childWrap.appendChild(buildSidebarNode(it, depth + 1));
+      row.after(childWrap);
+      // Recurse into this child container
+      await expandSidebarDirs(childWrap, depth + 1);
+    }
+    refreshIcons();
   }
 
   function buildSidebarNode(item, depth) {
@@ -777,7 +927,8 @@
     const iconName = isDir
       ? (sidebarExpanded.has(item.path) ? "folder-open" : "folder")
       : fileIcon(item.name);
-    row.innerHTML = `<span class="fs-icon">${icon(iconName, 14)}</span><span class="fs-name">${esc(item.name)}</span>`;
+    const dirtyDot = isDir ? "" : `<span class="fs-dirty-dot" style="display:none;">●</span>`;
+    row.innerHTML = `<span class="fs-icon">${icon(iconName, 14)}</span><span class="fs-name">${esc(item.name)}</span>${dirtyDot}`;
 
     if (isDir) {
       row.addEventListener("click", () => toggleSidebarDir(item.path, depth));
@@ -821,12 +972,21 @@
     if (!data || data.error) return;
     currentFilePath = path;
     isDirty = false;
+    syncSidebarDirty();
     localStorage.setItem("fs_ide_last_file", path);
 
     if (data.binary) {
       showToast("Binary file — cannot preview", "error");
       return;
     }
+
+    // Check for pending diff
+    let diffData = null;
+    try {
+      const diffRes = await fetch(`/api/filesystem/pending-diff?path=${encodeURIComponent(path)}`);
+      const d = await diffRes.json();
+      if (d.has_diff) diffData = d;
+    } catch { /* ignore */ }
 
     // IDE mode: render into the center editor pane
     if (document.body.getAttribute("data-mode") === "ide") {
@@ -835,21 +995,61 @@
       if (editorEmpty) editorEmpty.classList.add("hidden");
       if (editorContainer) {
         editorContainer.classList.remove("hidden");
-        renderEditor(data, editorContainer);
+        if (diffData) {
+          renderDiffReview(data, diffData, editorContainer);
+        } else {
+          renderEditor(data, editorContainer);
+        }
       }
       highlightSidebarFile(path);
       return;
     }
 
-    // Agent mode: open the overlay as before
+    // Agent mode: open the overlay, synced with sidebar folder
+    const syncRoot = sidebarRoot || path.split("/").slice(0, -1).join("/") || "/";
+    if (rootPath !== syncRoot) {
+      rootPath = syncRoot;
+      expandedDirs.clear();
+      expandedDirs.add(rootPath);
+      pathBar.textContent = rootPath;
+    }
+    // Expand parent dirs so the opened file is visible in tree
+    const fileParts = path.split("/");
+    for (let i = 1; i < fileParts.length - 1; i++) {
+      expandedDirs.add(fileParts.slice(0, i + 1).join("/"));
+    }
     openFS();
-    renderEditor(data);
+    await loadTree();
+    // Highlight the opened file in the overlay tree
+    const overlayRow = treeEl.querySelector(`.fs-item[data-path="${path}"]`);
+    if (overlayRow) {
+      if (activeFileEl) activeFileEl.classList.remove("fs-active");
+      overlayRow.classList.add("fs-active");
+      activeFileEl = overlayRow;
+    }
+    if (diffData) {
+      renderDiffReview(data, diffData);
+    } else {
+      renderEditor(data);
+    }
   }
 
   function highlightSidebarFile(path) {
     sidebarTree.querySelectorAll(".fs-item.fs-active").forEach(el => el.classList.remove("fs-active"));
     const row = sidebarTree.querySelector(`.fs-item[data-path="${path}"]`);
     if (row) row.classList.add("fs-active");
+  }
+
+  function syncSidebarDirty() {
+    // Hide all dots first, then show only if current file is dirty
+    sidebarTree.querySelectorAll(".fs-dirty-dot").forEach(d => d.style.display = "none");
+    if (isDirty && currentFilePath) {
+      const row = sidebarTree.querySelector(`.fs-item[data-path="${CSS.escape(currentFilePath)}"]`);
+      if (row) {
+        const dot = row.querySelector(".fs-dirty-dot");
+        if (dot) dot.style.display = "inline";
+      }
+    }
   }
 
   /* ---------- IDE CWD + open file getters (for auto-inject into chat) ---------- */
@@ -860,19 +1060,53 @@
     return currentFilePath || "";
   };
 
+  /* ---------- Open file at position (Problems panel jump) ---------- */
+  window.openIdeFileAt = async function (filePath, line, col) {
+    if (document.body.dataset.mode !== "ide") {
+      const ideBtn = document.getElementById("layoutIde");
+      if (ideBtn) ideBtn.click();
+    }
+    try {
+      if (filePath && filePath !== currentFilePath) {
+        await openSidebarFile(filePath, filePath.split("/").pop());
+      }
+      if (monacoEditor && line) {
+        const pos = { lineNumber: line, column: col || 1 };
+        monacoEditor.revealPositionInCenter(pos);
+        monacoEditor.setPosition(pos);
+        monacoEditor.focus();
+      }
+    } catch { /* file may be gone — ignore */ }
+  };
+
   /* ---------- Live refresh: re-fetch open file when agent edits it ---------- */
   window.refreshIdeFile = async function (filePath) {
-    if (!filePath || filePath !== currentFilePath || !monacoEditor || isDirty) return;
+    if (!filePath || filePath !== currentFilePath || isDirty) return;
     try {
       const res = await fetch("/api/filesystem/read?path=" + encodeURIComponent(filePath));
       const data = await res.json();
       if (data.error || data.binary) return;
-      const model = monacoEditor.getModel();
-      if (model && model.getValue() !== data.content) {
-        model.setValue(data.content);
-        isDirty = false;
-        const dirtyDot = document.getElementById("fsDirtyDot");
-        if (dirtyDot) dirtyDot.style.display = "none";
+
+      // Check for pending diff — show inline review instead of silent update
+      try {
+        const diffRes = await fetch(`/api/filesystem/pending-diff?path=${encodeURIComponent(filePath)}`);
+        const diffData = await diffRes.json();
+        if (diffData.has_diff) {
+          const isIde = document.body.getAttribute("data-mode") === "ide";
+          const targetEl = isIde ? document.getElementById("editorContainer") : null;
+          renderDiffReview(data, diffData, targetEl);
+          return;
+        }
+      } catch { /* fall through to normal update */ }
+
+      if (monacoEditor) {
+        const model = monacoEditor.getModel();
+        if (model && model.getValue() !== data.content) {
+          model.setValue(data.content);
+          isDirty = false;
+          const dirtyDot = document.getElementById("fsDirtyDot");
+          if (dirtyDot) dirtyDot.style.display = "none";
+        }
       }
     } catch { /* silent — file may have been deleted */ }
   };
@@ -887,6 +1121,17 @@
     sidebarRoot = lastFolder;
     sidebarExpanded.clear();
     sidebarExpanded.add(lastFolder);
+
+    // Expand all parent dirs leading to the last opened file
+    if (lastFile) {
+      const fileDir = lastFile.substring(0, lastFile.lastIndexOf("/"));
+      let dir = fileDir;
+      while (dir.length > lastFolder.length && dir.startsWith(lastFolder)) {
+        sidebarExpanded.add(dir);
+        dir = dir.substring(0, dir.lastIndexOf("/"));
+      }
+    }
+
     saveHistory(lastFolder);
     await loadSidebarTree();
 
@@ -945,6 +1190,7 @@
 
   /* ---------- Diff editor (Monaco split view) ---------- */
   let diffEditor = null;
+  let isDiffOpen = false;
 
   window.openDiffEditor = async function (path, backupPath, fileName) {
     await loadMonaco();
@@ -962,7 +1208,7 @@
     }
 
     openFS();
-    if (monacoEditor) { monacoEditor.dispose(); monacoEditor = null; }
+    isDiffOpen = true;
     if (diffEditor) { diffEditor.dispose(); diffEditor = null; }
 
     viewerEl.innerHTML = `
@@ -979,9 +1225,11 @@
     const originalModel = monaco.editor.createModel(origData.content, monacoLang(ext));
     const modifiedModel = monaco.editor.createModel(modData.content, monacoLang(ext));
 
+    defineSableMonacoTheme();
+    monaco.editor.setTheme("sable-dark");
+
     diffEditor = monaco.editor.createDiffEditor(wrapEl, {
-      theme: "sable-dark",
-      fontSize: 13,
+      fontSize: getEditorFontSize(),
       fontFamily: "JetBrains Mono, Fira Code, monospace",
       readOnly: true,
       renderSideBySide: true,
@@ -994,5 +1242,13 @@
   };
 
   /* ---------- Init: populate right sidebar on load ---------- */
-  showSidebarPicker();
+  const savedFolder = localStorage.getItem("fs_ide_last_folder");
+  if (savedFolder) {
+    sidebarRoot = savedFolder;
+    sidebarExpanded.clear();
+    sidebarExpanded.add(savedFolder);
+    loadSidebarTree();
+  } else {
+    showSidebarPicker();
+  }
 })();
