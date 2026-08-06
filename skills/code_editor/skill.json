@@ -3,7 +3,7 @@
   "key": "code_editor",
   "version": "1.0.0",
   "category": "core",
-  "description": "Native file I/O: view, edit, create, insert. The ONLY skill that mutates files on disk.",
+  "description": "Native file I/O: view, edit, create, insert. The ONLY skill that mutates files on disk. You are forbidden to write anything on the disk without laoding this skill.",
   "trigger": "Writing to disk: create, edit, insert, or view files with precise line-numbered operations.",
   "not_this_if": "Reading a PDF/image for content -> use file_uploader. Running a build -> use execute_command directly.",
   "tags": [

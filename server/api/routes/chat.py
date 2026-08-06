@@ -69,7 +69,13 @@ async def chat(request: ChatRequest):
             return {"error": f"Session startup failed: {type(exc).__name__}: {exc}"}
         if not active_chat_id:
             return {"error": "Could not create chat session"}
-    timestamped_message = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]\n{request.message}"
+    _ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    _ctx_parts = ""
+    if request.cwd:
+        _ctx_parts += f" | cwd: {request.cwd}"
+    if request.open_file:
+        _ctx_parts += f" | file: {request.open_file}"
+    timestamped_message = f"[{_ts}{_ctx_parts}]\n{request.message}"
     _injected_memory_keys = get_injected_memory_keys(active_chat_id)
     _ms_cfg: dict[str, Any] = {"enabled": True, "top_k": 10}
     _searcher = get_searcher()
@@ -547,6 +553,8 @@ async def chat(request: ChatRequest):
                 feedback = build_tool_feedback(round_skill_events)
                 if stream_error or error_message or not feedback or _ask_user_pause:
                     break
+
+
                 try:
                     _max_chars_tool = _ms_cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS)
                     if _ms_cfg.get("enabled", True) and feedback and len(feedback) <= _max_chars_tool:
@@ -555,7 +563,7 @@ async def chat(request: ChatRequest):
                         if _new_mem:
                             _tool_block = _searcher.format_for_prompt(_new_mem)
                             if _tool_block:
-                                feedback = f"{_tool_block}\n\n{feedback}"
+                                feedback = f"{_tool_block}\n\n{feedback}"  # memory stays unwrapped, tool part is already wrapped
                                 for r in _new_mem:
                                     _injected_memory_keys.add(r["key"])
                                 save_injected_memory_keys(active_chat_id, _injected_memory_keys)

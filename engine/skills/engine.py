@@ -18,7 +18,6 @@ from engine.skills.middleware import (
     ExecutionMiddleware,
     LoggingMiddleware,
     MiddlewarePipeline,
-    PermissionMiddleware,
     TagContext,
     ValidationMiddleware,
 )
@@ -67,10 +66,12 @@ class SkillEngine:
         # Background jobs
         self.bg_jobs = BackgroundJobManager()
 
-        # Middleware pipeline
+        # Middleware pipeline (lazy import to avoid circular dep)
+        from engine.security.middleware import SecurityMiddleware
+
         self._pipeline = MiddlewarePipeline([
             ValidationMiddleware(self._tag_ownership),
-            PermissionMiddleware(),
+            SecurityMiddleware(),
             ExecutionMiddleware(handlers),
             LoggingMiddleware(),
         ])
@@ -89,9 +90,11 @@ class SkillEngine:
         return self._tag_ownership
 
     def create_parser(self) -> SkillParser:
-        """Create a parser instance with tags from the registry."""
-        tags = tuple(self._tag_ownership.keys())
-        return SkillParser(known_tags=tags if tags else None)
+        """Create a parser instance with tags from the registry + handler tags."""
+        skill_tags = set(self._tag_ownership.keys())
+        handler_tags = set(self._handlers.keys())
+        all_tags = tuple(skill_tags | handler_tags)
+        return SkillParser(known_tags=all_tags if all_tags else None)
 
     def process_tag(
         self,
@@ -115,7 +118,10 @@ class SkillEngine:
 
     def get_known_tags(self) -> tuple[str, ...]:
         """Return all registered tag names (for parser initialization)."""
-        return tuple(self._tag_ownership.keys()) or KNOWN_TAGS
+        skill_tags = set(self._tag_ownership.keys())
+        handler_tags = set(self._handlers.keys())
+        all_tags = tuple(skill_tags | handler_tags)
+        return all_tags or KNOWN_TAGS
 
     def get_registry_prompt(self, include_defaults: bool = True) -> str:
         """Generate the skills section for the LLM system prompt.

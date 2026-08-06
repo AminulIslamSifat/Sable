@@ -577,12 +577,48 @@ class GhostChat:
             await self.page.goto(PLATFORM["url"])
             await asyncio.sleep(3)
 
-    async def stop_generation(self) -> bool:
+    async def stop_generation(self, chat_id: str | None = None, response_id: str | None = None) -> bool:
+        """Stop generation via API call (preferred) with on-page button as fallback."""
+        # Try the API stop endpoint first — more reliable than clicking the button
+        if chat_id and response_id:
+            try:
+                import urllib.request
+                # Extract cookies from the browser context for authentication
+                cookie_str = ""
+                try:
+                    cookies = await self.page.context.cookies()
+                    cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+                except Exception:
+                    pass
+
+                stop_url = f"https://chat.qwen.ai/api/v2/chat/completions/stop?chat_id={chat_id}"
+                payload = json.dumps({"chat_id": chat_id, "response_id": response_id}).encode()
+                headers = {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/plain, */*",
+                    "Origin": "https://chat.qwen.ai",
+                    "Referer": f"https://chat.qwen.ai/c/{chat_id}",
+                    "source": "web",
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:154.0) Gecko/20100101 Firefox/154.0",
+                }
+                if cookie_str:
+                    headers["Cookie"] = cookie_str
+
+                req = urllib.request.Request(stop_url, data=payload, headers=headers, method="POST")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    result = json.loads(resp.read())
+                    if result.get("success"):
+                        console.print("[bold red]Generation stopped via API! 🛑[/bold red]")
+                        return True
+            except Exception as exc:
+                console.print(f"[dim yellow]API stop failed ({exc}), falling back to button...[/dim yellow]")
+
+        # Fallback: click the on-page stop button
         try:
             btn = self.page.locator(PLATFORM["selectors"]["stop"]).first
             await btn.wait_for(state="visible", timeout=2000)
             await btn.click(timeout=1000)
-            console.print("[bold red]Generation stopped! 🛑[/bold red]")
+            console.print("[bold red]Generation stopped via button! 🛑[/bold red]")
             return True
         except Exception:
             return False
