@@ -12,6 +12,7 @@
   ],
   "default": false,
   "inline": false,
+  "context": "reference",
   "priority": 65,
   "scope": [
     "*"

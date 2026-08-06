@@ -29,7 +29,7 @@ _BLOCKED_COMMANDS = re.compile(
 _COMMAND_TAGS = frozenset({"execute_command", "execute_background_command"})
 
 # Tags that write to the filesystem
-_WRITE_TAGS = frozenset({"create_file", "edit_file", "insert_file", "create_note", "save_svg"})
+_WRITE_TAGS = frozenset({"create_file", "edit_file", "insert_file", "create_note", "save_svg", "create_svg"})
 
 # Allowed write roots (configurable at init)
 _DEFAULT_WRITE_ROOTS = (
@@ -85,7 +85,9 @@ class SecurityMiddleware:
                 return
 
         # --- 3. Validate write paths stay within allowed roots ---
-        if ctx.name in _WRITE_TAGS:
+        # save_svg/create_svg use safe_under(ASSETS_DIR) in the handler itself,
+        # so relative filenames are resolved there — skip the root gate.
+        if ctx.name in _WRITE_TAGS and ctx.name not in ("save_svg", "create_svg"):
             path = ctx.attrs.get("path", "")
             if path and not self._is_path_allowed(path):
                 ctx.error = f"Write to '{path}' denied — outside allowed roots"

@@ -1037,3 +1037,103 @@ async def set_context_pass_settings(request: Request) -> dict[str, Any]:
     _save_context_pass_settings(settings)
     return {"status": "ok", **settings}
 # ── /Context Pass Settings ─────────────────────────────────────────
+
+
+# ── TTS Model Management ────────────────────────────────────────────
+_TTS_DIR = _SYSTEM_DIR / "models" / "tts"
+_TTS_FILES = {
+    "kokoro-v1.0.onnx": {
+        "url": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx",
+        "size": 325525180,
+        "label": "Kokoro v1.0 Model (f32)",
+    },
+    "voices-v1.0.bin": {
+        "url": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin",
+        "size": 28205511,
+        "label": "Voice Embeddings (54 voices)",
+    },
+}
+
+
+def _tts_status() -> dict[str, Any]:
+    files = {}
+    for name, meta in _TTS_FILES.items():
+        path = _TTS_DIR / name
+        if path.exists():
+            actual = path.stat().st_size
+            files[name] = {
+                "label": meta["label"],
+                "installed": actual >= meta["size"] * 0.95,
+                "size": actual,
+                "expected": meta["size"],
+            }
+        else:
+            files[name] = {
+                "label": meta["label"],
+                "installed": False,
+                "size": 0,
+                "expected": meta["size"],
+            }
+    all_installed = all(f["installed"] for f in files.values())
+    return {"installed": all_installed, "dir": str(_TTS_DIR), "files": files}
+
+
+@router.get("/api/settings/tts")
+async def get_tts_status() -> dict[str, Any]:
+    return _tts_status()
+
+
+@router.post("/api/settings/tts/download")
+async def download_tts_models(request: Request) -> StreamingResponse:
+    import urllib.request
+
+    _TTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    async def _stream() -> AsyncGenerator[str, None]:
+        for name, meta in _TTS_FILES.items():
+            path = _TTS_DIR / name
+            if path.exists() and path.stat().st_size >= meta["size"] * 0.95:
+                yield json.dumps({"file": name, "status": "skip", "reason": "already installed"}) + "\n"
+                continue
+
+            yield json.dumps({"file": name, "status": "start", "total": meta["size"]}) + "\n"
+            try:
+                tmp = path.with_suffix(".part")
+                req = urllib.request.Request(meta["url"], headers={"User-Agent": "Sable/1.0"})
+                with urllib.request.urlopen(req, timeout=300) as resp:
+                    downloaded = 0
+                    with open(tmp, "wb") as f:
+                        while True:
+                            if await request.is_disconnected():
+                                tmp.unlink(missing_ok=True)
+                                yield json.dumps({"file": name, "status": "cancelled"}) + "\n"
+                                return
+                            chunk = resp.read(1024 * 256)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            yield json.dumps({"file": name, "status": "progress", "downloaded": downloaded, "total": meta["size"]}) + "\n"
+                            await asyncio.sleep(0)
+                tmp.rename(path)
+                yield json.dumps({"file": name, "status": "done", "size": downloaded}) + "\n"
+            except Exception as e:
+                if tmp.exists():
+                    tmp.unlink()
+                yield json.dumps({"file": name, "status": "error", "error": str(e)}) + "\n"
+
+        yield json.dumps({"status": "complete"}) + "\n"
+
+    return StreamingResponse(_stream(), media_type="application/x-ndjson")
+
+
+@router.delete("/api/settings/tts")
+async def delete_tts_models() -> dict[str, Any]:
+    removed = []
+    for name in _TTS_FILES:
+        path = _TTS_DIR / name
+        if path.exists():
+            path.unlink()
+            removed.append(name)
+    return {"status": "ok", "removed": removed}
+# ── /TTS Model Management ──────────────────────────────────────────

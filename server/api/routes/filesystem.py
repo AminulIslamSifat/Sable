@@ -195,11 +195,16 @@ async def filesystem_delete(request: Request) -> dict[str, Any]:
 @router.get("/api/filesystem/pick-folder")
 def filesystem_pick_folder() -> dict[str, Any]:
     """Open native folder picker dialog (zenity/yad/kdialog)."""
+    import logging
+    log = logging.getLogger("sable.fs")
+    log.info("[pick-folder] Request received, DISPLAY=%s", os.environ.get("DISPLAY", "(unset)"))
+
     for cmd in [
         ["zenity", "--file-selection", "--directory", "--title=Open Folder"],
         ["yad", "--file", "--directory", "--title=Open Folder"],
         ["kdialog", "--getexistingdirectory"],
     ]:
+        log.info("[pick-folder] Trying: %s", " ".join(cmd))
         try:
             result = subprocess.run(
                 cmd,
@@ -207,17 +212,26 @@ def filesystem_pick_folder() -> dict[str, Any]:
                 text=True,
                 timeout=120,
             )
+            log.info(
+                "[pick-folder] rc=%d stdout=%r stderr=%r",
+                result.returncode, result.stdout.strip()[:200], result.stderr.strip()[:200],
+            )
             if result.returncode == 0:
                 path = result.stdout.strip()
                 if path and os.path.isdir(path):
+                    log.info("[pick-folder] Selected: %s", path)
                     return {"path": path}
             elif result.returncode == 1:
                 # User cancelled
+                log.info("[pick-folder] User cancelled (rc=1)")
                 return {"path": None, "cancelled": True}
         except FileNotFoundError:
+            log.warning("[pick-folder] %s not found, trying next", cmd[0])
             continue
         except subprocess.TimeoutExpired:
+            log.error("[pick-folder] %s timed out after 120s", cmd[0])
             return {"path": None, "error": "Dialog timed out"}
+    log.error("[pick-folder] No dialog tool available")
     return {"path": None, "error": "No file dialog tool found (install zenity)"}
 
 

@@ -8,9 +8,9 @@
 
   <link rel="stylesheet" href="/static/css/variables.css?v=4">
   <link rel="stylesheet" href="/static/css/base.css?v=3">
-  <link rel="stylesheet" href="/static/css/layout.css?v=46">
-  <link rel="stylesheet" href="/static/css/chat.css?v=19">
-  <link rel="stylesheet" href="/static/css/panels.css?v=20">
+  <link rel="stylesheet" href="/static/css/layout.css?v=50">
+  <link rel="stylesheet" href="/static/css/chat.css?v=23">
+  <link rel="stylesheet" href="/static/css/panels.css?v=21">
   <link rel="stylesheet" href="/static/css/components.css?v=12">
   <link rel="stylesheet" href="/static/css/responsive.css?v=3">
   <link rel="stylesheet" href="/static/css/agents.css?v=31">
@@ -317,6 +317,7 @@
         <button class="settings-tab" data-tab="agents">Agents</button>
         <button class="settings-tab" data-tab="providers">Providers</button>
         <button class="settings-tab" data-tab="mcp">MCP</button>
+        <button class="settings-tab" data-tab="tts">TTS</button>
       </div>
       <div class="settings-body">
         <div id="tab-logs" class="settings-tab-content active">
@@ -485,6 +486,15 @@
             </div>
             <p id="dataExportStatus" class="muted" style="font-size:11px;margin-top:6px;min-height:14px;">Exports system/, output/, instruction/, Brain/, .sable_backups/ to ~/.sable/backup/</p>
           </div>
+          <!-- Telegram Toggle -->
+          <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <label for="telegramToggle" style="font-size:13px;color:var(--text-dim);font-weight:600;"><span class="icon-emoji">✈️</span><i data-lucide="send" class="icon-lucide"></i> Telegram Mini Client</label>
+              <input type="checkbox" id="telegramToggle" style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;">
+            </div>
+            <p class="muted" style="font-size:11px;margin-top:4px;">Enable a read-only Telegram chat browser in Library. Requires Telethon + API credentials.</p>
+          </div>
+
           <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;flex-direction:column;align-items:center;gap:10px;">
             <button id="stopServiceBtn" style="background:transparent;color:var(--danger);border:1.5px solid var(--danger);border-radius:8px;padding:9px 28px;font-size:12px;font-weight:600;cursor:pointer;">⏻ Stop Service</button>
             <button id="restartServiceBtn" style="background:transparent;color:var(--danger);border:1.5px solid var(--danger);border-radius:8px;padding:9px 28px;font-size:12px;font-weight:600;cursor:pointer;">↻ Restart Service</button>
@@ -690,6 +700,27 @@
           <p class="muted mem-desc">Registered agentic skills. Click a card for details.</p>
           <div id="skillsGrid" class="skills-grid"></div>
         </div>
+        
+        <div id="tab-tts" class="settings-tab-content">
+          <h3 class="mem-title">🔊 Text-to-Speech</h3>
+          <p class="muted mem-desc">Offline TTS powered by Kokoro. Download the model files to enable speech synthesis.</p>
+
+          <div id="ttsStatus" class="tts-status">
+            <p class="muted" style="font-size:12px;">Checking model status...</p>
+          </div>
+
+          <div id="ttsProgress" class="tts-progress" hidden>
+            <div class="tts-progress-bar">
+              <div id="ttsProgressFill" class="tts-progress-fill"></div>
+            </div>
+            <p id="ttsProgressText" class="muted" style="font-size:11px;margin-top:6px;"></p>
+          </div>
+
+          <div style="display:flex;gap:8px;margin-top:16px;">
+            <button id="ttsDownloadBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;">⬇ Download Models</button>
+            <button id="ttsDeleteBtn" class="btn-danger" style="font-size:13px;padding:8px 16px;" hidden>🗑 Remove Models</button>
+          </div>
+        </div>
         <div id="tab-agents" class="settings-tab-content">
           <h3 class="mem-title"><span class="icon-emoji">🤖</span><i data-lucide="bot" class="icon-lucide"></i> Agent Roles</h3>
           <p class="muted mem-desc">Define what each agent role does. These are injected into the system prompt when an agent is spawned with that role.</p>
@@ -804,6 +835,7 @@
         <button class="settings-tab" data-tab="lib-gallery">Gallery</button>
         <button class="settings-tab" data-tab="lib-skills">Skills</button>
         <button class="settings-tab" data-tab="lib-email"><span class="icon-emoji">📧</span><i data-lucide="mail" class="icon-lucide"></i> Email</button>
+        <button class="settings-tab" data-tab="lib-telegram" id="libTelegramTab" style="display:none;"><span class="icon-emoji">✈️</span><i data-lucide="send" class="icon-lucide"></i> Telegram</button>
       </div>
       <div class="settings-body library-body" id="libraryBody">
         <div id="tab-lib-agents" class="settings-tab-content active"></div>
@@ -812,6 +844,7 @@
         <div id="tab-lib-gallery" class="settings-tab-content"></div>
         <div id="tab-lib-skills" class="settings-tab-content"></div>
         <div id="tab-lib-email" class="settings-tab-content"></div>
+        <div id="tab-lib-telegram" class="settings-tab-content"></div>
       </div>
     </div>
   </div>
@@ -866,8 +899,8 @@
       },
     };
   </script>
-  <script src="/static/app.js?v=37"></script>
-  <script src="/static/js/agents.js?v=20"></script>
+  <script src="/static/app.js?v=38"></script>
+  <script src="/static/js/agents.js?v=22"></script>
   <script src="/static/js/filesystem.js?v=24"></script>
   <script src="/static/js/mode.js?v=18"></script>
   <script src="/static/js/resize-panels.js?v=1"></script>

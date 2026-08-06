@@ -699,17 +699,20 @@
 .attach-cell {
   cursor: pointer;
   border-radius: 45%;
-  padding: 7px;
+  padding: 6px;
 }
 .attach-cell .attach-btn {
   border-radius: 50%;
   box-shadow: none;
+  padding: 6.5px;
+  min-width: 22px;
+  min-height: 22px;
 }
 
 .text-cell {
   flex: 1;
   border-radius: 22px;
-  padding: 7px;
+  padding: 5px 7px;
 }
 .text-cell:active {
   border-radius: 28px;
@@ -720,8 +723,8 @@
   background: transparent;
   box-shadow: none;
   box-sizing: border-box;
-  min-height: 27px;
-  padding: 4px 15px;
+  min-height: 25px;
+  padding: 3.75px 15px;
 }
 .text-cell textarea:focus {
   box-shadow: none;
@@ -731,11 +734,18 @@
 .send-cell {
   cursor: pointer;
   border-radius: 45%;
-  padding: 7px;
+  padding: 6px;
 }
 .send-cell #send {
   border-radius: 50%;
   box-shadow: none;
+  padding: 6.5px;
+  min-width: 22px;
+  min-height: 22px;
+}
+.send-cell #send.stop-mode {
+  min-width: 27px;
+  min-height: 27px;
 }
 
 textarea {
@@ -750,7 +760,7 @@ textarea {
   color: var(--text);
   outline: none;
   font: inherit;
-  font-size: var(--font-size-system);
+  font-size: calc(var(--font-size-response) - 2.5px);
   line-height: 1.5;
   transition: border-color 0.15s;
   overflow-y: auto;
@@ -758,6 +768,7 @@ textarea {
 
 textarea::placeholder {
   color: var(--muted-2);
+  font-size: calc(var(--font-size-response) - 2.5px);
 }
 textarea:focus {
   border-color: #c9a46480;
@@ -772,7 +783,7 @@ textarea:disabled {
 #send {
   min-width: 27px;
   min-height: 27px;
-  padding: 8px;
+  padding: 6.5px;
   font-size: var(--font-size-system);
   font-weight: 700;
   color: var(--accent-text);
@@ -833,18 +844,19 @@ textarea:disabled {
 .empty {
   margin: auto;
   text-align: center;
-  color: var(--muted);
+  color: var(--accent);
   max-width: 380px;
 }
 .empty h2 {
   font-family: var(--font-serif);
-  color: var(--text);
+  color: var(--accent);
   margin-bottom: 6px;
-  font-weight: 600;
-  font-size: var(--font-size-system);
+  font-weight: 700;
+  font-size: 24px;
 }
 .empty p {
-  font-size: var(--font-size-system);
+  font-size: calc(var(--font-size-response) - 1px);
+  opacity: 0.7;
 }
 
 #toast {
@@ -1688,3 +1700,53 @@ textarea:disabled {
   }
 }
 
+
+
+/* ── TTS Settings Tab ─────────────────────────────────────────────── */
+.tts-status {
+  padding: 12px;
+  background: var(--bg-secondary, rgba(255,255,255,0.03));
+  border-radius: 8px;
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  margin-top: 12px;
+}
+.tts-progress {
+  margin-top: 12px;
+}
+.tts-progress-bar {
+  height: 6px;
+  background: var(--border, rgba(255,255,255,0.1));
+  border-radius: 3px;
+  overflow: hidden;
+}
+.tts-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent, #6c63ff);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+/* ── Generic action buttons ───────────────────────────────────────── */
+.btn-primary {
+  background: var(--accent, #6c63ff);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: opacity 0.15s;
+}
+.btn-primary:hover { opacity: 0.85; }
+.btn-primary:disabled { opacity: 0.5; cursor: default; }
+.btn-danger {
+  background: transparent;
+  color: var(--danger, #e74c3c);
+  border: 1px solid var(--danger, #e74c3c);
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+.btn-danger:hover { background: rgba(231, 76, 60, 0.1); }
+.btn-danger:disabled { opacity: 0.5; cursor: default; }
