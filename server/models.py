@@ -19,6 +19,12 @@ class ChatRequest(BaseModel):
     thinking_mode: str | None = None
     stream: bool = True
     ref_file_ids: list[str] | None = None
+    cwd: str | None = None
+    open_file: str | None = None
 
 class NewChatRequest(BaseModel):
+    model: str | None = None
+
+class ContextPassRequest(BaseModel):
+    chat_id: str
     model: str | None = None

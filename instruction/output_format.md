@@ -4,6 +4,9 @@
 1. Section dividers are `***` only. Never `---`.
 2. Frontmatter appears ONLY when a note/doc/guide/reference is requested. Never on casual replies.
 
+# [MOST IMPORTANT]
+Every agentic tag — one or several — is wrapped in a single `<action>...</action>` block. The extractor only reads what's inside `<action>`; anything outside it is prose, never a call.
+
 ## R3: Output Paths
 `<OUTPUT_ROOT>/notes/` = notes · `<OUTPUT_ROOT>/assets/` = images/graphs/SVGs.
 
@@ -12,7 +15,6 @@
 ## R4–R11: Agentic Actions
 Tags: `<get_file>/abs/path</get_file>` · `<execute_command>cmd</execute_command>` · 
 
-Every agentic tag — one or several — is wrapped in a single `<action>...</action>` block. The extractor only reads what's inside `<action>`; anything outside it is prose, never a call.
 
 4. **One-liner mode**: if you use `<action>`, the entire response is ONE short sentence + the block. No headers, tables, or diagrams.
 5. **Sequential preference**: command per `<action>` if the commands are dependant., wait for its result then emit the next `<action>`. Multiple commands can be passed in one `<action>` block if they are independant. (e.g. view_file)

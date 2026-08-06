@@ -32,6 +32,7 @@ from engine.skills.handlers.grep_search import (
     handle_glob,
     handle_list_dir,
 )
+from engine.mcp.handler import handle_mcp_call
 
 HANDLER_MAP: dict[str, object] = {
     "execute_command": handle_execute_command,
@@ -54,6 +55,7 @@ HANDLER_MAP: dict[str, object] = {
     "grep": handle_grep,
     "glob": handle_glob,
     "list_dir": handle_list_dir,
+    "mcp_call": handle_mcp_call,
 }
 
 __all__ = [
@@ -78,4 +80,5 @@ __all__ = [
     "handle_grep",
     "handle_glob",
     "handle_list_dir",
+    "handle_mcp_call",
 ]

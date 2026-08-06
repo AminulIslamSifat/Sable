@@ -81,20 +81,16 @@ class BrowserManager:
             self.page = await self.context.new_page()
             await self.page.goto("https://chat.qwen.ai", wait_until="domcontentloaded", timeout=15000)
 
-            # Wait for auth hydration (avatar/user element or timeout)
-            try:
-                await self.page.wait_for_selector(
-                    "button[class*='avatar'], img[class*='avatar'], [class*='user-info']",
-                    timeout=8000,
-                )
-            except Exception:
-                print("[WARN] Auth selector not found, falling back to fixed wait...")
-                await self.page.wait_for_timeout(4000)
+            # Poll localStorage directly for auth token (faster than waiting for UI selectors in headless)
+            has_token = False
+            for _ in range(12):  # up to 6s, checking every 500ms
+                has_token = await self.page.evaluate("() => !!localStorage.getItem('token')")
+                if has_token:
+                    break
+                await self.page.wait_for_timeout(500)
 
-            # Validate auth tokens loaded
-            has_token = await self.page.evaluate("() => !!localStorage.getItem('token')")
             if not has_token:
-                print("[WARN] ⚠️  No JWT token in localStorage after load!")
+                print("[WARN] ⚠️  No JWT token in localStorage after 6s!")
                 print(f"[WARN] Profile may be stale/corrupted. Try: rm -rf {self.user_data_dir} && re-login via browser_opener.py")
             else:
                 print("[DEBUG] ✅ Auth token hydrated successfully.")
@@ -312,9 +308,10 @@ class BrowserManager:
         print(f"[DEBUG] Image uploaded successfully! File ID: {file_id}")
         return file_obj
 
-    async def sync_context(self) -> bool:
+    async def sync_context(self, headers: dict[str, str] | None = None) -> bool:
         """Sync persona instructions to Qwen via settings/update API (no Playwright DOM)."""
-        await self.start()
+        if headers is None:
+            await self.start()
 
         SETTINGS_URL = "https://chat.qwen.ai/api/v2/users/user/settings/update"
 
@@ -325,10 +322,6 @@ class BrowserManager:
         maria_path = instruction_dir / "Maria.md"
         if maria_path.exists():
             instructions += maria_path.read_text(encoding="utf-8") + "\n\n"
-
-        personal_path = instruction_dir / "personal.md"
-        if personal_path.exists():
-            instructions += personal_path.read_text(encoding="utf-8") + "\n\n"
 
         of_path = instruction_dir / "output_format.md"
         if of_path.exists():
@@ -342,7 +335,15 @@ class BrowserManager:
             handlers=HANDLER_MAP,
             agent_id="maria",
         )
-        instructions += _engine.get_registry_prompt() + "\n\n"
+        instructions += _engine.get_registry_prompt()
+        # Inject connected MCP tools into system prompt
+        try:
+            from engine.mcp.manager import get_mcp_manager
+            mcp_section = get_mcp_manager().get_prompt_section()
+            if mcp_section:
+                instructions += chr(10) + chr(10) + mcp_section + chr(10) + chr(10)
+        except Exception:
+            pass
 
         PROJECT_ROOT = Path(__file__).resolve().parent.parent
         OUTPUT_ROOT = PROJECT_ROOT / "output"
@@ -360,8 +361,10 @@ class BrowserManager:
         if len(instructions) > MAX_CHARS:
             instructions = instructions[:MAX_CHARS]
 
-        # Get fresh auth headers from browser session
-        headers = await self.get_fresh_headers()
+        # Use provided headers or fetch fresh from browser
+        if headers is None:
+            headers = await self.get_fresh_headers()
+        headers = dict(headers)  # copy to avoid mutating the cached dict
         headers.update({
             "Content-Type": "application/json",
             "Version": "0.2.80",

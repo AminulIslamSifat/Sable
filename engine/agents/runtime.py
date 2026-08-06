@@ -151,6 +151,12 @@ class AgentRuntime:
                 depth=depth,
                 collect=assignment.collect,
             )
+
+            # Attach todo list if provided
+            if assignment.todos:
+                from engine.agents.agent import AgentTodoList
+                agent.todos = AgentTodoList.build_from_list(assignment.todos)
+
             self._agents[agent.id] = agent
 
         # DB persist
@@ -171,7 +177,15 @@ class AgentRuntime:
         await self._emit(chat_id, AgentEvent(
             type="agent_spawned",
             agent_id=agent.id,
-            data={"role": agent.role, "task": agent.task, "model": agent.model},
+            data={
+                "role": agent.role,
+                "task": agent.task,
+                "model": agent.model,
+                "todos": [
+                    {"id": t.id, "content": t.content, "status": t.status, "subtasks": t.subtasks, "result": t.result}
+                    for t in agent.todos.todos
+                ] if agent.todos else None,
+            },
         ))
 
         # Select semaphore based on backend

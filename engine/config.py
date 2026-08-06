@@ -48,19 +48,34 @@ BROWSER_AUTOMATION_DATA_DIR = _SYSTEM / "automation-browser-data"
 
 URL = "https://chat.qwen.ai/api/v2/chat/completions"
 NEW_CHAT_URL = "https://chat.qwen.ai/api/v2/chats/new"
+STOP_URL = "https://chat.qwen.ai/api/v2/chat/completions/stop"
 
 # Each model carries its own list of selectable "thinking modes" — some
-# models only support one mode (e.g. qwen3.8-max-preview is Thinking-only),
+# models only support one mode (e.g. qwen3.8-max was Thinking-only),
 # others support several (qwen3.7-max: Fast/Thinking, qwen3.7-plus:
 # Fast/Auto/Thinking). Each thinking mode entry maps directly onto the
 # feature_config fields the upstream API expects. Add/remove model or mode
 # entries here to control what's selectable in the UI.
 MODELS = [
     {
-        "id": "qwen3.8-max-preview",
-        "label": "Qwen3.8 Max Preview",
+        "id": "qwen3.8-max",
+        "label": "Qwen3.8 Max",
         "capabilities": {"image": True, "video": False, "document": False, "audio": False},
         "thinking_modes": [
+            {
+                "id": "fast",
+                "label": "Fast",
+                "thinking_enabled": False,
+                "auto_thinking": False,
+                "thinking_mode": "Fast",
+            },
+            {
+                "id": "auto",
+                "label": "Auto",
+                "thinking_enabled": True,
+                "auto_thinking": True,
+                "thinking_mode": "Auto",
+            },
             {
                 "id": "thinking",
                 "label": "Thinking",
