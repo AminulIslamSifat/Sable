@@ -1,0 +1,22 @@
+
+{
+  "name": "Telegram",
+  "key": "telegram",
+  "version": "1.0.0",
+  "category": "data",
+  "description": "Send and read Telegram messages via Telethon CLI.",
+  "trigger": "Checking Telegram, reading messages, sending TG messages, searching contacts.",
+  "not_this_if": "Configuring Telegram API keys -> use Sable settings panel. Downloading media -> use Video Downloader.",
+  "tags": [
+    "execute_command"
+  ],
+  "default": false,
+  "inline": false,
+  "priority": 50,
+  "scope": [
+    "*"
+  ],
+  "config": {},
+  "dependencies": [],
+  "$schema": "skill-v1"
+}

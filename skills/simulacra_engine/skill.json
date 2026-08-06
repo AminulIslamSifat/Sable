@@ -7,11 +7,13 @@
   "trigger": "Dynamic, animated, interactive visualizations of physical or mathematical systems.",
   "not_this_if": "A static graph suffices -> use Graph Master. Node/edge structure -> use SVG Creator.",
   "tags": [
+    "run_simulacra",
     "create_note",
     "execute_command"
   ],
   "default": false,
   "inline": false,
+  "context": "reference",
   "priority": 45,
   "scope": [
     "*"

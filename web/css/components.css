@@ -124,8 +124,8 @@
         font-size: var(--font-size-system);
       }
       textarea {
-        min-height: 30px;
-        padding: 5px 10px;
+        min-height: 28px;
+        padding: 3px 10px;
         font-size: var(--font-size-system);
       }
 
@@ -138,11 +138,16 @@
       .header-model-wrap {
         min-width: 0;
         flex: 1;
+        max-width: 50%;
+        overflow: hidden;
       }
       .header-model-wrap select {
-        max-width: none;
+        max-width: 100%;
         width: 100%;
         font-size: var(--font-size-system);
+        text-overflow: ellipsis;
+        overflow: hidden;
+        white-space: nowrap;
       }
 
       /* code blocks: smooth scroll + smaller font */

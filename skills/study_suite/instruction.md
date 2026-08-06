@@ -7,7 +7,7 @@ Problems), and last-minute revision (Cheat Sheets).
 Each mode has a defined trigger, a precise output format, and non-negotiable rules. Read all four
 before firing any mode.
 
----
+***
 
 ## Mode Selection Protocol
 
@@ -26,7 +26,7 @@ flashcards).
 **One mode per response.** Never mix modes unless the user explicitly requests a combo (e.g., "give me
 a cheat sheet and some practice problems").
 
----
+***
 
 ## Mode 1: Flashcards (Active Recall)
 
@@ -43,8 +43,6 @@ algorithm or theorem.
 > {Question} :: {Answer}
 > {Question} :: {Answer}
 > ...
->
-> See: [[{Source Note Title}]]
 ```
 
 ### Construction Rules
@@ -56,9 +54,7 @@ algorithm or theorem.
 3. **LaTeX is mandatory** for all mathematical expressions. Use `$ ... $` inline. No plaintext math.
 4. **Minimum 8 cards, maximum 20** per session. If the topic is too narrow for 8 non-redundant
    cards, tell the user explicitly rather than padding with trivial cards.
-5. **Wikilink the source note** at the bottom of every callout block using `See: [[Note Name]]`.
-   If no note name is known, omit the line — do not guess.
-6. **After generating**, always offer: *"Want me to compile these into an Anki CSV (Mode 2)?"*
+5. **After generating**, always offer: *"Want me to compile these into an Anki CSV (Mode 2)?"*
    Do not generate the CSV unprompted.
 
 ### Example
@@ -70,11 +66,9 @@ algorithm or theorem.
 > What property must every BST node satisfy? :: Left subtree values $<$ node $<$ right subtree values
 > What is an in-order traversal of a BST guaranteed to produce? :: A sorted (ascending) sequence
 > What is the worst-case space complexity of recursive BST traversal? :: $O(h)$ where $h$ is tree height
->
-> See: [[Binary Search Trees]]
 ```
 
----
+***
 
 ## Mode 2: Anki CSV Compiler (Bulk Export)
 
@@ -122,7 +116,7 @@ Front,Back,Tags
 ```
 ````
 
----
+***
 
 ## Mode 3: Practice Problems (Application & Mastery)
 
@@ -184,9 +178,9 @@ Every problem set must span all three tiers in order. Do not collapse tiers or s
    Do not reveal the full solution until he has made a second attempt or explicitly asks to see it.
    If the topic involves a derivation, invoke the Derivation Demon protocol. If it involves
    tracing code, invoke the Code Trace protocol.
-7. **Wikilink the topic** in the header: `## Practice: [[{Topic}]]`
+7. **Topic in header**: `## Practice: {Topic}`
 
----
+***
 
 ## Mode 4: Cheat Sheet (High-Density Reference)
 
@@ -234,7 +228,7 @@ complexity bound, every edge case, and every common exam trap for the topic.
    genuinely useful — not filler.
 6. **No preamble.** Start directly with the first heading. No "Here is your cheat sheet" or
    "In this reference...". Pure signal from line one.
-7. **Wikilink related notes** at the very bottom under a `### See Also` heading.
+7. **Related topics** at the very bottom under a `### See Also` heading (plain text, no links).
 
 ### Example (partial)
 
@@ -265,10 +259,10 @@ complexity bound, every edge case, and every common exam trap for the topic.
 > "Zero, One, Two — Remove, Promote, Successor" maps directly to the three deletion cases.
 
 ### See Also
-[[AVL Trees]] · [[Red-Black Trees]] · [[Tree Traversals]]
+AVL Trees · Red-Black Trees · Tree Traversals
 ```
 
----
+***
 
 ## Cross-Skill Integration
 
@@ -281,18 +275,16 @@ These are concrete handoff rules, not aspirational suggestions.
 | Mode 4 or Mode 1 topic has a non-trivial data structure | Offer: *"Want an SVG diagram of this structure?"* and invoke the SVG Creator skill if the user says yes. |
 | Mode 3 question involves a tree, graph, or heap | Include a plain-text ASCII sketch in the solution key as a minimum; offer a full SVG via SVG Creator. |
 
----
+***
 
 ## Global Rules (All Modes)
 
 1. **LaTeX everywhere**: Every formula, complexity expression, and mathematical symbol uses
    `$ ... $`. Zero exceptions. No plaintext math.
-2. **Wikilinks everywhere**: Every topic name, referenced note, and related concept uses
-   `[[Note Name]]` syntax. This is non-negotiable for vault navigation.
-3. **No fluff**: Never open with "Great question!", "Sure!", "In this guide...", or any filler.
+2. **No fluff**: Never open with "Great question!", "Sure!", "In this guide...", or any filler.
    Start with the content immediately.
-4. **One mode per response**: Do not mix modes unless the user explicitly requests a combo.
-5. **Offer the next logical mode**: After Mode 1, offer Mode 2. After Mode 4, offer Mode 3.
+3. **One mode per response**: Do not mix modes unless the user explicitly requests a combo.
+4. **Offer the next logical mode**: After Mode 1, offer Mode 2. After Mode 4, offer Mode 3.
    Never offer more than one follow-up at a time.
-6. **When a topic is too broad**: Ask the user to narrow it to a subtopic before generating.
+5. **When a topic is too broad**: Ask the user to narrow it to a subtopic before generating.
    A cheat sheet for "Data Structures" is useless; a cheat sheet for "AVL Tree Rotations" is not.

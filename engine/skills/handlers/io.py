@@ -163,7 +163,7 @@ def handle_save_svg(
     started = time.time()
     ASSETS_DIR.mkdir(parents=True, exist_ok=True)
     raw = content.strip()
-    svg_name = attrs.get("path", "")
+    svg_name = attrs.get("path", "") or attrs.get("filename", "")
     svg = ""
 
     try:
@@ -195,5 +195,12 @@ def handle_save_svg(
         yield _end_event(tag_id, name, False, started, error=str(exc))
         return
 
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    upload_dest = UPLOAD_DIR / path.name
+    shutil.copy2(path, upload_dest)
+
     yield _output_event(tag_id, f"Saved SVG {path} ({len(svg)} chars)\n")
-    yield _end_event(tag_id, name, True, started, {"path": str(path), "chars": len(svg)})
+    yield _end_event(
+        tag_id, name, True, started,
+        {"path": str(path), "chars": len(svg), "url": f"/system/uploads/{upload_dest.name}", "mime": "image/svg+xml"},
+    )

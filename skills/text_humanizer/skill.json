@@ -1,4 +1,3 @@
-
 {
   "name": "Text Humanizer",
   "key": "text_humanizer",
@@ -12,6 +11,7 @@
   ],
   "default": false,
   "inline": false,
+  "context": "reference",
   "priority": 65,
   "scope": [
     "*"

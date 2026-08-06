@@ -105,57 +105,79 @@ DEFAULT_AGENT_CONFIG: dict[str, Any] = {
         "max_total_tool_calls": 50,
     },
     "defaults": {
-        "researcher_model": "qwen3.7-max",
+        "analyst_model": "qwen3.7-max",
         "coder_model": "qwen3.7-max",
-        "reviewer_model": "qwen3.7-max",
         "writer_model": "qwen3.7-max",
-        "utility_model": "qwen3.7-max",
-        "timeout_researcher": 90,
-        "timeout_coder": 180,
-        "timeout_reviewer": 60,
-        "timeout_writer": 120,
-        "timeout_utility": 120,
+        "timeout_analyst": 300,
+        "timeout_coder": 300,
+        "timeout_writer": 300,
+        "sysutil_model": "qwen3.7-max",
+        "docs_model": "qwen3.7-max",
+        "visuals_model": "qwen3.7-max",
+        "tester_model": "qwen3.7-max",
+        "timeout_sysutil": 300,
+        "timeout_docs": 300,
+        "timeout_visuals": 300,
+        "timeout_tester": 300,
     },
     "roles": {
-        "researcher": {
+        "analyst": {
             "default_model": "qwen3.7-max",
-            "default_timeout": 90,
+            "default_timeout": 300,
             "max_parallel": 4,
-            "allowed_skills": ["execute_command", "online_search", "file_uploader"],
-            "default_skills": ["online_search"],
-            "required_sections": ["Topic", "Findings", "Summary"],
+            "allowed_skills": ["execute_command", "online_search", "code_editor", "file_uploader"],
+            "default_skills": ["online_search", "code_editor"],
+            "required_sections": [],
         },
         "coder": {
             "default_model": "qwen3.7-max",
-            "default_timeout": 180,
+            "default_timeout": 300,
             "max_parallel": 1,
             "allowed_skills": ["execute_command", "code_editor", "background_command", "online_search"],
             "default_skills": ["code_editor", "background_command"],
             "required_sections": ["Description", "Files Modified"],
         },
-        "reviewer": {
-            "default_model": "qwen3.7-max",
-            "default_timeout": 60,
-            "max_parallel": 3,
-            "allowed_skills": ["execute_command", "code_editor", "online_search"],
-            "default_skills": ["code_editor"],
-            "required_sections": ["File Reviewed", "Verdict"],
-        },
+
         "writer": {
             "default_model": "qwen3.7-max",
-            "default_timeout": 120,
+            "default_timeout": 300,
             "max_parallel": 2,
             "allowed_skills": ["execute_command", "code_editor", "online_search"],
             "default_skills": ["code_editor"],
             "required_sections": ["Title", "Structure Overview"],
         },
-        "utility": {
+
+        "sysutil": {
             "default_model": "qwen3.7-max",
-            "default_timeout": 120,
+            "default_timeout": 300,
             "max_parallel": 3,
-            "allowed_skills": ["execute_command", "code_editor", "background_command", "online_search", "file_uploader"],
-            "default_skills": ["code_editor", "background_command"],
+            "allowed_skills": ["execute_command", "system_repair", "phone_control", "background_command", "youtube_downloader", "grep_search", "code_editor", "online_search", "file_uploader"],
+            "default_skills": ["system_repair", "youtube_downloader", "code_editor"],
             "required_sections": ["Task", "Result"],
+        },
+        "docs": {
+            "default_model": "qwen3.7-max",
+            "default_timeout": 300,
+            "max_parallel": 2,
+            "allowed_skills": ["execute_command", "document_skills", "file_uploader", "text_humanizer", "code_editor"],
+            "default_skills": ["document_skills", "file_uploader"],
+            "required_sections": ["Task", "Document Path"],
+        },
+        "visuals": {
+            "default_model": "qwen3.7-max",
+            "default_timeout": 300,
+            "max_parallel": 2,
+            "allowed_skills": ["execute_command", "graph_master", "svg_creator", "frontend_design", "simulacra_engine", "code_editor"],
+            "default_skills": ["graph_master", "svg_creator"],
+            "required_sections": ["Task", "Output Path"],
+        },
+        "tester": {
+            "default_model": "qwen3.7-max",
+            "default_timeout": 300,
+            "max_parallel": 2,
+            "allowed_skills": ["execute_command", "testing_debugging", "code_editor", "grep_search", "background_command"],
+            "default_skills": ["testing_debugging", "code_editor"],
+            "required_sections": ["Bug Summary", "Root Cause", "Fix Applied"],
         },
     },
     "universal_skills": ["execute_command"],
@@ -421,7 +443,7 @@ async def spawn_agent(request: Request):
     if not role or not task or not chat_id:
         return {"error": "role, task, and chat_id are required"}
 
-    valid_roles = ("researcher", "coder", "reviewer", "writer", "utility")
+    valid_roles = ("analyst", "coder", "writer", "sysutil", "docs", "visuals", "tester")
     if role not in valid_roles:
         return {"error": f"Invalid role '{role}'. Must be one of: {', '.join(valid_roles)}"}
 
