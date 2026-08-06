@@ -177,6 +177,7 @@
       border: 1px solid var(--border);
       color: var(--text);
       white-space: pre-wrap;
+      font-size: calc(var(--font-size-response) - 1px);
     }
     .user.collapsed .user-text { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
     .user-expand-btn {
@@ -584,7 +585,7 @@
 
 /* ---------- markdown / obsidian-style rendering (self-contained, no CDN) ---------- */
 
-    .md-content { color: var(--text); font-size: var(--font-size-response); }
+    .md-content { color: var(--text); font-size: var(--font-size-response); padding: 2px 6px; }
     .md-content > *:first-child { margin-top: 0; }
     .md-content > *:last-child { margin-bottom: 0; }
 

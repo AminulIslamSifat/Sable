@@ -53,8 +53,14 @@
 
   /* ---------- Open / Close ---------- */
   function openFS() {
+    console.log("[FS] openFS called, rootPath:", rootPath || "(empty)");
     overlay.classList.remove("hidden");
-    if (!rootPath) showRootPicker();
+    if (!rootPath) {
+      console.log("[FS] No rootPath, showing root picker");
+      showRootPicker();
+    } else {
+      console.log("[FS] rootPath set, showing existing tree (not root picker)");
+    }
   }
   function closeFS() {
     hideFsCtx();
@@ -109,14 +115,30 @@
 
     const openFolderBtn = openRow.querySelector("#fsOpenFolderBtn");
     openFolderBtn.addEventListener("click", async () => {
+      console.log("[FS] Open Folder clicked, disabled:", openFolderBtn.disabled);
+      if (openFolderBtn.disabled) { console.warn("[FS] Button is disabled, ignoring"); return; }
       openFolderBtn.disabled = true;
       openFolderBtn.querySelector("span").textContent = "Waiting…";
       try {
+        console.log("[FS] Fetching /api/filesystem/pick-folder...");
         const res = await fetch("/api/filesystem/pick-folder");
+        console.log("[FS] Response status:", res.status);
         const data = await res.json();
-        if (data.path) { saveHistory(data.path); openRoot(data.path); return; }
+        console.log("[FS] Pick-folder response:", JSON.stringify(data));
+        if (data.path) {
+          console.log("[FS] Opening root:", data.path);
+          saveHistory(data.path);
+          openRoot(data.path);
+          openFolderBtn.disabled = false;
+          openFolderBtn.querySelector("span").textContent = "Open Folder";
+          return;
+        }
+        console.warn("[FS] No path returned:", data.error || "cancelled");
         openFolderBtn.querySelector("span").textContent = data.error || "Open Folder";
-      } catch { openFolderBtn.querySelector("span").textContent = "Open Folder"; }
+      } catch (err) {
+        console.error("[FS] Pick-folder fetch failed:", err);
+        openFolderBtn.querySelector("span").textContent = "Open Folder";
+      }
       openFolderBtn.disabled = false;
     });
 
@@ -156,6 +178,7 @@
   }
 
   function openRoot(path) {
+    console.log("[FS] openRoot called with:", path);
     rootPath = path;
     expandedDirs.clear();
     expandedDirs.add(path);
@@ -842,7 +865,7 @@
       dirs.forEach((d) => {
         const item = document.createElement("div");
         item.className = "fs-item";
-        item.innerHTML = `<span class="fs-icon">${icon("folder", 14)}</span><span class="fs-name">${esc(d.name || shorten(d.path))}</span>`;
+        item.innerHTML = `<span class="fs-icon">${icon("folder", 14)}</span><span class="fs-name" title="${esc(d.path)}">${esc(shorten(d.path))}</span>`;
         item.addEventListener("click", () => pickSidebarRoot(d.path));
         sidebarTree.appendChild(item);
       });

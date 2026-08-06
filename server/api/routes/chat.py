@@ -349,6 +349,24 @@ async def chat(request: ChatRequest):
                                     update_chat_title(active_chat_id, _title_text[:80])
                                     yield sse({"type": "chat_title", "title": _title_text[:80]})
                                 continue
+                            # SVG tags: stream content directly, no skill card
+                            if item["name"] in ("create_svg", "save_svg"):
+                                svg_body = (item.get("content", "") or "").strip()
+                                if svg_body.startswith("<svg"):
+                                    yield sse({"type": "answer", "text": "\n```svg\n" + svg_body + "\n```\n"})
+                                # Save silently in background
+                                svg_name = item.get("attrs", {}).get("filename") or item.get("attrs", {}).get("path") or f"svg-{__import__('time').strftime('%Y%m%d-%H%M%S')}.svg"
+                                if not svg_name.endswith(".svg"):
+                                    svg_name += ".svg"
+                                try:
+                                    from engine.skills.handlers.common import ASSETS_DIR, safe_under
+                                    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+                                    dest = safe_under(ASSETS_DIR, svg_name)
+                                    dest.parent.mkdir(parents=True, exist_ok=True)
+                                    dest.write_text(svg_body, encoding="utf-8")
+                                except Exception:
+                                    pass
+                                continue
                             # Execute the tag through the middleware pipeline
                             for ev in engine.process_tag(
                                 item["name"], item.get("attrs", {}), item.get("content", "")
@@ -356,6 +374,14 @@ async def chat(request: ChatRequest):
                                 if ev.get("type") in ("skill_start", "skill_output", "skill_end", "file_edit"):
                                     round_skill_events.append(ev)
                                 yield sse(ev)
+                                # Detect simulacra completion → emit sim_ready card
+                                if (ev.get("type") == "skill_end"
+                                        and ev.get("name") == "run_simulacra"
+                                        and ev.get("ok")):
+                                    _fname = item.get("attrs", {}).get("filename", "simulation.html")
+                                    if not _fname.endswith(".html"):
+                                        _fname += ".html"
+                                    yield sse({"type": "sim_ready", "filename": _fname})
                         else:
                             # tool_pending, tool_progress, etc — forward to frontend
                             if itype in ("skill_start", "skill_output", "skill_end", "file_edit"):

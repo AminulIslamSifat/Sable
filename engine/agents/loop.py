@@ -32,11 +32,9 @@ STUCK_MESSAGE = (
 )
 
 FORMAT_REMINDERS: dict[str, str] = {
-    "researcher": "This is your FINAL response. Output ONLY a markdown document with these sections: ## Topic, ## Findings, ## Sources, ## Summary, ## Confidence. No JSON. No action block.",
+    "analyst": "This is your FINAL response. Output ONLY a markdown document. For research: ## Topic, ## Findings, ## Sources, ## Summary, ## Confidence. For code review: ## File Reviewed, ## Critical Issues, ## Warnings, ## Info, ## Verdict. No JSON. No action block.",
     "coder": "This is your FINAL response. Output ONLY a markdown document with these sections: ## Description, ## Files Modified, ## Tests, ## Notes. No JSON. No action block.",
-    "reviewer": "This is your FINAL response. Output ONLY a markdown document with these sections: ## File Reviewed, ## Critical Issues, ## Warnings, ## Info, ## Verdict. No JSON. No action block.",
     "writer": "This is your FINAL response. Output ONLY a markdown document with these sections: ## Title, ## Document Path, ## Structure Overview, ## Word Count, ## Notes. No JSON. No action block.",
-    "utility": "This is your FINAL response. Output ONLY a markdown document with these sections: ## Task, ## Actions Taken, ## Result, ## Notes. No JSON. No action block.",
 }
 
 _TAG_RE = re.compile(r"<(action)>(.*?)</\1>", re.DOTALL)

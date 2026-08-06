@@ -22,6 +22,7 @@ from server.config import (
     AUTH_EXEMPT_PREFIXES, WEB_DIR, UPLOAD_DIR,
     _MEMORY_SEARCH_SETTINGS,
 )
+from engine.config import ASSETS_DIR
 from server.utils import logger
 
 # Import routers
@@ -39,6 +40,7 @@ from .routes.library import router as library_router
 from .routes.email import router as email_router
 from .routes.filesystem import router as filesystem_router
 from .routes.terminal import router as terminal_router
+from .routes.telegram import router as telegram_router
 
 def _raise_nofile_limit() -> None:
     """Raise open file limit for agentic workloads (browsers, agents, streams)."""
@@ -116,6 +118,12 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
         await get_mcp_manager().shutdown()
     except Exception:
         pass
+    # Disconnect Telegram client cleanly
+    try:
+        from server.api.routes.telegram import disconnect_client
+        await disconnect_client()
+    except Exception:
+        pass
 
 app = FastAPI(title="Sable API", version="0.4.0", lifespan=lifespan)
 
@@ -141,6 +149,9 @@ if WEB_DIR.exists():
 
 if UPLOAD_DIR.exists():
     app.mount("/system/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+if ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 
 # ---------- Auth Middleware ----------
 @app.middleware("http")
@@ -171,6 +182,7 @@ app.include_router(library_router)
 app.include_router(email_router)
 app.include_router(filesystem_router)
 app.include_router(terminal_router)
+app.include_router(telegram_router)
 
 # Wire agent runtime event callback → SSE push
 from .routes.agents import _async_push_agent_event, push_agent_event

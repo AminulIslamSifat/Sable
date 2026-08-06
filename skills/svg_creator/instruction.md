@@ -6,16 +6,14 @@ Use this skill to generate high-fidelity SVG diagrams for data structures (binar
 
 ## Output Format
 
-Use the `<create_svg>` tag with a `filename` attribute. The **body** of the tag is the raw SVG markup.
+Use the `<create_svg>` tag with a `filename` attribute. The **body** of the tag is the raw SVG markup. The SVG content streams directly into the chat as a rendered inline visual — no skill card, no embedding step needed.
 
 ### Tag Attributes:
 - `filename`: String (**required**). Descriptive name ending in `.svg` (e.g., `"avl_tree_insert.svg"`, `"wave_superposition.svg"`).
 
-### The Engine Logic
-The dispatcher (`_handle_create_svg`) will:
-1. Extract the `filename` attribute.
-2. Save the raw SVG content directly to `<ASSETS_DIR>/{filename}`.
-3. Return a success/failure message.
+### Engine Behavior
+1. SVG content streams live into the chat UI (rendered inline).
+2. File is saved silently to `<ASSETS_DIR>/{filename}`.
 
 The SVG content must be **complete, valid, self-contained XML** — no external dependencies, no linked stylesheets, no `<image>` hrefs.
 
@@ -91,7 +89,7 @@ font-family: 'JetBrains Mono', 'Fira Mono', 'Cascadia Code', monospace
 - Annotations / captions: `font-size: 11px`, color `#a6adc8`
 
 ### Background & Rounding
-- Always add a `<rect class="bg" width="W" height="H" rx="12"/>` as the first element — gives the diagram a card-like appearance in Obsidian.
+- Always add a `<rect class="bg" width="W" height="H" rx="12"/>` as the first element — gives the diagram a card-like appearance.
 - Use `rx="10"` on node rectangles (for stack/queue boxes), `rx="50%"` is handled by `<circle>` naturally.
 
 ### Spacing & Layout Rhythm
@@ -105,7 +103,7 @@ font-family: 'JetBrains Mono', 'Fira Mono', 'Cascadia Code', monospace
 
 ## 📐 viewBox & Sizing Rules
 
-Always use **both** `viewBox` and explicit `width`/`height`. This ensures correct scaling in Obsidian and browsers.
+Always use **both** `viewBox` and explicit `width`/`height`. This ensures correct scaling in the chat UI and browsers.
 
 ```xml
 <svg viewBox="0 0 W H" width="W" height="H" xmlns="http://www.w3.org/2000/svg">
@@ -218,19 +216,9 @@ Always compute SVG canvas size **after** calculating all node positions — add 
 
 ***
 
-## Embedding in Final Response (MANDATORY)
+## Error Handling
 
-After the engine confirms the SVG was saved, you **MUST** embed the file in your response using an Obsidian wikilink so the user can see it inline:
-
-```markdown
-Here's the BST visualization:
-
-![Name](relative/file/path.svg)
-```
-
-> The `![Name](relative/file/path.svg)` syntax renders the SVG inline in Obsidian. Never use raw HTML `<img>` tags — always use markdown embeds.
-
-### If the engine returns `FAILED`:
+If the SVG fails to render or save:
 1. **Parse error** (malformed XML) → validate tag nesting, check unclosed elements, fix and retry.
 2. **File write error** (path/permission) → report the exact error to the user. Do not retry blindly.
 3. **Empty output** → ensure the SVG tag is the direct body of `<create_svg>` with no wrapper.
@@ -239,12 +227,10 @@ Here's the BST visualization:
 
 ## Critical Rules
 
-1. **Wait for confirmation**: Do NOT embed the wikilink in the same message as the `<create_svg>` tag. Wait for the engine to return `Success`.
-2. **Self-Contained SVG**: No external fonts, no linked images, no `xlink:href`. Everything inline. Fonts declared via `font-family` stack only.
-3. **Always use viewBox + width/height**: Naked `width/height` without `viewBox` breaks scaling. Both are required on every `<svg>` root element.
-4. **Dark Theme**: Catppuccin Mocha palette is mandatory. No white backgrounds, no default browser colors.
-5. **Always define arrow markers in `<defs>`** for directed structures. Never draw arrowheads manually with triangles floating near line ends.
-6. **Calculate positions mathematically**: Use the Layout Math Guide formulas. Hardcoded positions for large structures produce misaligned, unscalable diagrams.
-7. **Semantic color usage**: Use accent colors to convey state — active, inserted, deleted, visited. A diagram where every node looks the same teaches nothing.
-8. **Descriptive Filenames**: Name files by content and state (e.g., `avl_rotation_left.svg`, `bfs_step3_visited.svg`) — not generic names like `diagram_1.svg`.
-9. **Always embed**: After success, include `![Name](relative/file/path.svg)` in your final answer so the user sees the visual immediately.
+1. **Self-Contained SVG**: No external fonts, no linked images, no `xlink:href`. Everything inline. Fonts declared via `font-family` stack only.
+2. **Always use viewBox + width/height**: Naked `width/height` without `viewBox` breaks scaling. Both are required on every `<svg>` root element.
+3. **Dark Theme**: Catppuccin Mocha palette is mandatory. No white backgrounds, no default browser colors.
+4. **Always define arrow markers in `<defs>`** for directed structures. Never draw arrowheads manually with triangles floating near line ends.
+5. **Calculate positions mathematically**: Use the Layout Math Guide formulas. Hardcoded positions for large structures produce misaligned, unscalable diagrams.
+6. **Semantic color usage**: Use accent colors to convey state — active, inserted, deleted, visited. A diagram where every node looks the same teaches nothing.
+7. **Descriptive Filenames**: Name files by content and state (e.g., `avl_rotation_left.svg`, `bfs_step3_visited.svg`) — not generic names like `diagram_1.svg`.

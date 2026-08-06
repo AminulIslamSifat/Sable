@@ -363,7 +363,7 @@
 
   new MutationObserver(() => {
     if (!panel.classList.contains('hidden')) applyHeight(height);
-  }).observe(document.body, { attributes: true, attributeFilter: ['data-mode'] });
+  }).observe(document.body, { attributes: true, attributeFilter: ['data-mode', 'class'] });
 
   new MutationObserver(() => {
     const th = termTheme();

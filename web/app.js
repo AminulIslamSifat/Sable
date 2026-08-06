@@ -624,25 +624,29 @@
       return icon ? `<i data-lucide="${icon}" class="msg-lucide-icon"></i>` : emoji;
     }
 
-    function closeUnclosedFences(text) {
-      // Count fence openers/closers to detect unclosed code blocks.
-      // A line is a fence opener/closer only if it matches ^(```|~~~) at start.
-      // We track state properly so nested or mismatched fences don't confuse us.
+    function countOpenFences(text) {
+      // Returns { inFence: bool, fenceChar: string } — single source of truth
+      // for fence state. Used by both closeUnclosedFences and the typewriter.
       let inFence = false;
       let fenceChar = "";
       const lines = text.split("\n");
       for (let i = 0; i < lines.length; i++) {
-        const m = lines[i].match(/^(```|~~~)\s*(\S*)\s*$/);
+        const m = lines[i].match(/^(```|~~~)/);
         if (m) {
           if (!inFence) {
             inFence = true;
             fenceChar = m[1];
-          } else if (lines[i].trim() === fenceChar) {
+          } else if (lines[i].trim().startsWith(fenceChar)) {
             inFence = false;
             fenceChar = "";
           }
         }
       }
+      return { inFence, fenceChar };
+    }
+
+    function closeUnclosedFences(text) {
+      const { inFence, fenceChar } = countOpenFences(text);
       if (inFence) {
         return text + "\n" + fenceChar;
       }
@@ -1660,7 +1664,7 @@
           }
         }
         // Fast path: inside code fence — append to <code> directly until fence closes
-        if (!fast && _ansInFence && !chunk.includes("```")) {
+        if (!fast && _ansInFence && !_ANS_STRUCTURAL_RE.test(chunk)) {
           const codeEls = answerContent.querySelectorAll(".code-block pre code");
           const codeEl = codeEls[codeEls.length - 1];
           if (codeEl) {
@@ -1670,7 +1674,7 @@
         }
         if (!fast) {
           answerContent.innerHTML = renderMarkdown(raw);
-          _ansInFence = (raw.match(/^```/gm) || []).length % 2 === 1;
+          _ansInFence = countOpenFences(raw).inFence;
         }
 
         scrollBottom();
@@ -1912,6 +1916,7 @@
             get_file:     { icon: "📂", label: "Loading file", detail: "" },
             create_note:  { icon: "🗒️", label: "Creating note", detail: attrs.path || "" },
             save_svg:     { icon: "🎨", label: "Saving SVG", detail: attrs.path || "" },
+            create_svg:   { icon: "🎨", label: "Creating SVG", detail: attrs.filename || attrs.path || "" },
             spawn_agent:  { icon: "🤖", label: `Spawning ${attrs.role || "agent"}`, detail: (attrs.task || "").slice(0, 60), progress: true },
           };
           const info = meta[tag] || { icon: "⚙️", label: tag, detail: "" };
@@ -1945,6 +1950,7 @@
           const bytes = evt.bytes || 0;
           const size = bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
           count.textContent = `${evt.lines || 0} lines · ${size}`;
+
         },
         showToolDone() {
           const card = turn.querySelector(".tool-activity-card");
@@ -2148,6 +2154,22 @@
           } else if (evt.type === "skill_end") {
             if (evt.name === "ask_user") continue;
             ui.finishSkill(evt);
+          } else if (evt.type === "sim_ready") {
+            const fname = evt.filename || "simulation.html";
+            const url = "/assets/" + encodeURIComponent(fname);
+            const pane = activePane;
+            if (pane) {
+              const stack = pane.querySelector(".turn:last-child .skill-stack:last-of-type");
+              const target = stack || pane.querySelector(".turn:last-child") || pane;
+              const card = document.createElement("div");
+              card.className = "skill-card sim-ready-card";
+              card.style.cursor = "pointer";
+              card.innerHTML = '<div class="skill-header"><div class="skill-header-left"><span class="skill-arrow"><i data-lucide="play-circle"></i></span><span class="skill-name">simulation · ' + fname + '</span></div><div class="skill-header-right"><span class="skill-status" style="color:var(--ok)">ready · click to open</span></div></div>';
+              card.onclick = () => window.open(url, "_blank");
+              target.appendChild(card);
+              activateLucideIcons(card);
+              scrollBottom();
+            }
           } else if (evt.type === "chat_title") {
             const newTitle = (evt.title || "").trim();
             if (newTitle && activeChatId === streamChatId) {
@@ -3486,7 +3508,7 @@
         const target = document.getElementById("tab-" + tab.dataset.tab);
         if (target) target.classList.add("active");
         const tabName = tab.dataset.tab;
-        if (tabName === 'general') loadBrowserSettings();
+        if (tabName === 'general') { loadBrowserSettings(); initTelegramToggle(); }
         else if (tabName === 'account') loadAccountProfiles();
         else if (tabName === 'mcp') loadMcpServers();
       });
@@ -3516,12 +3538,16 @@
 
     function openLibrary() {
       libraryOverlay.classList.remove("hidden");
+      // Show/hide Telegram tab based on toggle state
+      const tgTab = document.getElementById('libTelegramTab');
+      if (tgTab) tgTab.style.display = localStorage.getItem('sable_telegram_enabled') === 'true' ? '' : 'none';
       // Load active tab if not yet loaded
       const activeTab = libraryTabs.querySelector(".settings-tab.active");
       if (activeTab) loadLibraryTab(activeTab.dataset.tab);
     }
 
     function closeLibrary() {
+      stopTgPoll();
       libraryOverlay.classList.add("hidden");
     }
 
@@ -3549,6 +3575,8 @@
       if (!container) return;
       // Email: skip reload if already cached
       if (section === "email" && _emailState.loaded) return;
+      // Telegram: skip reload if already cached
+      if (section === "telegram" && _tgState.loaded) return;
       container.innerHTML = '<div class="library-loading">Loading…</div>';
       try {
         if (section === "gallery") {
@@ -3561,6 +3589,8 @@
           renderSkills(container, items);
         } else if (section === "email") {
           renderEmailPanel(container);
+        } else if (section === "telegram") {
+          renderTelegramPanel(container);
         } else {
           const res = await fetch(`/api/library/${section}`);
           const items = await res.json();
@@ -3890,7 +3920,436 @@
       } catch { return dateStr.slice(0, 16); }
     }
 
+    /* ---------- Telegram Mini Client ---------- */
+
+    let _tgState = { loaded: false, configured: false, enabled: false, connected: false, chats: [], activeChatId: null };
+
+    async function renderTelegramPanel(container, force) {
+      if (_tgState.loaded && !force) return;
+      container.innerHTML = '<div class="library-loading">Loading…</div>';
+      try {
+        const res = await fetch('/api/telegram/status');
+        const status = await res.json();
+        _tgState.configured = status.configured;
+        _tgState.enabled = status.enabled;
+        _tgState.connected = status.connected;
+        if (!status.configured || !status.enabled) {
+          renderTgSetup(container);
+        } else if (!status.connected) {
+          renderTgDisconnected(container);
+        } else {
+          await renderTgChats(container);
+        }
+        _tgState.loaded = true;
+      } catch (e) {
+        container.innerHTML = '<div class="library-empty">Failed to connect to Telegram service.</div>';
+      }
+    }
+
+    function refreshTgPanel() {
+      const container = document.getElementById('tab-lib-telegram');
+      if (!container) return;
+      _tgState.loaded = false;
+      renderTelegramPanel(container, true);
+    }
+
+    function renderTgSetup(container) {
+      container.innerHTML = `
+        <div class="email-setup">
+          <h3 style="margin-bottom:12px;font-size:15px;"><span class="icon-emoji">✈️</span> Configure Telegram</h3>
+          <p style="font-size:12px;color:var(--muted);margin-bottom:16px;">Get API credentials from <a href="https://my.telegram.org/apps" target="_blank" style="color:var(--accent);">my.telegram.org/apps</a>. This is a read-only mini client — no sending.</p>
+          <div class="email-form-grid">
+            <label>API ID<input id="tg-api-id" type="number" placeholder="12345678" /></label>
+            <label>API Hash<input id="tg-api-hash" placeholder="abcdef1234567890" /></label>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:14px;">
+            <button class="icon-btn" id="tg-save-cfg" style="padding:6px 16px;">Save & Connect</button>
+          </div>
+          <div id="tg-setup-error" style="color:var(--danger,#ff5050);font-size:12px;margin-top:8px;"></div>
+        </div>
+      `;
+      if (window.lucide) lucide.createIcons({ nodes: container.querySelectorAll('[data-lucide]') });
+      container.querySelector('#tg-save-cfg').addEventListener('click', async () => {
+        const apiId = parseInt(container.querySelector('#tg-api-id').value);
+        const apiHash = container.querySelector('#tg-api-hash').value.trim();
+        const errEl = container.querySelector('#tg-setup-error');
+        if (!apiId || !apiHash) { errEl.textContent = 'Both fields required.'; return; }
+        errEl.textContent = 'Saving…';
+        try {
+          const res = await fetch('/api/telegram/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_id: apiId, api_hash: apiHash, enabled: true }),
+          });
+          if (!res.ok) { errEl.textContent = 'Failed to save config.'; return; }
+          // Also enable the toggle in settings
+          const toggle = document.getElementById('telegramToggle');
+          if (toggle) { toggle.checked = true; localStorage.setItem('sable_telegram_enabled', 'true'); }
+          document.getElementById('libTelegramTab').style.display = '';
+          refreshTgPanel();
+        } catch { errEl.textContent = 'Network error.'; }
+      });
+    }
+
+    function renderTgDisconnected(container) {
+      container.innerHTML = `
+        <div class="email-setup">
+          <h3 style="margin-bottom:12px;font-size:15px;"><span class="icon-emoji">🔑</span> Sign In to Telegram</h3>
+          <p style="font-size:12px;color:var(--muted);margin-bottom:16px;">Enter your phone number to receive a login code.</p>
+          <div id="tg-signin-step1">
+            <div class="email-form-grid">
+              <label>Phone Number<input id="tg-phone" placeholder="+1234567890" /></label>
+            </div>
+            <button class="icon-btn" id="tg-send-code" style="padding:6px 16px;margin-top:12px;">Send Code</button>
+            <div id="tg-signin-error" style="color:var(--danger,#ff5050);font-size:12px;margin-top:8px;"></div>
+          </div>
+          <div id="tg-signin-step2" style="display:none;">
+            <div class="email-form-grid">
+              <label>Code<input id="tg-code" placeholder="12345" /></label>
+            </div>
+            <button class="icon-btn" id="tg-verify-code" style="padding:6px 16px;margin-top:12px;">Verify</button>
+            <div id="tg-verify-error" style="color:var(--danger,#ff5050);font-size:12px;margin-top:8px;"></div>
+          </div>
+          <div id="tg-signin-step3" style="display:none;">
+            <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Two-step verification is enabled. Enter your password.</p>
+            <div class="email-form-grid">
+              <label>Password<input id="tg-password" type="password" placeholder="Your 2FA password" /></label>
+            </div>
+            <button class="icon-btn" id="tg-verify-password" style="padding:6px 16px;margin-top:12px;">Sign In</button>
+            <div id="tg-password-error" style="color:var(--danger,#ff5050);font-size:12px;margin-top:8px;"></div>
+          </div>
+        </div>
+      `;
+      if (window.lucide) lucide.createIcons({ nodes: container.querySelectorAll('[data-lucide]') });
+      let _tgPhoneCodeHash = null;
+      container.querySelector('#tg-send-code').addEventListener('click', async () => {
+        const phone = container.querySelector('#tg-phone').value.trim();
+        const errEl = container.querySelector('#tg-signin-error');
+        if (!phone) { errEl.textContent = 'Phone required.'; return; }
+        errEl.textContent = 'Sending code…';
+        try {
+          const res = await fetch('/api/telegram/signin/send-code', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone }),
+          });
+          const data = await res.json();
+          if (!res.ok) { errEl.textContent = data.detail || 'Failed.'; return; }
+          _tgPhoneCodeHash = data.phone_code_hash;
+          errEl.textContent = '';
+          container.querySelector('#tg-signin-step1').style.display = 'none';
+          container.querySelector('#tg-signin-step2').style.display = '';
+        } catch { errEl.textContent = 'Network error.'; }
+      });
+      container.querySelector('#tg-verify-code').addEventListener('click', async () => {
+        const phone = container.querySelector('#tg-phone').value.trim();
+        const code = container.querySelector('#tg-code').value.trim();
+        const errEl = container.querySelector('#tg-verify-error');
+        if (!code) { errEl.textContent = 'Code required.'; return; }
+        if (!_tgPhoneCodeHash) { errEl.textContent = 'Send code first.'; return; }
+        errEl.textContent = 'Verifying…';
+        try {
+          const res = await fetch('/api/telegram/signin/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone, code, phone_code_hash: _tgPhoneCodeHash }),
+          });
+          const data = await res.json();
+          if (!res.ok) { errEl.textContent = data.detail || 'Verification failed.'; return; }
+          if (data.needs_password) {
+            // Show 2FA password step
+            container.querySelector('#tg-signin-step2').style.display = 'none';
+            container.querySelector('#tg-signin-step3').style.display = '';
+            return;
+          }
+          refreshTgPanel();
+        } catch { errEl.textContent = 'Network error.'; }
+      });
+      container.querySelector('#tg-verify-password').addEventListener('click', async () => {
+        const password = container.querySelector('#tg-password').value;
+        const errEl = container.querySelector('#tg-password-error');
+        if (!password) { errEl.textContent = 'Password required.'; return; }
+        errEl.textContent = 'Signing in…';
+        try {
+          const res = await fetch('/api/telegram/signin/password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone: '', password }),
+          });
+          const data = await res.json();
+          if (!res.ok) { errEl.textContent = data.detail || 'Wrong password.'; return; }
+          refreshTgPanel();
+        } catch { errEl.textContent = 'Network error.'; }
+      });
+    }
+
+    async function renderTgChats(container) {
+      container.innerHTML = '<div class="library-loading">Loading chats…</div>';
+      try {
+        const res = await fetch('/api/telegram/chats?limit=50');
+        if (!res.ok) throw new Error('Failed');
+        _tgState.chats = await res.json();
+      } catch {
+        container.innerHTML = '<div class="library-empty">Failed to load chats. <button onclick="document.getElementById(\'tab-lib-telegram\').innerHTML=\'\'; window._tgRefresh && window._tgRefresh();" style="color:var(--accent);background:none;border:none;cursor:pointer;text-decoration:underline;">Retry</button></div>';
+        window._tgRefresh = () => refreshTgPanel();
+        return;
+      }
+      renderTgChatList(container);
+    }
+
+    function renderTgChatList(container) {
+      const chats = _tgState.chats;
+      if (!chats.length) {
+        container.innerHTML = '<div class="library-empty">No chats found.</div>';
+        return;
+      }
+      container.innerHTML = '';
+      const wrapper = document.createElement('div');
+      wrapper.style.cssText = 'display:flex;flex-direction:column;gap:2px;max-height:70vh;overflow-y:auto;';
+      chats.forEach(chat => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;cursor:pointer;transition:background 0.15s;';
+        row.addEventListener('mouseenter', () => row.style.background = 'var(--panel)');
+        row.addEventListener('mouseleave', () => row.style.background = 'transparent');
+        const icon = chat.is_channel ? '📢' : chat.is_group ? '👥' : '💬';
+        const unread = chat.unread > 0 ? `<span style="background:var(--accent);color:#fff;font-size:10px;padding:2px 6px;border-radius:10px;min-width:16px;text-align:center;">${chat.unread}</span>` : '';
+        const date = chat.last_date ? formatEmailDate(chat.last_date) : '';
+        row.innerHTML = `
+          <span style="font-size:18px;flex-shrink:0;">${icon}</span>
+          <div style="flex:1;min-width:0;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escHtml(chat.name)}</span>
+              <span style="font-size:11px;color:var(--muted);flex-shrink:0;margin-left:8px;">${date}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px;">
+              <span style="font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escHtml(chat.last_message || '')}</span>
+              ${unread}
+            </div>
+          </div>
+        `;
+        row.addEventListener('click', () => openTgChat(container, chat));
+        wrapper.appendChild(row);
+      });
+      // Back button area
+      const header = document.createElement('div');
+      header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border);';
+      header.innerHTML = `<span style="font-size:14px;font-weight:600;"><span class="icon-emoji">✈️</span> Chats</span>
+        <button class="icon-btn" id="tg-refresh-chats" title="Refresh" style="width:auto;padding:4px 8px;font-size:11px;">↻</button>`;
+      container.appendChild(header);
+      container.appendChild(wrapper);
+      if (window.lucide) lucide.createIcons({ nodes: container.querySelectorAll('[data-lucide]') });
+      container.querySelector('#tg-refresh-chats').addEventListener('click', () => {
+        _tgState.loaded = false;
+        renderTelegramPanel(container, true);
+      });
+    }
+
+    let _tgPollTimer = null;
+
+    function stopTgPoll() {
+      if (_tgPollTimer) { clearInterval(_tgPollTimer); _tgPollTimer = null; }
+    }
+
+    async function openTgChat(container, chat) {
+      stopTgPoll();
+      _tgState.activeChatId = chat.id;
+      _tgState.activeChat = chat;
+      _tgState.lastMsgId = 0;
+      container.innerHTML = '<div class="library-loading">Loading messages…</div>';
+      try {
+        const res = await fetch(`/api/telegram/chat/${chat.id}/messages?limit=50`);
+        if (!res.ok) throw new Error('Failed');
+        const messages = await res.json();
+        if (messages.length) _tgState.lastMsgId = messages[messages.length - 1].id;
+        renderTgMessages(container, chat, messages);
+        // Start polling for new messages every 6s
+        _tgPollTimer = setInterval(() => tgPollNew(container, chat), 6000);
+      } catch {
+        container.innerHTML = '<div class="library-empty">Failed to load messages.</div>';
+      }
+    }
+
+    async function tgPollNew(container, chat) {
+      if (_tgState.activeChatId !== chat.id) { stopTgPoll(); return; }
+      try {
+        const res = await fetch(`/api/telegram/chat/${chat.id}/messages?limit=20&offset_id=${_tgState.lastMsgId}`);
+        if (!res.ok) return;
+        const msgs = await res.json();
+        // Filter only truly new messages
+        const newMsgs = msgs.filter(m => m.id > _tgState.lastMsgId);
+        if (!newMsgs.length) return;
+        const msgArea = container.querySelector('#tg-msg-area');
+        if (!msgArea) return;
+        const wasAtBottom = msgArea.scrollHeight - msgArea.scrollTop - msgArea.clientHeight < 60;
+        newMsgs.forEach(m => {
+          msgArea.appendChild(buildTgBubble(m, chat));
+          if (m.id > _tgState.lastMsgId) _tgState.lastMsgId = m.id;
+        });
+        if (wasAtBottom) msgArea.scrollTop = msgArea.scrollHeight;
+      } catch {}
+    }
+
+    function renderTgMessages(container, chat, messages) {
+      container.innerHTML = '';
+      // Header with back button
+      const header = document.createElement('div');
+      header.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--border);';
+      const icon = chat.is_channel ? '📢' : chat.is_group ? '👥' : '💬';
+      header.innerHTML = `
+        <button class="icon-btn" id="tg-back" title="Back" style="width:auto;padding:4px 8px;">←</button>
+        <span style="font-size:18px;">${icon}</span>
+        <span style="font-size:14px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escHtml(chat.name)}</span>
+      `;
+      container.appendChild(header);
+      header.querySelector('#tg-back').addEventListener('click', () => {
+        stopTgPoll();
+        _tgState.activeChatId = null;
+        _tgState.activeChat = null;
+        renderTgChatList(container);
+      });
+      // Messages area
+      const msgArea = document.createElement('div');
+      msgArea.id = 'tg-msg-area';
+      msgArea.style.cssText = 'display:flex;flex-direction:column;gap:6px;max-height:55vh;overflow-y:auto;padding:4px 0;';
+      if (!messages.length) {
+        msgArea.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:12px;padding:20px;">No messages.</div>';
+      } else {
+        messages.forEach(m => msgArea.appendChild(buildTgBubble(m, chat)));
+      }
+      container.appendChild(msgArea);
+      // Send box (not for channels unless admin — but we'll allow it, backend will reject if no perms)
+      if (!chat.is_channel) {
+        const sendBox = document.createElement('div');
+        sendBox.style.cssText = 'display:flex;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);align-items:flex-end;';
+        sendBox.innerHTML = `
+          <textarea id="tg-input" rows="1" placeholder="Type a message…" style="flex:1;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:8px 12px;font-size:13px;font-family:inherit;resize:none;max-height:80px;outline:none;"></textarea>
+          <button id="tg-send-btn" class="icon-btn" style="padding:8px 14px;font-size:13px;flex-shrink:0;">Send</button>
+        `;
+        container.appendChild(sendBox);
+        const input = sendBox.querySelector('#tg-input');
+        const sendBtn = sendBox.querySelector('#tg-send-btn');
+        // Auto-resize textarea
+        input.addEventListener('input', () => {
+          input.style.height = 'auto';
+          input.style.height = Math.min(input.scrollHeight, 80) + 'px';
+        });
+        // Enter to send (Shift+Enter for newline)
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doTgSend(container, chat, input, msgArea); }
+        });
+        sendBtn.addEventListener('click', () => doTgSend(container, chat, input, msgArea));
+      }
+      // Scroll to bottom
+      requestAnimationFrame(() => msgArea.scrollTop = msgArea.scrollHeight);
+      if (window.lucide) lucide.createIcons({ nodes: container.querySelectorAll('[data-lucide]') });
+    }
+
+    function buildTgBubble(m, chat) {
+      const bubble = document.createElement('div');
+      const isMe = m.is_out;
+      bubble.style.cssText = `align-self:${isMe ? 'flex-end' : 'flex-start'};max-width:75%;padding:8px 12px;border-radius:12px;font-size:13px;line-height:1.45;word-break:break-word;background:${isMe ? 'var(--accent-bg, rgba(154,125,74,0.15))' : 'var(--panel)'};border:1px solid ${isMe ? 'var(--accent-border, rgba(154,125,74,0.3))' : 'var(--border)'};`;
+      let html = '';
+      // Sender name in groups
+      if ((chat.is_group || chat.is_channel) && !isMe && m.sender) {
+        html += `<div style="font-size:11px;font-weight:600;color:var(--accent);margin-bottom:2px;">${escHtml(m.sender)}</div>`;
+      }
+      // Media
+      if (m.has_media && m.media_type) {
+        const mt = m.media_type;
+        if (['photo', 'sticker', 'gif'].includes(mt)) {
+          const maxW = mt === 'sticker' ? '120px' : '220px';
+          html += `<img src="/api/telegram/chat/${chat.id}/media/${m.id}" loading="lazy" style="max-width:${maxW};border-radius:8px;display:block;margin-bottom:4px;cursor:pointer;" onclick="this.style.maxWidth=this.style.maxWidth==='220px'?'100%':'220px'" />`;
+        } else if (mt === 'video') {
+          html += `<video src="/api/telegram/chat/${chat.id}/media/${m.id}" controls preload="metadata" style="max-width:220px;border-radius:8px;display:block;margin-bottom:4px;"></video>`;
+        } else if (mt === 'voice' || mt === 'audio') {
+          html += `<audio src="/api/telegram/chat/${chat.id}/media/${m.id}" controls preload="metadata" style="max-width:220px;display:block;margin-bottom:4px;"></audio>`;
+        } else if (mt === 'document') {
+          html += `<a href="/api/telegram/chat/${chat.id}/media/${m.id}" download style="color:var(--accent);font-size:12px;">📎 Document</a><br>`;
+        } else {
+          const icons = { location: '📍', contact: '👤', poll: '📊', webpage: '🔗', other: '📎' };
+          html += `<span style="opacity:0.6;font-size:12px;">${icons[mt] || '📎'} ${mt}</span><br>`;
+        }
+      }
+      // Webpage preview
+      if (m.webpage_url) {
+        html += `<div style="border-left:2px solid var(--accent);padding-left:8px;margin:4px 0;font-size:12px;"><a href="${escAttr(m.webpage_url)}" target="_blank" style="color:var(--accent);">${escHtml(m.webpage_title || m.webpage_url)}</a>${m.webpage_desc ? '<br><span style="color:var(--muted);">' + escHtml(m.webpage_desc) + '</span>' : ''}</div>`;
+      }
+      // Text
+      if (m.text) {
+        html += escHtml(m.text).replace(/\n/g, '<br>');
+      } else if (!m.has_media && !m.webpage_url) {
+        html += '<em style="opacity:0.5;">[empty]</em>';
+      }
+      // Timestamp
+      const time = m.date ? new Date(m.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+      html += `<div style="font-size:10px;color:var(--muted);margin-top:3px;text-align:right;">${time}</div>`;
+      bubble.innerHTML = html;
+      return bubble;
+    }
+
+    async function doTgSend(container, chat, input, msgArea) {
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = '';
+      input.style.height = 'auto';
+      // Optimistic local bubble
+      const fakeMsg = { id: Date.now(), sender: '', text, date: new Date().toISOString(), is_out: true, media_type: null, has_media: false };
+      msgArea.appendChild(buildTgBubble(fakeMsg, chat));
+      msgArea.scrollTop = msgArea.scrollHeight;
+      try {
+        const res = await fetch('/api/telegram/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chat.id, text }),
+        });
+        if (!res.ok) {
+          const d = await res.json();
+          showToast(d.detail || 'Send failed', 'error');
+        }
+      } catch { showToast('Network error', 'error'); }
+    }
+
+    // ── Telegram Settings Toggle ──
+    function initTelegramToggle() {
+      const toggle = document.getElementById('telegramToggle');
+      const tab = document.getElementById('libTelegramTab');
+      if (!toggle || !tab) return;
+      // Load saved state
+      const saved = localStorage.getItem('sable_telegram_enabled');
+      if (saved === 'true') {
+        toggle.checked = true;
+        tab.style.display = '';
+      } else {
+        toggle.checked = false;
+        tab.style.display = 'none';
+      }
+      toggle.addEventListener('change', async () => {
+        const enabled = toggle.checked;
+        localStorage.setItem('sable_telegram_enabled', String(enabled));
+        tab.style.display = enabled ? '' : 'none';
+        // Update backend config
+        try {
+          const statusRes = await fetch('/api/telegram/status');
+          const status = await statusRes.json();
+          if (status.configured) {
+            await fetch('/api/telegram/config', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ api_id: 0, api_hash: '', enabled }),
+            });
+          }
+        } catch {}
+        // Reset cached state so it reloads fresh
+        _tgState.loaded = false;
+        if (!enabled) {
+          // Disconnect if disabling
+          try { await fetch('/api/telegram/disconnect', { method: 'POST' }); } catch {}
+        }
+      });
+    }
+
     async function openLibraryReader(section, filename, title) {
+
       try {
         const res = await fetch(`/api/library/read/${section}/${encodeURIComponent(filename)}`);
         const data = await res.json();
@@ -5006,7 +5465,7 @@
       const activeTab = document.querySelector('.settings-tab.active');
       if (activeTab) {
         const tabName = activeTab.dataset.tab;
-        if (tabName === 'general') loadBrowserSettings();
+        if (tabName === 'general') { loadBrowserSettings(); initTelegramToggle(); }
         else if (tabName === 'account') loadAccountProfiles();
       }
     };

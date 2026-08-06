@@ -26,10 +26,13 @@ KNOWN_TAGS = (
     "openweb",
     "create_note",
     "save_svg",
+    "create_svg",
     "view_file",
     "edit_file",
     "create_file",
     "insert_file",
+
+    "run_simulacra",
 
     # Meta tags — parsed but NOT dispatched as skills
     "chat_title",
@@ -168,6 +171,9 @@ class SkillParser:
             pending_match = self.open_re.search(self.buf)
             if pending_match:
                 tag_name = pending_match.group(1).lower()
+                # SVG tags stream directly to chat — no activity card
+                if tag_name in ("create_svg", "save_svg"):
+                    break
                 if tag_name != self._pending_tag:
                     self._pending_tag = tag_name
                     self._last_progress = (0, 0)
