@@ -24,3 +24,7 @@ class ChatRequest(BaseModel):
 
 class NewChatRequest(BaseModel):
     model: str | None = None
+
+class ContextPassRequest(BaseModel):
+    chat_id: str
+    model: str | None = None

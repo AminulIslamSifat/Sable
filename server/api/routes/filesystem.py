@@ -21,6 +21,7 @@ _BROWSE_ROOTS = (
 # Directories to always hide
 _HIDDEN_DIRS = {
     ".git", "__pycache__", "node_modules", ".venv", ".sable_backups",
+    ".editor_tools_backups",
     ".cache", ".local", ".npm", ".config", ".mozilla", ".thunderbird",
 }
 
@@ -314,3 +315,136 @@ def filesystem_read(path: str = Query(..., description="File path to read")) -> 
         }
     except Exception as e:
         return {"error": f"Read failed: {e}"}
+
+
+# --------------------------------------------------------------------------
+# Inline diff review (accept/reject edits)
+# --------------------------------------------------------------------------
+
+_BACKUP_DIR_NAME = ".editor_tools_backups"
+_MAX_DIFF_AGE_SECONDS = 3600  # Only show diffs for edits within last hour
+
+
+def _find_latest_backup(file_path: str) -> dict[str, Any] | None:
+    """Find the most recent backup for a file in its .editor_tools_backups dir."""
+    import time as _time
+
+    p = Path(file_path)
+    backup_dir = p.parent / _BACKUP_DIR_NAME
+    if not backup_dir.is_dir():
+        return None
+
+    base = p.name
+    candidates = []
+    try:
+        for f in backup_dir.iterdir():
+            if f.name.startswith(base + ".") and f.name.endswith(".bak"):
+                candidates.append(f)
+    except OSError:
+        return None
+
+    if not candidates:
+        return None
+
+    # Sort by mtime, newest first
+    candidates.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    latest = candidates[0]
+
+    # Only consider recent backups
+    age = _time.time() - latest.stat().st_mtime
+    if age > _MAX_DIFF_AGE_SECONDS:
+        return None
+
+    try:
+        content = latest.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+
+    return {
+        "backup_path": str(latest),
+        "content": content,
+        "age_seconds": int(age),
+    }
+
+
+@router.get("/api/filesystem/pending-diff")
+def filesystem_pending_diff(path: str = Query(..., description="File path to check")) -> dict[str, Any]:
+    """Check if a file has a pending (recent) edit with a backup available."""
+    if not _is_allowed(path):
+        return {"has_diff": False}
+
+    target = Path(path)
+    if not target.exists():
+        return {"has_diff": False}
+
+    backup_info = _find_latest_backup(path)
+    if not backup_info:
+        return {"has_diff": False}
+
+    # Read current file content for comparison
+    try:
+        current_content = target.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return {"has_diff": False}
+
+    # Only show diff if content actually differs
+    if current_content == backup_info["content"]:
+        return {"has_diff": False}
+
+    return {
+        "has_diff": True,
+        "backup_path": backup_info["backup_path"],
+        "original_content": backup_info["content"],
+        "modified_content": current_content,
+        "age_seconds": backup_info["age_seconds"],
+    }
+
+
+@router.post("/api/filesystem/accept-edit")
+async def filesystem_accept_edit(request: Request) -> dict[str, Any]:
+    """Accept an edit — keep the new content, remove the backup."""
+    body = await request.json()
+    backup_path = body.get("backup_path", "")
+
+    if not backup_path:
+        return {"error": "No backup_path provided"}
+
+    bp = Path(backup_path)
+    if not bp.exists():
+        return {"error": "Backup not found"}
+
+    try:
+        bp.unlink()
+        return {"ok": True}
+    except Exception as e:
+        return {"error": f"Failed to remove backup: {e}"}
+
+
+@router.post("/api/filesystem/reject-edit")
+async def filesystem_reject_edit(request: Request) -> dict[str, Any]:
+    """Reject an edit — restore backup content to the file, remove the backup."""
+    body = await request.json()
+    file_path = body.get("path", "")
+    backup_path = body.get("backup_path", "")
+
+    if not file_path or not backup_path:
+        return {"error": "Missing path or backup_path"}
+    if not _is_allowed(file_path):
+        return {"error": "Access denied"}
+
+    bp = Path(backup_path)
+    target = Path(file_path)
+
+    if not bp.exists():
+        return {"error": "Backup not found"}
+    if not target.exists():
+        return {"error": "Target file not found"}
+
+    try:
+        # Restore backup content to the file
+        content = bp.read_text(encoding="utf-8", errors="replace")
+        target.write_text(content, encoding="utf-8")
+        bp.unlink()
+        return {"ok": True, "restored": True}
+    except Exception as e:
+        return {"error": f"Reject failed: {e}"}

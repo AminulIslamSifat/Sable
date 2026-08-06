@@ -15,7 +15,7 @@ from engine.agents.agent import Agent, AgentTodoList, TodoItem
 logger = logging.getLogger("sable")
 
 # Default teacher model — always the strongest available
-DEFAULT_TEACHER_MODEL = "qwen3.8-max-preview"
+DEFAULT_TEACHER_MODEL = "qwen3.8-max"
 
 # Max teacher interventions per agent before giving up
 MAX_TEACHER_INTERVENTIONS = 2

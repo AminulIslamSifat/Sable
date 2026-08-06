@@ -5,9 +5,7 @@ in an action block like any other skill tag.
 
 ## Tag Format
 
-```xml
-<mcp_call server="SERVER_NAME" tool="TOOL_NAME">{json_args}</mcp_call>
-```
+<action><mcp_call server="SERVER_NAME" tool="TOOL_NAME">{json_args}</mcp_call></action>
 
 - `server` - name of a connected MCP server. Omit to auto-route to whichever
   connected server provides the tool.
@@ -26,6 +24,4 @@ in an action block like any other skill tag.
 
 ## Example
 
-```xml
 <action><mcp_call server="github" tool="search_repositories">{"query": "user:sifat", "per_page": 10}</mcp_call></action>
-```

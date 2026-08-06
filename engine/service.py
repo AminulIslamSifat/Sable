@@ -39,6 +39,14 @@ class ChatService:
         self._browser = BrowserManager(user_data_dir=user_data_dir)
         self._headers: dict[str, str] | None = None
         self._lock = asyncio.Lock()
+        # Derive account name from user_data_dir for token lookup
+        # e.g. ".../system/browser-data-acc3" → "browser-data-acc3"
+        import re
+        basename = Path(user_data_dir).name
+        if re.match(r"browser-data-acc\d+$", basename):
+            self._account_override: str | None = basename
+        else:
+            self._account_override = None
 
     async def close(self) -> None:
         async with self._lock:
@@ -60,7 +68,7 @@ class ChatService:
             return self._headers
         # Medium path: check per-account token cache before launching browser
         from engine.config import _resolve_active_account
-        account = _resolve_active_account()
+        account = self._account_override or _resolve_active_account()
         cached = get_qwen_tokens_for_account(account)
         if cached and cached.get("cookies"):
             from engine.session import build_headers
@@ -95,11 +103,12 @@ class ChatService:
                 self._headers = await self._browser.get_fresh_headers()
                 # Save refreshed tokens to per-account cache
                 from engine.config import _resolve_active_account
+                account = self._account_override or _resolve_active_account()
                 save_qwen_tokens_for_account(
                     cookies=self._headers.get("Cookie", ""),
                     bx_ua=self._headers.get("bx-ua", ""),
                     bx_umidtoken=self._headers.get("bx-umidtoken", ""),
-                    account=_resolve_active_account(),
+                    account=account,
                 )
             finally:
                 await self._browser.close()
@@ -113,11 +122,12 @@ class ChatService:
                     self._headers = await self._browser.get_fresh_headers()
                     # Persist WAF tokens to per-account cache
                     from engine.config import _resolve_active_account
+                    account = self._account_override or _resolve_active_account()
                     save_qwen_tokens_for_account(
                         cookies=self._headers.get("Cookie", ""),
                         bx_ua=self._headers.get("bx-ua", ""),
                         bx_umidtoken=self._headers.get("bx-umidtoken", ""),
-                        account=_resolve_active_account(),
+                        account=account,
                     )
             except Exception as exc:
                 logger.warning("Warmup failed: %s: %s", type(exc).__name__, exc)

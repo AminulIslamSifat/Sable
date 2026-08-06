@@ -526,8 +526,8 @@ class ScraperEngine:
         await self.stop(kill_browser=True)
         return {"status": "ok", "killed_pid": killed_pid}
 
-    async def _interrupt_generation(self, engine: Any) -> None:
-        """Click the engine's on-page stop button so generation actually halts.
+    async def _interrupt_generation(self, engine: Any, chat_id: str | None = None, response_id: str | None = None) -> None:
+        """Stop generation via API (Qwen) or on-page stop button.
 
         Called when the client aborts the stream — without this the browser
         tab happily keeps generating for nobody, burning tokens in the
@@ -537,10 +537,16 @@ class ScraperEngine:
         if stop is None:
             return
         try:
-            if await stop():
-                logger.info("Browser generation stopped via on-page stop button")
+            import inspect
+            sig = inspect.signature(stop)
+            if "chat_id" in sig.parameters:
+                if await stop(chat_id=chat_id, response_id=response_id):
+                    logger.info("Browser generation stopped via API/button")
+            else:
+                if await stop():
+                    logger.info("Browser generation stopped via on-page stop button")
         except Exception as exc:
-            logger.warning("Could not click browser stop button: %s", exc)
+            logger.warning("Could not stop browser generation: %s", exc)
 
     async def _stream_get_response(
         self,
@@ -806,10 +812,10 @@ class ScraperEngine:
                 }
             except (asyncio.CancelledError, GeneratorExit):
                 # The client hit stop (or the stream was cut mid-generation).
-                # Abort the fetch alone doesn't reach the webpage — click the
-                # real stop button so DeepSeek/Qwen actually stops generating.
+                # Call the stop API (Qwen) or click the on-page stop button
+                # so DeepSeek/Qwen actually stops generating.
                 if engine is not None:
-                    await self._interrupt_generation(engine)
+                    await self._interrupt_generation(engine, chat_id=chat_id, response_id=parent_id)
                 raise
             except SystemExit as exc:
                 yield {

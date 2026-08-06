@@ -60,7 +60,7 @@ def build_body(
                     "research_mode": "normal",
                     "auto_thinking": mode_cfg["auto_thinking"],
                     "thinking_mode": mode_cfg["thinking_mode"],
-                    "thinking_format": "summary",
+                    **({"thinking_format": "summary"} if mode_cfg["thinking_enabled"] else {}),
                     "auto_search": True,
                 },
                 "extra": {"meta": {"subChatType": "t2t"}},

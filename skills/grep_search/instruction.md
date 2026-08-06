@@ -8,9 +8,9 @@ Search file contents, find files by pattern, list directories. All paths sandbox
 ### `<grep>` — Search file contents
 Uses ripgrep (falls back to grep). Returns `file:line:match` format.
 
-```xml
+<action>
 <grep pattern="regex_pattern" path="/optional/dir" glob="*.py" ignore_case="true" max_results="50" />
-```
+</action>
 
 | Attribute | Required | Description |
 |:--|:--|:--|
@@ -23,9 +23,9 @@ Uses ripgrep (falls back to grep). Returns `file:line:match` format.
 ### `<glob>` — Find files by pattern
 Returns relative paths sorted by modification time (newest first).
 
-```xml
+<action>
 <glob pattern="**/*.py" path="/optional/base" />
-```
+</action>
 
 | Attribute | Required | Description |
 |:--|:--|:--|
@@ -35,9 +35,9 @@ Returns relative paths sorted by modification time (newest first).
 ### `<list_dir>` — List directory contents
 Folders first, then files with sizes.
 
-```xml
+<action>
 <list_dir path="/some/directory" />
-```
+</action>
 
 | Attribute | Required | Description |
 |:--|:--|:--|

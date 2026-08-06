@@ -80,6 +80,9 @@
       --font-serif: 'Maple Mono', ui-monospace, monospace;
       --font-mono: 'Maple Mono', ui-monospace, monospace;
       --font-size-response: 14.5px;
+      --font-size-system: 13px;
+      --editor-font-size: 13px;
+      --ide-chat-font-size: 13px;
     }
 
     /* ---------- Theme: Default (neutral gray) ---------- */
@@ -325,6 +328,7 @@
       margin: 0;
       height: 100%;
       font-family: var(--font-body);
+      font-size: var(--font-size-system);
       background: radial-gradient(ellipse at 50% 0%, var(--bg-glow) 0%, var(--bg) 70%) fixed;
       color: var(--text);
       -webkit-font-smoothing: antialiased;
