@@ -325,7 +325,7 @@ const AgentPanel = {
       let html;
       if (typeof marked !== "undefined" && (role === "assistant" || role === "tool")) {
         const raw = marked.parse(msg.content || "");
-        html = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw) : raw;
+        html = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw, { FORBID_TAGS: ["action", "grep", "glob", "list_dir", "execute_command", "get_file", "view_file", "edit_file", "create_file", "insert_file", "spawn_agent", "ask_user", "mcp_call", "chat_title"] }) : raw;
       } else {
         html = `<p>${escHtml(msg.content || "")}</p>`;
       }
@@ -387,14 +387,14 @@ const AgentPanel = {
           if (currentAnswerEl) {
             currentAnswerEl.classList.remove("ap-streaming");
             const raw = typeof marked !== "undefined" ? marked.parse(evt.text || "") : escHtml(evt.text || "");
-            const html = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw) : raw;
+            const html = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw, { FORBID_TAGS: ["action", "grep", "glob", "list_dir", "execute_command", "get_file", "view_file", "edit_file", "create_file", "insert_file", "spawn_agent", "ask_user", "mcp_call", "chat_title"] }) : raw;
             currentAnswerEl.querySelector(".ap-msg-content").innerHTML = html;
           } else {
             // No chunks received (e.g. history replay) — create fresh
             currentAnswerEl = document.createElement("div");
             currentAnswerEl.className = "ap-msg ap-assistant";
             const raw = typeof marked !== "undefined" ? marked.parse(evt.text || "") : escHtml(evt.text || "");
-            const html = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw) : raw;
+            const html = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw, { FORBID_TAGS: ["action", "grep", "glob", "list_dir", "execute_command", "get_file", "view_file", "edit_file", "create_file", "insert_file", "spawn_agent", "ask_user", "mcp_call", "chat_title"] }) : raw;
             currentAnswerEl.innerHTML = `<div class="ap-msg-role">assistant</div><div class="ap-msg-content">${html}</div>`;
             this.bodyEl.appendChild(currentAnswerEl);
           }
@@ -650,11 +650,13 @@ function onChatClosed() {
 // @ Mention — spawn agents from chat input
 // --------------------------------------------------------------------------
 const AGENT_ROLES = [
-  { id: "researcher", icon: "🔍", label: "Researcher", desc: "Web search + summarize" },
+  { id: "sysutil", icon: "🔧", label: "Utility", desc: "System repair, ADB, downloads" },
+  { id: "docs", icon: "📄", label: "Docs", desc: "PDF, DOCX, XLSX, humanize" },
+  { id: "visuals", icon: "🎨", label: "Visuals", desc: "Plots, diagrams, UI, simulations" },
+  { id: "tester", icon: "🐛", label: "Tester", desc: "Debug, test, fix errors" },
+  { id: "analyst", icon: "🔍", label: "Analyst", desc: "Research + code review" },
   { id: "coder", icon: "💻", label: "Coder", desc: "Write/edit code" },
-  { id: "reviewer", icon: "📋", label: "Reviewer", desc: "Review code quality" },
   { id: "writer", icon: "✍️", label: "Writer", desc: "Docs & content" },
-  { id: "utility", icon: "⚙️", label: "Utility", desc: "General tasks" },
 ];
 
 let _mentionPopup = null;
@@ -839,7 +841,7 @@ const AgentSettings = {
     if (!container) return;
     container.innerHTML = "";
 
-    const roleIcons = { researcher: "🔍", coder: "💻", reviewer: "👁️", writer: "✍️", utility: "🔧" };
+    const roleIcons = { analyst: "🔍", coder: "💻", writer: "✍️", sysutil: "🔧", docs: "📄", visuals: "🎨", tester: "🐛" };
     const models = this._availableModels || [];
 
     for (const [role, data] of Object.entries(this._roles)) {
@@ -1152,3 +1154,207 @@ document.addEventListener("DOMContentLoaded", () => {
     if (++sweeps > 30) clearInterval(sweepInterval);
   }, 1000);
 })();
+
+
+
+// --------------------------------------------------------------------------
+// TTS Settings Tab
+// --------------------------------------------------------------------------
+const TTSSettings = {
+  loaded: false,
+  _saveTimer: null,
+
+  async loadStatus() {
+    const statusEl = document.getElementById('ttsStatus');
+    const dlBtn = document.getElementById('ttsDownloadBtn');
+    const delBtn = document.getElementById('ttsDeleteBtn');
+    const prefsSection = document.getElementById('ttsPrefsSection');
+    try {
+      const res = await fetch('/api/settings/tts', { headers: { Authorization: `Bearer ${localStorage.getItem('sable_token') || ''}` } });
+      const data = await res.json();
+      let html = '<div style="display:flex;flex-direction:column;gap:8px;">';
+      for (const [name, info] of Object.entries(data.files)) {
+        const icon = info.installed ? '\u2705' : '\u2b1c';
+        const sizeMB = (info.size / 1048576).toFixed(1);
+        const expectedMB = (info.expected / 1048576).toFixed(0);
+        html += '<div style="display:flex;align-items:center;gap:8px;font-size:13px;">';
+        html += '<span>' + icon + '</span>';
+        html += '<span style="font-weight:500;">' + info.label + '</span>';
+        html += '<span class="muted" style="font-size:11px;margin-left:auto;">';
+        html += info.installed ? sizeMB + ' MB' : 'Not installed (' + expectedMB + ' MB)';
+        html += '</span></div>';
+      }
+      html += '</div>';
+      statusEl.innerHTML = html;
+      dlBtn.hidden = data.installed;
+      dlBtn.textContent = '\u2b07 Download Models';
+      dlBtn.disabled = false;
+      delBtn.hidden = !data.installed;
+      // Show prefs section only when models are installed
+      if (prefsSection) prefsSection.hidden = !data.installed;
+      if (data.installed) {
+        this.loadPrefs();
+        this.loadVoices();
+      }
+      this.loaded = true;
+    } catch (e) {
+      statusEl.innerHTML = '<p style="color:#e74c3c;font-size:12px;">Failed to check status: ' + e.message + '</p>';
+    }
+  },
+
+  async loadPrefs() {
+    try {
+      const res = await fetch('/api/settings/tts/prefs');
+      const prefs = await res.json();
+      const speedRange = document.getElementById('ttsSpeedRange');
+      const speedLabel = document.getElementById('ttsSpeedLabel');
+      if (speedRange && prefs.speed != null) {
+        speedRange.value = prefs.speed;
+        if (speedLabel) speedLabel.textContent = parseFloat(prefs.speed).toFixed(1) + '\u00d7';
+      }
+      // Voice will be set after loadVoices populates the dropdown
+      this._currentPrefs = prefs;
+    } catch (e) { /* ignore */ }
+  },
+
+  async loadVoices() {
+    const select = document.getElementById('ttsVoiceSelect');
+    if (!select) return;
+    try {
+      const res = await fetch('/api/tts/voices');
+      const data = await res.json();
+      const voices = data.voices || [];
+      select.innerHTML = '';
+      if (voices.length === 0) {
+        select.innerHTML = '<option value="">No voices available</option>';
+        return;
+      }
+      voices.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = v.replace(/_/g, ' ');
+        select.appendChild(opt);
+      });
+      // Restore saved voice
+      if (this._currentPrefs && this._currentPrefs.voice) {
+        select.value = this._currentPrefs.voice;
+      }
+    } catch (e) {
+      select.innerHTML = '<option value="">Failed to load voices</option>';
+    }
+  },
+
+  savePrefs() {
+    clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(async () => {
+      const voiceSelect = document.getElementById('ttsVoiceSelect');
+      const speedRange = document.getElementById('ttsSpeedRange');
+      const body = {};
+      if (voiceSelect) body.voice = voiceSelect.value;
+      if (speedRange) body.speed = parseFloat(speedRange.value);
+      try {
+        await fetch('/api/settings/tts/prefs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      } catch (e) { /* ignore */ }
+    }, 300);
+  },
+
+  async download() {
+    const dlBtn = document.getElementById('ttsDownloadBtn');
+    const progressEl = document.getElementById('ttsProgress');
+    const fillEl = document.getElementById('ttsProgressFill');
+    const textEl = document.getElementById('ttsProgressText');
+
+    dlBtn.disabled = true;
+    dlBtn.textContent = '\u23f3 Downloading...';
+    progressEl.hidden = false;
+    fillEl.style.width = '0%';
+
+    try {
+      const res = await fetch('/api/settings/tts/download', { method: 'POST', headers: { Authorization: `Bearer ${localStorage.getItem('sable_token') || ''}` } });
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const msg = JSON.parse(line);
+            if (msg.status === 'progress') {
+              const pct = Math.round((msg.downloaded / msg.total) * 100);
+              fillEl.style.width = pct + '%';
+              textEl.textContent = msg.file + ' \u2014 ' + pct + '% (' + (msg.downloaded / 1048576).toFixed(1) + ' / ' + (msg.total / 1048576).toFixed(0) + ' MB)';
+            } else if (msg.status === 'done') {
+              textEl.textContent = '\u2705 ' + msg.file + ' complete';
+            } else if (msg.status === 'skip') {
+              textEl.textContent = '\u23ed ' + msg.file + ' already installed';
+            } else if (msg.status === 'error') {
+              textEl.textContent = '\u274c ' + msg.file + ': ' + msg.error;
+              fillEl.style.background = '#e74c3c';
+            } else if (msg.status === 'complete') {
+              textEl.textContent = '\ud83c\udf89 All models downloaded!';
+              fillEl.style.width = '100%';
+              fillEl.style.background = '#4caf50';
+            }
+          } catch (parseErr) { /* skip malformed lines */ }
+        }
+      }
+    } catch (e) {
+      textEl.textContent = '\u274c Download failed: ' + e.message;
+    }
+
+    dlBtn.disabled = false;
+    dlBtn.textContent = '\u2b07 Download Models';
+    this.loadStatus();
+  },
+
+  async remove() {
+    if (!confirm('Remove all TTS model files? (338 MB)')) return;
+    const delBtn = document.getElementById('ttsDeleteBtn');
+    delBtn.disabled = true;
+    try {
+      await fetch('/api/settings/tts', { method: 'DELETE', headers: { Authorization: `Bearer ${localStorage.getItem('sable_token') || ''}` } });
+    } catch (e) { /* ignore */ }
+    delBtn.disabled = false;
+    this.loadStatus();
+  },
+};
+
+// Wire up TTS tab
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.settings-tab').forEach((tab) => {
+    if (tab.dataset.tab === 'tts') {
+      tab.addEventListener('click', () => {
+        if (!TTSSettings.loaded) TTSSettings.loadStatus();
+      });
+    }
+  });
+
+  const dlBtn = document.getElementById('ttsDownloadBtn');
+  if (dlBtn) dlBtn.addEventListener('click', () => TTSSettings.download());
+
+  const delBtn = document.getElementById('ttsDeleteBtn');
+  if (delBtn) delBtn.addEventListener('click', () => TTSSettings.remove());
+
+  // Voice & speed controls — auto-save on change
+  const voiceSelect = document.getElementById('ttsVoiceSelect');
+  if (voiceSelect) voiceSelect.addEventListener('change', () => TTSSettings.savePrefs());
+
+  const speedRange = document.getElementById('ttsSpeedRange');
+  const speedLabel = document.getElementById('ttsSpeedLabel');
+  if (speedRange) {
+    speedRange.addEventListener('input', () => {
+      if (speedLabel) speedLabel.textContent = parseFloat(speedRange.value).toFixed(1) + '\u00d7';
+    });
+    speedRange.addEventListener('change', () => TTSSettings.savePrefs());
+  }
+});

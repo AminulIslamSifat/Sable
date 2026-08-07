@@ -8,7 +8,7 @@ Use this skill to generate dynamic, interactive simulations, models, and high-fi
 - the user just wants a code snippet to run himself, not a browser-openable file
 - The concept is fully explainable with a still image — motion adds nothing
 
----
+***
 
 ## Output Format
 
@@ -31,22 +31,21 @@ The dispatcher passes the tag to `sim_engine.py`, which:
 - **One permitted external dependency:** Google Fonts `<link>` import inside `<head>` only. No other external resources.
 - Use raw `<canvas>`, `requestAnimationFrame`, or inline SVG for animations.
 
----
+***
 
 ## Workflow Protocol
 
 1. Assess the concept → assign a complexity tier (see below).
 2. Determine slider count using the slider judgment rules (see below).
 3. Write and emit the `<run_simulacra>` tag.
-4. **Wait for engine confirmation** (`SUCCESS` or `FAILED`) before responding further.
-5. On `SUCCESS` → respond with a brief description of what was built and always embed `![Name](relative/file/path.html)` so GhostChat opens it in the browser.
-6. On `FAILED` → read the error details carefully before retrying:
+4. On success → respond with a brief description of what was built and the saved file path.
+5. On failure → read the error details carefully before retrying:
    - `SyntaxError` / `IndentationError` → fix Python string escaping, usually a quote conflict inside the HTML triple-string
    - `FileNotFoundError` → `OUT_PATH` was not written to; check the `with open(OUT_PATH)` block is actually reached
    - `PermissionError` → assets directory issue; flag to the user, do not retry blindly
    - Any other error → attempt one fix and retry. If it fails again, report the raw error to the user rather than looping.
 
----
+***
 
 ## Complexity Tier Assessment
 
@@ -60,7 +59,7 @@ The dispatcher passes the tag to `sim_engine.py`, which:
 
 **Complex tier approximation rule:** If a concept cannot be accurately represented in vanilla Canvas without sacrificing mathematical correctness, implement a **faithful approximation** and label it clearly in the HUD (e.g., `"Simplified Model"`). Never fake behavior silently.
 
----
+***
 
 ## Slider Judgment Rules
 
@@ -78,7 +77,7 @@ Do **not** apply a fixed slider count. Reason from the concept every time.
 - Logistic Map → Growth Rate `r` (1 high-precision slider)
 - Mandelbrot → Iteration Depth, Color Shift (2 sliders)
 
----
+***
 
 ## Mandatory Aesthetic Standards
 
@@ -134,7 +133,7 @@ Never use a flat solid fill for the page background. Always create depth using o
 - HUD sits in a separate floating panel from controls.
 - Values rendered in `JetBrains Mono`, animated with smooth counter transitions where possible.
 
----
+***
 
 ## Responsive Canvas (Mandatory)
 
@@ -168,7 +167,7 @@ resize();
 - State (positions, velocities, population counts, phase) must survive a resize — do not reset the simulation.
 - Implement `captureState()` / `restoreState()` as lightweight plain-object snapshots per simulation.
 
----
+***
 
 ## Reference Implementation
 

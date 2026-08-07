@@ -4,7 +4,7 @@ import json
 
 # Add project root to sys.path for config import
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../../../../"))
+ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../../../"))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 

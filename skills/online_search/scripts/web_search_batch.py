@@ -507,6 +507,7 @@ def fetch_webpage_content(url: str, *, timeout: int = 10, max_chars: int = 5000)
     try:
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(request, timeout=timeout) as response:
+            status_code = response.status
             body = response.read()
             content_type = response.headers.get_content_type()
             charset = response.headers.get_content_charset() or "utf-8"
@@ -524,15 +525,19 @@ def fetch_webpage_content(url: str, *, timeout: int = 10, max_chars: int = 5000)
                     "url": url,
                     "title": title,
                     "content": truncate(visible, max_chars),
+                    "status_code": status_code,
                 }
             return {
                 "success": True,
                 "url": url,
                 "title": "",
                 "content": truncate(text.strip(), max_chars),
+                "status_code": status_code,
             }
+    except urllib.error.HTTPError as e:
+        return {"success": False, "url": url, "error": str(e), "content": "", "title": "", "status_code": e.code}
     except Exception as e:
-        return {"success": False, "url": url, "error": str(e), "content": "", "title": ""}
+        return {"success": False, "url": url, "error": str(e), "content": "", "title": "", "status_code": 0}
 
 
 def build_provider_chain(primary: str, settings: dict[str, Any]) -> list[str]:
