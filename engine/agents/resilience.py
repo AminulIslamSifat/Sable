@@ -51,12 +51,14 @@ class LoopDetector:
     def __init__(self, max_consecutive: int = 3, max_total: int = 10):
         self.history: list[str] = []
         self.per_tool_counts: dict[str, int] = defaultdict(int)
+        self.structure_history: list[str] = []  # tag names only (no args)
         self.max_consecutive = max_consecutive
         self.max_total = max_total
 
     def check(self, tool_name: str, tool_args: str) -> bool:
         sig = f"{tool_name}:{tool_args}"
         self.history.append(sig)
+        self.structure_history.append(tool_name)
         self.per_tool_counts[tool_name] += 1
 
         # Per-tool cap: one tool called too many times total
@@ -69,3 +71,30 @@ class LoopDetector:
             if len(set(recent)) == 1:
                 return False
         return True
+
+    def is_structure_looping(self, threshold: int = 5) -> bool:
+        """Check if the same sequence of tool names repeats N+ times.
+        
+        Detects patterns like [grep, view_file, grep, view_file, grep, view_file]
+        where the agent keeps using the same tools in the same order without progress.
+        """
+        if len(self.structure_history) < threshold:  # Need at least threshold items for length-1 pattern
+            return False
+        
+        # Try pattern lengths from 1 to threshold
+        for pat_len in range(1, min(threshold + 1, len(self.structure_history) // 2 + 1)):
+            pattern = self.structure_history[-pat_len:]
+            # Check if this pattern repeats at least threshold times consecutively
+            match_count = 0
+            pos = len(self.structure_history) - pat_len
+            while pos >= 0:
+                segment = self.structure_history[pos:pos + pat_len]
+                if segment == pattern:
+                    match_count += 1
+                    pos -= pat_len
+                else:
+                    break
+            if match_count >= threshold:
+                return True
+        
+        return False

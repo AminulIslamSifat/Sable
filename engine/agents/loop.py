@@ -44,6 +44,29 @@ _INNER_TAG_RE = re.compile(
     re.DOTALL | re.MULTILINE,
 )
 
+# Warning messages injected as user messages when format violations are detected
+ACTION_WRAPPER_WARNING = (
+    "[FORMAT WARNING] You used a tool tag without wrapping it in an <act" + "ion> block. "
+    "All tool tags MUST be wrapped like this:\n"
+    "<act" + "ion>\n<your_tag>...</your_tag>\n</act" + "ion>\n"
+    "Please retry with the correct format."
+)
+
+ORPHAN_CLOSE_TAG_WARNING = (
+    "[FORMAT WARNING] Found a closing </act" + "ion> tag without a matching opening <act" + "ion> tag. "
+    "Make sure every tool call is properly wrapped:\n"
+    "<act" + "ion>\n<your_tag>...</your_tag>\n</act" + "ion>\n"
+    "Please retry with the correct format."
+)
+
+REPEAT_LOOP_WARNING = (
+    "[LOOP WARNING] The same command structure has been repeated 5+ times. "
+    "This approach is not working. Stop repeating and either:\n"
+    "1. Try a completely different strategy\n"
+    "2. Summarize what you have and provide your final answer\n"
+    "Do NOT repeat the same command again."
+)
+
 
 
 # --------------------------------------------------------------------------
@@ -275,8 +298,31 @@ async def run_agent_llm_loop(
             response_text = re.sub(r'<todo_sub\s+content="[^"]*"\s*/?>', '', response_text)
             response_text = re.sub(r'\n{3,}', '\n\n', response_text).strip()
 
+        # Check for action wrapper format violations BEFORE parsing tags
+        format_warning = _check_action_wrapper_violations(response_text)
+        if format_warning:
+            agent.messages.append({"role": "user", "content": format_warning})
+            await _persist_message(agent.id, "user", format_warning)
+            response_text, new_parent_id = await _send_with_retry(
+                agent, format_warning, parent_id, breaker, False
+            )
+            if new_parent_id:
+                parent_id = new_parent_id
+            agent.messages.append({"role": "assistant", "content": response_text})
+            await _persist_message(agent.id, "assistant", response_text)
+            # Re-check after retry — if still bad, accept degraded
+            format_warning2 = _check_action_wrapper_violations(response_text)
+            if format_warning2:
+                return response_text  # Accept even if still malformed
+
         # Parse skill tags
         tags = _parse_skill_tags(response_text)
+
+        # Strip action blocks from display text so raw tags never reach the frontend.
+        # Tags are already parsed above; the raw markup is just leftover garbage.
+        response_text = _TAG_RE.sub("", response_text)
+        response_text = re.sub(r'\n{3,}', '\n\n', response_text).strip()
+
         if not tags:
             # No tool calls → validate as final markdown answer
             if _validate_markdown_output(response_text, role_cfg.required_sections):
@@ -313,6 +359,20 @@ async def run_agent_llm_loop(
             agent.messages.append({"role": "user", "content": current_message})
             await _persist_message(agent.id, "user", current_message)
             continue
+
+        # Check for structural looping (same tool pattern repeated 5+ times)
+        if loop_detector.is_structure_looping(threshold=5):
+            agent.messages.append({"role": "user", "content": REPEAT_LOOP_WARNING})
+            await _persist_message(agent.id, "user", REPEAT_LOOP_WARNING)
+            response_text, new_parent_id = await _send_with_retry(
+                agent, REPEAT_LOOP_WARNING, parent_id, breaker, False
+            )
+            if new_parent_id:
+                parent_id = new_parent_id
+            agent.messages.append({"role": "assistant", "content": response_text})
+            await _persist_message(agent.id, "assistant", response_text)
+            # After warning, continue loop — agent gets one chance to break the pattern
+            # If it loops again, the per-tool or consecutive checks will catch it
 
         # Execute skills
         tool_results = []
@@ -697,6 +757,37 @@ async def _call_qwen(
 
 
 _SKIP_TAGS = frozenset(("action", "spawn_agent", "br", "hr", "json", "p", "div", "span"))
+
+
+
+def _check_action_wrapper_violations(text: str) -> str | None:
+    """Check for action wrapper format violations in LLM response.
+
+    Returns a warning message string if violations found, None otherwise.
+    Checks:
+    1. Bare skill tags not wrapped in action blocks
+    2. Orphan closing action tags without matching opener
+    """
+    from engine.skills.parser import KNOWN_TAGS
+
+    has_action_open = "<act" + "ion>" in text
+    has_action_close = "</act" + "ion>" in text
+
+    # Check for orphan closing tag
+    if has_action_close and not has_action_open:
+        return ORPHAN_CLOSE_TAG_WARNING
+
+    # Check for bare skill tags outside action blocks
+    # Strip all proper action blocks first
+    stripped = _TAG_RE.sub("", text)
+
+    # Now check if any known skill tags remain in the stripped text
+    for tag_name in KNOWN_TAGS:
+        pattern = re.compile(r"<" + re.escape(tag_name) + r"[\s/>]", re.IGNORECASE)
+        if pattern.search(stripped):
+            return ACTION_WRAPPER_WARNING
+
+    return None
 
 
 def _parse_skill_tags(text: str) -> list[dict[str, Any]]:

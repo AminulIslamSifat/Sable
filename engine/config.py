@@ -6,12 +6,21 @@ from pathlib import Path
 # Project root (two levels up from this file: engine/config.py → engine/ → project root)
 _ROOT = Path(__file__).resolve().parent.parent
 
+# Persistent storage root — survives SSD tree wipes/rebuilds.
+# Sessions, tokens, and auth state MUST live here, not under _ROOT.
+_PERSISTENT_OVERRIDE = os.getenv("SABLE_PERSISTENT_ROOT")
+PERSISTENT_ROOT = (
+    Path(_PERSISTENT_OVERRIDE).resolve()
+    if _PERSISTENT_OVERRIDE
+    else Path.home() / "hdd" / "projects" / "Sable"
+)
+
 # --------------------------------------------------------------------------
 # Server bind settings — single source of truth for the FastAPI/uvicorn app.
 # Override with SABLE_HOST / SABLE_PORT environment variables when needed.
 # --------------------------------------------------------------------------
 HOST = os.getenv("SABLE_HOST", "0.0.0.0")
-PORT = int(os.getenv("SABLE_PORT", "61771"))
+PORT = int(os.getenv("SABLE_PORT", "61770"))
 
 # --------------------------------------------------------------------------
 # Runtime data paths — single source of truth used by server.py and any

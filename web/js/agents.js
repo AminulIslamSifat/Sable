@@ -325,7 +325,7 @@ const AgentPanel = {
       let html;
       if (typeof marked !== "undefined" && (role === "assistant" || role === "tool")) {
         const raw = marked.parse(msg.content || "");
-        html = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw) : raw;
+        html = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw, { FORBID_TAGS: ["action", "grep", "glob", "list_dir", "execute_command", "get_file", "view_file", "edit_file", "create_file", "insert_file", "spawn_agent", "ask_user", "mcp_call", "chat_title"] }) : raw;
       } else {
         html = `<p>${escHtml(msg.content || "")}</p>`;
       }
@@ -387,14 +387,14 @@ const AgentPanel = {
           if (currentAnswerEl) {
             currentAnswerEl.classList.remove("ap-streaming");
             const raw = typeof marked !== "undefined" ? marked.parse(evt.text || "") : escHtml(evt.text || "");
-            const html = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw) : raw;
+            const html = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw, { FORBID_TAGS: ["action", "grep", "glob", "list_dir", "execute_command", "get_file", "view_file", "edit_file", "create_file", "insert_file", "spawn_agent", "ask_user", "mcp_call", "chat_title"] }) : raw;
             currentAnswerEl.querySelector(".ap-msg-content").innerHTML = html;
           } else {
             // No chunks received (e.g. history replay) — create fresh
             currentAnswerEl = document.createElement("div");
             currentAnswerEl.className = "ap-msg ap-assistant";
             const raw = typeof marked !== "undefined" ? marked.parse(evt.text || "") : escHtml(evt.text || "");
-            const html = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw) : raw;
+            const html = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw, { FORBID_TAGS: ["action", "grep", "glob", "list_dir", "execute_command", "get_file", "view_file", "edit_file", "create_file", "insert_file", "spawn_agent", "ask_user", "mcp_call", "chat_title"] }) : raw;
             currentAnswerEl.innerHTML = `<div class="ap-msg-role">assistant</div><div class="ap-msg-content">${html}</div>`;
             this.bodyEl.appendChild(currentAnswerEl);
           }

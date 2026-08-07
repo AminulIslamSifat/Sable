@@ -149,7 +149,7 @@ async def chat(request: ChatRequest):
     add_message(active_chat_id, "user", timestamped_message, None, parent_id, memory_used=_memory_used or None)
     # Inject title instruction on first message (model-only, not saved to DB)
     if parent_id is None:
-        timestamped_message += '\n\n[SYSTEM: First message of a new chat. Respond normally, but also emit <ation><chat_title>Short descriptive title</chat_title></action> at the end of your response. If you are running another command, then put chat_title and that command in one action block.]'
+        timestamped_message += '\n\n[SYSTEM: First message of a new chat. Respond normally, but also emit <action><chat_title>Short descriptive title</chat_title></action> at the end of your response. If you are running another command, then put chat_title and that command in one action block.]'
     resolved_files: list[dict[str, Any]] | None = None
     _backend = _resolve_api_backend(request.model) if _is_api_model(request.model) else None
     if request.files:
@@ -349,11 +349,10 @@ async def chat(request: ChatRequest):
                                     update_chat_title(active_chat_id, _title_text[:80])
                                     yield sse({"type": "chat_title", "title": _title_text[:80]})
                                 continue
-                            # SVG tags: stream content directly, no skill card
+                            # SVG tags: content already streamed progressively by parser;
+                            # only save to disk here — skip re-streaming
                             if item["name"] in ("create_svg", "save_svg"):
                                 svg_body = (item.get("content", "") or "").strip()
-                                if svg_body.startswith("<svg"):
-                                    yield sse({"type": "answer", "text": "\n```svg\n" + svg_body + "\n```\n"})
                                 # Save silently in background
                                 svg_name = item.get("attrs", {}).get("filename") or item.get("attrs", {}).get("path") or f"svg-{__import__('time').strftime('%Y%m%d-%H%M%S')}.svg"
                                 if not svg_name.endswith(".svg"):

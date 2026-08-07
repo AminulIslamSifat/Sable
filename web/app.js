@@ -568,20 +568,32 @@
 
     function escapeNonHtmlTags(text) {
       // Escape angle brackets for tags that aren't valid HTML/SVG so marked +
-      // DOMPurify don't swallow them silently. Code spans and fenced blocks are
-      // shielded first: their angle brackets are literal and get escaped exactly
-      // once by marked's code renderer — pre-escaping them here double-encodes
-      // the "&" and a literal "&lt;" leaks into rendered code.
-      const stash = [];
-      const hide = (m) => { stash.push(m); return " N" + (stash.length - 1) + " "; };
-      text = text.replace(/(^|\n)(```|~~~)[^\n]*\n[\s\S]*?(?:\n\2[ \t]*(?=\n|$)|$)/g, hide);
-      text = text.replace(/(`+)([^`]*?)\1/g, hide);
-      text = text.replace(/<(\/?)([a-zA-Z_][\w.-]*)(\s[^>]*)?>/g, (match, slash, tag, rest) => {
-        if (_HTML_TAGS.has(tag.toLowerCase())) return match;
-        return match.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-      });
-      return text.replace(/ N(\d+) /g, (m, i) => stash[+i]);
+      // DOMPurify don't swallow them silently. Fenced blocks and inline code
+      // spans are skipped entirely via line scan (no regex stash) to avoid
+      // catastrophic backtracking on large inputs.
+      const lines = text.split("\n");
+      let inFence = false;
+      let fenceChar = "";
+
+      for (let i = 0; i < lines.length; i++) {
+        const fm = lines[i].match(/^(```|~~~)/);
+        if (fm) {
+          if (!inFence) { inFence = true; fenceChar = fm[1]; }
+          else if (lines[i].trim() === fenceChar) { inFence = false; fenceChar = ""; }
+          continue;
+        }
+        if (inFence) continue;
+
+        // Escape non-HTML tags outside fenced blocks
+        lines[i] = lines[i].replace(/<(\/?)([a-zA-Z_][\w.-]*)(\s[^>]*)?>/g, (match, slash, tag) => {
+          if (_HTML_TAGS.has(tag.toLowerCase())) return match;
+          return match.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        });
+      }
+
+      return lines.join("\n");
     }
+
 
     // ── Emoji → Lucide mapping for chat messages ──
     const EMOJI_LUCIDE_MAP = {
@@ -1679,7 +1691,8 @@
 
         scrollBottom();
         _ansTimer = _ansQueue ? setTimeout(_ansTick, TW_MS) : null;
-        if (!_ansTimer) { renderMermaidDiagrams(answerContent); renderMathJax(answerContent); activateLucideIcons(answerContent); }
+        activateLucideIcons(answerContent);
+        if (!_ansTimer) { renderMermaidDiagrams(answerContent); renderMathJax(answerContent); }
       }
       function _enqueueAnswer(text) {
         _ansQueue += text;
@@ -3591,6 +3604,8 @@
           renderEmailPanel(container);
         } else if (section === "telegram") {
           renderTelegramPanel(container);
+        } else if (section === "research") {
+          renderResearchPanel(container);
         } else {
           const res = await fetch(`/api/library/${section}`);
           const items = await res.json();
@@ -3664,6 +3679,10 @@
     }
 
     /* ---------- Email Panel ---------- */
+
+    /* ---------- Deep Research Panel ---------- */
+    /* Extracted to /static/src/research.js — loaded separately in index.html */
+
 
     let _emailState = { folder: 'INBOX', messages: [], configured: false, loaded: false };
 
@@ -4377,19 +4396,8 @@
     }
 
     function renderMarkdownSimple(md) {
-      // Minimal markdown → HTML for library reader
-      let html = escHtml(md);
-      html = html.replace(/^### (.+)$/gm, "<h4>$1</h4>");
-      html = html.replace(/^## (.+)$/gm, "<h3>$1</h3>");
-      html = html.replace(/^# (.+)$/gm, "<h2>$1</h2>");
-      html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-      html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
-      html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-      html = html.replace(/^- (.+)$/gm, "<li>$1</li>");
-      html = html.replace(/(<li>.*<\/li>\n?)+/g, "<ul>$&</ul>");
-      html = html.replace(/^---$/gm, "<hr>");
-      html = html.replace(/\n{2,}/g, "</p><p>");
-      return "<p>" + html + "</p>";
+      // Use the full marked+DOMPurify pipeline for proper tables, code blocks, etc.
+      return renderMarkdown(md);
     }
 
     // === Brain / Memory Panel ===
