@@ -107,6 +107,81 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_agent_messages_agent ON agent_messages(agent_id)"
         )
 
+        # --- TrackNote tables ---
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS notes (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL DEFAULT '',
+                note_type TEXT NOT NULL DEFAULT 'note',
+                items TEXT DEFAULT '[]',
+                due_date TEXT,
+                color TEXT,
+                label TEXT,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notes_type ON notes(note_type)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notes_archived ON notes(archived)"
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schedules (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                schedule_type TEXT NOT NULL DEFAULT 'daily',
+                time TEXT,
+                day_of_week INTEGER,
+                start_date TEXT,
+                end_date TEXT,
+                description TEXT DEFAULT '',
+                completed INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_schedules_type ON schedules(schedule_type)"
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_ops (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                model TEXT NOT NULL DEFAULT 'qwen3.7-max',
+                schedule_type TEXT NOT NULL DEFAULT 'daily',
+                schedule_time TEXT,
+                schedule_day INTEGER,
+                cron_expression TEXT,
+                last_run TEXT,
+                next_run TEXT,
+                last_result TEXT,
+                missed_run_policy TEXT NOT NULL DEFAULT 'catch_up',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_ops_enabled ON agent_ops(enabled)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_ops_next_run ON agent_ops(next_run)"
+        )
+
 def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = None, mode: str | None = None, provider: str | None = None) -> None:
     now = utcnow()
     with get_db() as conn:
@@ -399,5 +474,222 @@ def get_agent_messages(agent_id: str) -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT id, role, content, created_at FROM agent_messages WHERE agent_id = ? ORDER BY id ASC",
             (agent_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+# ── TrackNote: Notes/Todos CRUD ─────────────────────────────────────────────
+
+def list_notes(note_type: str | None = None, archived: bool = False) -> list[dict[str, Any]]:
+    with get_db() as conn:
+        if note_type:
+            rows = conn.execute(
+                "SELECT * FROM notes WHERE note_type = ? AND archived = ? ORDER BY pinned DESC, updated_at DESC",
+                (note_type, int(archived)),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM notes WHERE archived = ? ORDER BY pinned DESC, updated_at DESC",
+                (int(archived),),
+            ).fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            try:
+                d["items"] = json.loads(d.get("items") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                d["items"] = []
+            results.append(d)
+        return results
+
+
+def get_note(note_id: str) -> dict[str, Any] | None:
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    try:
+        d["items"] = json.loads(d.get("items") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        d["items"] = []
+    return d
+
+
+def create_note(title: str = "", content: str = "", note_type: str = "note",
+                items: list | None = None, due_date: str | None = None,
+                color: str | None = None, label: str | None = None) -> str:
+    import uuid
+    now = utcnow()
+    note_id = uuid.uuid4().hex[:12]
+    items_json = json.dumps(items or [], ensure_ascii=False)
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO notes (id, title, content, note_type, items, due_date, color, label, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (note_id, title, content, note_type, items_json, due_date, color, label, now, now),
+        )
+    return note_id
+
+
+def update_note(note_id: str, **kwargs) -> bool:
+    allowed = {"title", "content", "note_type", "due_date", "color", "label", "pinned", "archived"}
+    fields = {k: v for k, v in kwargs.items() if k in allowed}
+    if "items" in kwargs:
+        fields["items"] = json.dumps(kwargs["items"], ensure_ascii=False)
+    if not fields:
+        return False
+    fields["updated_at"] = utcnow()
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [note_id]
+    with get_db() as conn:
+        cur = conn.execute(f"UPDATE notes SET {set_clause} WHERE id = ?", values)
+        return cur.rowcount > 0
+
+
+def delete_note(note_id: str) -> bool:
+    with get_db() as conn:
+        cur = conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+        return cur.rowcount > 0
+
+
+def toggle_note_item(note_id: str, item_index: int) -> bool:
+    """Toggle done state of a checklist item by index."""
+    note = get_note(note_id)
+    if not note or not note.get("items"):
+        return False
+    items = note["items"]
+    if item_index < 0 or item_index >= len(items):
+        return False
+    items[item_index]["done"] = not items[item_index].get("done", False)
+    return update_note(note_id, items=items)
+
+
+# ── TrackNote: Schedules CRUD ───────────────────────────────────────────────
+
+def list_schedules() -> list[dict[str, Any]]:
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM schedules ORDER BY "
+            "CASE schedule_type WHEN 'daily' THEN 0 WHEN 'weekly' THEN 1 WHEN 'occasional' THEN 2 END, "
+            "time ASC, start_date ASC"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def get_upcoming_schedules(days: int = 10) -> list[dict[str, Any]]:
+    """Return schedules relevant for the next N days (for startup injection)."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    cutoff = (now + timedelta(days=days)).isoformat()
+    now_iso = now.isoformat()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM schedules WHERE completed = 0 AND ("
+            "  schedule_type IN ('daily', 'weekly')"
+            "  OR (schedule_type = 'occasional' AND start_date <= ? AND (end_date IS NULL OR end_date >= ?))"
+            ") ORDER BY start_date ASC, time ASC",
+            (cutoff, now_iso),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def create_schedule(title: str, schedule_type: str = "daily", time: str | None = None,
+                    day_of_week: int | None = None, start_date: str | None = None,
+                    end_date: str | None = None, description: str = "") -> str:
+    import uuid
+    now = utcnow()
+    sched_id = uuid.uuid4().hex[:12]
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO schedules (id, title, schedule_type, time, day_of_week, start_date, end_date, description, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (sched_id, title, schedule_type, time, day_of_week, start_date, end_date, description, now, now),
+        )
+    return sched_id
+
+
+def update_schedule(sched_id: str, **kwargs) -> bool:
+    allowed = {"title", "schedule_type", "time", "day_of_week", "start_date", "end_date", "description", "completed"}
+    fields = {k: v for k, v in kwargs.items() if k in allowed}
+    if not fields:
+        return False
+    fields["updated_at"] = utcnow()
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [sched_id]
+    with get_db() as conn:
+        cur = conn.execute(f"UPDATE schedules SET {set_clause} WHERE id = ?", values)
+        return cur.rowcount > 0
+
+
+def delete_schedule(sched_id: str) -> bool:
+    with get_db() as conn:
+        cur = conn.execute("DELETE FROM schedules WHERE id = ?", (sched_id,))
+        return cur.rowcount > 0
+
+
+# ── TrackNote: Agent Ops CRUD ───────────────────────────────────────────────
+
+def list_agent_ops() -> list[dict[str, Any]]:
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM agent_ops ORDER BY enabled DESC, created_at DESC"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def get_agent_op(op_id: str) -> dict[str, Any] | None:
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM agent_ops WHERE id = ?", (op_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def create_agent_op(name: str, prompt: str, model: str = "qwen3.7-max",
+                    schedule_type: str = "daily", schedule_time: str | None = None,
+                    schedule_day: int | None = None, cron_expression: str | None = None,
+                    missed_run_policy: str = "catch_up") -> str:
+    import uuid
+    now = utcnow()
+    op_id = uuid.uuid4().hex[:12]
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO agent_ops (id, name, prompt, model, schedule_type, schedule_time, "
+            "schedule_day, cron_expression, missed_run_policy, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (op_id, name, prompt, model, schedule_type, schedule_time,
+             schedule_day, cron_expression, missed_run_policy, now, now),
+        )
+    return op_id
+
+
+def update_agent_op(op_id: str, **kwargs) -> bool:
+    allowed = {"name", "prompt", "model", "schedule_type", "schedule_time",
+               "schedule_day", "cron_expression", "missed_run_policy",
+               "enabled", "last_run", "next_run", "last_result"}
+    fields = {k: v for k, v in kwargs.items() if k in allowed}
+    if not fields:
+        return False
+    fields["updated_at"] = utcnow()
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [op_id]
+    with get_db() as conn:
+        cur = conn.execute(f"UPDATE agent_ops SET {set_clause} WHERE id = ?", values)
+        return cur.rowcount > 0
+
+
+def delete_agent_op(op_id: str) -> bool:
+    with get_db() as conn:
+        cur = conn.execute("DELETE FROM agent_ops WHERE id = ?", (op_id,))
+        return cur.rowcount > 0
+
+
+def get_due_agent_ops() -> list[dict[str, Any]]:
+    """Return enabled agent ops whose next_run is past and need firing."""
+    now = utcnow()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM agent_ops WHERE enabled = 1 AND next_run IS NOT NULL AND next_run <= ? "
+            "ORDER BY next_run ASC",
+            (now,),
         ).fetchall()
         return [dict(row) for row in rows]

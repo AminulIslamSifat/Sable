@@ -96,14 +96,17 @@ async def context_pass(req: ContextPassRequest) -> dict[str, Any]:
 
     prompt = (
         "You are a context summarizer. Below is a conversation transcript. "
-        "Summarize it into a concise briefing that can be used as the FIRST message "
-        "in a brand-new chat session, so the new session immediately understands:\n"
-        "1. What the user was working on (goal/task)\n"
-        "2. Current state — what's done, what's pending\n"
-        "3. Key decisions made, constraints, file paths, or technical details\n"
-        "4. Any unresolved issues or next steps\n\n"
-        "Format: Write it as a direct briefing to the assistant (second person). "
-        "Keep it under 800 words. No preamble, no 'here's a summary' — just the briefing.\n\n"
+        "Produce a focused operational briefing for a new chat session. "
+        "No filler, no meta-commentary, no 'here is a summary' — jump straight to substance.\n\n"
+        "Structure (increasing detail toward the end):\n"
+        "• Working topic — one sentence: what this chat is about and where it's heading.\n"
+        "• Background — brief context only if needed to understand the current task.\n"
+        "• Last actions (DETAILED) — what was most recently attempted, what was tried, "
+        "why each approach was chosen, what succeeded or failed, and the exact current state.\n"
+        "• Planned next move (DETAILED) — concrete next steps, open questions, blockers, "
+        "and any specific files/paths/configs involved.\n\n"
+        "The later sections must be progressively more detailed than earlier ones. "
+        "Omit anything irrelevant to continuing the work. Keep under 800 words.\n\n"
         f"---\n{transcript}"
     )
 

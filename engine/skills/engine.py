@@ -180,8 +180,21 @@ class SkillEngine:
         # Non-default skills (or ALL skills when include_defaults=False): compact listing grouped by category
         non_default = self._skills if not include_defaults else [s for s in self._skills if not s.default]
         if non_default:
+            # Separate reference-only skills (one-liner) from full compact listing
+            reference_skills = [s for s in non_default if s.context == "reference"]
+            full_skills = [s for s in non_default if s.context != "reference"]
+
+            # Reference-only skills: single line each
+            if reference_skills:
+                lines.append("## Subagent Skills (reference only — spawn matching agent)")
+                lines.append("")
+                for skill in reference_skills:
+                    lines.append(f"- `{skill.key}`: `{skill.dir_path}/instruction.md`")
+                lines.append("")
+
+            # Full compact listing grouped by category
             categories: dict[str, list[SkillMeta]] = {}
-            for skill in non_default:
+            for skill in full_skills:
                 categories.setdefault(skill.category, []).append(skill)
 
             for category in ("core", "data", "visuals", "study", "system"):

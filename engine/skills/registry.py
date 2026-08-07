@@ -35,6 +35,7 @@ class SkillMeta:
     # Optional fields
     not_this_if: str | None = None
     inline: bool = False
+    context: str = "full"  # "full" = normal rendering, "reference" = one-liner only
     config: dict = field(default_factory=dict)
     dependencies: list[str] = field(default_factory=list)
     # Computed at discovery
@@ -192,6 +193,7 @@ def _parse_manifest(manifest_path: Path) -> SkillMeta | None:
         scope=raw["scope"],
         not_this_if=raw.get("not_this_if"),
         inline=raw.get("inline", False),
+        context=raw.get("context", "full"),
         config=raw.get("config", {}),
         dependencies=raw.get("dependencies", []),
         dir_path=skill_dir,
