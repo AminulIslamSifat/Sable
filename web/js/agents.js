@@ -1162,11 +1162,13 @@ document.addEventListener("DOMContentLoaded", () => {
 // --------------------------------------------------------------------------
 const TTSSettings = {
   loaded: false,
+  _saveTimer: null,
 
   async loadStatus() {
     const statusEl = document.getElementById('ttsStatus');
     const dlBtn = document.getElementById('ttsDownloadBtn');
     const delBtn = document.getElementById('ttsDeleteBtn');
+    const prefsSection = document.getElementById('ttsPrefsSection');
     try {
       const res = await fetch('/api/settings/tts', { headers: { Authorization: `Bearer ${localStorage.getItem('sable_token') || ''}` } });
       const data = await res.json();
@@ -1188,10 +1190,76 @@ const TTSSettings = {
       dlBtn.textContent = '\u2b07 Download Models';
       dlBtn.disabled = false;
       delBtn.hidden = !data.installed;
+      // Show prefs section only when models are installed
+      if (prefsSection) prefsSection.hidden = !data.installed;
+      if (data.installed) {
+        this.loadPrefs();
+        this.loadVoices();
+      }
       this.loaded = true;
     } catch (e) {
       statusEl.innerHTML = '<p style="color:#e74c3c;font-size:12px;">Failed to check status: ' + e.message + '</p>';
     }
+  },
+
+  async loadPrefs() {
+    try {
+      const res = await fetch('/api/settings/tts/prefs');
+      const prefs = await res.json();
+      const speedRange = document.getElementById('ttsSpeedRange');
+      const speedLabel = document.getElementById('ttsSpeedLabel');
+      if (speedRange && prefs.speed != null) {
+        speedRange.value = prefs.speed;
+        if (speedLabel) speedLabel.textContent = parseFloat(prefs.speed).toFixed(1) + '\u00d7';
+      }
+      // Voice will be set after loadVoices populates the dropdown
+      this._currentPrefs = prefs;
+    } catch (e) { /* ignore */ }
+  },
+
+  async loadVoices() {
+    const select = document.getElementById('ttsVoiceSelect');
+    if (!select) return;
+    try {
+      const res = await fetch('/api/tts/voices');
+      const data = await res.json();
+      const voices = data.voices || [];
+      select.innerHTML = '';
+      if (voices.length === 0) {
+        select.innerHTML = '<option value="">No voices available</option>';
+        return;
+      }
+      voices.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = v.replace(/_/g, ' ');
+        select.appendChild(opt);
+      });
+      // Restore saved voice
+      if (this._currentPrefs && this._currentPrefs.voice) {
+        select.value = this._currentPrefs.voice;
+      }
+    } catch (e) {
+      select.innerHTML = '<option value="">Failed to load voices</option>';
+    }
+  },
+
+  savePrefs() {
+    clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(async () => {
+      const voiceSelect = document.getElementById('ttsVoiceSelect');
+      const speedRange = document.getElementById('ttsSpeedRange');
+      const body = {};
+      if (voiceSelect) body.voice = voiceSelect.value;
+      if (speedRange) body.speed = parseFloat(speedRange.value);
+      try {
+        await fetch('/api/settings/tts/prefs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      } catch (e) { /* ignore */ }
+    }, 300);
   },
 
   async download() {
@@ -1276,4 +1344,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const delBtn = document.getElementById('ttsDeleteBtn');
   if (delBtn) delBtn.addEventListener('click', () => TTSSettings.remove());
+
+  // Voice & speed controls — auto-save on change
+  const voiceSelect = document.getElementById('ttsVoiceSelect');
+  if (voiceSelect) voiceSelect.addEventListener('change', () => TTSSettings.savePrefs());
+
+  const speedRange = document.getElementById('ttsSpeedRange');
+  const speedLabel = document.getElementById('ttsSpeedLabel');
+  if (speedRange) {
+    speedRange.addEventListener('input', () => {
+      if (speedLabel) speedLabel.textContent = parseFloat(speedRange.value).toFixed(1) + '\u00d7';
+    });
+    speedRange.addEventListener('change', () => TTSSettings.savePrefs());
+  }
 });

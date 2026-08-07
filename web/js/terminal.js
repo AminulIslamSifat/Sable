@@ -325,9 +325,9 @@
   btn.addEventListener('click', toggle);
   if (closeBtn) closeBtn.addEventListener('click', close);
 
-  // VS Code parity: Ctrl/Cmd+` toggles the terminal.
+  // VS Code parity: Ctrl/Cmd+` or Ctrl/Cmd+J toggles the terminal.
   window.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === '`') { e.preventDefault(); toggle(); }
+    if ((e.ctrlKey || e.metaKey) && (e.key === '`' || e.key.toLowerCase() === 'j')) { e.preventDefault(); toggle(); }
   });
 
   /* ---------- resize handle drag ---------- */

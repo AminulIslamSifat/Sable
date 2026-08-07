@@ -92,6 +92,14 @@
     if (e.target === overlay) closeFS();
   });
 
+  // Ctrl/Cmd+B toggles the file viewer panel.
+  window.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
+      e.preventDefault();
+      overlay.classList.contains("hidden") ? openFS() : closeFS();
+    }
+  });
+
   /* ---------- Root picker ---------- */
   const fsHistory = JSON.parse(localStorage.getItem("fs_root_history") || "[]");
 
@@ -392,7 +400,7 @@
         { token: "namespace", foreground: "d4b896" },
       ],
       colors: {
-        "editor.background": bg,
+        "editor.background": "#00000000",
         "editor.foreground": textDim,
         "editor.lineHighlightBackground": panel,
         "editorLineNumber.foreground": muted2,
@@ -400,7 +408,7 @@
         "editorCursor.foreground": accentText,
         "editor.selectionBackground": accent + "30",
         "editor.inactiveSelectionBackground": accent + "18",
-        "editorGutter.background": bg,
+        "editorGutter.background": "#00000000",
         "editorWidget.background": panel,
         "editorWidget.border": border,
         "editorWidget.foreground": textDim,
@@ -416,7 +424,7 @@
         "scrollbarSlider.background": border + "80",
         "scrollbarSlider.hoverBackground": border,
         "scrollbarSlider.activeBackground": muted2,
-        "editorBracketMatch.border": accent + "60",
+        "editorBracketMatch.border": "#00000000",
         "editorBracketHighlight.foreground1": accentText,
         "editorBracketHighlight.foreground2": "d4b896",
         "editorBracketHighlight.foreground3": "8fa876",
@@ -425,7 +433,7 @@
         "editorBracketHighlight.foreground6": h(muted),
         "editorIndentGuide.background1": border,
         "editorIndentGuide.activeBackground1": muted2,
-        "minimap.background": bg,
+        "minimap.background": "#00000000",
         "editorOverviewRuler.border": bg,
         "editorGroup.border": border,
         "tab.activeBackground": panel,
@@ -576,6 +584,7 @@
       renderLineHighlight: "all",
       scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
       automaticLayout: true,
+      unicodeHighlight: { ambiguousCharacters: false, invisibleCharacters: false },
     });
 
     // Track dirty state
@@ -1192,23 +1201,37 @@
     });
   }
 
-  /* ---------- Sidebar tab switching ---------- */
-  const sidebarTabs = document.querySelectorAll(".fs-sidebar-tab");
+  /* ---------- Sidebar tab switching (pill style) ---------- */
+  const fsModePill = document.getElementById("fsModePill");
   const filesPanel = document.getElementById("sidebarFilesPanel");
   const diffPanel = document.getElementById("sidebarDiffPanel");
 
-  sidebarTabs.forEach((tab) => {
-    tab.addEventListener("click", () => {
-      sidebarTabs.forEach((t) => t.classList.remove("active"));
-      tab.classList.add("active");
-      const panel = tab.dataset.panel;
-      if (filesPanel) filesPanel.classList.toggle("active", panel === "files");
-      if (diffPanel) diffPanel.classList.toggle("active", panel === "diff");
-      if (panel === "files") {
-        sidebarRoot ? loadSidebarTree() : showSidebarPicker();
-      }
+  function setFsMode(panel) {
+    if (!fsModePill) return;
+    const btns = fsModePill.querySelectorAll("button");
+    let idx = 0;
+    btns.forEach((b, i) => {
+      const isActive = b.dataset.panel === panel;
+      b.classList.toggle("active", isActive);
+      if (isActive) idx = i;
     });
-  });
+    fsModePill.style.setProperty("--i", idx);
+    if (filesPanel) filesPanel.classList.toggle("active", panel === "files");
+    if (diffPanel) diffPanel.classList.toggle("active", panel === "diff");
+    if (panel === "files") {
+      sidebarRoot ? loadSidebarTree() : showSidebarPicker();
+    }
+  }
+
+  if (fsModePill) {
+    fsModePill.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-panel]");
+      if (btn) setFsMode(btn.dataset.panel);
+    });
+  }
+
+  // Expose for external callers (e.g. diff card click in app.js)
+  window.setFsSidebarMode = setFsMode;
 
 
   /* ---------- Diff editor (Monaco split view) ---------- */

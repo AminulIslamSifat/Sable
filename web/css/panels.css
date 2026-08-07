@@ -2107,6 +2107,14 @@ textarea:disabled {
   overflow: hidden;
 }
 
+.fs-monaco-wrap .monaco-editor,
+.fs-monaco-wrap .monaco-editor .overflow-guard,
+.fs-monaco-wrap .monaco-editor-background {
+  outline: none !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
 .fs-viewer-actions {
   display: flex;
   align-items: center;

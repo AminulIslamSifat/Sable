@@ -122,7 +122,10 @@ async def cmd_messages(cfg: dict[str, Any], chat_id: int, limit: int, offset_id:
     """Get messages from a specific chat."""
     client = await _get_client(cfg)
     msgs = []
-    async for m in client.iter_messages(chat_id, limit=limit, max_id=offset_id or None):
+    kwargs: dict[str, Any] = {"limit": limit}
+    if offset_id:
+        kwargs["max_id"] = offset_id
+    async for m in client.iter_messages(chat_id, **kwargs):
         sender_name = ""
         try:
             s = await m.get_sender()
