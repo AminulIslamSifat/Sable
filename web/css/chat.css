@@ -813,6 +813,29 @@
       height: auto;
     }
 
+    /* Center bare SVG elements rendered directly in markdown (not wrapped).
+       Exclude Lucide icons — they stay inline with text. */
+    .md-content > svg:not(.msg-lucide-icon),
+    .md-content p > svg:not(.msg-lucide-icon) {
+      display: block;
+      margin: 14px auto;
+      max-width: 100%;
+      height: auto;
+    }
+
+    /* Center SVG inside code fences (```svg) */
+    .md-content pre:has(code.language-svg) {
+      text-align: center;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+    }
+    .md-content pre code.language-svg {
+      display: inline-block;
+      white-space: normal;
+    }
+
     /* highlight / mark */
     .md-content mark {
       background: rgba(201, 164, 100, 0.35);

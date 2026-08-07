@@ -55,15 +55,26 @@ def handle_execute_command(
         r'(/home/sifat/Projects/Sable|~/Projects/Sable|$PROJECT_ROOT)'
     )
     if _ssd_pattern.search(cmd):
-        # Read-only commands are always fine
-        _read_cmds = r'^\s*(cat|grep|rg|find|ls|head|tail|file|wc|stat|du|tree|less|more|which|type|diff|md5sum|sha256sum)'
-        is_read = bool(_re.match(_read_cmds, cmd))
-        # Allow cp FROM hdd TO Projects (the sync workflow)
-        _sync_pattern = _re.compile(
-            r'^\s*cp\s+.*(/home/sifat/hdd/projects/Sable|~/hdd/projects/Sable)\S*\s+.*(/home/sifat/Projects/Sable|~/Projects/Sable)'
-        )
-        is_sync = bool(_sync_pattern.search(cmd))
-        if not is_read and not is_sync:
+        # Reads ALWAYS pass. Only block destructive/code-overwriting ops.
+        # Sync (HDD->SSD copy) is always allowed — that's the sanctioned path.
+        _has_hdd = bool(_re.search(r'(/home/sifat/hdd/projects/Sable|~/hdd/projects/Sable)', cmd))
+        _is_cp = bool(_re.search(r'(?:^|\s|;|&&|\|\||\|)\s*cp\b', cmd))
+        is_sync = _is_cp and _has_hdd
+        is_write = False
+        # 1. shell redirection INTO an SSD path  (> or >> or 2>)
+        if _re.search(r'(>>?|2>)\s*["\']?(/home/sifat/Projects/Sable|~/Projects/Sable)', cmd):
+            is_write = True
+        # 2. destructive / in-place-mutating verbs (mkdir excluded — safe, needed for sync)
+        _mutate = r'(?:^|\s|;|&&|\|\||\|)\s*(rm|mv|touch|tee|chmod|chown|truncate|shred|sed\s+-i|perl\s+-i)\b'
+        if _re.search(_mutate, cmd):
+            is_write = True
+        # 3. cp whose destination is SSD but source is NOT the HDD tree
+        if _is_cp and not _has_hdd:
+            is_write = True
+        # 4. git write verbs (add/commit/push/etc.)
+        if _re.search(r'\bgit\s+(add|commit|push|merge|rebase|reset|checkout|pull|clone|rm|mv)\b', cmd):
+            is_write = True
+        if is_write and not is_sync:
             msg = "[BLOCKED] Direct write to /home/sifat/Projects/Sable is not allowed.\nEdit in /home/sifat/hdd/projects/Sable first, dont touch ssd Sable.\n"
             yield _output_event(tag_id, msg, 'stderr')
             yield _end_event(tag_id, name, False, started, error='Blocked: SSD tree write guard')

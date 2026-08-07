@@ -11,12 +11,12 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from engine.config import _ROOT
+from engine.config import _ROOT, PERSISTENT_ROOT
 
 router = APIRouter(prefix="/api/telegram", tags=["telegram"])
 
-_CONFIG_PATH = _ROOT / "system" / ".telegram_config.json"
-_SESSION_DIR = _ROOT / "system" / "telegram_sessions"
+_CONFIG_PATH = PERSISTENT_ROOT / "system" / ".telegram_config.json"
+_SESSION_DIR = PERSISTENT_ROOT / "system" / "telegram_sessions"
 
 # ── Lazy Telethon client (singleton, only imported when enabled) ──────────────
 
