@@ -335,7 +335,7 @@
 
     /* drag-to-resize strip along the top edge */
     .terminal-resize-handle {
-      height: 8px;
+      height: 4px;
       flex-shrink: 0;
       cursor: row-resize;
       position: relative;
@@ -363,23 +363,24 @@
 
     .terminal-bar {
       display: flex;
-      align-items: stretch;
+      align-items: center;
       justify-content: space-between;
-      height: 34px;
+      height: 29px;
+      padding: 0;
       flex-shrink: 0;
       background: var(--bg);
       border-bottom: 1px solid var(--border);
     }
-    .terminal-tabs { display: flex; align-items: stretch; gap: 2px; padding-left: 8px; }
+    .terminal-tabs { display: flex; align-items: center; gap: 2px; padding-left: 8px; height: 100%; }
     .terminal-tab {
       background: none;
       border: none;
       cursor: pointer;
       color: var(--muted);
-      font: 500 11px var(--font-body);
+      font: 500 9px var(--font-body);
       letter-spacing: 0.05em;
       text-transform: uppercase;
-      margin: 5px 2px;
+      margin: 0 2px;
       padding: 4px 11px;
       display: flex;
       align-items: center;

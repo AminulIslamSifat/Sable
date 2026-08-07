@@ -19,6 +19,7 @@ dependencies = [
     "soundfile>=0.14.0",
     "misaki>=0.8.0",
     "telethon>=1.36.0",
+    "pyaes>=1.6.1",
     "pillow>=11.0.0",
     "defusedxml>=0.7.0",
     "python-docx>=1.1.0",

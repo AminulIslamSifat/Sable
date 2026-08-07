@@ -121,16 +121,35 @@ class SignInRequest(BaseModel):
 
 @router.get("/status")
 async def telegram_status():
-    """Check if Telegram is configured and connected."""
+    """Check if Telegram is configured and connected.
+
+    On fresh startup the in-memory ``_client`` is None even though a valid
+    session file exists on disk.  Instead of reporting *disconnected* (which
+    forces the user to re-login every restart), we attempt a silent reconnect
+    using the persisted session before giving up.
+    """
+    global _client
     cfg = _load_config()
     if not cfg:
         return {"configured": False, "enabled": False, "connected": False}
     connected = False
-    if cfg.get("enabled") and _client:
-        try:
-            connected = _client.is_connected() and await _client.is_user_authorized()
-        except Exception:
-            pass
+    if cfg.get("enabled"):
+        # Fast path: reuse existing in-memory client
+        if _client:
+            try:
+                connected = _client.is_connected() and await _client.is_user_authorized()
+            except Exception:
+                pass
+        # Slow path: no client yet — try restoring from session file
+        if not connected:
+            try:
+                c = await _get_client()
+                connected = True
+                _client = c
+            except HTTPException:
+                pass  # 401 / 403 → genuinely not authorized or disabled
+            except Exception:
+                pass
     return {
         "configured": True,
         "enabled": cfg.get("enabled", False),
@@ -348,11 +367,34 @@ async def send_code(req: SignInRequest):
     if _auth_client:
         try: await _auth_client.disconnect()
         except Exception: pass
-    c = TelegramClient(session_path, api_id=int(cfg["api_id"]), api_hash=cfg["api_hash"])
-    await c.connect()
-    result = await c.send_code_request(req.phone)
-    _auth_client = c  # keep alive for verify step
-    return {"phone_code_hash": result.phone_code_hash}
+
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            c = TelegramClient(
+                session_path,
+                api_id=int(cfg["api_id"]),
+                api_hash=cfg["api_hash"],
+                connection_retries=5,
+            )
+            await c.connect()
+            # Small stabilization delay — MTProto handshake may not be
+            # fully ready immediately after connect(), causing "network
+            # error" on the very first RPC call.
+            await asyncio.sleep(0.3)
+            result = await c.send_code_request(req.phone)
+            _auth_client = c  # keep alive for verify step
+            return {"phone_code_hash": result.phone_code_hash}
+        except Exception as e:
+            last_err = e
+            try:
+                await c.disconnect()
+            except Exception:
+                pass
+            if attempt < 2:
+                await asyncio.sleep(1.5)
+
+    raise HTTPException(502, f"Failed to send code after 3 attempts: {last_err}")
 
 
 @router.post("/signin/verify")

@@ -150,6 +150,33 @@ async def chat(request: ChatRequest):
     # Inject title instruction on first message (model-only, not saved to DB)
     if parent_id is None:
         timestamped_message += '\n\n[SYSTEM: First message of a new chat. Respond normally, but also emit <action><chat_title>Short descriptive title</chat_title></action> at the end of your response. If you are running another command, then put chat_title and that command in one action block.]'
+
+        # Inject upcoming schedule (last/next 10 days) so Maria knows what's coming
+        try:
+            from server.database import get_upcoming_schedules
+            _upcoming = get_upcoming_schedules(days=10)
+            if _upcoming:
+                _sched_lines = []
+                for _s in _upcoming:
+                    _stype = _s.get("schedule_type", "daily")
+                    _time = _s.get("time", "")
+                    _desc = _s.get("description", "")
+                    _title = _s.get("title", "")
+                    if _stype == "weekly":
+                        _days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+                        _dow = _s.get("day_of_week", 0)
+                        _day_name = _days[_dow] if 0 <= _dow <= 6 else "?"
+                        _sched_lines.append(f"- {_title} ({_day_name} {_time})" + (f" — {_desc}" if _desc else ""))
+                    elif _stype == "occasional":
+                        _sd = _s.get("start_date", "")[:10]
+                        _sched_lines.append(f"- {_title} ({_sd} {_time})" + (f" — {_desc}" if _desc else ""))
+                    else:
+                        _sched_lines.append(f"- {_title} (daily {_time})" + (f" — {_desc}" if _desc else ""))
+                _sched_block = "\n".join(_sched_lines)
+                timestamped_message += f'\n\n[SCHEDULE CONTEXT — next 10 days:\n{_sched_block}]'
+        except Exception:
+            pass
+
     resolved_files: list[dict[str, Any]] | None = None
     _backend = _resolve_api_backend(request.model) if _is_api_model(request.model) else None
     if request.files:

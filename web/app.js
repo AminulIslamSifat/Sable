@@ -147,6 +147,169 @@
     let creating    = false;
 
 
+    /* =========================================================================
+       Streaming TTS Player — sentence-chunked parallel synthesis + sequential playback
+       Splits text into sentences, fetches audio for chunk N+1 while chunk N plays.
+       ========================================================================= */
+    class TTSStreamPlayer {
+      constructor(onStateChange) {
+        this.onStateChange = onStateChange; // (state: 'loading'|'playing'|'stopped') => void
+        this.queue = [];       // Audio objects waiting to play
+        this.playing = null;   // currently playing Audio
+        this.stopped = false;
+        this.abortCtrl = new AbortController(); // cancels in-flight fetches
+      }
+
+      static stripMarkdown(text) {
+        // Remove common markdown artifacts that TTS can't speak
+        return text
+          .replace(/^#{1,6}\s+/gm, "")           // headers
+          .replace(/^\*{3,}$|^-{3,}$|^_{3,}$/gm, "") // horizontal rules
+          .replace(/\*\*(.+?)\*\*/g, "$1")       // bold
+          .replace(/\*(.+?)\*/g, "$1")           // italic
+          .replace(/~~(.+?)~~/g, "$1")           // strikethrough
+          .replace(/==(.+?)==/g, "$1")           // highlight
+          .replace(/`(.+?)`/g, "$1")             // inline code
+          .replace(/^>\s*/gm, "")                // blockquotes
+          .replace(/^\s*[-*+]\s+/gm, "")         // unordered list markers
+          .replace(/^\s*\d+\.\s+/gm, "")         // ordered list markers
+          .replace(/\[(.+?)\]\(.+?\)/g, "$1")   // links → keep text
+          .replace(/\p{Emoji_Presentation}/gu, "") // strip emojis (TTS can't speak them)
+          .replace(/\n{2,}/g, "\n")              // collapse blank lines
+          .trim();
+      }
+
+      static splitSentences(text) {
+        // Clean markdown first so TTS only sees speakable text
+        const clean = TTSStreamPlayer.stripMarkdown(text);
+        if (!clean) return [];
+        // Split on sentence-ending punctuation followed by whitespace/newline or end-of-string.
+        // Also splits on double-newlines (paragraph breaks) as natural pause points.
+        const raw = clean.match(/[^.!?…\n]+[.!?…]+[\s]?|[^.!?…\n]+(?=\n)|[^.!?…\n]+$/g);
+        if (!raw) return [clean];
+        // Merge very short fragments (< 15 chars) with next chunk to avoid tiny audio blips
+        const merged = [];
+        let buf = "";
+        for (const s of raw) {
+          const trimmed = s.trim();
+          if (!trimmed) continue;
+          buf += (buf ? " " : "") + trimmed;
+          if (buf.length >= 15 || s === raw[raw.length - 1]) {
+            merged.push(buf);
+            buf = "";
+          }
+        }
+        if (buf.trim()) merged.push(buf.trim());
+        return merged.filter(s => s.length > 0);
+      }
+
+      async _fetchChunk(text) {
+        const res = await fetch("/api/tts/synthesize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+          signal: this.abortCtrl.signal,
+        });
+        if (!res.ok) throw new Error("TTS chunk failed");
+        const blob = await res.blob();
+        return new Audio(URL.createObjectURL(blob));
+      }
+
+      async _playNext() {
+        if (this.stopped) return;
+        if (this.queue.length === 0) {
+          this.onStateChange("stopped");
+          return;
+        }
+        const audio = this.queue.shift();
+        this.playing = audio;
+        audio.onended = () => {
+          this.playing = null;
+          URL.revokeObjectURL(audio.src);
+          this._playNext();
+        };
+        audio.onerror = () => {
+          this.playing = null;
+          this._playNext();
+        };
+        try { await audio.play(); } catch { this._playNext(); }
+      }
+
+      async play(text) {
+        this.stop();
+        this.stopped = false;
+        this.abortCtrl = new AbortController();
+        const chunks = TTSStreamPlayer.splitSentences(text);
+        if (chunks.length === 0) return;
+
+        this.onStateChange("loading");
+
+        // Fetch first two chunks concurrently to eliminate gap between sentence 1 and 2
+        try {
+          const initialFetches = [this._fetchChunk(chunks[0])];
+          if (chunks.length > 1) initialFetches.push(this._fetchChunk(chunks[1]));
+          const initialAudios = await Promise.all(initialFetches);
+
+          for (const audio of initialAudios) {
+            if (this.stopped) { URL.revokeObjectURL(audio.src); continue; }
+            this.queue.push(audio);
+          }
+          if (this.stopped) return;
+
+          this.onStateChange("playing");
+          this._playNext();
+
+          // Pipeline: pre-fetch remaining chunks in parallel (max 2 concurrent)
+          const remaining = chunks.slice(2);
+          let idx = 0;
+          const prefetch = async () => {
+            while (idx < remaining.length && !this.stopped) {
+              const i = idx++;
+              try {
+                const audio = await this._fetchChunk(remaining[i]);
+                if (!this.stopped) {
+                  this.queue.push(audio);
+                  if (!this.playing) this._playNext();
+                } else {
+                  URL.revokeObjectURL(audio.src);
+                }
+              } catch (err) {
+                if (err.name === "AbortError") return; // clean cancellation
+                if (!this.stopped) {
+                  console.warn(`TTS chunk ${i} failed:`, err.message);
+                }
+              }
+            }
+          };
+          // Run up to 2 parallel prefetchers (fire-and-forget)
+          prefetch();
+          prefetch();
+        } catch (e) {
+          if (e.name === "AbortError") return;
+          if (!this.stopped) {
+            showToast("TTS error: " + e.message, "error");
+            this.onStateChange("stopped");
+          }
+        }
+      }
+
+      stop() {
+        this.stopped = true;
+        this.abortCtrl.abort(); // cancel all in-flight fetches
+        if (this.playing) {
+          this.playing.pause();
+          this.playing.currentTime = 0;
+          URL.revokeObjectURL(this.playing.src);
+          this.playing = null;
+        }
+        for (const a of this.queue) {
+          URL.revokeObjectURL(a.src);
+        }
+        this.queue = [];
+        this.onStateChange("stopped");
+      }
+    }
+
     const attachBtn     = document.getElementById("attachBtn");
     const fileInput     = document.getElementById("fileInput");
     const attachPreview = document.getElementById("attachPreview");
@@ -1237,8 +1400,352 @@
     if (diffToggleBtn) diffToggleBtn.addEventListener("click", () => {
       const opening = !document.body.classList.contains("diff-open");
       document.body.classList.toggle("diff-open");
-      if (opening && typeof AgentPanel !== "undefined") AgentPanel.close();
+      if (opening) {
+        document.body.classList.remove("tracknote-open");
+        if (typeof AgentPanel !== "undefined") AgentPanel.close();
+      }
     });
+
+    // ---------- TrackNote sidebar ----------
+    const trackNoteBtn = document.getElementById("trackNoteBtn");
+    const trackNoteCloseBtn = document.getElementById("trackNoteClose");
+    const trackNotePill = document.getElementById("trackNotePill");
+    const tnPanels = {
+      schedule: document.getElementById("tnPanelSchedule"),
+      todo: document.getElementById("tnPanelTodo"),
+      "agent-tasks": document.getElementById("tnPanelAgentTasks"),
+    };
+
+    function setTrackNoteMode(mode) {
+      if (!trackNotePill) return;
+      const btns = trackNotePill.querySelectorAll("button");
+      let idx = 0;
+      btns.forEach((b, i) => {
+        const isActive = b.dataset.mode === mode;
+        b.classList.toggle("active", isActive);
+        if (isActive) idx = i;
+      });
+      trackNotePill.style.setProperty("--i", idx);
+      Object.entries(tnPanels).forEach(([k, el]) => {
+        if (el) el.classList.toggle("active", k === mode);
+      });
+    }
+
+    if (trackNoteBtn) trackNoteBtn.addEventListener("click", () => {
+      const opening = !document.body.classList.contains("tracknote-open");
+      document.body.classList.toggle("tracknote-open");
+      if (opening) {
+        document.body.classList.remove("diff-open");
+        if (typeof AgentPanel !== "undefined") AgentPanel.close();
+      }
+    });
+    if (trackNoteCloseBtn) trackNoteCloseBtn.addEventListener("click", () => {
+      document.body.classList.remove("tracknote-open");
+    });
+    if (trackNotePill) {
+      trackNotePill.addEventListener("click", (e) => {
+        const btn = e.target.closest("button[data-mode]");
+        if (btn) setTrackNoteMode(btn.dataset.mode);
+      });
+    }
+
+
+    // ---------- TrackNote: API helpers ----------
+    function esc(s) { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
+    const TN_API = "/api";
+    async function tnFetch(path) {
+      const r = await fetch(TN_API + path, { headers: { authorization: "Bearer " + (localStorage.getItem("sable_token") || "") } });
+      if (!r.ok) throw new Error(r.statusText);
+      return r.json();
+    }
+    async function tnPost(path, body) {
+      const r = await fetch(TN_API + path, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + (localStorage.getItem("sable_token") || "") }, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error(r.statusText);
+      return r.json();
+    }
+    async function tnPut(path, body) {
+      const r = await fetch(TN_API + path, { method: "PUT", headers: { "content-type": "application/json", authorization: "Bearer " + (localStorage.getItem("sable_token") || "") }, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error(r.statusText);
+      return r.json();
+    }
+    async function tnDelete(path) {
+      const r = await fetch(TN_API + path, { method: "DELETE", headers: { authorization: "Bearer " + (localStorage.getItem("sable_token") || "") } });
+      if (!r.ok) throw new Error(r.statusText);
+      return r.json();
+    }
+
+    // ---------- TrackNote: Schedule panel ----------
+    const tnSchedList = document.getElementById("tnSchedList");
+    const tnSchedEmpty = document.getElementById("tnSchedEmpty");
+
+    function formatTime24(t) {
+      if (!t) return "";
+      // Already HH:MM (24h) from backend — just return as-is
+      return t;
+    }
+
+    function renderScheduleItem(s) {
+      const div = document.createElement("div");
+      div.className = "tn-item";
+      const typeLabel = s.schedule_type === "weekly" ? `Weekly (${["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][s.day_of_week || 0]})` : s.schedule_type === "occasional" ? `Once (${(s.start_date||"").slice(0,10)})` : "Daily";
+      div.innerHTML = `<div class="tn-item-title">${esc(s.title)}</div><div class="tn-item-meta">${typeLabel} ${formatTime24(s.time)}${s.description ? " — " + esc(s.description) : ""}</div><div class="tn-item-actions"><button class="tn-item-action" data-edit="${s.id}" title="Edit">✎</button><button class="tn-item-action danger" data-del="${s.id}" title="Delete">✕</button></div>`;
+      div.querySelector("[data-del]").addEventListener("click", async () => {
+        await tnDelete("/schedules/" + s.id);
+        loadSchedules();
+      });
+      div.querySelector("[data-edit]").addEventListener("click", () => {
+        openTnEditModal("schedule", s);
+      });
+      return div;
+    }
+
+    async function loadSchedules() {
+      try {
+        const data = await tnFetch("/schedules");
+        tnSchedList.innerHTML = "";
+        const items = data.schedules || [];
+        items.forEach(s => tnSchedList.appendChild(renderScheduleItem(s)));
+        tnSchedEmpty.style.display = items.length ? "none" : "block";
+      } catch(e) { console.warn("loadSchedules failed", e); }
+    }
+
+    document.getElementById("tnSchedAdd")?.addEventListener("click", async () => {
+      const title = document.getElementById("tnSchedTitle").value.trim();
+      if (!title) return;
+      const stype = document.getElementById("tnSchedType").value;
+      const time = document.getElementById("tnSchedTime").value || null;
+      await tnPost("/schedules", { title, schedule_type: stype, time });
+      document.getElementById("tnSchedTitle").value = "";
+      loadSchedules();
+    });
+
+    // ---------- TrackNote: Notes/Todos panel ----------
+    const tnNoteList = document.getElementById("tnNoteList");
+    const tnNoteEmpty = document.getElementById("tnNoteEmpty");
+
+    function renderNoteItem(n) {
+      const div = document.createElement("div");
+      div.className = "tn-item";
+      let html = `<div class="tn-item-title">${esc(n.title || "Untitled")}</div>`;
+      if (n.content) html += `<div class="tn-item-meta">${esc(n.content).slice(0, 120)}</div>`;
+      if (n.due_date) html += `<div class="tn-item-meta">Due: ${esc(n.due_date)}</div>`;
+      // Checklist items
+      if (n.items && n.items.length) {
+        html += `<div class="tn-checklist">`;
+        n.items.forEach((item, i) => {
+          const doneClass = item.done ? " done" : "";
+          html += `<div class="tn-checklist-item${doneClass}"><input type="checkbox" ${item.done ? "checked" : ""} data-note="${n.id}" data-idx="${i}" /><span>${esc(item.text || "")}</span></div>`;
+        });
+        html += `</div>`;
+      }
+      html += `<div class="tn-item-actions"><button class="tn-item-action" data-edit="${n.id}" title="Edit">✎</button><button class="tn-item-action danger" data-del="${n.id}" title="Delete">✕</button></div>`;
+      div.innerHTML = html;
+      div.querySelector("[data-del]").addEventListener("click", async () => {
+        await tnDelete("/notes/" + n.id);
+        loadNotes();
+      });
+      div.querySelector("[data-edit]").addEventListener("click", () => {
+        openTnEditModal("note", n);
+      });
+      div.querySelectorAll("input[type=checkbox][data-note]").forEach(cb => {
+        cb.addEventListener("change", async () => {
+          await tnPost("/notes/" + cb.dataset.note + "/toggle-item?index=" + cb.dataset.idx);
+          loadNotes();
+        });
+      });
+      return div;
+    }
+
+    async function loadNotes() {
+      try {
+        const data = await tnFetch("/notes");
+        tnNoteList.innerHTML = "";
+        const items = data.notes || [];
+        items.forEach(n => tnNoteList.appendChild(renderNoteItem(n)));
+        tnNoteEmpty.style.display = items.length ? "none" : "block";
+      } catch(e) { console.warn("loadNotes failed", e); }
+    }
+
+    document.getElementById("tnNoteAdd")?.addEventListener("click", async () => {
+      const title = document.getElementById("tnNoteTitle").value.trim();
+      if (!title) return;
+      await tnPost("/notes", { title, note_type: "note" });
+      document.getElementById("tnNoteTitle").value = "";
+      loadNotes();
+    });
+
+    document.getElementById("tnTodoAdd")?.addEventListener("click", async () => {
+      const title = document.getElementById("tnNoteTitle").value.trim();
+      if (!title) return;
+      await tnPost("/notes", { title, note_type: "checklist", items: [{ text: "New item", done: false }] });
+      document.getElementById("tnNoteTitle").value = "";
+      loadNotes();
+    });
+
+    // ---------- TrackNote: Agent Ops panel ----------
+    const tnAgentList = document.getElementById("tnAgentList");
+    const tnAgentEmpty = document.getElementById("tnAgentEmpty");
+    const tnAgentModelSel = document.getElementById("tnAgentModel");
+
+    // Populate model dropdown from global MODELS if available
+    function populateAgentModels() {
+      if (!tnAgentModelSel) return;
+      const models = (typeof window.SABLE_MODELS !== "undefined" ? window.SABLE_MODELS : null) || [
+        { id: "qwen3.7-max", label: "Qwen3.7 Max" },
+        { id: "qwen3.8-max", label: "Qwen3.8 Max" },
+        { id: "deepseek-expert", label: "DeepSeek Expert" },
+      ];
+      tnAgentModelSel.innerHTML = "";
+      models.forEach(m => {
+        const opt = document.createElement("option");
+        opt.value = m.id; opt.textContent = m.label || m.id;
+        tnAgentModelSel.appendChild(opt);
+      });
+    }
+    populateAgentModels();
+
+    function renderAgentOp(op) {
+      const div = document.createElement("div");
+      div.className = "tn-item";
+      const statusClass = op.enabled ? "on" : "off";
+      const schedInfo = op.schedule_type === "cron" ? `Cron: ${op.cron_expression || "?"}` : `${op.schedule_type} ${formatTime24(op.schedule_time)}`;
+      const lastRun = op.last_run ? new Date(op.last_run).toLocaleString() : "never";
+      div.innerHTML = `<div class="tn-item-title"><span class="tn-agent-status ${statusClass}"></span>${esc(op.name)}</div><div class="tn-item-meta">${schedInfo} · Model: ${esc(op.model)} · Last: ${lastRun}</div><div class="tn-item-meta" style="margin-top:4px;opacity:.7">${esc(op.prompt).slice(0, 150)}${op.prompt.length > 150 ? "…" : ""}</div><div class="tn-item-actions"><button class="tn-item-action" data-toggle="${op.id}" title="Toggle">${op.enabled ? "⏸" : "▶"}</button><button class="tn-item-action" data-edit="${op.id}" title="Edit">✎</button><button class="tn-item-action danger" data-del="${op.id}" title="Delete">✕</button></div>`;
+      div.querySelector("[data-toggle]").addEventListener("click", async () => {
+        await tnPut("/agent-ops/" + op.id, { enabled: op.enabled ? 0 : 1 });
+        loadAgentOps();
+      });
+      div.querySelector("[data-del]").addEventListener("click", async () => {
+        await tnDelete("/agent-ops/" + op.id);
+        loadAgentOps();
+      });
+      div.querySelector("[data-edit]").addEventListener("click", () => {
+        openTnEditModal("agent-op", op);
+      });
+      return div;
+    }
+
+    async function loadAgentOps() {
+      try {
+        const data = await tnFetch("/agent-ops");
+        tnAgentList.innerHTML = "";
+        const items = data.ops || [];
+        items.forEach(op => tnAgentList.appendChild(renderAgentOp(op)));
+        tnAgentEmpty.style.display = items.length ? "none" : "block";
+      } catch(e) { console.warn("loadAgentOps failed", e); }
+    }
+
+    document.getElementById("tnAgentAdd")?.addEventListener("click", async () => {
+      const name = document.getElementById("tnAgentName").value.trim();
+      const prompt = document.getElementById("tnAgentPrompt").value.trim();
+      if (!name || !prompt) return;
+      const model = tnAgentModelSel?.value || "qwen3.7-max";
+      const stype = document.getElementById("tnAgentSchedType").value;
+      const time = document.getElementById("tnAgentTime").value || null;
+      await tnPost("/agent-ops", { name, prompt, model, schedule_type: stype, schedule_time: time });
+      document.getElementById("tnAgentName").value = "";
+      document.getElementById("tnAgentPrompt").value = "";
+      loadAgentOps();
+    });
+
+    // ---------- TrackNote: Edit Modal ----------
+    let tnEditOverlay = null;
+
+    function ensureTnEditModal() {
+      if (tnEditOverlay) return tnEditOverlay;
+      tnEditOverlay = document.createElement("div");
+      tnEditOverlay.className = "tn-edit-overlay";
+      tnEditOverlay.innerHTML = `<div class="tn-edit-modal"><div class="tn-edit-header"><span class="tn-edit-title">Edit</span><button class="tn-edit-close" title="Close">✕</button></div><div class="tn-edit-body"></div><div class="tn-edit-footer"><button class="tn-edit-cancel">Cancel</button><button class="tn-edit-save">Save</button></div></div>`;
+      document.body.appendChild(tnEditOverlay);
+      tnEditOverlay.querySelector(".tn-edit-close").addEventListener("click", closeTnEditModal);
+      tnEditOverlay.querySelector(".tn-edit-cancel").addEventListener("click", closeTnEditModal);
+      tnEditOverlay.addEventListener("click", (e) => { if (e.target === tnEditOverlay) closeTnEditModal(); });
+      return tnEditOverlay;
+    }
+
+    function closeTnEditModal() {
+      if (tnEditOverlay) tnEditOverlay.style.display = "none";
+    }
+
+    function openTnEditModal(type, item) {
+      const overlay = ensureTnEditModal();
+      const body = overlay.querySelector(".tn-edit-body");
+      const titleEl = overlay.querySelector(".tn-edit-title");
+      const saveBtn = overlay.querySelector(".tn-edit-save");
+      body.innerHTML = "";
+      overlay.style.display = "flex";
+
+      if (type === "schedule") {
+        titleEl.textContent = "Edit Schedule";
+        const time12 = item.time ? (() => { const [h,m] = item.time.split(":"); const hr = parseInt(h,10); const ampm = hr >= 12 ? "PM" : "AM"; const h12 = hr % 12 || 12; return `${h12}:${m} ${ampm}`; })() : "";
+        body.innerHTML = `<label>Title<input type="text" id="tnEditTitle" value="${esc(item.title)}" /></label><label>Type<select id="tnEditType"><option value="daily"${item.schedule_type==="daily"?" selected":""}>Daily</option><option value="weekly"${item.schedule_type==="weekly"?" selected":""}>Weekly</option><option value="occasional"${item.schedule_type==="occasional"?" selected":""}>Occasional</option></select></label><label>Time<input type="time" id="tnEditTime" value="${item.time||""}" /><span class="tn-time-preview">${time12}</span></label><label>Description<textarea id="tnEditDesc" rows="2">${esc(item.description||"")}</textarea></label>`;
+        saveBtn.onclick = async () => {
+          await tnPut("/schedules/" + item.id, {
+            title: document.getElementById("tnEditTitle").value.trim(),
+            schedule_type: document.getElementById("tnEditType").value,
+            time: document.getElementById("tnEditTime").value || null,
+            description: document.getElementById("tnEditDesc").value.trim(),
+          });
+          closeTnEditModal(); loadSchedules();
+        };
+      } else if (type === "note") {
+        titleEl.textContent = "Edit Note / Todo";
+        const isChecklist = item.items && item.items.length > 0;
+        let itemsHtml = "";
+        if (isChecklist) {
+          itemsHtml = `<label>Checklist Items (one per line)<textarea id="tnEditItems" rows="5">${(item.items||[]).map(i=>`${i.done?"[x] ":""}${i.text}`).join("\n")}</textarea></label>`;
+        }
+        body.innerHTML = `<label>Title<input type="text" id="tnEditTitle" value="${esc(item.title||"")}" /></label><label>Content<textarea id="tnEditContent" rows="3">${esc(item.content||"")}</textarea></label>${itemsHtml}<label>Due Date<input type="date" id="tnEditDue" value="${(item.due_date||"").slice(0,10)}" /></label>`;
+        saveBtn.onclick = async () => {
+          const updates = {
+            title: document.getElementById("tnEditTitle").value.trim(),
+            content: document.getElementById("tnEditContent").value.trim(),
+            due_date: document.getElementById("tnEditDue").value || null,
+          };
+          if (isChecklist) {
+            const lines = document.getElementById("tnEditItems").value.split("\n").filter(l => l.trim());
+            updates.items = lines.map(l => {
+              const done = /^\[x\]\s*/i.test(l);
+              return { text: l.replace(/^\[x\]\s*/i, "").trim(), done };
+            });
+          }
+          await tnPut("/notes/" + item.id, updates);
+          closeTnEditModal(); loadNotes();
+        };
+      } else if (type === "agent-op") {
+        titleEl.textContent = "Edit Agent Op";
+        const modelOpts = (typeof window.SABLE_MODELS !== "undefined" ? window.SABLE_MODELS : [
+          { id: "qwen3.7-max", label: "Qwen3.7 Max" },
+          { id: "qwen3.8-max", label: "Qwen3.8 Max" },
+          { id: "deepseek-expert", label: "DeepSeek Expert" },
+        ]).map(m => `<option value="${m.id}"${m.id===item.model?" selected":""}>${m.label||m.id}</option>`).join("");
+        const time12 = item.schedule_time ? (() => { const [h,m] = item.schedule_time.split(":"); const hr = parseInt(h,10); const ampm = hr >= 12 ? "PM" : "AM"; const h12 = hr % 12 || 12; return `${h12}:${m} ${ampm}`; })() : "";
+        body.innerHTML = `<label>Name<input type="text" id="tnEditName" value="${esc(item.name)}" /></label><label>Prompt<textarea id="tnEditPrompt" rows="4">${esc(item.prompt)}</textarea></label><label>Model<select id="tnEditModel">${modelOpts}</select></label><label>Schedule Type<select id="tnEditSchedType"><option value="daily"${item.schedule_type==="daily"?" selected":""}>Daily</option><option value="weekly"${item.schedule_type==="weekly"?" selected":""}>Weekly</option><option value="cron"${item.schedule_type==="cron"?" selected":""}>Cron</option></select></label><label>Time<input type="time" id="tnEditTime" value="${item.schedule_time||""}" /><span class="tn-time-preview">${time12}</span></label><label>Cron Expression<input type="text" id="tnEditCron" value="${esc(item.cron_expression||"")}" placeholder="e.g. 0 */6 * * *" /></label>`;
+        saveBtn.onclick = async () => {
+          await tnPut("/agent-ops/" + item.id, {
+            name: document.getElementById("tnEditName").value.trim(),
+            prompt: document.getElementById("tnEditPrompt").value.trim(),
+            model: document.getElementById("tnEditModel").value,
+            schedule_type: document.getElementById("tnEditSchedType").value,
+            schedule_time: document.getElementById("tnEditTime").value || null,
+            cron_expression: document.getElementById("tnEditCron").value.trim() || null,
+          });
+          closeTnEditModal(); loadAgentOps();
+        };
+      }
+    }
+
+    // Load all panels when TrackNote opens
+    const _origTnToggle = trackNoteBtn ? trackNoteBtn.onclick : null;
+    if (trackNoteBtn) {
+      trackNoteBtn.addEventListener("click", () => {
+        if (document.body.classList.contains("tracknote-open")) {
+          loadSchedules(); loadNotes(); loadAgentOps();
+        }
+      });
+    }
+
+
 
     function diffLineEl(cls, text) {
       const d = document.createElement("div");
@@ -1462,7 +1969,42 @@
             setTimeout(() => { copyBtn.innerHTML = '<i data-lucide="copy"></i>'; activateLucideIcons(copyBtn); }, 1500);
           });
         });
+
+        // TTS read-aloud button for historical messages (streaming)
+        const ttsBtn = document.createElement("button");
+        ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
+        ttsBtn.title = "Read aloud";
+        let ttsPlayer = null;
+        ttsBtn.addEventListener("click", async () => {
+          if (ttsPlayer && !ttsPlayer.stopped) {
+            ttsPlayer.stop();
+            ttsPlayer = null;
+            ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
+            ttsBtn.title = "Read aloud";
+            activateLucideIcons(ttsBtn);
+            return;
+          }
+          const md = msgDiv.querySelector(".md-content");
+          const text = md ? md.innerText : "";
+          if (!text) return;
+          ttsPlayer = new TTSStreamPlayer((state) => {
+            if (state === "loading") {
+              ttsBtn.innerHTML = '<i data-lucide="loader-circle"></i>';
+            } else if (state === "playing") {
+              ttsBtn.innerHTML = '<i data-lucide="square"></i>';
+              ttsBtn.title = "Stop";
+            } else {
+              ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
+              ttsBtn.title = "Read aloud";
+              ttsPlayer = null;
+            }
+            activateLucideIcons(ttsBtn);
+          });
+          ttsPlayer.play(text);
+        });
+
         toolbar.appendChild(copyBtn);
+        toolbar.appendChild(ttsBtn);
         msgDiv.appendChild(toolbar);
         activateLucideIcons(toolbar);
       }
@@ -1691,7 +2233,11 @@
 
         scrollBottom();
         _ansTimer = _ansQueue ? setTimeout(_ansTick, TW_MS) : null;
-        activateLucideIcons(answerContent);
+        // Only activate lucide icons when chunk contains a data-lucide placeholder
+        // or at end-of-stream — avoids calling createIcons() every 12ms tick
+        if (chunk.includes("data-lucide") || !_ansTimer) {
+          activateLucideIcons(answerContent);
+        }
         if (!_ansTimer) { renderMermaidDiagrams(answerContent); renderMathJax(answerContent); }
       }
       function _enqueueAnswer(text) {
@@ -1890,13 +2436,9 @@
             document.body.classList.add("diff-open");
             if (typeof AgentPanel !== "undefined") AgentPanel.close();
             // Switch sidebar tab to Diff mode
-            document.querySelectorAll(".fs-sidebar-tab").forEach((t) => t.classList.remove("active"));
-            const diffTab = document.querySelector('.fs-sidebar-tab[data-panel="diff"]');
-            if (diffTab) diffTab.classList.add("active");
-            const filesPanel = document.getElementById("sidebarFilesPanel");
-            const diffPanel = document.getElementById("sidebarDiffPanel");
-            if (filesPanel) filesPanel.classList.remove("active");
-            if (diffPanel) diffPanel.classList.add("active");
+            if (typeof window.setFsSidebarMode === "function") {
+              window.setFsSidebarMode("diff");
+            }
           });
             fileEditSummary.card = card;
           }
@@ -2042,8 +2584,42 @@
               sendMessage();
             });
 
+            // TTS read-aloud button (streaming)
+            const ttsBtn = document.createElement("button");
+            ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
+            ttsBtn.title = "Read aloud";
+            let ttsPlayer = null;
+            ttsBtn.addEventListener("click", async () => {
+              if (ttsPlayer && !ttsPlayer.stopped) {
+                ttsPlayer.stop();
+                ttsPlayer = null;
+                ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
+                ttsBtn.title = "Read aloud";
+                activateLucideIcons(ttsBtn);
+                return;
+              }
+              const md = botEl.querySelector(".md-content");
+              const text = md ? md.innerText : "";
+              if (!text) return;
+              ttsPlayer = new TTSStreamPlayer((state) => {
+                if (state === "loading") {
+                  ttsBtn.innerHTML = '<i data-lucide="loader-circle"></i>';
+                } else if (state === "playing") {
+                  ttsBtn.innerHTML = '<i data-lucide="square"></i>';
+                  ttsBtn.title = "Stop";
+                } else {
+                  ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
+                  ttsBtn.title = "Read aloud";
+                  ttsPlayer = null;
+                }
+                activateLucideIcons(ttsBtn);
+              });
+              ttsPlayer.play(text);
+            });
+
             toolbar.appendChild(copyBtn);
             toolbar.appendChild(regenBtn);
+            toolbar.appendChild(ttsBtn);
             botEl.appendChild(toolbar);
             activateLucideIcons(toolbar);
           });
@@ -3510,6 +4086,39 @@
     settingsClose.addEventListener("click", closeSettings);
     settingsOverlay.addEventListener("click", (e) => {
       if (e.target === settingsOverlay) closeSettings();
+    });
+
+    // Ctrl+, toggles settings (VS Code parity)
+    document.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === ",") {
+        e.preventDefault();
+        settingsOverlay.classList.contains("hidden") ? openSettings() : closeSettings();
+      }
+    });
+
+    // Ctrl+N — new chat
+    document.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "n") {
+        e.preventDefault();
+        createChat();
+      }
+    });
+
+    // Ctrl+K, O — open folder as project (chord shortcut)
+    let ctrlKPending = false;
+    document.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        ctrlKPending = true;
+        e.preventDefault();
+        setTimeout(() => { ctrlKPending = false; }, 1500);
+        return;
+      }
+      if (ctrlKPending && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        ctrlKPending = false;
+        const btn = document.getElementById("sbOpenFolderBtn") || document.getElementById("fsOpenFolderBtn");
+        if (btn && !btn.disabled) btn.click();
+      }
     });
 
     // Tab switching (lazy-load per tab)
