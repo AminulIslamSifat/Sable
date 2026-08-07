@@ -20,7 +20,7 @@ PERSISTENT_ROOT = (
 # Override with SABLE_HOST / SABLE_PORT environment variables when needed.
 # --------------------------------------------------------------------------
 HOST = os.getenv("SABLE_HOST", "0.0.0.0")
-PORT = int(os.getenv("SABLE_PORT", "61770"))
+PORT = int(os.getenv("SABLE_PORT", "61771"))
 
 # --------------------------------------------------------------------------
 # Runtime data paths — single source of truth used by server.py and any
