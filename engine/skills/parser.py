@@ -147,13 +147,23 @@ class SkillParser:
                 self.buf = self.buf[end:]
                 self._pending_tag = None
                 self._last_progress = (0, 0)
+                # SVG tags: content was already streamed progressively as text;
+                # emit tag_found with streamed=True so server saves but doesn't re-stream
+                is_svg = name in ("create_svg", "save_svg")
+                if is_svg:
+                    streamed_key = f"_svg_streamed_{name}"
+                    if hasattr(self, streamed_key):
+                        delattr(self, streamed_key)
                 # Yield structured tag event for engine dispatch
-                yield {
+                evt: dict[str, Any] = {
                     "type": "tag_found",
                     "name": name,
                     "attrs": parse_attrs(attrs_raw),
                     "content": content,
                 }
+                if is_svg:
+                    evt["streamed"] = True
+                yield evt
                 continue
 
             hold = self._hold_start()
@@ -171,8 +181,17 @@ class SkillParser:
             pending_match = self.open_re.search(self.buf)
             if pending_match:
                 tag_name = pending_match.group(1).lower()
-                # SVG tags stream directly to chat — no activity card
+                # SVG tags: stream body content progressively as text
                 if tag_name in ("create_svg", "save_svg"):
+                    partial_body = self.buf[pending_match.end():]
+                    if partial_body:
+                        # Check if this chunk has already been streamed
+                        streamed_key = f"_svg_streamed_{tag_name}"
+                        prev = getattr(self, streamed_key, 0)
+                        new_content = partial_body[prev:]
+                        if new_content:
+                            setattr(self, streamed_key, len(partial_body))
+                            yield {"type": "text", "text": new_content}
                     break
                 if tag_name != self._pending_tag:
                     self._pending_tag = tag_name

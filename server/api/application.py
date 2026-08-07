@@ -41,6 +41,7 @@ from .routes.email import router as email_router
 from .routes.filesystem import router as filesystem_router
 from .routes.terminal import router as terminal_router
 from .routes.telegram import router as telegram_router
+from .routes.research import router as research_router
 
 def _raise_nofile_limit() -> None:
     """Raise open file limit for agentic workloads (browsers, agents, streams)."""
@@ -161,7 +162,11 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     auth_header = request.headers.get("authorization", "")
     authorized = auth_header.startswith("Bearer ") and auth_header[7:] == AUTH_TOKEN
-    if not authorized and (path == "/api/logs" or path.endswith("/agent-events")):
+    if not authorized and (
+        path == "/api/logs"
+        or path.endswith("/agent-events")
+        or path.startswith("/api/research/events/")
+    ):
         authorized = request.query_params.get("token", "") == AUTH_TOKEN
     if not authorized:
         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
@@ -183,6 +188,7 @@ app.include_router(email_router)
 app.include_router(filesystem_router)
 app.include_router(terminal_router)
 app.include_router(telegram_router)
+app.include_router(research_router)
 
 # Wire agent runtime event callback → SSE push
 from .routes.agents import _async_push_agent_event, push_agent_event
