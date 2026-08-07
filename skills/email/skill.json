@@ -1,0 +1,22 @@
+
+{
+  "name": "Email",
+  "key": "email",
+  "version": "1.0.0",
+  "category": "data",
+  "description": "Send and read emails via IMAP/SMTP with stdlib.",
+  "trigger": "Checking inbox, reading emails, sending emails, searching mailbox.",
+  "not_this_if": "Configuring email credentials -> use Sable settings panel. Scraping websites -> use Browser Control.",
+  "tags": [
+    "execute_command"
+  ],
+  "default": false,
+  "inline": false,
+  "priority": 50,
+  "scope": [
+    "*"
+  ],
+  "config": {},
+  "dependencies": [],
+  "$schema": "skill-v1"
+}

@@ -34,8 +34,28 @@ _LEGACY_KEY_PATH = _SYSTEM_DIR / ".gemini_api_key"
 
 
 
-# Max messages to keep in session history (sliding window)
-_MAX_SESSION_MESSAGES = 60
+# Max chars for session history (sliding window by character count)
+_MAX_SESSION_CHARS = 100_000
+
+
+def _msg_chars(msg: dict[str, Any]) -> int:
+    """Estimate character count of a Gemini-format message."""
+    total = 0
+    for part in msg.get("parts", []):
+        text = part.get("text", "")
+        if text:
+            total += len(text)
+    return total
+
+
+def _trim_history(history: list[dict[str, Any]], prefix_len: int) -> list[dict[str, Any]]:
+    """Trim history to fit within _MAX_SESSION_CHARS, preserving prefix messages."""
+    prefix = history[:prefix_len]
+    msgs = history[prefix_len:]
+    total = sum(_msg_chars(m) for m in msgs)
+    while total > _MAX_SESSION_CHARS and len(msgs) > 1:
+        total -= _msg_chars(msgs.pop(0))
+    return prefix + msgs
 
 # Instruction files to prepend on first message
 _INSTRUCTION_DIR = Path(__file__).resolve().parent.parent.parent / "instruction"
@@ -193,10 +213,10 @@ class GeminiClient:
         """Get existing session history or create a new one (sliding window)."""
         if chat_id and chat_id in self._sessions:
             history = self._sessions[chat_id]
-            if len(history) > _MAX_SESSION_MESSAGES:
-                prefix_len = 2 if history and history[0].get("parts", [{}])[0].get("text", "").startswith("[System Instructions]") else 0
-                keep = history[prefix_len:][_MAX_SESSION_MESSAGES - prefix_len:]
-                self._sessions[chat_id] = history[:prefix_len] + keep
+            prefix_len = 2 if history and history[0].get("parts", [{}])[0].get("text", "").startswith("[System Instructions]") else 0
+            total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
+            if total_chars > _MAX_SESSION_CHARS:
+                self._sessions[chat_id] = _trim_history(history, prefix_len)
             return self._sessions[chat_id]
 
         history: list[dict[str, Any]] = []
@@ -351,9 +371,11 @@ class GeminiClient:
                     if full_answer:
                         model_parts.append({"text": full_answer})
                     history.append({"role": "model", "parts": model_parts})
-                    if chat_id and len(history) > _MAX_SESSION_MESSAGES:
+                    if chat_id:
                         prefix_len = 2 if history and history[0].get("parts", [{}])[0].get("text", "").startswith("[System Instructions]") else 0
-                        self._sessions[chat_id] = history[:prefix_len] + history[prefix_len:][-(_MAX_SESSION_MESSAGES - prefix_len):]
+                        total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
+                        if total_chars > _MAX_SESSION_CHARS:
+                            self._sessions[chat_id] = _trim_history(history, prefix_len)
 
                 yield {"type": "done", "parent_id": None}
                 return  # Success — exit

@@ -8,9 +8,9 @@
 
   <link rel="stylesheet" href="/static/css/variables.css?v=4">
   <link rel="stylesheet" href="/static/css/base.css?v=3">
-  <link rel="stylesheet" href="/static/css/layout.css?v=46">
-  <link rel="stylesheet" href="/static/css/chat.css?v=19">
-  <link rel="stylesheet" href="/static/css/panels.css?v=20">
+  <link rel="stylesheet" href="/static/css/layout.css?v=50">
+  <link rel="stylesheet" href="/static/css/chat.css?v=23">
+  <link rel="stylesheet" href="/static/css/panels.css?v=29">
   <link rel="stylesheet" href="/static/css/components.css?v=12">
   <link rel="stylesheet" href="/static/css/responsive.css?v=3">
   <link rel="stylesheet" href="/static/css/agents.css?v=31">
@@ -99,8 +99,8 @@
       <div id="chats"></div>
     </div>
     <div class="sidebar-section sidebar-bottom">
-      <button id="scheduleBtn" class="sidebar-footer-btn" title="Schedule">
-        <span class="icon-emoji">🗓</span><i data-lucide="calendar-clock" class="icon-lucide"></i> Schedule
+      <button id="trackNoteBtn" class="sidebar-footer-btn" title="TrackNote">
+        <span class="icon-emoji">📋</span><i data-lucide="clipboard-list" class="icon-lucide"></i> TrackNote
       </button>
       <button id="libraryBtn" class="sidebar-footer-btn" title="Library">
         <span class="icon-emoji">📚</span><i data-lucide="book-open" class="icon-lucide"></i> Library
@@ -278,18 +278,65 @@
     };
   </script>
 
+  <!-- TrackNote right sidebar -->
+  <aside id="trackNoteSidebar" class="diff-sidebar tracknote-sidebar" aria-label="TrackNote">
+    <div class="diff-sidebar-header">
+      <div class="sidebar-mode-pill tracknote-mode-pill" id="trackNotePill" style="--n:3;--i:0;">
+        <button class="active" data-mode="schedule">Schedule</button>
+        <button data-mode="todo">Todo</button>
+        <button data-mode="agent-tasks">Agent Ops</button>
+      </div>
+      <button id="trackNoteClose" class="new-chat-icon sidebar-close-icon" title="Close"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
+    </div>
+    <div class="tracknote-body">
+      <div id="tnPanelSchedule" class="tracknote-panel active">
+        <div class="tn-add-row">
+          <input id="tnSchedTitle" type="text" placeholder="What's scheduled?" />
+          <select id="tnSchedType"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="occasional">Occasional</option></select>
+          <input id="tnSchedTime" type="time" />
+          <button id="tnSchedAdd" class="tn-add-btn" title="Add schedule">+</button>
+        </div>
+        <div id="tnSchedList" class="tn-list"></div>
+        <div id="tnSchedEmpty" class="tracknote-empty">No schedules yet</div>
+      </div>
+      <div id="tnPanelTodo" class="tracknote-panel">
+        <div class="tn-add-row">
+          <input id="tnNoteTitle" type="text" placeholder="Note or todo..." />
+          <button id="tnNoteAdd" class="tn-add-btn" title="Add note">+</button>
+          <button id="tnTodoAdd" class="tn-add-btn" title="Add todo checklist">☑</button>
+        </div>
+        <div id="tnNoteList" class="tn-list"></div>
+        <div id="tnNoteEmpty" class="tracknote-empty">No notes or todos yet</div>
+      </div>
+      <div id="tnPanelAgentTasks" class="tracknote-panel">
+        <div class="tn-agent-form" id="tnAgentForm">
+          <input id="tnAgentName" type="text" placeholder="Task name" />
+          <textarea id="tnAgentPrompt" placeholder="What should the agent do?" rows="3"></textarea>
+          <div class="tn-agent-row">
+            <select id="tnAgentModel"></select>
+            <select id="tnAgentSchedType"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="cron">Cron</option></select>
+            <input id="tnAgentTime" type="time" />
+          </div>
+          <button id="tnAgentAdd" class="tn-add-btn tn-full-width">Create Agent Op</button>
+        </div>
+        <div id="tnAgentList" class="tn-list"></div>
+        <div id="tnAgentEmpty" class="tracknote-empty">No agent tasks queued</div>
+      </div>
+    </div>
+  </aside>
+
   <aside id="diffSidebar" class="diff-sidebar" aria-label="File sidebar">
     <div class="diff-sidebar-header">
       <div style="display: flex; align-items: center; gap: 6px;">
-        <div class="fs-sidebar-tabs">
-          <button class="fs-sidebar-tab active" data-panel="files">Files</button>
-          <button class="fs-sidebar-tab" data-panel="diff">Diff</button>
+        <div class="sidebar-mode-pill fs-mode-pill" id="fsModePill" style="--n:2;--i:0;">
+          <button class="active" data-panel="files">Files</button>
+          <button data-panel="diff">Diff</button>
         </div>
-        <button id="sbOpenFolderBtn" class="icon-btn" title="Open Folder"><span class="icon-emoji">📂</span><i data-lucide="folder-open" class="icon-lucide"></i> <span style="font-size:11px;">Open</span></button>
+        <button id="sbOpenFolderBtn" class="new-chat-icon sidebar-action-icon" title="Open Folder"><span class="icon-emoji">📂</span><i data-lucide="folder-open" class="icon-lucide"></i></button>
       </div>
       <div style="display: flex; align-items: center; gap: 6px;">
-        <button id="diffClear" class="icon-btn" title="Clear"><span class="icon-emoji">🗑</span><i data-lucide="trash-2" class="icon-lucide"></i></button>
-        <button id="diffClose" class="icon-btn" title="Close"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
+        <button id="diffClear" class="new-chat-icon sidebar-action-icon" title="Clear"><span class="icon-emoji">🗑</span><i data-lucide="trash-2" class="icon-lucide"></i></button>
+        <button id="diffClose" class="new-chat-icon sidebar-close-icon" title="Close"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
       </div>
     </div>
     <div id="sidebarFilesPanel" class="fs-sidebar-panel active">
@@ -317,6 +364,7 @@
         <button class="settings-tab" data-tab="agents">Agents</button>
         <button class="settings-tab" data-tab="providers">Providers</button>
         <button class="settings-tab" data-tab="mcp">MCP</button>
+        <button class="settings-tab" data-tab="tts">TTS</button>
       </div>
       <div class="settings-body">
         <div id="tab-logs" class="settings-tab-content active">
@@ -485,6 +533,15 @@
             </div>
             <p id="dataExportStatus" class="muted" style="font-size:11px;margin-top:6px;min-height:14px;">Exports system/, output/, instruction/, Brain/, .sable_backups/ to ~/.sable/backup/</p>
           </div>
+          <!-- Telegram Toggle -->
+          <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <label for="telegramToggle" style="font-size:13px;color:var(--text-dim);font-weight:600;"><span class="icon-emoji">✈️</span><i data-lucide="send" class="icon-lucide"></i> Telegram Mini Client</label>
+              <input type="checkbox" id="telegramToggle" style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;">
+            </div>
+            <p class="muted" style="font-size:11px;margin-top:4px;">Enable a read-only Telegram chat browser in Library. Requires Telethon + API credentials.</p>
+          </div>
+
           <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;flex-direction:column;align-items:center;gap:10px;">
             <button id="stopServiceBtn" style="background:transparent;color:var(--danger);border:1.5px solid var(--danger);border-radius:8px;padding:9px 28px;font-size:12px;font-weight:600;cursor:pointer;">⏻ Stop Service</button>
             <button id="restartServiceBtn" style="background:transparent;color:var(--danger);border:1.5px solid var(--danger);border-radius:8px;padding:9px 28px;font-size:12px;font-weight:600;cursor:pointer;">↻ Restart Service</button>
@@ -690,6 +747,49 @@
           <p class="muted mem-desc">Registered agentic skills. Click a card for details.</p>
           <div id="skillsGrid" class="skills-grid"></div>
         </div>
+        
+        <div id="tab-tts" class="settings-tab-content">
+          <h3 class="mem-title">🔊 Text-to-Speech</h3>
+          <p class="muted mem-desc">Offline TTS powered by Kokoro. Download the model files to enable speech synthesis.</p>
+
+          <div id="ttsStatus" class="tts-status">
+            <p class="muted" style="font-size:12px;">Checking model status...</p>
+          </div>
+
+          <div id="ttsProgress" class="tts-progress" hidden>
+            <div class="tts-progress-bar">
+              <div id="ttsProgressFill" class="tts-progress-fill"></div>
+            </div>
+            <p id="ttsProgressText" class="muted" style="font-size:11px;margin-top:6px;"></p>
+          </div>
+
+          <div id="ttsPrefsSection" hidden>
+            <h3 class="mem-title" style="margin-top:20px;">Voice & Speed</h3>
+            <p class="muted mem-desc">Default voice and speed for read-aloud. Saved automatically.</p>
+
+            <div style="display:flex;flex-direction:column;gap:14px;margin-top:10px;">
+              <div>
+                <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Voice</label>
+                <select id="ttsVoiceSelect" class="mem-input" style="width:100%;max-width:280px;">
+                  <option value="">Loading voices...</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Speed: <span id="ttsSpeedLabel">1.0×</span></label>
+                <input type="range" id="ttsSpeedRange" min="0.5" max="2.0" step="0.1" value="1.0" style="width:100%;max-width:280px;accent-color:var(--accent);cursor:pointer;">
+                <div class="muted" style="display:flex;justify-content:space-between;font-size:11px;max-width:280px;margin-top:2px;">
+                  <span>0.5× slow</span><span>1.0×</span><span>2.0× fast</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:8px;margin-top:16px;">
+            <button id="ttsDownloadBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;">⬇ Download Models</button>
+            <button id="ttsDeleteBtn" class="btn-danger" style="font-size:13px;padding:8px 16px;" hidden>🗑 Remove Models</button>
+          </div>
+        </div>
         <div id="tab-agents" class="settings-tab-content">
           <h3 class="mem-title"><span class="icon-emoji">🤖</span><i data-lucide="bot" class="icon-lucide"></i> Agent Roles</h3>
           <p class="muted mem-desc">Define what each agent role does. These are injected into the system prompt when an agent is spawned with that role.</p>
@@ -804,6 +904,7 @@
         <button class="settings-tab" data-tab="lib-gallery">Gallery</button>
         <button class="settings-tab" data-tab="lib-skills">Skills</button>
         <button class="settings-tab" data-tab="lib-email"><span class="icon-emoji">📧</span><i data-lucide="mail" class="icon-lucide"></i> Email</button>
+        <button class="settings-tab" data-tab="lib-telegram" id="libTelegramTab" style="display:none;"><span class="icon-emoji">✈️</span><i data-lucide="send" class="icon-lucide"></i> Telegram</button>
       </div>
       <div class="settings-body library-body" id="libraryBody">
         <div id="tab-lib-agents" class="settings-tab-content active"></div>
@@ -812,6 +913,7 @@
         <div id="tab-lib-gallery" class="settings-tab-content"></div>
         <div id="tab-lib-skills" class="settings-tab-content"></div>
         <div id="tab-lib-email" class="settings-tab-content"></div>
+        <div id="tab-lib-telegram" class="settings-tab-content"></div>
       </div>
     </div>
   </div>
@@ -866,8 +968,9 @@
       },
     };
   </script>
-  <script src="/static/app.js?v=37"></script>
-  <script src="/static/js/agents.js?v=20"></script>
+  <script src="/static/app.js?v=48"></script>
+  <script src="/static/src/research.js?v=9"></script>
+  <script src="/static/js/agents.js?v=22"></script>
   <script src="/static/js/filesystem.js?v=24"></script>
   <script src="/static/js/mode.js?v=18"></script>
   <script src="/static/js/resize-panels.js?v=1"></script>

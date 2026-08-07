@@ -61,7 +61,7 @@ class ValidationMiddleware:
         ctx.skill = skill
 
         # Content-required tags
-        content_required = {"execute_command", "execute_background_command", "create_file", "create_note", "save_svg"}
+        content_required = {"execute_command", "execute_background_command", "create_file", "create_note", "save_svg", "create_svg"}
         if ctx.name in content_required and not ctx.content.strip():
             ctx.error = f"Tag '{ctx.name}' requires non-empty content"
             yield end_event(ctx.tag_id, ctx.name, False, ctx.started, error=ctx.error)
@@ -108,6 +108,7 @@ class ExecutionMiddleware:
                     saw_end = True
                 ctx.emit(event)
                 yield event
+
             if not saw_end:
                 ev = end_event(ctx.tag_id, ctx.name, True, ctx.started)
                 ctx.emit(ev)

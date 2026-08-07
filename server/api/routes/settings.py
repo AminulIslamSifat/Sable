@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from engine.scraper import (
     get_settings as get_scraper_settings,
     list_engines as list_scraper_engines,
@@ -1037,3 +1037,213 @@ async def set_context_pass_settings(request: Request) -> dict[str, Any]:
     _save_context_pass_settings(settings)
     return {"status": "ok", **settings}
 # ── /Context Pass Settings ─────────────────────────────────────────
+
+
+# ── TTS Model Management ────────────────────────────────────────────
+_TTS_DIR = _SYSTEM_DIR / "models" / "tts"
+_TTS_FILES = {
+    "kokoro-v1.0.onnx": {
+        "url": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx",
+        "size": 325525180,
+        "label": "Kokoro v1.0 Model (f32)",
+    },
+    "voices-v1.0.bin": {
+        "url": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin",
+        "size": 28205511,
+        "label": "Voice Embeddings (54 voices)",
+    },
+}
+
+
+def _tts_status() -> dict[str, Any]:
+    files = {}
+    for name, meta in _TTS_FILES.items():
+        path = _TTS_DIR / name
+        if path.exists():
+            actual = path.stat().st_size
+            files[name] = {
+                "label": meta["label"],
+                "installed": actual >= meta["size"] * 0.95,
+                "size": actual,
+                "expected": meta["size"],
+            }
+        else:
+            files[name] = {
+                "label": meta["label"],
+                "installed": False,
+                "size": 0,
+                "expected": meta["size"],
+            }
+    all_installed = all(f["installed"] for f in files.values())
+    return {"installed": all_installed, "dir": str(_TTS_DIR), "files": files}
+
+
+@router.get("/api/settings/tts")
+async def get_tts_status() -> dict[str, Any]:
+    return _tts_status()
+
+
+@router.post("/api/settings/tts/download")
+async def download_tts_models(request: Request) -> StreamingResponse:
+    import urllib.request
+
+    _TTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    async def _stream() -> AsyncGenerator[str, None]:
+        for name, meta in _TTS_FILES.items():
+            path = _TTS_DIR / name
+            if path.exists() and path.stat().st_size >= meta["size"] * 0.95:
+                yield json.dumps({"file": name, "status": "skip", "reason": "already installed"}) + "\n"
+                continue
+
+            yield json.dumps({"file": name, "status": "start", "total": meta["size"]}) + "\n"
+            try:
+                tmp = path.with_suffix(".part")
+                req = urllib.request.Request(meta["url"], headers={"User-Agent": "Sable/1.0"})
+                with urllib.request.urlopen(req, timeout=300) as resp:
+                    downloaded = 0
+                    with open(tmp, "wb") as f:
+                        while True:
+                            if await request.is_disconnected():
+                                tmp.unlink(missing_ok=True)
+                                yield json.dumps({"file": name, "status": "cancelled"}) + "\n"
+                                return
+                            chunk = resp.read(1024 * 256)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            yield json.dumps({"file": name, "status": "progress", "downloaded": downloaded, "total": meta["size"]}) + "\n"
+                            await asyncio.sleep(0)
+                tmp.rename(path)
+                yield json.dumps({"file": name, "status": "done", "size": downloaded}) + "\n"
+            except Exception as e:
+                if tmp.exists():
+                    tmp.unlink()
+                yield json.dumps({"file": name, "status": "error", "error": str(e)}) + "\n"
+
+        yield json.dumps({"status": "complete"}) + "\n"
+
+    return StreamingResponse(_stream(), media_type="application/x-ndjson")
+
+
+@router.delete("/api/settings/tts")
+async def delete_tts_models() -> dict[str, Any]:
+    removed = []
+    for name in _TTS_FILES:
+        path = _TTS_DIR / name
+        if path.exists():
+            path.unlink()
+            removed.append(name)
+    return {"status": "ok", "removed": removed}
+
+# ── TTS Preferences ──────────────────────────────────────────────────
+_TTS_PREFS_PATH = BASE_DIR / "system/tts_prefs.json"
+_TTS_PREFS_DEFAULTS: dict[str, Any] = {
+    "voice": "af_bella",
+    "speed": 1.0,
+}
+
+
+def _load_tts_prefs() -> dict[str, Any]:
+    prefs = dict(_TTS_PREFS_DEFAULTS)
+    if _TTS_PREFS_PATH.exists():
+        try:
+            with open(_TTS_PREFS_PATH, "r", encoding="utf-8") as f:
+                stored = json.load(f)
+            if isinstance(stored, dict):
+                prefs.update(stored)
+        except Exception:
+            pass
+    return prefs
+
+
+def _save_tts_prefs(prefs: dict[str, Any]) -> None:
+    _TTS_PREFS_PATH.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
+
+
+@router.get("/api/settings/tts/prefs")
+async def get_tts_prefs() -> dict[str, Any]:
+    return _load_tts_prefs()
+
+
+@router.post("/api/settings/tts/prefs")
+async def set_tts_prefs(request: Request) -> dict[str, Any]:
+    body = await request.json()
+    prefs = _load_tts_prefs()
+    if "voice" in body:
+        prefs["voice"] = str(body["voice"]).strip()
+    if "speed" in body:
+        try:
+            prefs["speed"] = round(float(body["speed"]), 2)
+        except (ValueError, TypeError):
+            pass
+    _save_tts_prefs(prefs)
+    return {"status": "ok", **prefs}
+# ── /TTS Preferences ─────────────────────────────────────────────────
+
+
+# ── TTS Synthesis ────────────────────────────────────────────────────
+_kokoro_instance = None
+
+
+def _get_kokoro():
+    """Lazy-load Kokoro model (singleton)."""
+    global _kokoro_instance
+    if _kokoro_instance is not None:
+        return _kokoro_instance
+    from kokoro_onnx import Kokoro
+    model_path = _TTS_DIR / "kokoro-v1.0.onnx"
+    voices_path = _TTS_DIR / "voices-v1.0.bin"
+    if not model_path.exists() or not voices_path.exists():
+        raise HTTPException(status_code=400, detail="TTS models not installed")
+    _kokoro_instance = Kokoro(str(model_path), str(voices_path))
+    return _kokoro_instance
+
+
+@router.post("/api/tts/synthesize")
+async def tts_synthesize(request: Request) -> Response:
+    """Synthesize text to speech. Returns WAV audio."""
+    import io
+    import soundfile as sf
+
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    # Fall back to saved prefs if voice/speed not provided
+    prefs = _load_tts_prefs()
+    voice = body.get("voice") or prefs.get("voice", "af_bella")
+    speed = body.get("speed") if body.get("speed") is not None else prefs.get("speed", 1.0)
+
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty text")
+    if len(text) > 5000:
+        raise HTTPException(status_code=400, detail="Text too long (max 5000 chars)")
+
+    try:
+        kokoro = _get_kokoro()
+        samples, sr = kokoro.create(text, voice=voice, speed=speed)
+    except Exception as e:
+        logger.error(f"TTS synthesis failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Synthesis failed: {e}")
+
+    buf = io.BytesIO()
+    sf.write(buf, samples, sr, format="WAV")
+    buf.seek(0)
+    return Response(content=buf.read(), media_type="audio/wav")
+
+
+@router.get("/api/tts/voices")
+async def tts_voices() -> dict[str, Any]:
+    """List available TTS voices."""
+    try:
+        kokoro = _get_kokoro()
+        if hasattr(kokoro, "voices"):
+            voices = sorted(kokoro.voices.keys())
+        elif hasattr(kokoro, "get_voices"):
+            voices = sorted(kokoro.get_voices())
+        else:
+            voices = []
+        return {"voices": voices}
+    except HTTPException:
+        return {"voices": [], "error": "TTS models not installed"}
+# ── /TTS Synthesis ───────────────────────────────────────────────────

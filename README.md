@@ -1,6 +1,7 @@
 
 # Sable
 
+<!-- stress-test-marker: Maria was here 2026-08-07 -->
 Self-hosted agentic development companion combining AI chat, a full web IDE, browser automation, multi-agent orchestration, persistent memory, and a content library into one personal platform. Proxies Qwen and DeepSeek through browser session auth (no API keys required for Qwen), supports Gemini/Groq/Mistral via API keys, and runs entirely on your machine.
 
 ***

@@ -32,6 +32,7 @@ from engine.skills.handlers.grep_search import (
     handle_glob,
     handle_list_dir,
 )
+from engine.skills.handlers.simulacra import handle_run_simulacra
 from engine.mcp.handler import handle_mcp_call
 
 HANDLER_MAP: dict[str, object] = {
@@ -44,6 +45,7 @@ HANDLER_MAP: dict[str, object] = {
     "openweb": handle_openweb,
     "create_note": handle_create_note,
     "save_svg": handle_save_svg,
+    "create_svg": handle_save_svg,
     "view_file": handle_view_file,
     "edit_file": handle_edit_file,
     "create_file": handle_create_file,
@@ -55,6 +57,7 @@ HANDLER_MAP: dict[str, object] = {
     "grep": handle_grep,
     "glob": handle_glob,
     "list_dir": handle_list_dir,
+    "run_simulacra": handle_run_simulacra,
     "mcp_call": handle_mcp_call,
 }
 
@@ -80,5 +83,6 @@ __all__ = [
     "handle_grep",
     "handle_glob",
     "handle_list_dir",
+    "handle_run_simulacra",
     "handle_mcp_call",
 ]

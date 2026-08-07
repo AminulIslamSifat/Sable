@@ -22,6 +22,7 @@ from server.config import (
     AUTH_EXEMPT_PREFIXES, WEB_DIR, UPLOAD_DIR,
     _MEMORY_SEARCH_SETTINGS,
 )
+from engine.config import ASSETS_DIR
 from server.utils import logger
 
 # Import routers
@@ -39,6 +40,9 @@ from .routes.library import router as library_router
 from .routes.email import router as email_router
 from .routes.filesystem import router as filesystem_router
 from .routes.terminal import router as terminal_router
+from .routes.telegram import router as telegram_router
+from .routes.research import router as research_router
+from .routes.tracknote import router as tracknote_router
 
 def _raise_nofile_limit() -> None:
     """Raise open file limit for agentic workloads (browsers, agents, streams)."""
@@ -94,6 +98,13 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
                 _s.set_thresholds(_ms["model_thresholds"])
         except Exception:
             pass
+    # Start agent ops scheduler (event-driven, no polling)
+    try:
+        from server.scheduler import start_scheduler
+        _aio.create_task(start_scheduler())
+    except Exception as exc:
+        logger.warning("Agent ops scheduler failed to start: %s: %s", type(exc).__name__, exc)
+
     await service.warmup()
     try:
         ds_token = await service.refresh_deepseek_token()
@@ -107,6 +118,12 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     except Exception as exc:
         logger.warning("Startup sync_context failed: %s: %s", type(exc).__name__, exc)
     yield
+    # Shutdown agent ops scheduler
+    try:
+        from server.scheduler import cancel_all
+        cancel_all()
+    except Exception:
+        pass
     await service.close()
     from engine.scraper import scraper as scraper_service
     await scraper_service.stop(kill_browser=True)
@@ -114,6 +131,12 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     try:
         from engine.mcp.manager import get_mcp_manager
         await get_mcp_manager().shutdown()
+    except Exception:
+        pass
+    # Disconnect Telegram client cleanly
+    try:
+        from server.api.routes.telegram import disconnect_client
+        await disconnect_client()
     except Exception:
         pass
 
@@ -142,6 +165,9 @@ if WEB_DIR.exists():
 if UPLOAD_DIR.exists():
     app.mount("/system/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
+if ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
+
 # ---------- Auth Middleware ----------
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
@@ -150,7 +176,11 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     auth_header = request.headers.get("authorization", "")
     authorized = auth_header.startswith("Bearer ") and auth_header[7:] == AUTH_TOKEN
-    if not authorized and (path == "/api/logs" or path.endswith("/agent-events")):
+    if not authorized and (
+        path == "/api/logs"
+        or path.endswith("/agent-events")
+        or path.startswith("/api/research/events/")
+    ):
         authorized = request.query_params.get("token", "") == AUTH_TOKEN
     if not authorized:
         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
@@ -171,6 +201,9 @@ app.include_router(library_router)
 app.include_router(email_router)
 app.include_router(filesystem_router)
 app.include_router(terminal_router)
+app.include_router(telegram_router)
+app.include_router(research_router)
+app.include_router(tracknote_router)
 
 # Wire agent runtime event callback → SSE push
 from .routes.agents import _async_push_agent_event, push_agent_event
