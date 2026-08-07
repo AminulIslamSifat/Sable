@@ -28,14 +28,7 @@ echo -e "\n${YELLOW}[+] Installing Playwright Chromium browser...${NC}"
 uv run playwright install chromium
 echo -e "${GREEN}[✓] Success: Playwright Chromium installed${NC}"
 
-# 3. Run browser opener engine
-echo -e "\n${YELLOW}[+] Running the browser opener engine... Log in into Qwen and DeepSeek in the browser.${NC}"
-# Explicit profile 1: create browser-data-acc1 directly, never rely on the
-# (possibly dangling on a fresh clone) system/browser-data symlink.
-uv run python -m engine.browser_opener 1
-echo -e "${GREEN}[✓] Success: Browser opener executed${NC}"
-
-# 3.5. Set up account profile structure and distribute to all slots (under system/)
+# 3. Set up account profile structure (browser login moved to web UI)
 echo -e "\n${YELLOW}[+] Setting up account profiles and distributing...${NC}"
 mkdir -p system
 
@@ -76,14 +69,9 @@ done
 echo -e "${GREEN}[✓] Success: Browser profiles distributed${NC}"
 
 
-# 4. Ask for a password and save it to system/.auth_token
-echo -e "\n${YELLOW}[+] Setting up authentication token...${NC}"
+# 4. Authentication token setup moved to web UI
+echo -e "\n${CYAN}[i] Password & browser login will be handled from the web UI after first start.${NC}"
 mkdir -p system
-
-read -s -p "Please enter the password to save: " password
-echo
-echo "$password" > system/.auth_token
-echo -e "${GREEN}[✓] Password successfully saved to system/.auth_token${NC}"
 
 # 5. Copy example instruction file if it doesn't exist
 if [ -f "instruction/Maria.md.example" ]; then

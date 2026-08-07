@@ -23,9 +23,10 @@
   <link rel="apple-touch-icon" href="/static/assets/icon-192.png">
 </head>
 <body data-mode="agent">
-  <!-- Login gate -->
+  <!-- Login / Setup gate -->
   <div id="loginOverlay" class="login-overlay">
-    <div class="login-card">
+    <!-- Normal login card -->
+    <div id="loginCard" class="login-card">
       <img src="/static/assets/sable_icon.svg" alt="Sable" class="login-logo">
       <h1>Sable</h1>
       <p class="login-sub">Enter your access token to continue</p>
@@ -34,6 +35,35 @@
         <button type="submit" id="loginBtn" class="login-btn">Unlock</button>
       </form>
       <p id="loginError" class="login-error hidden">Invalid token. Try again.</p>
+    </div>
+    <!-- First-run setup wizard -->
+    <div id="setupWizard" class="login-card hidden">
+      <img src="/static/assets/sable_icon.svg" alt="Sable" class="login-logo">
+      <h1>Welcome to Sable</h1>
+      <p class="login-sub">Let's get you set up</p>
+      <!-- Step 1: Set password -->
+      <div id="setupStepPassword">
+        <form id="setupPasswordForm" class="login-form" autocomplete="off">
+          <input type="password" id="setupPassword" class="login-input" placeholder="Choose a password" autofocus>
+          <button type="submit" id="setupPasswordBtn" class="login-btn">Set Password</button>
+        </form>
+        <p id="setupPasswordError" class="login-error hidden"></p>
+      </div>
+      <!-- Step 2: Browser login -->
+      <div id="setupStepBrowser" class="hidden">
+        <p style="font-size:14px;color:var(--text-muted,#aaa);margin-bottom:16px;">
+          A browser window will open for you to log into Qwen. Complete the login there, then close the browser to continue.
+        </p>
+        <button id="setupBrowserBtn" class="login-btn">Open Browser Login</button>
+        <p id="setupBrowserStatus" class="login-error hidden" style="color:var(--accent,#7c5cbf);"></p>
+      </div>
+      <!-- Step 3: Done -->
+      <div id="setupStepDone" class="hidden">
+        <p style="font-size:14px;color:var(--success,#4caf50);margin-bottom:16px;">
+          ✅ Setup complete! You can now log in with your password.
+        </p>
+        <button id="setupDoneBtn" class="login-btn">Go to Login</button>
+      </div>
     </div>
   </div>
 
