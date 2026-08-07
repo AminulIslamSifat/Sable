@@ -55,44 +55,162 @@
       return res;
     };
 
+    /* ---------- Setup wizard elements ---------- */
+    const loginCard       = document.getElementById("loginCard");
+    const setupWizard     = document.getElementById("setupWizard");
+    const setupStepPassword = document.getElementById("setupStepPassword");
+    const setupStepBrowser  = document.getElementById("setupStepBrowser");
+    const setupStepDone     = document.getElementById("setupStepDone");
+    const setupPasswordForm = document.getElementById("setupPasswordForm");
+    const setupPasswordIn   = document.getElementById("setupPassword");
+    const setupPasswordBtn  = document.getElementById("setupPasswordBtn");
+    const setupPasswordErr  = document.getElementById("setupPasswordError");
+    const setupBrowserBtn   = document.getElementById("setupBrowserBtn");
+    const setupBrowserStatus = document.getElementById("setupBrowserStatus");
+    const setupDoneBtn      = document.getElementById("setupDoneBtn");
+
+    function showSetupWizard() {
+      loginCard.classList.add("hidden");
+      setupWizard.classList.remove("hidden");
+      setupStepPassword.classList.remove("hidden");
+      setupStepBrowser.classList.add("hidden");
+      setupStepDone.classList.add("hidden");
+      setupPasswordIn.focus();
+    }
+
+    function showLoginCard() {
+      setupWizard.classList.add("hidden");
+      loginCard.classList.remove("hidden");
+      loginTokenIn.focus();
+    }
+
     function ensureAuth() {
       if (getToken()) {
         loginOverlay.classList.add("hidden");
         return Promise.resolve();
       }
       loginOverlay.classList.remove("hidden");
-      return new Promise((resolve) => {
-        // { once: true } prevents stacking a new listener on every ensureAuth() call
-        loginForm.addEventListener("submit", async (e) => {
-          e.preventDefault();
-          const token = loginTokenIn.value.trim();
-          if (!token) return;
-          loginBtn.disabled = true;
-          loginError.classList.add("hidden");
-          try {
-            const res = await _origFetch("/api/login", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ token }),
-            });
-            if (res.ok) {
-              setToken(token);
-              loginOverlay.classList.add("hidden");
-              resolve();
-            } else {
-              loginError.textContent = "Invalid token. Try again.";
-              loginError.classList.remove("hidden");
-              loginTokenIn.value = "";
-              loginTokenIn.focus();
+
+      // Check if first-run setup is needed
+      return (async () => {
+        try {
+          const statusRes = await _origFetch("/api/setup/status");
+          if (statusRes.ok) {
+            const status = await statusRes.json();
+            if (status.needs_password) {
+              // First run — show setup wizard
+              showSetupWizard();
+              return new Promise((resolve) => {
+                // Step 1: Set password
+                setupPasswordForm.addEventListener("submit", async (e) => {
+                  e.preventDefault();
+                  const pw = setupPasswordIn.value.trim();
+                  if (!pw) return;
+                  setupPasswordBtn.disabled = true;
+                  setupPasswordErr.classList.add("hidden");
+                  try {
+                    const res = await _origFetch("/api/setup/password", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ password: pw }),
+                    });
+                    if (res.ok) {
+                      setToken(pw);
+                      // Move to browser login step
+                      setupStepPassword.classList.add("hidden");
+                      setupStepBrowser.classList.remove("hidden");
+                    } else {
+                      const data = await res.json().catch(() => ({}));
+                      setupPasswordErr.textContent = data.detail || "Failed to set password.";
+                      setupPasswordErr.classList.remove("hidden");
+                    }
+                  } catch {
+                    setupPasswordErr.textContent = "Connection error.";
+                    setupPasswordErr.classList.remove("hidden");
+                  } finally {
+                    setupPasswordBtn.disabled = false;
+                  }
+                }, { once: true });
+
+                // Step 2: Browser login
+                setupBrowserBtn.addEventListener("click", async () => {
+                  setupBrowserBtn.disabled = true;
+                  setupBrowserStatus.textContent = "Opening browser...";
+                  setupBrowserStatus.classList.remove("hidden");
+                  try {
+                    const res = await _origFetch("/api/setup/browser-login", {
+                      method: "POST",
+                      headers: { Authorization: "Bearer " + getToken() },
+                    });
+                    if (res.ok) {
+                      setupBrowserStatus.textContent = "Browser opened! Complete login there, then close it.";
+                      // Move to done step after a brief delay
+                      setTimeout(() => {
+                        setupStepBrowser.classList.add("hidden");
+                        setupStepDone.classList.remove("hidden");
+                      }, 3000);
+                    } else {
+                      setupBrowserStatus.textContent = "Failed to open browser. You can do this later from Settings.";
+                      setupStepBrowser.classList.add("hidden");
+                      setupStepDone.classList.remove("hidden");
+                    }
+                  } catch {
+                    setupBrowserStatus.textContent = "Connection error. You can set up browser login later.";
+                    setupStepBrowser.classList.add("hidden");
+                    setupStepDone.classList.remove("hidden");
+                  } finally {
+                    setupBrowserBtn.disabled = false;
+                  }
+                }, { once: true });
+
+                // Step 3: Done → go to normal login
+                setupDoneBtn.addEventListener("click", () => {
+                  showLoginCard();
+                  // Auto-fill and submit since we already have the token
+                  loginTokenIn.value = getToken();
+                  loginForm.dispatchEvent(new Event("submit"));
+                  resolve();
+                }, { once: true });
+              });
             }
-          } catch (err) {
-            loginError.textContent = "Connection error. Try again.";
-            loginError.classList.remove("hidden");
-          } finally {
-            loginBtn.disabled = false;
           }
-        }, { once: true });
-      });
+        } catch {
+          // Setup status check failed — fall through to normal login
+        }
+
+        // Normal login flow
+        return new Promise((resolve) => {
+          loginForm.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const token = loginTokenIn.value.trim();
+            if (!token) return;
+            loginBtn.disabled = true;
+            loginError.classList.add("hidden");
+            try {
+              const res = await _origFetch("/api/login", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ token }),
+              });
+              if (res.ok) {
+                setToken(token);
+                loginOverlay.classList.add("hidden");
+                resolve();
+              } else {
+                loginError.textContent = "Invalid token. Try again.";
+                loginError.classList.remove("hidden");
+                loginTokenIn.value = "";
+                loginTokenIn.focus();
+              }
+            } catch (err) {
+              loginError.textContent = "Connection error. Try again.";
+              loginError.classList.remove("hidden");
+            } finally {
+              loginBtn.disabled = false;
+            }
+          }, { once: true });
+        });
+      })();
     }
 
     const ACTIVE_CHAT_KEY = "sable_active_chat";
