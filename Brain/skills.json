@@ -90,6 +90,48 @@
       "trigger": "When user mentions setting up CI/CD, Buildkite, pipelines, or automated builds for the 'mk' project or similar environments using Buildkite",
       "prompt": "When configuring Buildkite CI:\n1. Identify the project requirements (build steps, test commands, deployment targets)\n2. Create Buildkite pipeline configuration with appropriate steps and agent targeting\n3. Configure hooks if needed (pre-command, post-command, pre-checkout, etc.)\n4. Ensure environment variables and secrets are handled via Buildkite's secrets management\n5. Verify pipeline structure matches Buildkite's YAML schema (different from GitHub Actions)\n6. Set up appropriate branch triggers and concurrency controls\n7. Document pipeline steps for the team",
       "created": "2026-08-07"
+    },
+    {
+      "name": "generate_creative_insults",
+      "description": "Generates a list of darkly humorous, absurd, and escalating insults tailored to the user's preferences, incorporating technical, personal, and surreal elements.",
+      "trigger": "When user requests creative insults, roasts, or escalation of existing insults (e.g., 'gloves off', 'way too nice', 'complete the list').",
+      "prompt": "Generate a numbered list of 10 creative insults for the user, blending dark humor, technical references, and absurdity. Start with bodily harm or sexual humiliation, escalate to existential or technical suffering, and maintain a surreal tone. Repeat or expand upon user-requested themes if provided. Use the following structure:\n\n1. [Bodily harm/sexual humiliation]\n2. [Familial regret/existential dread]\n3. [Technical failure/system punishment]\n4. [Absurdly specific punishment]\n5. [Personal humiliation]\n6. [Escalated bodily harm]\n7. [Technical or coding-related suffering]\n8. [Existential or surreal punishment]\n9. [Humiliation in social or professional contexts]\n10. [Final, most severe punishment, often combining themes].\n\nIf user requests escalation, repeat or expand upon previous insults with increased severity or specificity.",
+      "created": "2026-08-07"
+    },
+    {
+      "name": "tts_stress_test_generator",
+      "description": "Generates syntactically complex, edge-case, or profane text for stress-testing TTS systems. Prioritizes phonetic diversity, emotional intonation, and system robustness. Always confirms with user that output is for testing only.",
+      "trigger": [
+        "User requests to 'test TTS with edge cases'",
+        "User asks for 'stress-test input for TTS'",
+        "User mentions 'TTS pronunciation test' with extreme examples",
+        "User says 'go on a bit of edge' in TTS context"
+      ],
+      "prompt": "1. **Generate Test Input**: Create a 5–10 line passage with:\n   - Phonetic edge cases (e.g., 'rusted chainsaw dipped in battery acid')\n   - Emotional range (anger, sarcasm, despair)\n   - Syntactic complexity (compound metaphors, nested clauses)\n   - Slang/profanity if user’s prior input suggests it’s acceptable\n   - Absurdist or dark humor if aligned with user’s style\n2. **Confirm Intent**: Preface with: \"Here’s a stress-test passage for your TTS. This is designed to break things—let me know if you’d like it toned down or focused on specific phonemes.\"\n3. **Post-Output**: Ask: \"How did the system handle [specific phonetic/syntactic elements]? Want to iterate on any part?\"\n4. **Safety**: If user hasn’t previously used profanity, ask: \"Should I avoid explicit content, or is this purely technical testing?\"\n\n**Example Output Structure**:\n```\n[Phonetic stress test]\nA rusted chainsaw *dipped* in battery acid (test /dɪpt/ vs. /dɪp/)...\n[Emotional range]\nMay your *grandchildren* feel it—(test multigenerational intonation)\n[Syntactic complexity]\nChoke on the memory of *wasted years* while your ex—(test clause nesting)\n```\n\n**Avoid**: Actual insults; frame everything as a *technical* test of the TTS’s limits.",
+      "created": "2026-08-07"
+    },
+    {
+      "name": "ExtremeTTSValidator",
+      "description": "Automates stress-testing of TTS systems using edge-case inputs (profanity, complex syntax, emotional extremes) to identify rendering flaws, API limitations, or WAF triggers. Generates test phrases, logs failures, and suggests debugging steps.",
+      "trigger": [
+        "When the user requests TTS testing with 'edge cases', 'stress test', or similar phrases.",
+        "When TTS output fails with HTTP 200 (zero content) or token-related errors.",
+        "When the user pastes/vocalizes provocative text samples (heuristic: >3 profanities or violent metaphors in a single input)."
+      ],
+      "prompt": "1. **Generate Test Phrases**: Create 3-5 extreme text samples targeting:\n   - Phonetic complexity (e.g., alliteration, rare phonemes).\n   - Emotional range (e.g., rage, despair, euphoria).\n   - Syntactic stress (e.g., nested clauses, interrupted phrases).\n   - Content filters (e.g., profanity, taboo topics).\n\n2. **Execute Tests**:\n   - Pipe each phrase to the TTS system in the current project directory.\n   - Log raw input, output audio (if any), and HTTP/API responses.\n\n3. **Analyze Failures**:\n   - For HTTP 200 (zero content): Check WAF tokens, session state, and payload length.\n   - For audio artifacts: Spectrogram analysis of glitches (e.g., clipping, tone shifts).\n   - For content blocking: Test phrase fragments to isolate triggers.\n\n4. **Report**:\n   - Summarize pass/fail rates by category (phonetic, emotional, etc.).\n   - Flag recurring errors (e.g., 'WAF token stale in 6/10 tests').\n   - Suggest mitigations (e.g., token refresh, input sanitization).\n\n*Example Output*:\n```\nTest 1/5 [PASS]: 'The sibilant serpent slithers silently.' (Phonetic: 92% clarity)\nTest 3/5 [FAIL]: HTTP 200 (zero content). WAF token expired. Renewed automatically.\nSummary: 60% pass rate. Critical issue: Token management.\n```\n\n*Dependencies*: Requires `ffmpeg` (for audio analysis), `jq` (for API response parsing), and write access to the project directory for logs.",
+      "created": "2026-08-07"
+    },
+    {
+      "name": "debug_Sable_TTS",
+      "description": "Diagnoses and fixes TTS playback issues in the Sable project, including chunking failures, markdown formatting problems, and silent errors. Automates common debugging steps and suggests code fixes.",
+      "trigger": [
+        "When TTS playback stops prematurely",
+        "When TTS skips sentences or produces garbled audio",
+        "When testing TTS with complex inputs (markdown, profanity, long text)",
+        "When user mentions 'TTS not working' or similar"
+      ],
+      "prompt": "1. **Check Input Source**: Verify if the issue occurs with both markdown and plain text. If markdown-specific, proceed to markdown handling checks.\n\n2. **Inspect Chunking**: Run `console.log(TTSStreamPlayer.splitSentences(inputText))` to see how text is being split. Look for:\n   - Oversized chunks (>5000 chars)\n   - Chunks containing markdown artifacts (***, #, `code`)\n   - Unnatural splits mid-sentence\n\n3. **Monitor Network/Errors**:\n   - Open browser dev tools → Network tab\n   - Filter for TTS chunk requests (likely `/api/tts`)\n   - Check for failed requests (HTTP 4xx/5xx)\n   - Look for swallowed errors in console (search for 'TTS chunk failed')\n\n4. **Test Edge Cases**:\n   - Long paragraphs without punctuation\n   - Mixed markdown + plain text\n   - Profanity/technical jargon hybrids\n   - Unspeakable symbols (emoji, special chars)\n\n5. **Apply Fixes** (if issues found):\n   - **Markdown artifacts**: Ensure `stripMarkdown()` is called before splitting. Key patterns to remove:\n     ```js\n     .replace(/^#{1,6}\\s+/gm, '')       // Headers\n     .replace(/\\*\\*\\*(.+?)\\*\\*\\*/g, '$1') // Bold\n     .replace(/`(.+?)`/g, '$1')         // Inline code\n     .replace(/[\\*_~=]/g, '')           // Italic/strikethrough/highlight\n     ```\n   - **Chunk size**: Adjust merge logic in `splitSentences()` to prevent oversized chunks:\n     ```js\n     if (buf.trim().length >= 5000) {  // Hard limit\n       merged.push(buf.trim())\n       buf = '';\n     }\n     ```\n   - **Error handling**: Replace silent `.catch()` with:\n     ```js\n     .catch(err => {\n       console.warn(`TTS chunk ${i} failed:`, err.message);\n       showToast('TTS chunk failed — check console', 'warning');\n     })\n     ```\n\n6. **Verify Fixes**:\n   - Test with the original failing input\n   - Check console for errors\n   - Confirm all sentences play without gaps/skips\n\n7. **User Feedback**:\n   - If fixes applied, notify user: 'TTS debugging complete. Issues found: [list]. Applied fixes: [list].'\n   - If no issues found: 'TTS appears functional. Try these stress tests: [suggestions].'\n\n**Common Root Causes**:\n- Markdown artifacts in synthesis text\n- Oversized chunks (>5000 chars)\n- Silent error swallowing in promise chains\n- Paragraph breaks not treated as sentence boundaries\n\n**Example Debug Command**:\n```js\n// Run this in browser console to test chunking:\nconst testText = `Your problem text here`;\nconsole.log('Raw chunks:', TTSStreamPlayer.splitSentences(testText));\nconsole.log('Stripped text:', TTSStreamPlayer.stripMarkdown(testText));\n```",
+      "created": "2026-08-07"
     }
   ]
 }

@@ -42,6 +42,7 @@ from .routes.filesystem import router as filesystem_router
 from .routes.terminal import router as terminal_router
 from .routes.telegram import router as telegram_router
 from .routes.research import router as research_router
+from .routes.tracknote import router as tracknote_router
 
 def _raise_nofile_limit() -> None:
     """Raise open file limit for agentic workloads (browsers, agents, streams)."""
@@ -97,6 +98,13 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
                 _s.set_thresholds(_ms["model_thresholds"])
         except Exception:
             pass
+    # Start agent ops scheduler (event-driven, no polling)
+    try:
+        from server.scheduler import start_scheduler
+        _aio.create_task(start_scheduler())
+    except Exception as exc:
+        logger.warning("Agent ops scheduler failed to start: %s: %s", type(exc).__name__, exc)
+
     await service.warmup()
     try:
         ds_token = await service.refresh_deepseek_token()
@@ -110,6 +118,12 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     except Exception as exc:
         logger.warning("Startup sync_context failed: %s: %s", type(exc).__name__, exc)
     yield
+    # Shutdown agent ops scheduler
+    try:
+        from server.scheduler import cancel_all
+        cancel_all()
+    except Exception:
+        pass
     await service.close()
     from engine.scraper import scraper as scraper_service
     await scraper_service.stop(kill_browser=True)
@@ -189,6 +203,7 @@ app.include_router(filesystem_router)
 app.include_router(terminal_router)
 app.include_router(telegram_router)
 app.include_router(research_router)
+app.include_router(tracknote_router)
 
 # Wire agent runtime event callback → SSE push
 from .routes.agents import _async_push_agent_event, push_agent_event

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from engine.scraper import (
     get_settings as get_scraper_settings,
     list_engines as list_scraper_engines,
@@ -1136,4 +1136,114 @@ async def delete_tts_models() -> dict[str, Any]:
             path.unlink()
             removed.append(name)
     return {"status": "ok", "removed": removed}
-# ── /TTS Model Management ──────────────────────────────────────────
+
+# ── TTS Preferences ──────────────────────────────────────────────────
+_TTS_PREFS_PATH = BASE_DIR / "system/tts_prefs.json"
+_TTS_PREFS_DEFAULTS: dict[str, Any] = {
+    "voice": "af_bella",
+    "speed": 1.0,
+}
+
+
+def _load_tts_prefs() -> dict[str, Any]:
+    prefs = dict(_TTS_PREFS_DEFAULTS)
+    if _TTS_PREFS_PATH.exists():
+        try:
+            with open(_TTS_PREFS_PATH, "r", encoding="utf-8") as f:
+                stored = json.load(f)
+            if isinstance(stored, dict):
+                prefs.update(stored)
+        except Exception:
+            pass
+    return prefs
+
+
+def _save_tts_prefs(prefs: dict[str, Any]) -> None:
+    _TTS_PREFS_PATH.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
+
+
+@router.get("/api/settings/tts/prefs")
+async def get_tts_prefs() -> dict[str, Any]:
+    return _load_tts_prefs()
+
+
+@router.post("/api/settings/tts/prefs")
+async def set_tts_prefs(request: Request) -> dict[str, Any]:
+    body = await request.json()
+    prefs = _load_tts_prefs()
+    if "voice" in body:
+        prefs["voice"] = str(body["voice"]).strip()
+    if "speed" in body:
+        try:
+            prefs["speed"] = round(float(body["speed"]), 2)
+        except (ValueError, TypeError):
+            pass
+    _save_tts_prefs(prefs)
+    return {"status": "ok", **prefs}
+# ── /TTS Preferences ─────────────────────────────────────────────────
+
+
+# ── TTS Synthesis ────────────────────────────────────────────────────
+_kokoro_instance = None
+
+
+def _get_kokoro():
+    """Lazy-load Kokoro model (singleton)."""
+    global _kokoro_instance
+    if _kokoro_instance is not None:
+        return _kokoro_instance
+    from kokoro_onnx import Kokoro
+    model_path = _TTS_DIR / "kokoro-v1.0.onnx"
+    voices_path = _TTS_DIR / "voices-v1.0.bin"
+    if not model_path.exists() or not voices_path.exists():
+        raise HTTPException(status_code=400, detail="TTS models not installed")
+    _kokoro_instance = Kokoro(str(model_path), str(voices_path))
+    return _kokoro_instance
+
+
+@router.post("/api/tts/synthesize")
+async def tts_synthesize(request: Request) -> Response:
+    """Synthesize text to speech. Returns WAV audio."""
+    import io
+    import soundfile as sf
+
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    # Fall back to saved prefs if voice/speed not provided
+    prefs = _load_tts_prefs()
+    voice = body.get("voice") or prefs.get("voice", "af_bella")
+    speed = body.get("speed") if body.get("speed") is not None else prefs.get("speed", 1.0)
+
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty text")
+    if len(text) > 5000:
+        raise HTTPException(status_code=400, detail="Text too long (max 5000 chars)")
+
+    try:
+        kokoro = _get_kokoro()
+        samples, sr = kokoro.create(text, voice=voice, speed=speed)
+    except Exception as e:
+        logger.error(f"TTS synthesis failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Synthesis failed: {e}")
+
+    buf = io.BytesIO()
+    sf.write(buf, samples, sr, format="WAV")
+    buf.seek(0)
+    return Response(content=buf.read(), media_type="audio/wav")
+
+
+@router.get("/api/tts/voices")
+async def tts_voices() -> dict[str, Any]:
+    """List available TTS voices."""
+    try:
+        kokoro = _get_kokoro()
+        if hasattr(kokoro, "voices"):
+            voices = sorted(kokoro.voices.keys())
+        elif hasattr(kokoro, "get_voices"):
+            voices = sorted(kokoro.get_voices())
+        else:
+            voices = []
+        return {"voices": voices}
+    except HTTPException:
+        return {"voices": [], "error": "TTS models not installed"}
+# ── /TTS Synthesis ───────────────────────────────────────────────────

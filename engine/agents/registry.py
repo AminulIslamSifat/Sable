@@ -178,6 +178,44 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         max_parallel=2,
         required_sections=["Bug Summary", "Root Cause", "Fix Applied"],
     ),
+
+    # Scheduled agent ops — broad skill set for autonomous tasks
+    "scheduled": RoleConfig(
+        system_prompt=(
+            "You are an autonomous scheduled agent. You execute recurring tasks "
+            "independently. Be thorough, produce clear markdown results, and handle "
+            "errors gracefully. You have access to code editing, web search, file "
+            "operations, and communication tools (Telegram, email).\n\n"
+            "IMPORTANT: For reminders and notifications, you MUST send a Telegram message "
+            "as the primary delivery. Read the telegram skill instruction before first use. "
+            "Only fall back to markdown-only output if Telegram is unavailable."
+            + _MARKDOWN_INSTRUCTION
+            + "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
+            "## Task\n## Result\n## Notes\n\n"
+            "Do NOT use these headers in intermediate responses. "
+            "Intermediate response = one brief sentence + tool call. Nothing else."
+        ),
+        allowed_skills=[
+            "execute_command",
+            "code_editor",
+            "online_search",
+            "file_uploader",
+            "telegram",
+            "email",
+            "grep_search",
+            "background_command",
+        ],
+        default_skills=[
+            "code_editor",
+            "online_search",
+            "telegram",
+            "grep_search",
+        ],
+        default_model="qwen3.7-max",
+        default_timeout=600,
+        max_parallel=2,
+        required_sections=["Task", "Result"],
+    ),
 }
 
 
