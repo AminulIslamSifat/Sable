@@ -3416,6 +3416,7 @@
         `stroke-dasharray="${circ}" stroke-dashoffset="${offset}" stroke-linecap="round" ` +
         `transform="rotate(-90 9 9)" style="transition:stroke-dashoffset 0.3s ease"/>` +
         `</svg>`;
+      window._statusContextMax = maxChars;
       statusContextEl.title = `${pct}% context used (${(totalChars/1000).toFixed(0)}k / ${(maxChars/1000).toFixed(0)}k chars)`;
     }
 
@@ -3424,6 +3425,63 @@
     setInterval(() => { updateStatusBarCwd(); updateStatusBarContext(); }, 5000);
     updateStatusBarCwd();
     updateStatusBarContext();
+
+    /* ---------- Context breakdown popup ---------- */
+    function _attachCtxPopup(el) {
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        document.getElementById('ctxBreakdownPopup')?.remove();
+        if (!activeChatId) return;
+        const popup = document.createElement('div');
+        popup.id = 'ctxBreakdownPopup';
+        popup.className = 'context-breakdown-panel';
+        popup.style.cssText = 'position:fixed;z-index:100;padding:4px 0;min-width:180px;background:rgba(23,23,26,0.92);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 -4px 12px rgba(0,0,0,0.4),0 -12px 32px rgba(0,0,0,0.3),inset 0 1px 0 rgba(255,255,255,0.05);opacity:0;transform:translateY(6px) scale(0.97);pointer-events:none;transition:opacity 0.18s ease,transform 0.18s ease;';
+        popup.innerHTML = '<div style="color:var(--muted);font-size:10px;padding:6px 10px;">Loading…</div>';
+        const trigger = e.currentTarget;
+        const bar = trigger.closest('.chat-compact-input') || trigger.closest('.input-composite') || trigger.parentElement;
+        const rect = bar.getBoundingClientRect();
+        popup.style.right = (window.innerWidth - rect.right) + 'px';
+        popup.style.left = 'auto';
+        popup.style.bottom = (window.innerHeight - rect.top + 2) + 'px';
+        document.body.appendChild(popup);
+        try {
+          const r = await fetch('/api/chats/' + activeChatId + '/context-breakdown');
+          const d = await r.json();
+          const total = d.total || 0;
+          const entry = currentModelEntry();
+          const maxChars = entry?.max_session_chars || window._statusContextMax || 100000;
+          const fmt = v => (v / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+          const rows = [
+            ['User', d.user || 0, 'var(--accent)'],
+            ['Assistant', d.assistant || 0, '#8b5cf6'],
+            ['Thinking', d.thinking || 0, '#f59e0b'],
+            ['Tool', d.tool || 0, '#10b981'],
+          ];
+          let html = '<div style="padding:6px 10px 4px;font-weight:600;color:var(--text);font-size:10px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:2px;">Context — ' + fmt(total) + '/' + fmt(maxChars) + '</div>';
+          for (const [label, val, color] of rows) {
+            const pct = total > 0 ? Math.round(val / total * 100) : 0;
+            html += '<div style="display:flex;align-items:center;gap:6px;padding:3px 10px;">'
+              + '<span style="width:8px;height:8px;border-radius:50%;background:' + color + ';flex-shrink:0;"></span>'
+              + '<span style="flex:1;font-size:10px;">' + label + '</span>'
+              + '<span style="color:var(--text-dim);font-size:10px;font-variant-numeric:tabular-nums;">' + fmt(val) + ' (' + pct + '%)</span></div>'
+              + '<div style="height:3px;background:var(--panel-2);border-radius:2px;margin:0 10px 2px 24px;"><div style="height:100%;width:' + pct + '%;background:' + color + ';border-radius:2px;"></div></div>';
+          }
+          popup.innerHTML = html;
+          requestAnimationFrame(() => { popup.style.opacity = '1'; popup.style.transform = 'translateY(0) scale(1)'; popup.style.pointerEvents = 'auto'; });
+        } catch { popup.innerHTML = '<div style="color:var(--danger);padding:6px 10px;">Failed to load</div>'; requestAnimationFrame(() => { popup.style.opacity = '1'; popup.style.transform = 'translateY(0) scale(1)'; popup.style.pointerEvents = 'auto'; }); }
+      });
+    }
+    const _compactCtx = document.getElementById('compactContext');
+    if (_compactCtx) {
+      _attachCtxPopup(_compactCtx);
+    }
+    const _mainCtx = document.getElementById('statusContext');
+    if (_mainCtx) {
+      _attachCtxPopup(_mainCtx);
+    }
+    document.addEventListener('click', () => document.getElementById('ctxBreakdownPopup')?.remove());
+
 
     /* ---------- Glass dropdown (custom model selector) ---------- */
     const glassDropdown = document.getElementById("modelDropdown");
@@ -6843,7 +6901,10 @@
           return `<div style="display:flex;align-items:center;justify-content:space-between;background:var(--panel);border:1px solid ${isActive ? 'var(--accent)' : 'var(--border)'};border-radius:10px;padding:10px 14px;">
             <div style="min-width:0;">
               <div style="font-size:12px;font-weight:600;color:var(--text);">${email}</div>
-              <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">${acc.name}${size ? ' · ' + size : ''}${isActive ? ' · <span style="color:var(--accent);">active</span>' : ''}</div>
+              <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">${acc.name}${size ? ' · ' + size : ''}${isActive ? ' · <span style="color:var(--accent);">active</span>' : ''}
+                ${acc.has_waf ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#22c55e;border:1px solid #22c55e;border-radius:4px;padding:1px 5px;margin-left:6px;">qwen</span>' : ''}
+                ${acc.has_ds ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#22c55e;border:1px solid #22c55e;border-radius:4px;padding:1px 5px;margin-left:4px;">ds</span>' : ''}
+              </div>
             </div>
             <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
               <button class="icon-btn account-open-btn" data-profile="${acc.name}" style="width:auto;padding:5px 12px;font-size:11px;white-space:nowrap;">Open</button>
