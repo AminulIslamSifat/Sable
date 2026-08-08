@@ -9,7 +9,7 @@
   <link rel="stylesheet" href="/static/css/variables.css?v=4">
   <link rel="stylesheet" href="/static/css/base.css?v=3">
   <link rel="stylesheet" href="/static/css/layout.css?v=51">
-  <link rel="stylesheet" href="/static/css/ide.css?v=1">
+  <link rel="stylesheet" href="/static/css/ide.css?v=4">
   <link rel="stylesheet" href="/static/css/chat.css?v=23">
   <link rel="stylesheet" href="/static/css/panels.css?v=30">
   <link rel="stylesheet" href="/static/css/components.css?v=12">
@@ -70,6 +70,10 @@
   <aside id="chatCompact" class="chat-compact hidden">
     <div class="chat-compact-header">
       <span class="chat-compact-title" id="chatCompactTitle">New chat</span>
+      <div class="compact-header-actions">
+        <button class="compact-header-btn" id="compactAgentSwitch" title="Switch to Agent mode"><i data-lucide="message-square" class="icon-lucide"></i></button>
+        <button class="compact-header-btn" id="compactNewChat" title="New chat"><i data-lucide="square-pen" class="icon-lucide"></i></button>
+      </div>
     </div>
     <div class="chat-compact-messages" id="chatCompactMessages">
       <div class="chat-compact-empty" id="chatCompactEmpty">
@@ -78,8 +82,40 @@
       </div>
     </div>
     <div class="chat-compact-input">
-      <textarea id="chatCompactInput" placeholder="Chat..." rows="1"></textarea>
-      <button id="chatCompactSend" class="chat-compact-send" title="Send"><span class="icon-emoji">➤</span><i data-lucide="send" class="icon-lucide"></i><span class="btn-label-stop"></span></button>
+      <div class="compact-input-row">
+        <div class="compact-attach-cell">
+          <button class="compact-attach-btn" id="chatCompactAttach" title="Attach file"><span class="icon-emoji">+</span><i data-lucide="paperclip" class="icon-lucide"></i></button>
+        </div>
+        <input type="file" id="chatCompactFileInput" accept="image/*" multiple hidden>
+        <div class="compact-text-cell">
+          <textarea id="chatCompactInput" placeholder="Chat..." rows="1"></textarea>
+        </div>
+        <div class="compact-send-cell">
+          <button id="chatCompactSend" class="chat-compact-send" title="Send"><span class="icon-emoji">➤</span><i data-lucide="send" class="icon-lucide"></i><span class="btn-label-stop"></span></button>
+        </div>
+      </div>
+      <div class="compact-status-bar">
+        <div class="compact-status-left">
+          <div class="status-dropdown" id="compactThinkingDropdown" title="Thinking mode">
+            <div class="status-dropdown-trigger" id="compactThinkingTrigger">
+              <span class="status-dropdown-label" id="compactThinkingLabel"></span>
+            </div>
+            <div class="status-dropdown-menu" id="compactThinkingMenu"></div>
+          </div>
+        </div>
+        <div class="compact-status-center">
+          <div class="glass-dropdown" id="compactModelDropdown">
+            <button class="glass-dropdown-trigger" id="compactModelTrigger" title="Model">
+              <span class="glass-dropdown-label" id="compactModelLabel">Model</span>
+              <span class="glass-dropdown-arrow"><i data-lucide="chevron-down" style="width:10px;height:10px;"></i></span>
+            </button>
+            <div class="glass-dropdown-menu" id="compactModelMenu"></div>
+          </div>
+        </div>
+        <div class="compact-status-right">
+          <span class="status-context" id="compactContext" title="Context usage"></span>
+        </div>
+      </div>
     </div>
   </aside>
 
@@ -143,6 +179,8 @@
         <div class="header-cell header-icon-cell">
           <button id="sidebarToggle" class="icon-btn" title="Toggle sidebar"><span class="icon-emoji">☰</span><i data-lucide="panel-left-close" class="icon-lucide"></i></button>
         </div>
+        <!-- IDE Tab Bar (in top bar, between sidebar toggle and right buttons) -->
+        <div id="editorTabBar" class="ide-header-tab-bar hidden"></div>
         <div class="header-center-group">
           <div class="header-cell header-model-cell">
             <div class="glass-dropdown" id="modelDropdown">
@@ -373,7 +411,7 @@
             <select id="tnAgentSchedType"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="cron">Cron</option></select>
             <input id="tnAgentTime" type="time" />
           </div>
-          <button id="tnAgentAdd" class="tn-add-btn tn-full-width">Create Agent Op</button>
+          <button id="tnAgentAdd" class="tn-card-btn tn-full-width">Create Agent Op</button>
         </div>
         <div id="tnAgentList" class="tn-list"></div>
         <div id="tnAgentEmpty" class="tracknote-empty">No agent tasks queued</div>
@@ -1167,11 +1205,11 @@
       },
     };
   </script>
-  <script src="/static/app.js?v=62"></script>
+  <script src="/static/app.js?v=74"></script>
   <script src="/static/src/research.js?v=9"></script>
   <script src="/static/js/agents.js?v=22"></script>
-  <script src="/static/js/filesystem.js?v=24"></script>
-  <script src="/static/js/mode.js?v=18"></script>
+  <script src="/static/js/filesystem.js?v=27"></script>
+  <script src="/static/js/mode.js?v=19"></script>
   <script src="/static/js/resize-panels.js?v=1"></script>
   <script src="/static/js/terminal.js?v=4"></script>
 

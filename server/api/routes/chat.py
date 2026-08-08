@@ -43,7 +43,7 @@ from server.database import (
     ensure_chat, get_chat_mode, get_chat_provider,
     set_title_if_default, update_chat_title, get_injected_memory_keys, save_injected_memory_keys,
     touch_chat, save_chat_url, get_chat_url,
-    add_message, update_message, get_messages, list_chats, delete_chat, get_parent_id,
+    add_message, update_message, get_messages, list_chats, delete_chat, get_parent_id, get_db,
 )
 from server.utils import retry_async, retry_stream, make_title, _is_deepseek_api_model, _resolve_api_backend, _is_api_model, logger
 from server.models import ChatRequest
@@ -148,9 +148,16 @@ async def chat(request: ChatRequest):
     except Exception:
         pass
     add_message(active_chat_id, "user", timestamped_message, None, parent_id, memory_used=_memory_used or None)
+    # Separate API payload so injections don't leak into session history
+    api_message = timestamped_message
+    # Stateless backends (DeepSeek) always have parent_id=None.
+    # Check message count to avoid re-injecting title prompt on every message.
+    _msg_count = get_db().execute(
+        "SELECT COUNT(*) as c FROM messages WHERE chat_id = ?", (active_chat_id,)
+    ).fetchone()["c"]
     # Inject title instruction on first message (model-only, not saved to DB)
-    if parent_id is None:
-        timestamped_message += '\n\n[SYSTEM: First message of a new chat. Respond normally, but also emit <action><chat_title>Short descriptive title</chat_title></action> at the end of your response. If you are running another command, then put chat_title and that command in one action block.]'
+    if parent_id is None and _msg_count <= 1:
+        api_message += '\n\n[SYSTEM: First message of a new chat. Respond normally, but also emit <action><chat_title>Short descriptive title</chat_title></action> at the end of your response. If you are running another command, then put chat_title and that command in one action block.]'
 
         # Inject upcoming schedule (last/next 10 days) so Maria knows what's coming
         try:
@@ -174,7 +181,7 @@ async def chat(request: ChatRequest):
                     else:
                         _sched_lines.append(f"- {_title} (daily {_time})" + (f" — {_desc}" if _desc else ""))
                 _sched_block = "\n".join(_sched_lines)
-                timestamped_message += f'\n\n[SCHEDULE CONTEXT — next 10 days:\n{_sched_block}]'
+                api_message += f'\n\n[SCHEDULE CONTEXT — next 10 days:\n{_sched_block}]'
         except Exception:
             pass
 
@@ -213,7 +220,7 @@ async def chat(request: ChatRequest):
                     logger.warning("Could not resolve file: %s", f["path"])
     if not request.stream and scraper_enabled:
         result = await scraper_service.chat(
-            message=timestamped_message,
+            message=api_message,
             chat_id=active_chat_id,
             parent_id=parent_id,
             files=resolved_files,
@@ -245,7 +252,7 @@ async def chat(request: ChatRequest):
             _inline_files = [f.get('path') for f in resolved_files if f.get('path')]
         _max_session_chars = _cfg.get("max_session_chars")
         _chat_kwargs: dict[str, Any] = dict(
-            message=timestamped_message,
+            message=api_message,
             model=_api_model,
             thinking_mode=request.thinking_mode,
             chat_id=None if _ephemeral else active_chat_id,
@@ -268,7 +275,7 @@ async def chat(request: ChatRequest):
     if not request.stream and not scraper_enabled:
         result = await retry_async(
             lambda: service.chat(
-                message=timestamped_message,
+                message=api_message,
                 chat_id=active_chat_id,
                 parent_id=parent_id,
                 files=resolved_files,
@@ -318,7 +325,7 @@ async def chat(request: ChatRequest):
         skill_events: list[dict[str, Any]] = []
         final_parent = parent_id
         error_message: str | None = None
-        current_message = timestamped_message
+        current_message = api_message
         current_parent = parent_id
         round_index = 0
         saved_message_id: int | None = None
@@ -362,6 +369,8 @@ async def chat(request: ChatRequest):
                                 if _t:
                                     update_chat_title(active_chat_id, _t[:80])
                                     yield sse({"type": "chat_title", "title": _t[:80]})
+                                # Mark as executed so incomplete-action guard does not fire
+                                round_skill_events.append({"type": "skill_end", "name": "chat_title", "ok": True})
                                 _title_buf = _title_buf[:m.start()] + _title_buf[m.end():]
                             # Hold back partial <title at end of buffer
                             lt = _title_buf.rfind("<")
@@ -382,6 +391,8 @@ async def chat(request: ChatRequest):
                                 if _title_text:
                                     update_chat_title(active_chat_id, _title_text[:80])
                                     yield sse({"type": "chat_title", "title": _title_text[:80]})
+                                # Mark as executed so incomplete-action guard doesn't fire
+                                round_skill_events.append({"type": "skill_end", "name": "chat_title", "ok": True})
                                 continue
                             # SVG tags: content already streamed progressively by parser;
                             # only save to disk here — skip re-streaming

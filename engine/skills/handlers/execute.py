@@ -47,6 +47,13 @@ def handle_execute_command(
         yield _end_event(tag_id, name, False, started, error="Blocked: sable.service restart not allowed via execute_command")
         return
 
+    # Block git checkout universally — destroys uncommitted work
+    if _re.search(r'\bgit\s+checkout\b', cmd):
+        msg = "[BLOCKED] git checkout is not allowed. It destroys uncommitted working changes.\nIf you need to revert, ask Sifat first or use targeted file restoration.\n"
+        yield _output_event(tag_id, msg, "stderr")
+        yield _end_event(tag_id, name, False, started, error="Blocked: git checkout not allowed")
+        return
+
     # --- SSD tree write guard: block edits to /home/sifat/Projects/Sable ---
     # Only allow reads and explicit cp from HDD tree (the sanctioned sync path).
     _SSD_TREE = r'/home/sifat/Projects/Sable'

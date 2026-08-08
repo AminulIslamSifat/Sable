@@ -69,7 +69,7 @@ MODELS = [
     {
         "id": "qwen3.8-max",
         "label": "Qwen3.8 Max",
-        "max_session_chars": 4_000_000,
+        "max_session_chars": 3_000_000,
         "capabilities": {"image": True, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {
@@ -98,6 +98,7 @@ MODELS = [
     {
         "id": "qwen3.7-max",
         "label": "Qwen3.7 Max",
+        "max_session_chars": 3_000_000,
         "capabilities": {"image": True, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {
@@ -119,6 +120,7 @@ MODELS = [
     {
         "id": "qwen3.7-plus",
         "label": "Qwen3.7 Plus",
+        "max_session_chars": 3_000_000,
         "capabilities": {"image": True, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {

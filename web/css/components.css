@@ -237,15 +237,17 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 8px;
-      padding: 12px 14px;
+      gap: 6px;
+      padding: 4px 8px;
       border-bottom: 1px solid var(--border);
+      min-height: 0;
     }
     .diff-sidebar-title {
-      font-size: var(--font-size-system);
+      font-size: 11px;
       letter-spacing: .08em;
       text-transform: uppercase;
       color: var(--accent-text);
+      line-height: 1;
     }
 
     /* Sidebar tabs (Files / Diff) */
@@ -253,17 +255,17 @@
       display: flex;
       gap: 2px;
       background: var(--panel-2);
-      border-radius: 8px;
-      padding: 2px;
+      border-radius: 6px;
+      padding: 1px;
     }
     .fs-sidebar-tab {
       border: none;
       background: none;
       color: var(--text-dim);
-      font-size: var(--font-size-system);
+      font-size: 11px;
       font-weight: 500;
-      padding: 4px 12px;
-      border-radius: 6px;
+      padding: 3px 10px;
+      border-radius: 5px;
       cursor: pointer;
       transition: all .12s;
     }
@@ -287,7 +289,7 @@
 
     /* Sidebar toolbar */
     .fs-sidebar-toolbar {
-      padding: 8px 12px;
+      padding: 4px 8px;
       border-bottom: 1px solid var(--border-soft);
     }
 
@@ -383,8 +385,8 @@
     .fs-sidebar-toolbar {
       display: flex;
       align-items: center;
-      gap: 8px;
-      padding: 6px 10px;
+      gap: 6px;
+      padding: 4px 8px;
       border-bottom: 1px solid var(--border-soft);
     }
 
