@@ -9,6 +9,12 @@ SERVICE="sable.service"
 SABLE_PORT="${SABLE_PORT:-61770}"
 SABLE_URL="http://127.0.0.1:${SABLE_PORT}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "🔄 Synchronizing dependencies with uv..."
+uv sync
+echo ""
+
 print_info_box() {
     local url="$1" port="$2" service="$3"
     
@@ -30,7 +36,7 @@ print_info_box() {
 
 # Auto-open browser after server starts
 open_browser() {
-    sleep 2
+    sleep 5
     if command -v xdg-open >/dev/null 2>&1; then
         xdg-open "$SABLE_URL" 2>/dev/null &
     elif command -v open >/dev/null 2>&1; then
@@ -46,9 +52,18 @@ if systemctl --user cat "$SERVICE" >/dev/null 2>&1; then
         print_info_box "$SABLE_URL" "$SABLE_PORT" "$SERVICE"
         open_browser
     else
-        echo "⚠️  Service failed to start. Check logs:"
-        echo "   journalctl --user -u $SERVICE -n 30 --no-pager"
-        exit 1
+        echo "⚠️  Service failed to start. Clearing stale browser profile and retrying..."
+        rm -rf "$SCRIPT_DIR/system/browser-data"
+        systemctl --user restart "$SERVICE"
+        sleep 1
+        if systemctl --user is-active --quiet "$SERVICE"; then
+            print_info_box "$SABLE_URL" "$SABLE_PORT" "$SERVICE"
+            open_browser
+        else
+            echo "❌ Still failing after profile reset. Check logs:"
+            echo "   journalctl --user -u $SERVICE -n 30 --no-pager"
+            exit 1
+        fi
     fi
 else
     echo "systemd user service not found — starting the server directly with uv..."

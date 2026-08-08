@@ -847,24 +847,63 @@
       opacity: .7;
     }
 
-    /* TrackNote form elements */
-    .tn-add-row {
-      display: flex; gap: 6px; margin-bottom: 12px; align-items: center; flex-wrap: wrap;
+    /* TrackNote card-style input box */
+    .tn-card {
+      background: color-mix(in srgb, var(--panel-2) 60%, transparent);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      margin-bottom: 16px;
+      transition: border-color .15s ease, box-shadow .15s ease;
     }
-    .tn-add-row input[type="text"], .tn-add-row input[type="time"] {
-      flex: 1; min-width: 0; padding: 6px 10px; font-size: var(--font-size-system);
-      border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text);
+    .tn-card:focus-within {
+      border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
     }
-    .tn-add-row select {
-      padding: 6px 8px; font-size: var(--font-size-system);
-      border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text);
+    .tn-card-header {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
     }
-    .tn-add-btn {
-      width: 30px; height: 30px; border-radius: 6px; border: 1px solid var(--border);
-      background: var(--accent); color: #fff; font-size: 16px; cursor: pointer;
-      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    .tn-card-icon { font-size: 16px; line-height: 1; }
+    .tn-card-title {
+      font-size: var(--font-size-system); font-weight: 600;
+      color: var(--accent-text); letter-spacing: .02em;
     }
-    .tn-add-btn:hover { opacity: .85; }
+    .tn-card-input {
+      width: 100%; padding: 9px 12px; font-size: var(--font-size-system);
+      border-radius: 8px; border: 1px solid var(--border);
+      background: var(--panel); color: var(--text);
+      margin-bottom: 10px; box-sizing: border-box;
+      transition: border-color .12s ease;
+    }
+    .tn-card-input:focus {
+      outline: none; border-color: var(--accent);
+    }
+    .tn-card-controls {
+      display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    }
+    .tn-card-controls select, .tn-card-controls input[type="time"] {
+      padding: 7px 10px; font-size: var(--font-size-system);
+      border-radius: 8px; border: 1px solid var(--border);
+      background: var(--panel); color: var(--text);
+    }
+    .tn-card-controls select { flex: 1; min-width: 0; }
+    .tn-card-btn {
+      padding: 7px 16px; font-size: var(--font-size-system); font-weight: 600;
+      border-radius: 8px; border: none; cursor: pointer;
+      background: var(--accent); color: #fff;
+      transition: opacity .12s ease, transform .1s ease;
+      white-space: nowrap;
+    }
+    .tn-card-btn:hover { opacity: .88; }
+    .tn-card-btn:active { transform: scale(.97); }
+    .tn-card-btn-secondary {
+      background: transparent; border: 1px solid var(--border);
+      color: var(--text-dim);
+    }
+    .tn-card-btn-secondary:hover {
+      background: color-mix(in srgb, var(--accent) 8%, transparent);
+      color: var(--text); border-color: var(--accent);
+    }
     .tn-full-width { width: 100%; height: auto; padding: 8px; font-size: var(--font-size-system); }
 
     .tn-agent-form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
