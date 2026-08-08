@@ -24,6 +24,116 @@
   let monacoReady = null;  // promise that resolves when Monaco is loaded
   let diffReviewEditor = null; // inline diff review editor
 
+  /* ---------- Tab Bar State (VS Code-style) ---------- */
+  const editorTabBar = document.getElementById("editorTabBar");
+  let openTabs = []; // [{path, name, content, ext, dirty}]
+  let activeTabPath = null;
+
+  // Expose for mode switch refresh
+  window.renderIdeTabBar = renderTabBar;
+
+  // Mouse wheel → horizontal scroll on tab bar
+  if (editorTabBar) {
+    editorTabBar.addEventListener("wheel", (e) => {
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+        e.preventDefault();
+        editorTabBar.scrollLeft += e.deltaY;
+      }
+    }, { passive: false });
+  }
+
+  function getTab(path) { return openTabs.find(t => t.path === path); }
+
+  function renderTabBar() {
+    if (!editorTabBar) return;
+    const isIde = document.body.getAttribute("data-mode") === "ide";
+    if (!isIde || openTabs.length === 0) {
+      editorTabBar.classList.add("hidden");
+      return;
+    }
+    editorTabBar.classList.remove("hidden");
+    editorTabBar.innerHTML = "";
+    for (const tab of openTabs) {
+      const el = document.createElement("div");
+      el.className = "editor-tab" + (tab.path === activeTabPath ? " active" : "") + (tab.dirty ? " dirty" : "");
+      el.dataset.path = tab.path;
+      el.innerHTML = `<span class="editor-tab-icon">${icon(fileIcon(tab.name), 12)}</span><span class="editor-tab-name">${esc(tab.name)}</span><span class="editor-tab-dirty"></span><span class="editor-tab-close" title="Close">${icon("x", 10)}</span>`;
+      el.addEventListener("click", (e) => {
+        if (e.target.closest(".editor-tab-close")) { closeTab(tab.path); return; }
+        activateTab(tab.path);
+      });
+      editorTabBar.appendChild(el);
+    }
+    refreshIcons();
+  }
+
+  function addOrUpdateTab(path, name, content, ext) {
+    const existing = getTab(path);
+    if (existing) {
+      existing.content = content;
+      existing.ext = ext;
+      existing.dirty = false;
+    } else {
+      openTabs.push({ path, name, content, ext, dirty: false });
+    }
+    activeTabPath = path;
+    renderTabBar();
+  }
+
+  function markTabDirty(path, dirty) {
+    const tab = getTab(path);
+    if (!tab) return;
+    tab.dirty = dirty;
+    renderTabBar();
+  }
+
+  async function activateTab(path) {
+    if (path === activeTabPath) return;
+    const tab = getTab(path);
+    if (!tab) return;
+    // Save current editor content to old tab before switching
+    if (activeTabPath && monacoEditor) {
+      const oldTab = getTab(activeTabPath);
+      if (oldTab) oldTab.content = monacoEditor.getValue();
+    }
+    activeTabPath = path;
+    currentFilePath = path;
+    isDirty = tab.dirty;
+    syncSidebarDirty();
+    const editorContainer = document.getElementById("editorContainer");
+    const editorEmpty = document.getElementById("editorEmptyState");
+    if (editorEmpty) editorEmpty.classList.add("hidden");
+    if (editorContainer) {
+      editorContainer.classList.remove("hidden");
+      renderEditor({ name: tab.name, content: tab.content, ext: tab.ext, size: tab.content.length }, editorContainer);
+    }
+    highlightSidebarFile(path);
+    renderTabBar();
+  }
+
+  function closeTab(path) {
+    const idx = openTabs.findIndex(t => t.path === path);
+    if (idx === -1) return;
+    openTabs.splice(idx, 1);
+    if (activeTabPath === path) {
+      if (openTabs.length > 0) {
+        const newIdx = Math.min(idx, openTabs.length - 1);
+        activateTab(openTabs[newIdx].path);
+      } else {
+        activeTabPath = null;
+        currentFilePath = "";
+        isDirty = false;
+        syncSidebarDirty();
+        const editorContainer = document.getElementById("editorContainer");
+        const editorEmpty = document.getElementById("editorEmptyState");
+        if (editorContainer) editorContainer.classList.add("hidden");
+        if (editorEmpty) editorEmpty.classList.remove("hidden");
+        sidebarTree.querySelectorAll(".fs-item.fs-active").forEach(el => el.classList.remove("fs-active"));
+      }
+    }
+    renderTabBar();
+  }
+
   function getEditorFontSize() {
     return parseInt(localStorage.getItem("sable_editor_font_size") || "13", 10);
   }
@@ -547,6 +657,7 @@
         isDirty = false;
         dirtyDot.style.display = "none";
         syncSidebarDirty();
+        markTabDirty(currentFilePath, false);
       } catch { alert("Save failed"); }
     }
 
@@ -585,6 +696,7 @@
       scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
       automaticLayout: true,
       unicodeHighlight: { ambiguousCharacters: false, invisibleCharacters: false },
+      stickyScroll: { enabled: false },
     });
 
     // Track dirty state
@@ -593,6 +705,7 @@
         isDirty = true;
         dirtyDot.style.display = "inline";
         syncSidebarDirty();
+        markTabDirty(currentFilePath, true);
       }
     });
 
@@ -1021,8 +1134,10 @@
       if (d.has_diff) diffData = d;
     } catch { /* ignore */ }
 
-    // IDE mode: render into the center editor pane
+    // IDE mode: render into the center editor pane with tab bar
     if (document.body.getAttribute("data-mode") === "ide") {
+      const ext = (data.ext || "").replace(".", "");
+      addOrUpdateTab(path, name, data.content, ext);
       const editorContainer = document.getElementById("editorContainer");
       const editorEmpty = document.getElementById("editorEmptyState");
       if (editorEmpty) editorEmpty.classList.add("hidden");
@@ -1137,6 +1252,9 @@
         if (model && model.getValue() !== data.content) {
           model.setValue(data.content);
           isDirty = false;
+          markTabDirty(filePath, false);
+          const tab = getTab(filePath);
+          if (tab) { tab.content = data.content; }
           const dirtyDot = document.getElementById("fsDirtyDot");
           if (dirtyDot) dirtyDot.style.display = "none";
         }
@@ -1169,13 +1287,13 @@
     saveHistory(lastFolder);
     await loadSidebarTree();
 
-    // Restore last opened file
+    // Restore last opened file via tab system
     if (lastFile) {
       try {
         const data = await sbApi("/read?path=" + encodeURIComponent(lastFile));
         if (data && !data.error && !data.binary) {
-          currentFilePath = lastFile;
-          isDirty = false;
+          const ext = (data.ext || "").replace(".", "");
+          addOrUpdateTab(lastFile, lastFile.split("/").pop(), data.content, ext);
           const editorContainer = document.getElementById("editorContainer");
           const editorEmpty = document.getElementById("editorEmptyState");
           if (editorEmpty) editorEmpty.classList.add("hidden");

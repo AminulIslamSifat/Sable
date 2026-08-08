@@ -547,6 +547,18 @@ async def list_all_mcp_tools() -> dict[str, Any]:
 @router.get("/api/settings/accounts")
 async def list_accounts() -> dict[str, Any]:
     def _scan() -> list[dict[str, Any]]:
+        # Load token presence maps
+        waf_tokens: dict = {}
+        ds_tokens: dict = {}
+        try:
+            waf_tokens = json.loads((_SYSTEM_DIR / ".session_tokens.json").read_text())
+        except Exception:
+            pass
+        try:
+            ds_tokens = json.loads((_SYSTEM_DIR / ".deepseek_tokens.json").read_text())
+        except Exception:
+            pass
+
         accounts: list[dict[str, Any]] = []
         for entry in _SYSTEM_DIR.iterdir():
             m = re.match(r"browser-data-acc(\d+)$", entry.name)
@@ -556,6 +568,8 @@ async def list_accounts() -> dict[str, Any]:
                     "num": int(m.group(1)),
                     "email": _read_profile_email(entry),
                     "size_mb": _dir_size_mb(entry),
+                    "has_waf": entry.name in waf_tokens,
+                    "has_ds": entry.name in ds_tokens,
                 })
         accounts.sort(key=lambda a: a["num"])
         return accounts
