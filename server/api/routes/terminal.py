@@ -27,7 +27,7 @@ import termios
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from server.auth import AUTH_TOKEN
+import server.auth as _auth_mod
 from server.utils import logger
 
 router = APIRouter()
@@ -100,7 +100,7 @@ def _set_winsize(fd: int, rows: int, cols: int) -> None:
 
 @router.websocket("/ws/terminal")
 async def terminal_ws(ws: WebSocket) -> None:
-    if ws.query_params.get("token", "") != AUTH_TOKEN:
+    if ws.query_params.get("token", "") != _auth_mod.AUTH_TOKEN:
         await ws.close(code=4001)
         return
     await ws.accept()

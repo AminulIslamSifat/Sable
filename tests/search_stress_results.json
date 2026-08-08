@@ -1,0 +1,2758 @@
+{
+  "timestamp": "2026-08-08 07:08:22",
+  "scores": [
+    {
+      "name": "tavily",
+      "composite": 97,
+      "reliability": 100,
+      "fill_rate": 100,
+      "avg_results": 7.8,
+      "avg_time": 1.37,
+      "url_quality": 95,
+      "snippet": 100,
+      "relevance": 91,
+      "speed_score": 89,
+      "ok_queries": 20,
+      "has_results": 20,
+      "total_items": 156
+    },
+    {
+      "name": "serper",
+      "composite": 95,
+      "reliability": 100,
+      "fill_rate": 100,
+      "avg_results": 7.0,
+      "avg_time": 2.51,
+      "url_quality": 100,
+      "snippet": 94,
+      "relevance": 87,
+      "speed_score": 79,
+      "ok_queries": 20,
+      "has_results": 20,
+      "total_items": 141
+    },
+    {
+      "name": "searxng",
+      "composite": 95,
+      "reliability": 100,
+      "fill_rate": 100,
+      "avg_results": 8.0,
+      "avg_time": 0.92,
+      "url_quality": 100,
+      "snippet": 99,
+      "relevance": 71,
+      "speed_score": 92,
+      "ok_queries": 20,
+      "has_results": 20,
+      "total_items": 159
+    }
+  ],
+  "results": {
+    "serper": [
+      {
+        "query": "Python asyncio tutorial 2025",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Python's asyncio: A Hands-On Walkthrough",
+            "url": "https://realpython.com/async-io-python/",
+            "snippet": "In this tutorial, you'll learn how Python asyncio works, how to define and run coroutines, and when to use asynchronous programming for better ..."
+          },
+          {
+            "title": "asyncio \u2014 Asynchronous I/O",
+            "url": "https://docs.python.org/3/library/asyncio.html",
+            "snippet": "asyncio is a library to write concurrent code using the async/await syntax. asyncio is used as a foundation for multiple Python asynchronous frameworks that ..."
+          },
+          {
+            "title": "A quick intro guide to asynchronous programming in ...",
+            "url": "https://medium.com/wix-engineering/a-quick-intro-guide-to-asynchronous-programming-in-python-using-asyncio-18e42e652272",
+            "snippet": "A quick intro guide to asynchronous programming in Python (using asyncio) Asyncio is a Python library. A coroutine is basically a function. ..."
+          },
+          {
+            "title": "Python Asyncio: The Complete Guide #10063",
+            "url": "https://github.com/orgs/micropython/discussions/10063",
+            "snippet": "I put together asynchronous-python, a comprehensive and hands-on guide that covers asynchronous programming in Python from core concepts to practical use cases."
+          },
+          {
+            "title": "Asyncio - The Blue Book",
+            "url": "https://lyz-code.github.io/blue-book/asyncio/",
+            "snippet": "asyncio is a library to write concurrent code using the async/await syntax. asyncio is used as a foundation for multiple Python asynchronous frameworks"
+          },
+          {
+            "title": "Asyncio Architecture in Python: Event Loops, Tasks, and ...",
+            "url": "https://dev.to/imsushant12/asyncio-architecture-in-python-event-loops-tasks-and-futures-explained-4pn3",
+            "snippet": "Asyncio: Single thread, single process. It uses an event loop to run many tasks concurrently by switching between them when one task is waiting"
+          },
+          {
+            "title": "Asynchronous Programming with asyncio in Python",
+            "url": "https://blog.naveenpn.com/asynchronous-programming-with-asyncio-in-python-the-ultimate-guide",
+            "snippet": "Asynchronous programming with asyncio supercharges Python applications, enabling them to handle thousands of concurrent operations efficiently."
+          },
+          {
+            "title": "asyncio in Python",
+            "url": "https://www.geeksforgeeks.org/python/asyncio-in-python/",
+            "snippet": "Asynchronous Programming with Asyncio in Python. In the example below, we'll create a function and make it asynchronous using the async keyword."
+          }
+        ],
+        "time": 1.6598918437957764
+      },
+      {
+        "query": "Linux kernel 6.12 changelog",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Linux_6.12",
+            "url": "https://kernelnewbies.org/Linux_6.12",
+            "snippet": "Summary of the changes and new features merged in the Linux kernel during the 6.12 development cycle."
+          },
+          {
+            "title": "Kernel 6.12.4 Changelog Summary : r/linux",
+            "url": "https://www.reddit.com/r/linux/comments/1hbfsgv/kernel_6124_changelog_summary/",
+            "snippet": "1. Architecture-specific Updates \u00b7 Fixed bugs in interrupt handling for specific chipsets. \u00b7 Enhanced support for Intel and AMD processor ..."
+          },
+          {
+            "title": "Linux Kernel 6.12 Released: Key Features and ...",
+            "url": "https://tuxcare.com/blog/linux-kernel-6-12/",
+            "snippet": "Explore the latest features of Linux Kernel 6.12, including real-time processing, improved hardware support, and enhanced security."
+          },
+          {
+            "title": "Index of /pub/linux/kernel/v6.x/",
+            "url": "https://www.kernel.org/pub/linux/kernel/v6.x/",
+            "snippet": "ChangeLog-6.12 18-Nov-2024 04:49 14M ChangeLog-6.12.1 22-Nov-2024. ChangeLog-6.12.100 30-Jul-2026 11:22 5960 ChangeLog-6.12.101 03-Aug-2026 09:28 899K -6.12.11 ..."
+          },
+          {
+            "title": "Moving Linux Kernel to 6.12",
+            "url": "https://forums.raspberrypi.com/viewtopic.php?t=379745",
+            "snippet": "The 6.12 kernel is now the default in apt. This is expected to be the next upstream LTS (Long Term Support) kernel."
+          },
+          {
+            "title": "Changelog in Linux kernel 6.12",
+            "url": "https://opennet.ru/kernel/6.12.html",
+            "snippet": "drm/xe: Align all VRAM scanout buffers to 64k physical pages when needed. drm/xe: Allow suspend / resume to be safely called multiple times."
+          },
+          {
+            "title": "The 6.12 kernel has been released",
+            "url": "https://www.reddit.com/r/linux/comments/1gtpo7n/the_612_kernel_has_been_released/",
+            "snippet": ""
+          },
+          {
+            "title": "Linux kernel 6.12 released with new features and improvements",
+            "url": "https://www.facebook.com/groups/lifewithdebian/posts/10160478756493977/",
+            "snippet": ""
+          }
+        ],
+        "time": 1.5175318717956543
+      },
+      {
+        "query": "best mechanical keyboards under 100 dollars",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Budget First Keyboard Recs (<100$)?",
+            "url": "https://www.reddit.com/r/keyboards/comments/1q7zjgl/budget_first_keyboard_recs_100/",
+            "snippet": "Hello, I've had my PC for a bit over 2 years now and finally want to invest in a decent keyboard less than 100 USD.\n\nI usually play games like Val, Elden ..."
+          },
+          {
+            "title": "Best Budget Mechanical Keyboards 2026: Our tested picks ...",
+            "url": "https://www.tomshardware.com/best-picks/best-budget-mechanical-keyboards",
+            "snippet": "Best Budget Mechanical Keyboards 2026: Our tested picks under $100 ; Keychron C2 Pro. Best Productivity1. Keychron C2 Pro ; Ajazz AK820 Pro. Best ..."
+          },
+          {
+            "title": "The 4 Best Budget Gaming Keyboards of 2026",
+            "url": "https://www.rtings.com/keyboard/reviews/best/gaming-keyboards-under-100",
+            "snippet": "The Corsair K70 CORE is the best budget gaming keyboard for most people, ve tested over 290 keyboards, best budget mechanical keyboards."
+          },
+          {
+            "title": "The Absolute BEST Keyboard Under $100... I Guarantee! ND75",
+            "url": "https://www.youtube.com/watch?v=Dmb2cEvUVM8",
+            "snippet": "I can comfortably say that it's the best keyboard under $100 right now... if you're in the market for a very good mechanical keyboard, Best ..."
+          },
+          {
+            "title": "Best gaming keyboard under 100 dollars.? Also looking for a mouse.",
+            "url": "https://www.reddit.com/r/keyboards/comments/1rs42hy/best_gaming_keyboard_under_100_dollars_also/",
+            "snippet": ""
+          },
+          {
+            "title": "What is the best mechanical keyboard under 100 usd?",
+            "url": "https://pcpartpicker.com/forums/topic/472182-what-is-the-best-mechanical-keyboard-under-100-usd",
+            "snippet": ""
+          },
+          {
+            "title": "What is a good mechanical keyboard for general typing under $100?",
+            "url": "https://www.facebook.com/groups/pcbuilderandsetups/posts/1258843495915688/",
+            "snippet": ""
+          },
+          {
+            "title": "Gaming Keyboards Under $100",
+            "url": "https://www.bestbuy.com/site/shop/gaming-keyboards-under-100",
+            "snippet": "Shop the best gaming keyboards under $100 at Best Buy. Find top brands, great features, and unbeatable deals for every gamer!"
+          }
+        ],
+        "time": 2.272212505340576
+      },
+      {
+        "query": "climate change impact on agriculture research paper",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Climate change impacts on sustainable agriculture",
+            "url": "https://www.sciencedirect.com/science/article/pii/S2666519025000251",
+            "snippet": "by M Manucharyan \u00b7 2025 \u00b7 Cited by 27 \u2014 Climate change affects precipitation patterns, leading to more frequent and severe droughts in some regions, but increased rainfall, and flooding in others."
+          },
+          {
+            "title": "(PDF) Climate change and its impact on agriculture",
+            "url": "https://www.researchgate.net/publication/312459338_Climate_change_and_its_impact_on_agriculture",
+            "snippet": "Climate change could increase the prices of major crops in some regions. For the most vulnerable people, lower agricultural output means lower incomes. Under ..."
+          },
+          {
+            "title": "The Impact Of Climate Change On Agriculture",
+            "url": "https://ideas.repec.org/p/pra/mprapa/29784.html",
+            "snippet": "Agriculture is extremely vulnerable to climate change. Higher temperatures eventually reduce yields of desirable crops while encouraging weed and pest ..."
+          },
+          {
+            "title": "Climate change cuts global crop yields, even when farmers ...",
+            "url": "https://sustainability.stanford.edu/news/climate-change-cuts-global-crop-yields-even-when-farmers-adapt",
+            "snippet": "A sweeping new analysis finds that rising global temperatures will dampen the world's capacity to produce food from most staple crops, even ..."
+          },
+          {
+            "title": "How Climate Change Will Exacerbate Agriculture's Impacts",
+            "url": "https://www.nature.org/en-us/newsroom/growing-threats-how-climate-change-will-exacerbate-environmental-impacts-agriculture/",
+            "snippet": "Declining yields and fertility loss could lead in turn to increased clearing of land for food production, causing the loss of wildlife habitat ..."
+          },
+          {
+            "title": "Impacts of climate change on global agriculture accounting ...",
+            "url": "https://www.nature.com/articles/s41586-025-09085-w",
+            "snippet": "by A Hultgren \u00b7 2025 \u00b7 Cited by 417 \u2014 Climate change threatens global food systems, but the extent to which adaptation will reduce losses remains unknown and controversial."
+          },
+          {
+            "title": "Global Change and its Impact on Agriculture",
+            "url": "https://agecoresearch.tamu.edu/mccarl/wp-content/uploads/sites/4/2023/12/879.pdf",
+            "snippet": "by RM Adams \u00b7 2001 \u00b7 Cited by 1 \u2014 The combined effects of climate change have been found to have implications for dryland and irrigated crop yields as well as irrigation water use."
+          },
+          {
+            "title": "How Climate Change Is Stressing the Global Food Supply ...",
+            "url": "https://www.publichealth.columbia.edu/news/how-climate-change-stressing-global-food-supply-public-health",
+            "snippet": "Climate change has broad-ranging impacts on agricultural practices, increasing water use and scarcity, nitrous oxide and methane emissions, soil ..."
+          }
+        ],
+        "time": 2.9707276821136475
+      },
+      {
+        "query": "how to center a div in CSS",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Centering a div nowadays: What are the best practices?",
+            "url": "https://www.reddit.com/r/webdev/comments/1diix0e/centering_a_div_nowadays_what_are_the_best/",
+            "snippet": "What are the best practices to center a div in the middle of a DOM element and what are the pros and cons (ignore compatibility issues)? Here are what ..."
+          },
+          {
+            "title": "How To Center a Div The Ultimate Guide to Centering in CSS",
+            "url": "https://www.joshwcomeau.com/css/center-a-div/",
+            "snippet": "When we set both margin-left: auto and margin-right: auto , the two hippos each gobble up an equal amount of space. This forces the element to ..."
+          },
+          {
+            "title": "CSS Center Align",
+            "url": "https://www.w3schools.com/css/css_align.asp",
+            "snippet": "Center a div element using flexbox: .center { display: flex; justify-content: center; align-items: center; }"
+          },
+          {
+            "title": "Center an element - CSS - MDN Web Docs - Mozilla",
+            "url": "https://developer.mozilla.org/en-US/docs/Web/CSS/How_to/Layout_cookbook/Center_an_element",
+            "snippet": "Then set align-items to center for vertical centering (on the block axis) and justify-content to center for horizontal centering (on the inline ..."
+          },
+          {
+            "title": "Best way to center a <div> on a page vertically and ...",
+            "url": "https://stackoverflow.com/questions/356809/best-way-to-center-a-div-on-a-page-vertically-and-horizontally",
+            "snippet": "This question already has answers here: How to center an element horizontally and vertically (30 answers) Closed 7 years ago. Best way to center ..."
+          },
+          {
+            "title": "How I Center a Div or Text in a Div in CSS",
+            "url": "https://blog.hubspot.com/website/center-div-css",
+            "snippet": "To center a div horizontally. Give the div a CSS class like center. In your CSS code, type your .center CSS selector and open the style ..."
+          },
+          {
+            "title": "How to Center a Div in CSS",
+            "url": "https://mimo.org/tutorials/css/how-to-center-a-div-in-css",
+            "snippet": "Step 1: Center Horizontally with margin: Center Horizontally and Vertically with Flexbox Flexbox is the most common and flexible method for centering."
+          }
+        ],
+        "time": 1.5354344844818115
+      },
+      {
+        "query": "rust lifetime annotation error E0491",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Why Rust Lifetime Elision cannot inference the proper ...",
+            "url": "https://users.rust-lang.org/t/why-rust-lifetime-elision-cannot-inference-the-proper-lifetime-annotations-on-functions/65106",
+            "snippet": "In the newest version of Rust Compiler, the Lifetime Elision can only inference the lifetime annotations in specific circumstances."
+          },
+          {
+            "title": "Confusing error message for misplaced lifetime annotation ...",
+            "url": "https://github.com/rust-lang/rust/issues/75025",
+            "snippet": "I recently forgot where in a mutable reference the lifetime goes, and got a confusing wall of error messages. Out of the six error messages ..."
+          },
+          {
+            "title": "Lifetime annotations: why doesn't Rust?",
+            "url": "https://www.reddit.com/r/rust/comments/10dmkth/lifetime_annotations_why_doesnt_rust/",
+            "snippet": "Decyphering error messages for something like that sounds harder than just writing the lifetimes in the first place."
+          },
+          {
+            "title": "Advanced Lifetimes - The Rust Programming Language",
+            "url": "https://web.mit.edu/rust-lang_v1.25/arch/amd64_ubuntu1404/share/doc/rust/html/book/second-edition/ch19-02-advanced-lifetimes.html",
+            "snippet": "The following is the error we get now when we try to compile: error[E0491]: in type `&'c Context<'s>`, reference has a longer lifetime than the data it"
+          },
+          {
+            "title": "rust - Why do I get lifetime error when using a reference in ...",
+            "url": "https://stackoverflow.com/questions/73920475/why-do-i-get-lifetime-error-when-using-a-reference-in-a-struct-that-is-still-val",
+            "snippet": "The Rust compiler actually keeps a hidden lifetime annotation with every reference (at compile time only). So the Rust compiler understands ..."
+          },
+          {
+            "title": "Rust's Lifetime Rules Make No Sense \u2014 Until You Debug This ...",
+            "url": "https://ritik-chopra28.medium.com/rusts-lifetime-rules-make-no-sense-until-you-debug-this-error-febf8d213f52",
+            "snippet": "Lifetimes freeze time at compile time \u2014 every reference must prove it won't outlive its data. When that proof fails, Rust stops you before ..."
+          },
+          {
+            "title": "Lifetime Annotation Problem - help",
+            "url": "https://users.rust-lang.org/t/lifetime-annotation-problem/13840",
+            "snippet": "Yes, this is due to mutable references. This comes up quite often, usually in the context of an Iterator returning mutable references."
+          },
+          {
+            "title": "Rust Lifetimes explained Tutorial",
+            "url": "https://www.youtube.com/watch?v=S-SkEA4QWWE",
+            "snippet": "Let's understand one of the most important core concept of the Rust programming language: Lifetimes Related Lessons: References and borrowing: ..."
+          }
+        ],
+        "time": 2.661893844604492
+      },
+      {
+        "query": "hyprland windowrule workspace movetoworkspacesilent",
+        "status": "ok",
+        "results": [
+          {
+            "title": "How to change windows between workspaces without ...",
+            "url": "https://www.reddit.com/r/hyprland/comments/1pm3553/how_to_change_windows_between_workspaces_without/",
+            "snippet": "I want Hyprland to move the active window to workspace 10 without switching focus. I'm using that workspace as a window archive to store ..."
+          },
+          {
+            "title": "Window Rules",
+            "url": "https://wiki.hypr.land/Configuring/Basics/Window-Rules/",
+            "snippet": "Can be suffixed with \" silent\" workspace string Sets the workspace on which a window should open. Can also be \"unset\" or suffixed with \" silent ..."
+          },
+          {
+            "title": "Launching / moving a window silently to workspace with on ...",
+            "url": "https://github.com/hyprwm/Hyprland/issues/5663",
+            "snippet": "moving a window silently to workspace with on-created-empty rule triggers the rule \u30fb executing silently triggers the rule \u30fb persistent ..."
+          },
+          {
+            "title": "Dispatchers",
+            "url": "https://wiki.hyprland.org/0.46.0/Configuring/Dispatchers/",
+            "snippet": "List of Dispatchers ; movetoworkspacesilent, same as above, but doesn't switch to the workspace, workspace OR workspace,window for a specific window."
+          },
+          {
+            "title": "Open a window on a specific workspace at start once #982",
+            "url": "https://github.com/hyprwm/Hyprland/discussions/982",
+            "snippet": "Is there a way to open a specific window on a predefined workspace when starting Hyprland. But after that to allow this window on any workspace?"
+          },
+          {
+            "title": "Window Rules",
+            "url": "https://wiki.hyprland.org/0.46.0/Configuring/Window-Rules/",
+            "snippet": "You can also add silent after the workspace to make the window open silently. noinitialfocus disables the initial focus to the window pin pins the window"
+          },
+          {
+            "title": "Workspace window rule is always silent when executed ...",
+            "url": "https://github.com/hyprwm/Hyprland/discussions/13657",
+            "snippet": "If the workspace window rule gets applied while a special workspace is in focus, it gets executed silently."
+          },
+          {
+            "title": "Windowrule to (silently) put a window onto the current ...",
+            "url": "https://forum.hypr.land/t/windowrule-to-silently-put-a-window-onto-the-current-workspace-on-a-particular-monitor-no-focus-change/1107",
+            "snippet": "Is there a way to create a windowrule to put a window on a particular monitor (in my case a current workspace present there) and do it \u201csilently ..."
+          }
+        ],
+        "time": 1.9458487033843994
+      },
+      {
+        "query": "nginx reverse proxy websocket connection reset",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Nginx Reverse Proxy WebSocket Timeout",
+            "url": "https://stackoverflow.com/questions/52078122/nginx-reverse-proxy-websocket-timeout",
+            "snippet": "Alternatively, the proxied server can be configured to periodically send WebSocket ping frames to reset the timeout and check if the connection ..."
+          },
+          {
+            "title": "Allowing web socket connection when using NGINX as ...",
+            "url": "https://www.ajmaradiaga.com/Allowing-web-sockets-when-using-NGINX-as-reverse-proxy/",
+            "snippet": "In this blog post I will cover what is required to allow web socket connections to your application when using NGINX as a reverse proxy."
+          },
+          {
+            "title": "WebSocket proxying",
+            "url": "https://nginx.org/en/docs/http/websocket.html",
+            "snippet": "By default, the connection will be closed if the proxied server does not transmit any data within 60 seconds. This timeout can be increased with ..."
+          },
+          {
+            "title": "NGINX as a WebSocket Proxy",
+            "url": "https://www.f5.com/company/blog/nginx/websocket-nginx",
+            "snippet": "Learn how to use NGINX as a reverse proxy and load balancer for WebSocket applications. NGINX has supported WebSocket since version 1.3 and can act as a ..."
+          },
+          {
+            "title": "Nginx WebSocket Proxy: Config, SSL & Load Balancing",
+            "url": "https://websocket.org/guides/infrastructure/nginx/",
+            "snippet": "This guide provides copy-paste configs for proxying, load balancing, SSL/TLS termination, and related operational concerns."
+          },
+          {
+            "title": "Have NGINX automatically upgrade websocket ...",
+            "url": "https://serverfault.com/questions/1116900/have-nginx-automatically-upgrade-websocket-connections-in-reverse-proxy",
+            "snippet": "I have several services I'm placing behind an NGINX reverse proxy, which was simple enough to setup, but I've run into a problem with websockets. ..."
+          },
+          {
+            "title": "Multiple WebSocket connections at once in reverse proxy",
+            "url": "https://community.nginx.org/t/multiple-websocket-connections-at-once-in-reverse-proxy/2644",
+            "snippet": "What I'm trying to do: Allow multiple WebSocket connections at once Where I'm stuck: Only one WebSocket connection can exist, ..."
+          },
+          {
+            "title": "How to Configure WebSocket with Nginx Reverse Proxy",
+            "url": "https://oneuptime.com/blog/post/2026-01-24-websocket-nginx-reverse-proxy/view",
+            "snippet": "Learn how to configure Nginx as a reverse proxy for WebSocket connections, This guide covers the complete setup for production WebSocket ..."
+          }
+        ],
+        "time": 1.581324577331543
+      },
+      {
+        "query": "systemd service restart loop journalctl",
+        "status": "ok",
+        "results": [
+          {
+            "title": "How to fix infinitely restarting `systemd-journald` job at boot?",
+            "url": "https://discussion.fedoraproject.org/t/how-to-fix-infinitely-restarting-systemd-journald-job-at-boot/138716",
+            "snippet": "Start by checking for disk full or corrupt filesystem. and also do a safe shutdown or restart. and check for filesystem problems."
+          },
+          {
+            "title": "How to tell journald to re-read its configuration?",
+            "url": "https://unix.stackexchange.com/questions/253203/how-to-tell-journald-to-re-read-its-configuration",
+            "snippet": "My question is simple: how do I tell journald to re-read its configuration file without rebooting? I've made some changes to /etc/systemd/journald.conf ..."
+          },
+          {
+            "title": "Managing Systemd Logs on Linux with Journalctl",
+            "url": "https://www.dash0.com/guides/systemd-logs-linux-journalctl",
+            "snippet": "If a service fails to start properly after the last system reboot, you can pinpoint the cause by examining the service logs from the current ..."
+          },
+          {
+            "title": "Warn/disallow Restart=always without preventing repeated ...",
+            "url": "https://github.com/systemd/systemd/issues/30804",
+            "snippet": "RestartSec directives to prevent the service from entering an infinite Start request repeated too quickly loop. systemd's default restart ..."
+          },
+          {
+            "title": "Fix systemd service restart loops",
+            "url": "https://binadit.com/tutorials/fix-systemd-service-keeps-restarting-in-a-loop",
+            "snippet": "This tutorial shows you how to identify why services keep restarting, fix common configuration issues, and prevent future restart loops with ..."
+          },
+          {
+            "title": "journalctl only refreshing after restarting systemd service?",
+            "url": "https://serverfault.com/questions/886704/journalctl-only-refreshing-after-restarting-systemd-service",
+            "snippet": "I have a systemd service with gunicorn. I have a print statement in a function.Problem is that, journalctl does not show the print output when i ..."
+          },
+          {
+            "title": "Systemd: Zero to Hero \u2013 Part 4: Diagnosing Failures and ...",
+            "url": "https://blog.alphabravo.io/systemd-zero-to-hero-part-4-diagnosing-failures-and-debugging-like-a-pro/",
+            "snippet": "The \"start-limit-hit\" result indicates that the service failed repeatedly and systemd stopped trying to restart it . This often happens when a ..."
+          },
+          {
+            "title": "Best way to auto-restart a failed systemd service with ...",
+            "url": "https://forum.linuxconfig.org/t/best-way-to-auto-restart-a-failed-systemd-service-with-logging/8525",
+            "snippet": "Use Restart=always (better than on-failure ), add a 10sec delay between restarts, and limit to 5 attempts per 5 minutes so it doesn't go crazy."
+          }
+        ],
+        "time": 1.8755686283111572
+      },
+      {
+        "query": "docker compose volume mount permission denied",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Docker-compose and named volume permission denied",
+            "url": "https://stackoverflow.com/questions/64027052/docker-compose-and-named-volume-permission-denied",
+            "snippet": "There is docker-compose that uses base Dockerfile created image for application. Dockerfile looks similar to below. Some lines are omitted for reason. ..."
+          },
+          {
+            "title": "How to Fix 'Permission Denied' Errors in Docker Volumes",
+            "url": "https://oneuptime.com/blog/post/2026-01-24-fix-permission-denied-docker-volumes/view",
+            "snippet": "Resolve Docker volume permission errors by understanding UID/GID mapping, using proper ownership settings, and implementing portable ..."
+          },
+          {
+            "title": "Permission denied with volumes : r/docker",
+            "url": "https://www.reddit.com/r/docker/comments/hjsipd/permission_denied_with_volumes/",
+            "snippet": "Whenever I try to write a file in the data folder, which is bound to a volume, it errors with permission denied. What can I do to fix this? My ..."
+          },
+          {
+            "title": "Another Docker Compose Permissions using volumes ...",
+            "url": "https://forums.docker.com/t/another-docker-compose-permissions-using-volumes-question/131998",
+            "snippet": "Mounting a file into a folder will not change the permission of the folder it was mounted in. By any chance is the jobs folder itself ..."
+          },
+          {
+            "title": "Docker-compose volumes give permission denied after ...",
+            "url": "https://github.com/moby/moby/issues/41202",
+            "snippet": "Docker-compose volumes give permission denied after upgrade to moby. It is SELinux's fault. Add :Z to your volumes mounts: /container/path:Z ..."
+          },
+          {
+            "title": "Trouble with volume permissions - General",
+            "url": "https://forums.docker.com/t/trouble-with-volume-permissions/118503",
+            "snippet": "When using bind-mounts, you need to allign the owner uid:gid of the host folder, with the uid:gid of the process inside the container."
+          },
+          {
+            "title": "How to Manage Permissions for Docker Shared Volumes",
+            "url": "https://www.dash0.com/faq/how-to-manage-permissions-for-docker-shared-volumes",
+            "snippet": "Fix Docker volume permission errors with the --user flag, Dockerfile chown patterns, and named-volume vs bind-mount differences."
+          },
+          {
+            "title": "Docker Files and Volumes: Permission Denied",
+            "url": "https://mydeveloperplanet.com/2022/10/19/docker-files-and-volumes-permission-denied/",
+            "snippet": "In this blog, you will learn why you get a 'Permission Denied' error and how to solve it. other has read permissions."
+          }
+        ],
+        "time": 1.6631429195404053
+      },
+      {
+        "query": "apple",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Apple",
+            "url": "https://www.apple.com/",
+            "snippet": "Discover the innovative world of Apple and shop everything iPhone, iPad, Apple Watch, Mac, and Apple TV, plus explore accessories, entertainment, ..."
+          },
+          {
+            "title": "Apple Inc.",
+            "url": "https://en.wikipedia.org/wiki/Apple_Inc.",
+            "snippet": "Apple Inc. is an American multinational technology company headquartered in Cupertino, California, in Silicon Valley, and known for consumer electronics, ..."
+          },
+          {
+            "title": "Apple (@Apple) / Posts / X",
+            "url": "https://x.com/Apple",
+            "snippet": "Apple (@Apple) - Posts - Apple.com | X (formerly Twitter) Apple Location: Cupertino, CA Joined: Sep 27, 2011"
+          },
+          {
+            "title": "apple \u2022 Instagram photos and videos",
+            "url": "https://www.instagram.com/apple/",
+            "snippet": "@appletv is the new U.S. home of F1. Watch every race live starting March 7. Apple Additional hardware and software used Glowing"
+          },
+          {
+            "title": "Apple Brand Shop - Walmart.com",
+            "url": "https://www.walmart.com/cp/apple-brand-shop/1229722",
+            "snippet": "Explore a wide range of innovative offerings, from the newest iPhones and iPads to cutting-edge MacBooks and Apple Watches. AirPods and more."
+          }
+        ],
+        "time": 1.7445526123046875
+      },
+      {
+        "query": "java",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Java | Oracle",
+            "url": "https://www.java.com/",
+            "snippet": "Oracle Java is the #1 programming language and development platform. It reduces costs, shortens development timeframes, drives innovation, and improves ..."
+          },
+          {
+            "title": "Java Downloads",
+            "url": "https://www.oracle.com/java/technologies/downloads/",
+            "snippet": "Download the Java including the latest version 17 LTS on the Java SE Platform. These downloads can be used for any purpose, at no cost, binaries are free to ..."
+          },
+          {
+            "title": "Java",
+            "url": "https://en.wikipedia.org/wiki/Java",
+            "snippet": "Java is one of the Greater Sunda Islands in the South East Asian country of Indonesia. It is bordered by the Indian Ocean to the south and the Java Sea (a part ..."
+          },
+          {
+            "title": "Dev.java: The Destination for Java Developers",
+            "url": "https://dev.java/",
+            "snippet": "The Destination for Java Developers. Hundreds of tutorials, news and videos from the experts, all right here. Get Started. Getting Started with Java \u00b7 Java ..."
+          },
+          {
+            "title": "Java Tutorial",
+            "url": "https://www.w3schools.com/java/",
+            "snippet": "Java Java is one of the world's most widely used programming languages. Java is free to use, and runs on all platforms."
+          },
+          {
+            "title": "r/java",
+            "url": "https://www.reddit.com/r/java/",
+            "snippet": "r/java: News, Technical discussions, research papers and assorted things of interest related to the Java programming language NO programming help,"
+          }
+        ],
+        "time": 2.1456520557403564
+      },
+      {
+        "query": "python",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Welcome to Python.org",
+            "url": "https://www.python.org/",
+            "snippet": "Get Started. Whether you're new to programming or an experienced developer, it's easy to learn and use Python. Start with our Beginner's Guide. Download. Python ..."
+          },
+          {
+            "title": "Python (programming language)",
+            "url": "https://en.wikipedia.org/wiki/Python_(programming_language)",
+            "snippet": "Python is a high-level, general-purpose programming language that emphasizes code readability, simplicity, and ease-of-writing with the use of significant ..."
+          },
+          {
+            "title": "Python Tutorial",
+            "url": "https://www.w3schools.com/python/",
+            "snippet": "Python is a popular programming language. Python can be used on a server to create web applications. Python is easy to learn - You will enjoy it!"
+          },
+          {
+            "title": "Best Python Courses + Tutorials",
+            "url": "https://www.codecademy.com/catalog/language/python",
+            "snippet": "Python is a general-purpose, versatile, and powerful programming language. It's a great first language because Python code is concise and easy to read."
+          },
+          {
+            "title": "Online Python Compiler (Interpreter)",
+            "url": "https://www.programiz.com/python-programming/online-compiler/",
+            "snippet": "Write and run your Python code using our online compiler. Enjoy additional features like code sharing, dark mode, and support for multiple programming ..."
+          },
+          {
+            "title": "Google's Python Class | Python Education",
+            "url": "https://developers.google.com/edu/python",
+            "snippet": "Welcome to Google's Python Class -- this is a free class for people with a little bit of programming experience who want to learn Python."
+          }
+        ],
+        "time": 6.9233903884887695
+      },
+      {
+        "query": "mercury",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Mercury",
+            "url": "https://mercury.com/",
+            "snippet": "Everything you do with money. All in one place. Apply in 10 minutes for business banking that transforms how you operate."
+          },
+          {
+            "title": "Worldwide Leader in Marine Propulsion | Mercury Marine | USA",
+            "url": "https://www.mercurymarine.com/us/en",
+            "snippet": "Mercury Marine is the world's leading manufacturer of recreational marine propulsion engines. Get sales, service and parts info, and find a local dealer ..."
+          },
+          {
+            "title": "Basic Information about Mercury",
+            "url": "https://www.epa.gov/mercury/basic-information-about-mercury",
+            "snippet": "Mercury is a naturally-occurring chemical element found in rock in the earth's crust, including in deposits of coal."
+          },
+          {
+            "title": "Mercury",
+            "url": "https://science.nasa.gov/mercury/",
+            "snippet": "Mercury is the smallest planet in our solar system and the nearest to the Sun. Mercury is only slightly larger than Earth's Moon. It's the ..."
+          },
+          {
+            "title": "Mercury (element)",
+            "url": "https://en.wikipedia.org/wiki/Mercury_(element)",
+            "snippet": "Mercury is a chemical element; it has symbol Hg and atomic number 80. It is commonly known as quicksilver. A heavy, silvery d-block element, mercury is the only ..."
+          }
+        ],
+        "time": 2.2925150394439697
+      },
+      {
+        "query": "jaguar",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Jaguar | Inspire Like No Other | Challenge Convention",
+            "url": "https://www.jaguar.com/en-us/jdx/index.html",
+            "snippet": "Since 1935, Jaguar has been at its best when looking forward. With fearless creativity at our core, we continue to challenge convention."
+          },
+          {
+            "title": "Jaguar",
+            "url": "https://en.wikipedia.org/wiki/Jaguar",
+            "snippet": "The jaguar (Panthera onca) is a large cat species and the only living member of the genus Panthera that is native to the Americas."
+          },
+          {
+            "title": "Market Selector | Jaguar | View the site in your preferred ...",
+            "url": "https://www.jaguar.com/en-xi/jdx/market-selector.html",
+            "snippet": "Discover the different language sites we have to make browsing our vehicle range's easier. We have over 100 different language options available."
+          },
+          {
+            "title": "Jaguar (@Jaguar) / Posts / X",
+            "url": "https://x.com/Jaguar",
+            "snippet": "Jaguar (@Jaguar) - (formerly Twitter) Jaguar Location: Global Website: http://jaguar.com/copy-nothing Joined: Aug 6, 2011 1252Posts 1Following 1194485Followers"
+          },
+          {
+            "title": "Jaguar Cars",
+            "url": "https://en.wikipedia.org/wiki/Jaguar_Cars",
+            "snippet": "Jaguar is a British sports car and luxury vehicle brand of Jaguar Land Rover. Until 1 January 2013, the brand was produced by the British company Jaguar ..."
+          }
+        ],
+        "time": 1.9755492210388184
+      },
+      {
+        "query": "hwo to fi xblue scren wndows 11",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Troubleshooting Windows unexpected restarts and stop ...",
+            "url": "https://support.microsoft.com/en-us/windows/experience/performance-optimization/troubleshooting-windows-unexpected-restarts-and-stop-code-errors",
+            "snippet": "Basic troubleshooting steps for Windows 11 blue screens, black screens and stop code errors \u00b7 Remove any new hardware. \u00b7 Start your PC in safe mode. \u00b7 Check the ..."
+          },
+          {
+            "title": "Got my first blue screen of death anything I can do to ...",
+            "url": "https://www.reddit.com/r/WindowsHelp/comments/1jokank/got_my_first_blue_screen_of_death_anything_i_can/",
+            "snippet": "Honestly, I'd say the most you can do to \"prevent\" BSODs is to run CMD as admin and do SFC /scannow then restart the system, go back into admin ..."
+          },
+          {
+            "title": "How to fix blue screen of death on windows 11?",
+            "url": "https://techcommunity.microsoft.com/discussions/windows11/how-to-fix-blue-screen-of-death-on-windows-11/4507557",
+            "snippet": "Running DISM, a built-in Windows tool, can help resolve 'Blue Screen of Death' issues in Windows 11 by repairing deep-seated system corruption ..."
+          },
+          {
+            "title": "Blue Screen (BSOD) Errors and Stop Code Issues in ...",
+            "url": "https://www.dell.com/support/contents/en-us/article/product-support/self-support-knowledgebase/fix-common-issues/blue-screen",
+            "snippet": "Update drivers and Windows. Check for hardware issues. Run a full virus scan. Consider resetting or reinstalling Windows if the Blue Screen error persists."
+          },
+          {
+            "title": "How to fix Windows 11 blue screen issue?",
+            "url": "https://www.facebook.com/groups/PCPROBLEMSOLUTIONS/posts/9470058726428359/",
+            "snippet": "Hi. I have that dreaded blue screen for Windows 11. I did not do anything. Was playing one minute, tried to turn it back on an hour later and got ..."
+          },
+          {
+            "title": "How can Blue Screen Errors in Windows 11 be resolved? ...",
+            "url": "https://www.quora.com/How-can-Blue-Screen-Errors-in-Windows-11-be-resolved-What-are-the-common-causes-of-these-errors",
+            "snippet": "How can Blue Screen Errors in Windows 11 be resolved? What are the common causes of these errors?"
+          },
+          {
+            "title": "Blue Screen issues on Windows 11",
+            "url": "https://learn.microsoft.com/en-us/answers/questions/5618462/blue-screen-issues-on-windows-11",
+            "snippet": "Update Drivers: Ensure all your device drivers are up to date. \u00b7 Check for Windows Updates: Make sure your Windows 11 is fully updated. \u00b7 Run ..."
+          }
+        ],
+        "time": 2.0179800987243652
+      },
+      {
+        "query": "wht is quantum computng",
+        "status": "ok",
+        "results": [
+          {
+            "title": "What Is Quantum Computing? | IBM",
+            "url": "https://www.ibm.com/think/topics/quantum-computing",
+            "snippet": "Quantum computing is a rapidly-emerging technology that harnesses the laws of quantum mechanics to solve problems too complex for classical ..."
+          },
+          {
+            "title": "Explain it like I'm 5? : r/QuantumComputing",
+            "url": "https://www.reddit.com/r/QuantumComputing/comments/yjnvwh/explain_it_like_im_5/",
+            "snippet": "Can someone explain quantum computing to me like I\u2019m 5? I work in tech sales. I\u2019m not completely dense, but this one is difficult for me. I justwant ..."
+          },
+          {
+            "title": "Quantum Computing Explained | NIST",
+            "url": "https://www.nist.gov/quantum-information-science/quantum-computing-explained",
+            "snippet": "These computers work by harnessing quantum physics \u2014 the strange, often counterintuitive laws that govern the universe at its smallest scales ..."
+          },
+          {
+            "title": "What is quantum computing?",
+            "url": "https://www.mckinsey.com/featured-insights/mckinsey-explainers/what-is-quantum-computing",
+            "snippet": "Quantum computing is a new approach to calculation that uses principles of fundamental physics to solve extremely complex problems very quickly."
+          },
+          {
+            "title": "What is quantum computing?",
+            "url": "https://quantumai.google/whatisqc",
+            "snippet": "Quantum computers use quantum physics to access different computational abilities than classical computers."
+          },
+          {
+            "title": "DOE Explains...Quantum Computing",
+            "url": "https://www.energy.gov/science/doe-explainsquantum-computing",
+            "snippet": "Quantum computers are computers that consist of quantum bits, or \u201cqubits,\u201d that play a similar role to the bits in today's digital computers."
+          },
+          {
+            "title": "What is Quantum Computing?",
+            "url": "https://aws.amazon.com/what-is/quantum-computing/",
+            "snippet": "Quantum computing is a multidisciplinary field comprising aspects of computer science, physics, and mathematics that utilizes quantum mechanics to solve ..."
+          }
+        ],
+        "time": 1.756892204284668
+      },
+      {
+        "query": "best laptap for programing 2025",
+        "status": "ok",
+        "results": [
+          {
+            "title": "A good laptop for programming in 2025? : r/programmation",
+            "url": "https://www.reddit.com/r/programmation/comments/1k2klif/un_bon_ordi_pour_programmer_en_2025/?tl=en",
+            "snippet": "I need a laptop so I can code from bed after spending too much time sitting at my desk. \n\nI need 32GB of RAM and an NVMe SSD because I often have ..."
+          },
+          {
+            "title": "The Best Laptops for Programmers We've Tested for 2026",
+            "url": "https://www.pcmag.com/picks/the-best-laptops-for-programmers",
+            "snippet": "Our Top Tested Picks \u00b7 MSI Prestige 16 AI Evo \u00b7 Apple MacBook Pro 16-Inch (2026, M5 Max) \u00b7 HP ZBook Power 16 G11 A \u00b7 Lenovo ThinkPad E14 Gen 5."
+          },
+          {
+            "title": "How to choose a laptop for programming",
+            "url": "https://www.itpro.com/hardware/laptops/360012/4-best-laptops-for-programming",
+            "snippet": "What are the best laptops for programming? Apple M5 MacBook Pro The. M4 and M5 models in 2025. refresh rate making it laptop to beat that at ..."
+          },
+          {
+            "title": "The 4 Best Laptops For Programming of 2026",
+            "url": "https://www.rtings.com/laptop/reviews/best/by-usage/programming",
+            "snippet": "The Apple MacBook Pro 14 (M4, 2024) is the best laptop for programming we've tested. It packs a ridiculous amount of processing power, allowing ..."
+          },
+          {
+            "title": "Ideal laptops for programming 2025",
+            "url": "https://www.reddit.com/r/AskProgramming/comments/1lu4q5e/ideal_laptops_for_programming_2025/",
+            "snippet": ""
+          },
+          {
+            "title": "What's the best laptop for coding and productivity in 2025?",
+            "url": "https://www.quora.com/Whats-the-best-laptop-for-coding-and-productivity-in-2025",
+            "snippet": ""
+          },
+          {
+            "title": "Which laptops are best for programming in 2025?",
+            "url": "https://www.quora.com/Which-laptops-are-best-for-programming-in-2025",
+            "snippet": ""
+          },
+          {
+            "title": "Best laptop for programming 2026: Top picks for coders",
+            "url": "https://www.techradar.com/news/best-laptop-for-programming",
+            "snippet": "Any of the M-series MacBook Pro models will make a good laptop for programmers, but the M4 remains my top pick for best overall performance. And ..."
+          }
+        ],
+        "time": 2.108962059020996
+      },
+      {
+        "query": "why is my cat staring at the wall",
+        "status": "ok",
+        "results": [
+          {
+            "title": "why does my cat look at 1 direction (usually a wall) and do ...",
+            "url": "https://www.reddit.com/r/CatAdvice/comments/1i1vh9f/why_does_my_cat_look_at_1_direction_usually_a/",
+            "snippet": "no like actually i wanna know"
+          },
+          {
+            "title": "Does anyone know why my cat sits and stares at the wall ...",
+            "url": "https://www.facebook.com/groups/1497497480513488/posts/3913237955606083/",
+            "snippet": "Does anyone know why my cat sits and stares at the wall for hours. She gets on the table and just stares at the ceiling and the wall. Or she just sits ..."
+          },
+          {
+            "title": "Is It Normal for Cats to Stare at Walls?",
+            "url": "https://lovelandregional.com/blog/is-it-normal-for-cats-to-stare-at-walls/",
+            "snippet": "It tends to occur due to age-related changes in the feline's brain. Cognitive dysfunction can cause a cat to exhibit see and hear more than we can."
+          },
+          {
+            "title": "Why Does My Cat Stare at the Wall? Causes & Tips",
+            "url": "https://www.catastrophicreations.com/blogs/articles/why-does-my-cat-stare-at-the-wall?srsltid=AfmBOoqzLK61o3Ig3hBpq9-UxgU304gjDTN_M9dTfOo27vr02cuDmGoh",
+            "snippet": "Even a cat staring at the wall meaning could be as simple as them fixating on shadows, dust motes, or light reflections. cats stare at walls out of stress, ..."
+          },
+          {
+            "title": "Why does my cat stare at the wall?",
+            "url": "https://manypets.com/uk/articles/why-does-cat-stare-wall/",
+            "snippet": "Cats can stare at walls when they have an issue with their hearing or vision. Possible conditions include blindness, cataracts and ear ..."
+          },
+          {
+            "title": "Why do some cats stare at the wall as if something has ...",
+            "url": "https://www.quora.com/Why-do-some-cats-stare-at-the-wall-as-if-something-has-scared-them-and-then-sprint-away",
+            "snippet": "Why do some cats stare at the wall as if something has scared them, and then sprint away?"
+          }
+        ],
+        "time": 2.675703525543213
+      },
+      {
+        "query": "can you microwave aluminum foil",
+        "status": "ok",
+        "results": [
+          {
+            "title": "ELI5: Why can you not put tinfoil in the microwave?",
+            "url": "https://www.reddit.com/r/explainlikeimfive/comments/51bnmv/eli5_why_can_you_not_put_tinfoil_in_the_microwave/",
+            "snippet": "Tinfoil isn't flammable but is there something in it that makes it a microwave flair?"
+          },
+          {
+            "title": "Can You Put Aluminum Foil in the Microwave?",
+            "url": "https://www.maytag.com/blog/kitchen/can-you-put-aluminum-foil-in-the-microwave.html",
+            "snippet": "Aluminum foil can lead to sparking inside a microwave when used incorrectly. These sparks may ignite materials around the tinfoil, which could result in a fire."
+          },
+          {
+            "title": "Aluminium foil and microwave ovens",
+            "url": "https://www.alufoil.org/aluminium-foil-and-microwave-ovens",
+            "snippet": "The use of alufoilcontainers in microwave ovens is safe. Conclusive evidence that aluminium foil packaging can be used safely in microwave ovens has been ..."
+          },
+          {
+            "title": "Can You Microwave Aluminum Foil?",
+            "url": "https://www.whirlpool.com/blog/kitchen/aluminum-foil-in-microwave.html",
+            "snippet": "You can safely use aluminum foil in your microwave as long as you do so properly and follow the instructions provided in your appliance's product manual."
+          },
+          {
+            "title": "Microwave - Using Metal or Foil - GE Kitchen Appliances",
+            "url": "https://products.geappliances.com/appliance/gea-support-search-content?contentId=17965",
+            "snippet": "l Aluminum foil can be safely used in a microwave, but certain guidelines must be followed to prevent damage to the oven."
+          },
+          {
+            "title": "Can I microwave food wrapped in aluminum foil?",
+            "url": "https://www.quora.com/Can-I-microwave-food-wrapped-in-aluminum-foil",
+            "snippet": "Can I microwave food wrapped in aluminum foil?"
+          },
+          {
+            "title": "Using Aluminum Foil in a Microwave | FAQ",
+            "url": "https://www.subzero-wolf.com/assistance/answers/wolf/microwave-ovens/using-aluminum-foil-in-a-microwave",
+            "snippet": "When using aluminum foil in the microwave oven, use small amounts and have it carefully placed. Some general rules: Use new, smooth foil only."
+          }
+        ],
+        "time": 6.904682874679565
+      }
+    ],
+    "tavily": [
+      {
+        "query": "Python asyncio tutorial 2025",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Python's asyncio: A Hands-On Walkthrough",
+            "url": "https://realpython.com/async-io-python",
+            "snippet": "`$ python -m asyncio\nasyncio REPL 3.13.3 (main, Jun 25 2025, 17:27:59) ... on darwin\nUse \"await\" directly instead of \"asyncio.run()\".\nType \"help\", \"copyright\", \"credits\" or \"license\" for more informat"
+          },
+          {
+            "title": "Asynchronous Programming with asyncio in Python \u2014 The Ultimate Guide",
+            "url": "https://blog.naveenpn.com/asynchronous-programming-with-asyncio-in-python-the-ultimate-guide",
+            "snippet": "Introduction Modern applications increasingly rely on real-time data streams \u2014 from chat apps and stock tickers to IoT device feeds, real-time analytics dashboards, and webhooks. The challenge isn\u2019t j"
+          },
+          {
+            "title": "asyncio in Python - GeeksforGeeks",
+            "url": "https://www.geeksforgeeks.org/python/asyncio-in-python",
+            "snippet": "Courses\n\n Placement 360 Course\n Data Analytics Course\n DSA and System Design\n\n- Data Science CourseExplore\n\n# asyncio in Python\n\nLast Updated : 23 Jul, 2025 [...] Python  ````\n import asyncio async de"
+          },
+          {
+            "title": "Python Asyncio: The Complete Guide \u00b7 micropython \u00b7 Discussion #10063 \u00b7 GitHub",
+            "url": "https://github.com/orgs/micropython/discussions/10063",
+            "snippet": "### Uh oh!\n\nThere was an error while loading. Please reload this page.\n\n#### aligheshlaghi97 May 16, 2025\n\n|  | [...] You must be logged in to vote\n\nAll reactions\n\n0 replies\n\nComment options\n\n### Uh o"
+          },
+          {
+            "title": "A quick intro guide to asynchronous programming in Python (using asyncio)",
+            "url": "https://medium.com/wix-engineering/a-quick-intro-guide-to-asynchronous-programming-in-python-using-asyncio-18e42e652272",
+            "snippet": "\u2014 Code become unreadable for people not familiar with it. Unlike threads, asyncio comes with its own syntax and tools which becomes hard to understand. \n\n \u2014 You cant use libraries with clients not bui"
+          },
+          {
+            "title": "Asyncio - The Blue Book",
+            "url": "https://lyz-code.github.io/blue-book/asyncio",
+            "snippet": "```\n>>> import time>>> async def main():... t = asyncio. create_task(coro([3, 2, 1]))... t2 = asyncio. create_task(coro([10, 5, 0]))# Python 3.7+... print('Start:', time. strftime(' %X '))... a = awai"
+          },
+          {
+            "title": "asyncio \u2014 Asynchronous I/O",
+            "url": "https://docs.python.org/3/library/asyncio.html",
+            "snippet": "Low-level APIs\n\n Event loop\n Futures\n Transports and Protocols\n Policies\n Platform Support\n Extending\n\nGuides and Tutorials\n\n High-level API Index\n Low-level API Index\n Developing with asyncio\n asynci"
+          },
+          {
+            "title": "Asyncio Architecture in Python: Event Loops, Tasks, and ...",
+            "url": "https://dev.to/imsushant12/asyncio-architecture-in-python-event-loops-tasks-and-futures-explained-4pn3",
+            "snippet": "```\n  import asyncio async def say_hi(): await asyncio. sleep(1) print(\"Hi! \") loop. stop() # stop the loop after task completes loop = asyncio. new_event_loop() asyncio. set_event_loop(loop) loop. cr"
+          }
+        ],
+        "time": 0.8170316219329834
+      },
+      {
+        "query": "Linux kernel 6.12 changelog",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Changelog in Linux kernel 6.12",
+            "url": "https://opennet.ru/kernel/6.12.html",
+            "snippet": "# Changelog in Linux kernel 6.12\n\n'drm/xe/hw\\_engine\\_group: Register hw engine group's exec queues\n\n.gitignore: add .gcda files\n\n.mailmap: Add an entry for my work email address\n\n.mailmap: update e-m"
+          },
+          {
+            "title": "Index of /pub/linux/kernel/v6.x/",
+            "url": "https://www.kernel.org/pub/linux/kernel/v6.x",
+            "snippet": "04:49 14M ChangeLog-6.12.1 22-Nov-2024 14:39 5096 ChangeLog-6.12.10 17-Jan-2025 12:54 304K ChangeLog-6.12.11 23-Jan-2025 16:37 197K ChangeLog-6.12.12 01-Feb-2025 17:55 55K ChangeLog-6.12.13 08-Feb-202"
+          },
+          {
+            "title": "Linux_6.12",
+            "url": "https://kernelnewbies.org/Linux_6.12",
+            "snippet": "Summary of the changes and new features merged in the Linux kernel during the 6.12 development cycle."
+          },
+          {
+            "title": "Linux Kernel 6.12 Released: Key Features and Improvements",
+            "url": "https://tuxcare.com/blog/linux-kernel-6-12",
+            "snippet": "The latest Linux kernel 6.12 was released on November 17, 2024. With each new release, the Linux kernel continues to push the boundaries of performance, security, and functionality. Expected to be a L"
+          },
+          {
+            "title": "Moving Linux Kernel to 6.12",
+            "url": "https://forums.raspberrypi.com/viewtopic.php?t=379745",
+            "snippet": "The 6.12 kernel is now the default in apt. This is expected to be the next upstream LTS (Long Term Support) kernel. No issues so far."
+          },
+          {
+            "title": "Linux kernel version history - Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Linux_kernel_version_history",
+            "snippet": "101. \u2191 \"linux-kernel.vger.kernel.org archive mirror\". lore.kernel.org. Retrieved 21 April 2025.\n102. \u2191 Torvalds, Linus (17 November 2024). \"Linux 6.12\".\n103. \u2191 Greg Kroah-Hartman (16 June 2026). \"Linu"
+          },
+          {
+            "title": "Maximize Safety & Performance: Linux 6.12 LTS vs 6.6 LTS",
+            "url": "https://linuxsecurity.com/news/security-projects/how-linux-6-12-lts-outperforms-6-6-lts",
+            "snippet": "Linux 6.12 LTS offers numerous security updates designed to fortify your system against various forms of attack, from kernel patches and fixes for access control mechanisms to improvements in module l"
+          },
+          {
+            "title": "Kernel 6.12.4 Changelog Summary : r/linux",
+            "url": "https://www.reddit.com/r/linux/comments/1hbfsgv/kernel_6124_changelog_summary",
+            "snippet": "1. Architecture-specific Updates \u00b7 Fixed bugs in interrupt handling for specific chipsets. \u00b7 Enhanced support for Intel and AMD processor"
+          }
+        ],
+        "time": 0.7828304767608643
+      },
+      {
+        "query": "best mechanical keyboards under 100 dollars",
+        "status": "ok",
+        "results": [
+          {
+            "title": "5 Best Budget Mechanical Keyboards Under $100",
+            "url": "https://keebsforall.com/blogs/mechanical-keyboards-101/5-best-budget-mechanical-keyboards-under-100",
+            "snippet": "The Velocifire TKL02WS is a solid pick in the budget mechanical keyboard category, offering a compact tenkeyless design and dual connectivity options. Built with ABS plastic and weighing 2.2 pounds, i"
+          },
+          {
+            "title": "2025's Best Mechanical Keyboard Under $100 Isn't What You Expect",
+            "url": "https://www.youtube.com/watch?v=5cs0wV41eBc",
+            "snippet": "The AULA F99 Pro, Epomaker Galaxy 100, MSH's A68, Keyron V6, and Keyron K10 Pro are the most popular mechanical keyboards under $100 of 2025. But which is the absolute best? We're going to compare the"
+          },
+          {
+            "title": "Gaming Keyboards Under $100",
+            "url": "https://www.bestbuy.com/site/shop/gaming-keyboards-under-100",
+            "snippet": "The best gaming keyboards aren't just for hardcore gamers. They're for anyone who wants a keyboard that's responsive, comfortable to type on, and functional. Browse the top-ranked list of gaming keybo"
+          },
+          {
+            "title": "The Absolute BEST Keyboard Under $100... I Guarantee! ND75",
+            "url": "https://www.youtube.com/watch?v=Dmb2cEvUVM8",
+            "snippet": "right now with like 15 different 500 plus dollar keyboards buy this thing I don't think there's anything better than this keyboard on the market under 100 bucks hands down heck even $200 and you know "
+          },
+          {
+            "title": "Best Budget Mechanical Keyboards 2026: Our tested picks ...",
+            "url": "https://www.tomshardware.com/best-picks/best-budget-mechanical-keyboards",
+            "snippet": "With so much gaming focus on smaller keyboards, full-sized models with modern features at budget-friendly prices aren't as abundant 75% and 60% keyboards these days. But Keychron's C2 Pro stands out f"
+          },
+          {
+            "title": "The 4 Best Budget Gaming Keyboards of 2026",
+            "url": "https://www.rtings.com/keyboard/reviews/best/gaming-keyboards-under-100",
+            "snippet": "Best\n\nGaming   Keyboards   Mechanical   Wireless   Ergonomic   Budget Gaming   Typing   iPad   Mac   Office   Budget And Cheap   Programming   Logitech   75%   Budget Mechanical   Keychron   Low-Profi"
+          },
+          {
+            "title": "Budget First Keyboard Recs (<100$)?",
+            "url": "https://www.reddit.com/r/keyboards/comments/1q7zjgl/budget_first_keyboard_recs_100",
+            "snippet": "Hello, I've had my PC for a bit over 2 years now and finally want to invest in a decent keyboard less than 100 USD.\n\nI usually play games like Val, Elden"
+          }
+        ],
+        "time": 3.3913724422454834
+      },
+      {
+        "query": "climate change impact on agriculture research paper",
+        "status": "ok",
+        "results": [
+          {
+            "title": "The Impact Of Climate Change On Agriculture",
+            "url": "https://ideas.repec.org/p/pra/mprapa/29784.html",
+            "snippet": "weed and pest proliferation. Changes in precipitation patterns increase the likelihood of short-run crop failures and long-run production declines. Although there will be gains in some crops in some r"
+          },
+          {
+            "title": "How Climate Change Is Stressing the Global Food Supply ...",
+            "url": "https://www.publichealth.columbia.edu/news/how-climate-change-stressing-global-food-supply-public-health",
+            "snippet": "A sweeping global research review of the links between climate and agriculture reveals the likelihood of an emergent feedback loop whereby, as climate change puts more pressure on the global food supp"
+          },
+          {
+            "title": "Impacts of Global Climate Change on Agricultural Production",
+            "url": "https://www.mdpi.com/2073-4395/14/7/1360",
+            "snippet": "events, and the occurrence patterns of pests and diseases directly or indirectly, ultimately influencing crop yield and quality. This article reviews the latest research progress in this field, summar"
+          },
+          {
+            "title": "[PDF] CLIMATE CHANGE: Impact on Agriculture and Costs of Adaptation",
+            "url": "https://www.unisdr.org/files/11292_IFPRIfood.pdf",
+            "snippet": "Climate Change 1 Climate Change T he research underlying this report provides detailed estimates of the impacts of climate change on agricultural production, consumption, prices, and trade, and also e"
+          },
+          {
+            "title": "How Climate Change Will Exacerbate Agriculture's Environmental Impacts",
+            "url": "https://www.nature.org/en-us/newsroom/growing-threats-how-climate-change-will-exacerbate-environmental-impacts-agriculture",
+            "snippet": "\u201cThe paper highlights where agriculture\u2019s negative environmental impacts could be further magnified as the climate crisis deepens, exacerbating greenhouse gas emissions, nutrient pollution, and habita"
+          },
+          {
+            "title": "GLOBAL CLIMATE CHANGE AND ITS IMPACT ON AGRICULTURE",
+            "url": "https://agecoresearch.tamu.edu/mccarl/wp-content/uploads/sites/4/2023/12/879.pdf",
+            "snippet": "4. Concluding comments Agriculture can be affected by future climate change and current or relatively near-term efforts to mitigate climate change. There is a growing literature on both of these topic"
+          },
+          {
+            "title": "Climate change impacts on sustainable agriculture",
+            "url": "https://www.sciencedirect.com/science/article/pii/S2666519025000251",
+            "snippet": "This article explores climate change and its possible impact on the agrarian sector of Armenia through correlation analysis. As a country heavily reliant on agriculture for economic stability and food"
+          },
+          {
+            "title": "Impacts of climate change on global agriculture accounting ...",
+            "url": "https://www.nature.com/articles/s41586-025-09085-w",
+            "snippet": "that do account for autonomous adaptation. We note that, in a recent paper50.\"), researchers incorporate the Moore et al.9.\") results directly into the Greenhouse Gas Impact Value Estimator (GIVE) int"
+          }
+        ],
+        "time": 1.2624967098236084
+      },
+      {
+        "query": "how to center a div in CSS",
+        "status": "ok",
+        "results": [
+          {
+            "title": "How to center a DIV in CSS - 5 ways to center element",
+            "url": "https://www.youtube.com/watch?v=4Dl6TTs-nos",
+            "snippet": "00:00 - Start\n00:12 - How to center a DIV using CSS\n00:27 - Source Code and Setup\n00:52 - Center a div in CSS using the text-align property\n01:10 - Center a DIV in CSS Using the margin property\n01:49 "
+          },
+          {
+            "title": "How I Center a Div or Text in a Div in CSS",
+            "url": "https://blog.hubspot.com/website/center-div-css",
+            "snippet": "Most of the web pages I created at the beginning of my career were extremely limited due to my lack of knowledge of how powerful CSS is. The good news is you don\u2019t have to make the same mistakes I did"
+          },
+          {
+            "title": "How to Center a Div in CSS",
+            "url": "https://mimo.org/tutorials/css/how-to-center-a-div-in-css",
+            "snippet": "CAREER PATHS\n\nFull-Stack DevelopmentFront-End DevelopmentBack-End DevelopmentPython Development\n\nCOURSES\n\nHTMLJavaScriptReactSQL\n\nCSSTypescriptPythonSwift\n\nGlossaryTutorialsLearner storiesBlog\n\nPricin"
+          },
+          {
+            "title": "How To Center a Div \u2022 Josh W. Comeau",
+            "url": "https://www.joshwcomeau.com/css/center-a-div",
+            "snippet": "JoshWComeau\n\n# How To Center a Div The Ultimate Guide to Centering in CSS\n\nFiled under\n:   CSS\n\non\n\nin\n:   February 13th, 2024.\n:   Feb 2024.\n\nLast updated\n\non\n\nin\n:   April 27th, 2026.\n:   Apr 2026.\n"
+          },
+          {
+            "title": "html - Best way to center a <div> on a page vertically and horizontally? - Stack Overflow",
+            "url": "https://stackoverflow.com/questions/356809/best-way-to-center-a-div-on-a-page-vertically-and-horizontally",
+            "snippet": "and vertically middle 12\") Vertically & Horizontally Align inner DIV center of the page how can I align to middle by height 8\") How to align div in center of a page? 5\") CSS Vertically & Horizontally "
+          },
+          {
+            "title": "Centering in CSS Guide | CSS-Tricks",
+            "url": "https://css-tricks.com/centering-css-complete-guide",
+            "snippet": "```\n    div { display: flex; } div div { margin: auto; } \n    ```\n18. Martin Rinehart\n\n    Permalink to comment#\n\n    Beautiful summary, Chris. Right into my CSS book\u2019s webliography.\n\n    By the by, t"
+          },
+          {
+            "title": "Center an element - CSS | MDN",
+            "url": "https://developer.mozilla.org/en-US/docs/Web/CSS/How_to/Layout_cookbook/Center_an_element",
+            "snippet": "```\n\n### CSS\n\ncss\n\n```\ndiv { border: solid 3px; padding: 1em; max-width: 75%; } .item { border: 2px solid rgb(95 97 110); border-radius: 0.5em; padding: 20px; width: 10em; } .container { height: 8em; "
+          },
+          {
+            "title": "CSS Center Align",
+            "url": "https://www.w3schools.com/css/css_align.asp",
+            "snippet": "#### For Businesses\n\nContact us about W3Schools Academy for your organization\n\n#### Contact Us\n\nAbout sales:\nsales@w3schools.com\n  \nAbout errors:\nhelp@w3schools.com\n\n## CSS Tutorial\n\n## CSS Advanced\n\n"
+          }
+        ],
+        "time": 1.0531213283538818
+      },
+      {
+        "query": "rust lifetime annotation error E0491",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Advanced Lifetimes - The Rust Programming Language",
+            "url": "https://web.mit.edu/rust-lang_v1.25/arch/amd64_ubuntu1404/share/doc/rust/html/book/second-edition/ch19-02-advanced-lifetimes.html",
+            "snippet": "`error[E0491]: in type `&'c Context<'s>`, reference has a longer lifetime than the data it references\n--> src/lib.rs:4:5\n|\n4 | context: &'c Context<'s>,\n| ^^^^^^^^^^^^^^^^^^^^^^^^\n|\nnote: the pointer "
+          },
+          {
+            "title": "Confusing error message for misplaced lifetime annotation in ...",
+            "url": "https://github.com/rust-lang/rust/issues/75025",
+            "snippet": "I recently forgot where in a mutable reference the lifetime goes, and got a confusing wall of error messages. Out of the six error messages"
+          },
+          {
+            "title": "Why Rust Lifetime Elision cannot inference the proper lifetime annotations on functions? - help - The Rust Programming Language Forum",
+            "url": "https://users.rust-lang.org/t/why-rust-lifetime-elision-cannot-inference-the-proper-lifetime-annotations-on-functions/65106",
+            "snippet": "The compiler will throw the error: explicit lifetime required in the type of `tar_vec`, which means the lifetime of the returned value is mismatch the annotation in the function signature.\n\n`tar_vec`\n"
+          },
+          {
+            "title": "Why do I get lifetime error when using a reference in a struct that is still valid?",
+            "url": "https://stackoverflow.com/questions/73920475/why-do-i-get-lifetime-error-when-using-a-reference-in-a-struct-that-is-still-val",
+            "snippet": "The Rust compiler actually keeps a hidden lifetime annotation with every reference (at compile time only). So the Rust compiler understands"
+          },
+          {
+            "title": "Rust Lifetimes explained Tutorial",
+            "url": "https://www.youtube.com/watch?v=S-SkEA4QWWE",
+            "snippet": "using lifetimes I should use them correctly so if I using a lifetime annotation in the return type this should match at least one of the types given as parameters so since we don't we're not using any"
+          },
+          {
+            "title": "Lifetime Annotation Problem - help",
+            "url": "https://users.rust-lang.org/t/lifetime-annotation-problem/13840",
+            "snippet": "Yes, this is due to mutable references. This comes up quite often, usually in the context of an Iterator returning mutable references."
+          },
+          {
+            "title": "How to Use Rust Lifetimes Correctly",
+            "url": "https://oneuptime.com/blog/post/2026-02-03-rust-lifetimes/view",
+            "snippet": "```\n// A reference with an explicit lifetime annotation &'a i32 // A mutable reference with a lifetime &'a mut i32\n```\n\nLifetime annotations do not change how long values live. They describe relations"
+          },
+          {
+            "title": "Lifetime annotations: why doesn't Rust?",
+            "url": "https://www.reddit.com/r/rust/comments/10dmkth/lifetime_annotations_why_doesnt_rust",
+            "snippet": "Decyphering error messages for something like that sounds harder than just writing the lifetimes in the first place."
+          }
+        ],
+        "time": 0.8145158290863037
+      },
+      {
+        "query": "hyprland windowrule workspace movetoworkspacesilent",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Open a window on a specific workspace at start once \u00b7 hyprwm/Hyprland \u00b7 Discussion #982 \u00b7 GitHub",
+            "url": "https://github.com/hyprwm/Hyprland/discussions/982",
+            "snippet": "-\n\n|  |\n\n| The only way I found to make this work with apps that spawn child processes to create their windows was to temporarily set a `windowrule`, then unset it after a short delay.  ``` windowrule"
+          },
+          {
+            "title": "Dispatchers \u2013 Hyprland Wiki",
+            "url": "https://wiki.hypr.land/0.46.0/Configuring/Dispatchers",
+            "snippet": "| killactive | closes (not kills) the active window | none |\n| closewindow | closes a specified window | window |\n| workspace | changes the workspace | workspace |\n| movetoworkspace | moves the focuse"
+          },
+          {
+            "title": "Window Rules \u2013 Hyprland Wiki",
+            "url": "https://wiki.hypr.land/0.46.0/Configuring/Window-Rules",
+            "snippet": "`windowrule = move 100 100, ^(kitty)$ # moves kitty to 100 100\nwindowrule = animation popin, ^(kitty)$ # sets the animation style for kitty\nwindowrule = noblur, ^(firefox)$ # disables blur for firefox"
+          },
+          {
+            "title": "Launching / moving a window silently to workspace with on-created-empty rule triggers the rule \u00b7 Issue #5663 \u00b7 hyprwm/Hyprland \u00b7 GitHub",
+            "url": "https://github.com/hyprwm/Hyprland/issues/5663",
+            "snippet": "### Description\n\nThis is annoying when I autostart windows and they are launched 2 times because executing silently triggers the rule\n\n### How to reproduce\n\n1. Set on-created-empy rule, for example:\n\n"
+          },
+          {
+            "title": "Workspace Rules \u2013 Hyprland Wiki",
+            "url": "https://wiki.hypr.land/0.47.0/Configuring/Workspace-Rules",
+            "snippet": "Hyprland Wiki\nHyprland Wiki\n\nOn this page\n\n# Workspace Rules\n\nYou can set workspace rules to achieve workspace-specific behaviors. For\ninstance, you can define a workspace where all windows are drawn "
+          },
+          {
+            "title": "Workspace window rule is always silent when executed from special workspace \u00b7 hyprwm/Hyprland \u00b7 Discussion #13657 \u00b7 GitHub",
+            "url": "https://github.com/hyprwm/Hyprland/discussions/13657",
+            "snippet": "and places the window on the underlying workspace:  ``` hl.bind(\"F12\", hl.dsp.workspace.toggle_special(\"term\")) hl.workspace_rule({ workspace=\"special:term\", on_created_empty=\"kitty --class dropdown\" "
+          },
+          {
+            "title": "How to change windows between workspaces without ...",
+            "url": "https://www.reddit.com/r/hyprland/comments/1pm3553/how_to_change_windows_between_workspaces_without",
+            "snippet": "I want Hyprland to move the active window to workspace 10 without switching focus. I'm using that workspace as a window archive to store"
+          },
+          {
+            "title": "Window Rules",
+            "url": "https://wiki.hypr.land/Configuring/Basics/Window-Rules",
+            "snippet": "| fullscreen\\_state\\_internal | [int] | Windows with matching `fullscreenstate`. `0` - none, `1` - maximize, `2` - fullscreen, `3` - maximize and fullscreen. |\n| workspace | [workspace] | Windows on m"
+          }
+        ],
+        "time": 1.2737929821014404
+      },
+      {
+        "query": "nginx reverse proxy websocket connection reset",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Nginx Reverse Proxy WebSocket Timeout - Stack Overflow",
+            "url": "https://stackoverflow.com/questions/52078122/nginx-reverse-proxy-websocket-timeout",
+            "snippet": "> Alternatively, the proxied server can be configured to periodically send WebSocket ping frames to reset the timeout and check if the connection is still alive. [...] Nginx/1.12.2\n CentOS Linux relea"
+          },
+          {
+            "title": "WebSocket proxying",
+            "url": "https://nginx.org/en/docs/http/websocket.html",
+            "snippet": "By default, the connection will be closed if the proxied server does not transmit any data within 60 seconds. This timeout can be increased with the proxy\\_read\\_timeout directive. Alternatively, the "
+          },
+          {
+            "title": "Multiple WebSocket connections at once in reverse proxy - NGINX - NGINX Community Forum",
+            "url": "https://community.nginx.org/t/multiple-websocket-connections-at-once-in-reverse-proxy/2644",
+            "snippet": "# Multiple WebSocket connections at once in reverse proxy\n\nWhat I\u2019m trying to do: Allow multiple WebSocket connections at once\n\nWhere I\u2019m stuck: Only one WebSocket connection can exist, any other conn"
+          },
+          {
+            "title": "How to Configure WebSocket with Nginx Reverse Proxy",
+            "url": "https://oneuptime.com/blog/post/2026-01-24-websocket-nginx-reverse-proxy/view",
+            "snippet": "connections limit_conn websocket_conn 10; proxy_pass  proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection \"upgrade\"; proxy_read_timeout 86400s; } } [...] $http_"
+          },
+          {
+            "title": "Allowing web socket connection when using NGINX as reverse proxy \u2013 Antonio Maradiaga \u2013 Collection of things I'm interested in / working on",
+            "url": "https://ajmaradiaga.com/Allowing-web-sockets-when-using-NGINX-as-reverse-proxy",
+            "snippet": "# Antonio Maradiaga\n\nCollection of things I'm interested in / working on\n\n# Allowing web socket connection when using NGINX as reverse proxy\n\nIn this blog post I will cover what is required to allow w"
+          },
+          {
+            "title": "NGINX as a WebSocket Proxy | F5",
+            "url": "https://www.f5.com/company/blog/nginx/websocket-nginx",
+            "snippet": "A WebSocket application keeps a long\u2011running connection open between the client and the server, facilitating the development of real\u2011time applications. The HTTP Upgrade mechanism used to upgrade the c"
+          },
+          {
+            "title": "NGINX WebSocket Proxy: HTTP Upgrade & WSS Guide [2026]",
+            "url": "https://www.getpagespeed.com/server-setup/nginx/nginx-websocket-proxy/amp",
+            "snippet": "`proxy_set_header Connection $connection_upgrade`\n\n`proxy_set_header Connection $connection_upgrade`\n\nSets the `Connection` header based on the map defined earlier. For WebSocket requests, this become"
+          },
+          {
+            "title": "Nginx WebSocket Proxy: Config, SSL & Load Balancing | WebSocket.org",
+            "url": "https://websocket.org/guides/infrastructure/nginx",
+            "snippet": "1. Connection immediately closes \u2014 Verify `Upgrade` and `Connection` headers are set and `proxy_http_version 1.1` is specified. HTTP/1.0 does not support `Upgrade`.\n2. Connection drops after 60 second"
+          }
+        ],
+        "time": 0.9070556163787842
+      },
+      {
+        "query": "systemd service restart loop journalctl",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Warn/disallow `Restart=always` without preventing `repeated too quickly` loop \u00b7 Issue #30804 \u00b7 systemd/systemd \u00b7 GitHub",
+            "url": "https://github.com/systemd/systemd/issues/30804",
+            "snippet": "I've recently opened a few issues, and PRs for various projects to address failure conditions that are all related to these services using a systemd `.service` file that they've configured by default "
+          },
+          {
+            "title": "Best way to auto-restart a failed systemd service with logging? - General Linux Help - Linux Forum",
+            "url": "https://forum.linuxconfig.org/t/best-way-to-auto-restart-a-failed-systemd-service-with-logging/8525",
+            "snippet": "# Best way to auto-restart a failed systemd service with logging?\n\nHey everyone,\n\nI\u2019ve got a small Ubuntu-based VPS running a custom service, and I want to make sure it auto-restarts if it crashes \u2014 b"
+          },
+          {
+            "title": "How do I see when a systemd service was started/stopped/restarted? - Unix & Linux Stack Exchange",
+            "url": "https://unix.stackexchange.com/questions/368767/how-do-i-see-when-a-systemd-service-was-started-stopped-restarted",
+            "snippet": "```\n$ journalctl No journal files were found. \n```\n\nwhich is a bit confusing.\n\nIf you are logged in as root, `journalctl --unit=yourservice` should give you the information you are looking for. After "
+          },
+          {
+            "title": "Systemd: Zero to Hero \u2013 Part 4: Diagnosing Failures and Debugging Like a Pro",
+            "url": "https://blog.alphabravo.io/systemd-zero-to-hero-part-4-diagnosing-failures-and-debugging-like-a-pro",
+            "snippet": "```\n# Show current resource usage systemctl status myapp.service # Show detailed resource information systemctl show myapp.service | grep -E \"(Memory|Tasks|CPU)\" \n```\n\n### Watchdog and Restart Policie"
+          },
+          {
+            "title": "Fix systemd service restart loops",
+            "url": "https://binadit.com/tutorials/fix-systemd-service-keeps-restarting-in-a-loop",
+            "snippet": "Apr 17, 2026 \u2014 This tutorial shows you how to identify why services keep restarting, fix common configuration issues, and prevent future restart loops with"
+          },
+          {
+            "title": "Managing Systemd Logs on Linux with Journalctl \u00b7 Dash0",
+            "url": "https://www.dash0.com/guides/systemd-logs-linux-journalctl",
+            "snippet": "sh\n\n```\n\n1\n\nsudo systemctl restart systemd-journald\n\n```\n\n## Centralizing journald logs with OpenTelemetry\n\nWhile `journalctl` is excellent for local log inspection, modern observability strategies re"
+          },
+          {
+            "title": "how to automatically restart service if there is error in log?",
+            "url": "https://superuser.com/questions/1702771/linux-how-to-automatically-restart-service-if-there-is-error-in-log",
+            "snippet": "Feb 2, 2022 \u2014 Hello in the sudo systemctl status I sometimes see an error in text like [info] asio async_shutdown error: asio.system:32 (Broken pipe), yet it is still"
+          },
+          {
+            "title": "How to fix infinitely restarting `systemd-journald` job at boot? - Fedora Discussion",
+            "url": "https://discussion.fedoraproject.org/t/how-to-fix-infinitely-restarting-systemd-journald-job-at-boot/138716",
+            "snippet": "However, should this occur again (it may, for similar has occurred in the past, for me) I shan\u2019t forget to provide this information.\n\nIrrespective, for posterity:\n\nIf your console is usable (e.g., usi"
+          }
+        ],
+        "time": 0.8880183696746826
+      },
+      {
+        "query": "docker compose volume mount permission denied",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Another Docker Compose Permissions using volumes question - Compose - Docker Community Forums",
+            "url": "https://forums.docker.com/t/another-docker-compose-permissions-using-volumes-question/131998",
+            "snippet": "| Topic |  | Replies | Views | Activity |\n ---  --- \n| Error EACCES permission denied, using Docker Compose plugin on Ubuntu  Compose docker ,  docker-compose ,  ubuntu | 4 | 27553 | April 25, 2023 |\n"
+          },
+          {
+            "title": "Issue \u00b7 GitHub",
+            "url": "https://github.com/moby/moby/issues/41202",
+            "snippet": "Notifications  You must be signed in to change notification settings\n Fork 19.2k\n Star  72k\n\n# Docker-compose volumes give permission denied after upgrade to moby. #41202\n\nCopy link\n\nCopy link\n\nClosed"
+          },
+          {
+            "title": "How to Fix 'Permission Denied' Errors in Docker Volumes",
+            "url": "https://oneuptime.com/blog/post/2026-01-24-fix-permission-denied-docker-volumes/view",
+            "snippet": "```\n# Shared label (multiple containers can access) docker run -v ./data:/app/data:z myapp # Private label (only this container) docker run -v ./data:/app/data:Z myapp\n```\n\nIn Compose:\n\n```\nvolumes: -"
+          },
+          {
+            "title": "Docker volumes and how to solve permission denied for docker volume",
+            "url": "https://www.youtube.com/watch?v=iODjCjHSpVU",
+            "snippet": "uh home directory directory name it's save file project and numbers then column and now part where we are going to mount this directory to our local Docker storage and that is app numbers and of cours"
+          },
+          {
+            "title": "Docker Files and Volumes: Permission Denied \u2013 My Developer Planet",
+            "url": "https://mydeveloperplanet.com/2022/10/19/docker-files-and-volumes-permission-denied",
+            "snippet": "My Developer Planet\n\nMy Developer Planet\n\nThis blog is a platform for me to share my knowledge in the area of software development.\n\n# Docker Files and Volumes: Permission Denied\n\nEncountered a \u2018Permi"
+          },
+          {
+            "title": "Permission Problems with persistent Docker Volumes stored at ./ - Installation Issues - Passbolt community forum",
+            "url": "https://community.passbolt.com/t/permission-problems-with-persistent-docker-volumes-stored-at/7966",
+            "snippet": "Even if www-data doesn\u2019t exists in your system, you can use chown with userid:groupid:\n\n`chown -R 33:33 gpg_directory`\n\nYou must use the same id than in the container.\n\nHope this helps.\n\nThanks @TheRe"
+          },
+          {
+            "title": "Trouble with volume permissions - General - Docker Community Forums",
+            "url": "https://forums.docker.com/t/trouble-with-volume-permissions/118503",
+            "snippet": "I know I can set the user for the mounted directory (through docker compose), but I\u2019m having trouble understanding if that means the user on the host or the container. I read somewhere I should create"
+          },
+          {
+            "title": "How to Manage Permissions for Docker Shared Volumes \u00b7 Dash0",
+            "url": "https://www.dash0.com/faq/how-to-manage-permissions-for-docker-shared-volumes",
+            "snippet": "Mount a directory into a container, write a file from inside, and watch the host complain about permission denied when you try to edit it. Or run a container as a non-root user, mount your project dir"
+          }
+        ],
+        "time": 1.8537538051605225
+      },
+      {
+        "query": "apple",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Apple",
+            "url": "https://www.apple.com",
+            "snippet": "### Apple Wallet Apple Wallet\n\n   Wallet\n   Apple Card\n   Apple Pay\n   Apple Cash\n\n### Account Account\n\n   Manage Your Apple Account\n   Apple Store Account\n   iCloud.com\n\n### Entertainment Entertainme"
+          },
+          {
+            "title": "Apple Inc.",
+            "url": "https://en.wikipedia.org/wiki/Apple_Inc.",
+            "snippet": "Apple also generates revenue from a range of services, including commissions from the App Store \"App Store (Apple)\") on app sales and in-app purchases, extended warranties through AppleCare+, cloud st"
+          },
+          {
+            "title": "apple \u2022 Instagram photos and videos",
+            "url": "https://www.instagram.com/apple",
+            "snippet": "Log In\n\nSign Up\n\n## apple\n\n 37M followers\n 9 following\n\napple\n\nEveryone has a story to tell.  \n#ShotoniPhone\n\napple.co/Apple-Support\n\n Canary Islands\n Paris\n\nPhoto by apple on August 03, 2026.\n\nVideo "
+          },
+          {
+            "title": "Apple (@Apple) on X",
+            "url": "https://x.com/Apple",
+            "snippet": "/ X"
+          },
+          {
+            "title": "Apple's New Upgrade Program Any Good? $500 Off MacBooks, Future ...",
+            "url": "https://www.youtube.com/watch?v=Cd_dEVHYKkA",
+            "snippet": "In this episode of more weekend Apple news we cover Apple's new Upgrade Program with financing and Pricing Plans for MacBook (interest free financing), iPhones,  iPads, Apple Watches.  Why is Apple's "
+          },
+          {
+            "title": "AppleMagazine.com | The Latest Apple News, Every Day",
+            "url": "https://applemagazine.com",
+            "snippet": "Apple Notes app icon centered on a vibrant gradient background with shades of yellow, orange, pink, blue, and purple, highlighting seamless apple notes collaboration and teamwork across Apple devices."
+          },
+          {
+            "title": "AppleInsider: Apple News, Rumors, Reviews, Prices & Deals",
+            "url": "https://appleinsider.com",
+            "snippet": "## Featured Topics of the Week\n\n[](\n\n### APPLE STUDIOS\n\n#### Jason Sudeikis wants two more seasons of the 'Ted Lasso' revival\n\n[](\n\n### DEALS\n\n#### August Apple Watch deals deliver savings of up to $1"
+          },
+          {
+            "title": "Apple Brand Shop - Walmart.com",
+            "url": "https://www.walmart.com/cp/apple-brand-shop/1229722",
+            "snippet": "Walmart\nBanner title icon\nWalmart+\nBanner title icon\n\n# Apple Brand Shop\n\n## Set for college with Apple\n\nAll your must-haves, right here.\n\nThe MacBook Neo logo and four MacBook Neo laptops arranged in"
+          }
+        ],
+        "time": 0.7961876392364502
+      },
+      {
+        "query": "java",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Java Tutorial",
+            "url": "https://www.w3schools.com/java",
+            "snippet": "#### For Businesses\n\nContact us about W3Schools Academy for your organization\n\n#### Contact Us\n\nAbout sales:\nsales@w3schools.com\n  \nAbout errors:\nhelp@w3schools.com\n\n## Java Tutorial\n\n## Java Methods\n"
+          },
+          {
+            "title": "What is Java? - Java Programming Language Explained",
+            "url": "https://aws.amazon.com/what-is/java",
+            "snippet": "## How to program in Java\n\nTo begin programming in Java, you need to install a Java Edition on your system. There are four main Java editions:\n\n### What is Java SE?\n\nJava Standard Edition is the core "
+          },
+          {
+            "title": "Java",
+            "url": "https://en.wikipedia.org/wiki/Java",
+            "snippet": "From Wikipedia, the free encyclopedia\n\nIsland and region in Indonesia\n\nThis article is about the Indonesian island. For the programming language, see Java (programming language) \"Java (programming lan"
+          },
+          {
+            "title": "Dev.java: The Destination for Java Developers",
+            "url": "https://dev.java",
+            "snippet": "### Get Started\n\n Getting Started with Java\n Java Language Basics\n Lambda Expressions\n Downloading Java\n\n### Go Deeper\n\n The Collections Framework\n The Stream API\n The Gatherer API\n Virtual Threads\n\n#"
+          },
+          {
+            "title": "Java Downloads | Oracle",
+            "url": "https://www.oracle.com/java/technologies/downloads",
+            "snippet": "# Java Downloads\n\nWatch the JavaOne 2026 keynotes and select sessions\n\nLooking for other Java downloads?\n\n## Java 26, Java 25, Java 21, and earlier versions available now\n\nJDK 26 is the latest release"
+          },
+          {
+            "title": "Java | Oracle",
+            "url": "https://www.java.com",
+            "snippet": "# Java\n\n  image description here \n\nOracle Java is the #1 programming language and development platform. It reduces costs, shortens development timeframes, drives innovation, and improves application s"
+          },
+          {
+            "title": "Oracle Java Technologies | Oracle",
+            "url": "https://www.oracle.com/java/technologies",
+            "snippet": "Join us at JavaOne\n\n## Java\n\nFor over 30 years, Java has evolved as a secure, enterprise-grade platform powering innovation. Oracle\u2019s stewardship continues to advance Java as the language of choice to"
+          },
+          {
+            "title": "OpenJDK",
+            "url": "https://openjdk.org",
+            "snippet": "| Learn about the key active Projects in the Community including Amber (high-productivity language features), Babylon (foreign programming models), Leyden (better startup and warmup), Loom (lightweigh"
+          }
+        ],
+        "time": 0.8716220855712891
+      },
+      {
+        "query": "python",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Python (programming language)",
+            "url": "https://en.wikipedia.org/wiki/Python_(programming_language)",
+            "snippet": "Python's name is inspired by the British comedy group Monty Python, whom Python creator Guido van Rossum enjoyed while developing the language. Monty Python references appear frequently in Python code"
+          },
+          {
+            "title": "Welcome to Python.org",
+            "url": "https://www.python.org",
+            "snippet": "Sign In\n       Sign Up / Register\n       Sign In\n\n   About\n       Applications\n       Quotes\n       Getting Started\n       Help\n       Python Brochure\n       #### Python is a programming language that"
+          },
+          {
+            "title": "Python Tutorial",
+            "url": "https://www.w3schools.com/python",
+            "snippet": "## Learn Python\n\nPython is a popular programming language.\n\nPython can be used on a server to create web applications.\n\nPython is easy to learn - You will enjoy it!\n\n### Become Python Certified\n\nGet c"
+          },
+          {
+            "title": "Online Python - IDE, Editor, Compiler, Interpreter",
+            "url": "https://www.online-python.com",
+            "snippet": "Online-Python is a quick and easy tool that helps you to build, compile, test your python programs. Build, run, and share Python code online for free"
+          },
+          {
+            "title": "Best Python Courses + Tutorials",
+            "url": "https://www.codecademy.com/catalog/language/python",
+            "snippet": "Skip to Content\n\n# Python courses\n\n## About Python\n\nPython is a general-purpose, versatile, and powerful programming language. It's a great first language because Python code is concise and easy to re"
+          }
+        ],
+        "time": 2.9688150882720947
+      },
+      {
+        "query": "mercury",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Mercury (@mercury) / Posts / X",
+            "url": "/goto?url=CAESTQHuR6pNUU36AUwejKcgzRc7Z98d6ojLErT71mUNtwifOdxK0avyQZD9soViU1zNjtLmi4Fwk0cFR6JeUDBbB5sNgfcVMOOA78R7U8V1",
+            "snippet": "Mercury is the fintech more than 300K ambitious companies and entrepreneurs trust with their finances. Mercury account that completes financial"
+          },
+          {
+            "title": "Mercury",
+            "url": "/goto?url=CAESWQHuR6pNkHbZynPDxijuYZCwiJuKEJXkD6aFONNKPXtzCioz4rUW8n6tGG0fPWiSLYCtttXRC9a3LpNGsPD_YlyFvJDi-Wn3TU24Ft36Cx5RtzRIp--rBF6H",
+            "snippet": "May 7, 2025 \u2014 Mercury is the smallest planet in our solar system and the nearest to the Sun. Mercury is only slightly larger than Earth's Moon. It's the"
+          },
+          {
+            "title": "Mercury (element)",
+            "url": "/goto?url=CAESZwHuR6pNr04nK6PlpNYfHcimuGL44unMDC7oygHBbwW2DU3OnTrLwXb0q77nISLtuZ6r3reIMkLRYXtaWbnEZdCPHuUOAs36ffN2TJwN5fmEemqc3JBUw0buVJRFwTHymC4yuvaR5PU%3D",
+            "snippet": "Mercury is a chemical element; it has symbol Hg and atomic number 80. It is commonly known as quicksilver. A heavy, silvery d-block element, mercury is the only"
+          },
+          {
+            "title": "Basic Information about Mercury",
+            "url": "/goto?url=CAEScwHuR6pNisKj-D6VIzl7A__1QB7YVQqu03tUKla863HYqbELdhsrHWPwM-ZyJPfDiNUKsKRj-24y0rp0uJqZO5WVwet8pI_CGLB5HM0KNo70xGnIh7aYgDK-F9ZvYRIOgJN14lXCwQ-RLBn7_Z0HICfZ7jQ%3D",
+            "snippet": "Mercury is a naturally-occurring chemical element found in rock in the earth's crust, including in deposits of coal."
+          },
+          {
+            "title": "Mercury",
+            "url": "/goto?url=CAESTAHuR6pNJmhdUKVg1ylHsK2TfuWbsQrOjZy3634XW3dSN4zIrGGFRFAG07Va_Bb1dFzhBEejWPeQm--j6vgY2VcjvPBV8iQ-IOCpIIM%3D",
+            "snippet": "Mercury is a fintech company, not an FDIC-insured bank. Business banking & more Apply for free checking and savings accounts with zero minimums, earn up to 3."
+          },
+          {
+            "title": "The Story of Mercury Brand | Articles | Ford Motor Company",
+            "url": "/goto?url=CAESgAEB7keqTU3Tl-lQFTTUVee3zVzTFQ1pD79wt-7sTIwyGsaVDKDWIx7hdTPZo2Ogap9Kxeemhj7i6W3-5-qn7ZdxYQCISbvg_KKhrZRAfX_n4xfOUlsgeFUqaStjiWeQgYe115b6v62VZ_l0Cafd-vTuVfaLDNFQwhvK840JvCQ8cg%3D%3D",
+            "snippet": "Learn how Mercury launched in 1938 as Ford's premium mid-brand, blending styling, performance & luxury, before its retirement in 2011."
+          },
+          {
+            "title": "Mercury Insurance: Auto, Home, Business Insurance & More",
+            "url": "/goto?url=CAESWQHuR6pNNak4DJ4pVUkzqhO2208F251n26fC9rpiIkJ9O_DiHR341j3Fe7-9tr9YZ9f3fR56vq26DIGYU28-VEm26bdweFk8e8wsITgDWXti2_R2jVDMnQkb",
+            "snippet": "Get protected today for Auto, Home, Business, and more with Mercury Insurance. Customized coverage, low rates, excellent service, and 24/7 claims service."
+          },
+          {
+            "title": "Worldwide Leader in Marine Propulsion | Mercury Marine | USA",
+            "url": "/goto?url=CAESWwHuR6pNbz8OgiL_JaRLIFaXmy2iU63slRQHryXuoETTKZteiQ7W8JclRk74Q4ZewlBmE-xmNO6BBhLO71Mz0hvck5sSubFu5j6X5_LSKoFXFsJyFIINMYINKps%3D",
+            "snippet": "Mercury Marine is the world's leading manufacturer of recreational marine propulsion engines. Get sales, service and parts info, and find a local dealer"
+          }
+        ],
+        "time": 0.871495246887207
+      },
+      {
+        "query": "jaguar",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Jaguar (@jaguar) \u2022 Instagram photos and videos",
+            "url": "https://www.instagram.com/jaguar?hl=en",
+            "snippet": "Video by Jaguar on March 25, 2026.\n\nPhoto by Jaguar on March 23, 2026.\n\nVideo by Jaguar on March 20, 2026.\n\nShow more posts from jaguar [...] Log In\n\nSign Up\n\n## jaguar\n\n 16.2M followers\n 1 following\n"
+          },
+          {
+            "title": "JAGUAR Definition & Meaning - Merriam-Webster",
+            "url": "https://www.merriam-webster.com/dictionary/jaguar",
+            "snippet": "# jaguar\n\n## noun\n\n## Illustration of jaguar\n\nIllustration of jaguar\n\n## Did you know? [...] ## Examples of jaguar in a Sentence\n\n## Word History\n\nPortuguese, from Tupi jaw\u00e1ra large carnivore\n\n1604, i"
+          },
+          {
+            "title": "Jaguar Cars - Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Jaguar_Cars",
+            "snippet": "340 | | SS 1\u00bd litre | Jaguar 1\u00bd litre | S-Type \"Jaguar S-Type (1963)\") | XJ-C \"Jaguar XJ\") | | SS 2\u00bd litre | Jaguar 2\u00bd litre | 420 \"Jaguar 420 and Daimler Sovereign (1966\u20131969)\") | XJ6 S1 \"Jaguar XJ\")"
+          },
+          {
+            "title": "Jaguar - Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Jaguar",
+            "snippet": "El Jefe \"El Jefe (jaguar)\"), a jaguar in Arizona\n\nIn 1986, the Cockscomb Basin Wildlife Sanctuary was established in Belize as the world's first protected area for jaguar conservation.\n\n### Jaguar Con"
+          },
+          {
+            "title": "Jaguar | Inspire Like No Other | Challenge Convention",
+            "url": "https://www.jaguar.com/en-us/jdx/index.html",
+            "snippet": "Jaguar F-TYPE\n\nJAGUAR F-TYPE\n\nA true Jaguar sports car.\n\nBUILD AND RESERVE\n\n \n\nEXPLORE\n\nJaguar XF\n\nJAGUAR XF\n\nLuxury business saloon with distinctive design, dynamic drive and state-of-the-art technol"
+          },
+          {
+            "title": "Jaguar (@Jaguar) / X",
+            "url": "https://x.com/Jaguar",
+            "snippet": "Nov 3, 2023\n\n  @Bin\\_modhayan Hello, only your local retailer should be able to assist you. You can find your nearest retailer here: (landrover-me.com). Thanks.\n\n  385\n user avatar\n\n  Jaguar\n\n  @Jagua"
+          },
+          {
+            "title": "Jaguar Cars and SUVs: Reviews, Pricing, and Specs",
+            "url": "https://www.caranddriver.com/jaguar",
+            "snippet": "Chevron Down Icon\n\nStarting at $65,570 \u00b7 8/10\n\nChevron Down Icon\n\nStarting at N/A \u00b7 8/10\n\nChevron Down Icon\nChevron Down Icon\n\n### 2019 Jaguar XJ\n\n2019 Jaguar XJ\nChevron Down Icon\n\nStarting at $86,025"
+          },
+          {
+            "title": "Market Selector | Jaguar | View the site in your preferred language",
+            "url": "https://www.jaguar.com/en-xi/jdx/market-selector.html",
+            "snippet": "SKIP TO CONTENT\n\nPLEASE NOTE\n\nWe use YouTube videos on our website. To view these videos we require you to accept the cookies which YouTube will set on your device. These are categorised as non-essent"
+          }
+        ],
+        "time": 0.8966772556304932
+      },
+      {
+        "query": "hwo to fi xblue scren wndows 11",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Quick Start - XBLUE",
+            "url": "https://xblue.com/quickstart",
+            "snippet": "Title: Quick Start - XBLUE\nImage 1Image 2Image 3Image 4Image 5Image 6Image 7Image 8Image 9Image 10Image 11Image 12Image 13Image 14. Image 15Image 16Skip to content. Image 17: XBLUE Logo 2018 200. Imag"
+          },
+          {
+            "title": "Downloads - XBLUE",
+            "url": "https://xblue.com/downloads",
+            "snippet": "Get XBLUE Phones for **FREE!**Learn More Support Material & Firmware for Phone System Servers and IP Telephones ### X16 Plus Firmware Version 1.2.6.7 **NOTE:**V1.2.6.6 and greater If your system is cu"
+          },
+          {
+            "title": "XBLUE Phone Systems",
+            "url": "https://www.pcliquidations.com/xblue-phones",
+            "snippet": "Title: XBLUE Phone Systems\n# Xblue Phone Systems. XBLUE Networks phone systems are. tried-and-true solutions enabling efficient, value-focus communications to. business has 2 to 16 employees, consider"
+          },
+          {
+            "title": "QB FAQ Archives - XBLUE",
+            "url": "https://xblue.com/category/qb-system",
+            "snippet": "Title: QB FAQ Archives - XBLUE\n# Category: QB FAQ. ## FAQ \u2013 IP9g Headset Compatibility. FAQ \u2013 IP9g Headset Compatibility This FAQ lists Headsets that are compatible with the IP9g. Contact XBLUE for ad"
+          },
+          {
+            "title": "XBLUE Networks - A at XBLUE Networks",
+            "url": "https://www.linkedin.com/in/xblue-networks-b754343a",
+            "snippet": "Park, Kansas, United States\nN/A connections, N/A followers\n\n\nAbout\nN/A\n\n\nExperience\nN/A\n[XBLUE Networks](N/A)  \nN/A - Present\nN/A\n\n\n\nEducation\nN/A"
+          },
+          {
+            "title": "Shop for XBLUE Products & Services - XBLUE",
+            "url": "https://xblue.com/shop",
+            "snippet": "Title: Shop for XBLUE Products & Services - XBLUE\nGet XBLUE Phones for **FREE!** Learn More. # XBLUE Systems & Services Pricing. ## Cloud-Based & On-Site Phone Systems. ## XBLUE Cloud Phone Systems. W"
+          },
+          {
+            "title": "Phones for XBLUE Cloud - XBLUE",
+            "url": "https://xblue.com/cloud-phones",
+            "snippet": "# Phones for XBLUE Cloud. # **Phones & Headsets for XBLUE Cloud Phone Systems**. Special Offer - Get Your Phones Free of Charge - View Details. ### Get Your Phones Free of Charge. This is an offer to "
+          },
+          {
+            "title": "XBLUE Cloud Archives - XBLUE",
+            "url": "https://xblue.com/product-category/xblue-cloud",
+            "snippet": "Title: XBLUE Cloud Archives - XBLUE\n# XBLUE Cloud. * Virtual Voicemail for Cloud - Annual. ## Virtual Voicemail for Cloud \u2013 Annual. * Virtual Voicemail for Cloud - Monthly. ## Virtual Voicemail for Cl"
+          }
+        ],
+        "time": 3.9802472591400146
+      },
+      {
+        "query": "wht is quantum computng",
+        "status": "ok",
+        "results": [
+          {
+            "title": "What Is Quantum Computing? | IBM",
+            "url": "https://www.ibm.com/think/topics/quantum-computing",
+            "snippet": "4. Quantum algorithm discovery: Quantum advantage requires two components. The first is viable quantum circuits, and the second is a means to demonstrate that those quantum circuits are better than kn"
+          },
+          {
+            "title": "What is Quantum Computing? - Quantum Computing Explained - AWS",
+            "url": "https://aws.amazon.com/what-is/quantum-computing",
+            "snippet": "Quantum software implements unique quantum algorithms using quantum circuits. A quantum circuit is a computing routine that defines a series of logical quantum operations on the underlying qubits. Dev"
+          },
+          {
+            "title": "What is quantum computing? \u00a0|\u00a0 Google Quantum AI",
+            "url": "https://quantumai.google/whatisqc",
+            "snippet": "Google Quantum AI\nGoogle Quantum AI\n\nQuantum computers\n\ncan perform tasks no\n\nclassical computer can [...] ## Current quantum processors are noisy [...] Today's quantum processors are powerful enough "
+          },
+          {
+            "title": "Quantum Computing Explained | NIST",
+            "url": "https://www.nist.gov/quantum-information-science/quantum-computing-explained",
+            "snippet": "If, on the other hand, scientists find that a large-scale quantum computer cannot be built, that would be \u201cshocking,\u201d says Glancy. \u201cIt might inspire a revolution in physics. In my opinion that is a go"
+          },
+          {
+            "title": "Quantinuum | Accelerating Quantum Computing",
+            "url": "https://www.quantinuum.com",
+            "snippet": "Products & Solutions\n\n#### Quantum Computers\n\nQuantinuum Systems\n\nDiscover the world\u2019s highest performing quantum computersSystem Model H1\n\nOur first-generation quantum computer with a linear architec"
+          },
+          {
+            "title": "DOE Explains...Quantum Computing",
+            "url": "https://www.energy.gov/science/doe-explainsquantum-computing",
+            "snippet": "## DOE Office of Science: Contributions to Quantum Computing [...] ultimately make quantum computers easier to use. [...] Funding Opportunities\n\n## Breadcrumb\n\n# DOE Explains...Quantum Computing\n\nPhot"
+          },
+          {
+            "title": "Explain it like I\u2019m 5? : r/QuantumComputing",
+            "url": "https://www.reddit.com/r/QuantumComputing/comments/yjnvwh/explain_it_like_im_5",
+            "snippet": "How Far Are We From Personal Quantum Computers?Image 47 r/QuantumComputing\u20226y ago    ### How Far Are We From Personal Quantum Computers?    14 upvotes \u00b737 comments    \n\n  \n\n   Is Quantum Computing Fea"
+          },
+          {
+            "title": "What is quantum computing?",
+            "url": "https://www.mckinsey.com/featured-insights/mckinsey-explainers/what-is-quantum-computing",
+            "snippet": "Quantum computing is a new approach to calculation that uses principles of fundamental physics to solve extremely complex problems very quickly."
+          }
+        ],
+        "time": 0.8026473522186279
+      },
+      {
+        "query": "best laptap for programing 2025",
+        "status": "ok",
+        "results": [
+          {
+            "title": "BestShop | Best Price, Smart Shopping",
+            "url": "https://bestshop.com",
+            "snippet": "### The Best Small Appliances in 2025\n\n  Upgrade your kitchen with the top small appliances expected in 2025 for innovative devices.\n\n  Read now\n \n\n  ### Top 5 Best Wireless Earbuds in 2025\n\n  Experie"
+          },
+          {
+            "title": "Best Buy: Shop tech deals - Apps on Google Play",
+            "url": "https://play.google.com/store/apps/details?id=com.bestbuy.android&hl=en_US",
+            "snippet": "May 21, 2025\n\nProducts selling out: Hello, thanks for your feedback. Our goal is to have the best experience for customers even when products are expected to sell out quickly. If you have any more que"
+          },
+          {
+            "title": "BEST | definition in the Cambridge English Dictionary",
+            "url": "https://dictionary.cambridge.org/us/dictionary/english/best",
+            "snippet": "best phrase best phrase\")\n   best bet idiom\n\nSee all idioms and phrases\n\n\n\n\n\nWord of the Day\n\nnot put something down\n\nIf you cannot put a book down, you are unable to stop reading it until you reach t"
+          },
+          {
+            "title": "BEST Definition & Meaning",
+            "url": "https://www.merriam-webster.com/dictionary/best",
+            "snippet": "best-kept secret\n       best-laid plans\n       best man\n       best of all\n       best of luck\n       best (out) of three/five/seven\n       best seller\n       best-seller list\n       best/surest/safes"
+          },
+          {
+            "title": "Best Buy | Official Online Store | Shop Now & Save",
+            "url": "https://www.bestbuy.com",
+            "snippet": "In-store pricing may vary. Prices and offers are subject to change. \u00a9 2026 Best Buy. All rights reserved. BEST BUY, the BEST BUY logo, the tag design, and MY BEST BUY are trademarks of Best Buy and it"
+          },
+          {
+            "title": "Best Products",
+            "url": "https://en.wikipedia.org/wiki/Best_Products",
+            "snippet": "Best Products\n\nAdd topic [...] Best Products Company, Inc., or simply Best, was a chain of American catalog showroom retail stores founded by Sydney and Frances Lewis in 1957 and formerly headquartere"
+          },
+          {
+            "title": "Best Buy - Appliances Near Me - Los Angeles, California",
+            "url": "https://www.yelp.com/biz/best-buy-los-angeles-5",
+            "snippet": "More info about Best Buy \u00b7 2909 Los Feliz Blvd. Los Angeles, CA 90039. Atwater Village \u00b7 (323) 912-9288. Call Now \u00b7 Hours. What time does Best Buy open?Read more"
+          },
+          {
+            "title": "Best Buy",
+            "url": "https://www.youtube.com/bestbuy",
+            "snippet": "Take what you love to the next level with the right tech. Find inspiration and discover the latest must-have electronics."
+          }
+        ],
+        "time": 0.9114196300506592
+      },
+      {
+        "query": "why is my cat staring at the wall",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Why Is My Cat Staring at the Wall? (A Vet Explains) - Cats.com",
+            "url": "https://cats.com/why-is-my-cat-staring-at-the-wall",
+            "snippet": "## When Should I Worry if My Cat Is Staring at the Wall?\n\ncat alone Laying in Window\n\nIf your cat stares at the wall only occasionally, ut\u2019s likely nothing to be worried about. Kirsten McCarthy / Cats"
+          },
+          {
+            "title": "Why Does My Cat Stare at the Wall? Common Reasons & What to Do",
+            "url": "https://www.catastrophicreations.com/blogs/articles/why-does-my-cat-stare-at-the-wall",
+            "snippet": "Even a cat staring at the wall meaning could be as simple as them fixating on shadows, dust motes, or light reflections. cats stare at walls out of stress,"
+          },
+          {
+            "title": "Is It Normal for Cats to Stare at Walls? - Loveland Regional Animal Hospital",
+            "url": "https://lovelandregional.com/blog/is-it-normal-for-cats-to-stare-at-walls",
+            "snippet": "## Conclusion\n\nIf you see your cat staring at the wall, it is probably not a cause for concern. However, if your cat\u2019s behavior coincides with any of the symptoms mentioned in this article, you should"
+          },
+          {
+            "title": "Why Is My Cat Staring at the Wall? Expert Answers and Advice",
+            "url": "https://www.justanswer.com/cat-health/bfq6n-cat-staring-brick-wall-great.html",
+            "snippet": "Causes involve brain aging and loss of neurons. Treatment focuses on environmental enrichment, consistent routines, and possibly medications like selegiline."
+          },
+          {
+            "title": "Does anyone know why my cat sits and stares at the wall for hours. She gets ...",
+            "url": "https://www.facebook.com/groups/1497497480513488/posts/3913237955606083",
+            "snippet": "Does anyone know why my cat sits and stares at the wall for hours. She gets on the table and just stares at the ceiling and the wall. Or she just sits"
+          },
+          {
+            "title": "why does my cat look at 1 direction (usually a wall) and do nothing else for ...",
+            "url": "https://www.reddit.com/r/CatAdvice/comments/1i1vh9f/why_does_my_cat_look_at_1_direction_usually_a",
+            "snippet": "no like actually i wanna know"
+          },
+          {
+            "title": "Why does my cat stare at the wall?",
+            "url": "https://manypets.com/uk/articles/why-does-cat-stare-wall",
+            "snippet": "Cats can stare at walls when they have an issue with their hearing or vision. Possible conditions include blindness, cataracts and ear"
+          },
+          {
+            "title": "Why do some cats stare at the wall as if something has scared them, and ...",
+            "url": "https://www.quora.com/Why-do-some-cats-stare-at-the-wall-as-if-something-has-scared-them-and-then-sprint-away",
+            "snippet": "Why do some cats stare at the wall as if something has scared them, and then sprint away?"
+          }
+        ],
+        "time": 1.0803027153015137
+      },
+      {
+        "query": "can you microwave aluminum foil",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Can I microwave food wrapped in aluminum foil?",
+            "url": "https://www.quora.com/Can-I-microwave-food-wrapped-in-aluminum-foil",
+            "snippet": "Can I microwave food wrapped in aluminum foil?"
+          },
+          {
+            "title": "Microwave - Using Metal or Foil",
+            "url": "https://products.geappliances.com/appliance/gea-support-search-content?contentId=17965",
+            "snippet": "## Aluminum Foil\n\nAluminum foil can be safely used in a microwave, but certain guidelines must be followed to prevent damage to the oven. The following describes the proper use of aluminum foil when m"
+          },
+          {
+            "title": "Microwave Aluminum Foil",
+            "url": "https://www.youtube.com/watch?v=lhpndQJkNk0",
+            "snippet": "Kirk Schnable and Vikram Sharma describe the effects when placing aluminum foil in the microwave."
+          },
+          {
+            "title": "Can You Microwave Aluminum Foil?",
+            "url": "https://www.whirlpool.com/blog/kitchen/aluminum-foil-in-microwave.html",
+            "snippet": "You can safely use aluminum foil in your microwave as long as you do so properly and follow the instructions provided in your appliance's product manual.Read more"
+          },
+          {
+            "title": "Can You Put Aluminum Foil in the Microwave?",
+            "url": "https://www.maytag.com/blog/kitchen/can-you-put-aluminum-foil-in-the-microwave.html",
+            "snippet": "Aluminum foil can lead to sparking inside a microwave when used incorrectly. These sparks may ignite materials around the tinfoil, which could result in a fire.Read more"
+          },
+          {
+            "title": "Using Aluminum Foil in a Microwave | FAQ | Sub-Zero, Wolf, and Cove",
+            "url": "https://www.subzero-wolf.com/assistance/answers/wolf/microwave-ovens/using-aluminum-foil-in-a-microwave",
+            "snippet": "Outdoor\n\nHome > Product Support > Answers\n\n#### E-MAIL THIS ANSWER\n\n### Using Aluminum Foil in a Microwave | FAQ | Sub-Zero, Wolf, and Cove\n\nThis field is required.\n\nPlease enter a valid email address"
+          },
+          {
+            "title": "Aluminium foil and microwave ovens - European Aluminium Foil Association",
+            "url": "https://www.alufoil.org/aluminium-foil-and-microwave-ovens",
+            "snippet": "### Microwave Safety of Aluminium Foil Packaging [...] \")\n\n# Aluminium foil and microwave ovens\n\nAbout Alufoil\n\n## The use of alufoilcontainers in microwave ovens is safe [...] ### Heating Performance"
+          },
+          {
+            "title": "ELI5: Why can you not put tinfoil in the microwave?",
+            "url": "https://www.reddit.com/r/explainlikeimfive/comments/51bnmv/eli5_why_can_you_not_put_tinfoil_in_the_microwave",
+            "snippet": "Tinfoil isn't flammable but is there something in it that makes it a microwave flair?"
+          }
+        ],
+        "time": 1.2263071537017822
+      }
+    ],
+    "searxng": [
+      {
+        "query": "Python asyncio tutorial 2025",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Welcome to Python.org",
+            "url": "https://www.python.org/",
+            "snippet": "Intuitive Interpretation Calculations are simple with Python, and expression syntax is straightforward: the operators +, -, * and / work \u2026"
+          },
+          {
+            "title": "PyCharm: The only Python IDE you need - JetBrains",
+            "url": "https://www.jetbrains.com/pycharm/",
+            "snippet": "PyCharm The only Python IDE you need Built for web, data, and AI/ML professionals. Supercharged with an AI-enhanced IDE \u2026"
+          },
+          {
+            "title": "Best Python Courses + Tutorials | Codecademy",
+            "url": "https://www.codecademy.com/catalog/language/python",
+            "snippet": "Start your coding journey with Python courses and tutorials. From basic to advanced projects, grow your Python skills at Codecademy."
+          },
+          {
+            "title": "Python 3.14.7 documentation",
+            "url": "https://docs.python.org/",
+            "snippet": "1 day ago \u00b7 What's new in Python 3.14? Or all \"What's new\" documents since Python 2.0 Tutorial Start here: a tour of Python's syntax \u2026"
+          },
+          {
+            "title": "Python Tutorial - W3Schools",
+            "url": "https://www.w3schools.com/python/",
+            "snippet": "Python is a popular programming language. Python can be used on a server to create web applications. Python is easy to learn - You \u2026"
+          },
+          {
+            "title": "Online Python - IDE, Editor, Compiler, Interpreter",
+            "url": "https://www.online-python.com/",
+            "snippet": "Online Python IDE Build, run, and share Python code online for free with the help of online-integrated python's development \u2026"
+          },
+          {
+            "title": "Online Python Compiler (Interpreter) - Programiz",
+            "url": "https://www.programiz.com/python-programming/online-compiler/",
+            "snippet": "Write and run your Python code using our online compiler. Enjoy additional features like code sharing, dark mode, and support for \u2026"
+          },
+          {
+            "title": "Part 1: What is Python & Why Learn It? - Python for Beginners",
+            "url": "https://www.youtube.com/watch?v=mlTd1EPITBo",
+            "snippet": "Jun 28, 2026 \u00b7 What Python is and where it came from What Python is used for (web, data, AI, automation & more) Why Python is \u2026"
+          }
+        ],
+        "time": 4.0168280601501465
+      },
+      {
+        "query": "Linux kernel 6.12 changelog",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Download Linux | Linux.org",
+            "url": "https://www.linux.org/pages/download/",
+            "snippet": "May 1, 2017 \u00b7 24 Popular Linux Distributions Explore different Linux distributions and find the one that fits your needs. Try \u2026"
+          },
+          {
+            "title": "Linux - Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Linux",
+            "snippet": "Linux distributions are frequently used in server platforms. [21][22] Many Linux distributions use the word \" Linux \" in their name, but \u2026"
+          },
+          {
+            "title": "Linux.org",
+            "url": "https://www.linux.org/",
+            "snippet": "The heart of a Proxmox Server is setting up Virtual Machines (VM) and Linux Containers (LXC). In this article, we will look at setting \u2026"
+          },
+          {
+            "title": "Home - Linux Mint",
+            "url": "https://www.linuxmint.com/",
+            "snippet": "Linux Mint is an elegant, easy to use, up to date and comfortable desktop operating system."
+          },
+          {
+            "title": "Download - Get Ubuntu",
+            "url": "https://ubuntu.com/download",
+            "snippet": "Download Ubuntu Ubuntu is the world\u2019s favorite Linux operating system. Run it on your laptop, workstation, server, or IoT device, with \u2026"
+          },
+          {
+            "title": "What is Linux? - Linux.com",
+            "url": "https://www.linux.com/what-is-linux/",
+            "snippet": "Develop a good working knowledge of Linux using both the graphical interface and command line across the major Linux distribution \u2026"
+          },
+          {
+            "title": "Introduction to Linux - GeeksforGeeks",
+            "url": "https://www.geeksforgeeks.org/linux-unix/introduction-to-linux-operating-system/",
+            "snippet": "Jun 11, 2026 \u00b7 Linux architecture is the layered structure of the Linux operating system that defines how components like the kernel, \u2026"
+          },
+          {
+            "title": "Linux.com - News For Open Source Professionals",
+            "url": "https://www.linux.com/",
+            "snippet": "Linux.com is the go-to resource for open source professionals to learn about the latest in Linux and open source technology, careers, \u2026"
+          }
+        ],
+        "time": 4.020339727401733
+      },
+      {
+        "query": "best mechanical keyboards under 100 dollars",
+        "status": "ok",
+        "results": [
+          {
+            "title": "15 Best Free PC Games to Play on Steam (August 2026)",
+            "url": "https://www.atriarch.com/best-free-pc-games-to-play-on-steam-in-2026/",
+            "snippet": "Jul 30, 2026 \u00b7 Discover the best free PC games on Steam in 2026. We tested 15 top titles covering shooters, RPGs, MOBAs, and \u2026"
+          },
+          {
+            "title": "18 Best Single Player Games of All Time (August 2026): Must-Play ...",
+            "url": "https://www.atriarch.com/best-single-player-games-of-all-time/",
+            "snippet": "Jul 29, 2026 \u00b7 Discover the best single player games of all time with our 2026 guide. We ranked 18 top titles by story, gameplay, and \u2026"
+          },
+          {
+            "title": "Best Open World Games to Play in 2026 (July 2026) - Complete Guide",
+            "url": "https://www.atriarch.com/best-open-world-games-to-play-in-2026/",
+            "snippet": "Jul 29, 2026 \u00b7 Looking for the best open world games to play in 2026? We tested 19 titles across PS5, Xbox, PC, and Switch, \u2026"
+          },
+          {
+            "title": "14 Best Games Like Elden Ring to Play Next (August 2026)",
+            "url": "https://www.atriarch.com/best-games-like-elden-ring-to-play-next/",
+            "snippet": "Jul 29, 2026 \u00b7 Finished Elden Ring and craving more? Here are the 14 best games like Elden Ring to play next in 2026, from \u2026"
+          },
+          {
+            "title": "Home - Atriarch",
+            "url": "https://www.atriarch.com/",
+            "snippet": "What Went Wrong With ArcheAge\u2019s Housing and Economy 2026 15 Best Free-to-Play MMORPGs to Play (August 2026) 10 Best \u2026"
+          },
+          {
+            "title": "Best Mobile Games to Play Offline in 2026 - atriarch.com",
+            "url": "https://www.atriarch.com/best-mobile-games-to-play-offline-in-2026/",
+            "snippet": "Jul 30, 2026 \u00b7 The best mobile games to play offline in 2026 are titles that download once, save your progress locally, and never \u2026"
+          },
+          {
+            "title": "Best Free Mobile Games Without Ads (August 2026)",
+            "url": "https://www.atriarch.com/best-free-mobile-games-without-ads/",
+            "snippet": "Jul 29, 2026 \u00b7 Discover the best free mobile games without ads in 2026. We tested 12+ ad-free games for iOS and Android - no IAPs, \u2026"
+          },
+          {
+            "title": "Best RPGs of All Time Ranked (2026) - Atriarch",
+            "url": "https://www.atriarch.com/best-rpgs-of-all-time-ranked/",
+            "snippet": "Jul 29, 2026 \u00b7 We built this ranked list of the best RPGs of all time by weighing three things above all else: storytelling that stays with \u2026"
+          }
+        ],
+        "time": 0.3034060001373291
+      },
+      {
+        "query": "climate change impact on agriculture research paper",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Como iniciar sess\u00e3o no Hotmail | Microsoft Support",
+            "url": "https://support.microsoft.com/pt-pt/accounts-billing/manage/how-to-sign-in-to-hotmail",
+            "snippet": "A Microsoft mant\u00e9m-se sempre atenta a atividades invulgares de in\u00edcio de sess\u00e3o, caso outra pessoa estiver a tentar entrar na sua \u2026"
+          },
+          {
+            "title": "Anmelden bei Hotmail | Microsoft Support",
+            "url": "https://support.microsoft.com/de-de/accounts-billing/manage/how-to-sign-in-to-hotmail",
+            "snippet": "Microsoft h\u00e4lt immer ein Auge auf ungew\u00f6hnliche Anmeldeaktivit\u00e4ten, nur f\u00fcr den Fall, dass jemand anderes versucht, auf Ihr Konto \u2026"
+          },
+          {
+            "title": "What's New in Excel (January 2026) | Microsoft Community Hub",
+            "url": "https://techcommunity.microsoft.com/blog/excelblog/whats-new-in-excel-january-2026/4474246",
+            "snippet": "Jan 27, 2026 \u00b7 Happy New Year, and welcome to the January 2026 update! We\u2019re excited to share that Agent Mode in Excel is now \u2026"
+          },
+          {
+            "title": "What's New in Excel (May 2026) | Microsoft Community Hub",
+            "url": "https://techcommunity.microsoft.com/blog/excelblog/whats-new-in-excel-may-2026/4502700",
+            "snippet": "May 26, 2026 \u00b7 Many of these features are the result of your feedback. THANK YOU! Your continued Feedback in Action (#FIA) helps \u2026"
+          },
+          {
+            "title": "Aanmelden bij Hotmail | Microsoft Support",
+            "url": "https://support.microsoft.com/nl-nl/accounts-billing/manage/how-to-sign-in-to-hotmail",
+            "snippet": "Microsoft houdt altijd in de gaten of er ongewone aanmeldingsactiviteit is, voor het geval iemand anders in je account probeert te \u2026"
+          },
+          {
+            "title": "\u91ca\u653e Windows \u4e2d\u7684\u9a71\u52a8\u5668\u7a7a\u95f4 | Microsoft Support",
+            "url": "https://support.microsoft.com/zh-CN/Windows/experience/storage-filemanagement/free-up-drive-space-in-windows",
+            "snippet": "\u5982\u679c\u4f60\u7684\u7535\u8111\u5b58\u50a8\u7a7a\u95f4\u4e0d\u8db3\uff0c\u4f60\u53ef\u80fd\u4f1a\u6ce8\u610f\u5230\u6027\u80fd\u8f83\u6162\u6216\u5b89\u88c5 Windows \u66f4\u65b0\u65f6\u9047\u5230\u95ee\u9898\u3002 \u91ca\u653e\u7a7a\u95f4\u53ef\u5e2e\u52a9\u8bbe\u5907\u66f4\u597d\u5730\u8fd0\u884c\u5e76\u4fdd\u6301\u5b89\u5168 \u2026"
+          },
+          {
+            "title": "Aanmelden bij Outlook.com | Microsoft Support",
+            "url": "https://support.microsoft.com/nl-nl/accounts-billing/manage/how-to-sign-in-to-outlook-com",
+            "snippet": "Probleemoplossing: Kan niet aanmelden bij Hotmail of Outlook.com Microsoft houdt altijd in de gaten of er ongewone \u2026"
+          },
+          {
+            "title": "Activer Windows | Microsoft Support",
+            "url": "https://support.microsoft.com/fr-FR/Windows/activation/activate-windows",
+            "snippet": "Remarque Microsoft conserve un enregistrement des cl\u00e9s de produit uniquement si vous avez effectu\u00e9 vos achats aupr\u00e8s du \u2026"
+          }
+        ],
+        "time": 0.3094367980957031
+      },
+      {
+        "query": "how to center a div in CSS",
+        "status": "ok",
+        "results": [
+          {
+            "title": "CSS Center Align - W3Schools",
+            "url": "https://www.w3schools.com/csS/css_align.asp",
+            "snippet": "CSS Centering Elements With CSS, you can center elements (horizontally, vertically, or both) with several methods, depending on \u2026"
+          },
+          {
+            "title": "How to Center a Div using CSS? - GeeksforGeeks",
+            "url": "https://www.geeksforgeeks.org/css/how-to-align-a-div-element-to-the-middle-of-a-page-using-css/",
+            "snippet": "Jan 15, 2025 \u00b7 Here are three methods to center a div horizontally, vertically, and both horizontally and vertically using CSS. Center a \u2026"
+          },
+          {
+            "title": "How to Center a Div in CSS: Every Method Explained (2026)",
+            "url": "https://stylewars.dev/blog/how-to-center-a-div-css",
+            "snippet": "Mar 17, 2026 \u00b7 Learn every way to center a div in CSS, from classic margin auto to modern grid and the new align-content method. \u2026"
+          },
+          {
+            "title": "3 Ways to Center a Div in CSS (That Actually Work)",
+            "url": "https://dev.to/amoreno/3-ways-to-center-a-div-in-css-that-actually-work-30ge",
+            "snippet": "Jun 28, 2025 \u00b7 Discover three effective methods to center a div in CSS, simplifying the process for beginners and enhancing your web \u2026"
+          },
+          {
+            "title": "How to Center a Div with CSS - freeCodeCamp.org",
+            "url": "https://www.freecodecamp.org/news/how-to-center-a-div-with-css/",
+            "snippet": "Apr 27, 2022 \u00b7 How to Center Text Horizontally Using the CSS text-align Property In this section, we'll see how to center text \u2026"
+          },
+          {
+            "title": "Center an element - CSS | MDN - MDN Web Docs",
+            "url": "https://developer.mozilla.org/en-US/docs/Web/CSS/How_to/Layout_cookbook/Center_an_element",
+            "snippet": "Nov 7, 2025 \u00b7 In this recipe, you will see how to center one box inside another by using flexbox and grid, centering content both \u2026"
+          },
+          {
+            "title": "How To Center a Div - Josh W Comeau",
+            "url": "https://www.joshwcomeau.com/css/center-a-div/",
+            "snippet": "Feb 13, 2024 \u00b7 How To Center a Div The Ultimate Guide to Centering in CSS"
+          },
+          {
+            "title": "How to Center a Div in CSS | Frontend Hero",
+            "url": "https://frontend-hero.com/how-to-center-div-css",
+            "snippet": "3 days ago \u00b7 Learn how to center a div in CSS using Flexbox, Grid, position absolute, margin auto, and more. Step-by-step guide with \u2026"
+          }
+        ],
+        "time": 0.32727766036987305
+      },
+      {
+        "query": "rust lifetime annotation error E0491",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Rust Programming Language",
+            "url": "https://rust-lang.org/",
+            "snippet": "Rust is blazingly fast and memory-efficient: with no runtime or garbage collector, it can power performance-critical services, run on embedded devices, and easily integrate with other languages."
+          },
+          {
+            "title": "Rust \u2014 Explore, Build and Survive",
+            "url": "https://rust.facepunch.com/",
+            "snippet": "The only aim in Rust is to survive. Everything wants you to die - the island\u2019s wildlife and other inhabitants, the environment, other survivors. Do whatever it takes to last another night."
+          },
+          {
+            "title": "Save 50% on Rust on Steam",
+            "url": "https://store.steampowered.com/app/252490/Rust/",
+            "snippet": "The only aim in Rust is to survive. Everything wants you to die - the island\u2019s wildlife, other inhabitants, the environment, and other survivors. Do whatever it takes to last another night."
+          },
+          {
+            "title": "Install Rust - Rust Programming Language",
+            "url": "https://rust-lang.org/tools/install/",
+            "snippet": "To start using Rust, download the installer, then run the program and follow the onscreen instructions. You may need to install the Visual Studio C++ Build tools when prompted to do so. If you are not on \u2026"
+          },
+          {
+            "title": "Rust+ - Official Companion App \u2014 Rust",
+            "url": "https://rust.facepunch.com/companion",
+            "snippet": "The official Rust companion app. Track your base status, chat to your clan members and control your bases electricity."
+          },
+          {
+            "title": "Rust (programming language) - Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+            "snippet": "Rust supports multiple programming paradigms. It was influenced by ideas from functional programming, including immutability, higher-order functions, algebraic data types, and pattern matching. It also \u2026"
+          },
+          {
+            "title": "Rust Tutorial - W3Schools",
+            "url": "https://www.w3schools.com/rust/index.php",
+            "snippet": "Rust is a popular programming language used to build everything from web servers to game engines. Rust is known for being very fast, and is similar to C and C++ in language."
+          },
+          {
+            "title": "rust-lang / rust: Empowering everyone to build reliable and ... - GitHub",
+            "url": "https://github.com/rust-lang/rust",
+            "snippet": "Why Rust? Performance: Fast and memory-efficient, suitable for critical services, embedded devices, and easily integrated with other languages. Reliability: Our rich type system and ownership model \u2026"
+          }
+        ],
+        "time": 0.3201465606689453
+      },
+      {
+        "query": "hyprland windowrule workspace movetoworkspacesilent",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Hyprland",
+            "url": "https://hypr.land/",
+            "snippet": "Hyprland - Dynamic tiling Wayland compositor with the looks."
+          },
+          {
+            "title": "GitHub - hyprwm/Hyprland: Hyprland is an independent, highly ...",
+            "url": "https://github.com/hyprwm/Hyprland",
+            "snippet": "Hyprland is an independent, highly customizable, dynamic tiling Wayland compositor that doesn't sacrifice on its looks. - \u2026"
+          },
+          {
+            "title": "Hyprland",
+            "url": "https://hyprland.org/",
+            "snippet": "Moved to https://hypr.land"
+          },
+          {
+            "title": "Hyprland - Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Hyprland",
+            "snippet": "Hyprland is a dynamic tiling window manager and compositing manager for Wayland written in C++. Hyprland officially supports Arch \u2026"
+          },
+          {
+            "title": "Hyprland Wiki",
+            "url": "https://wiki.hypr.land/",
+            "snippet": "1 day ago \u00b7 The documentation for Hyprland. Hello there, dear traveler! Welcome to the Hyprland Wiki! Take a tour of the pages on \u2026"
+          },
+          {
+            "title": "Hyprland 0.56 has arrived! | Hyprland",
+            "url": "https://hypr.land/news/update56/",
+            "snippet": "Jul 20, 2026 \u00b7 Hey hey folks, it\u2019s time for Hyprland 0.56! This update includes a lot of fixes and new features, after about 2.5 months \u2026"
+          },
+          {
+            "title": "Hyprland Made Easy: Preconfigured Beautiful Distros - It's FOSS",
+            "url": "https://itsfoss.com/hyprland-distros/",
+            "snippet": "Oct 19, 2025 \u00b7 Hyprland is a dynamic tiling Wayland compositor that has been gaining traction in the Linux community due to its \u2026"
+          },
+          {
+            "title": "Hyprland - ArchWiki",
+            "url": "https://wiki.archlinux.org/title/Hyprland",
+            "snippet": "Jul 27, 2026 \u00b7 Hyprland is an independent tiling Wayland compositor written in C++. Noteworthy features of Hyprland include dynamic \u2026"
+          }
+        ],
+        "time": 0.2941555976867676
+      },
+      {
+        "query": "nginx reverse proxy websocket connection reset",
+        "status": "ok",
+        "results": [
+          {
+            "title": "nginx",
+            "url": "https://nginx.org/en/",
+            "snippet": "nginx (\" engine x \") is an HTTP web server, reverse proxy, content cache, load balancer, TCP/UDP proxy server, and mail proxy \u2026"
+          },
+          {
+            "title": "nginx: download",
+            "url": "https://nginx.org/en/download.html",
+            "snippet": "Linux packages for stable and mainline versions."
+          },
+          {
+            "title": "nginx - Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Nginx",
+            "snippet": "nginx[8][9] (pronounced \"engine x\" [8][9] / \u02cc\u025bnd\u0292\u026an\u02c8\u025bks / EN-jin-EKS, stylized as NGINX) is a web server that can also be used as a \u2026"
+          },
+          {
+            "title": "What is Nginx (Web Server) and how to install it - GeeksforGeeks",
+            "url": "https://www.geeksforgeeks.org/operating-systems/what-is-nginx-web-server-and-how-to-install-it/",
+            "snippet": "Jun 19, 2026 \u00b7 When you open a browser and enter a URL, NGINX can receive that request and return the requested page or \u2026"
+          },
+          {
+            "title": "nginx/nginx: The official NGINX Open Source repository. - GitHub",
+            "url": "https://github.com/nginx/nginx",
+            "snippet": "NGINX (pronounced \"engine x\" or \"en-jin-eks\") is the world's most popular Web Server, high performance Load Balancer, Reverse \u2026"
+          },
+          {
+            "title": "Installing NGINX Open Source",
+            "url": "https://docs.nginx.com/nginx/admin-guide/installing-nginx/installing-nginx-open-source/",
+            "snippet": "You can configure your package manager to install NGINX Open Source from the official nginx.org repository, which provides both \u2026"
+          },
+          {
+            "title": "What is NGINX? \u2014 A Beginner-Friendly Guide | by Rohith Leo R",
+            "url": "https://devopsnexus.medium.com/what-is-nginx-a-beginner-friendly-guide-2ff131995df2",
+            "snippet": "May 9, 2025 \u00b7 NGINX is an open-source, high-performance web server developed by Igor Sysoev in 2004. It\u2019s designed to serve \u2026"
+          },
+          {
+            "title": "Releases \u00b7 nginx/nginx - GitHub",
+            "url": "https://github.com/nginx/nginx/releases",
+            "snippet": "The official NGINX Open Source repository. Contribute to nginx/nginx development by creating an account on GitHub."
+          }
+        ],
+        "time": 0.3160381317138672
+      },
+      {
+        "query": "systemd service restart loop journalctl",
+        "status": "ok",
+        "results": [
+          {
+            "title": "System and Service Manager",
+            "url": "https://systemd.io/",
+            "snippet": "System and Service Manager systemd is a suite of basic building blocks for a Linux system. It provides a system and service \u2026"
+          },
+          {
+            "title": "systemd - Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Systemd",
+            "snippet": "systemd is a software suite for system and service management on Linux [7] built to unify service configuration and behavior across \u2026"
+          },
+          {
+            "title": "systemd/systemd: The systemd System and Service Manager - GitHub",
+            "url": "https://github.com/systemd/systemd",
+            "snippet": "The systemd System and Service Manager . Contribute to systemd/systemd development by creating an account on GitHub."
+          },
+          {
+            "title": "Systemd and its Components in Linux - GeeksforGeeks",
+            "url": "https://www.geeksforgeeks.org/linux-unix/linux-systemd-and-its-components/",
+            "snippet": "May 11, 2026 \u00b7 Systemd is a system and service manager for modern Linux operating systems. It initializes the system, manages \u2026"
+          },
+          {
+            "title": "systemd - ArchWiki",
+            "url": "https://wiki.archlinux.org/title/Systemd",
+            "snippet": "Jul 4, 2026 \u00b7 From the project web page: systemd is a suite of basic building blocks for a Linux system. It provides a system and \u2026"
+          },
+          {
+            "title": "Mastering Systemd in Linux: A Comprehensive Guide",
+            "url": "https://linuxvox.com/blog/systemd-in-linux/",
+            "snippet": "Jan 16, 2026 \u00b7 In the world of Linux, the init system is responsible for bootstrapping the user space and managing system processes. \u2026"
+          },
+          {
+            "title": "systemd (1) - Linux manual page - man7.org",
+            "url": "https://www.man7.org/linux/man-pages/man1/systemd.1.html",
+            "snippet": "NAME top systemd, init - systemd system and service manager SYNOPSIS top /usr/lib/systemd/systemd [OPTIONS...] init \u2026"
+          },
+          {
+            "title": "systemd - freedesktop.org",
+            "url": "https://www.freedesktop.org/software/systemd/man/latest/systemd.html",
+            "snippet": "Description \u00b6 systemd is a system and service manager for Linux operating systems. When run as first process on boot (as PID 1), it \u2026"
+          }
+        ],
+        "time": 0.31043553352355957
+      },
+      {
+        "query": "docker compose volume mount permission denied",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Docker: Accelerated Container Application Development",
+            "url": "https://www.docker.com/",
+            "snippet": "Docker is a platform designed to help developers build, share, and run container applications. We handle the tedious setup, so you can focus on the code."
+          },
+          {
+            "title": "Docker Desktop: The #1 Containerization Tool for Developers | Docker",
+            "url": "https://www.docker.com/products/docker-desktop/",
+            "snippet": "Docker Desktop is collaborative containerization software for developers. Get started and download Docker Desktop today on Mac, Windows, or Linux."
+          },
+          {
+            "title": "Docker Desktop - Download and install on Windows | Microsoft Store",
+            "url": "https://apps.microsoft.com/detail/xp8cbj40xlbwkx",
+            "snippet": "Docker Desktop is a one-click-install application for your Mac, Linux, or Windows environment, enabling you to build, share, and run containerized applications and microservices."
+          },
+          {
+            "title": "Docker (software) - Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Docker_(software)",
+            "snippet": "Docker is a set of products that uses operating system-level virtualization to deliver software in packages called containers. Docker automates the deployment of applications within lightweight containers, \u2026"
+          },
+          {
+            "title": "Docker Tutorial - GeeksforGeeks",
+            "url": "https://www.geeksforgeeks.org/devops/docker-tutorial/",
+            "snippet": "Feb 19, 2026 \u00b7 Before starting with Docker, we first need to set up docker on our system and run a simple program to verify the installation. Docker provides a set of commands that let you build, \u2026"
+          },
+          {
+            "title": "Docker \u00b7 GitHub",
+            "url": "https://github.com/docker",
+            "snippet": "Docker helps developers build, share, run, and verify applications anywhere \u2014 without tedious environment configuration or management. This GitHub organization is home to many of the open \u2026"
+          },
+          {
+            "title": "What is Docker? - GeeksforGeeks",
+            "url": "https://www.geeksforgeeks.org/devops/introduction-to-docker/",
+            "snippet": "Apr 23, 2026 \u00b7 Docker is an OS\u2011level virtualization (or containerization) platform, which allows applications to share the host OS kernel instead of running a separate guest OS like in traditional \u2026"
+          },
+          {
+            "title": "Docker Tutorial",
+            "url": "https://www.tutorialspoint.com/docker/index.htm",
+            "snippet": "In this tutorial, we will provide you with a thorough understanding of Docker, going over its main features, advantages, and ways to use it to develop, launch, and distribute apps more quickly and easily. What \u2026"
+          }
+        ],
+        "time": 0.5950973033905029
+      },
+      {
+        "query": "apple",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Apple",
+            "url": "https://www.apple.com/",
+            "snippet": "Discover the innovative world of Apple and shop everything iPhone, iPad, Apple Watch, Mac, and Apple TV, plus explore \u2026"
+          },
+          {
+            "title": "Apple Store Online",
+            "url": "https://www.apple.com/store",
+            "snippet": "Shop the latest Apple products, accessories and offers. Compare models, get expert shopping help, plus flexible payment and \u2026"
+          },
+          {
+            "title": "Manage your Apple Account",
+            "url": "https://account.apple.com/",
+            "snippet": "Your Apple Account is the account you use for all Apple services."
+          },
+          {
+            "title": "Official Apple Support",
+            "url": "https://support.apple.com/",
+            "snippet": "Handled with AppleCare Every AppleCare plan provides one-stop service for your Apple products, with quick and easy repairs for \u2026"
+          },
+          {
+            "title": "Apple Inc. - Wikipedia",
+            "url": "https://en.m.wikipedia.org/wiki/Apple_Inc.",
+            "snippet": "The company also provides digital content services, including Apple Books, Apple Fitness+, Apple Music, Apple News, Apple TV, and \u2026"
+          },
+          {
+            "title": "AppleI ID",
+            "url": "https://account.apple.com/account",
+            "snippet": ""
+          },
+          {
+            "title": "Sign in to your Apple Account on the web or in your device settings",
+            "url": "https://support.apple.com/en-us/111001",
+            "snippet": "Feb 18, 2026 \u00b7 Your Apple Account makes all of your devices work together seamlessly and gives you access to Apple services \u2014 \u2026"
+          },
+          {
+            "title": "Sign In - Apple",
+            "url": "https://asw.apple.com/home",
+            "snippet": "Sign in to your Apple account to access and manage your Apple services securely on this platform."
+          }
+        ],
+        "time": 0.32173919677734375
+      },
+      {
+        "query": "java",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Java | Oracle",
+            "url": "https://www.java.com/",
+            "snippet": "Oracle Java is the #1 programming language and development platform. It reduces costs, shortens development timeframes, drives innovation, and improves application services."
+          },
+          {
+            "title": "Download Java",
+            "url": "https://www.java.com/en/download/",
+            "snippet": "Jul 21, 2026 \u00b7 Java 8 integrates with your operating system to run separately installed Java applications. If you were asked to install Java to run a desktop application, it's most likely you need this version."
+          },
+          {
+            "title": "Java Downloads | Oracle",
+            "url": "https://www.oracle.com/java/technologies/downloads/",
+            "snippet": "Download the Java including the latest version 17 LTS on the Java SE Platform. These downloads can be used for any purpose, at no cost, under the Java SE binary code license."
+          },
+          {
+            "title": "Java Tutorial - W3Schools",
+            "url": "https://www.w3schools.com/java/",
+            "snippet": "Learn Java Java is one of the world's most widely used programming languages. Java is free to use, and runs on all platforms."
+          },
+          {
+            "title": "Java Software | Oracle",
+            "url": "https://www.oracle.com/java/",
+            "snippet": "Oct 6, 2009 \u00b7 Java software reduces costs, drives innovation, and improves application services. Learn more about Java, the #1 development platform."
+          },
+          {
+            "title": "Java (programming language) - Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Java_(programming_language)",
+            "snippet": "[22] Java was designed by James Gosling at Sun Microsystems. It was released in May 1995 as a core component of Sun's Java platform. The original and reference implementation Java compilers, virtual \u2026"
+          },
+          {
+            "title": "Java Tutorial - GeeksforGeeks",
+            "url": "https://www.geeksforgeeks.org/java/java/",
+            "snippet": "Jul 8, 2026 \u00b7 Java is a platform-independent language, which means code written in Java can run on any device that supports the Java Virtual Machine (JVM). Syntax and structure are similar to C-based \u2026"
+          },
+          {
+            "title": "Download JDK 8, 11, 17, 21, 25, 26 | Java Builds for Linux, Windows and ...",
+            "url": "https://bell-sw.com/pages/downloads/",
+            "snippet": "Download Liberica JDK, supported OpenJDK builds. Open source Java 8, 11 and more for Linux, Windows, macOS."
+          }
+        ],
+        "time": 0.3249094486236572
+      },
+      {
+        "query": "python",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Python",
+            "url": "https://en.wikipedia.org/wiki/Python",
+            "snippet": "Topics referred to by the same term"
+          },
+          {
+            "title": "Welcome to Python.org",
+            "url": "https://www.python.org/",
+            "snippet": "Intuitive Interpretation Calculations are simple with Python, and expression syntax is straightforward: the operators +, -, * and / work \u2026"
+          },
+          {
+            "title": "PyCharm: The only Python IDE you need - JetBrains",
+            "url": "https://www.jetbrains.com/pycharm/",
+            "snippet": "PyCharm The only Python IDE you need Built for web, data, and AI/ML professionals. Supercharged with an AI-enhanced IDE \u2026"
+          },
+          {
+            "title": "Best Python Courses + Tutorials | Codecademy",
+            "url": "https://www.codecademy.com/catalog/language/python",
+            "snippet": "Start your coding journey with Python courses and tutorials. From basic to advanced projects, grow your Python skills at Codecademy."
+          },
+          {
+            "title": "Python 3.14.7 documentation",
+            "url": "https://docs.python.org/",
+            "snippet": "1 day ago \u00b7 What's new in Python 3.14? Or all \"What's new\" documents since Python 2.0 Tutorial Start here: a tour of Python's syntax \u2026"
+          },
+          {
+            "title": "Python Tutorial - W3Schools",
+            "url": "https://www.w3schools.com/python/",
+            "snippet": "Python is a popular programming language. Python can be used on a server to create web applications. Python is easy to learn - You \u2026"
+          },
+          {
+            "title": "Online Python - IDE, Editor, Compiler, Interpreter",
+            "url": "https://www.online-python.com/",
+            "snippet": "Online Python IDE Build, run, and share Python code online for free with the help of online-integrated python's development \u2026"
+          },
+          {
+            "title": "Online Python Compiler (Interpreter) - Programiz",
+            "url": "https://www.programiz.com/python-programming/online-compiler/",
+            "snippet": "Write and run your Python code using our online compiler. Enjoy additional features like code sharing, dark mode, and support for \u2026"
+          }
+        ],
+        "time": 0.2967708110809326
+      },
+      {
+        "query": "mercury",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Mercury",
+            "url": "https://en.wikipedia.org/wiki/Mercury",
+            "snippet": "Topics referred to by the same term"
+          },
+          {
+            "title": "Mercury - LinkedIn",
+            "url": "https://www.linkedin.com/company/mercuryhq",
+            "snippet": "Mercury is the fintech ambitious companies use for banking* and all their financial workflows. With a powerful account at the center of their operations, companies can make better financial ..."
+          },
+          {
+            "title": "Mercury - LinkedIn",
+            "url": "https://www.linkedin.com/company/wearemercury/",
+            "snippet": "Mercury | 12,928 followers on LinkedIn. CRM, ATS, Automation, AI and Analytics all on one connected platform. | Mercury is the digital transformation champion in the staffing and recruitment ..."
+          },
+          {
+            "title": "Mercury - LinkedIn",
+            "url": "https://ie.linkedin.com/company/mercury-engineering",
+            "snippet": "Mercury is the European leader in construction solutions. We build and manage complex engineering & construction projects for the world\u2019s leading corporations. Our solutions help deliver technologies and \u2026"
+          },
+          {
+            "title": "Mercury | LinkedIn",
+            "url": "https://ch.linkedin.com/company/mercury-engineering",
+            "snippet": "Mercury is the European leader in construction solutions. We build and manage complex engineering & construction projects for the world\u2019s leading corporations. Our solutions help deliver technologies and \u2026"
+          },
+          {
+            "title": "Mercury\u00ae Financial | LinkedIn",
+            "url": "https://in.linkedin.com/company/mercuryfinancial-llc",
+            "snippet": "Mercury\u00ae Financial | 4,812 followers on LinkedIn. Follow Atlanticus to see how Mercury\u00ae is helping Empower Better Financial Outcomes for Everyday Americans. About Atlanticus Holdings Corporation \u2026"
+          },
+          {
+            "title": "Mercury - LinkedIn",
+            "url": "https://uk.linkedin.com/company/wearemercury",
+            "snippet": "Mercury | 12,922 followers on LinkedIn. CRM, ATS, Automation, AI and Analytics all on one connected platform. | Mercury is the digital transformation champion in the staffing and recruitment profession. \u2026"
+          },
+          {
+            "title": "Mercury | LinkedIn",
+            "url": "https://de.linkedin.com/company/mercury-engineering",
+            "snippet": "Mercury is the European leader in construction solutions. We build and manage complex engineering & construction projects for the world\u2019s leading corporations. Our solutions help deliver technologies and \u2026"
+          }
+        ],
+        "time": 0.3060595989227295
+      },
+      {
+        "query": "jaguar",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Amazon.co.jp: \u5358\u4e09\u96fb\u6c60 40\u672c",
+            "url": "https://www.amazon.co.jp/%E5%8D%98%E4%B8%89%E9%9B%BB%E6%B1%A0-40%E6%9C%AC/s?k=%E5%8D%98%E4%B8%89%E9%9B%BB%E6%B1%A0+40%E6%9C%AC",
+            "snippet": "\u4fa1\u683c\u3084\u305d\u306e\u4ed6\u306e\u8a73\u7d30\u306f\u3001\u5546\u54c1\u306e\u30b5\u30a4\u30ba\u3084\u8272\u306b\u3088\u3063\u3066\u7570\u306a\u308b\u5834\u5408\u304c\u3042\u308a\u307e\u3059\u3002 \u3053\u306e\u51fa\u54c1\u8005\u304b\u30898\u70b9\u8cfc\u5165\u3059\u308b\u3068\u30018%\u5272\u5f15\u3055\u308c\u307e\u3059\u3002"
+          },
+          {
+            "title": "\u30d1\u30ca\u30bd\u30cb\u30c3\u30af \u30a2\u30eb\u30ab\u30ea\u4e7e\u96fb\u6c60 \u53583\u5f62 1\u30d1\u30c3\u30af\uff0840\u672c\uff09 - \u30a2\u30b9\u30af\u30eb",
+            "url": "https://www.askul.co.jp/p/581033/?msockid=016bc0fc14ad640d3fb2d753151865e3",
+            "snippet": "\u901a\u8ca9\u306a\u3089\u30a2\u30b9\u30af\u30eb\uff08\u30bd\u30ed\u30a8\u30eb\u30a2\u30ea\u30fc\u30ca\uff09\u3002 \u30d1\u30ca\u30bd\u30cb\u30c3\u30af \u30a2\u30eb\u30ab\u30ea\u4e7e\u96fb\u6c60 \u53583\u5f62 1\u30d1\u30c3\u30af\uff0840\u672c\uff09\u3092\u3001\u6700\u77ed\u5f53\u65e5\u304a\u5c4a\u3051\u3002 \u3010\u6cd5\u4eba \u2026"
+          },
+          {
+            "title": "Amazon.co.jp: \u5358\u4e09\u96fb\u6c60 \u30a2\u30eb\u30ab\u30ea 40\u672c",
+            "url": "https://www.amazon.co.jp/%E5%8D%98%E4%B8%89%E9%9B%BB%E6%B1%A0-%E3%82%A2%E3%83%AB%E3%82%AB%E3%83%AA-40%E6%9C%AC/s?k=%E5%8D%98%E4%B8%89%E9%9B%BB%E6%B1%A0+%E3%82%A2%E3%83%AB%E3%82%AB%E3%83%AA+40%E6%9C%AC",
+            "snippet": "Nordic Swan\u8a8d\u5b9a\u6e08\u307f\u88fd\u54c1\u306f\u3001\u539f\u6750\u6599\u3001\u88fd\u9020\u3001\u4f7f\u7528\u3001\u518d\u5229\u7528\u3001\u30ea\u30b5\u30a4\u30af\u30eb\u3092\u542b\u3080\u88fd\u54c1\u30e9\u30a4\u30d5\u30b5\u30a4\u30af\u30eb\u306e\u3059\u3079\u3066\u306e\u6bb5\u968e\u306b\u304a\u3044\u3066\u3001\u88fd\u54c1 \u2026"
+          },
+          {
+            "title": "\u3010\u30a2\u30eb\u30ab\u30ea\u4e7e\u96fb\u6c60 \u53583\u5f62 40\u672c\u3011\u306e\u304a\u3059\u3059\u3081\u4eba\u6c17\u30e9\u30f3\u30ad\u30f3\u30b0 ...",
+            "url": "https://www.monotaro.com/k/store/%E3%82%A2%E3%83%AB%E3%82%AB%E3%83%AA%E4%B9%BE%E9%9B%BB%E6%B1%A0%20%E5%8D%983%E5%BD%A2%2040%E6%9C%AC/?msockid=016bc0fc14ad640d3fb2d753151865e3",
+            "snippet": "3 days ago \u00b7 \u300c\u30a2\u30eb\u30ab\u30ea\u4e7e\u96fb\u6c60 \u53583\u5f62 40\u672c\u300d\u306e\u8ca9\u58f2\u7279\u96c6\u3067\u3059\u3002 MonotaRO\u306e\u53d6\u6271\u5546\u54c1\u306e\u4e2d\u304b\u3089\u30a2\u30eb\u30ab\u30ea\u4e7e\u96fb\u6c60 \u53583\u5f62 40\u672c\u306b\u95a2\u9023\u3059 \u2026"
+          },
+          {
+            "title": "\u53583 \u30a2\u30eb\u30ab\u30ea\u4e7e\u96fb\u6c60 \u53583 \u30e2\u30ce\u30bf\u30ed\u30a6 40\u672c \u3010\u901a\u8ca9\u30e2\u30ce\u30bf\u30ed\u30a6\u3011",
+            "url": "https://www.monotaro.com/p/3491/0915/?msockid=016bc0fc14ad640d3fb2d753151865e3",
+            "snippet": "\u53583 \u30a2\u30eb\u30ab\u30ea\u4e7e\u96fb\u6c60 \u53583 1\u7bb1 (40\u672c) \u30e2\u30ce\u30bf\u30ed\u30a6 34910915 \u306a\u3069\u304c\u304a\u8cb7\u5f97\u4fa1\u683c\u3067\u8cfc\u5165\u3067\u304d\u308b\u30e2\u30ce\u30bf\u30ed\u30a6\u306f\u53d6\u6271\u5546\u54c12,888\u4e07\u70b9\u30013,500\u5186 \u2026"
+          },
+          {
+            "title": "\u300c\u5358\u4e09\u96fb\u6c60 40\u672c\u300d\u901a\u8ca9 - \u30a2\u30b9\u30af\u30eb",
+            "url": "https://www.askul.co.jp/ksearch/?searchWord=%E5%8D%98%E4%B8%89%E9%9B%BB%E6%B1%A0+40%E6%9C%AC&msockid=016bc0fc14ad640d3fb2d753151865e3",
+            "snippet": "\u300c\u30d1\u30ca\u30bd\u30cb\u30c3\u30af \u30a2\u30eb\u30ab\u30ea\u4e7e\u96fb\u6c60 \u30a8\u30dc\u30eb\u30bf\uff08EVOLTA\uff09NEO\uff08\u30cd\u30aa\uff09 \u53583\u5f62\u300d\u306b\u306f\u30d0\u30ea\u30a8\u30fc\u30b7\u30e7\u30f3\u304c2\u500b\u3042\u308a\u307e\u3059\u3002"
+          },
+          {
+            "title": "\u300c\u5358\u4e09\u4e7e\u96fb\u6c60 40\u672c\u300d\u306e\u4eba\u6c17\u5546\u54c1\u4e00\u89a7 | \u5b89\u3044\u5546\u54c1\u3092\u901a\u8ca9\u30b5\u30a4\u30c8 ...",
+            "url": "https://search.kakaku.com/%E5%8D%98%E4%B8%89%E4%B9%BE%E9%9B%BB%E6%B1%A0%2040%E6%9C%AC/?msockid=016bc0fc14ad640d3fb2d753151865e3",
+            "snippet": "\"\u5358\u4e09\u4e7e\u96fb\u6c60 40\u672c\"\u306e\u4eba\u6c17\u5546\u54c1\u3092\u3054\u7d39\u4ecb\u3002 \u4fa1\u683c.com\u306a\u3089\u4eca\u58f2\u308c\u3066\u3044\u308b\u5546\u54c1\u3084\u304a\u5f97\u306a\u5546\u54c1\u3092\u5168\u56fd\u306e\u30cd\u30c3\u30c8\u901a\u8ca9\u30b7\u30e7\u30c3\u30d7\u304b\u3089\u63a2\u3059\u3053\u3068\u304c \u2026"
+          },
+          {
+            "title": "\u30d1\u30ca\u30bd\u30cb\u30c3\u30af \u30a2\u30eb\u30ab\u30ea\u4e7e\u96fb\u6c60 \u53583\u5f62 LR6XJN/40S 1\u7bb1 (40\u672c)",
+            "url": "https://www.tanomail.com/product/1604030/?msockid=016bc0fc14ad640d3fb2d753151865e3",
+            "snippet": "\u30d1\u30ca\u30bd\u30cb\u30c3\u30af \u30a2\u30eb\u30ab\u30ea\u4e7e\u96fb\u6c60 \u53583\u5f62 LR6XJN/40S 1\u7bb1 (40\u672c)\uff08\u96fb\u6c60\uff09\u306e\u901a\u8ca9\u306a\u3089\u300c\u305f\u306e\u3081\u30fc\u308b\u300d\uff01 \u30d1\u30ca\u30bd\u30cb\u30c3\u30af \u30a2\u30eb\u30ab\u30ea\u4e7e\u96fb\u6c60 \u2026"
+          }
+        ],
+        "time": 0.35497069358825684
+      },
+      {
+        "query": "hwo to fi xblue scren wndows 11",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Habitable Worlds Observatory - NASA Science",
+            "url": "https://science.nasa.gov/astrophysics/programs/habitable-worlds-observatory/",
+            "snippet": "Apr 7, 2026 \u00b7 HWO will be the first telescope designed specifically to search for signs of life on planets orbiting other stars. With a powerful set of instruments, it will also provide a platform for \u2026"
+          },
+          {
+            "title": "Home | Habitable Worlds Observatory",
+            "url": "https://habitableworldsobservatory.org/",
+            "snippet": "Attend Habitable Worlds Observatory (HWO) events organized by various institutions during the 247th American Astronomical Society Meeting in Phoenix, Arizona."
+          },
+          {
+            "title": "Habitable Worlds Observatory - Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Habitable_Worlds_Observatory",
+            "snippet": "HWO's main objective would be to identify and directly image at least 25 potentially habitable worlds. It would then use spectroscopy to search for chemical biosignatures in these planets' atmospheres, \u2026"
+          },
+          {
+            "title": "NASA Science | HWO Science - NASA Science",
+            "url": "https://science.nasa.gov/astrophysics/programs/habitable-worlds-observatory/science-2/",
+            "snippet": "Nov 24, 2025 \u00b7 HWO will search for exoplanets orbiting around stars in the solar neighborhood and focus on finding potentially Earth-like planets residing in their stars' habitable zone, the region around \u2026"
+          },
+          {
+            "title": "Habitable Worlds Observatory (HWO) | Goddard Engineering and \u2026",
+            "url": "https://etd.gsfc.nasa.gov/our-work/habitable-worlds-observatory-hwo/",
+            "snippet": "Jul 2, 2025 \u00b7 Currently referred to as the Habitable Worlds Observatory (HWO), this is a concept for a mission that would search for and characterize habitable planets beyond our solar system."
+          },
+          {
+            "title": "JPL Science: Habitable Worlds Observatory",
+            "url": "https://science.jpl.nasa.gov/projects/hwo/",
+            "snippet": "The Habitable Worlds Observatory (HWO) is a large ultraviolet/optical/infrared space telescope recommended by the National Academies\u2019 Pathways to Discovery in Astronomy and Astrophysics for \u2026"
+          },
+          {
+            "title": "Habitable Worlds Observatory (HWO) - NASA",
+            "url": "https://www.nasa.gov/centers-and-facilities/marshall/marshall-science-research-and-projects/habitable-worlds-observatory-hwo/",
+            "snippet": "Feb 26, 2024 \u00b7 H. Philip Stahl (ST10) was selected to lead the HWO Telescope Mirror Assembly & Structure Technology (Tele MAST) Sub-Group. As a member of the HWO Technology Assessment \u2026"
+          },
+          {
+            "title": "Habitable Worlds Observatory (HWO) Technology Maturation \u2026",
+            "url": "https://assets.science.nasa.gov/content/dam/science/missions/habitable-worlds-observatory/hwo-meetings/aas-245-(jan-2025)/2_%20HWO%20TMPO.pdf",
+            "snippet": "From 2024 to 2030, HWO TMPO will: Use \u201cConcept Maturity Levels\u201d (CMLs), endorsed by the LMS, to keep pace and set intermediate milestones for concept and technology maturity during pre-formulation"
+          }
+        ],
+        "time": 0.2992713451385498
+      },
+      {
+        "query": "wht is quantum computng",
+        "status": "ok",
+        "results": [
+          {
+            "title": "WhatsApp Web",
+            "url": "https://web-fallback.whatsapp.com/",
+            "snippet": "Log in to WhatsApp Web for simple, reliable and private messaging on your desktop. Send and receive messages and files with \u2026"
+          },
+          {
+            "title": "WhatsApp Messaging",
+            "url": "https://www.whatsapp.com/messaging",
+            "snippet": "Stay close to the people that matter to you with simple, reliable and private messaging across iOS and Android devices."
+          },
+          {
+            "title": "Withholding tax (WHT) rates",
+            "url": "https://taxsummaries.pwc.com/quick-charts/withholding-tax-wht-rates",
+            "snippet": "Statutory WHT rates on dividend, interest, and royalty payments made by companies in WWTS territories to residents and non \u2026"
+          },
+          {
+            "title": "WHT",
+            "url": "https://wht.tv/",
+            "snippet": "WHT is part of the Family Broadcasting Corporation."
+          },
+          {
+            "title": "WHT - Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/WHT",
+            "snippet": "This disambiguation page lists articles associated with the title WHT. If an internal link incorrectly led you here, you may wish to \u2026"
+          },
+          {
+            "title": "WHT | Qinhuangdao - Facebook",
+            "url": "https://www.facebook.com/profile.php/?id=100093572650981",
+            "snippet": "5 days ago \u00b7 The 2026 Heyball International Open US Stop comes down to this \u2014 one match, one champion. \ud83c\uddec\ud83c\udde7 Jordan Shepherd VS \u2026"
+          },
+          {
+            "title": "India - Corporate - Withholding taxes",
+            "url": "https://taxsummaries.pwc.com/india/corporate/withholding-taxes",
+            "snippet": "May 11, 2026 \u00b7 If the PAN of the deductee is not quoted, the rate of WHT will be the rate specified in relevant provisions of the Act, \u2026"
+          },
+          {
+            "title": "What does WHT mean? - Abbreviation Finder",
+            "url": "https://abbreviationfinder.org/acronyms/wht.html",
+            "snippet": "Using WHT as an acronym offers efficiency and brevity, saving time and space in communication while conveying professionalism \u2026"
+          }
+        ],
+        "time": 0.316908597946167
+      },
+      {
+        "query": "best laptap for programing 2025",
+        "status": "ok",
+        "results": [
+          {
+            "title": "15 Best Free PC Games to Play on Steam (August 2026)",
+            "url": "https://www.atriarch.com/best-free-pc-games-to-play-on-steam-in-2026/",
+            "snippet": "Jul 30, 2026 \u00b7 Discover the best free PC games on Steam in 2026. We tested 15 top titles covering shooters, RPGs, MOBAs, and \u2026"
+          },
+          {
+            "title": "18 Best Single Player Games of All Time (August 2026): Must-Play ...",
+            "url": "https://www.atriarch.com/best-single-player-games-of-all-time/",
+            "snippet": "Jul 29, 2026 \u00b7 Discover the best single player games of all time with our 2026 guide. We ranked 18 top titles by story, gameplay, and \u2026"
+          },
+          {
+            "title": "Best Open World Games to Play in 2026 (July 2026) - Complete Guide",
+            "url": "https://www.atriarch.com/best-open-world-games-to-play-in-2026/",
+            "snippet": "Jul 29, 2026 \u00b7 Looking for the best open world games to play in 2026? We tested 19 titles across PS5, Xbox, PC, and Switch, \u2026"
+          },
+          {
+            "title": "14 Best Games Like Elden Ring to Play Next (August 2026)",
+            "url": "https://www.atriarch.com/best-games-like-elden-ring-to-play-next/",
+            "snippet": "Jul 29, 2026 \u00b7 Finished Elden Ring and craving more? Here are the 14 best games like Elden Ring to play next in 2026, from \u2026"
+          },
+          {
+            "title": "Home - Atriarch",
+            "url": "https://www.atriarch.com/",
+            "snippet": "What Went Wrong With ArcheAge\u2019s Housing and Economy 2026 15 Best Free-to-Play MMORPGs to Play (August 2026) 10 Best \u2026"
+          },
+          {
+            "title": "Best Mobile Games to Play Offline in 2026 - atriarch.com",
+            "url": "https://www.atriarch.com/best-mobile-games-to-play-offline-in-2026/",
+            "snippet": "Jul 30, 2026 \u00b7 The best mobile games to play offline in 2026 are titles that download once, save your progress locally, and never \u2026"
+          },
+          {
+            "title": "Best Free Mobile Games Without Ads (August 2026)",
+            "url": "https://www.atriarch.com/best-free-mobile-games-without-ads/",
+            "snippet": "Jul 29, 2026 \u00b7 Discover the best free mobile games without ads in 2026. We tested 12+ ad-free games for iOS and Android - no IAPs, \u2026"
+          },
+          {
+            "title": "Best RPGs of All Time Ranked (2026) - Atriarch",
+            "url": "https://www.atriarch.com/best-rpgs-of-all-time-ranked/",
+            "snippet": "Jul 29, 2026 \u00b7 We built this ranked list of the best RPGs of all time by weighing three things above all else: storytelling that stays with \u2026"
+          }
+        ],
+        "time": 0.37364959716796875
+      },
+      {
+        "query": "why is my cat staring at the wall",
+        "status": "ok",
+        "results": [
+          {
+            "title": "WHY | English meaning - Cambridge Dictionary",
+            "url": "https://dictionary.cambridge.org/dictionary/english/why",
+            "snippet": "WHY definition: 1. for what reason: 2. used to express surprise or anger: 3. the reasons for something: . Learn more."
+          },
+          {
+            "title": "WHY Definition & Meaning - Merriam-Webster",
+            "url": "https://www.merriam-webster.com/dictionary/why",
+            "snippet": "The meaning of WHY is for what cause, reason, or purpose. How to use why in a sentence."
+          },
+          {
+            "title": "WHY | definition in the Cambridge English Dictionary",
+            "url": "https://dictionary.cambridge.org/us/dictionary/english/why",
+            "snippet": "WHY meaning: 1. for what reason: 2. used to express surprise or anger: 3. the reasons for something: . Learn more."
+          },
+          {
+            "title": "Michael Jackson Why - YouTube",
+            "url": "https://m.youtube.com/watch?v=Ac4JvziFzNc",
+            "snippet": "Jul 7, 2009 \u00b7 Enjoy the videos and music you love, upload original content, and share it all with friends, family, and the world on YouTube."
+          },
+          {
+            "title": "Why - Definition, Meaning & Synonyms | Vocabulary.com",
+            "url": "https://www.vocabulary.com/dictionary/why",
+            "snippet": "the cause or intention underlying an action or situation, especially in the phrase `the whys and wherefores'"
+          },
+          {
+            "title": "Why - Wikipedia",
+            "url": "https://en.m.wikipedia.org/wiki/Why",
+            "snippet": "Why may refer to: Causality, a consequential relationship between two or more events Reason (argument), a premise in support of an argument, for what reason or purpose Grounding \u2026"
+          },
+          {
+            "title": "Annie Lennox - Why (Official Music Video) - YouTube",
+            "url": "https://m.youtube.com/watch?v=HG7I4oniOyA",
+            "snippet": "Oct 2, 2009 \u00b7 568K Share 114M views 16 years ago Annie Lennox - Why (Official Video) Listen on Spotify - http://smarturl.it/Lennox_SPTT Listen on Apple Music - http://smarturl.it/Lennox_AME"
+          },
+          {
+            "title": "WHY definition and meaning | Collins English Dictionary",
+            "url": "https://www.collinsdictionary.com/dictionary/english/why",
+            "snippet": "4 meanings: 1. a. for what reason, purpose, or cause? b. (used in indirect questions) 2. for or because of which 3. the reason,.... Click for more definitions."
+          }
+        ],
+        "time": 0.9857301712036133
+      },
+      {
+        "query": "can you microwave aluminum foil",
+        "status": "ok",
+        "results": [
+          {
+            "title": "Canva: Visual Suite for Everyone",
+            "url": "https://www.canva.com/?msockid=3636c21231fc62160477d5bd305563df",
+            "snippet": "Canva is a free-to-use online graphic design tool. Use it to create social media posts, presentations, posters, videos, logos and more."
+          },
+          {
+            "title": "CAN Definition & Meaning - Merriam-Webster",
+            "url": "https://www.merriam-webster.com/dictionary/can",
+            "snippet": "6 days ago \u00b7 The use of can to ask or grant permission has been common since the 19th century and is well established, although some feel may is more appropriate in formal contexts. May is relatively rare \u2026"
+          },
+          {
+            "title": "CAN | English meaning - Cambridge Dictionary",
+            "url": "https://dictionary.cambridge.org/dictionary/english/can",
+            "snippet": "Can is usually used in standard spoken English when asking for permission. It is acceptable in most forms of written English, although in very formal writing, such as official instructions, may is often \u2026"
+          },
+          {
+            "title": "How to Use \u201cCan\u201d in English: Meaning and Examples",
+            "url": "https://lingoharvest.com/english/grammar/modal-verbs/1251-use-can-everyday-english-sentences.html",
+            "snippet": "Apr 18, 2026 \u00b7 Learning to use can naturally in everyday sentences is one of the quickest ways to sound more confident in English. You will hear it when people talk about ability, ask for help, give \u2026"
+          },
+          {
+            "title": "Can - definition of can by The Free Dictionary",
+            "url": "https://www.thefreedictionary.com/can",
+            "snippet": "Define can. can synonyms, can pronunciation, can translation, English dictionary definition of can. to be able to, have the power or skill to: I can take a bus to the airport."
+          },
+          {
+            "title": "CAN | definition in the Cambridge Learner\u2019s Dictionary",
+            "url": "https://dictionary.cambridge.org/us/dictionary/learner-english/can",
+            "snippet": "I can't hear - can you turn the sound up? I can carry both bags - they're quite light. You can sing lower than me."
+          },
+          {
+            "title": "\u201cCAN\u201d or \u201cCOULD\u201d? What\u2019s the difference? - YouTube",
+            "url": "https://www.youtube.com/watch?v=j8brjlHycW0",
+            "snippet": "May 9, 2023 \u00b7 Do you use \u201ccan\u201d and \u201ccould\u201d correctly in English? Join me and learn how to use these two important modal verbs, in terms of grammar, vocabulary, and pronunciation."
+          }
+        ],
+        "time": 4.021513938903809
+      }
+    ]
+  }
+}

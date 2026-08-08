@@ -341,38 +341,24 @@ async def run_agent_llm_loop(
             await _persist_message(agent.id, "assistant", response_text)
             return response_text  # Accept even if still malformed (degraded)
 
-        # Loop detection
-        stuck = False
+        # Loop detection — warning-based (mirrors MainChatGuard, never hard-kills)
         for tag in tags:
-            if not loop_detector.check(tag["name"], str(tag.get("attrs", ""))):
-                stuck = True
-                break
-        if stuck:
-            # Try teacher escalation before generic stuck message
+            loop_detector.check(tag["name"], str(tag.get("attrs", "")))
+
+        loop_warning = loop_detector.get_warning()
+        if loop_warning:
+            # Try teacher escalation before generic warning
             teacher_guidance = await _try_teacher_escalation(
                 agent, "Agent is repeating the same tool calls with identical arguments."
             )
             if teacher_guidance:
-                current_message = f"[MENTOR INTERVENTION]\n{teacher_guidance}"
+                warning_msg = f"[MENTOR INTERVENTION]\n{teacher_guidance}"
             else:
-                current_message = STUCK_MESSAGE
-            agent.messages.append({"role": "user", "content": current_message})
-            await _persist_message(agent.id, "user", current_message)
-            continue
-
-        # Check for structural looping (same tool pattern repeated 5+ times)
-        if loop_detector.is_structure_looping(threshold=5):
-            agent.messages.append({"role": "user", "content": REPEAT_LOOP_WARNING})
-            await _persist_message(agent.id, "user", REPEAT_LOOP_WARNING)
-            response_text, new_parent_id = await _send_with_retry(
-                agent, REPEAT_LOOP_WARNING, parent_id, breaker, False
-            )
-            if new_parent_id:
-                parent_id = new_parent_id
-            agent.messages.append({"role": "assistant", "content": response_text})
-            await _persist_message(agent.id, "assistant", response_text)
-            # After warning, continue loop — agent gets one chance to break the pattern
-            # If it loops again, the per-tool or consecutive checks will catch it
+                warning_msg = loop_warning
+            agent.messages.append({"role": "user", "content": warning_msg})
+            await _persist_message(agent.id, "user", warning_msg)
+            # Don't skip execution — let the agent see the warning AND execute its tools
+            # The warning is injected as context for the NEXT iteration
 
         # Execute skills
         tool_results = []

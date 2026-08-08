@@ -208,11 +208,33 @@ class SkillParser:
                     yield {"type": "tool_progress", "tag": tag_name, "lines": p_lines, "bytes": p_bytes}
             break
 
+    # Regex to strip any remaining tag-like content on flush (leaked tags)
+    _TAG_STRIP_RE: re.Pattern | None = None
+
+    def _get_tag_strip_re(self) -> re.Pattern:
+        if self._TAG_STRIP_RE is None:
+            alternation = "|".join(re.escape(t) for t in self._known_tags)
+            # Matches: <tag ... />, <tag ...>...</tag>, <tag ...> (unclosed), </tag>
+            self._TAG_STRIP_RE = re.compile(
+                r"<\s*(?:" + alternation + r")\b[^>]*(?:/>|>.*?<\s*/\s*(?:" + alternation + r")\s*>|>)"
+                r"|<\s*/\s*(?:" + alternation + r")\s*>",
+                re.S | re.I,
+            )
+        return self._TAG_STRIP_RE
+
     def flush(self) -> Generator[dict[str, Any], None, None]:
-        """Flush remaining buffer as text. Called at end of stream."""
+        """Flush remaining buffer. Extracts any complete tags, strips leaked tag syntax."""
         if self.buf:
-            yield {"type": "text", "text": self.buf}
-            self.buf = ""
+            # Only extract tags if inside an action block — bare tags outside
+            # action blocks must NOT execute (security/correctness gate)
+            if self._in_action:
+                yield from self._extract_loop()
+            # Strip any remaining tag-like content before emitting as text
+            if self.buf:
+                cleaned = self._get_tag_strip_re().sub("", self.buf).strip()
+                if cleaned:
+                    yield {"type": "text", "text": cleaned}
+                self.buf = ""
         self._in_action = False
 
     def _find_complete(self) -> tuple[int, int, str, str, str] | None:
