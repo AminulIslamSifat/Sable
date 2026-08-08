@@ -26,17 +26,38 @@
 
     /* ---------- Auth gate ---------- */
     const TOKEN_KEY = "sable_token";
-    const loginOverlay = document.getElementById("loginOverlay");
+
+    // Phase elements
+    const phasePassword  = document.getElementById("phasePassword");
+    const phaseBrowser   = document.getElementById("phaseBrowser");
+    const loginOverlay   = document.getElementById("loginOverlay");
+
     const loginForm    = document.getElementById("loginForm");
     const loginTokenIn = document.getElementById("loginToken");
     const loginBtn     = document.getElementById("loginBtn");
     const loginError   = document.getElementById("loginError");
 
+    const setupPasswordForm = document.getElementById("setupPasswordForm");
+    const setupPasswordIn   = document.getElementById("setupPassword");
+    const setupPasswordBtn  = document.getElementById("setupPasswordBtn");
+    const setupPasswordErr  = document.getElementById("setupPasswordError");
+    const setupBrowserBtn   = document.getElementById("setupBrowserBtn");
+    const setupBrowserStatus = document.getElementById("setupBrowserStatus");
+
     const getToken = () => localStorage.getItem(TOKEN_KEY);
     const setToken = (t) => localStorage.setItem(TOKEN_KEY, t);
     const clearToken = () => localStorage.removeItem(TOKEN_KEY);
 
+    // Hide all phases, then show one
+    function showPhase(phase) {
+      phasePassword.classList.add("hidden");
+      phaseBrowser.classList.add("hidden");
+      loginOverlay.classList.add("hidden");
+      if (phase) phase.classList.remove("hidden");
+    }
+
     // Inject the bearer token into every API request; bounce to login on 401.
+    let _authBounced = false;
     const _origFetch = window.fetch.bind(window);
     window.fetch = async (url, init = {}) => {
       const token = getToken();
@@ -44,55 +65,146 @@
         init.headers = Object.assign({}, init.headers, { Authorization: "Bearer " + token });
       }
       const res = await _origFetch(url, init);
-      if (res.status === 401 && typeof url === "string" && !url.includes("/api/login")) {
+      if (res.status === 401 && typeof url === "string" && !url.includes("/api/login") && !_authBounced) {
+        _authBounced = true;
         clearToken();
-        // Show login overlay without reloading — reloading causes an infinite
-        // loop because background API calls (models, chats, etc.) all fire
-        // before auth is established and each 401 triggers another reload.
-        loginOverlay.classList.remove("hidden");
+        showPhase(loginOverlay);
         loginTokenIn.focus();
       }
       return res;
     };
 
+    // Persistent login resolve — set when ensureAuth() needs to wait for login
+    let _loginResolve = null;
+
+    // Persistent login form handler (never removed, handles retries + 401 re-shows)
+    loginForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const token = loginTokenIn.value.trim();
+      if (!token) return;
+      loginBtn.disabled = true;
+      loginError.classList.add("hidden");
+      try {
+        const res = await _origFetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token }),
+        });
+        if (res.ok) {
+          setToken(token);
+          _authBounced = false;
+          showPhase(null);
+          if (_loginResolve) { _loginResolve(); _loginResolve = null; }
+        } else {
+          loginError.textContent = "Invalid token. Try again.";
+          loginError.classList.remove("hidden");
+          loginTokenIn.value = "";
+          loginTokenIn.focus();
+        }
+      } catch {
+        loginError.textContent = "Connection error. Try again.";
+        loginError.classList.remove("hidden");
+      } finally {
+        loginBtn.disabled = false;
+      }
+    });
+
+    function waitForLogin() {
+      return new Promise((resolve) => { _loginResolve = resolve; });
+    }
+
     function ensureAuth() {
       if (getToken()) {
-        loginOverlay.classList.add("hidden");
+        showPhase(null);
         return Promise.resolve();
       }
-      loginOverlay.classList.remove("hidden");
-      return new Promise((resolve) => {
-        // { once: true } prevents stacking a new listener on every ensureAuth() call
-        loginForm.addEventListener("submit", async (e) => {
-          e.preventDefault();
-          const token = loginTokenIn.value.trim();
-          if (!token) return;
-          loginBtn.disabled = true;
-          loginError.classList.add("hidden");
-          try {
-            const res = await _origFetch("/api/login", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ token }),
-            });
-            if (res.ok) {
-              setToken(token);
-              loginOverlay.classList.add("hidden");
-              resolve();
-            } else {
-              loginError.textContent = "Invalid token. Try again.";
-              loginError.classList.remove("hidden");
-              loginTokenIn.value = "";
-              loginTokenIn.focus();
+
+      // Check if first-run setup is needed
+      return (async () => {
+        try {
+          const statusRes = await _origFetch("/api/setup/status");
+          if (statusRes.ok) {
+            const status = await statusRes.json();
+            if (status.needs_password) {
+              // === PHASE 1: Set Password ===
+              showPhase(phasePassword);
+              setupPasswordIn.focus();
+
+              await new Promise((resolve) => {
+                setupPasswordForm.addEventListener("submit", async (e) => {
+                  e.preventDefault();
+                  const pw = setupPasswordIn.value.trim();
+                  if (!pw) return;
+                  setupPasswordBtn.disabled = true;
+                  setupPasswordErr.classList.add("hidden");
+                  try {
+                    const res = await _origFetch("/api/setup/password", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ password: pw }),
+                    });
+                    if (res.ok) {
+                      setToken(pw);
+                      resolve();
+                    } else {
+                      const data = await res.json().catch(() => ({}));
+                      setupPasswordErr.textContent = data.detail || "Failed to set password.";
+                      setupPasswordErr.classList.remove("hidden");
+                    }
+                  } catch {
+                    setupPasswordErr.textContent = "Connection error.";
+                    setupPasswordErr.classList.remove("hidden");
+                  } finally {
+                    setupPasswordBtn.disabled = false;
+                  }
+                }, { once: true });
+              });
+
+              // === PHASE 2: Browser Login ===
+              showPhase(phaseBrowser);
+
+              await new Promise((resolve) => {
+                setupBrowserBtn.addEventListener("click", async () => {
+                  setupBrowserBtn.disabled = true;
+                  setupBrowserStatus.textContent = "Opening browser...";
+                  setupBrowserStatus.classList.remove("hidden");
+                  try {
+                    const res = await _origFetch("/api/setup/browser-login", {
+                      method: "POST",
+                      headers: { Authorization: "Bearer " + getToken() },
+                    });
+                    if (res.ok) {
+                      setupBrowserStatus.textContent = "Browser opened! Complete login there, then close it.";
+                      setTimeout(resolve, 3000);
+                    } else {
+                      setupBrowserStatus.textContent = "Failed to open browser. You can do this later from Settings.";
+                      setTimeout(resolve, 2000);
+                    }
+                  } catch {
+                    setupBrowserStatus.textContent = "Connection error. You can set up browser login later.";
+                    setTimeout(resolve, 2000);
+                  } finally {
+                    setupBrowserBtn.disabled = false;
+                  }
+                }, { once: true });
+              });
+
+              // === PHASE 3: Auto-login after setup ===
+              showPhase(loginOverlay);
+              loginTokenIn.value = getToken();
+              loginForm.dispatchEvent(new Event("submit"));
+              return waitForLogin();
             }
-          } catch (err) {
-            loginError.textContent = "Connection error. Try again.";
-            loginError.classList.remove("hidden");
-          } finally {
-            loginBtn.disabled = false;
           }
-        }, { once: true });
-      });
+        } catch {
+          // Setup status check failed — fall through to normal login
+        }
+
+        // === PHASE 3: Normal login flow ===
+        showPhase(loginOverlay);
+        loginTokenIn.focus();
+        return waitForLogin();
+      })();
     }
 
     const ACTIVE_CHAT_KEY = "sable_active_chat";
@@ -218,25 +330,36 @@
       async _playNext() {
         if (this.stopped) return;
         if (this.queue.length === 0) {
-          this.onStateChange("stopped");
+          if (!this.stopped) this.onStateChange("stopped");
           return;
         }
         const audio = this.queue.shift();
         this.playing = audio;
         audio.onended = () => {
+          if (this.stopped) return;
           this.playing = null;
           URL.revokeObjectURL(audio.src);
           this._playNext();
         };
         audio.onerror = () => {
+          if (this.stopped) return;
           this.playing = null;
           this._playNext();
         };
-        try { await audio.play(); } catch { this._playNext(); }
+        try { await audio.play(); } catch {
+          if (!this.stopped) this._playNext();
+        }
       }
 
       async play(text) {
-        this.stop();
+        // Hard global guard: if any TTS is already active, refuse to play
+        if (_ttsActive && _activeTTS.player !== this) {
+          console.warn("[TTS] Blocked: another TTS session is active");
+          return;
+        }
+        // Note: removed this.stop() call — it fired onStateChange("stopped")
+        // which reset _ttsActive before playback even started. We always create
+        // a fresh player instance so there's nothing to clean up.
         this.stopped = false;
         this.abortCtrl = new AbortController();
         const chunks = TTSStreamPlayer.splitSentences(text);
@@ -297,17 +420,55 @@
         this.stopped = true;
         this.abortCtrl.abort(); // cancel all in-flight fetches
         if (this.playing) {
+          this.playing.onended = null;  // kill chain — no more _playNext
+          this.playing.onerror = null;
           this.playing.pause();
           this.playing.currentTime = 0;
-          URL.revokeObjectURL(this.playing.src);
+          try { URL.revokeObjectURL(this.playing.src); } catch {}
           this.playing = null;
         }
         for (const a of this.queue) {
-          URL.revokeObjectURL(a.src);
+          try { URL.revokeObjectURL(a.src); } catch {}
         }
         this.queue = [];
         this.onStateChange("stopped");
       }
+    }
+
+    // Global TTS lock — only one message can play at a time across all buttons
+    // Generation counter: incremented on every stop/start so stale callbacks self-invalidate
+    let _ttsGeneration = 0;
+    let _ttsActive = false; // true while TTS is running OR cooling down after stop
+    let _ttsStopping = false; // true when stopGlobalTTS() initiated the stop (vs natural end)
+    let _ttsLastAction = 0; // timestamp of last start/stop action (ms)
+    const TTS_DEBOUNCE_MS = 400; // minimum ms between any TTS actions
+    const _activeTTS = { player: null, btn: null, gen: -1 };
+    function stopGlobalTTS() {
+      const prevGen = _ttsGeneration;
+      _ttsGeneration++; // invalidate ALL pending callbacks from previous sessions
+      _ttsStopping = true; // mark that WE initiated this stop
+      console.log(`[TTS-DEBUG] stopGlobalTTS called | gen ${prevGen}→${_ttsGeneration} | _ttsActive=${_ttsActive}`);
+      // CRITICAL: set _ttsLastAction BEFORE stopping so debounce blocks immediate re-clicks
+      _ttsLastAction = Date.now();
+      if (_activeTTS.player) {
+        _activeTTS.player.stop();
+        _activeTTS.player = null;
+      }
+      if (_activeTTS.btn) {
+        _activeTTS.btn.innerHTML = '<i data-lucide="volume-2"></i>';
+        _activeTTS.btn.title = "Read aloud";
+        _activeTTS.btn.classList.remove("tts-playing");
+        activateLucideIcons(_activeTTS.btn);
+        _activeTTS.btn = null;
+      }
+      _activeTTS.gen = -1;
+      // Keep _ttsActive true briefly so rapid clicks are blocked
+      // onStateChange("stopped") will see _ttsStopping=true and skip _ttsActive reset
+      setTimeout(() => {
+        console.log(`[TTS-DEBUG] cooldown expired | _ttsActive ${_ttsActive}→false | gen=${_ttsGeneration}`);
+        _ttsActive = false;
+        _ttsStopping = false;
+      }, TTS_DEBOUNCE_MS);
     }
 
     const attachBtn     = document.getElementById("attachBtn");
@@ -1066,6 +1227,13 @@
       activeStreams.delete(chatId);
       if (chatId === activeChatId) updateSendBtn();
       renderChats();
+      // Refresh context ring after message completes
+      if (chatId === activeChatId) {
+        fetch(`/api/chats/${chatId}/messages?limit=1`)
+          .then(r => r.json())
+          .then(d => { window._statusContextChars = d.context_chars || 0; updateStatusBarContext(); })
+          .catch(() => {});
+      }
     }
 
     function setCreating(val) {
@@ -1080,7 +1248,7 @@
         floatBtn.classList.toggle("loading", val);
       }
       modelSelectEl.disabled = val;
-      thinkingSwitcherEl.style.display = val ? "none" : "";
+      if (thinkingSwitcherEl) thinkingSwitcherEl.style.display = val ? "none" : "";
     }
 
     function autoResize() {
@@ -1290,6 +1458,48 @@
             }
           });
           toolbar.appendChild(copyBtn);
+
+          // TTS button for live user messages
+          const ttsBtn = document.createElement("button");
+          ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
+          ttsBtn.title = "Read aloud";
+          ttsBtn.addEventListener("click", async () => {
+            const now = Date.now();
+            if (now - _ttsLastAction < TTS_DEBOUNCE_MS) return;
+            if (_ttsActive) { stopGlobalTTS(); return; }
+            _ttsLastAction = now;
+            const userTextEl = div.querySelector(".user-text");
+            const ttsText = userTextEl ? userTextEl.textContent : text;
+            if (!ttsText) return;
+            _ttsActive = true;
+            const gen = ++_ttsGeneration;
+            _activeTTS.gen = gen;
+            const player = new TTSStreamPlayer((state) => {
+              if (_ttsGeneration !== gen) return;
+              if (state === "loading") {
+                ttsBtn.innerHTML = '<i data-lucide="loader-circle"></i>';
+                ttsBtn.title = "Loading...";
+              } else if (state === "playing") {
+                ttsBtn.innerHTML = '<i data-lucide="square"></i>';
+                ttsBtn.title = "Stop";
+                ttsBtn.classList.add("tts-playing");
+              } else {
+                ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
+                ttsBtn.title = "Read aloud";
+                ttsBtn.classList.remove("tts-playing");
+                if (!_ttsStopping) _ttsActive = false;
+                _activeTTS.player = null;
+                _activeTTS.btn = null;
+                _activeTTS.gen = -1;
+              }
+              activateLucideIcons(ttsBtn);
+            });
+            _activeTTS.player = player;
+            _activeTTS.btn = ttsBtn;
+            player.play(ttsText);
+          });
+          toolbar.appendChild(ttsBtn);
+
           div.appendChild(toolbar);
           activateLucideIcons(toolbar);
         }
@@ -1818,12 +2028,24 @@
 
     function addHistoryMessage(message) {
       clearEmptyState();
+
+      // --- 1. Render message content FIRST (fixes ordering: msg before skill_events) ---
+      let displayContent = message.content || "";
+      let realTs = null;
+      if (message.role === "user") {
+        const memMatch = displayContent.match(/^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n/);
+        if (memMatch) displayContent = displayContent.slice(memMatch[0].length);
+        const tsMatch = displayContent.match(/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\n?/);
+        if (tsMatch) {
+          realTs = tsMatch[1];
+          displayContent = displayContent.slice(tsMatch[0].length);
+        }
+      }
+
+      // Legacy thinking (no round_thinking in events)
       const events = Array.isArray(message.skill_events) ? message.skill_events : [];
-      // New messages store per-round thinking inside skill_events as
-      // "round_thinking" entries so we can rebuild the t1,c1,t2,c2 layout.
-      // Legacy messages only have the flat `thinking` blob — fall back to a
-      // single block at the top for those.
       const hasRoundThinking = events.some((e) => e.type === "round_thinking");
+      const hasRoundText = events.some((e) => e.type === "round_text" && e.text && e.text.trim());
       if (message.thinking && !hasRoundThinking) {
         const wrap = document.createElement("div");
         wrap.className = "thinking-wrap";
@@ -1836,114 +2058,11 @@
         activateLucideIcons(wrap);
       }
 
-      let hasRoundText = false;
-      if (events.length > 0) {
-        const cards = {};
-        let group = null;
-        for (const evt of events) {
-          if (evt.type === "round_thinking") {
-            // This round's thought — render it, then force the next commands
-            // into a brand-new stack placed right after it.
-            group = null;
-            const wrap = document.createElement("div");
-            wrap.className = "thinking-wrap";
-            wrap.innerHTML = `
-              <details class="thinking">
-                <summary><i data-lucide="chevron-right" class="thinking-chevron"></i>Thinking</summary>
-                <div class="thinking-body">${escHtml(evt.text || "")}</div>
-              </details>`;
-            activePane.appendChild(wrap);
-            activateLucideIcons(wrap);
-          } else if (evt.type === "round_text") {
-            // Per-round text — render inline within the chat flow so it
-            // interleaves with tool cards instead of grouping at the bottom.
-            hasRoundText = true;
-            if (evt.text && evt.text.trim()) {
-              const textDiv = document.createElement("div");
-              textDiv.className = "msg bot";
-              const content = document.createElement("div");
-              content.className = "md-content";
-              content.innerHTML = renderMarkdown(evt.text);
-              renderMermaidDiagrams(content);
-              renderMathJax(content);
-              activateLucideIcons(content);
-              textDiv.appendChild(content);
-              activePane.appendChild(textDiv);
-            }
-          } else if (evt.type === "skill_start") {
-            if (evt.name === "ask_user") continue; // MCQ rendered on skill_output
-            if (!group) {
-              group = document.createElement("div");
-              group.className = "skill-stack";
-              group.style.display = "flex";
-              activePane.appendChild(group);
-            }
-            const card = createSkillCard(evt);
-            group.appendChild(card);
-            activateLucideIcons(card);
-            cards[evt.id] = card;
-          } else if (evt.type === "skill_output") {
-            if (evt.name === "ask_user") {
-              try {
-                const card = renderAskUserCard(JSON.parse(evt.text), activePane);
-                card.classList.add("answered");
-                card.querySelectorAll("button").forEach(b => b.disabled = true);
-              } catch(e) { /* skip malformed */ }
-              continue;
-            }
-            const card = cards[evt.id];
-            if (card) appendSkillCardOutput(card, evt.text);
-          } else if (evt.type === "skill_end") {
-            if (evt.name === "ask_user") continue;
-            const card = cards[evt.id];
-            if (card) finishSkillCard(card, evt);
-          } else if (evt.type === "agent_result") {
-            // Render persisted agent completion card (same as live SSE)
-            if (typeof addAgentResultCard === "function") {
-              addAgentResultCard({
-                type: evt.ok ? "agent_completed" : "agent_failed",
-                agent_id: evt.agent_id,
-                data: evt.data || {},
-              });
-            }
-          } else if (evt.type === "file_edit") {
-            handleFileEdit(evt, false);
-          } else if (evt.type === "memory_used") {
-            // Tool-round memory chip — inject inline into the last skill card header
-            if (Array.isArray(evt.memories) && evt.memories.length) {
-              const chip = createMemoryChip(evt.memories);
-              chip.classList.add("memory-chip-tool");
-              const allCards = activePane.querySelectorAll(".skill-card");
-              const target = allCards.length ? allCards[allCards.length - 1] : null;
-              if (target) {
-                const right = target.querySelector(".skill-header-right");
-                if (right) right.insertBefore(chip, right.firstChild);
-                else target.querySelector(".skill-header")?.appendChild(chip);
-              } else {
-                activePane.appendChild(chip);
-              }
-            }
-          }
-        }
-      }
-
-      let displayContent = message.content || "";
-      let realTs = null;
-      if (message.role === "user") {
-        // Strip the injected memory block + timestamp prefix — the bubble shows
-        // what the user typed; the memories live behind the chip instead.
-        const memMatch = displayContent.match(/^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n/);
-        if (memMatch) displayContent = displayContent.slice(memMatch[0].length);
-        const tsMatch = displayContent.match(/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\n?/);
-        if (tsMatch) {
-          realTs = tsMatch[1];
-          displayContent = displayContent.slice(tsMatch[0].length);
-        }
-      }
-      // If round_text events already rendered bot text inline, skip the final blob
-      const msgDiv = (message.role !== "user" && hasRoundText)
-        ? null
-        : addMessage(message.role === "user" ? "user" : "bot", displayContent);
+      // For assistant messages with round_text events, skip main content rendering —
+      // _renderSkillEvents will replay text + skills in streaming order via round_text.
+      // This prevents the "all text first, then all commands" mesh.
+      const skipMainContent = message.role !== "user" && hasRoundText;
+      const msgDiv = skipMainContent ? null : addMessage(message.role === "user" ? "user" : "bot", displayContent);
       if (message.role === "user" && msgDiv) {
         if (realTs) {
           const tsEl = msgDiv.querySelector(".msg-timestamp");
@@ -1952,61 +2071,261 @@
         if (Array.isArray(message.memory_used) && message.memory_used.length) {
           attachMemoryChip(msgDiv, message.memory_used);
         }
-      }
-      // Attach toolbar to historical bot messages
-      if (message.role !== "user" && msgDiv) {
-        const toolbar = document.createElement("div");
-        toolbar.className = "msg-toolbar";
-        const copyBtn = document.createElement("button");
-        copyBtn.innerHTML = '<i data-lucide="copy"></i>';
-        copyBtn.title = "Copy";
-        copyBtn.addEventListener("click", () => {
-          const md = msgDiv.querySelector(".md-content");
-          const text = md ? md.innerText : "";
-          navigator.clipboard.writeText(text).then(() => {
-            copyBtn.innerHTML = '<i data-lucide="check"></i>';
-            activateLucideIcons(copyBtn);
-            setTimeout(() => { copyBtn.innerHTML = '<i data-lucide="copy"></i>'; activateLucideIcons(copyBtn); }, 1500);
+        // Ensure user messages from DB have copy + TTS toolbar
+        let toolbar = msgDiv.querySelector(".msg-toolbar");
+        if (!toolbar) {
+          toolbar = document.createElement("div");
+          toolbar.className = "msg-toolbar";
+          msgDiv.appendChild(toolbar);
+        }
+        if (!toolbar.querySelector('[title="Copy"]')) {
+          const copyBtn = document.createElement("button");
+          copyBtn.innerHTML = '<i data-lucide="copy"></i>';
+          copyBtn.title = "Copy";
+          copyBtn.addEventListener("click", () => {
+            const userTextEl = msgDiv.querySelector(".user-text");
+            const copyText = userTextEl ? userTextEl.textContent : displayContent;
+            navigator.clipboard.writeText(copyText).then(() => {
+              copyBtn.innerHTML = '<i data-lucide="check"></i>';
+              activateLucideIcons(copyBtn);
+              setTimeout(() => { copyBtn.innerHTML = '<i data-lucide="copy"></i>'; activateLucideIcons(copyBtn); }, 1500);
+            });
           });
-        });
+          toolbar.appendChild(copyBtn);
+        }
+        if (!toolbar.querySelector('[title="Read aloud"]')) {
+          const ttsBtn = document.createElement("button");
+          ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
+          ttsBtn.title = "Read aloud";
+          ttsBtn.addEventListener("click", async () => {
+            const now = Date.now();
+            const delta = now - _ttsLastAction;
+            const btnId = ttsBtn.dataset.msgId || ttsBtn.closest('[data-id]')?.dataset.id || 'unknown';
+            const activeBtnId = _activeTTS.btn ? (_activeTTS.btn.dataset.msgId || _activeTTS.btn.closest('[data-id]')?.dataset.id || 'unknown') : 'none';
+            console.log(`[TTS-DEBUG] user-msg click | delta=${delta}ms | _ttsActive=${_ttsActive} | gen=${_ttsGeneration} | btnMsg=${btnId} | activeBtnMsg=${activeBtnId} | btnTitle=${ttsBtn.title}`);
+            if (delta < TTS_DEBOUNCE_MS) {
+              console.log(`[TTS-DEBUG] user-msg click BLOCKED by debounce (${delta}ms < ${TTS_DEBOUNCE_MS}ms)`);
+              return;
+            }
+            if (_ttsActive) {
+              console.log(`[TTS-DEBUG] user-msg click → stopping active TTS`);
+              stopGlobalTTS();
+              return;
+            }
+            _ttsLastAction = now;
+            const userTextEl = msgDiv.querySelector(".user-text");
+            const text = userTextEl ? userTextEl.textContent : displayContent;
+            if (!text) return;
+            _ttsActive = true;
+            const gen = ++_ttsGeneration;
+            _activeTTS.gen = gen;
+            console.log(`[TTS-DEBUG] user-msg START | gen=${gen} | textLen=${text.length}`);
+            const player = new TTSStreamPlayer((state) => {
+              console.log(`[TTS-DEBUG] user-msg onStateChange="${state}" | gen=${gen} | currentGen=${_ttsGeneration}`);
+              if (_ttsGeneration !== gen) return;
+              if (state === "loading") {
+                ttsBtn.innerHTML = '<i data-lucide="loader-circle"></i>';
+                ttsBtn.title = "Loading...";
+              } else if (state === "playing") {
+                ttsBtn.innerHTML = '<i data-lucide="square"></i>';
+                ttsBtn.title = "Stop";
+                ttsBtn.classList.add("tts-playing");
+              } else {
+                ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
+                ttsBtn.title = "Read aloud";
+                ttsBtn.classList.remove("tts-playing");
+                // Natural completion: reset _ttsActive so next click can start
+                // If stopGlobalTTS() initiated this stop, it handles _ttsActive via timeout
+                if (!_ttsStopping) {
+                  _ttsActive = false;
+                  console.log(`[TTS-DEBUG] user-msg natural end | _ttsActive→false`);
+                }
+                _activeTTS.player = null;
+                _activeTTS.btn = null;
+                _activeTTS.gen = -1;
+              }
+              activateLucideIcons(ttsBtn);
+            });
+            _activeTTS.player = player;
+            _activeTTS.btn = ttsBtn;
+            player.play(text);
+          });
+          toolbar.appendChild(ttsBtn);
+        }
+        activateLucideIcons(toolbar);
+      }
+      // Attach toolbar to historical bot messages (or skip if round_text will handle it)
+      if (message.role !== "user" && msgDiv) {
+        _attachBotToolbar(msgDiv);
+      }
 
-        // TTS read-aloud button for historical messages (streaming)
-        const ttsBtn = document.createElement("button");
-        ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
-        ttsBtn.title = "Read aloud";
-        let ttsPlayer = null;
-        ttsBtn.addEventListener("click", async () => {
-          if (ttsPlayer && !ttsPlayer.stopped) {
-            ttsPlayer.stop();
-            ttsPlayer = null;
+      // --- 2. Render skill_events (embedded or lazy-loaded) ---
+      if (events.length > 0) {
+        _renderSkillEvents(events);
+      } else if (message.has_skill_events && message.id) {
+        // Lazy-load skill_events from the API
+        _lazyLoadSkillEvents(message.id, message.chat_id || activeChatId);
+      }
+    }
+
+    // Attach copy + TTS toolbar to a .msg.bot div (reused by history + round_text)
+    function _attachBotToolbar(msgDiv) {
+      if (!msgDiv || msgDiv.querySelector(".msg-toolbar")) return;
+      const toolbar = document.createElement("div");
+      toolbar.className = "msg-toolbar";
+      const copyBtn = document.createElement("button");
+      copyBtn.innerHTML = '<i data-lucide="copy"></i>';
+      copyBtn.title = "Copy";
+      copyBtn.addEventListener("click", () => {
+        const md = msgDiv.querySelector(".md-content");
+        const text = md ? md.innerText : "";
+        navigator.clipboard.writeText(text).then(() => {
+          copyBtn.innerHTML = '<i data-lucide="check"></i>';
+          activateLucideIcons(copyBtn);
+          setTimeout(() => { copyBtn.innerHTML = '<i data-lucide="copy"></i>'; activateLucideIcons(copyBtn); }, 1500);
+        });
+      });
+      const ttsBtn = document.createElement("button");
+      ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
+      ttsBtn.title = "Read aloud";
+      ttsBtn.addEventListener("click", async () => {
+        const now = Date.now();
+        const delta = now - _ttsLastAction;
+        if (delta < TTS_DEBOUNCE_MS) return;
+        if (_ttsActive) { stopGlobalTTS(); return; }
+        _ttsLastAction = now;
+        const md = msgDiv.querySelector(".md-content");
+        const text = md ? md.innerText : "";
+        if (!text) return;
+        _ttsActive = true;
+        const gen = ++_ttsGeneration;
+        _activeTTS.gen = gen;
+        const player = new TTSStreamPlayer((state) => {
+          if (_ttsGeneration !== gen) return;
+          if (state === "loading") {
+            ttsBtn.innerHTML = '<i data-lucide="loader-circle"></i>';
+            ttsBtn.title = "Loading...";
+          } else if (state === "playing") {
+            ttsBtn.innerHTML = '<i data-lucide="square"></i>';
+            ttsBtn.title = "Stop";
+            ttsBtn.classList.add("tts-playing");
+          } else {
             ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
             ttsBtn.title = "Read aloud";
-            activateLucideIcons(ttsBtn);
-            return;
+            ttsBtn.classList.remove("tts-playing");
+            if (!_ttsStopping) _ttsActive = false;
+            _activeTTS.player = null;
+            _activeTTS.btn = null;
+            _activeTTS.gen = -1;
           }
-          const md = msgDiv.querySelector(".md-content");
-          const text = md ? md.innerText : "";
-          if (!text) return;
-          ttsPlayer = new TTSStreamPlayer((state) => {
-            if (state === "loading") {
-              ttsBtn.innerHTML = '<i data-lucide="loader-circle"></i>';
-            } else if (state === "playing") {
-              ttsBtn.innerHTML = '<i data-lucide="square"></i>';
-              ttsBtn.title = "Stop";
-            } else {
-              ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
-              ttsBtn.title = "Read aloud";
-              ttsPlayer = null;
-            }
-            activateLucideIcons(ttsBtn);
-          });
-          ttsPlayer.play(text);
+          activateLucideIcons(ttsBtn);
         });
+        _activeTTS.player = player;
+        _activeTTS.btn = ttsBtn;
+        player.play(text);
+      });
+      toolbar.appendChild(copyBtn);
+      toolbar.appendChild(ttsBtn);
+      msgDiv.appendChild(toolbar);
+      activateLucideIcons(toolbar);
+    }
 
-        toolbar.appendChild(copyBtn);
-        toolbar.appendChild(ttsBtn);
-        msgDiv.appendChild(toolbar);
-        activateLucideIcons(toolbar);
+    function _renderSkillEvents(events) {
+      const cards = {};
+      let group = null;
+      for (const evt of events) {
+        if (evt.type === "round_thinking") {
+          group = null;
+          const wrap = document.createElement("div");
+          wrap.className = "thinking-wrap";
+          wrap.innerHTML = `
+            <details class="thinking">
+              <summary><i data-lucide="chevron-right" class="thinking-chevron"></i>Thinking</summary>
+              <div class="thinking-body">${escHtml(evt.text || "")}</div>
+            </details>`;
+          activePane.appendChild(wrap);
+          activateLucideIcons(wrap);
+        } else if (evt.type === "round_text") {
+          if (evt.text && evt.text.trim()) {
+            const textDiv = document.createElement("div");
+            textDiv.className = "msg bot";
+            const content = document.createElement("div");
+            content.className = "md-content";
+            content.innerHTML = renderMarkdown(evt.text);
+            renderMermaidDiagrams(content);
+            renderMathJax(content);
+            activateLucideIcons(content);
+            textDiv.appendChild(content);
+            activePane.appendChild(textDiv);
+            _attachBotToolbar(textDiv);
+          }
+        } else if (evt.type === "skill_start") {
+          if (evt.name === "ask_user") continue;
+          if (!group) {
+            group = document.createElement("div");
+            group.className = "skill-stack";
+            group.style.display = "flex";
+            activePane.appendChild(group);
+          }
+          const card = createSkillCard(evt);
+          group.appendChild(card);
+          activateLucideIcons(card);
+          cards[evt.id] = card;
+        } else if (evt.type === "skill_output") {
+          if (evt.name === "ask_user") {
+            try {
+              const card = renderAskUserCard(JSON.parse(evt.text), activePane);
+              card.classList.add("answered");
+              card.querySelectorAll("button").forEach(b => b.disabled = true);
+            } catch(e) { /* skip malformed */ }
+            continue;
+          }
+          const card = cards[evt.id];
+          if (card) appendSkillCardOutput(card, evt.text);
+        } else if (evt.type === "skill_end") {
+          if (evt.name === "ask_user") continue;
+          const card = cards[evt.id];
+          if (card) finishSkillCard(card, evt);
+          // Reset group so the next skill_start creates a fresh stack
+          // (matches streaming behavior where each command gets its own group)
+          group = null;
+        } else if (evt.type === "agent_result") {
+          if (typeof addAgentResultCard === "function") {
+            addAgentResultCard({
+              type: evt.ok ? "agent_completed" : "agent_failed",
+              agent_id: evt.agent_id,
+              data: evt.data || {},
+            });
+          }
+        } else if (evt.type === "file_edit") {
+          handleFileEdit(evt, false);
+        } else if (evt.type === "memory_used") {
+          if (Array.isArray(evt.memories) && evt.memories.length) {
+            const chip = createMemoryChip(evt.memories);
+            chip.classList.add("memory-chip-tool");
+            const allCards = activePane.querySelectorAll(".skill-card");
+            const target = allCards.length ? allCards[allCards.length - 1] : null;
+            if (target) {
+              const right = target.querySelector(".skill-header-right");
+              if (right) right.insertBefore(chip, right.firstChild);
+              else target.querySelector(".skill-header")?.appendChild(chip);
+            } else {
+              activePane.appendChild(chip);
+            }
+          }
+        }
+      }
+    }
+
+    async function _lazyLoadSkillEvents(messageId, chatId) {
+      try {
+        const data = await fetch(`/api/chats/${chatId}/messages/${messageId}/events`).then(r => r.json());
+        const events = data.skill_events || [];
+        if (events.length > 0) {
+          _renderSkillEvents(events);
+        }
+      } catch (err) {
+        console.error("Failed to lazy-load skill events:", err);
       }
     }
 
@@ -2588,33 +2907,54 @@
             const ttsBtn = document.createElement("button");
             ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
             ttsBtn.title = "Read aloud";
-            let ttsPlayer = null;
             ttsBtn.addEventListener("click", async () => {
-              if (ttsPlayer && !ttsPlayer.stopped) {
-                ttsPlayer.stop();
-                ttsPlayer = null;
-                ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
-                ttsBtn.title = "Read aloud";
-                activateLucideIcons(ttsBtn);
+              const now = Date.now();
+              const delta = now - _ttsLastAction;
+              console.log(`[TTS-DEBUG] stream-bot click | delta=${delta}ms | _ttsActive=${_ttsActive} | gen=${_ttsGeneration}`);
+              if (delta < TTS_DEBOUNCE_MS) {
+                console.log(`[TTS-DEBUG] stream-bot click BLOCKED by debounce (${delta}ms < ${TTS_DEBOUNCE_MS}ms)`);
                 return;
               }
+              if (_ttsActive) {
+                console.log(`[TTS-DEBUG] stream-bot click → stopping active TTS`);
+                stopGlobalTTS();
+                return;
+              }
+              _ttsLastAction = now;
               const md = botEl.querySelector(".md-content");
               const text = md ? md.innerText : "";
               if (!text) return;
-              ttsPlayer = new TTSStreamPlayer((state) => {
+              _ttsActive = true;
+              const gen = ++_ttsGeneration;
+              _activeTTS.gen = gen;
+              console.log(`[TTS-DEBUG] stream-bot START | gen=${gen} | textLen=${text.length}`);
+              const player = new TTSStreamPlayer((state) => {
+                console.log(`[TTS-DEBUG] stream-bot onStateChange="${state}" | gen=${gen} | currentGen=${_ttsGeneration}`);
+                if (_ttsGeneration !== gen) return;
                 if (state === "loading") {
                   ttsBtn.innerHTML = '<i data-lucide="loader-circle"></i>';
+                  ttsBtn.title = "Loading...";
                 } else if (state === "playing") {
                   ttsBtn.innerHTML = '<i data-lucide="square"></i>';
                   ttsBtn.title = "Stop";
+                  ttsBtn.classList.add("tts-playing");
                 } else {
                   ttsBtn.innerHTML = '<i data-lucide="volume-2"></i>';
                   ttsBtn.title = "Read aloud";
-                  ttsPlayer = null;
+                  ttsBtn.classList.remove("tts-playing");
+                  if (!_ttsStopping) {
+                    _ttsActive = false;
+                    console.log(`[TTS-DEBUG] stream-bot natural end | _ttsActive→false`);
+                  }
+                  _activeTTS.player = null;
+                  _activeTTS.btn = null;
+                  _activeTTS.gen = -1;
                 }
                 activateLucideIcons(ttsBtn);
               });
-              ttsPlayer.play(text);
+              _activeTTS.player = player;
+              _activeTTS.btn = ttsBtn;
+              player.play(text);
             });
 
             toolbar.appendChild(copyBtn);
@@ -2971,33 +3311,119 @@
         ? preferredModeId
         : modes[0].id;
 
-      thinkingSwitcherEl.innerHTML = "";
-      thinkingSwitcherEl.style.setProperty('--n', modes.length);
-      for (let idx = 0; idx < modes.length; idx++) {
-        const m = modes[idx];
-        const btn = document.createElement("button");
-        btn.textContent = m.label || m.id;
-        btn.dataset.modeId = m.id;
-        if (m.id === selectedThinkingMode) {
-          btn.classList.add('active');
-          thinkingSwitcherEl.style.setProperty('--i', idx);
+      if (thinkingSwitcherEl) {
+        thinkingSwitcherEl.innerHTML = "";
+        thinkingSwitcherEl.style.setProperty('--n', modes.length);
+        for (let idx = 0; idx < modes.length; idx++) {
+          const m = modes[idx];
+          const btn = document.createElement("button");
+          btn.textContent = m.label || m.id;
+          btn.dataset.modeId = m.id;
+          if (m.id === selectedThinkingMode) {
+            btn.classList.add('active');
+            thinkingSwitcherEl.style.setProperty('--i', idx);
+          }
+          btn.addEventListener('click', () => {
+            if (btn.classList.contains('active')) return;
+            selectedThinkingMode = m.id;
+            thinkingSwitcherEl.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            thinkingSwitcherEl.style.setProperty('--i', idx);
+            try { localStorage.setItem(THINKING_MODE_KEY, selectedThinkingMode); } catch (err) {}
+          });
+          thinkingSwitcherEl.appendChild(btn);
         }
-        btn.addEventListener('click', () => {
-          if (btn.classList.contains('active')) return;
-          selectedThinkingMode = m.id;
-          thinkingSwitcherEl.querySelectorAll('button').forEach(b => b.classList.remove('active'));
-          btn.classList.add('active');
-          thinkingSwitcherEl.style.setProperty('--i', idx);
-          try { localStorage.setItem(THINKING_MODE_KEY, selectedThinkingMode); } catch (err) {}
-        });
-        thinkingSwitcherEl.appendChild(btn);
+
+        // Only one available mode — hide the switcher entirely.
+        thinkingSwitcherEl.style.display = modes.length <= 1 ? 'none' : '';
       }
 
-      // Only one available mode — hide the switcher entirely.
-      thinkingSwitcherEl.style.display = modes.length <= 1 ? 'none' : '';
-
       try { localStorage.setItem(THINKING_MODE_KEY, selectedThinkingMode); } catch (err) {}
+      syncStatusBarThinking();
     }
+
+    /* ---------- Status Bar (thinking mode, cwd, context) ---------- */
+    const statusDropdownEl = document.getElementById("statusThinkingDropdown");
+    const statusLabelEl = document.getElementById("statusThinkingLabel");
+    const statusMenuEl = document.getElementById("statusThinkingMenu");
+    const statusCwdEl = document.getElementById("statusCwd");
+    const statusContextEl = document.getElementById("statusContext");
+
+    function syncStatusBarThinking() {
+      if (!statusDropdownEl || !statusLabelEl || !statusMenuEl) return;
+      const entry = currentModelEntry();
+      const modes = (entry && entry.thinking_modes && entry.thinking_modes.length > 0)
+        ? entry.thinking_modes
+        : [{ id: "thinking", label: "Thinking" }];
+      statusMenuEl.innerHTML = "";
+      const activeMode = modes.find(m => m.id === selectedThinkingMode) || modes[0];
+      statusLabelEl.textContent = activeMode.label || activeMode.id;
+      for (const m of modes) {
+        const item = document.createElement("div");
+        item.className = "status-dropdown-item" + (m.id === selectedThinkingMode ? " active" : "");
+        item.textContent = m.label || m.id;
+        item.dataset.modeId = m.id;
+        item.addEventListener("click", (e) => {
+          e.stopPropagation();
+          selectedThinkingMode = m.id;
+          try { localStorage.setItem(THINKING_MODE_KEY, selectedThinkingMode); } catch (err) {}
+          statusDropdownEl.classList.remove("open");
+          populateThinkingModes(selectedThinkingMode);
+        });
+        statusMenuEl.appendChild(item);
+      }
+      statusDropdownEl.style.display = modes.length <= 1 ? "none" : "";
+    }
+
+    const statusTriggerEl = document.getElementById("statusThinkingTrigger");
+    const inputComposite = document.querySelector(".input-composite");
+    if (statusTriggerEl && statusDropdownEl && statusMenuEl) {
+      statusTriggerEl.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const isOpen = statusDropdownEl.classList.toggle("open");
+        if (isOpen && inputComposite) {
+          const rect = inputComposite.getBoundingClientRect();
+          statusMenuEl.style.left = rect.left + "px";
+          statusMenuEl.style.bottom = (window.innerHeight - rect.top + 2) + "px";
+          statusMenuEl.style.minWidth = Math.max(100, rect.width * 0.3) + "px";
+        }
+      });
+      document.addEventListener("click", () => {
+        statusDropdownEl.classList.remove("open");
+      });
+    }
+
+    function updateStatusBarCwd() {
+      if (!statusCwdEl) return;
+      const cwd = window.getIdeCwd ? window.getIdeCwd() : "";
+      statusCwdEl.textContent = cwd || "";
+      statusCwdEl.title = cwd || "No working directory";
+    }
+
+    function updateStatusBarContext() {
+      if (!statusContextEl) return;
+      const entry = currentModelEntry();
+      const maxChars = entry?.max_session_chars || 100_000;
+      const totalChars = window._statusContextChars || 0;
+      const pct = Math.min(100, Math.round((totalChars / maxChars) * 100));
+      const radius = 7;
+      const circ = 2 * Math.PI * radius;
+      const offset = circ - (pct / 100) * circ;
+      const color = pct > 85 ? "#ef4444" : pct > 60 ? "#f59e0b" : "var(--accent)";
+      statusContextEl.innerHTML = `<svg width="18" height="18" viewBox="0 0 18 18" style="vertical-align:middle">` +
+        `<circle cx="9" cy="9" r="${radius}" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2"/>` +
+        `<circle cx="9" cy="9" r="${radius}" fill="none" stroke="${color}" stroke-width="2" ` +
+        `stroke-dasharray="${circ}" stroke-dashoffset="${offset}" stroke-linecap="round" ` +
+        `transform="rotate(-90 9 9)" style="transition:stroke-dashoffset 0.3s ease"/>` +
+        `</svg>`;
+      statusContextEl.title = `${pct}% context used (${(totalChars/1000).toFixed(0)}k / ${(maxChars/1000).toFixed(0)}k chars)`;
+    }
+
+    // Refresh status bar on key events + slow fallback interval
+    window.addEventListener('cwd-changed', () => updateStatusBarCwd());
+    setInterval(() => { updateStatusBarCwd(); updateStatusBarContext(); }, 5000);
+    updateStatusBarCwd();
+    updateStatusBarContext();
 
     /* ---------- Glass dropdown (custom model selector) ---------- */
     const glassDropdown = document.getElementById("modelDropdown");
@@ -3137,10 +3563,15 @@
 
     async function loadMessages(chatId) {
       try {
-        const data = await fetch(`/api/chats/${chatId}/messages`).then(r => r.json());
+        // Phase 1: Load last 50 messages (fast, no skill_events)
+        console.log("[DEBUG loadMessages] called for", chatId, "stack:", new Error().stack?.split('\n').slice(1,4).join(' | '));
+        const data = await fetch(`/api/chats/${chatId}/messages?limit=50&include_skill_events=true`).then(r => r.json());
         const pane = ensurePane(chatId);
         pane.innerHTML = "";
+        window._statusContextChars = data.context_chars || 0;
+        updateStatusBarContext();
         const messages = data.messages || [];
+        console.log("[DEBUG loadMessages] got", messages.length, "messages, ids:", messages.map(m => m.id));
         if (messages.length === 0) {
           pane.innerHTML = `<div class="empty"><h2>New conversation</h2><p>Send the first message.</p></div>`;
           return [];
@@ -3149,13 +3580,44 @@
         const prevPane = activePane;
         activePane = pane;
         for (const msg of messages) addHistoryMessage(msg);
+        console.log("[DEBUG loadMessages] after render, pane children:", pane.children.length);
         activePane = prevPane;
         renderMathJax(pane);
         if (chatId === activeChatId) scrollBottom(true);
+
+        // Phase 2: Load older messages in background (if there are more)
+        if (messages.length === 50) {
+          const oldestId = messages[0]?.id;
+          if (oldestId) _loadOlderMessages(chatId, oldestId, pane);
+        }
+
         return messages;
       } catch (err) {
         console.error("Failed to load messages:", err);
         return [];
+      }
+    }
+
+    async function _loadOlderMessages(chatId, beforeId, pane) {
+      try {
+        const data = await fetch(`/api/chats/${chatId}/messages?before_id=${beforeId}&include_skill_events=true`).then(r => r.json());
+        const older = data.messages || [];
+        if (older.length === 0) return;
+        const prevPane = activePane;
+        activePane = pane;
+        // Prepend older messages at the top
+        const frag = document.createDocumentFragment();
+        const tempDiv = document.createElement("div");
+        activePane = tempDiv;
+        for (const msg of older) addHistoryMessage(msg);
+        activePane = prevPane;
+        // Insert at the beginning of the pane (after any empty state)
+        const empty = pane.querySelector(".empty");
+        if (empty) empty.remove();
+        pane.insertBefore(tempDiv, pane.firstChild);
+        renderMathJax(pane);
+      } catch (err) {
+        console.error("Failed to load older messages:", err);
       }
     }
 
@@ -3202,6 +3664,9 @@
       syncGlassDropdown();
     }
 
+    // Guard against concurrent loadMessages for the same chat
+    const _loadingChats = new Set();
+
     async function selectChat(chatId) {
       const meta = chatList.find(c => c.id === chatId);
       const alreadyOpen = openTabs.has(chatId);
@@ -3223,8 +3688,11 @@
       renderChats();
 
       // Only load messages from API if this tab hasn't been loaded yet
-      if (!alreadyOpen) {
+      // Use _loadingChats guard to prevent duplicate loads from race conditions
+      if (!alreadyOpen && !_loadingChats.has(chatId)) {
+        _loadingChats.add(chatId);
         const msgs = await loadMessages(chatId);
+        _loadingChats.delete(chatId);
         // Derive parentId from the actual message chain
         if (Array.isArray(msgs) && msgs.length) {
           const last = msgs[msgs.length - 1];
@@ -3502,7 +3970,11 @@
       if (creating) return null;
       setCreating(true);
       const oldChatId = activeChatId;
-      if (oldChatId && scraperMode) {
+      const isStreaming = oldChatId && activeStreams.has(oldChatId);
+      if (isStreaming) {
+        // Skip consolidation — current chat is still responding
+        showToast("⏭️ Skipped memory consolidation (chat still streaming)", "info");
+      } else if (oldChatId && scraperMode) {
         // Scraper mode: send consolidation prompt into the active browser tab,
         // wait for the model to respond with memory JSON, then create new chat.
         showToast("🧠 Consolidating memory in browser...", "info");
@@ -3563,6 +4035,9 @@
         if (typeof onChatOpened === "function") onChatOpened(activeChatId);
         saveActiveChat();
         await loadChats();
+        // Reset context ring for fresh chat
+        window._statusContextChars = 0;
+        updateStatusBarContext();
         // Pane already has empty state from createTabPane
         inputEl.focus();
         return activeChatId;
@@ -5622,6 +6097,419 @@
       loadCustomModels();
     });
 
+    // --- Search Engine tab ---
+    const _searchEls = {
+      provider: () => document.getElementById("searchProviderSelect"),
+      searxngSection: () => document.getElementById("searchSearxngSection"),
+      searxngUrl: () => document.getElementById("searchSearxngUrl"),
+      fallback: () => document.getElementById("searchFallbackChain"),
+      resultCount: () => document.getElementById("searchResultCount"),
+      safesearch: () => document.getElementById("searchSafesearch"),
+      saveBtn: () => document.getElementById("searchSaveBtn"),
+      testBtn: () => document.getElementById("searchTestBtn"),
+      clearCacheBtn: () => document.getElementById("searchClearCacheBtn"),
+      status: () => document.getElementById("searchStatus"),
+      hint: () => document.getElementById("searchProviderHint"),
+      // API key inputs
+      keyBrave: () => document.getElementById("searchInputBrave"),
+      keyGooglePse: () => document.getElementById("searchInputGooglePse"),
+      keyGooglePseCx: () => document.getElementById("searchInputGooglePseCx"),
+      keyTavily: () => document.getElementById("searchInputTavily"),
+      keySerper: () => document.getElementById("searchInputSerper"),
+      // Key row containers
+      rowBrave: () => document.getElementById("searchKeyBrave"),
+      rowGooglePse: () => document.getElementById("searchKeyGooglePse"),
+      rowTavily: () => document.getElementById("searchKeyTavily"),
+      rowSerper: () => document.getElementById("searchKeySerper"),
+      noKeyNeeded: () => document.getElementById("searchNoKeyNeeded"),
+      // Key status badges
+      statusBrave: () => document.getElementById("searchKeyBraveStatus"),
+      statusGooglePse: () => document.getElementById("searchKeyGooglePseStatus"),
+      statusTavily: () => document.getElementById("searchKeyTavilyStatus"),
+      statusSerper: () => document.getElementById("searchKeySerperStatus"),
+      // Test & compare controls
+      testQuery: () => document.getElementById("searchTestQuery"),
+      testCount: () => document.getElementById("searchTestCount"),
+      testProvider: () => document.getElementById("searchTestProvider"),
+      testResults: () => document.getElementById("searchTestResults"),
+      compareBtn: () => document.getElementById("searchCompareBtn"),
+      compareControls: () => document.getElementById("searchCompareControls"),
+      compareA: () => document.getElementById("searchCompareA"),
+      compareB: () => document.getElementById("searchCompareB"),
+      compareRunBtn: () => document.getElementById("searchCompareRunBtn"),
+      compareCloseBtn: () => document.getElementById("searchCompareCloseBtn"),
+      compareResults: () => document.getElementById("searchCompareResults"),
+      // Fallback dropdown
+      fallbackDropdown: () => document.getElementById("searchFallbackDropdown"),
+      fallbackSelected: () => document.getElementById("searchFallbackSelected"),
+      fallbackOptions: () => document.getElementById("searchFallbackOptions"),
+    };
+
+    function _updateSearchProviderUI() {
+      const provider = _searchEls.provider()?.value || "searxng";
+      const section = _searchEls.searxngSection();
+      if (section) section.style.display = provider === "searxng" ? "" : "none";
+
+      // Show/hide API key rows based on provider
+      const keyMap = {
+        brave: _searchEls.rowBrave(),
+        google_pse: _searchEls.rowGooglePse(),
+        tavily: _searchEls.rowTavily(),
+        serper: _searchEls.rowSerper(),
+      };
+      const needsKey = ["brave", "google_pse", "tavily", "serper"];
+      for (const [prov, el] of Object.entries(keyMap)) {
+        if (el) el.style.display = (provider === prov) ? "" : "none";
+      }
+      const noKeyEl = _searchEls.noKeyNeeded();
+      if (noKeyEl) noKeyEl.style.display = (!needsKey.includes(provider) && provider !== "disabled") ? "" : "none";
+
+      const hints = {
+        searxng: "Self-hosted meta-search. No API key needed.",
+        brave: "Get your key at brave.com/search/api",
+        duckduckgo: "Free, no key. Rate-limited.",
+        google_pse: "Get keys at programmablesearchengine.google.com",
+        tavily: "Get your key at tavily.com",
+        serper: "Get your key at serper.dev",
+        disabled: "All web search disabled.",
+      };
+      const hintEl = _searchEls.hint();
+      if (hintEl) hintEl.textContent = hints[provider] || "";
+    }
+
+    // --- Fallback chain multi-select dropdown ---
+    const _fallbackUI = (() => {
+      let providers = [];
+      let selected = []; // ordered
+
+      function syncHidden() {
+        const h = _searchEls.fallback();
+        if (h) h.value = selected.join(", ");
+      }
+
+      function renderChips() {
+        const el = _searchEls.fallbackSelected();
+        if (!el) return;
+        el.innerHTML = "";
+        if (selected.length === 0) {
+          el.innerHTML = '<span class="muted" style="font-size:11px;">Select providers…</span>';
+          syncHidden();
+          return;
+        }
+        selected.forEach((name) => {
+          const chip = document.createElement("span");
+          chip.draggable = true;
+          chip.style.cssText = "display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 8px;border-radius:10px;background:color-mix(in srgb, var(--accent) 18%, transparent);border:1px solid var(--border);color:var(--text);cursor:grab;";
+          chip.textContent = name;
+          const x = document.createElement("span");
+          x.textContent = "×";
+          x.style.cssText = "cursor:pointer;opacity:.7;font-weight:700;";
+          x.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            selected = selected.filter((p) => p !== name);
+            renderChips();
+            renderOptions();
+          });
+          chip.appendChild(x);
+          chip.addEventListener("dragstart", (ev) => ev.dataTransfer.setData("text/plain", name));
+          chip.addEventListener("dragover", (ev) => ev.preventDefault());
+          chip.addEventListener("drop", (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            const src = ev.dataTransfer.getData("text/plain");
+            if (!src || src === name) return;
+            selected = selected.filter((p) => p !== src);
+            selected.splice(selected.indexOf(name), 0, src);
+            renderChips();
+          });
+          el.appendChild(chip);
+        });
+        syncHidden();
+      }
+
+      function renderOptions() {
+        const el = _searchEls.fallbackOptions();
+        if (!el) return;
+        el.innerHTML = "";
+        const currentPrimary = _searchEls.provider()?.value || "searxng";
+        providers.filter((p) => p !== "disabled" && p !== currentPrimary).forEach((name) => {
+          const isSel = selected.includes(name);
+          const row = document.createElement("div");
+          row.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:12px;cursor:pointer;color:var(--text);";
+          row.innerHTML = `<span style="opacity:${isSel ? 1 : 0.35}">${isSel ? "☑" : "☐"}</span> ${name}`;
+          row.addEventListener("mouseenter", () => (row.style.background = "color-mix(in srgb, var(--accent) 8%, transparent)"));
+          row.addEventListener("mouseleave", () => (row.style.background = "transparent"));
+          row.addEventListener("click", () => {
+            selected = selected.includes(name) ? selected.filter((p) => p !== name) : [...selected, name];
+            renderChips();
+            renderOptions();
+          });
+          el.appendChild(row);
+        });
+      }
+
+      function init(allProviders) {
+        providers = allProviders;
+        const sel = _searchEls.fallbackSelected();
+        const opt = _searchEls.fallbackOptions();
+        if (sel) sel.addEventListener("click", () => {
+          renderOptions();
+          if (opt) opt.style.display = opt.style.display === "none" ? "block" : "none";
+        });
+        document.addEventListener("click", (e) => {
+          const dd = _searchEls.fallbackDropdown();
+          if (dd && !dd.contains(e.target) && opt) opt.style.display = "none";
+        });
+        renderOptions();
+        renderChips();
+      }
+
+      function set(chain) {
+        const list = Array.isArray(chain) ? chain : (chain || "").split(",").map((s) => s.trim()).filter(Boolean);
+        selected = list.filter((p) => providers.length === 0 || providers.includes(p));
+        renderChips();
+      }
+
+      return { init, set, selected: () => [...selected], renderOptions };
+    })();
+
+    function _escHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    function _renderSearchResultList(results) {
+      if (!results || results.length === 0) return '<div class="muted" style="font-size:11px;padding:6px 0;">No results.</div>';
+      return results
+        .map((r, i) => `
+        <div style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;background:color-mix(in srgb, var(--panel) 60%, transparent);">
+          <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:2px;">${i + 1}. ${_escHtml(r.title || "(no title)")}</div>
+          <a href="${_escHtml(r.url || "#")}" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent-text);word-break:break-all;">${_escHtml(r.url || "")}</a>
+          ${r.snippet ? `<div class="muted" style="font-size:11px;margin-top:4px;">${_escHtml(r.snippet)}</div>` : ""}
+        </div>`)
+        .join("");
+    }
+
+    async function _loadSearchProviders() {
+      try {
+        const res = await fetch("/api/settings/search/providers");
+        if (!res.ok) return [];
+        const data = await res.json();
+        const list = data.providers || [];
+        const tp = _searchEls.testProvider();
+        if (tp) {
+          tp.innerHTML = '<option value="">Default</option>';
+          list.forEach((p) => {
+            const o = document.createElement("option");
+            o.value = p;
+            o.textContent = p;
+            tp.appendChild(o);
+          });
+        }
+        [_searchEls.compareA(), _searchEls.compareB()].forEach((sel, i) => {
+          if (!sel) return;
+          sel.innerHTML = "";
+          list.forEach((p) => {
+            const o = document.createElement("option");
+            o.value = p;
+            o.textContent = p;
+            sel.appendChild(o);
+          });
+          sel.value = list[Math.min(i, list.length - 1)] || "";
+        });
+        _fallbackUI.init(list);
+        return list;
+      } catch (e) {
+        console.error("Failed to load search providers:", e);
+        return [];
+      }
+    }
+
+    async function loadSearchSettings() {
+      try {
+        const res = await fetch("/api/settings/search");
+        if (!res.ok) return;
+        const data = await res.json();
+        const p = _searchEls.provider();
+        if (p && data.search_provider) p.value = data.search_provider;
+        const u = _searchEls.searxngUrl();
+        if (u) u.value = data.search_url || "";
+        _fallbackUI.set(data.search_fallback_chain || []);
+        const rc = _searchEls.resultCount();
+        if (rc && data.search_result_count != null) rc.value = data.search_result_count;
+        const ss = _searchEls.safesearch();
+        if (ss && data.search_safesearch) ss.value = data.search_safesearch;
+        // Set API key status badges
+        const _keyBadge = (el, hasKey) => {
+          if (!el) return;
+          el.textContent = hasKey ? "✅ saved" : "⚠️ not set";
+          el.style.color = hasKey ? "var(--success)" : "var(--warning)";
+        };
+        _keyBadge(_searchEls.statusBrave(), data.has_brave_key);
+        _keyBadge(_searchEls.statusGooglePse(), data.has_google_pse_key);
+        _keyBadge(_searchEls.statusTavily(), data.has_tavily_key);
+        _keyBadge(_searchEls.statusSerper(), data.has_serper_key);
+        _updateSearchProviderUI();
+      } catch (e) {
+        console.error("Failed to load search settings:", e);
+      }
+    }
+
+    _searchEls.provider()?.addEventListener("change", () => {
+      _updateSearchProviderUI();
+      _fallbackUI.renderOptions();
+    });
+
+    _loadSearchProviders();
+
+    _searchEls.saveBtn()?.addEventListener("click", async () => {
+      const statusEl = _searchEls.status();
+      const payload = {
+        search_provider: _searchEls.provider()?.value || "searxng",
+        search_url: _searchEls.searxngUrl()?.value?.trim() || "",
+        search_fallback_chain: _fallbackUI.selected(),
+        search_result_count: parseInt(_searchEls.resultCount()?.value || "10", 10),
+        search_safesearch: _searchEls.safesearch()?.value || "strict",
+      };
+      // Include non-empty API keys
+      const braveKey = _searchEls.keyBrave()?.value?.trim();
+      if (braveKey) payload.brave_api_key = braveKey;
+      const googlePseKey = _searchEls.keyGooglePse()?.value?.trim();
+      if (googlePseKey) payload.google_pse_key = googlePseKey;
+      const googlePseCx = _searchEls.keyGooglePseCx()?.value?.trim();
+      if (googlePseCx) payload.google_pse_cx = googlePseCx;
+      const tavilyKey = _searchEls.keyTavily()?.value?.trim();
+      if (tavilyKey) payload.tavily_api_key = tavilyKey;
+      const serperKey = _searchEls.keySerper()?.value?.trim();
+      if (serperKey) payload.serper_api_key = serperKey;
+      try {
+        const res = await fetch("/api/settings/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        const data = await res.json();
+        if (statusEl) statusEl.textContent = data.status === "ok" ? "✅ Saved successfully." : `❌ ${data.detail || data.error || "Save failed"}`;
+        if (data.status === "ok") {
+          // Clear secret inputs so they don't linger in the DOM
+          ["keyBrave", "keyGooglePse", "keyGooglePseCx", "keyTavily", "keySerper"].forEach((k) => {
+            const el = _searchEls[k]();
+            if (el) el.value = "";
+          });
+          // Refresh badges so "not set" flips to "saved" immediately
+          await loadSearchSettings();
+        }
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `❌ ${e.message}`;
+      }
+    });
+
+    _searchEls.testBtn()?.addEventListener("click", async () => {
+      const statusEl = _searchEls.status();
+      const resultsEl = _searchEls.testResults();
+      const compareEl = _searchEls.compareResults();
+      if (compareEl) compareEl.style.display = "none";
+      if (statusEl) statusEl.textContent = "Testing…";
+      if (resultsEl) { resultsEl.style.display = "none"; resultsEl.innerHTML = ""; }
+      try {
+        const res = await fetch("/api/settings/search/test", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query: _searchEls.testQuery()?.value?.trim() || "",
+            count: parseInt(_searchEls.testCount()?.value || "5", 10),
+            provider: _searchEls.testProvider()?.value || "",
+          }),
+        });
+        let data;
+        try { data = await res.json(); } catch (_) { data = null; }
+        if (!res.ok || !data) {
+          if (statusEl) statusEl.textContent = `❌ Server error (${res.status}). Try restarting Sable to load new search routes.`;
+          return;
+        }
+        if (data.success) {
+          if (statusEl) statusEl.textContent = `✅ ${data.provider_used}: ${data.result_count} results in ${data.elapsed_s}s`;
+          if (resultsEl) {
+            resultsEl.innerHTML = `<div class="muted" style="font-size:11px;margin-bottom:6px;">Results for <b>${_escHtml(data.query)}</b> via ${_escHtml(data.provider_used)}:</div>` + _renderSearchResultList(data.results);
+            resultsEl.style.display = "block";
+          }
+        } else {
+          if (statusEl) statusEl.textContent = `❌ ${data.provider_used || "unknown"}: ${data.error || "No results"}`;
+        }
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `❌ ${e.message}`;
+      }
+    });
+
+    // --- Compare mode ---
+    _searchEls.compareBtn()?.addEventListener("click", () => {
+      const c = _searchEls.compareControls();
+      if (c) c.style.display = c.style.display === "none" || !c.style.display ? "block" : "none";
+    });
+
+    _searchEls.compareCloseBtn()?.addEventListener("click", () => {
+      const c = _searchEls.compareControls();
+      if (c) c.style.display = "none";
+    });
+
+    function _renderCompareColumn(data) {
+      const head = data.success
+        ? `<span style="color:var(--success)">✅</span> ${data.result_count} results · ${data.elapsed_s}s`
+        : `<span style="color:var(--danger)">❌</span> ${_escHtml(data.error || "failed")}`;
+      return `
+        <div style="flex:1;min-width:240px;">
+          <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px;">${_escHtml(data.provider)}</div>
+          <div class="muted" style="font-size:11px;margin-bottom:8px;">${head}</div>
+          ${data.success ? _renderSearchResultList(data.results) : ""}
+        </div>`;
+    }
+
+    _searchEls.compareRunBtn()?.addEventListener("click", async () => {
+      const statusEl = _searchEls.status();
+      const resultsEl = _searchEls.compareResults();
+      const testEl = _searchEls.testResults();
+      if (testEl) testEl.style.display = "none";
+      if (statusEl) statusEl.textContent = "Comparing…";
+      const provA = _searchEls.compareA()?.value || "searxng";
+      const provB = _searchEls.compareB()?.value || "duckduckgo";
+      if (provA === provB) {
+        if (statusEl) statusEl.textContent = "⚠️ Pick two different providers to compare.";
+        return;
+      }
+      try {
+        const res = await fetch("/api/settings/search/compare", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query: _searchEls.testQuery()?.value?.trim() || "",
+            count: parseInt(_searchEls.testCount()?.value || "5", 10),
+            provider_a: provA,
+            provider_b: provB,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          if (statusEl) statusEl.textContent = `❌ Server error (${res.status}).`;
+          return;
+        }
+        if (statusEl) statusEl.textContent = `⚖️ Comparison done for “${data.query}”`;
+        if (resultsEl) {
+          resultsEl.innerHTML = `<div style="display:flex;gap:16px;flex-wrap:wrap;">${_renderCompareColumn(data.a)}${_renderCompareColumn(data.b)}</div>`;
+          resultsEl.style.display = "block";
+        }
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `❌ ${e.message}`;
+      }
+    });
+
+    _searchEls.clearCacheBtn()?.addEventListener("click", async () => {
+      const statusEl = _searchEls.status();
+      try {
+        const res = await fetch("/api/settings/search/cache/clear", { method: "POST" });
+        const data = await res.json();
+        if (statusEl) statusEl.textContent = data.cleared ? "✅ Search cache cleared" : `❌ ${data.error || "Failed"}`;
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `❌ ${e.message}`;
+      }
+    });
+
+    document.querySelector('[data-tab="search"]')?.addEventListener("click", loadSearchSettings);
+
     // --- Model management (all models: static + custom) ---
     async function loadCustomModels() {
       const listEl = document.getElementById("customModelList");
@@ -5708,6 +6596,7 @@
           audio: document.getElementById("capAudio")?.checked || false,
         };
         const supportsThinking = document.getElementById("capThinking")?.checked || false;
+        const maxChars = parseInt(document.getElementById("customModelMaxChars")?.value) || 500000;
         if (!backend) { showToast("Select a provider first", "error"); return; }
         if (!mid) { showToast("Select a model from the dropdown", "error"); return; }
         if (!label) { showToast("Enter a display name", "error"); return; }
@@ -5715,7 +6604,7 @@
           const res = await fetch("/api/settings/models", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: mid, label, api_backend: backend, capabilities, supports_thinking: supportsThinking }),
+            body: JSON.stringify({ id: mid, label, api_backend: backend, max_session_chars: maxChars, capabilities, supports_thinking: supportsThinking }),
           });
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
@@ -5731,6 +6620,7 @@
           document.getElementById("capDocument").checked = false;
           document.getElementById("capAudio").checked = false;
           document.getElementById("capThinking").checked = false;
+          document.getElementById("customModelMaxChars").value = "500000";
           showToast("Model added ✓", "success");
           loadCustomModels();
           loadModels();

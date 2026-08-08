@@ -2,7 +2,7 @@
 name = "sable"
 version = "0.2.0"
 description = "Sable agentic chat platform"
-requires-python = ">=3.11"
+requires-python = "==3.12.13"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
@@ -32,6 +32,8 @@ dependencies = [
     "pytest>=8.0.0",
     "six>=1.16.0",
     "websockets>=14.0",
+    "beautifulsoup4>=4.12.0",
+    "tenacity>=8.2.0",
 ]
 
 [tool.uv]

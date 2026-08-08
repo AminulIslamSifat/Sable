@@ -20,7 +20,7 @@ from server.models import RevertRequest
 from server.utils import logger
 from ..dependencies import service, sse
 from server.database import list_chats
-from server.auth import AUTH_TOKEN
+
 from server.logging_setup import _log_buffer
 
 router = APIRouter()
