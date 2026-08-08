@@ -559,6 +559,10 @@ async def list_accounts() -> dict[str, Any]:
         except Exception:
             pass
 
+        # Load exhaustion status
+        from engine.config import get_all_exhaustion_status
+        exhaustion = get_all_exhaustion_status()
+
         accounts: list[dict[str, Any]] = []
         for entry in _SYSTEM_DIR.iterdir():
             m = re.match(r"browser-data-acc(\d+)$", entry.name)
@@ -570,6 +574,7 @@ async def list_accounts() -> dict[str, Any]:
                     "size_mb": _dir_size_mb(entry),
                     "has_waf": entry.name in waf_tokens,
                     "has_ds": entry.name in ds_tokens,
+                    "exhausted": exhaustion.get(entry.name, False),
                 })
         accounts.sort(key=lambda a: a["num"])
         return accounts

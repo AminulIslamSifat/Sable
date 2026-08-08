@@ -1204,6 +1204,7 @@
   window.getIdeCwd = function () {
     return sidebarRoot || localStorage.getItem("fs_ide_last_folder") || "";
   };
+  window.openFsRoot = openRoot;
   window.getIdeOpenFile = function () {
     return currentFilePath || "";
   };
