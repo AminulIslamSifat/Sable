@@ -229,7 +229,8 @@
     }
     .msg.bot:hover .msg-toolbar,
     .msg.user:hover .msg-toolbar,
-    .msg-toolbar:focus-within { opacity: 1; }
+    .msg-toolbar:focus-within,
+    .msg-toolbar:has(.tts-playing) { opacity: 1; }
     .msg-toolbar button {
       font-size: var(--font-size-system);
       padding: 4px 6px;
@@ -249,6 +250,16 @@
       height: 14px;
     }
     .msg-toolbar button:hover { background: var(--panel-2); color: var(--text); border-color: var(--accent); }
+    .msg-toolbar button.tts-playing {
+      background: var(--danger, #e53e3e);
+      color: #fff;
+      border-color: var(--danger, #e53e3e);
+      animation: tts-pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes tts-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
 
     .bot.streaming .md-content::after {
       content: 'processing…';

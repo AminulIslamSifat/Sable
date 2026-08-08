@@ -17,6 +17,10 @@ def get_db() -> sqlite3.Connection:
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA busy_timeout=5000")
+        _conn.execute("PRAGMA synchronous=NORMAL")
+        _conn.execute("PRAGMA cache_size=-64000")       # 64MB page cache
+        _conn.execute("PRAGMA mmap_size=268435456")      # 256MB mmap
+        _conn.execute("PRAGMA temp_store=MEMORY")
     return _conn
 
 def init_db() -> None:
@@ -97,6 +101,33 @@ def init_db() -> None:
             )
             """
         )
+        # --- Messages indexes (critical for performance) ---
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_chat_role ON messages(chat_id, role, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chats_updated ON chats(updated_at DESC)"
+        )
+
+        # --- Skill events table (separated from messages for perf + ordering) ---
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS skill_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL,
+                seq INTEGER NOT NULL DEFAULT 0,
+                event_data TEXT NOT NULL,
+                FOREIGN KEY(message_id) REFERENCES messages(id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_skill_events_msg ON skill_events(message_id, seq)"
+        )
+
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs(status)"
         )
@@ -267,6 +298,17 @@ def get_chat_url(chat_id: str) -> str | None:
         row = conn.execute("SELECT chat_url FROM chats WHERE id = ?", (chat_id,)).fetchone()
         return row["chat_url"] if row and row["chat_url"] else None
 
+def _write_skill_events(conn: sqlite3.Connection, message_id: int, skill_events: list[dict[str, Any]] | None) -> None:
+    """Write skill events to the dedicated skill_events table."""
+    if not skill_events:
+        return
+    conn.execute("DELETE FROM skill_events WHERE message_id = ?", (message_id,))
+    conn.executemany(
+        "INSERT INTO skill_events (message_id, seq, event_data) VALUES (?, ?, ?)",
+        [(message_id, i, json.dumps(ev, ensure_ascii=False)) for i, ev in enumerate(skill_events)],
+    )
+
+
 def add_message(
     chat_id: str,
     role: str,
@@ -277,15 +319,16 @@ def add_message(
     memory_used: list[dict[str, Any]] | None = None,
 ) -> int:
     now = utcnow()
-    skill_events_json = json.dumps(skill_events, ensure_ascii=False) if skill_events else None
     memory_used_json = json.dumps(memory_used, ensure_ascii=False) if memory_used else None
     with get_db() as conn:
         cur = conn.execute(
-            "INSERT INTO messages (chat_id, role, content, thinking, skill_events, memory_used, parent_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (chat_id, role, content, thinking, skill_events_json, memory_used_json, parent_id, now),
+            "INSERT INTO messages (chat_id, role, content, thinking, memory_used, parent_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, role, content, thinking, memory_used_json, parent_id, now),
         )
-        return int(cur.lastrowid)
+        msg_id = int(cur.lastrowid)
+        _write_skill_events(conn, msg_id, skill_events)
+        return msg_id
 
 def update_message(
     message_id: int,
@@ -295,55 +338,108 @@ def update_message(
     skill_events: list[dict[str, Any]] | None = None,
     memory_used: list[dict[str, Any]] | None = None,
 ) -> None:
-    skill_events_json = json.dumps(skill_events, ensure_ascii=False) if skill_events else None
     memory_used_json = json.dumps(memory_used, ensure_ascii=False) if memory_used else None
     with get_db() as conn:
         conn.execute(
-            "UPDATE messages SET content = ?, thinking = ?, parent_id = ?, skill_events = ?, memory_used = ? WHERE id = ?",
-            (content, thinking, parent_id, skill_events_json, memory_used_json, message_id),
+            "UPDATE messages SET content = ?, thinking = ?, parent_id = ?, memory_used = ? WHERE id = ?",
+            (content, thinking, parent_id, memory_used_json, message_id),
         )
+        _write_skill_events(conn, message_id, skill_events)
 
 def append_skill_event(chat_id: str, event: dict[str, Any]) -> None:
-    """Append a single event to the last assistant message's skill_events.
-
-    Uses a single atomic UPDATE with SQLite JSON1 functions — no read-modify-write race.
-    """
+    """Append a single event to the last assistant message's skill_events table."""
     event_json = json.dumps(event, ensure_ascii=False)
     with get_db() as conn:
+        row = conn.execute(
+            "SELECT id FROM messages WHERE chat_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1",
+            (chat_id,),
+        ).fetchone()
+        if not row:
+            return
+        msg_id = row["id"]
+        # Get next seq number
+        seq_row = conn.execute(
+            "SELECT COALESCE(MAX(seq), -1) + 1 AS next_seq FROM skill_events WHERE message_id = ?",
+            (msg_id,),
+        ).fetchone()
         conn.execute(
-            """UPDATE messages SET skill_events = CASE
-                WHEN skill_events IS NULL OR skill_events = '' THEN json_array(json(?))
-                ELSE json_insert(skill_events, '$[' || json_array_length(skill_events) || ']', json(?))
-            END
-            WHERE id = (
-                SELECT id FROM messages WHERE chat_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1
-            )""",
-            (event_json, event_json, chat_id),
+            "INSERT INTO skill_events (message_id, seq, event_data) VALUES (?, ?, ?)",
+            (msg_id, seq_row["next_seq"], event_json),
         )
 
 
-def get_messages(chat_id: str) -> list[dict[str, Any]]:
+def get_messages(
+    chat_id: str,
+    limit: int | None = None,
+    before_id: int | None = None,
+    include_skill_events: bool = False,
+) -> list[dict[str, Any]]:
+    """Fetch messages for a chat with optional pagination.
+
+    Args:
+        chat_id: The chat to load messages for.
+        limit: Max number of messages to return (None = all).
+        before_id: If set, return messages with id < before_id (for loading older messages).
+        include_skill_events: If True, include skill_events from the separate table.
+    """
+    query = "SELECT id, chat_id, role, content, thinking, memory_used, parent_id, created_at FROM messages WHERE chat_id = ?"
+    params: list[Any] = [chat_id]
+
+    if before_id is not None:
+        query += " AND id < ?"
+        params.append(before_id)
+
+    query += " ORDER BY id DESC"
+
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
+
     with get_db() as conn:
-        rows = conn.execute(
-            "SELECT id, chat_id, role, content, thinking, skill_events, memory_used, parent_id, created_at "
-            "FROM messages WHERE chat_id = ? ORDER BY id ASC",
-            (chat_id,),
-        ).fetchall()
+        rows = conn.execute(query, params).fetchall()
+        # Reverse to get ascending order (we queried DESC for pagination)
+        msg_ids = [row["id"] for row in rows]
+
+        # Batch-check which messages have skill events (single query)
+        has_events_set: set[int] = set()
+        if not include_skill_events and msg_ids:
+            placeholders = ",".join("?" * len(msg_ids))
+            ev_rows = conn.execute(
+                f"SELECT DISTINCT message_id FROM skill_events WHERE message_id IN ({placeholders})",
+                msg_ids,
+            ).fetchall()
+            has_events_set = {r["message_id"] for r in ev_rows}
+
         messages = []
-        for row in rows:
+        for row in reversed(rows):
             msg = dict(row)
-            raw_events = msg.get("skill_events")
-            try:
-                msg["skill_events"] = json.loads(raw_events) if raw_events else []
-            except json.JSONDecodeError:
-                msg["skill_events"] = []
             raw_mem = msg.get("memory_used")
             try:
                 msg["memory_used"] = json.loads(raw_mem) if raw_mem else []
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, TypeError):
                 msg["memory_used"] = []
+            if include_skill_events:
+                msg["skill_events"] = get_skill_events_for_message(msg["id"])
+            else:
+                msg["has_skill_events"] = msg["id"] in has_events_set
             messages.append(msg)
         return messages
+
+
+def get_skill_events_for_message(message_id: int) -> list[dict[str, Any]]:
+    """Load all skill events for a specific message (lazy-load endpoint)."""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT event_data FROM skill_events WHERE message_id = ? ORDER BY seq ASC",
+            (message_id,),
+        ).fetchall()
+        events = []
+        for row in rows:
+            try:
+                events.append(json.loads(row["event_data"]))
+            except (json.JSONDecodeError, TypeError):
+                continue
+        return events
 
 def search_messages(query: str, limit: int = 50) -> list[dict[str, Any]]:
     """Search message content across all chats. Returns matching messages with chat info.
@@ -378,6 +474,11 @@ def list_chats() -> list[dict[str, Any]]:
 
 def delete_chat(chat_id: str) -> bool:
     with get_db() as conn:
+        # Clean up skill_events for messages in this chat
+        conn.execute(
+            "DELETE FROM skill_events WHERE message_id IN (SELECT id FROM messages WHERE chat_id = ?)",
+            (chat_id,),
+        )
         conn.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
         cur = conn.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
         return cur.rowcount > 0
@@ -693,3 +794,40 @@ def get_due_agent_ops() -> list[dict[str, Any]]:
             (now,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+
+def migrate_skill_events_to_table() -> int:
+    """One-time migration: move skill_events from messages.skill_events column to skill_events table.
+
+    Returns the number of messages migrated. Safe to call multiple times (skips already-migrated).
+    """
+    migrated = 0
+    with get_db() as conn:
+        # Check if migration is needed (messages still have skill_events data)
+        rows = conn.execute(
+            "SELECT id, skill_events FROM messages WHERE skill_events IS NOT NULL AND skill_events != '' AND skill_events != '[]'"
+        ).fetchall()
+        for row in rows:
+            msg_id = row["id"]
+            # Skip if already migrated to the table
+            existing = conn.execute(
+                "SELECT 1 FROM skill_events WHERE message_id = ? LIMIT 1", (msg_id,)
+            ).fetchone()
+            if existing:
+                continue
+            raw = row["skill_events"]
+            try:
+                events = json.loads(raw)
+                if not isinstance(events, list) or not events:
+                    continue
+            except (json.JSONDecodeError, TypeError):
+                continue
+            conn.executemany(
+                "INSERT INTO skill_events (message_id, seq, event_data) VALUES (?, ?, ?)",
+                [(msg_id, i, json.dumps(ev, ensure_ascii=False)) for i, ev in enumerate(events)],
+            )
+            migrated += 1
+        # Clear the old column to reclaim space (after VACUUM)
+        if migrated > 0:
+            conn.execute("UPDATE messages SET skill_events = NULL")
+    return migrated

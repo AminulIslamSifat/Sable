@@ -365,6 +365,7 @@ async def add_model(request: Request) -> dict[str, Any]:
         "label": label,
         "api_backend": backend,
         "api_model_type": body.get("api_model_type", mid),
+        "max_session_chars": int(body.get("max_session_chars", 500_000)),
         "capabilities": body.get("capabilities", {"image": False, "video": False, "document": False, "audio": False}),
         "thinking_modes": thinking_modes,
         "_custom": True,
@@ -1247,3 +1248,222 @@ async def tts_voices() -> dict[str, Any]:
     except HTTPException:
         return {"voices": [], "error": "TTS models not installed"}
 # ── /TTS Synthesis ───────────────────────────────────────────────────
+
+
+# ---------------------------------------------------------------------------
+# Search provider settings (Phase 2 — multi-provider migration)
+# ---------------------------------------------------------------------------
+
+_ALLOWED_SEARCH_PROVIDERS = {
+    "searxng", "brave", "duckduckgo", "google_pse", "tavily", "serper", "disabled",
+}
+_ALLOWED_SAFESEARCH = {"strict", "moderate", "off"}
+_SEARCH_KEY_FIELDS = ("brave_api_key", "google_pse_key", "google_pse_cx", "tavily_api_key", "serper_api_key")
+
+def _read_system_settings() -> dict[str, Any]:
+    """Read system/settings.json, returning empty dict on failure."""
+    path = _SYSTEM_DIR / "settings.json"
+    if not path.is_file():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:
+        logger.warning("Failed to read system settings: %s", exc)
+        return {}
+
+def _write_system_settings(data: dict[str, Any]) -> None:
+    """Atomically write system/settings.json."""
+    path = _SYSTEM_DIR / "settings.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    tmp.replace(path)
+
+@router.get("/api/settings/search")
+async def get_search_settings() -> dict[str, Any]:
+    """Return current search config with key-presence booleans (never actual keys)."""
+    from engine.search import get_search_config as _get_cfg
+
+    cfg = _get_cfg()
+    settings = _read_system_settings()
+
+    provider = cfg.get("active_provider", settings.get("search_provider", "searxng"))
+    return {
+        "search_provider": provider,
+        "search_url": cfg.get("search_url", settings.get("search_url", "")),
+        "search_result_count": cfg.get("result_count", int(settings.get("search_result_count", 5))),
+        "search_safesearch": settings.get("search_safesearch", "strict"),
+        "search_fallback_chain": settings.get("search_fallback_chain", ["duckduckgo"]),
+        "has_brave_key": bool(settings.get("brave_api_key")),
+        "has_google_pse_key": bool(settings.get("google_pse_key")),
+        "has_google_pse_cx": bool(settings.get("google_pse_cx")),
+        "has_tavily_key": bool(settings.get("tavily_api_key")),
+        "has_serper_key": bool(settings.get("serper_api_key")),
+    }
+
+@router.post("/api/settings/search")
+async def update_search_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate and persist search configuration. Empty API keys are ignored."""
+    provider = payload.get("search_provider")
+    if provider is not None and provider not in _ALLOWED_SEARCH_PROVIDERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid search_provider '{provider}'. Allowed: {sorted(_ALLOWED_SEARCH_PROVIDERS)}",
+        )
+
+    result_count = payload.get("search_result_count")
+    if result_count is not None:
+        try:
+            result_count = int(result_count)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="search_result_count must be an integer")
+        if not (1 <= result_count <= 20):
+            raise HTTPException(status_code=400, detail="search_result_count must be between 1 and 20")
+
+    safesearch = payload.get("search_safesearch")
+    if safesearch is not None and safesearch not in _ALLOWED_SAFESEARCH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid search_safesearch '{safesearch}'. Allowed: {sorted(_ALLOWED_SAFESEARCH)}",
+        )
+
+    settings = _read_system_settings()
+
+    scalar_fields = {
+        "search_provider": provider,
+        "search_url": payload.get("search_url"),
+        "search_result_count": result_count,
+        "search_safesearch": safesearch,
+    }
+    for key, val in scalar_fields.items():
+        if val is not None:
+            settings[key] = val
+
+    if "search_fallback_chain" in payload:
+        chain = payload["search_fallback_chain"]
+        if isinstance(chain, list):
+            settings["search_fallback_chain"] = chain
+
+    for field in _SEARCH_KEY_FIELDS:
+        val = payload.get(field)
+        if val is not None and str(val).strip():
+            settings[field] = str(val).strip()
+
+    _write_system_settings(settings)
+
+    from engine.search import update_search_config as _update_cfg
+    _update_cfg(primary_provider=settings.get("search_provider", "searxng"))
+
+    logger.info("Search settings updated: provider=%s", settings.get("search_provider"))
+    return {"status": "ok", **{k: v for k, v in settings.items() if k not in _SEARCH_KEY_FIELDS}}
+
+_ALL_SEARCH_PROVIDERS = ["searxng", "duckduckgo", "brave", "google_pse", "tavily", "serper"]
+
+
+@router.get("/api/settings/search/providers")
+async def list_search_providers() -> dict[str, Any]:
+    """Return all available search provider names."""
+    return {"providers": _ALL_SEARCH_PROVIDERS}
+
+
+@router.post("/api/settings/search/test")
+async def test_search(request: Request) -> dict[str, Any]:
+    """Run a real test query against a specific or default search provider."""
+    import time as _time
+    from engine.search.core import _call_provider, searxng_search_results
+    from engine.search.config import _get_search_settings
+
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    query = (body.get("query") or "").strip() or "SearXNG test query"
+    count = min(int(body.get("count") or 5), 30)
+    provider_override = (body.get("provider") or "").strip()
+
+    settings = _get_search_settings()
+    provider = provider_override or settings.get("search_provider", "searxng")
+
+    start = _time.monotonic()
+    loop = asyncio.get_running_loop()
+    try:
+        if provider_override:
+            results = await loop.run_in_executor(None, _call_provider, provider, query, count)
+        else:
+            results = await loop.run_in_executor(
+                None, lambda: searxng_search_results(query, count=count)
+            )
+        elapsed = round(_time.monotonic() - start, 3)
+        return {
+            "success": True,
+            "query": query,
+            "provider_used": provider,
+            "result_count": len(results),
+            "elapsed_s": elapsed,
+            "results": [{"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", r.get("snippet", ""))[:200]} for r in results[:count]],
+            "error": None,
+        }
+    except Exception as exc:
+        elapsed = round(_time.monotonic() - start, 3)
+        logger.error("Search test failed (%s): %s", provider, exc)
+        return {
+            "success": False,
+            "query": query,
+            "provider_used": provider,
+            "result_count": 0,
+            "elapsed_s": elapsed,
+            "results": [],
+            "error": str(exc),
+        }
+
+
+@router.post("/api/settings/search/compare")
+async def compare_search(request: Request) -> dict[str, Any]:
+    """Run the same query against two providers side-by-side."""
+    import time as _time
+    from engine.search.core import _call_provider
+
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    query = (body.get("query") or "").strip() or "comparison test"
+    count = min(int(body.get("count") or 5), 30)
+    prov_a = (body.get("provider_a") or "searxng").strip()
+    prov_b = (body.get("provider_b") or "duckduckgo").strip()
+
+    loop = asyncio.get_running_loop()
+
+    async def _run_one(provider: str) -> dict:
+        start = _time.monotonic()
+        try:
+            results = await loop.run_in_executor(None, _call_provider, provider, query, count)
+            elapsed = round(_time.monotonic() - start, 3)
+            return {
+                "provider": provider,
+                "success": True,
+                "result_count": len(results),
+                "elapsed_s": elapsed,
+                "results": [{"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", r.get("snippet", ""))[:200]} for r in results[:count]],
+                "error": None,
+            }
+        except Exception as exc:
+            elapsed = round(_time.monotonic() - start, 3)
+            return {
+                "provider": provider,
+                "success": False,
+                "result_count": 0,
+                "elapsed_s": elapsed,
+                "results": [],
+                "error": str(exc),
+            }
+
+    res_a, res_b = await asyncio.gather(_run_one(prov_a), _run_one(prov_b))
+    return {"query": query, "count": count, "a": res_a, "b": res_b}
+
+@router.post("/api/settings/search/cache/clear")
+async def clear_search_cache() -> dict[str, Any]:
+    """Clear all cached search results."""
+    from engine.search import invalidate_cache
+
+    invalidate_cache()
+    logger.info("Search cache cleared via API")
+    return {"cleared": True}
+

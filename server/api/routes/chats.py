@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from engine.scraper import get_settings as get_scraper_settings
-from server.database import ensure_chat, list_chats, get_messages, delete_chat, search_messages
+from server.database import ensure_chat, list_chats, get_messages, delete_chat, search_messages, get_skill_events_for_message
 from server.utils import retry_async, make_title, _resolve_api_backend
 from server.models import NewChatRequest, ContextPassRequest
 from connectors import get_connector
@@ -47,8 +47,36 @@ async def new_chat(request: NewChatRequest = NewChatRequest()) -> dict[str, str 
     return {"chat_id": chat_id}
 
 @router.get("/api/chats/{chat_id}/messages")
-def chat_messages(chat_id: str) -> dict[str, Any]:
-    return {"chat_id": chat_id, "messages": get_messages(chat_id)}
+def chat_messages(
+    chat_id: str,
+    limit: int | None = None,
+    before_id: int | None = None,
+    include_skill_events: bool = False,
+) -> dict[str, Any]:
+    """Load messages with optional pagination.
+
+    - limit: max messages to return (default: all)
+    - before_id: load messages older than this id (for infinite scroll)
+    - include_skill_events: if true, embed skill_events in response (heavy)
+    """
+    messages = get_messages(chat_id, limit=limit, before_id=before_id, include_skill_events=include_skill_events)
+    # Compute total context chars for the full chat (not just the paginated slice)
+    from server.database import get_db
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(LENGTH(content)) + SUM(LENGTH(COALESCE(thinking, ''))), 0) AS total "
+            "FROM messages WHERE chat_id = ?",
+            (chat_id,),
+        ).fetchone()
+        context_chars = row["total"] if row else 0
+    return {"chat_id": chat_id, "messages": messages, "context_chars": context_chars}
+
+
+@router.get("/api/chats/{chat_id}/messages/{message_id}/events")
+def message_skill_events(chat_id: str, message_id: int) -> dict[str, Any]:
+    """Lazy-load skill events for a specific message."""
+    events = get_skill_events_for_message(message_id)
+    return {"message_id": message_id, "skill_events": events}
 
 @router.delete("/api/chats/{chat_id}")
 def delete_chat_route(chat_id: str) -> dict[str, Any]:
@@ -95,18 +123,50 @@ async def context_pass(req: ContextPassRequest) -> dict[str, Any]:
         transcript = transcript[:60000] + "\n… [transcript truncated]"
 
     prompt = (
-        "You are a context summarizer. Below is a conversation transcript. "
-        "Produce a focused operational briefing for a new chat session. "
-        "No filler, no meta-commentary, no 'here is a summary' — jump straight to substance.\n\n"
-        "Structure (increasing detail toward the end):\n"
-        "• Working topic — one sentence: what this chat is about and where it's heading.\n"
-        "• Background — brief context only if needed to understand the current task.\n"
-        "• Last actions (DETAILED) — what was most recently attempted, what was tried, "
-        "why each approach was chosen, what succeeded or failed, and the exact current state.\n"
-        "• Planned next move (DETAILED) — concrete next steps, open questions, blockers, "
-        "and any specific files/paths/configs involved.\n\n"
-        "The later sections must be progressively more detailed than earlier ones. "
-        "Omit anything irrelevant to continuing the work. Keep under 800 words.\n\n"
+        "You are a context handoff summarizer. Below is a conversation transcript from "
+        "a session that is being switched to a different model. Produce a focused "
+        "operational briefing so the new model can continue the work with zero loss "
+        "of state. No filler, no meta-commentary, no 'here is a summary' — jump "
+        "straight to substance.\n\n"
+
+        "HARD RULES (apply to all sections):\n"
+        "- Never invent, infer, or smooth over details that are not explicitly present "
+        "in the transcript. If something is ambiguous, unstated, or uncertain, write "
+        "[unclear] instead of guessing.\n"
+        "- Preserve all code snippets, file paths, commands, config values, error "
+        "messages, and stack traces VERBATIM — never paraphrase or reword these. "
+        "Quote them exactly as they appear in the transcript, in code blocks.\n"
+        "- Preserve exact technical details: package/library versions, OS, device/"
+        "environment specifics, variable names, function signatures.\n"
+        "- The word limit below applies to prose only. Verbatim code/error/config "
+        "blocks are exempt from the word count and should be included in full when "
+        "they represent the current working state.\n\n"
+
+        "Structure (each section progressively more detailed than the last, except "
+        "verbatim blocks which are always complete regardless of section):\n\n"
+
+        "• Working topic — Concise but complete: what the topic is, the motive/goal, "
+        "the plan, what's been done, what's pending. State clearly whether the task "
+        "is finished, abandoned, or stopped mid-way — and if mid-way, the exact point "
+        "of interruption.\n\n"
+
+        "• Background — Only the context needed to understand the current task "
+        "(prior decisions, constraints, why this approach was chosen over others). "
+        "Skip anything not relevant to continuing the work.\n\n"
+
+        "• Last exchange (most detailed so far) — The user's most recent prompt "
+        "passed near-verbatim, plus what was actually attempted in response: what "
+        "was tried, why that approach was chosen, what succeeded, what failed (with "
+        "exact error output), and the precise current state of any files/code/"
+        "commands at the point the session stopped.\n\n"
+
+        "• Planned next move (MOST detailed) — Concrete next steps in order, open "
+        "questions, known blockers, and every specific file/path/config/command "
+        "involved. If the previous model had a next action in mind but didn't "
+        "execute it, state exactly what that action was.\n\n"
+
+        "Target ~800 words of prose across all sections combined (verbatim blocks "
+        "excluded from this count). Omit anything irrelevant to resuming the work.\n\n"
         f"---\n{transcript}"
     )
 

@@ -35,7 +35,7 @@ Attributes:
 - instruction: special constraints or output format requirements
 - browser_data: browser profile for authenticated access
 - timeout: seconds before auto-kill (default 300)
-- collect: "true" to block and wait for result inline (use sparingly)
+- collect: "true" to block and wait for result inline (Not recommended)How tts can be useful on a agentic chat model (which have full access to pc, control browser, write code, edit document file, control email, telegram, has built in ide, search online, reseach, create graph simulation etc)How tts can be useful on a agentic chat model (which have full access to pc, control browser, write code, edit document file, control email, telegram, has built in ide, search online, reseach, create graph simulation etc)How tts can be useful on a agentic chat model (which have full access to pc, control browser, write code, edit document file, control email, telegram, has built in ide, search online, reseach, create graph simulation etc)
 - todos: pipe-separated step list, for tasks with 3+ distinct steps only
 
 Fallback models on failure: qwen3.7-max, qwen3.7-plus, qwen3.8-max, deepseek-expert, deepseek-instant, deepseek-vision (avoid deepseek unless asked).
@@ -71,7 +71,7 @@ Give each agent full self-contained context — it can't see the parent conversa
 ## Rules
 - Up to 5 concurrent agents
 - DeepSeek: max 2 parallel. Qwen: max 4
-- Fire-and-forget is default; collect="true" only when the result is needed before responding
+- Fire-and-forget is default; 
 - If an agent finishes mid-response, acknowledge it naturally and fold in the finding
 - If a collected agent fails, use what you have and note the gap
 - Prefer domain agents over generic roles when the task clearly fits a domain
