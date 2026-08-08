@@ -154,6 +154,19 @@ def get_token_for_account(account: str | None = None) -> str | None:
     return None
 
 
+def get_unique_tokens() -> list[str]:
+    """Load all tokens from the store, deduplicate, return unique valid tokens."""
+    store = _load_token_store()
+    seen: set[str] = set()
+    unique: list[str] = []
+    for tokens in store.values():
+        for tok in tokens:
+            if tok and tok != "None" and tok not in seen:
+                seen.add(tok)
+                unique.append(tok)
+    return unique
+
+
 def save_token_for_account(token: str, account: str | None = None) -> None:
     """Append a token to the account's list (deduped, capped). Never replaces old tokens.
 
@@ -179,6 +192,31 @@ CLIENT_HEADERS = {
     "x-client-bundle-id": "com.deepseek.chat",
     "x-client-locale": "en_US",
 }
+
+# Client-side history cap (matches Gemini/Mistral sliding window)
+_MAX_SESSION_CHARS = 100_000
+
+from connectors.common.context_summarizer import (
+    should_inject_hint, should_force_summarize, get_hint_text,
+    extract_summarize_tag, strip_summarize_tag, build_summary_prompt,
+    rewrite_history_with_summary, compute_force_cut_index,
+)
+
+
+def _msg_chars(msg: dict[str, Any]) -> int:
+    """Character count of a DeepSeek-format history message."""
+    return len(msg.get("content", ""))
+
+
+def _trim_history(history: list[dict[str, Any]], prefix_len: int, max_chars: int) -> list[dict[str, Any]]:
+    """Trim history to fit within max_chars, preserving prefix messages."""
+    prefix = history[:prefix_len]
+    msgs = history[prefix_len:]
+    total = sum(_msg_chars(m) for m in msgs)
+    while total > max_chars and len(msgs) > 1:
+        total -= _msg_chars(msgs.pop(0))
+    return prefix + msgs
+
 
 # Instruction files prepended to the first message of each session
 _INSTRUCTION_DIR = Path(__file__).resolve().parent.parent.parent / "instruction"
@@ -227,10 +265,13 @@ class DeepSeekAPIError(Exception):
 
 
 class DeepSeekClient:
-    """Async DeepSeek chat client with PoW solving.
+    """Async DeepSeek chat client with PoW solving and automatic token rotation.
 
-    Account-aware: resolves tokens from the per-account store.
-    Falls back to any available account token if the primary has none.
+    Mirrors the Gemini/Mistral connector pattern:
+      - Client-side conversation history per chat_id (no server-side session)
+      - Full context serialized into prompt each request (parent_id=None, stateless)
+      - Automatic round-robin token rotation with failover across unique tokens
+      - Sliding-window history trimming at _MAX_SESSION_CHARS
     """
 
     def __init__(
@@ -238,14 +279,25 @@ class DeepSeekClient:
         token: str | None = None,
         token_refresher: Callable[[], Awaitable[str]] | None = None,
         account: str | None = None,
+        model_id: str | None = None,
     ) -> None:
         self._token = token
         self._token_refresher = token_refresher
         self._account = account  # e.g. "browser-data-acc15"; None = active
+        self._model_id = model_id or "deepseek-instant"
         self._http: httpx.AsyncClient | None = None
         self._lock = asyncio.Lock()
-        # Session continuity: sable_chat_id → (deepseek_session_id, next_parent_id)
-        self._sessions: dict[str, tuple[str, int | None]] = {}
+        # Client-side conversation history: chat_id → [message dicts]
+        self._sessions: dict[str, list[dict[str, Any]]] = {}
+        # Token rotation state (always active — like Gemini/Mistral key rotation)
+        self._rotate_tokens: list[str] = []
+        self._rotate_idx: int = 0
+        self._rotate_sessions: dict[str, str] = {}  # token → deepseek session_id
+
+        # Load per-model max session chars from config
+        from engine.config import get_model_config
+        config = get_model_config(self._model_id)
+        self._max_session_chars = config.get("max_session_chars", 100_000)
 
     @property
     def account(self) -> str:
@@ -274,17 +326,94 @@ class DeepSeekClient:
         return self.token is not None
 
     def set_token(self, token: str, account: str | None = None) -> None:
-        """Set and persist token under the given account. Clears stale sessions."""
-        if token != self._token:
-            self._sessions.clear()
+        """Set and persist token under the given account."""
         self._token = token
         save_token_for_account(token, account or self._account)
 
+    # ------------------------------------------------------------------
+    # Token rotation (automatic round-robin + failover, like Gemini/Mistral)
+    # ------------------------------------------------------------------
+
+    def _init_rotation(self) -> None:
+        """Load unique tokens from store for rotation."""
+        self._rotate_tokens = get_unique_tokens()
+        self._rotate_idx = 0
+        logger.info("Token rotation initialized: %d unique tokens", len(self._rotate_tokens))
+
+    @property
+    def _current_rotate_token(self) -> str | None:
+        if not self._rotate_tokens:
+            return None
+        return self._rotate_tokens[self._rotate_idx % len(self._rotate_tokens)]
+
+    def _advance_rotation(self) -> None:
+        if self._rotate_tokens:
+            self._rotate_idx = (self._rotate_idx + 1) % len(self._rotate_tokens)
+
+    def _auth_headers_for(self, token: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {token}", **CLIENT_HEADERS}
+
     def _auth_headers(self) -> dict[str, str]:
-        tok = self.token
+        """Auth headers using current rotation token (or fallback single token)."""
+        if self._rotate_tokens:
+            tok = self._current_rotate_token
+        else:
+            tok = self.token
         if not tok:
-            raise DeepSeekAPIError("No token available. Extract from browser first.")
+            raise DeepSeekAPIError("No DeepSeek token available.")
         return {"Authorization": f"Bearer {tok}", **CLIENT_HEADERS}
+
+    async def _prepare_request_with_rotation(self) -> tuple[str, dict[str, str]] | None:
+        """Pick a usable token, get/create its session, solve PoW.
+
+        Returns (session_id, headers) or None if all tokens exhausted.
+        Always uses parent_id=None (stateless) — context is in the prompt.
+        Advances past tokens that fail; does NOT advance on success (caller does).
+        """
+        if not self._rotate_tokens:
+            self._init_rotation()
+        if not self._rotate_tokens:
+            return None
+
+        tried = 0
+        total = len(self._rotate_tokens)
+
+        while tried < total:
+            token = self._current_rotate_token
+            if not token:
+                self._advance_rotation()
+                tried += 1
+                continue
+
+            auth = self._auth_headers_for(token)
+
+            # One persistent session per token (avoids ~460ms create overhead per turn)
+            if token not in self._rotate_sessions:
+                try:
+                    session_id = await self._create_session(headers=auth)
+                    self._rotate_sessions[token] = session_id
+                except Exception as exc:
+                    logger.warning("Rotation: session failed for %s...: %s", token[:10], exc)
+                    self._advance_rotation()
+                    tried += 1
+                    continue
+            session_id = self._rotate_sessions[token]
+
+            try:
+                challenge = await self._get_challenge(headers=auth)
+                loop = asyncio.get_running_loop()
+                nonce = await loop.run_in_executor(None, self._solve_pow, challenge)
+                pow_header = self._build_pow_header(challenge, nonce)
+            except Exception as exc:
+                logger.warning("Rotation: PoW failed for %s...: %s", token[:10], exc)
+                self._advance_rotation()
+                tried += 1
+                continue
+
+            headers = {**auth, "X-DS-PoW-Response": pow_header, "Content-Type": "application/json"}
+            return session_id, headers
+
+        return None
 
     # ------------------------------------------------------------------
     # Token auto-refresh
@@ -403,20 +532,30 @@ class DeepSeekClient:
     # API calls
     # ------------------------------------------------------------------
 
-    async def _get_challenge(self) -> dict[str, Any]:
-        """Request a fresh PoW challenge. Auto-refreshes token from browser on 401."""
-        http = await self._get_http()
+    async def _get_challenge(self, headers: dict[str, str] | None = None) -> dict[str, Any]:
+        """Request a fresh PoW challenge. Auto-refreshes token from browser on 401.
 
-        # No token at all — try browser refresh before anything else
-        if not self.token:
+        Pass explicit `headers` (rotation mode) to use a specific pooled token — on
+        401 this raises instead of triggering a browser refresh (rotation tokens are
+        pre-collected JWTs; a dead one is skipped by the caller, not refreshed).
+        """
+        http = await self._get_http()
+        explicit = headers is not None
+        hdrs = headers if explicit else self._auth_headers()
+
+        # No token at all — try browser refresh before anything else (non-rotation only)
+        if not explicit and not self.token:
             await self._refresh_token()
+            hdrs = self._auth_headers()
 
         resp = await http.post(
             "/api/v0/chat/create_pow_challenge",
             json={"target_path": "/api/v0/chat/completion"},
-            headers=self._auth_headers(),
+            headers=hdrs,
         )
         if resp.status_code == 401:
+            if explicit:
+                raise DeepSeekAPIError("401 on challenge with rotation token")
             # Token expired — auto-refresh from persistent browser profile
             logger.warning("401 on challenge — refreshing token...")
             await self._refresh_token()
@@ -433,15 +572,23 @@ class DeepSeekClient:
             raise DeepSeekAPIError(f"Challenge failed: {data.get('msg', 'unknown')}")
         return data["data"]["biz_data"]["challenge"]
 
-    async def _create_session(self) -> str:
-        """Create a new chat session, return its UUID. Auto-refreshes token on 401."""
+    async def _create_session(self, headers: dict[str, str] | None = None) -> str:
+        """Create a new chat session, return its UUID. Auto-refreshes token on 401.
+
+        Pass explicit `headers` (rotation mode) to use a specific pooled token — on
+        401 this raises instead of triggering a browser refresh.
+        """
         http = await self._get_http()
+        explicit = headers is not None
+        hdrs = headers if explicit else self._auth_headers()
         resp = await http.post(
             "/api/v0/chat_session/create",
             json={},
-            headers=self._auth_headers(),
+            headers=hdrs,
         )
         if resp.status_code == 401:
+            if explicit:
+                raise DeepSeekAPIError("401 creating session with rotation token")
             logger.warning("401 on session create — refreshing token...")
             await self._refresh_token()
             resp = await http.post(
@@ -459,40 +606,166 @@ class DeepSeekClient:
             return biz["chat_session"]["id"]
         return biz["id"]
 
-    async def _prepare_request(
-        self, chat_id: str | None = None
-    ) -> tuple[str, int | None, dict[str, str]]:
-        """Solve PoW, reuse or create session. Returns (session_id, parent_message_id, headers)."""
-        challenge = await self._get_challenge()
+    # ------------------------------------------------------------------
+    # Client-side session history (mirrors Gemini/Mistral pattern)
+    # ------------------------------------------------------------------
 
-        # Solve in thread pool to avoid blocking event loop
-        loop = asyncio.get_running_loop()
-        nonce = await loop.run_in_executor(None, self._solve_pow, challenge)
-        logger.debug("PoW solved: nonce=%d", nonce)
+    async def _maybe_summarize(
+        self, chat_id: str, history: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Check thresholds and summarize if needed. Returns updated history."""
+        prefix_len = 1 if history and history[0].get("role") == "system" else 0
+        total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
+        if should_force_summarize(total_chars, self._max_session_chars):
+            cut_idx = compute_force_cut_index(history, prefix_len)
+            msgs_to_summarize = history[prefix_len:cut_idx]
+            if len(msgs_to_summarize) >= 2:
+                prompt = build_summary_prompt(msgs_to_summarize, _msg_chars)
+                summary = await self._call_self_summarize(prompt)
+                if summary:
+                    logger.info("Force-summarized %d messages for chat %s", len(msgs_to_summarize), chat_id)
+                    history = rewrite_history_with_summary(history, summary, cut_idx, prefix_len, fmt="openai")
+                    self._sessions[chat_id] = history
+        return history
 
-        pow_header = self._build_pow_header(challenge, nonce)
-
-        # Reuse session for continuity, or create new
-        parent_id: int | None = None
-        if chat_id and chat_id in self._sessions:
-            session_id, parent_id = self._sessions[chat_id]
-        else:
-            session_id = await self._create_session()
-            parent_id = None
-
-        headers = {
-            **self._auth_headers(),
-            "X-DS-PoW-Response": pow_header,
-            "Content-Type": "application/json",
+    async def _call_self_summarize(self, prompt: str) -> str | None:
+        """Call the same DeepSeek model to generate a summary. Non-streaming."""
+        # Use a simple non-streaming call via the same API
+        prepared = await self._prepare_request_with_rotation()
+        if prepared is None:
+            return None
+        session_id, headers = prepared
+        body = {
+            "chat_session_id": session_id,
+            "parent_message_id": None,
+            "model_type": self._model_id,
+            "prompt": prompt,
+            "ref_file_ids": [],
+            "thinking_enabled": False,
+            "search_enabled": False,
+            "action": None,
+            "preempt": False,
         }
-        return session_id, parent_id, headers
+        try:
+            http = await self._get_http()
+            full_answer = ""
+            async with http.stream(
+                "POST", "/api/v0/chat/completion", json=body, headers=headers,
+            ) as resp:
+                if resp.status_code != 200:
+                    return None
+                async for event in self._iter_completion_events(resp):
+                    if event.get("type") == "answer":
+                        full_answer += event.get("text", "")
+            result = strip_summarize_tag(full_answer).strip()
+            return result if result else None
+        except Exception as e:
+            logger.warning("DeepSeek summarizer error: %s", e)
+            return None
 
-    def _advance_session(self, chat_id: str | None, session_id: str, parent_id: int | None) -> None:
-        """Track session state after a successful message. parent_id increments by 2 each turn."""
-        if not chat_id:
-            return
-        next_parent = (parent_id or 0) + 2
-        self._sessions[chat_id] = (session_id, next_parent)
+    def _get_or_create_session(
+        self, chat_id: str | None, inject_instructions: bool,
+        system_instruction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Get existing session history or create a new one (sliding window)."""
+        if chat_id and chat_id in self._sessions:
+            history = self._sessions[chat_id]
+            prefix_len = 1 if history and history[0].get("role") == "system" else 0
+            total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
+            if total_chars > self._max_session_chars:
+                self._sessions[chat_id] = _trim_history(history, prefix_len, self._max_session_chars)
+            return self._sessions[chat_id]
+
+        history: list[dict[str, Any]] = []
+        instructions = system_instruction if system_instruction else (_load_instructions() if inject_instructions else None)
+        if instructions:
+            history.append({"role": "system", "content": instructions})
+
+        if chat_id:
+            self._sessions[chat_id] = history
+        return history
+
+    @staticmethod
+    def _serialize_history(history: list[dict[str, Any]], current_message: str) -> str:
+        """Serialize client-side history + current message into a single prompt string."""
+        parts: list[str] = []
+        for msg in history:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "system":
+                parts.append(f"[System Instructions]\n{content}")
+            elif role == "user":
+                parts.append(f"User: {content}")
+            elif role == "assistant":
+                parts.append(f"Assistant: {content}")
+        parts.append(f"User: {current_message}")
+        return "\n\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # SSE response parsing
+    # ------------------------------------------------------------------
+
+    async def _iter_completion_events(
+        self,
+        resp: httpx.Response,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Parse an open /chat/completion SSE stream into Sable events."""
+        current_frag_type: str = "RESPONSE"
+
+        async for line in resp.aiter_lines():
+            if not line.startswith("data: "):
+                continue
+            payload = line[6:]
+            if payload == "[DONE]":
+                break
+            try:
+                obj = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+
+            v = obj.get("v")
+            p = obj.get("p")
+            o = obj.get("o")
+
+            if v is None and p is None:
+                continue
+            if p == "response" and o == "BATCH":
+                continue
+            if p == "response/status" and o == "SET":
+                if v == "FINISHED":
+                    yield {"type": "done", "parent_id": None}
+                continue
+            if p and "elapsed_secs" in p:
+                continue
+            if p == "response/fragments" and o == "APPEND":
+                if isinstance(v, list) and v:
+                    new_type = v[0].get("type", "RESPONSE")
+                    current_frag_type = new_type
+                    content = v[0].get("content", "")
+                    if content:
+                        etype = "thinking" if new_type == "THINK" else "answer"
+                        yield {"type": etype, "text": content}
+                continue
+            if p == "response/fragments/-1/content" and o == "APPEND":
+                text = v if isinstance(v, str) else ""
+                if text:
+                    etype = "thinking" if current_frag_type == "THINK" else "answer"
+                    yield {"type": etype, "text": text}
+                continue
+            if isinstance(v, dict) and "response" in v:
+                fragments = v["response"].get("fragments", [])
+                for frag in fragments:
+                    ftype = frag.get("type", "RESPONSE")
+                    current_frag_type = ftype
+                    content = frag.get("content", "")
+                    if content:
+                        etype = "thinking" if ftype == "THINK" else "answer"
+                        yield {"type": etype, "text": content}
+                continue
+            if isinstance(v, str) and p is None:
+                etype = "thinking" if current_frag_type == "THINK" else "answer"
+                yield {"type": etype, "text": v}
+                continue
 
     # ------------------------------------------------------------------
     # Public interface — streaming
@@ -509,146 +782,131 @@ class DeepSeekClient:
         system_instruction: str | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """Stream a chat completion. Yields Sable-compatible event dicts."""
+        """Stream a chat completion. Yields Sable-compatible event dicts.
+
+        Mirrors Gemini/Mistral: client-side history, full-context prompt, automatic
+        token rotation with round-robin + failover.
+        """
         thinking_enabled = str(thinking_mode or "").lower() in ("thinking", "deepthink")
-        model_type = model  # None is valid (Instant sends null)
+        model_type = model
         file_ids = [str(fid) for fid in (ref_file_ids or []) if str(fid).strip()]
 
-        try:
-            session_id, parent_id, headers = await self._prepare_request(chat_id=chat_id)
-        except DeepSeekAPIError as exc:
-            yield {"type": "error", "message": str(exc)}
-            return
-        except Exception as exc:
-            yield {"type": "error", "message": f"PoW/session prep failed: {exc}"}
-            return
+        # Build client-side history (instructions as first entry, sliding window)
+        history = self._get_or_create_session(chat_id, inject_instructions, system_instruction=system_instruction)
 
-        # First message in session → prepend instruction context
-        prompt = message
-        if parent_id is None:
-            if system_instruction:
-                prompt = f"[System Instructions]\n{system_instruction}\n\n{message}"
-            elif inject_instructions:
-                instructions = _load_instructions()
-                if instructions:
-                    prompt = f"{instructions}\n\n{message}"
+        # Context summarization: check thresholds before sending
+        if chat_id:
+            history = await self._maybe_summarize(chat_id, history)
+            prefix_len = 1 if history and history[0].get("role") == "system" else 0
+            total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
+            if should_inject_hint(total_chars, self._max_session_chars):
+                hint = get_hint_text(total_chars, self._max_session_chars)
+                message = message + hint
 
-        # Append compact reminders only for non-agent sessions (agents have their own format)
+        # Serialize history + current message into prompt
+        prompt = self._serialize_history(history, message)
+
+        # Append reminders for non-agent sessions
         if not system_instruction:
-            _REMINDERS = (
+            prompt += (
                 "\n\n[REMINDERS: Do NOT break character. Follow skills strictly, "
                 "step by step. Never alter tag format. Keep responses concise. "
                 "No generic/AI-speak — stay in Maria persona.]"
             )
-            prompt += _REMINDERS
 
-        body = {
-            "chat_session_id": session_id,
-            "parent_message_id": parent_id,
-            "model_type": model_type,
-            "prompt": prompt,
-            "ref_file_ids": file_ids,
-            "thinking_enabled": thinking_enabled,
-            "search_enabled": False,
-            "action": None,
-            "preempt": False,
-        }
+        # Try each token with round-robin rotation + failover
+        attempts = max(1, len(self._rotate_tokens) or 1)
+        last_err = "unknown"
 
-        http = await self._get_http()
-        try:
-            async with http.stream(
-                "POST",
-                "/api/v0/chat/completion",
-                json=body,
-                headers=headers,
-            ) as resp:
-                if resp.status_code == 401:
-                    yield {"type": "error", "message": "Token expired mid-stream (401)."}
-                    return
-                if resp.status_code != 200:
-                    yield {"type": "error", "message": f"HTTP {resp.status_code}"}
-                    return
+        for _attempt in range(attempts):
+            prepared = await self._prepare_request_with_rotation()
+            if prepared is None:
+                yield {"type": "error", "message": f"All DeepSeek tokens failed ({last_err})."}
+                return
+            session_id, headers = prepared
 
-                # Track current fragment type to route appends correctly.
-                # DeepSeek SSE: first fragment is THINK, then a new RESPONSE
-                # fragment is appended. Shorthand {"v":"..."} appends go to
-                # whichever fragment is currently active.
-                current_frag_type: str = "RESPONSE"  # THINK | RESPONSE
+            body = {
+                "chat_session_id": session_id,
+                "parent_message_id": None,  # Always stateless — context is in the prompt
+                "model_type": model_type,
+                "prompt": prompt,
+                "ref_file_ids": file_ids,
+                "thinking_enabled": thinking_enabled,
+                "search_enabled": False,
+                "action": None,
+                "preempt": False,
+            }
 
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    payload = line[6:]
-                    if payload == "[DONE]":
-                        break
-                    try:
-                        obj = json.loads(payload)
-                    except json.JSONDecodeError:
+            try:
+                http = await self._get_http()
+                full_answer = ""
+                full_thinking = ""
+
+                async with http.stream(
+                    "POST", "/api/v0/chat/completion", json=body, headers=headers,
+                ) as resp:
+                    # Auth/rate-limit errors → rotate to next token
+                    if resp.status_code in (401, 403, 429):
+                        await resp.aread()
+                        last_err = f"HTTP {resp.status_code}"
+                        logger.warning("DeepSeek token failed (%s), rotating...", last_err)
+                        self._advance_rotation()
                         continue
 
-                    v = obj.get("v")
-                    p = obj.get("p")
-                    o = obj.get("o")
+                    if resp.status_code != 200:
+                        error_body = await resp.aread()
+                        yield {"type": "error", "message": f"HTTP {resp.status_code}: {error_body.decode()[:500]}"}
+                        return
 
-                    if v is None and p is None:
-                        continue
+                    async for event in self._iter_completion_events(resp):
+                        etype = event.get("type")
+                        if etype == "answer":
+                            full_answer += event.get("text", "")
+                        elif etype == "thinking":
+                            full_thinking += event.get("text", "")
+                        yield event
 
-                    # Batch status updates (FINISHED, token usage)
-                    if p == "response" and o == "BATCH":
-                        continue
+                # Success — save user message + assistant response to history
+                _summarize_idx = extract_summarize_tag(full_answer)
+                clean_answer = strip_summarize_tag(full_answer)
+                history.append({"role": "user", "content": message})
+                response_content = full_thinking + clean_answer if full_thinking else clean_answer
+                if response_content:
+                    history.append({"role": "assistant", "content": response_content})
 
-                    # Status SET → FINISHED
-                    if p == "response/status" and o == "SET":
-                        if v == "FINISHED":
-                            self._advance_session(chat_id, session_id, parent_id)
-                            yield {"type": "done", "parent_id": session_id}
-                        continue
+                # Handle model-triggered summarization
+                if _summarize_idx is not None and chat_id:
+                    prefix_len = 1 if history and history[0].get("role") == "system" else 0
+                    actual_cut = max(prefix_len, min(_summarize_idx, len(history) - 1))
+                    msgs_to_summarize = history[prefix_len:actual_cut]
+                    if len(msgs_to_summarize) >= 2:
+                        prompt = build_summary_prompt(msgs_to_summarize, _msg_chars)
+                        summary = await self._call_self_summarize(prompt)
+                        if summary:
+                            logger.info("Model-triggered summarization at index %d for chat %s", _summarize_idx, chat_id)
+                            history = rewrite_history_with_summary(history, summary, actual_cut, prefix_len, fmt="openai")
+                            self._sessions[chat_id] = history
 
-                    # elapsed_secs on fragment — ignore
-                    if p and "elapsed_secs" in p:
-                        continue
+                if chat_id:
+                    prefix_len = 1 if history and history[0].get("role") == "system" else 0
+                    total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
+                    if total_chars > self._max_session_chars:
+                        self._sessions[chat_id] = _trim_history(history, prefix_len, self._max_session_chars)
 
-                    # New fragment appended (thinking→response transition)
-                    if p == "response/fragments" and o == "APPEND":
-                        if isinstance(v, list) and v:
-                            new_type = v[0].get("type", "RESPONSE")
-                            current_frag_type = new_type
-                            content = v[0].get("content", "")
-                            if content:
-                                etype = "thinking" if new_type == "THINK" else "answer"
-                                yield {"type": etype, "text": content}
-                        continue
+                # Advance rotation for round-robin on next call
+                self._advance_rotation()
+                return
 
-                    # Explicit content append with path
-                    if p == "response/fragments/-1/content" and o == "APPEND":
-                        text = v if isinstance(v, str) else ""
-                        if text:
-                            etype = "thinking" if current_frag_type == "THINK" else "answer"
-                            yield {"type": etype, "text": text}
-                        continue
+            except httpx.ReadTimeout:
+                last_err = "timeout (120s)"
+                logger.warning("DeepSeek token timed out, rotating...")
+                self._advance_rotation()
+                continue
+            except Exception as exc:
+                yield {"type": "error", "message": f"Stream error: {type(exc).__name__}: {exc}"}
+                return
 
-                    # Full response object (first event — sets initial fragment)
-                    if isinstance(v, dict) and "response" in v:
-                        fragments = v["response"].get("fragments", [])
-                        for frag in fragments:
-                            ftype = frag.get("type", "RESPONSE")
-                            current_frag_type = ftype
-                            content = frag.get("content", "")
-                            if content:
-                                etype = "thinking" if ftype == "THINK" else "answer"
-                                yield {"type": etype, "text": content}
-                        continue
-
-                    # Shorthand string append {"v": " text"} — no path
-                    if isinstance(v, str) and p is None:
-                        etype = "thinking" if current_frag_type == "THINK" else "answer"
-                        yield {"type": etype, "text": v}
-                        continue
-
-        except httpx.ReadTimeout:
-            yield {"type": "error", "message": "Stream timed out (120s)"}
-        except Exception as exc:
-            yield {"type": "error", "message": f"Stream error: {type(exc).__name__}: {exc}"}
+        yield {"type": "error", "message": f"All DeepSeek tokens failed ({last_err})."}
 
     # ------------------------------------------------------------------
     # Public interface — non-streaming
@@ -702,6 +960,9 @@ _default_client: DeepSeekClient | None = None
 
 def get_client(account: str | None = None) -> DeepSeekClient:
     """Get or create a DeepSeek client for the given account.
+
+    All clients now use automatic token rotation + client-side history (mirrors
+    Gemini/Mistral pattern). No opt-in flag needed.
 
     account=None → default client (resolves active account dynamically).
     account="browser-data-acc7" → dedicated client pinned to that account.

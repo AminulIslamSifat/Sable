@@ -892,6 +892,7 @@
     sidebarRoot = path;
     sidebarExpanded.clear();
     localStorage.setItem("fs_ide_last_folder", path);
+    window.dispatchEvent(new Event('cwd-changed'));
     loadSidebarTree();
     openRoot(path);
   }
@@ -1153,6 +1154,7 @@
     sidebarRoot = lastFolder;
     sidebarExpanded.clear();
     sidebarExpanded.add(lastFolder);
+    window.dispatchEvent(new Event('cwd-changed'));
 
     // Expand all parent dirs leading to the last opened file
     if (lastFile) {
@@ -1293,6 +1295,7 @@
     sidebarRoot = savedFolder;
     sidebarExpanded.clear();
     sidebarExpanded.add(savedFolder);
+    window.dispatchEvent(new Event('cwd-changed'));
     loadSidebarTree();
   } else {
     showSidebarPicker();

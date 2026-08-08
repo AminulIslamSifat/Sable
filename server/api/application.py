@@ -16,8 +16,8 @@ from engine.memory_search import get_searcher
 from connectors.deepseek.client import get_client as get_deepseek_client
 
 from .dependencies import service
-from server.database import init_db, recover_stale_agents
-from server.auth import AUTH_TOKEN
+from server.database import init_db, recover_stale_agents, migrate_skill_events_to_table
+import server.auth as _auth_mod
 from server.config import (
     AUTH_EXEMPT_PREFIXES, WEB_DIR, UPLOAD_DIR,
     _MEMORY_SEARCH_SETTINGS,
@@ -43,6 +43,7 @@ from .routes.terminal import router as terminal_router
 from .routes.telegram import router as telegram_router
 from .routes.research import router as research_router
 from .routes.tracknote import router as tracknote_router
+from .routes.setup import router as setup_router
 
 def _raise_nofile_limit() -> None:
     """Raise open file limit for agentic workloads (browsers, agents, streams)."""
@@ -73,6 +74,10 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
         logger.warning("MCP auto-connect failed: %s: %s", type(exc).__name__, exc)
 
     init_db()
+    # One-time migration: move skill_events from messages column to dedicated table
+    migrated = migrate_skill_events_to_table()
+    if migrated:
+        logger.info("Migrated skill_events for %d messages to dedicated table", migrated)
     stale = recover_stale_agents()
     if stale:
         logger.info("Recovered %d stale agent(s) from previous session", stale)
@@ -175,13 +180,13 @@ async def auth_middleware(request: Request, call_next):
     if not path.startswith("/api/") or any(path.startswith(p) for p in AUTH_EXEMPT_PREFIXES):
         return await call_next(request)
     auth_header = request.headers.get("authorization", "")
-    authorized = auth_header.startswith("Bearer ") and auth_header[7:] == AUTH_TOKEN
+    authorized = auth_header.startswith("Bearer ") and auth_header[7:] == _auth_mod.AUTH_TOKEN
     if not authorized and (
         path == "/api/logs"
         or path.endswith("/agent-events")
         or path.startswith("/api/research/events/")
     ):
-        authorized = request.query_params.get("token", "") == AUTH_TOKEN
+        authorized = request.query_params.get("token", "") == _auth_mod.AUTH_TOKEN
     if not authorized:
         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     return await call_next(request)
@@ -204,6 +209,7 @@ app.include_router(terminal_router)
 app.include_router(telegram_router)
 app.include_router(research_router)
 app.include_router(tracknote_router)
+app.include_router(setup_router)
 
 # Wire agent runtime event callback → SSE push
 from .routes.agents import _async_push_agent_event, push_agent_event

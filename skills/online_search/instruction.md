@@ -17,4 +17,4 @@ Add `--max-chars 20000` for larger page context (default 10000).
 ## Rules
 - Always review Phase 1 results before fetching — never fetch blindly.
 - SKILL_DIR resolves to the directory containing this instruction.md.
-- Settings live in SKILL_DIR/settings.json.
+- Provider configuration is managed in Settings → Search Engine. The skill auto-detects the active provider and fallback chain from system settings.

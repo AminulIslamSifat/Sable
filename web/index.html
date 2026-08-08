@@ -8,9 +8,10 @@
 
   <link rel="stylesheet" href="/static/css/variables.css?v=4">
   <link rel="stylesheet" href="/static/css/base.css?v=3">
-  <link rel="stylesheet" href="/static/css/layout.css?v=50">
+  <link rel="stylesheet" href="/static/css/layout.css?v=51">
+  <link rel="stylesheet" href="/static/css/ide.css?v=1">
   <link rel="stylesheet" href="/static/css/chat.css?v=23">
-  <link rel="stylesheet" href="/static/css/panels.css?v=29">
+  <link rel="stylesheet" href="/static/css/panels.css?v=30">
   <link rel="stylesheet" href="/static/css/components.css?v=12">
   <link rel="stylesheet" href="/static/css/responsive.css?v=3">
   <link rel="stylesheet" href="/static/css/agents.css?v=31">
@@ -23,8 +24,34 @@
   <link rel="apple-touch-icon" href="/static/assets/icon-192.png">
 </head>
 <body data-mode="agent">
-  <!-- Login gate -->
-  <div id="loginOverlay" class="login-overlay">
+  <!-- Login / Setup gate -->
+  <!-- Phase 1: Set Password (first-run only) -->
+  <div id="phasePassword" class="login-overlay hidden">
+    <div class="login-card">
+      <img src="/static/assets/sable_icon.svg" alt="Sable" class="login-logo">
+      <h1>Welcome to Sable</h1>
+      <p class="login-sub">Choose a password to protect your workspace</p>
+      <form id="setupPasswordForm" class="login-form" autocomplete="off">
+        <input type="password" id="setupPassword" class="login-input" placeholder="Choose a password" autofocus>
+        <button type="submit" id="setupPasswordBtn" class="login-btn">Set Password</button>
+      </form>
+      <p id="setupPasswordError" class="login-error hidden"></p>
+    </div>
+  </div>
+
+  <!-- Phase 2: Browser Login (first-run only) -->
+  <div id="phaseBrowser" class="login-overlay hidden">
+    <div class="login-card">
+      <img src="/static/assets/sable_icon.svg" alt="Sable" class="login-logo">
+      <h1>Connect Account</h1>
+      <p class="login-sub">A browser window will open for you to log into Qwen.<br>Complete the login there, then close the browser to continue.</p>
+      <button id="setupBrowserBtn" class="login-btn">Open Browser Login</button>
+      <p id="setupBrowserStatus" class="login-error hidden" style="color:var(--accent,#7c5cbf);"></p>
+    </div>
+  </div>
+
+  <!-- Phase 3: Enter Pass (normal login) -->
+  <div id="loginOverlay" class="login-overlay hidden">
     <div class="login-card">
       <img src="/static/assets/sable_icon.svg" alt="Sable" class="login-logo">
       <h1>Sable</h1>
@@ -74,11 +101,13 @@
         </div>
       </div>
       <div class="sidebar-top-content">
-        <div class="thinking-switcher" id="thinkingSwitcher" title="Thinking mode used for new chats"></div>
                 <div class="mode-switcher" id="layoutSwitcher">
           <button id="layoutAgent" class="active" title="Agent chat mode"><span class="icon-emoji">💬</span><i data-lucide="message-square" class="icon-lucide"></i> Agent</button>
           <button id="layoutIde" title="IDE / editor mode"><span class="icon-emoji">🖥</span><i data-lucide="code-2" class="icon-lucide"></i> IDE</button>
         </div>
+        <button id="trackNoteBtn" class="sidebar-footer-btn" title="TrackNote">
+          <span class="icon-emoji">📋</span><i data-lucide="clipboard-list" class="icon-lucide"></i> TrackNote
+        </button>
         <div class="scraper-engine-wrap" id="scraperEngineWrap">
           <select id="scraperEngineSelect" title="Scraper engine"></select>
         </div>
@@ -99,9 +128,6 @@
       <div id="chats"></div>
     </div>
     <div class="sidebar-section sidebar-bottom">
-      <button id="trackNoteBtn" class="sidebar-footer-btn" title="TrackNote">
-        <span class="icon-emoji">📋</span><i data-lucide="clipboard-list" class="icon-lucide"></i> TrackNote
-      </button>
       <button id="libraryBtn" class="sidebar-footer-btn" title="Library">
         <span class="icon-emoji">📚</span><i data-lucide="book-open" class="icon-lucide"></i> Library
       </button>
@@ -196,20 +222,38 @@
 
     <div class="input-area" id="inputArea">
       <div class="attach-preview" id="attachPreview"></div>
-      <div class="input-row">
-        <div class="input-cell attach-cell">
-          <button class="attach-btn" id="attachBtn" title="Attach file"><span class="icon-emoji">+</span><i data-lucide="paperclip" class="icon-lucide"></i></button>
+      <div class="input-composite">
+        <div class="input-row">
+          <div class="input-cell attach-cell">
+            <button class="attach-btn" id="attachBtn" title="Attach file"><span class="icon-emoji">+</span><i data-lucide="paperclip" class="icon-lucide"></i></button>
+          </div>
+          <input type="file" id="fileInput" accept="image/*" multiple hidden>
+          <div class="input-cell text-cell">
+            <textarea id="input" placeholder="Chat..." rows="1"></textarea>
+          </div>
+          <div class="input-cell send-cell">
+            <button id="send">
+              <div class="spinner"></div>
+              <span class="btn-label"><span class="icon-emoji">➤</span><i data-lucide="send" class="icon-lucide"></i></span>
+              <span class="btn-label-stop"></span>
+            </button>
+          </div>
         </div>
-        <input type="file" id="fileInput" accept="image/*" multiple hidden>
-        <div class="input-cell text-cell">
-          <textarea id="input" placeholder="Chat..." rows="1"></textarea>
-        </div>
-        <div class="input-cell send-cell">
-          <button id="send">
-            <div class="spinner"></div>
-            <span class="btn-label"><span class="icon-emoji">➤</span><i data-lucide="send" class="icon-lucide"></i></span>
-            <span class="btn-label-stop"></span>
-          </button>
+        <div class="status-bar" id="statusBar">
+          <div class="status-left">
+            <div class="status-dropdown" id="statusThinkingDropdown" title="Thinking mode">
+              <div class="status-dropdown-trigger" id="statusThinkingTrigger">
+                <span class="status-dropdown-label" id="statusThinkingLabel"></span>
+              </div>
+              <div class="status-dropdown-menu" id="statusThinkingMenu"></div>
+            </div>
+          </div>
+          <div class="status-center">
+            <span class="status-cwd" id="statusCwd" title="Working directory"></span>
+          </div>
+          <div class="status-right">
+            <span class="status-context" id="statusContext" title="Context usage"></span>
+          </div>
         </div>
       </div>
     </div>
@@ -290,20 +334,32 @@
     </div>
     <div class="tracknote-body">
       <div id="tnPanelSchedule" class="tracknote-panel active">
-        <div class="tn-add-row">
-          <input id="tnSchedTitle" type="text" placeholder="What's scheduled?" />
-          <select id="tnSchedType"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="occasional">Occasional</option></select>
-          <input id="tnSchedTime" type="time" />
-          <button id="tnSchedAdd" class="tn-add-btn" title="Add schedule">+</button>
+        <div class="tn-card">
+          <div class="tn-card-header">
+            <span class="tn-card-icon">🗓️</span>
+            <span class="tn-card-title">New Schedule</span>
+          </div>
+          <input id="tnSchedTitle" class="tn-card-input" type="text" placeholder="What's scheduled?" />
+          <div class="tn-card-controls">
+            <select id="tnSchedType"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="occasional">Occasional</option></select>
+            <input id="tnSchedTime" type="time" />
+            <button id="tnSchedAdd" class="tn-card-btn" title="Add schedule">Add</button>
+          </div>
         </div>
         <div id="tnSchedList" class="tn-list"></div>
         <div id="tnSchedEmpty" class="tracknote-empty">No schedules yet</div>
       </div>
       <div id="tnPanelTodo" class="tracknote-panel">
-        <div class="tn-add-row">
-          <input id="tnNoteTitle" type="text" placeholder="Note or todo..." />
-          <button id="tnNoteAdd" class="tn-add-btn" title="Add note">+</button>
-          <button id="tnTodoAdd" class="tn-add-btn" title="Add todo checklist">☑</button>
+        <div class="tn-card">
+          <div class="tn-card-header">
+            <span class="tn-card-icon">📝</span>
+            <span class="tn-card-title">New Note / Todo</span>
+          </div>
+          <input id="tnNoteTitle" class="tn-card-input" type="text" placeholder="What's on your mind?" />
+          <div class="tn-card-controls">
+            <button id="tnNoteAdd" class="tn-card-btn tn-card-btn-secondary" title="Add note">+ Note</button>
+            <button id="tnTodoAdd" class="tn-card-btn" title="Add todo checklist">☑ Todo</button>
+          </div>
         </div>
         <div id="tnNoteList" class="tn-list"></div>
         <div id="tnNoteEmpty" class="tracknote-empty">No notes or todos yet</div>
@@ -363,6 +419,7 @@
         <button class="settings-tab" data-tab="skills">Skills</button>
         <button class="settings-tab" data-tab="agents">Agents</button>
         <button class="settings-tab" data-tab="providers">Providers</button>
+        <button class="settings-tab" data-tab="search">Search Engine</button>
         <button class="settings-tab" data-tab="mcp">MCP</button>
         <button class="settings-tab" data-tab="tts">TTS</button>
       </div>
@@ -587,6 +644,10 @@
             <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;align-items:center;">
               <input id="customModelLabel" type="text" placeholder="Display name (auto-filled, editable)" style="flex:1;min-width:180px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
             </div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;align-items:center;">
+              <label style="font-size:11px;color:var(--text);font-weight:500;white-space:nowrap;">Context Window (chars):</label>
+              <input id="customModelMaxChars" type="number" value="500000" min="1000" step="1000" style="width:140px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
+            </div>
             <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px;align-items:center;">
               <span style="font-size:11px;color:var(--text);font-weight:500;">Capabilities:</span>
               <label style="font-size:11px;color:var(--text);display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="capImage" style="accent-color:var(--accent);width:13px;height:13px;"> <span class="icon-emoji">🖼️</span><i data-lucide="image" class="icon-lucide" style="width:13px;height:13px;"></i> Image</label>
@@ -601,6 +662,144 @@
             <div id="customModelList" style="display:flex;flex-direction:column;gap:6px;margin-top:12px;"></div>
             <div id="customModelStatus" style="font-size:11px;color:var(--text-dim);margin-top:8px;"></div>
           </div>
+        </div>
+
+        <!-- Search Engine Tab -->
+        <div id="tab-search" class="settings-tab-content">
+          <h3 class="mem-title"><span class="icon-emoji">🔍</span> Search Engine</h3>
+          <p class="muted mem-desc">Configure web search provider, fallback chain, and caching. Used by Online Search skill and Deep Research.</p>
+
+          <!-- Active Provider -->
+          <div style="margin-bottom:20px;">
+            <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Primary Provider</label>
+            <select id="searchProviderSelect" class="mem-input" style="width:100%;max-width:300px;">
+              <option value="searxng">SearXNG (self-hosted)</option>
+              <option value="brave">Brave Search API</option>
+              <option value="duckduckgo">DuckDuckGo (no key needed)</option>
+              <option value="google_pse">Google Programmable Search</option>
+              <option value="tavily">Tavily API</option>
+              <option value="serper">Serper API</option>
+              <option value="disabled">Disabled</option>
+            </select>
+            <div id="searchProviderHint" class="muted" style="font-size:11px;margin-top:4px;"></div>
+          </div>
+
+          <!-- SearXNG Instance URL (conditional) -->
+          <div id="searchSearxngSection" style="margin-bottom:16px;">
+            <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">SearXNG Instance URL</label>
+            <input id="searchSearxngUrl" type="text" placeholder="http://localhost:8080" class="mem-input" style="width:100%;max-width:400px;">
+            <div class="muted" style="font-size:11px;margin-top:4px;">Leave empty for default (localhost:8080).</div>
+          </div>
+
+          <!-- API Keys Section -->
+          <div id="searchApiKeysSection" style="margin-bottom:16px;border-top:1px solid var(--border);padding-top:16px;">
+            <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:8px;">API Keys</label>
+
+            <div id="searchKeyBrave" class="search-key-row" style="margin-bottom:10px;display:none;">
+              <label class="muted" style="font-size:11px;display:block;margin-bottom:3px;">Brave API Key <span id="searchKeyBraveStatus" class="search-key-status"></span></label>
+              <input id="searchInputBrave" type="password" placeholder="Enter Brave API key…" class="mem-input" style="width:100%;max-width:400px;">
+            </div>
+
+            <div id="searchKeyGooglePse" class="search-key-row" style="margin-bottom:10px;display:none;">
+              <label class="muted" style="font-size:11px;display:block;margin-bottom:3px;">Google PSE API Key <span id="searchKeyGooglePseStatus" class="search-key-status"></span></label>
+              <input id="searchInputGooglePse" type="password" placeholder="Enter Google PSE API key…" class="mem-input" style="width:100%;max-width:400px;">
+              <label class="muted" style="font-size:11px;display:block;margin-bottom:3px;margin-top:6px;">Google PSE CX (Search Engine ID)</label>
+              <input id="searchInputGooglePseCx" type="text" placeholder="Enter Google PSE CX…" class="mem-input" style="width:100%;max-width:400px;">
+            </div>
+
+            <div id="searchKeyTavily" class="search-key-row" style="margin-bottom:10px;display:none;">
+              <label class="muted" style="font-size:11px;display:block;margin-bottom:3px;">Tavily API Key <span id="searchKeyTavilyStatus" class="search-key-status"></span></label>
+              <input id="searchInputTavily" type="password" placeholder="Enter Tavily API key…" class="mem-input" style="width:100%;max-width:400px;">
+            </div>
+
+            <div id="searchKeySerper" class="search-key-row" style="margin-bottom:10px;display:none;">
+              <label class="muted" style="font-size:11px;display:block;margin-bottom:3px;">Serper API Key <span id="searchKeySerperStatus" class="search-key-status"></span></label>
+              <input id="searchInputSerper" type="password" placeholder="Enter Serper API key…" class="mem-input" style="width:100%;max-width:400px;">
+            </div>
+
+            <div id="searchNoKeyNeeded" class="muted" style="font-size:11px;display:none;">✅ No API key required for this provider.</div>
+          </div>
+
+          <!-- Fallback Chain (multi-select) -->
+          <div style="margin-bottom:16px;border-top:1px solid var(--border);padding-top:16px;">
+            <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Fallback Chain</label>
+            <p class="muted" style="font-size:11px;margin:0 0 8px 0;">Select providers to try when primary fails (drag to reorder).</p>
+            <div id="searchFallbackDropdown" style="position:relative;width:100%;max-width:400px;">
+              <div id="searchFallbackSelected" class="mem-input" style="min-height:36px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;padding:4px 8px;cursor:pointer;">
+                <span class="muted" style="font-size:11px;">Select providers…</span>
+              </div>
+              <div id="searchFallbackOptions" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:50;background:var(--panel);border:1px solid var(--border);border-radius:8px;margin-top:4px;max-height:200px;overflow-y:auto;"></div>
+            </div>
+            <input id="searchFallbackChain" type="hidden">
+          </div>
+
+          <!-- Result Count & SafeSearch -->
+          <div style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap;">
+            <div>
+              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Default Result Count</label>
+              <input id="searchResultCount" type="number" min="1" max="50" value="10" class="mem-input" style="width:80px;">
+            </div>
+            <div>
+              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">SafeSearch</label>
+              <select id="searchSafesearch" class="mem-input" style="width:120px;">
+                <option value="strict">Strict</option>
+                <option value="moderate">Moderate</option>
+                <option value="off">Off</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Test & Compare Controls -->
+          <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px;">
+            <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:8px;">Test & Compare</label>
+            <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:end;">
+              <div style="flex:1;min-width:180px;">
+                <label class="muted" style="font-size:11px;display:block;margin-bottom:3px;">Query</label>
+                <input id="searchTestQuery" type="text" placeholder="Enter test query…" class="mem-input" style="width:100%;">
+              </div>
+              <div>
+                <label class="muted" style="font-size:11px;display:block;margin-bottom:3px;">Count</label>
+                <select id="searchTestCount" class="mem-input" style="width:70px;">
+                  <option value="3">3</option>
+                  <option value="5" selected>5</option>
+                  <option value="10">10</option>
+                  <option value="20">20</option>
+                </select>
+              </div>
+              <div>
+                <label class="muted" style="font-size:11px;display:block;margin-bottom:3px;">Provider</label>
+                <select id="searchTestProvider" class="mem-input" style="width:120px;">
+                  <option value="">Default</option>
+                </select>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+              <button id="searchSaveBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;">💾 Save</button>
+              <button id="searchTestBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">🧪 Test</button>
+              <button id="searchCompareBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">⚖️ Compare</button>
+              <button id="searchClearCacheBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">🗑 Clear Cache</button>
+            </div>
+            <!-- Compare provider selectors (hidden by default) -->
+            <div id="searchCompareControls" style="display:none;margin-bottom:10px;padding:10px;border:1px solid var(--border);border-radius:8px;background:color-mix(in srgb, var(--panel) 60%, transparent);">
+              <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;">
+                <div>
+                  <label class="muted" style="font-size:11px;display:block;margin-bottom:3px;">Provider A</label>
+                  <select id="searchCompareA" class="mem-input" style="width:130px;"></select>
+                </div>
+                <div>
+                  <label class="muted" style="font-size:11px;display:block;margin-bottom:3px;">Provider B</label>
+                  <select id="searchCompareB" class="mem-input" style="width:130px;"></select>
+                </div>
+                <button id="searchCompareRunBtn" class="btn-primary" style="font-size:12px;padding:6px 14px;">Run Comparison</button>
+                <button id="searchCompareCloseBtn" class="icon-btn" style="font-size:12px;padding:6px 10px;">✕</button>
+              </div>
+            </div>
+          </div>
+          <div id="searchStatus" class="muted" style="font-size:11px;margin-top:10px;"></div>
+          <!-- Test Results Display -->
+          <div id="searchTestResults" style="margin-top:12px;display:none;"></div>
+          <!-- Compare Results Display -->
+          <div id="searchCompareResults" style="margin-top:12px;display:none;"></div>
         </div>
 
         <!-- MCP Tab -->
@@ -968,7 +1167,7 @@
       },
     };
   </script>
-  <script src="/static/app.js?v=48"></script>
+  <script src="/static/app.js?v=62"></script>
   <script src="/static/src/research.js?v=9"></script>
   <script src="/static/js/agents.js?v=22"></script>
   <script src="/static/js/filesystem.js?v=24"></script>

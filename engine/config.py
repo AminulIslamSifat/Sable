@@ -69,6 +69,7 @@ MODELS = [
     {
         "id": "qwen3.8-max",
         "label": "Qwen3.8 Max",
+        "max_session_chars": 4_000_000,
         "capabilities": {"image": True, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {
@@ -148,6 +149,7 @@ MODELS = [
         "label": "DeepSeek Expert",
         "api_backend": "deepseek",
         "api_model_type": "expert",
+        "max_session_chars": 1_000_000,
         "capabilities": {"image": False, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {
@@ -171,6 +173,7 @@ MODELS = [
         "label": "DeepSeek Instant",
         "api_backend": "deepseek",
         "api_model_type": None,
+        "max_session_chars": 1_000_000,
         "capabilities": {"image": False, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {
@@ -194,6 +197,7 @@ MODELS = [
         "label": "DeepSeek Vision",
         "api_backend": "deepseek",
         "api_model_type": "vision",
+        "max_session_chars": 1_000_000,
         "capabilities": {"image": True, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {
