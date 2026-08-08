@@ -1,7 +1,10 @@
 """Qwen Engine Configuration — Endpoints, Models, and Default Constants."""
 
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger("sable")
 
 # Project root (two levels up from this file: engine/config.py → engine/ → project root)
 _ROOT = Path(__file__).resolve().parent.parent
@@ -517,3 +520,86 @@ def save_qwen_tokens_for_account(
         existing = existing[-_QWEN_MAX_TOKENS_PER_ACCOUNT:]
     store[acct] = existing
     save_qwen_token_store(store)
+
+
+
+# --------------------------------------------------------------------------
+# Qwen account exhaustion tracking (daily quota resets at UTC 00:00)
+# --------------------------------------------------------------------------
+
+_QWEN_EXHAUSTION_PATH = _SYSTEM / ".qwen_exhaustion.json"
+
+
+def _load_exhaustion_store() -> dict[str, dict]:
+    import json as _json
+    if _QWEN_EXHAUSTION_PATH.exists():
+        try:
+            return _json.loads(_QWEN_EXHAUSTION_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _save_exhaustion_store(store: dict[str, dict]) -> None:
+    import json as _json
+    import tempfile, os as _os
+    try:
+        data = _json.dumps(store, indent=2)
+        fd, tmp = tempfile.mkstemp(dir=str(_QWEN_EXHAUSTION_PATH.parent), suffix=".tmp")
+        try:
+            with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+            _os.replace(tmp, str(_QWEN_EXHAUSTION_PATH))
+        except BaseException:
+            try:
+                _os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except Exception:
+        pass
+
+
+def mark_account_exhausted(account: str) -> None:
+    """Mark an account as quota-exhausted with current UTC timestamp."""
+    from datetime import datetime, timezone
+    store = _load_exhaustion_store()
+    store[account] = {
+        "exhausted": True,
+        "exhausted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _save_exhaustion_store(store)
+    logger.info("Account %s marked exhausted", account)
+
+
+def is_account_exhausted(account: str) -> bool:
+    """Check if account is exhausted. Auto-resets if exhausted_at is before today's UTC midnight."""
+    from datetime import datetime, timezone
+    store = _load_exhaustion_store()
+    entry = store.get(account)
+    if not entry or not entry.get("exhausted"):
+        return False
+    # Check if quota has reset (new UTC day)
+    exhausted_at = entry.get("exhausted_at")
+    if exhausted_at:
+        try:
+            dt = datetime.fromisoformat(exhausted_at)
+            now = datetime.now(timezone.utc)
+            # If exhausted before today's UTC midnight, quota has reset
+            if dt.date() < now.date():
+                store[account] = {"exhausted": False, "exhausted_at": None}
+                _save_exhaustion_store(store)
+                return False
+        except (ValueError, TypeError):
+            pass
+    return True
+
+
+def get_all_exhaustion_status() -> dict[str, bool]:
+    """Return {account_name: is_exhausted} for all tracked accounts."""
+    store = _load_exhaustion_store()
+    result = {}
+    for account in store:
+        result[account] = is_account_exhausted(account)
+    return result
+
