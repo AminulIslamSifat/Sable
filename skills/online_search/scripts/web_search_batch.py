@@ -33,6 +33,14 @@ from typing import Any, Iterable
 
 from lxml import html as lxml_html
 
+# Add project root to sys.path so we can import engine.search
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from engine.search import search as unified_search
+from engine.search.config import _get_search_settings
+
 APP_DIR = Path(__file__).parent.resolve()
 SETTINGS_FILE = APP_DIR / "settings.json"
 DEFAULT_SEARXNG_INSTANCE = "http://localhost:8080"
@@ -148,6 +156,14 @@ NOISE_HINTS = (
 
 
 def load_settings() -> dict[str, Any]:
+    """Load search settings from system settings.json, falling back to skill-local file."""
+    try:
+        system_settings = _get_search_settings()
+        if system_settings:
+            return system_settings
+    except Exception:
+        pass
+    # Fallback to skill-local settings.json
     defaults = {
         "search_provider": "searxng",
         "search_fallback_chain": ["duckduckgo"],
@@ -176,22 +192,6 @@ def infer_time_filter(query: str) -> str | None:
     if any(kw in q_lc for kw in MONTH_HINTS):
         return "month"
     return None
-
-
-def safesearch_value(level: str) -> str:
-    raw = (level or "strict").strip().lower()
-    mapping = {
-        "strict": "2",
-        "moderate": "1",
-        "off": "0",
-        "on": "2",
-        "high": "2",
-        "medium": "1",
-        "default": "1",
-        "none": "0",
-        "disabled": "0",
-    }
-    return mapping.get(raw, "2")
 
 
 def http_get(url: str, *, params: dict[str, Any] | None = None, timeout: int = 15) -> tuple[int, str, str]:
@@ -377,92 +377,9 @@ def collect_queries(args) -> list[str]:
     return [q for q in queries if q]
 
 
-def searxng_search(query: str, *, settings: dict[str, Any], max_results: int, time_filter: str | None) -> list[SearchResult]:
-    instance = (settings.get("search_url") or "").strip() or DEFAULT_SEARXNG_INSTANCE
-    params = {
-        "q": query,
-        "format": "json",
-        "language": "en",
-        "safesearch": safesearch_value(settings.get("search_safesearch", "strict")),
-    }
-    q_lc = query.lower()
-    news_hint = time_filter is not None or any(h in q_lc for h in ("news", "nyheter", "headlines", "breaking", "latest", "today", "idag"))
-    if news_hint:
-        params["categories"] = "news"
-        if time_filter in {"day", "week", "month", "year"}:
-            params["time_range"] = "week" if time_filter in {"day", "week"} else time_filter
-    else:
-        params["categories"] = "general"
-        if GENERAL_ENGINES:
-            params["engines"] = GENERAL_ENGINES
-
-    try:
-        status, content_type, body = http_get(f"{instance.rstrip('/')}/search", params=params, timeout=15)
-        if status >= 400:
-            raise RuntimeError(f"SearXNG returned HTTP {status}")
-        if content_type == "application/json" or body.lstrip().startswith("{"):
-            data = json.loads(body)
-            results = []
-            for row in (data.get("results") or [])[:max_results]:
-                url = str(row.get("url") or "").strip()
-                if not url:
-                    continue
-                results.append(SearchResult(
-                    title=str(row.get("title") or ""),
-                    url=url,
-                    snippet=str(row.get("content") or ""),
-                ))
-            if results:
-                return results
-            if news_hint:
-                fallback_params = {
-                    "q": query,
-                    "format": "json",
-                    "language": "en",
-                    "categories": "general",
-                    "safesearch": safesearch_value(settings.get("search_safesearch", "strict")),
-                }
-                if GENERAL_ENGINES:
-                    fallback_params["engines"] = GENERAL_ENGINES
-                _, _, fallback_body = http_get(f"{instance.rstrip('/')}/search", params=fallback_params, timeout=15)
-                fallback_data = json.loads(fallback_body)
-                for row in (fallback_data.get("results") or [])[:max_results]:
-                    url = str(row.get("url") or "").strip()
-                    if not url:
-                        continue
-                    results.append(SearchResult(
-                        title=str(row.get("title") or ""),
-                        url=url,
-                        snippet=str(row.get("content") or ""),
-                    ))
-                if results:
-                    return results
-        return searxng_search_html(query, instance=instance, max_results=max_results)
-    except Exception:
-        return searxng_search_html(query, instance=instance, max_results=max_results)
-
-
-def searxng_search_html(query: str, *, instance: str, max_results: int) -> list[SearchResult]:
-    try:
-        _, _, body = http_get(f"{instance.rstrip('/')}/search", params={"q": query, "safesearch": "2"}, timeout=15)
-    except Exception:
-        return []
-    results: list[SearchResult] = []
-
-    # SearXNG HTML pages usually have <article class="result"> blocks.
-    for article in re.finditer(r"<article[^>]*class=[\"'][^\"']*result[^\"']*[\"'][^>]*>(.*?)</article>", body, re.I | re.S):
-        block = article.group(1)
-        link = re.search(r"<h3[^>]*>\s*<a[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", block, re.I | re.S)
-        if not link:
-            continue
-        url = html.unescape(link.group(1)).strip()
-        title = re.sub(r"<.*?>", "", link.group(2), flags=re.S)
-        snippet_match = re.search(r"<p[^>]*class=[\"'][^\"']*content[^\"']*[\"'][^>]*>(.*?)</p>", block, re.I | re.S)
-        snippet = re.sub(r"<.*?>", "", snippet_match.group(1), flags=re.S) if snippet_match else ""
-        results.append(SearchResult(title=html.unescape(title).strip(), url=url, snippet=html.unescape(snippet).strip()))
-        if len(results) >= max_results:
-            break
-    return results
+# NOTE: Inline search provider functions (searxng_search, duckduckgo_search, etc.)
+# have been removed. All search now goes through engine.search.unified_search().
+# See engine/search/providers.py for individual provider implementations.
 
 
 def _normalize_url(raw_url: str) -> str:
@@ -482,24 +399,6 @@ def _normalize_url(raw_url: str) -> str:
     elif not parsed.scheme:
         url = "https://" + url
     return url
-
-
-def duckduckgo_search(query: str, *, max_results: int) -> list[SearchResult]:
-    url = "https://html.duckduckgo.com/html/"
-    try:
-        _, _, body = http_get(url, params={"q": query}, timeout=15)
-    except Exception:
-        return []
-    results: list[SearchResult] = []
-    for item in re.finditer(r'<a[^>]*class=["\']result__a["\'][^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', body, re.I | re.S):
-        raw_url = _normalize_url(item.group(1))
-        title = re.sub(r"<.*?>", "", item.group(2), flags=re.S)
-        snippet_match = re.search(r'<a[^>]*class=["\']result__snippet["\'][^>]*>(.*?)</a>', body[item.end():], re.I | re.S)
-        snippet = re.sub(r"<.*?>", "", snippet_match.group(1), flags=re.S) if snippet_match else ""
-        results.append(SearchResult(title=html.unescape(title).strip(), url=raw_url, snippet=html.unescape(snippet).strip()))
-        if len(results) >= max_results:
-            break
-    return results
 
 
 def fetch_webpage_content(url: str, *, timeout: int = 10, max_chars: int = 5000) -> dict[str, Any]:
@@ -540,54 +439,11 @@ def fetch_webpage_content(url: str, *, timeout: int = 10, max_chars: int = 5000)
         return {"success": False, "url": url, "error": str(e), "content": "", "title": "", "status_code": 0}
 
 
-def build_provider_chain(primary: str, settings: dict[str, Any]) -> list[str]:
-    chain = [primary]
-    user_chain = settings.get("search_fallback_chain") or []
-    if isinstance(user_chain, str):
-        user_chain = [piece.strip() for piece in user_chain.split(",") if piece.strip()]
-    fallbacks = user_chain if user_chain else ["duckduckgo"]
-    for provider in fallbacks:
-        if provider and provider != primary and provider not in chain and provider != "disabled":
-            chain.append(provider)
-    return chain
-
-
-def search_provider(query: str, *, settings: dict[str, Any], max_results: int, time_filter: str | None) -> tuple[str, list[SearchResult]]:
-    provider = (settings.get("search_provider") or "searxng").strip() or "searxng"
-    if provider == "disabled":
-        return "disabled", []
-
-    for candidate in build_provider_chain(provider, settings):
-        try:
-            if candidate == "searxng":
-                results = searxng_search(query, settings=settings, max_results=max_results, time_filter=time_filter)
-            elif candidate == "duckduckgo":
-                results = duckduckgo_search(query, max_results=max_results)
-            else:
-                results = []
-            if results:
-                return candidate, results
-        except Exception:
-            continue
-    return provider, []
-
-
-def rank_results(query: str, results: list[SearchResult]) -> list[SearchResult]:
-    terms = [term for term in re.findall(r"[a-z0-9]+", query.lower()) if len(term) > 2]
-    if not terms:
-        return results
-
-    def score(result: SearchResult) -> tuple[int, int]:
-        haystack = f"{result.title} {result.snippet}".lower()
-        matches = sum(1 for term in terms if term in haystack)
-        return (-matches, len(result.title))
-
-    return sorted(results, key=score)
-
-
 def comprehensive_web_search(query: str, *, max_pages: int = 5, max_chars: int = 10000, time_filter: str | None = None) -> dict[str, Any]:
     settings = load_settings()
-    provider_name, raw_results = search_provider(query, settings=settings, max_results=max(max_pages, int(settings.get("search_result_count") or 5)), time_filter=time_filter)
+    count = max(max_pages, int(settings.get("search_result_count") or 5))
+    raw_results = unified_search(query, count=count, time_filter=time_filter)
+    provider_name = settings.get("search_provider", "searxng")
     if not raw_results:
         return {
             "query": query,
@@ -599,7 +455,8 @@ def comprehensive_web_search(query: str, *, max_pages: int = 5, max_chars: int =
             "context": f"No search results found for: {query}",
         }
 
-    ranked = rank_results(query, raw_results)
+    # Results already ranked by engine.search
+    ranked = [SearchResult(title=r.get("title",""), url=r.get("url",""), snippet=r.get("snippet","")) for r in raw_results]
     sources = [{"url": item.url, "title": item.title} for item in ranked[:max_pages]]
 
     fetched: list[dict[str, Any]] = []
@@ -682,9 +539,8 @@ def render_text(result: dict[str, Any]) -> str:
 def search_only(query: str, *, max_results: int = 15, time_filter: str | None = None) -> dict[str, Any]:
     """Phase 1: search and return ranked results without fetching page content."""
     settings = load_settings()
-    provider_name, raw_results = search_provider(
-        query, settings=settings, max_results=max_results, time_filter=time_filter
-    )
+    provider_name = settings.get("search_provider", "searxng")
+    raw_results = unified_search(query, count=max_results, time_filter=time_filter)
     if not raw_results:
         return {
             "query": query,
@@ -695,7 +551,8 @@ def search_only(query: str, *, max_results: int = 15, time_filter: str | None = 
             "results": [],
         }
 
-    ranked = rank_results(query, raw_results)
+    # Results already ranked by engine.search
+    ranked = [SearchResult(title=r.get("title",""), url=r.get("url",""), snippet=r.get("snippet","")) for r in raw_results]
     results = [
         {"index": idx, "title": item.title, "url": item.url, "snippet": truncate(item.snippet, 220)}
         for idx, item in enumerate(ranked[:max_results], 1)

@@ -21,6 +21,11 @@ from pathlib import Path
 from typing import Any
 
 from connectors.common.media import prepare_inline_file, to_gemini_inline
+from connectors.common.context_summarizer import (
+    should_inject_hint, should_force_summarize, get_hint_text,
+    extract_summarize_tag, strip_summarize_tag, build_summary_prompt,
+    rewrite_history_with_summary, compute_force_cut_index,
+)
 
 import httpx
 
@@ -48,12 +53,13 @@ def _msg_chars(msg: dict[str, Any]) -> int:
     return total
 
 
-def _trim_history(history: list[dict[str, Any]], prefix_len: int) -> list[dict[str, Any]]:
-    """Trim history to fit within _MAX_SESSION_CHARS, preserving prefix messages."""
+def _trim_history(history: list[dict[str, Any]], prefix_len: int, max_chars: int | None = None) -> list[dict[str, Any]]:
+    """Trim history to fit within max_chars, preserving prefix messages."""
+    limit = max_chars if max_chars is not None else _MAX_SESSION_CHARS
     prefix = history[:prefix_len]
     msgs = history[prefix_len:]
     total = sum(_msg_chars(m) for m in msgs)
-    while total > _MAX_SESSION_CHARS and len(msgs) > 1:
+    while total > limit and len(msgs) > 1:
         total -= _msg_chars(msgs.pop(0))
     return prefix + msgs
 
@@ -127,6 +133,8 @@ class GeminiClient:
         self._key_index: int = 0
         # Session history: chat_id → list of {"role": ..., "parts": [...]}
         self._sessions: dict[str, list[dict[str, Any]]] = {}
+        # Per-session max chars override (from model config)
+        self._session_max_chars: dict[str, int] = {}
         self._http: httpx.AsyncClient | None = None
 
     # ------------------------------------------------------------------
@@ -206,17 +214,91 @@ class GeminiClient:
             return {"thinkingConfig": {"thinkingLevel": mode}}
         return None
 
+    def _get_max_chars(self, chat_id: str | None) -> int:
+        """Get effective max chars for a session."""
+        if chat_id and chat_id in self._session_max_chars:
+            return self._session_max_chars[chat_id]
+        return _MAX_SESSION_CHARS
+
+    async def _maybe_summarize(
+        self, chat_id: str, history: list[dict[str, Any]],
+        max_chars: int, model_id: str, thinking_mode: str | None,
+    ) -> list[dict[str, Any]]:
+        """Check thresholds and summarize if needed. Returns updated history."""
+        prefix_len = 2 if history and history[0].get("parts", [{}])[0].get("text", "").startswith("[System Instructions]") else 0
+        total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
+
+        if should_force_summarize(total_chars, max_chars):
+            cut_idx = compute_force_cut_index(history, prefix_len)
+            msgs_to_summarize = history[prefix_len:cut_idx]
+            if len(msgs_to_summarize) >= 2:
+                prompt = build_summary_prompt(msgs_to_summarize, _msg_chars)
+                summary = await self._call_self_summarize(prompt, model_id, thinking_mode)
+                if summary:
+                    logger.info("Force-summarized %d messages for chat %s", len(msgs_to_summarize), chat_id)
+                    history = rewrite_history_with_summary(history, summary, cut_idx, prefix_len, fmt="gemini")
+                    self._sessions[chat_id] = history
+        return history
+
+    async def _call_self_summarize(self, prompt: str, model_id: str, thinking_mode: str | None) -> str | None:
+        """Call the same model to generate a summary. Non-streaming, single shot."""
+        url = f"{BASE_URL}/models/{model_id}:generateContent"
+        body: dict[str, Any] = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"maxOutputTokens": 4096},
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            ],
+        }
+        attempts = len(self._keys)
+        for _ in range(attempts):
+            key = self._current_key
+            if not key:
+                break
+            try:
+                http = await self._get_http()
+                resp = await http.post(url, params={"key": key}, json=body)
+                if resp.status_code in (401, 403, 429):
+                    self._rotate_key()
+                    continue
+                if resp.status_code != 200:
+                    logger.warning("Summarizer call failed: HTTP %d", resp.status_code)
+                    self._rotate_key()
+                    continue
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    text_parts = [p.get("text", "") for p in parts if not p.get("thought")]
+                    result = "".join(text_parts).strip()
+                    if result:
+                        return result
+                return None
+            except Exception as e:
+                logger.warning("Summarizer call error: %s", e)
+                self._rotate_key()
+                continue
+        return None
+
     def _get_or_create_session(
         self, chat_id: str | None, inject_instructions: bool,
         system_instruction: str | None = None,
+        max_session_chars: int | None = None,
     ) -> list[dict[str, Any]]:
         """Get existing session history or create a new one (sliding window)."""
+        # Store per-session max chars if provided
+        if chat_id and max_session_chars:
+            self._session_max_chars[chat_id] = max_session_chars
+        effective_max = self._get_max_chars(chat_id)
         if chat_id and chat_id in self._sessions:
             history = self._sessions[chat_id]
             prefix_len = 2 if history and history[0].get("parts", [{}])[0].get("text", "").startswith("[System Instructions]") else 0
             total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
-            if total_chars > _MAX_SESSION_CHARS:
-                self._sessions[chat_id] = _trim_history(history, prefix_len)
+            if total_chars > effective_max:
+                self._sessions[chat_id] = _trim_history(history, prefix_len, effective_max)
             return self._sessions[chat_id]
 
         history: list[dict[str, Any]] = []
@@ -250,6 +332,7 @@ class GeminiClient:
         ref_file_ids: list[str] | None = None,
         inject_instructions: bool = True,
         files: list[str] | None = None,
+        max_session_chars: int | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat completion, yielding Sable-standard events."""
@@ -261,7 +344,20 @@ class GeminiClient:
         url = f"{BASE_URL}/models/{model_id}:streamGenerateContent"
 
         system_instruction = kwargs.pop("system_instruction", None)
-        history = self._get_or_create_session(chat_id, inject_instructions, system_instruction=system_instruction)
+        history = self._get_or_create_session(chat_id, inject_instructions, system_instruction=system_instruction, max_session_chars=max_session_chars)
+
+        # Context summarization: check thresholds before sending
+        effective_max = self._get_max_chars(chat_id)
+        if chat_id and max_session_chars:
+            prefix_len = 2 if history and history[0].get("parts", [{}])[0].get("text", "").startswith("[System Instructions]") else 0
+            total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
+            # Force summarize at 90%
+            history = await self._maybe_summarize(chat_id, history, effective_max, model_id, thinking_mode)
+            # Inject hint at 75% (after potential force-summarize re-check)
+            total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
+            if should_inject_hint(total_chars, effective_max):
+                hint = get_hint_text(total_chars, effective_max)
+                message = message + hint
         parts: list[dict[str, Any]] = [{"text": message}]
         if files:
             for fpath in files:
@@ -361,21 +457,43 @@ class GeminiClient:
                                 text = part["text"]
                                 if text:
                                     full_answer += text
-                                    yield {"type": "answer", "text": text}
+                                    # Strip summarize_before tag from visible output
+                                    clean_text = strip_summarize_tag(text)
+                                    if clean_text:
+                                        yield {"type": "answer", "text": clean_text}
 
                 # Success — save to history
                 if got_response and (full_answer or full_thinking):
+                    # Check for model-triggered summarization
+                    _summarize_idx = extract_summarize_tag(full_answer)
+                    # Store cleaned answer (without tag) in history
+                    clean_answer = strip_summarize_tag(full_answer)
                     model_parts: list[dict[str, Any]] = []
                     if full_thinking:
                         model_parts.append({"text": full_thinking, "thought": True})
-                    if full_answer:
-                        model_parts.append({"text": full_answer})
+                    if clean_answer:
+                        model_parts.append({"text": clean_answer})
                     history.append({"role": "model", "parts": model_parts})
+
+                    # Handle model-triggered summarization
+                    if _summarize_idx is not None and chat_id:
+                        prefix_len = 2 if history and history[0].get("parts", [{}])[0].get("text", "").startswith("[System Instructions]") else 0
+                        actual_cut = max(prefix_len, min(_summarize_idx, len(history) - 1))
+                        msgs_to_summarize = history[prefix_len:actual_cut]
+                        if len(msgs_to_summarize) >= 2:
+                            prompt = build_summary_prompt(msgs_to_summarize, _msg_chars)
+                            summary = await self._call_self_summarize(prompt, model_id, thinking_mode)
+                            if summary:
+                                logger.info("Model-triggered summarization at index %d for chat %s", _summarize_idx, chat_id)
+                                history = rewrite_history_with_summary(history, summary, actual_cut, prefix_len, fmt="gemini")
+                                self._sessions[chat_id] = history
+
                     if chat_id:
                         prefix_len = 2 if history and history[0].get("parts", [{}])[0].get("text", "").startswith("[System Instructions]") else 0
                         total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
-                        if total_chars > _MAX_SESSION_CHARS:
-                            self._sessions[chat_id] = _trim_history(history, prefix_len)
+                        eff_max = self._get_max_chars(chat_id)
+                        if total_chars > eff_max:
+                            self._sessions[chat_id] = _trim_history(history, prefix_len, eff_max)
 
                 yield {"type": "done", "parent_id": None}
                 return  # Success — exit

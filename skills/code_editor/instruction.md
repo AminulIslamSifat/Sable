@@ -161,3 +161,6 @@ if __name__ == "__main__":
 The old `<execute_command>` → `editor_tools.py` CLI path still runs but is not recommended.
 It breaks silently on any code containing `$`, `"`, newlines, or `{}` in a heredoc.
 Use the tags above instead — they are structurally incapable of quoting failures.
+
+# [!IMPORTANT]
+If your edit has <action> tag in it then use python to edit the code. Don't mention <action> in the response, instead say `action` just.

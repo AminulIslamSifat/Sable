@@ -16,6 +16,7 @@ from engine.config import get_model_config
 from engine.memory_search import get_searcher
 from engine.scraper import get_settings as get_scraper_settings, scraper as scraper_service
 from engine.skills import SkillEngine, SkillParser, build_tool_feedback
+from engine.agents.resilience import MainChatGuard
 from engine.skills.handlers import HANDLER_MAP
 from connectors import get_connector
 from connectors.deepseek.client import get_client as get_deepseek_client
@@ -242,6 +243,7 @@ async def chat(request: ChatRequest):
         _inline_files = None
         if _api_backend in _DIRECT_READ_BACKENDS and resolved_files:
             _inline_files = [f.get('path') for f in resolved_files if f.get('path')]
+        _max_session_chars = _cfg.get("max_session_chars")
         _chat_kwargs: dict[str, Any] = dict(
             message=timestamped_message,
             model=_api_model,
@@ -250,6 +252,8 @@ async def chat(request: ChatRequest):
             ref_file_ids=request.ref_file_ids,
             inject_instructions=not _ephemeral,
         )
+        if _max_session_chars:
+            _chat_kwargs["max_session_chars"] = _max_session_chars
         if _inline_files:
             _chat_kwargs['files'] = _inline_files
         result = await _connector.chat(**_chat_kwargs)
@@ -309,6 +313,7 @@ async def chat(request: ChatRequest):
 
     async def event_stream():
         answer_parts: list[str] = []
+        _raw_answer_parts: list[str] = []  # pre-parser raw text for guard checks
         thinking_parts: list[str] = []
         skill_events: list[dict[str, Any]] = []
         final_parent = parent_id
@@ -317,6 +322,7 @@ async def chat(request: ChatRequest):
         current_parent = parent_id
         round_index = 0
         saved_message_id: int | None = None
+        _guard = MainChatGuard()
         _all_tool_mem_used: list[dict[str, Any]] = []
         yield sse({"type": "status", "message": "processing"})
         if _memory_used:
@@ -333,6 +339,7 @@ async def chat(request: ChatRequest):
                 round_skill_events: list[dict[str, Any]] = []
                 round_thinking_parts: list[str] = []
                 round_answer_parts: list[str] = []
+                _round_raw_parts: list[str] = []  # per-round raw text for guard checks
                 pending_thinking: list[str] = []
                 parser = _get_skill_engine().create_parser()
                 _title_buf = ""  # buffer for partial <title> tags in text stream
@@ -393,6 +400,8 @@ async def chat(request: ChatRequest):
                                 except Exception:
                                     pass
                                 continue
+                            # Track command for loop detection
+                            _guard.record_command(item["name"], item.get("content", ""))
                             # Execute the tag through the middleware pipeline
                             for ev in engine.process_tag(
                                 item["name"], item.get("attrs", {}), item.get("content", "")
@@ -461,6 +470,7 @@ async def chat(request: ChatRequest):
                     _inline_files = None
                     if _api_backend in _DIRECT_READ_BACKENDS and round_index == 0 and resolved_files:
                         _inline_files = [f.get('path') for f in resolved_files if f.get('path')]
+                    _max_session_chars_stream = _cfg.get("max_session_chars")
                     _stream_kwargs: dict[str, Any] = dict(
                         message=current_message,
                         model=_api_model,
@@ -469,6 +479,8 @@ async def chat(request: ChatRequest):
                         ref_file_ids=request.ref_file_ids if round_index == 0 else None,
                         inject_instructions=not _ephemeral,
                     )
+                    if _max_session_chars_stream:
+                        _stream_kwargs["max_session_chars"] = _max_session_chars_stream
                     if _inline_files:
                         _stream_kwargs['files'] = _inline_files
                     round_event_source = _connector.stream_chat(**_stream_kwargs)
@@ -497,7 +509,10 @@ async def chat(request: ChatRequest):
                     event_type = event.get("type")
                     if event_type == "answer":
                         pending_thinking.clear()
-                        async for _sse_line in _drain_sync_gen(emit_parsed(str(event.get("text", "")))):
+                        _raw_chunk = str(event.get("text", ""))
+                        _raw_answer_parts.append(_raw_chunk)
+                        _round_raw_parts.append(_raw_chunk)
+                        async for _sse_line in _drain_sync_gen(emit_parsed(_raw_chunk)):
                             yield _sse_line
                         continue
                     if event_type == "thinking":
@@ -536,6 +551,10 @@ async def chat(request: ChatRequest):
                     skill_events.append({"type": "round_text", "text": round_text})
                 if round_skill_events:
                     skill_events.extend(round_skill_events)
+                # --- MainChatGuard: track failures from this round ---
+                for _sev in round_skill_events:
+                    if _sev.get("type") == "skill_end":
+                        _guard.record_result(_sev.get("ok", False))
                 round_answer = "".join(answer_parts)
                 round_thinking = "".join(thinking_parts)
                 stored = round_answer or error_message or ""
@@ -602,7 +621,34 @@ async def chat(request: ChatRequest):
                     and (ev.get("result") or {}).get("pause")
                     for ev in round_skill_events
                 )
+                # --- MainChatGuard: inject warnings into feedback ---
+                _guard_warnings: list[str] = []
+                _guard_warnings_injected = False
+                _loop_warn = _guard.check_loop()
+                if _loop_warn:
+                    _guard_warnings.append(_loop_warn)
+                _fail_warn = _guard.check_failures()
+                if _fail_warn:
+                    _guard_warnings.append(_fail_warn)
+                # Check malformed/incomplete using RAW text (before parser strips tags)
+                _raw_round_text = "".join(_round_raw_parts)
+                _malform_warn = _guard.check_malformed_action(_raw_round_text)
+                if _malform_warn:
+                    _guard_warnings.append(_malform_warn)
+                # Only check incomplete if malformed didn't already catch it
+                if not _malform_warn:
+                    _incomplete_warn = _guard.check_incomplete_action(
+                        _raw_round_text,
+                        any(ev.get("type") == "skill_end" for ev in round_skill_events),
+                    )
+                    if _incomplete_warn:
+                        _guard_warnings.append(_incomplete_warn)
                 feedback = build_tool_feedback(round_skill_events)
+                # If no tool feedback but guard warnings exist, use warnings as feedback
+                # so the model sees them and self-corrects (auto-continue, no break)
+                if not feedback and _guard_warnings:
+                    feedback = "\n\n".join(_guard_warnings)
+                    _guard_warnings_injected = True
                 if stream_error or error_message or not feedback or _ask_user_pause:
                     break
 
@@ -649,7 +695,13 @@ async def chat(request: ChatRequest):
                     )
                     yield sse({"type": "status", "message": "high_skill_round_count", "round": round_index})
                 round_index += 1
-                current_message = feedback
+                if _guard_warnings and not _guard_warnings_injected:
+                    # Only prepend warnings if they weren't already used as feedback
+                    _warn_block = "\n\n".join(_guard_warnings)
+                    current_message = _warn_block + "\n\n" + (feedback or "")
+                else:
+                    current_message = feedback
+
                 current_parent = final_parent
                 yield sse(
                     {
@@ -676,6 +728,8 @@ async def chat(request: ChatRequest):
                         status = "ok" if evt.get("ok") else "error"
                         summary.append(f"[{status}] {evt.get('name', 'skill')}")
                 answer = "\n".join(summary)
+            # MainChatGuard: no-op in finally — mid-loop auto-continue handles all guard feedback.
+            # Warnings are injected via _guard_warnings -> current_message at end of each round.
             stored_content = answer or error_message or ""
             if saved_message_id is not None:
                 update_message(saved_message_id, stored_content, thinking, final_parent, skill_events)

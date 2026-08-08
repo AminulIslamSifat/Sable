@@ -647,28 +647,22 @@
   right: 0;
   bottom: 0;
   z-index: 10;
-  padding: 10px 20px 22px;
+  padding: 10px 20px 8px;
   pointer-events: none; /* let clicks pass through the empty margin around the pill */
   background: none;
 }
 
 .input-area .attach-preview,
-.input-area .input-row {
+.input-area .input-composite {
   pointer-events: auto; /* re-enable on the actual controls */
 }
 
-.input-row {
-  display: flex;
-  gap: 10px;
-  align-items: flex-end;
+/* --- unified composite box --- */
+.input-composite {
   max-width: 900px;
   margin: 0 auto;
-}
-
-/* --- individual floating cells (liquid glass) --- */
-.input-cell {
+  border-radius: 22px;
   background: rgba(23, 23, 26, 0.95);
-  border: none;
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.06),
     inset 1.5px 2.5px 0px -1.5px rgba(255, 255, 255, 0.25),
@@ -679,31 +673,145 @@
     inset 0px -3px 4px -2px rgba(0, 0, 0, 0.15),
     0px 1px 4px 0px rgba(0, 0, 0, 0.2),
     0px 8px 24px 0px rgba(0, 0, 0, 0.35);
+  padding: 5px 7px;
+}
+
+.input-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+/* --- cells inside composite (no individual glass) --- */
+.input-cell {
+  background: none;
+  border: none;
+  box-shadow: none;
   display: flex;
   align-items: flex-end;
+}
+
+.status-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 22px;
+  padding: 3px 8px 2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  margin-top: 2px;
+  font-size: 11px;
+  user-select: none;
+}
+.status-left, .status-right { flex: 0 0 auto; }
+.status-center {
+  flex: 1 1 auto;
+  text-align: center;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 0 8px;
+}
+.status-cwd {
+  color: var(--accent-text);
+  opacity: 0.7;
+}
+.status-context { font-variant-numeric: tabular-nums; }
+
+/* Status dropdown — mirrors glass-dropdown design, opens upward */
+.status-dropdown {
+  position: relative;
+  display: inline-block;
+  cursor: pointer;
+}
+.status-dropdown-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  opacity: 0.7;
+  font-weight: 500;
+  color: var(--accent-text);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.status-dropdown-trigger:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.status-dropdown-arrow {
+  font-size: 9px;
+  color: var(--muted);
+  transition: transform 0.2s ease;
+}
+.status-dropdown.open .status-dropdown-arrow {
+  transform: rotate(180deg);
+}
+.status-dropdown-menu {
+  position: fixed;
+  left: auto;
+  min-width: 100%;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 4px;
+  background: rgba(23, 23, 26, 0.92);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow:
+    0 -4px 12px rgba(0,0,0,0.4),
+    0 -12px 32px rgba(0,0,0,0.3),
+    inset 0 1px 0 rgba(255,255,255,0.05);
+  opacity: 0;
+  transform: translateY(6px) scale(0.97);
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  z-index: 100;
+}
+.status-dropdown.open .status-dropdown-menu {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+.status-dropdown-item {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+  border-radius: calc(var(--radius) - 3px);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  white-space: nowrap;
+}
+.status-dropdown-item:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.status-dropdown-item.active {
+  color: var(--accent);
+  font-weight: 600;
 }
 .attach-cell,
 .send-cell,
 .text-cell {
-  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
-              border-radius 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transition: transform 0.15s ease;
 }
 .attach-cell:active,
 .send-cell:active {
   transform: scale(0.90);
 }
-.text-cell:active {
-  transform: scale(0.985);
-}
 
 .attach-cell {
   cursor: pointer;
-  border-radius: 45%;
+  border-radius: 50%;
   padding: 6px;
 }
 .attach-cell .attach-btn {
   border-radius: 50%;
   box-shadow: none;
+  background: none;
   padding: 6.5px;
   min-width: 22px;
   min-height: 22px;
@@ -711,11 +819,7 @@
 
 .text-cell {
   flex: 1;
-  border-radius: 22px;
-  padding: 5px 7px;
-}
-.text-cell:active {
-  border-radius: 28px;
+  padding: 0;
 }
 .text-cell textarea {
   border-radius: 26px;
@@ -723,8 +827,8 @@
   background: transparent;
   box-shadow: none;
   box-sizing: border-box;
-  min-height: 25px;
-  padding: 3.75px 15px;
+  min-height: 32px;
+  padding: 10px 15px;
 }
 .text-cell textarea:focus {
   box-shadow: none;
@@ -739,6 +843,7 @@
 .send-cell #send {
   border-radius: 50%;
   box-shadow: none;
+  background: none;
   padding: 6.5px;
   min-width: 22px;
   min-height: 22px;
