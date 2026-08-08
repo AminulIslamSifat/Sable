@@ -256,6 +256,7 @@
     let parentId    = null;
     const activeStreams = new Map(); // chatId → AbortController
     const openTabs = new Map(); // chatId → { pane: HTMLElement, title: string }
+    const contextCharsCache = new Map(); // chatId → total context chars
     let creating    = false;
 
 
@@ -1228,12 +1229,17 @@
       if (chatId === activeChatId) updateSendBtn();
       renderChats();
       // Refresh context ring after message completes
-      if (chatId === activeChatId) {
-        fetch(`/api/chats/${chatId}/messages?limit=1`)
-          .then(r => r.json())
-          .then(d => { window._statusContextChars = d.context_chars || 0; updateStatusBarContext(); })
-          .catch(() => {});
-      }
+      fetch(`/api/chats/${chatId}/messages?limit=1`)
+        .then(r => r.json())
+        .then(d => {
+          const chars = d.context_chars || 0;
+          contextCharsCache.set(chatId, chars);
+          if (chatId === activeChatId) {
+            window._statusContextChars = chars;
+            updateStatusBarContext();
+          }
+        })
+        .catch(() => {});
     }
 
     function setCreating(val) {
@@ -3396,8 +3402,23 @@
     function updateStatusBarCwd() {
       if (!statusCwdEl) return;
       const cwd = window.getIdeCwd ? window.getIdeCwd() : "";
-      statusCwdEl.textContent = cwd || "";
+      statusCwdEl.textContent = cwd ? "cwd: " + cwd : "";
       statusCwdEl.title = cwd || "No working directory";
+    }
+
+    if (statusCwdEl) {
+      statusCwdEl.style.cursor = "pointer";
+      statusCwdEl.addEventListener("click", async () => {
+        try {
+          const res = await fetch("/api/filesystem/pick-folder");
+          const data = await res.json();
+          if (data.path && window.openFsRoot) {
+            window.openFsRoot(data.path);
+          }
+        } catch (err) {
+          console.error("[StatusBar] pick-folder failed:", err);
+        }
+      });
     }
 
     function updateStatusBarContext() {
@@ -3626,7 +3647,9 @@
         const data = await fetch(`/api/chats/${chatId}/messages?limit=50&include_skill_events=true`).then(r => r.json());
         const pane = ensurePane(chatId);
         pane.innerHTML = "";
-        window._statusContextChars = data.context_chars || 0;
+        const chars = data.context_chars || 0;
+        contextCharsCache.set(chatId, chars);
+        window._statusContextChars = chars;
         updateStatusBarContext();
         const messages = data.messages || [];
         console.log("[DEBUG loadMessages] got", messages.length, "messages, ids:", messages.map(m => m.id));
@@ -3761,6 +3784,9 @@
       } else {
         // Already loaded — just derive parentId from cached meta
         parentId = meta?.parent_id ? String(meta.parent_id) : null;
+        // Restore context ring from cache for this chat
+        window._statusContextChars = contextCharsCache.get(chatId) || 0;
+        updateStatusBarContext();
       }
 
       // Connect agent SSE for this chat
@@ -4094,6 +4120,7 @@
         saveActiveChat();
         await loadChats();
         // Reset context ring for fresh chat
+        contextCharsCache.set(activeChatId, 0);
         window._statusContextChars = 0;
         updateStatusBarContext();
         // Pane already has empty state from createTabPane
@@ -6904,6 +6931,7 @@
               <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">${acc.name}${size ? ' · ' + size : ''}${isActive ? ' · <span style="color:var(--accent);">active</span>' : ''}
                 ${acc.has_waf ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#22c55e;border:1px solid #22c55e;border-radius:4px;padding:1px 5px;margin-left:6px;">qwen</span>' : ''}
                 ${acc.has_ds ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#22c55e;border:1px solid #22c55e;border-radius:4px;padding:1px 5px;margin-left:4px;">ds</span>' : ''}
+                ${acc.exhausted ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#ef4444;border:1px solid #ef4444;background:rgba(239,68,68,0.1);border-radius:4px;padding:1px 5px;margin-left:4px;">Exhausted</span>' : ''}
               </div>
             </div>
             <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
