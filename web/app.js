@@ -4707,6 +4707,82 @@
     });
 
 
+    // ── Universal Save System ──────────────────────────────────────────────
+    // Hides individual save buttons, tracks dirty state per tab,
+    // shows floating "Save All" button when anything changed.
+    const _universalSave = (() => {
+      const bar = document.getElementById("universalSaveBar");
+      const btn = document.getElementById("universalSaveBtn");
+      const _tabs = {}; // tabName -> { saveFn, snapshotFn, dirty }
+
+      // Hide all individual save buttons
+      const hideIds = [
+        "personalSaveBtn", "protSaveBtn", "memSaveBtn", "msSaveBtn",
+        "searchSaveBtn", "cbSaveSettings", "agentConfigSave",
+      ];
+      hideIds.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = "none";
+      });
+
+      function updateBar() {
+        const anyDirty = Object.values(_tabs).some(t => t.dirty);
+        if (anyDirty) bar?.classList.remove("hidden");
+        else bar?.classList.add("hidden");
+      }
+
+      function markDirty(tabName) {
+        if (_tabs[tabName]) { _tabs[tabName].dirty = true; updateBar(); }
+      }
+
+      function register(tabName, saveFn, snapshotFn) {
+        _tabs[tabName] = { saveFn, snapshotFn, dirty: false, lastSnapshot: null };
+        if (snapshotFn) {
+          _tabs[tabName].lastSnapshot = snapshotFn();
+        }
+      }
+
+      async function saveAll() {
+        if (!btn) return;
+        btn.disabled = true;
+        btn.textContent = "⏳ Saving…";
+        const errors = [];
+        for (const [name, tab] of Object.entries(_tabs)) {
+          if (!tab.dirty) continue;
+          try {
+            await tab.saveFn();
+            tab.dirty = false;
+            if (tab.snapshotFn) tab.lastSnapshot = tab.snapshotFn();
+          } catch (e) {
+            errors.push(`${name}: ${e.message}`);
+          }
+        }
+        updateBar();
+        if (errors.length) showToast("Some saves failed: " + errors.join(", "), true);
+        else showToast("✅ All settings saved");
+        btn.disabled = false;
+        btn.textContent = "💾 Save All";
+      }
+
+      btn?.addEventListener("click", saveAll);
+
+      // Auto-detect changes via input/change events on settings body
+      const settingsBody = document.querySelector(".settings-body");
+      if (settingsBody) {
+        settingsBody.addEventListener("input", () => {
+          const activeTab = document.querySelector(".settings-tab.active")?.dataset.tab;
+          if (activeTab && _tabs[activeTab]) markDirty(activeTab);
+        });
+        settingsBody.addEventListener("change", () => {
+          const activeTab = document.querySelector(".settings-tab.active")?.dataset.tab;
+          if (activeTab && _tabs[activeTab]) markDirty(activeTab);
+        });
+      }
+
+      return { register, markDirty, saveAll };
+    })();
+    window._universalSave = _universalSave;
+
     // Horizontal scroll on mouse wheel for settings tab bars
     document.querySelectorAll(".settings-tabs").forEach((bar) => {
       bar.addEventListener("wheel", (e) => {
@@ -5949,6 +6025,44 @@
       loadMemorySearchSettings();
     });
 
+    // Register Brain tab with universal save
+    _universalSave.register("brain", async () => {
+      // Save personal context
+      await fetch("/api/settings/personal", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: personalArea.value }),
+      });
+      // Save memory
+      await fetch("/api/settings/memory", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ memory: _memoryCache }),
+      });
+      // Save protected
+      await fetch("/api/settings/memory/protected", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ protected: _protectedCache }),
+      });
+      // Save memory search settings
+      const modelThresholds = {};
+      msThresholdEditor.querySelectorAll("input[data-model]").forEach((inp) => {
+        if (inp.value.trim() !== "") modelThresholds[inp.dataset.model] = parseFloat(inp.value);
+      });
+      const msRes = await fetch("/api/settings/memory-search", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: msModelSelect.value,
+          top_k: parseInt(msTopK.value) || 10,
+          max_prompt_chars: parseInt(document.getElementById("msMaxChars").value) || 20000,
+          model_thresholds: modelThresholds,
+          enabled: msEnabled.checked,
+        }),
+      });
+      if (msRes.ok) {
+        const data = await msRes.json();
+        msInfo.textContent = `Active: ${data.current_model} | Threshold: ${data.current_threshold}`;
+      }
+    });
+
     // === Skills Panel ===
     const skillsGrid = document.getElementById("skillsGrid");
     const skillDetailOverlay = document.getElementById("skillDetailOverlay");
@@ -6456,8 +6570,7 @@
 
     _loadSearchProviders();
 
-    _searchEls.saveBtn()?.addEventListener("click", async () => {
-      const statusEl = _searchEls.status();
+    async function _saveSearchSettings() {
       const payload = {
         search_provider: _searchEls.provider()?.value || "searxng",
         search_url: _searchEls.searxngUrl()?.value?.trim() || "",
@@ -6465,7 +6578,6 @@
         search_result_count: parseInt(_searchEls.resultCount()?.value || "10", 10),
         search_safesearch: _searchEls.safesearch()?.value || "strict",
       };
-      // Include non-empty API keys
       const braveKey = _searchEls.keyBrave()?.value?.trim();
       if (braveKey) payload.brave_api_key = braveKey;
       const googlePseKey = _searchEls.keyGooglePse()?.value?.trim();
@@ -6476,23 +6588,21 @@
       if (tavilyKey) payload.tavily_api_key = tavilyKey;
       const serperKey = _searchEls.keySerper()?.value?.trim();
       if (serperKey) payload.serper_api_key = serperKey;
-      try {
-        const res = await fetch("/api/settings/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-        const data = await res.json();
-        if (statusEl) statusEl.textContent = data.status === "ok" ? "✅ Saved successfully." : `❌ ${data.detail || data.error || "Save failed"}`;
-        if (data.status === "ok") {
-          // Clear secret inputs so they don't linger in the DOM
-          ["keyBrave", "keyGooglePse", "keyGooglePseCx", "keyTavily", "keySerper"].forEach((k) => {
-            const el = _searchEls[k]();
-            if (el) el.value = "";
-          });
-          // Refresh badges so "not set" flips to "saved" immediately
-          await loadSearchSettings();
-        }
-      } catch (e) {
-        if (statusEl) statusEl.textContent = `❌ ${e.message}`;
+      const res = await fetch("/api/settings/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const data = await res.json();
+      if (data.status === "ok") {
+        ["keyBrave", "keyGooglePse", "keyGooglePseCx", "keyTavily", "keySerper"].forEach((k) => {
+          const el = _searchEls[k]();
+          if (el) el.value = "";
+        });
+        await loadSearchSettings();
+      } else {
+        throw new Error(data.detail || data.error || "Save failed");
       }
-    });
+    }
+
+    // Register Search tab with universal save
+    _universalSave.register("search", _saveSearchSettings);
 
     _searchEls.testBtn()?.addEventListener("click", async () => {
       const statusEl = _searchEls.status();
@@ -6886,6 +6996,26 @@
 
     if (ctxPassModel) ctxPassModel.addEventListener("change", saveContextPassSettings);
     if (ctxPassBrowserAcc) ctxPassBrowserAcc.addEventListener("change", saveContextPassSettings);
+
+    // Register General tab with universal save
+    _universalSave.register("general", async () => {
+      // Save tool output cap
+      const val = parseInt(maxToolOutputInput?.value, 10);
+      if (val && val >= 1000) {
+        await fetch("/api/settings/general", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ max_tool_output_chars: val }),
+        });
+      }
+      // Save context pass settings
+      await fetch("/api/settings/context-pass", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          summarizer_model: ctxPassModel ? ctxPassModel.value : "",
+          browser_data_acc: ctxPassBrowserAcc ? ctxPassBrowserAcc.value : "",
+        }),
+      });
+    });
     // ── /Context Pass Settings ──
 
     refreshWafBtn.addEventListener("click", async () => {
@@ -7259,7 +7389,7 @@
               <input type="password" id="mcpEnv_${s.name}" placeholder="GITHUB_PERSONAL_ACCESS_TOKEN" value="${(s.env && Object.values(s.env)[0]) || ''}" style="flex:1;padding:4px 8px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);" />
               <button onclick="mcpUpdateEnv('${s.name}')" class="icon-btn" style="width:auto;padding:4px 10px;font-size:11px;">Save Env</button>
             </div>
-            ${s.error ? `<p style="font-size:11px;color:#f87171;margin:4px 0 0 0;">⚠️ ${s.error}</p>` : ''}
+            ${s.error ? `<p style="font-size:11px;color:#f87171;margin:4px 0 0 0;"><i data-lucide="triangle-alert" style="width:12px;height:12px;display:inline;vertical-align:middle;"></i> ${s.error}</p>` : ''}
             ${s.tools && s.tools.length > 0 ? `
               <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);">
                 <p style="font-size:11px;color:var(--text-dim);margin:0 0 4px 0;">Tools (${s.tools.length}):</p>
@@ -7271,6 +7401,7 @@
           </div>
         `).join('');
         statusEl.textContent = `${servers.length} server(s) configured, ${servers.filter(s=>s.connected).length} connected`;
+        if (typeof lucide !== "undefined") lucide.createIcons();
       } catch (e) {
         statusEl.textContent = "Failed to load MCP servers: " + e.message;
       }

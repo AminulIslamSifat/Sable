@@ -11,7 +11,6 @@ Self-hosted agentic development companion combining AI chat, a full web IDE, bro
 ```bash
 git clone https://github.com/AminulIslamSifat/Sable.git && cd Sable
 chmod +x init start status
-./init    # one-time setup (deps, browser login, systemd service)
 ./start   # launch via systemd (or direct uv fallback)
 ```
 

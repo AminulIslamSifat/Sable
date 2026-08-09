@@ -11,7 +11,7 @@
   <link rel="stylesheet" href="/static/css/layout.css?v=51">
   <link rel="stylesheet" href="/static/css/ide.css?v=4">
   <link rel="stylesheet" href="/static/css/chat.css?v=23">
-  <link rel="stylesheet" href="/static/css/panels.css?v=31">
+  <link rel="stylesheet" href="/static/css/panels.css?v=32">
   <link rel="stylesheet" href="/static/css/components.css?v=12">
   <link rel="stylesheet" href="/static/css/responsive.css?v=3">
   <link rel="stylesheet" href="/static/css/agents.css?v=31">
@@ -465,6 +465,11 @@
         <button class="settings-tab" data-tab="cookbook">Cookbook</button>
       </div>
       <div class="settings-body">
+      <!-- Universal floating save button -->
+      <div id="universalSaveBar" class="universal-save-bar hidden">
+        <span class="universal-save-hint">Unsaved changes</span>
+        <button id="universalSaveBtn" class="btn-primary universal-save-btn">💾 Save All</button>
+      </div>
         <div id="tab-logs" class="settings-tab-content active">
           <div class="log-toolbar">
             <label class="log-toggle"><input type="checkbox" id="logAutoScroll" checked> Auto-scroll</label>
@@ -712,7 +717,7 @@
 
         <!-- Search Engine Tab -->
         <div id="tab-search" class="settings-tab-content">
-          <h3 class="mem-title"><span class="icon-emoji">🔍</span> Search Engine</h3>
+          <h3 class="mem-title"><span class="icon-emoji">🔍</span><i data-lucide="search" class="icon-lucide"></i> Search Engine</h3>
           <p class="muted mem-desc">Configure web search provider, fallback chain, and caching. Used by Online Search skill and Deep Research.</p>
 
           <!-- Active Provider -->
@@ -763,7 +768,7 @@
               <input id="searchInputSerper" type="password" placeholder="Enter Serper API key…" class="mem-input" style="width:100%;max-width:400px;">
             </div>
 
-            <div id="searchNoKeyNeeded" class="muted" style="font-size:11px;display:none;">✅ No API key required for this provider.</div>
+            <div id="searchNoKeyNeeded" class="muted" style="font-size:11px;display:none;"><i data-lucide="circle-check" class="icon-lucide" style="width:12px;height:12px;vertical-align:middle;color:var(--success);"></i> No API key required for this provider.</div>
           </div>
 
           <!-- Fallback Chain (multi-select) -->
@@ -820,10 +825,10 @@
               </div>
             </div>
             <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
-              <button id="searchSaveBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;">💾 Save</button>
-              <button id="searchTestBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">🧪 Test</button>
-              <button id="searchCompareBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">⚖️ Compare</button>
-              <button id="searchClearCacheBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">🗑 Clear Cache</button>
+              <button id="searchSaveBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;"><i data-lucide="save" class="icon-lucide"></i> Save</button>
+              <button id="searchTestBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;"><i data-lucide="flask-conical" class="icon-lucide"></i> Test</button>
+              <button id="searchCompareBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;"><i data-lucide="git-compare" class="icon-lucide"></i> Compare</button>
+              <button id="searchClearCacheBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;"><i data-lucide="trash-2" class="icon-lucide"></i> Clear Cache</button>
             </div>
             <!-- Compare provider selectors (hidden by default) -->
             <div id="searchCompareControls" style="display:none;margin-bottom:10px;padding:10px;border:1px solid var(--border);border-radius:8px;background:color-mix(in srgb, var(--panel) 60%, transparent);">
@@ -837,7 +842,7 @@
                   <select id="searchCompareB" class="mem-input" style="width:130px;"></select>
                 </div>
                 <button id="searchCompareRunBtn" class="btn-primary" style="font-size:12px;padding:6px 14px;">Run Comparison</button>
-                <button id="searchCompareCloseBtn" class="icon-btn" style="font-size:12px;padding:6px 10px;">✕</button>
+                <button id="searchCompareCloseBtn" class="icon-btn" style="font-size:12px;padding:6px 10px;"><i data-lucide="x" class="icon-lucide"></i></button>
               </div>
             </div>
           </div>
@@ -852,7 +857,7 @@
         <div id="tab-mcp" class="settings-tab-content">
           <div style="margin-bottom:20px;">
             <label style="font-size:14px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-              <span class="icon-emoji">🔌</span> MCP Servers
+              <span class="icon-emoji">🔌</span><i data-lucide="plug" class="icon-lucide"></i> MCP Servers
             </label>
             <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 12px 0;">Model Context Protocol — connect external tool servers (email, calendar, databases, etc.) to extend Sable's capabilities dynamically.</p>
 
@@ -994,7 +999,7 @@
         </div>
         
         <div id="tab-tts" class="settings-tab-content">
-          <h3 class="mem-title">🔊 Text-to-Speech</h3>
+          <h3 class="mem-title"><span class="icon-emoji">🔊</span><i data-lucide="volume-2" class="icon-lucide"></i> Text-to-Speech</h3>
           <p class="muted mem-desc">Offline TTS powered by Kokoro. Download the model files to enable speech synthesis.</p>
 
           <div id="ttsStatus" class="tts-status">
@@ -1031,12 +1036,12 @@
           </div>
 
           <div style="display:flex;gap:8px;margin-top:16px;">
-            <button id="ttsDownloadBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;">⬇ Download Models</button>
-            <button id="ttsDeleteBtn" class="btn-danger" style="font-size:13px;padding:8px 16px;" hidden>🗑 Remove Models</button>
+            <button id="ttsDownloadBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;"><i data-lucide="download" class="icon-lucide"></i> Download Models</button>
+            <button id="ttsDeleteBtn" class="btn-danger" style="font-size:13px;padding:8px 16px;" hidden><i data-lucide="trash-2" class="icon-lucide"></i> Remove Models</button>
           </div>
         </div>
         <div id="tab-cookbook" class="settings-tab-content">
-          <h3 class="mem-title">📚 Cookbook — Local Models</h3>
+          <h3 class="mem-title"><span class="icon-emoji">📚</span><i data-lucide="book-open" class="icon-lucide"></i> Cookbook — Local Models</h3>
           <p class="muted mem-desc">Download, serve, and chat with local LLMs via llama.cpp. Models run entirely on your machine.</p>
 
           <!-- Hardware Info -->
@@ -1076,7 +1081,7 @@
                 <label class="muted" style="font-size:11px;display:block;margin-bottom:4px;">Include Pattern</label>
                 <input id="cbInclude" type="text" class="mem-input" placeholder="e.g. *q4_k_m*" style="width:100%;">
               </div>
-              <button id="cbDownloadBtn" class="btn-primary" style="font-size:12px;padding:8px 14px;white-space:nowrap;">⬇ Download</button>
+              <button id="cbDownloadBtn" class="btn-primary" style="font-size:12px;padding:8px 14px;white-space:nowrap;"><i data-lucide="download" class="icon-lucide"></i> Download</button>
             </div>
           </div>
 
@@ -1297,14 +1302,14 @@
       },
     };
   </script>
-  <script src="/static/app.js?v=77"></script>
-  <script src="/static/src/research.js?v=9"></script>
-  <script src="/static/js/agents.js?v=22"></script>
+  <script src="/static/app.js?v=79"></script>
+  <script src="/static/src/research.js?v=10"></script>
+  <script src="/static/js/agents.js?v=23"></script>
   <script src="/static/js/filesystem.js?v=28"></script>
   <script src="/static/js/mode.js?v=19"></script>
   <script src="/static/js/resize-panels.js?v=1"></script>
   <script src="/static/js/terminal.js?v=4"></script>
-  <script src="/static/js/cookbook.js?v=1"></script>
+  <script src="/static/js/cookbook.js?v=3"></script>
 
   <script>
     /* Keep mode-toggle-compact pill indicator in sync with active button */

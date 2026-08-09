@@ -54,6 +54,8 @@ def get_presets() -> list[dict]:
             "builtin": True,
             "score": r["score"],
             "speed": r.get("speed", "unknown"),
+            "download_size_gb": r.get("download_size_gb", 0),
+            "estimated_memory_gb": r.get("estimated_memory_gb", 0),
             "notes": r.get("notes", ""),
         }
         for i, r in enumerate(recs[:7])

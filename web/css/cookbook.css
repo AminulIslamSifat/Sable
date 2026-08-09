@@ -524,3 +524,18 @@
   color: var(--text-secondary, #a0a0b0);
   max-width: 180px;
 }
+
+.cb-delete-btn {
+  background: transparent;
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 11px;
+  color: #f87171;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.cb-delete-btn:hover {
+  background: rgba(248, 113, 113, 0.1);
+  border-color: rgba(248, 113, 113, 0.5);
+}
