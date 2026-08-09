@@ -32,6 +32,7 @@ from connectors.common.context_summarizer import (
 logger = logging.getLogger("sable.groq_api")
 
 BASE_URL = "https://api.groq.com/openai/v1"
+
 _SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
 _KEYS_PATH = _SYSTEM_DIR / ".groq_api_keys.json"
 
@@ -82,15 +83,38 @@ def _save_keys(keys: list[str]) -> None:
 
 
 def _load_instructions() -> str:
-    """Load and concatenate instruction files + dynamic skill registry for system prompt injection."""
-    parts: list[str] = []
-    for fname in _INSTRUCTION_FILES:
-        fpath = _INSTRUCTION_DIR / fname
-        if fpath.exists():
-            parts.append(fpath.read_text(encoding="utf-8").strip())
+    """Minimal agentic tag docs + distilled code_editor for Groq."""
+    base = (
+        "Every agentic tag must be wrapped in a single <action>...</action> block. "
+        "The extractor only reads what is inside <action>; anything outside is prose.\n\n"
+        "Tags: <get_file>/abs/path</get_file> \u00b7 <execute_command>cmd</execute_command>\n\n"
+        "If you use <action>, the entire response is ONE short sentence + the block. "
+        "<action> appears only in plain text, never inside a fenced code block."
+    )
+    editor = """# File I/O
 
-    # Groq: zero system prompt bloat. 8k TPM can't handle it.
-    return ""
+    ## Read files
+    <get_file>/abs/path</get_file> — read any file (text or binary)
+    <view_file> path="/abs/path" </view_file> — read with line numbers, supports start/end range
+
+    ## Write files  
+    <edit_file> path="/abs/path">
+    <<<<<< SEARCH
+    exact old text from view_file
+    =======
+    new replacement text
+    >>>>>>
+    </edit_file> — replace text (must match exactly once)
+
+    <create_file> path="/abs/path">
+    file content here
+    </create_file> — create new file (fails if exists)
+
+    ## Rules
+    - Always <view_file> before editing — never build old_str from memory
+    - Wrap every tag in <action>...</action>
+    - One short sentence + the <action> block, nothing else"""
+    return base + "\n\n***\n\n" + editor
 
 
 class GroqClient:

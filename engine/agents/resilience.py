@@ -282,14 +282,17 @@ class MainChatGuard:
 
         import re
         # Check for action block markers
+        # Strip code fences and inline backticks before checking
+        _stripped = re.sub(r"`{3}.*?`{3}", "", raw_text, flags=re.S)
+        _stripped = re.sub(r"`[^`]+`", "", _stripped)
         has_action_markers = bool(re.search(
-            r"</?\s*action\s*>", raw_text, re.I
+            r"</?\s*action\s*>", _stripped, re.I
         ))
         # Check for known tool tags
         from engine.skills.parser import KNOWN_TAGS
         tag_pattern = "|".join(re.escape(t) for t in KNOWN_TAGS)
         has_tool_tags = bool(re.search(
-            r"<\s*(?:" + tag_pattern + r")\b", raw_text, re.I
+            r"<\s*(?:" + tag_pattern + r")\b", _stripped, re.I
         ))
 
         if has_action_markers or has_tool_tags:

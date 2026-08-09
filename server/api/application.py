@@ -44,6 +44,7 @@ from .routes.telegram import router as telegram_router
 from .routes.research import router as research_router
 from .routes.tracknote import router as tracknote_router
 from .routes.setup import router as setup_router
+from .routes.cookbook import router as cookbook_router
 
 def _raise_nofile_limit() -> None:
     """Raise open file limit for agentic workloads (browsers, agents, streams)."""
@@ -123,25 +124,48 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     except Exception as exc:
         logger.warning("Startup sync_context failed: %s: %s", type(exc).__name__, exc)
     yield
-    # Shutdown agent ops scheduler
+    # ── Fast shutdown (≤1s budget) ──
+    # 1. Cancel running agents immediately
+    try:
+        from engine.agents import get_runtime as _get_rt
+        _rt = _get_rt()
+        for _task in list(getattr(_rt, '_tasks', {}).values()):
+            if not _task.done():
+                _task.cancel()
+    except Exception:
+        pass
+
+    # 2. Scheduler
     try:
         from server.scheduler import cancel_all
         cancel_all()
     except Exception:
         pass
-    await service.close()
-    from engine.scraper import scraper as scraper_service
-    await scraper_service.stop(kill_browser=True)
-    # Shutdown MCP connections
+
+    # 3. Main browser — 0.5s timeout
     try:
-        from engine.mcp.manager import get_mcp_manager
-        await get_mcp_manager().shutdown()
+        await asyncio.wait_for(service.close(), timeout=0.5)
     except Exception:
         pass
-    # Disconnect Telegram client cleanly
+
+    # 4. Scraper browser — 0.5s timeout
+    try:
+        from engine.scraper import scraper as scraper_service
+        await asyncio.wait_for(scraper_service.stop(kill_browser=True), timeout=0.5)
+    except Exception:
+        pass
+
+    # 5. MCP — 0.5s timeout
+    try:
+        from engine.mcp.manager import get_mcp_manager
+        await asyncio.wait_for(get_mcp_manager().shutdown(), timeout=0.5)
+    except Exception:
+        pass
+
+    # 6. Telegram — 0.3s timeout
     try:
         from server.api.routes.telegram import disconnect_client
-        await disconnect_client()
+        await asyncio.wait_for(disconnect_client(), timeout=0.3)
     except Exception:
         pass
 
@@ -210,6 +234,7 @@ app.include_router(telegram_router)
 app.include_router(research_router)
 app.include_router(tracknote_router)
 app.include_router(setup_router)
+app.include_router(cookbook_router)
 
 # Wire agent runtime event callback → SSE push
 from .routes.agents import _async_push_agent_event, push_agent_event

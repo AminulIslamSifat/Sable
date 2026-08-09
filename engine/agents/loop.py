@@ -24,6 +24,23 @@ logger = logging.getLogger("sable")
 # Defaults — overridden by settings > agent > limits
 MAX_ITERATIONS = 25
 MAX_CONTEXT_CHARS = 12000
+DEFAULT_MAX_TOOL_OUTPUT_CHARS = 100_000
+
+
+def _get_max_tool_output_chars() -> int:
+    """Read tool output cap from system/settings.json (default 100k)."""
+    try:
+        from engine.config import _SYSTEM
+        import json as _json
+        p = _SYSTEM / "settings.json"
+        if p.is_file():
+            data = _json.loads(p.read_text(encoding="utf-8"))
+            val = data.get("max_tool_output_chars")
+            if isinstance(val, int) and val > 0:
+                return val
+    except Exception:
+        pass
+    return DEFAULT_MAX_TOOL_OUTPUT_CHARS
 
 STUCK_MESSAGE = (
     "You've called the same tool repeatedly with identical arguments. "
@@ -392,6 +409,10 @@ async def run_agent_llm_loop(
                         agent.push_stream_event(evt)
 
                 feedback = build_tool_feedback(events)
+                # Truncate oversized tool output to protect context window
+                max_chars = _get_max_tool_output_chars()
+                if feedback and len(feedback) > max_chars:
+                    feedback = feedback[:max_chars] + f"\n\n[OUTPUT TRUNCATED: {len(feedback)} chars → {max_chars} limit]"
                 tool_results.append(feedback or "[no output]")
 
                 # Stream skill_end to panel
@@ -515,6 +536,8 @@ async def _call_llm(
         return await _call_deepseek(agent, message)
     if backend in ("gemini", "groq", "mistral"):
         return await _call_api_backend(agent, message, backend, system_instruction=agent.system_prompt)
+    if backend == "local":
+        return await _call_local(agent, message)
     # Default: Qwen (no api_backend = scraper-based)
     return await _call_qwen(agent, message, parent_id, is_first_turn)
 
@@ -580,7 +603,7 @@ async def _call_api_backend(agent: Agent, message: str, backend: str, *, system_
     from connectors import get_connector
     from engine.config import get_model_config
 
-    connector = get_connector(backend)
+    connector = get_connector(backend, model_id=agent.model)
     cfg = get_model_config(agent.model)
     api_model_type = cfg.get("api_model_type")
 
@@ -663,6 +686,61 @@ async def _get_agent_qwen_headers(agent: Agent) -> dict[str, str]:
     # Fallback: shared service (active account)
     from server.api.dependencies import service
     return await service._ensure_headers()
+
+
+
+async def _call_local(agent: Agent, message: str) -> tuple[str, str | None]:
+    """Local/OpenAI-compatible cookbook model: full messages array per request.
+
+    llama-server is stateless — it needs the entire conversation every call.
+    We send agent.messages (system + all turns) to /v1/chat/completions.
+    """
+    import httpx
+    from engine.config import get_model_config
+
+    cfg = get_model_config(agent.model)
+    endpoint = cfg.get("local_endpoint", "http://127.0.0.1:8080/v1").rstrip("/")
+    api_model = cfg.get("api_model_type", agent.model)
+
+    # Full history — stateless API requires it
+    messages = list(agent.messages)
+
+    payload = {
+        "model": api_model,
+        "messages": messages,
+        "stream": True,
+    }
+
+    accumulated = ""
+    async with httpx.AsyncClient(timeout=300.0) as client:
+        async with client.stream(
+            "POST",
+            f"{endpoint}/chat/completions",
+            json=payload,
+            headers={"Authorization": "Bearer sable-local"},
+        ) as resp:
+            if resp.status_code != 200:
+                body = await resp.aread()
+                raise RuntimeError(f"Local model HTTP {resp.status_code}: {body.decode()[:300]}")
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                    delta = chunk["choices"][0].get("delta", {})
+                    token = delta.get("content", "")
+                    if token:
+                        accumulated += token
+                        agent.push_stream_event({"type": "chunk", "text": token})
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    pass
+
+    if not accumulated.strip():
+        raise RuntimeError("Local model returned empty response")
+    return accumulated, None
 
 
 async def _call_qwen(
