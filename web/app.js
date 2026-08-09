@@ -1201,6 +1201,7 @@
       pane.classList.add("active");
       activePane = pane;
       activeChatId = chatId;
+      document.getElementById("approvalBanner")?.classList.add("hidden");
       _bindScrollListener(pane);
       updateSendBtn();
       renderTabBar();
@@ -2236,6 +2237,15 @@
           });
           toolbar.appendChild(ttsBtn);
         }
+        // Checkpoint restore button (git-branch icon)
+        if (!toolbar.querySelector('[title="Restore checkpoint"]') && message.id) {
+          const cpBtn = document.createElement("button");
+          cpBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>';
+          cpBtn.title = "Restore checkpoint";
+          cpBtn.dataset.msgId = message.id;
+          cpBtn.addEventListener("click", () => showCheckpointModal(activeChatId, message.id, cpBtn));
+          toolbar.appendChild(cpBtn);
+        }
         activateLucideIcons(toolbar);
       }
       // Attach toolbar to historical bot messages (or skip if round_text will handle it)
@@ -2373,6 +2383,15 @@
           // Reset group so the next skill_start creates a fresh stack
           // (matches streaming behavior where each command gets its own group)
           group = null;
+        } else if (evt.type === "permission_request") {
+          // History replay: decision already made — show static note, not interactive banner
+          const note = document.createElement('div');
+          note.className = 'approval-pending-note';
+          note.textContent = '🔒 Permission was requested: ' + (evt.data?.command || evt.name || '').slice(0, 60);
+          if (activePane) {
+            const turn = activePane.querySelector('.turn:last-child');
+            (turn || activePane).appendChild(note);
+          }
         } else if (evt.type === "agent_result") {
           if (typeof addAgentResultCard === "function") {
             addAgentResultCard({
@@ -2477,6 +2496,146 @@
       scrollBottom();
       return card;
     }
+
+    // ── Permission Approval Banner ──
+    function renderApprovalCard(evt, container) {
+      const { id, name, data } = evt;
+      const { command, category, reason } = data;
+      const banner = document.getElementById('approvalBanner');
+      if (!banner) return;
+
+      const catIcons = {
+        filesystem: 'trash-2', packages: 'package', services: 'settings',
+        git: 'git-branch', network: 'globe', auth: 'shield',
+        disk: 'hard-drive', process: 'cpu', database: 'database', system: 'terminal'
+      };
+      const icon = catIcons[category] || 'alert-triangle';
+      const shortCmd = command.length > 80 ? command.slice(0, 80) + '…' : command;
+
+      banner.className = 'approval-banner';
+      banner.dataset.tagId = id;
+      banner.innerHTML = `
+        <div class="ab-icon"><i data-lucide="${icon}"></i></div>
+        <div class="ab-body">
+          <div class="ab-title">${shortCmd.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
+          <div class="ab-sub">${category} · ${reason}</div>
+        </div>
+        <div class="ab-actions">
+          <button class="ab-allow"><i data-lucide="check"></i> Allow</button>
+          <button class="ab-deny"><i data-lucide="x"></i> Deny</button>
+        </div>
+      `;
+
+      const allowBtn = banner.querySelector('.ab-allow');
+      const denyBtn = banner.querySelector('.ab-deny');
+
+      allowBtn.addEventListener('click', async () => {
+        allowBtn.disabled = true;
+        denyBtn.disabled = true;
+        // Remove transient "waiting" note
+        activePane?.querySelectorAll('.approval-pending-note').forEach(el => el.remove());
+        try {
+          console.log('[approval] allow clicked, id:', id);
+          const resp = await fetch('/api/skills/approve/' + id, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({chat_id: activeChatId}) });
+          console.log('[approval] response status:', resp.status);
+          banner.classList.add('ab-resolved');
+          if (resp.ok && activePane) {
+            const note = document.createElement('div');
+            note.className = 'approval-chat-note';
+            note.textContent = '\u2713 Command approved \u2014 result saved for next turn';
+            activePane.querySelector('.messages')?.appendChild(note);
+            activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
+          }
+          if (resp.headers.get('content-type')?.includes('text/event-stream')) {
+            const reader = resp.body.getReader();
+            const dec = new TextDecoder();
+            let buf = '';
+            let output = '';
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buf += dec.decode(value, { stream: true });
+              const lines = buf.split('\n');
+              buf = lines.pop();
+              for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                try {
+                  const ev = JSON.parse(line.slice(6));
+                  if (ev.type === 'skill_output' && ev.text) output += ev.text;
+                  if (ev.type === 'skill_end') {
+                    const st = document.createElement('span');
+                    st.className = 'ab-status ' + (ev.ok ? 'ok' : 'no');
+                    st.textContent = ev.ok ? 'done' : 'failed';
+                    banner.querySelector('.ab-actions').replaceWith(st);
+                  }
+                } catch(e) {}
+              }
+            }
+            if (output) {
+              const out = document.createElement('div');
+              out.className = 'ab-output';
+              out.textContent = output.slice(0, 500);
+              banner.appendChild(out);
+            }
+            // Auto-trigger model turn so it sees the result
+            setTimeout(() => sendAutoTurnMessage('[System: Command was approved and executed. Continue.]'), 300);
+          } else {
+            const data = await resp.json();
+            const st = document.createElement('span');
+            st.className = 'ab-status ok';
+            st.textContent = 'done';
+            banner.querySelector('.ab-actions').replaceWith(st);
+            if (data.feedback) {
+              setTimeout(() => sendAutoTurnMessage(data.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
+            }
+          }
+        } catch(e) {
+          banner.classList.add('ab-resolved');
+          const st = document.createElement('span');
+          st.className = 'ab-status no';
+          st.textContent = 'error';
+          banner.querySelector('.ab-actions')?.replaceWith(st);
+        }
+        setTimeout(() => banner.classList.add('hidden'), 4000);
+      });
+
+      denyBtn.addEventListener('click', async () => {
+        allowBtn.disabled = true;
+        denyBtn.disabled = true;
+        // Remove transient "waiting" note
+        activePane?.querySelectorAll('.approval-pending-note').forEach(el => el.remove());
+        banner.classList.add('ab-resolved');
+        const st = document.createElement('span');
+        st.className = 'ab-status no';
+        st.textContent = 'denied';
+        if (activePane) {
+          const note = document.createElement('div');
+          note.className = 'approval-chat-note denied';
+          note.textContent = '✗ Command denied — model will be informed';
+          activePane.querySelector('.messages')?.appendChild(note);
+          activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
+        }
+        banner.querySelector('.ab-actions').replaceWith(st);
+        try {
+          console.log('[approval] deny clicked, id:', id, 'chat:', activeChatId);
+          const r = await fetch('/api/skills/deny/' + id, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({chat_id: activeChatId}) });
+          console.log('[approval] deny status:', r.status);
+          const data = await r.json();
+          if (data.feedback) {
+            setTimeout(() => sendAutoTurnMessage(data.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
+          } else {
+            setTimeout(() => sendAutoTurnMessage('[System: Command was denied by user.]', { skipUserBubble: true, skipUserSave: true }), 300);
+          }
+        } catch(e) {
+          console.error('[approval] deny error:', e);
+          setTimeout(() => sendAutoTurnMessage('[System: Command was denied by user.]'), 300);
+        }
+        setTimeout(() => banner.classList.add('hidden'), 3000);
+      });
+
+      activateLucideIcons(banner);
+    }
+
 
     // one "turn" holds everything for a single response: thinking, then any
     // skill/tool runs it made, then the final answer — all stacked in order,
@@ -2967,7 +3126,7 @@
             }
             card.classList.remove("pending");
           });
-          if (!turn.querySelector(".msg.bot") && !turn.querySelector(".skill-card")) {
+          if (!turn.querySelector(".msg.bot") && !turn.querySelector(".skill-card") && !turn.querySelector(".approval-pending-note")) {
             ensureAnswer();
             answerEl.classList.remove("streaming");
             answerContent.textContent = "⚠ Empty response from upstream — check server terminal for WAF/auth details.";
@@ -3146,6 +3305,19 @@
             }
           } else if (evt.type === "status") {
             if (evt.message === "feeding_skill_results") ui.nextSkillRound();
+          } else if (evt.type === "user_message_id") {
+            // Attach checkpoint restore button to the live user message
+            if (userMsgDiv && evt.id) {
+              let toolbar = userMsgDiv.querySelector(".msg-toolbar");
+              if (toolbar && !toolbar.querySelector('[title="Restore checkpoint"]')) {
+                const cpBtn = document.createElement("button");
+                cpBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>';
+                cpBtn.title = "Restore checkpoint";
+                cpBtn.dataset.msgId = evt.id;
+                cpBtn.addEventListener("click", () => showCheckpointModal(streamChatId, evt.id, cpBtn));
+                toolbar.appendChild(cpBtn);
+              }
+            }
           } else if (evt.type === "memory_used") {
             if (Array.isArray(evt.memories) && evt.memories.length) {
               if (evt.source === "tool") ui.attachToolMemory(evt.memories);
@@ -3199,6 +3371,19 @@
           } else if (evt.type === "skill_end") {
             if (evt.name === "ask_user") continue;
             ui.finishSkill(evt);
+          } else if (evt.type === "permission_request") {
+            if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
+            renderApprovalCard(evt, activePane);
+          } else if (evt.type === "approval_pending") {
+            // Transient "waiting" indicator — removed after approve/deny
+            if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
+            const pending = document.createElement('div');
+            pending.className = 'approval-pending-note';
+            pending.textContent = evt.text || '⏳ Waiting for your approval…';
+            if (activePane) {
+              const turn = activePane.querySelector('.turn:last-child');
+              (turn || activePane.querySelector('.messages')).appendChild(pending);
+            }
           } else if (evt.type === "sim_ready") {
             const fname = evt.filename || "simulation.html";
             const url = "/assets/" + encodeURIComponent(fname);
@@ -4541,11 +4726,11 @@
     // Programmatic message send for auto-turn (agent completion notifications).
     // Goes through the exact same /api/chat pipeline as a user-typed message,
     // so skill cards, stop button, markdown, and history replay all work normally.
-    async function sendAutoTurnMessage(message) {
+    async function sendAutoTurnMessage(message, opts = {}) {
       if (!message || !activeChatId) return;
       if (isStreaming()) {
         // Queue: retry after current stream finishes
-        setTimeout(() => sendAutoTurnMessage(message), 1500);
+        setTimeout(() => sendAutoTurnMessage(message, opts), 1500);
         return;
       }
 
@@ -4555,7 +4740,7 @@
       // Remove previous turn's file-edit summary card
       if (activePane) activePane.querySelectorAll(".file-edit-summary-card").forEach(el => el.remove());
 
-      const userMsgDiv = addMessage("user", message);
+      const userMsgDiv = opts.skipUserBubble ? null : addMessage("user", message);
       const ui = addBotStreaming();
 
       try {
@@ -4568,7 +4753,8 @@
             parent_id: parentId,
             model: selectedModel,
             thinking_mode: selectedThinkingMode,
-            stream: true
+            stream: true,
+            ...(opts.skipUserSave ? { skip_user_save: true } : {})
           }),
           signal: controller.signal
         });
@@ -8168,6 +8354,109 @@
       } catch { showToast('Strip failed', 'error'); }
     }
   });
+
+    // ── Checkpoint Restore Modal ─────────────────────────────────────────
+    async function showCheckpointModal(chatId, messageId, btn) {
+      // Remove existing modal if any
+      document.querySelector('.cp-modal-overlay')?.remove();
+
+      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
+
+      try {
+        // 1. Get checkpoint for this message
+        const cpRes = await fetch(`/api/checkpoints/${chatId}/message/${messageId}`);
+        const cpData = await cpRes.json();
+        if (!cpData.checkpoint) {
+          showToast('No checkpoint found for this message', 'error');
+          btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>';
+          return;
+        }
+        const sha = cpData.checkpoint.commit_sha;
+
+        // 2. Get diff preview
+        const diffRes = await fetch(`/api/checkpoints/diff/${sha}`);
+        const diffData = await diffRes.json();
+
+        // 3. Build and show modal
+        const overlay = document.createElement('div');
+        overlay.className = 'cp-modal-overlay';
+        
+        let filesHtml = '';
+        if (diffData.files && diffData.files.length > 0) {
+          filesHtml = diffData.files.map(f => {
+            const statusIcon = f.status === 'added' ? '🟢' : f.status === 'deleted' ? '🔴' : '🟡';
+            return `<div class="cp-file-row">
+              <span class="cp-file-status">${statusIcon}</span>
+              <span class="cp-file-path">${f.path}</span>
+              <span class="cp-file-stats">+${f.additions} −${f.deletions}</span>
+            </div>`;
+          }).join('');
+        } else {
+          filesHtml = '<div class="cp-no-changes">No changes since this checkpoint — project is already at this state.</div>';
+        }
+
+        overlay.innerHTML = `
+          <div class="cp-modal">
+            <div class="cp-modal-header">
+              <h3><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg> Restore Checkpoint</h3>
+              <button class="cp-modal-close">&times;</button>
+            </div>
+            <div class="cp-modal-body">
+              <p class="cp-summary">
+                <strong>${diffData.total_files || 0}</strong> file(s) changed ·
+                <span class="cp-adds">+${diffData.total_additions || 0}</span> ·
+                <span class="cp-dels">−${diffData.total_deletions || 0}</span>
+              </p>
+              <div class="cp-file-list">${filesHtml}</div>
+            </div>
+            <div class="cp-modal-footer">
+              <button class="cp-btn-cancel">Cancel</button>
+              <button class="cp-btn-restore" ${!diffData.total_files ? 'disabled' : ''}>Restore</button>
+            </div>
+          </div>`;
+
+        document.body.appendChild(overlay);
+        activateLucideIcons(overlay);
+
+        // Close handlers
+        overlay.querySelector('.cp-modal-close').onclick = () => overlay.remove();
+        overlay.querySelector('.cp-btn-cancel').onclick = () => overlay.remove();
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+
+        // Restore handler
+        overlay.querySelector('.cp-btn-restore').onclick = async () => {
+          const restoreBtn = overlay.querySelector('.cp-btn-restore');
+          restoreBtn.disabled = true;
+          restoreBtn.textContent = 'Restoring…';
+          try {
+            const res = await fetch('/api/checkpoints/restore', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ commit_sha: sha }),
+            });
+            const result = await res.json();
+            if (result.ok) {
+              showToast('Checkpoint restored ✓', 'success');
+              overlay.remove();
+            } else {
+              showToast('Restore failed: ' + (result.detail || 'Unknown error'), 'error');
+              restoreBtn.disabled = false;
+              restoreBtn.textContent = 'Restore';
+            }
+          } catch (err) {
+            showToast('Restore failed: ' + err.message, 'error');
+            restoreBtn.disabled = false;
+            restoreBtn.textContent = 'Restore';
+          }
+        };
+      } catch (err) {
+        showToast('Failed to load checkpoint: ' + err.message, 'error');
+      } finally {
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>';
+      }
+    }
+    // ── /Checkpoint Restore Modal ────────────────────────────────────────
+
   // ── /Context Menu ─────────────────────────────────────────
 
 
