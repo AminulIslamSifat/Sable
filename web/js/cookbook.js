@@ -79,7 +79,7 @@
     }
     for (const d of done) {
       html += `
-        <div class="cb-download-card cb-done cb-auto-dismiss">
+        <div class="cb-download-card cb-done">
           <div class="cb-dl-header">
             <span class="cb-dl-repo"><i data-lucide="circle-check" style="width:12px;height:12px;display:inline;vertical-align:middle;color:var(--success);"></i> ${escHtml(d.repo_id)}</span>
           </div>
@@ -87,23 +87,14 @@
     }
     for (const d of failed) {
       html += `
-        <div class="cb-download-card cb-failed cb-auto-dismiss">
+        <div class="cb-download-card cb-failed">
           <div class="cb-dl-header">
-            <span class="cb-dl-repo">✗ ${escHtml(d.repo_id)}</span>
+            <span class="cb-dl-repo" style="color:var(--error);">✗ ${escHtml(d.repo_id)}</span>
           </div>
-          <p class="muted" style="font-size:11px;margin-top:4px;">${escHtml(d.error || "Unknown error")}</p>
+          <p style="font-size:11px;margin-top:4px;color:var(--error);word-break:break-all;">${escHtml(d.error || "Unknown error")}</p>
         </div>`;
     }
     el.innerHTML = html;
-
-    // Auto-dismiss done/failed cards after 5s
-    setTimeout(() => {
-      el.querySelectorAll(".cb-auto-dismiss").forEach((card) => {
-        card.style.transition = "opacity 0.4s";
-        card.style.opacity = "0";
-        setTimeout(() => card.remove(), 400);
-      });
-    }, 5000);
 
     // Bind stop buttons
     el.querySelectorAll(".cb-stop-dl-btn").forEach((btn) => {
@@ -363,6 +354,71 @@
     };
   }
 
+  // ─── Model Search ──────────────────────────────────────────────────────────
+  let _searchDebounce = null;
+
+  function initModelSearch() {
+    const input = document.getElementById("cbSearchInput");
+    const btn = document.getElementById("cbSearchBtn");
+    const resultsEl = document.getElementById("cbSearchResults");
+    if (!input || !btn || !resultsEl) return;
+
+    async function doSearch() {
+      const q = input.value.trim();
+      if (q.length < 2) { resultsEl.innerHTML = ""; return; }
+      btn.disabled = true;
+      resultsEl.innerHTML = '<p class="muted" style="font-size:11px;font-style:italic;">Searching HuggingFace...</p>';
+      try {
+        const data = await cbFetch("/search?q=" + encodeURIComponent(q));
+        if (!data.results.length) {
+          resultsEl.innerHTML = '<p class="muted" style="font-size:11px;font-style:italic;">No models found for "' + escHtml(q) + '"</p>';
+        } else {
+          let html = '<div class="cb-search-results-grid">';
+          for (const r of data.results) {
+            const dlStr = r.downloads >= 1000 ? (r.downloads / 1000).toFixed(1) + "k" : r.downloads;
+            const tags = (r.tags || []).map(t => '<span class="cb-tag">' + t + '</span>').join("");
+            let sizeStr = "";
+            if (r.total_size > 0) {
+              const gb = r.total_size / (1024 * 1024 * 1024);
+              sizeStr = gb >= 1 ? gb.toFixed(1) + " GB" : (r.total_size / (1024 * 1024)).toFixed(0) + " MB";
+            }
+            const fileInfo = r.gguf_count ? `${r.gguf_count} GGUF` + (sizeStr ? ` · ${sizeStr}` : "") : "";
+            html += `
+              <div class="cb-search-result-card">
+                <div class="cb-sr-header">
+                  <span class="cb-sr-name">${escHtml(r.repo_id)}</span>
+                  <span class="muted" style="font-size:10px;">⬇ ${dlStr} · ♥ ${r.likes}${fileInfo ? " · " + fileInfo : ""}</span>
+                </div>
+                <div class="cb-sr-tags">${tags}</div>
+                <button class="cb-sr-dl-btn" data-repo="${escHtml(r.repo_id)}">Download</button>
+              </div>`;
+          }
+          html += '</div>';
+          resultsEl.innerHTML = html;
+
+          // Bind download buttons — fill repo ID and trigger download
+          resultsEl.querySelectorAll(".cb-sr-dl-btn").forEach(b => {
+            b.onclick = () => {
+              document.getElementById("cbRepoId").value = b.dataset.repo;
+              document.getElementById("cbInclude").value = "*q4_k_m*";
+              document.getElementById("cbDownloadBtn").click();
+            };
+          });
+          if (typeof lucide !== "undefined") lucide.createIcons();
+        }
+      } catch (e) {
+        resultsEl.innerHTML = '<p style="font-size:11px;color:var(--error);">Search failed: ' + escHtml(e.message) + '</p>';
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    btn.onclick = doSearch;
+    input.onkeydown = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); doSearch(); }
+    };
+  }
+
   // ─── Settings ───────────────────────────────────────────────────────────────
   async function loadCookbookSettings() {
     try {
@@ -584,6 +640,7 @@
   function initCookbook() {
     loadCookbookSettings();
     initCustomDownload();
+    initModelSearch();
     initSaveSettings();
     loadModelSettings();
 
