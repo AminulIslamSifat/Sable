@@ -597,6 +597,7 @@
 /* ---------- markdown / obsidian-style rendering (self-contained, no CDN) ---------- */
 
     .md-content { color: var(--text); font-size: var(--font-size-response); padding: 2px 6px; }
+    .md-active-tail { display: contents; }
     .md-content > *:first-child { margin-top: 0; }
     .md-content > *:last-child { margin-bottom: 0; }
 
@@ -780,6 +781,7 @@
 
     /* mermaid diagrams */
     .md-content .mermaid-wrap {
+      position: relative;
       margin: 14px 0;
       background: var(--panel);
       border: 1px solid var(--border);
@@ -789,12 +791,43 @@
       overflow-y: auto;
       max-height: 80vh;
     }
+
     .md-content .mermaid-wrap svg {
       display: block;
-      min-width: 400px;
-      min-height: 200px;
-      width: max-content !important;
-      height: auto !important;
+      height: auto;
+    }
+    .md-content .mermaid-wrap.fit-width svg {
+      max-width: 100%;
+      height: auto;
+    }
+    .md-content .mermaid-wrap.fit-width {
+      overflow-x: hidden;
+    }
+    .mermaid-fit-btn {
+      position: absolute;
+      bottom: 8px;
+      right: 8px;
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text-muted);
+      font-size: 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity .15s;
+      z-index: 2;
+    }
+    .md-content .mermaid-wrap:hover .mermaid-fit-btn {
+      opacity: 1;
+    }
+    .mermaid-fit-btn:hover {
+      color: var(--text);
+      border-color: var(--text-muted);
     }
     .md-content .mermaid-error {
       color: var(--danger);

@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/static/css/base.css?v=3">
   <link rel="stylesheet" href="/static/css/layout.css?v=51">
   <link rel="stylesheet" href="/static/css/ide.css?v=4">
-  <link rel="stylesheet" href="/static/css/chat.css?v=23">
+  <link rel="stylesheet" href="/static/css/chat.css?v=26">
   <link rel="stylesheet" href="/static/css/panels.css?v=32">
   <link rel="stylesheet" href="/static/css/components.css?v=12">
   <link rel="stylesheet" href="/static/css/responsive.css?v=3">
@@ -329,6 +329,7 @@
 
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/purify.min.js"></script>
+  <script src="/static/vendor/morphdom.min.js"></script>
   <script src="/static/vendor/lucide.min.js"></script>
   <script>
     /* Lazy-load Mermaid & MathJax — only fetched when first needed */
@@ -659,7 +660,7 @@
           <!-- API Keys (unified) -->
           <div style="margin-bottom:20px;">
             <label style="font-size:14px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-              <span class="icon-emoji">🔑</span> API Keys
+              <span class="icon-emoji">🔑</span><i data-lucide="key-round" class="icon-lucide"></i> API Keys
             </label>
             <p style="font-size:11.5px;color:var(--text);margin:0 0 10px 0;">Multiple keys per provider — auto-rotates on rate limit or failure.</p>
             <div style="display:flex;gap:6px;margin-bottom:10px;align-items:center;">
@@ -677,7 +678,7 @@
           <!-- Add Model -->
           <div style="margin-bottom:16px;border-top:1px solid var(--border);padding-top:16px;">
             <label style="font-size:14px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-              <span class="icon-emoji">🧩</span> Add Model
+              <span class="icon-emoji">🧩</span><i data-lucide="puzzle" class="icon-lucide"></i> Add Model
             </label>
             <p style="font-size:11.5px;color:var(--text);margin:0 0 10px 0;">Select a provider to browse available models. Requires an API key above.</p>
             <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;align-items:center;">
@@ -1311,7 +1312,7 @@
       },
     };
   </script>
-  <script src="/static/app.js?v=81"></script>
+  <script src="/static/app.js?v=96"></script>
   <script src="/static/src/research.js?v=10"></script>
   <script src="/static/js/agents.js?v=23"></script>
   <script src="/static/js/filesystem.js?v=28"></script>

@@ -1,7 +1,7 @@
     /* ---------- mobile sidebar tint (≤860px, matches sidebar overlay breakpoint) ---------- */
     @media (max-width: 860px) {
-      .sidebar-section { background: color-mix(in srgb, var(--panel) 82%, transparent); }
-      .diff-sidebar { background: color-mix(in srgb, var(--panel) 82%, transparent); }
+      .sidebar-section { background: color-mix(in srgb, var(--panel) 91%, transparent); }
+      .diff-sidebar { background: color-mix(in srgb, var(--panel) 91%, transparent); }
       .agent-panel { background: color-mix(in srgb, var(--panel) 82%, transparent); }
 
       /* Hide IDE mode switcher + agent layout toggle on mobile — pure chat only */
@@ -10,6 +10,9 @@
 
       /* Hide model dropdown in compact status bar — keep only thinking + context */
       .compact-status-center { display: none !important; }
+
+      /* Hide terminal toggle + its wrapper cell on mobile — no room for IDE panels */
+      .header-icon-cell:has(#terminalToggle) { display: none !important; }
     }
 
     /* ---------- small phones (≤480px) ---------- */
