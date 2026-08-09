@@ -303,6 +303,39 @@ async def list_cached_models() -> dict[str, Any]:
     return {"models": _downloader.scan_cached_models()}
 
 
+# ─── Delete Model from Disk ────────────────────────────────────────────────────
+
+@router.delete("/api/cookbook/model")
+async def delete_model_file(request: Request) -> dict[str, Any]:
+    """Delete a model GGUF file from disk."""
+    body = await request.json()
+    model_path = body.get("path", "")
+    if not model_path:
+        raise HTTPException(400, "Missing 'path'")
+
+    from pathlib import Path as _Path
+    from engine.cookbook.state import get_state
+
+    p = _Path(model_path)
+    # Safety: must be inside models_dir and must be a .gguf file
+    models_dir = get_state().models_dir
+    if not str(p.resolve()).startswith(str(models_dir.resolve())):
+        raise HTTPException(403, "Path is outside the models directory")
+    if not p.suffix == ".gguf":
+        raise HTTPException(400, "Can only delete .gguf files")
+    if not p.exists():
+        raise HTTPException(404, "File not found")
+
+    p.unlink()
+    logger.info("Deleted model file: %s", model_path)
+
+    # Also clean up model settings if any
+    model_id = "local/" + p.stem.lower().replace(" ", "-")
+    delete_model_settings(model_id)
+
+    return {"status": "ok", "deleted": model_path}
+
+
 # ─── Per-Model Instruction Settings ────────────────────────────────────────────
 
 @router.get("/api/cookbook/model-settings")
