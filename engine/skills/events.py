@@ -44,6 +44,26 @@ def end_event(
     return event
 
 
+def permission_request_event(
+    tag_id: str,
+    name: str,
+    content: str,
+    category: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Emitted when a command requires explicit user approval before execution."""
+    return {
+        "type": "permission_request",
+        "id": tag_id,
+        "name": name,
+        "data": {
+            "command": content[:500],
+            "category": category,
+            "reason": reason,
+        },
+    }
+
+
 def build_tool_feedback(
     skill_events: list[dict[str, Any]],
     max_output_per_skill: int = 12000,
