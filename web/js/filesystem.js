@@ -202,11 +202,19 @@
     if (e.target === overlay) closeFS();
   });
 
-  // Ctrl/Cmd+B toggles the file viewer panel.
+  // Ctrl/Cmd+B toggles the right-side file sidebar.
   window.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
       e.preventDefault();
-      overlay.classList.contains("hidden") ? openFS() : closeFS();
+      const isOpen = document.body.classList.contains("diff-open");
+      if (isOpen) {
+        document.body.classList.remove("diff-open");
+      } else {
+        document.body.classList.add("diff-open");
+        document.body.classList.remove("tracknote-open");
+        if (typeof AgentPanel !== "undefined") AgentPanel.close();
+        if (typeof setFsSidebarMode === "function") setFsSidebarMode("files");
+      }
     }
   });
 
