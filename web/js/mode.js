@@ -38,6 +38,8 @@
       body.classList.remove('ide-sidebar-open');
       // Restore last session (folder + file)
       if (window.restoreIdeSession) window.restoreIdeSession();
+      // Sync compact status bar from main controls
+      setTimeout(syncCompactStatusBar, 100);
     } else {
       // Leaving IDE mode: close the right sidebar
       body.classList.remove('diff-open');
@@ -55,6 +57,9 @@
       const main = document.querySelector('.main');
       if (main) main.style.marginRight = '';
     }
+
+    // Refresh IDE tab bar visibility on mode switch
+    if (window.renderIdeTabBar) window.renderIdeTabBar();
 
     // Re-render lucide icons for newly visible elements
     if (window.lucide) window.lucide.createIcons();
@@ -107,6 +112,100 @@
     });
     if (chatCompactSend) {
       chatCompactSend.addEventListener('click', sendCompactMessage);
+    }
+
+
+    // New Chat button — delegate to main newChatFloat handler
+    const compactNewChat = document.getElementById('compactNewChat');
+    if (compactNewChat) {
+      compactNewChat.addEventListener('click', () => {
+        const mainNewChat = document.getElementById('newChatFloat');
+        if (mainNewChat) mainNewChat.click();
+      });
+    }
+
+    // Agent mode switch button
+    const compactAgentSwitch = document.getElementById('compactAgentSwitch');
+    if (compactAgentSwitch) {
+      compactAgentSwitch.addEventListener('click', () => {
+        setLayoutMode('agent');
+      });
+    }
+
+
+    // Attach button — delegate to main file input
+    const compactAttach = document.getElementById('chatCompactAttach');
+    const compactFileInput = document.getElementById('chatCompactFileInput');
+    const mainFileInput = document.getElementById('fileInput');
+    if (compactAttach && compactFileInput) {
+      compactAttach.addEventListener('click', () => {
+        // Use main file input if available (has the change handler wired in app.js)
+        if (mainFileInput) {
+          mainFileInput.click();
+        } else {
+          compactFileInput.click();
+        }
+      });
+    }
+
+    // Compact thinking dropdown — self-contained, clones items from main menu
+    const compactThinkingDropdown = document.getElementById('compactThinkingDropdown');
+    const compactThinkingTrigger = document.getElementById('compactThinkingTrigger');
+    const compactThinkingMenu = document.getElementById('compactThinkingMenu');
+    if (compactThinkingTrigger && compactThinkingDropdown && compactThinkingMenu) {
+      compactThinkingTrigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isOpen = compactThinkingDropdown.classList.toggle('open');
+        if (isOpen) {
+          // Clone items from main thinking menu
+          const mainMenu = document.getElementById('statusThinkingMenu');
+          compactThinkingMenu.innerHTML = '';
+          if (mainMenu) {
+            for (const item of mainMenu.children) {
+              const clone = item.cloneNode(true);
+              clone.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                // Forward click to the original main menu item (has the real handler)
+                item.click();
+                compactThinkingDropdown.classList.remove('open');
+                setTimeout(syncCompactStatusBar, 50);
+              });
+              compactThinkingMenu.appendChild(clone);
+            }
+          }
+        }
+      });
+      document.addEventListener('click', () => compactThinkingDropdown.classList.remove('open'));
+    }
+
+    // Compact model dropdown — self-contained, clones items from main menu
+    const compactModelDropdown = document.getElementById('compactModelDropdown');
+    const compactModelTrigger = document.getElementById('compactModelTrigger');
+    const compactModelMenu = document.getElementById('compactModelMenu');
+    if (compactModelTrigger && compactModelDropdown && compactModelMenu) {
+      compactModelTrigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isOpen = compactModelDropdown.classList.toggle('open');
+        if (isOpen) {
+          // Clone items from main model menu
+          const mainMenu = document.getElementById('modelMenu');
+          compactModelMenu.innerHTML = '';
+          if (mainMenu) {
+            for (const item of mainMenu.children) {
+              const clone = item.cloneNode(true);
+              clone.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                // Forward click to the original main menu item (has the real handler)
+                item.click();
+                compactModelDropdown.classList.remove('open');
+                setTimeout(syncCompactStatusBar, 50);
+              });
+              compactModelMenu.appendChild(clone);
+            }
+          }
+        }
+      });
+      document.addEventListener('click', () => compactModelDropdown.classList.remove('open'));
     }
   }
 
@@ -307,6 +406,56 @@
     }
   }
 
+  // ─── Status Bar Mirror (thinking, model, context) ───
+  // Syncs compact status bar controls from the main input area
+
+  function syncCompactStatusBar() {
+    if (body.getAttribute('data-mode') !== 'ide') return;
+
+    // Thinking mode label + visibility
+    const mainThinkingLabel = document.getElementById('statusThinkingLabel');
+    const compactThinkingLabel = document.getElementById('compactThinkingLabel');
+    const mainThinkingDropdown = document.getElementById('statusThinkingDropdown');
+    const compactThinkingDropdown = document.getElementById('compactThinkingDropdown');
+    if (mainThinkingLabel && compactThinkingLabel) {
+      compactThinkingLabel.textContent = mainThinkingLabel.textContent;
+    }
+    if (mainThinkingDropdown && compactThinkingDropdown) {
+      compactThinkingDropdown.style.display = mainThinkingDropdown.style.display;
+    }
+
+    // Model label
+    const mainModelLabel = document.querySelector('#modelDropdown .glass-dropdown-label');
+    const compactModelLabel = document.getElementById('compactModelLabel');
+    if (mainModelLabel && compactModelLabel) {
+      compactModelLabel.textContent = mainModelLabel.textContent;
+    }
+
+    // Context usage (SVG ring — must copy innerHTML)
+    const mainContext = document.getElementById('statusContext');
+    const compactContext = document.getElementById('compactContext');
+    if (mainContext && compactContext) {
+      compactContext.innerHTML = mainContext.innerHTML;
+      compactContext.title = mainContext.title;
+    }
+  }
+
+  let statusBarObserver = null;
+
+  function startStatusBarObserver() {
+    const mainStatusBar = document.getElementById('statusBar');
+    if (!mainStatusBar || statusBarObserver) return;
+
+    statusBarObserver = new MutationObserver(() => syncCompactStatusBar());
+    statusBarObserver.observe(mainStatusBar, { childList: true, subtree: true, characterData: true });
+
+    // Also sync on model change events
+    const modelSelect = document.getElementById('modelSelect');
+    if (modelSelect) {
+      modelSelect.addEventListener('change', () => setTimeout(syncCompactStatusBar, 50));
+    }
+  }
+
   // ─── Public API ───
 
   // ─── Compact Chat Title Sync ───
@@ -427,9 +576,11 @@
     setupCompactToolbarDelegation();
     startChatObserver();
     startSendBtnObserver();
+    startStatusBarObserver();
     // Initial mirror if starting in IDE mode
     if (saved === 'ide') {
       setTimeout(mirrorMessages, 500);
+      setTimeout(syncCompactStatusBar, 600);
       // Restore IDE session (folder + file) after DOM settles
       setTimeout(() => {
         if (window.restoreIdeSession) window.restoreIdeSession();

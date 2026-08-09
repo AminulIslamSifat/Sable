@@ -308,7 +308,7 @@ class DeepResearcher:
         backend = resolve_backend(model) if model else None
         logger.debug("_dispatch | model=%s backend=%s account=%s timeout=%d", model, backend, account, timeout)
         if backend:
-            connector = get_connector(backend)
+            connector = get_connector(backend, model_id=model)
             logger.info("routing to %s connector for model=%s", backend, model)
             result = await connector.chat(message=prompt, model=model, thinking_mode="fast")
             answer = (result or {}).get("answer", "").strip()

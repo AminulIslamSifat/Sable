@@ -76,8 +76,13 @@ def extract_summarize_tag(text: str) -> int | None:
 
 
 def strip_summarize_tag(text: str) -> str:
-    """Remove <summarize_before> tags from visible output."""
-    return _SUMMARIZE_TAG_RE.sub("", text).strip()
+    """Remove <summarize_before> tags from visible output.
+
+    NOTE: Does NOT .strip() whitespace — this function is called on
+    individual streaming chunks where leading/trailing spaces are
+    meaningful inter-token spacing.
+    """
+    return _SUMMARIZE_TAG_RE.sub("", text)
 
 
 def build_summary_prompt(history_messages: list[dict[str, Any]], msg_char_fn) -> str:

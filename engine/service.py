@@ -15,6 +15,7 @@ from engine.config import (
     URL,
     get_qwen_tokens_for_account,
     save_qwen_tokens_for_account,
+    mark_account_exhausted,
 )
 from engine.payloads import build_body
 from engine.session import BrowserManager, create_new_chat
@@ -47,6 +48,12 @@ class ChatService:
             self._account_override: str | None = basename
         else:
             self._account_override = None
+
+    def _mark_exhausted(self) -> None:
+        """Mark the current account as quota-exhausted."""
+        from engine.config import _resolve_active_account
+        account = self._account_override or _resolve_active_account()
+        mark_account_exhausted(account)
 
     async def close(self) -> None:
         async with self._lock:
@@ -273,6 +280,7 @@ class ChatService:
                                     if code == "RateLimited":
                                         hours = inner.get("num", "?")
                                         details = inner.get("details", "Daily usage limit reached.")
+                                        self._mark_exhausted()
                                         yield {
                                             "type": "rate_limited",
                                             "message": details,
@@ -311,6 +319,7 @@ class ChatService:
                                                     if code == "RateLimited":
                                                         hours = inner.get("num", "?")
                                                         details = inner.get("details", "Daily usage limit reached.")
+                                                        self._mark_exhausted()
                                                         yield {
                                                             "type": "rate_limited",
                                                             "message": details,
@@ -414,6 +423,7 @@ class ChatService:
                             if code == "RateLimited":
                                 hours = inner.get("num", "?")
                                 details = inner.get("details", "Daily usage limit reached.")
+                                self._mark_exhausted()
                                 yield {
                                     "type": "rate_limited",
                                     "message": details,

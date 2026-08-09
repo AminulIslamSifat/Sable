@@ -68,8 +68,59 @@ def chat_messages(
             "FROM messages WHERE chat_id = ?",
             (chat_id,),
         ).fetchone()
-        context_chars = row["total"] if row else 0
+        msg_chars = row["total"] if row else 0
+        tool_row = conn.execute(
+            "SELECT COALESCE(SUM(LENGTH(se.event_data)), 0) AS tool_total "
+            "FROM skill_events se JOIN messages m ON se.message_id = m.id "
+            "WHERE m.chat_id = ?",
+            (chat_id,),
+        ).fetchone()
+        context_chars = msg_chars + (tool_row["tool_total"] if tool_row else 0)
     return {"chat_id": chat_id, "messages": messages, "context_chars": context_chars}
+
+
+@router.get("/api/chats/{chat_id}/context-breakdown")
+def context_breakdown(chat_id: str) -> dict[str, Any]:
+    """Return context usage breakdown by role/type for the context circle popup."""
+    from server.database import get_db
+    with get_db() as conn:
+        # Per-role content chars
+        rows = conn.execute(
+            "SELECT role, "
+            "COALESCE(SUM(LENGTH(content)), 0) AS content_chars, "
+            "COALESCE(SUM(LENGTH(COALESCE(thinking, ''))), 0) AS thinking_chars "
+            "FROM messages WHERE chat_id = ? GROUP BY role",
+            (chat_id,),
+        ).fetchall()
+        # Tool output chars from the skill_events table (joined via message_id)
+        tool_rows = conn.execute(
+            "SELECT se.event_data FROM skill_events se "
+            "JOIN messages m ON se.message_id = m.id "
+            "WHERE m.chat_id = ?",
+            (chat_id,),
+        ).fetchall()
+
+    user_chars = 0
+    assistant_chars = 0
+    thinking_chars = 0
+    for r in rows:
+        if r["role"] == "user":
+            user_chars = r["content_chars"]
+        elif r["role"] == "assistant":
+            assistant_chars = r["content_chars"]
+            thinking_chars = r["thinking_chars"]
+
+    # Sum tool chars directly from event_data
+    tool_chars = sum(len(tr["event_data"] or "") for tr in tool_rows)
+
+    total = user_chars + assistant_chars + thinking_chars + tool_chars
+    return {
+        "total": total,
+        "user": user_chars,
+        "assistant": assistant_chars,
+        "thinking": thinking_chars,
+        "tool": tool_chars,
+    }
 
 
 @router.get("/api/chats/{chat_id}/messages/{message_id}/events")
