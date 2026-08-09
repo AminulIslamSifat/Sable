@@ -122,8 +122,10 @@
       });
 
       loadResearchLibrary();
-      // Recreate cards for runs still in flight (DOM was wiped on re-render)
-      // and reattach their streams. Finished runs live in Past Research.
+
+      // Restore active runs: first from in-memory Map (tab re-render), then
+      // discover any server-side runs we lost (tab close + reopen).
+      const restoredSids = new Set();
       _researchRuns.forEach((run, sid) => {
         if (run.done) return;
         const prior = run.nodesList || [];
@@ -132,7 +134,38 @@
         fresh.nodesList = prior.slice();
         prior.forEach((n) => fresh.graph.addNode(n));
         attachResearchStream(sid);
+        restoredSids.add(sid);
       });
+
+      // Discover server-side active sessions not already in memory.
+      try {
+        const res = await fetch("/api/research/active");
+        const data = await res.json().catch(() => ({ active: [] }));
+        for (const s of (data.active || [])) {
+          if (!s.session_id || restoredSids.has(s.session_id)) continue;
+          // Fetch current status so the card isn't blank until next SSE event.
+          let initialProgress = s.progress || {};
+          let startedAt = Date.now();
+          try {
+            const stRes = await fetch("/api/research/status/" + s.session_id);
+            const stData = await stRes.json().catch(() => null);
+            if (stData) {
+              initialProgress = stData.progress || initialProgress;
+              if (stData.started_at) startedAt = stData.started_at * 1000;
+            }
+          } catch {}
+          createRunCard(s.session_id, s.query || "Research");
+          const run = _researchRuns.get(s.session_id);
+          if (run) {
+            run.startedAt = startedAt;
+            renderRunProgress(run, initialProgress);
+          }
+          attachResearchStream(s.session_id);
+          restoredSids.add(s.session_id);
+        }
+      } catch (e) {
+        console.warn("research: failed to discover active sessions", e);
+      }
     }
 
     // Parse an API response as JSON, but surface a readable error if the server
