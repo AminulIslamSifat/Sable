@@ -4732,8 +4732,12 @@
       }
 
       function markDirty(tabName) {
+        if (_loading) return;
         if (_tabs[tabName]) { _tabs[tabName].dirty = true; updateBar(); }
       }
+
+      let _loading = true; // suppress dirty during initial load
+      setTimeout(() => { _loading = false; }, 2000);
 
       function register(tabName, saveFn, snapshotFn) {
         _tabs[tabName] = { saveFn, snapshotFn, dirty: false, lastSnapshot: null };
@@ -4769,11 +4773,13 @@
       // Auto-detect changes via input/change events on settings body
       const settingsBody = document.querySelector(".settings-body");
       if (settingsBody) {
-        settingsBody.addEventListener("input", () => {
+        settingsBody.addEventListener("input", (e) => {
+          if (e.target?.dataset?.noSaveTrack) return;
           const activeTab = document.querySelector(".settings-tab.active")?.dataset.tab;
           if (activeTab && _tabs[activeTab]) markDirty(activeTab);
         });
-        settingsBody.addEventListener("change", () => {
+        settingsBody.addEventListener("change", (e) => {
+          if (e.target?.dataset?.noSaveTrack) return;
           const activeTab = document.querySelector(".settings-tab.active")?.dataset.tab;
           if (activeTab && _tabs[activeTab]) markDirty(activeTab);
         });
