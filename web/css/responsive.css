@@ -7,6 +7,9 @@
       /* Hide IDE mode switcher + agent layout toggle on mobile — pure chat only */
       #layoutSwitcher { display: none !important; }
       #modeSwitcher { display: none !important; }
+
+      /* Hide model dropdown in compact status bar — keep only thinking + context */
+      .compact-status-center { display: none !important; }
     }
 
     /* ---------- small phones (≤480px) ---------- */

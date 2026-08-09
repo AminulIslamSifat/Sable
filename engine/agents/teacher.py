@@ -301,7 +301,7 @@ async def _call_teacher_api(prompt: str, model: str, backend: str) -> str:
     from connectors import get_connector
     from engine.config import get_model_config
 
-    connector = get_connector(backend)
+    connector = get_connector(backend, model_id=model)
     cfg = get_model_config(model)
     api_model_type = cfg.get("api_model_type")
 

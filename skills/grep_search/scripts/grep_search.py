@@ -17,6 +17,8 @@ ALLOWED_ROOTS = [
 ]
 
 MAX_RESULTS_CAP = 200
+MAX_OUTPUT_CHARS = 25_000  # default output budget (~25k chars)
+LINE_TRUNCATE = 300        # per-line truncation
 
 
 def validate_path(raw: str) -> Path:
@@ -40,6 +42,9 @@ def cmd_grep(args: dict) -> list[str]:
     max_results = min(int(args.get("max_results", 50)), MAX_RESULTS_CAP)
     glob_filter = args.get("glob")
     ignore_case = str(args.get("ignore_case", "")).lower() in ("true", "1", "yes")
+    full_output = str(args.get("full", "")).lower() in ("true", "1", "yes")
+    exclude_raw = args.get("exclude", "")
+    extra_excludes = [e.strip() for e in exclude_raw.split(",") if e.strip()] if exclude_raw else []
 
     # Try ripgrep first
     rg = shutil.which("rg")
@@ -47,6 +52,12 @@ def cmd_grep(args: dict) -> list[str]:
         cmd = [rg, "--json", "--max-count=1", f"--max-count={max_results}"]
         if ignore_case:
             cmd.append("-i")
+        # Default exclusions for junk dirs/files
+        for excl in ("vendor/", "node_modules/", "*.min.js", "*.min.css", ".git/"):
+            cmd.extend(["--glob", f"!{excl}"])
+        # User-specified exclusions
+        for excl in extra_excludes:
+            cmd.extend(["--glob", f"!{excl}"])
         if glob_filter:
             cmd.extend(["--glob", glob_filter])
         cmd.extend([pattern, str(search_path)])
@@ -55,6 +66,19 @@ def cmd_grep(args: dict) -> list[str]:
         cmd = ["grep", "-rn", "--max-count=1"]
         if ignore_case:
             cmd.append("-i")
+        default_excl_dirs = ["vendor", "node_modules"]
+        default_excl_files = ["*.min.js", "*.min.css"]
+        for excl in extra_excludes:
+            if excl.endswith("/"):
+                default_excl_dirs.append(excl.rstrip("/"))
+            elif "*" in excl or "." in excl:
+                default_excl_files.append(excl)
+            else:
+                default_excl_dirs.append(excl)
+        for d in default_excl_dirs:
+            cmd.append(f"--exclude-dir={d}")
+        for f in default_excl_files:
+            cmd.append(f"--exclude={f}")
         if glob_filter:
             cmd.extend(["--include", glob_filter])
         cmd.extend([pattern, str(search_path)])
@@ -67,6 +91,10 @@ def cmd_grep(args: dict) -> list[str]:
         return [f"Error: {e}"]
 
     lines: list[str] = []
+    total_chars = 0
+    truncated = False
+    total_match_count = 0
+
     if rg:
         # Parse ripgrep JSON lines
         for line in proc.stdout.splitlines():
@@ -75,11 +103,20 @@ def cmd_grep(args: dict) -> list[str]:
             try:
                 obj = json.loads(line)
                 if obj.get("type") == "match":
+                    total_match_count += 1
                     data = obj["data"]
                     path = data["path"]["text"]
                     line_num = data["line_number"]
                     text = data["lines"]["text"].rstrip("\n")
-                    lines.append(f"{path}:{line_num}:{text}")
+                    if len(text) > LINE_TRUNCATE:
+                        text = text[:LINE_TRUNCATE] + "…"
+                    entry = f"{path}:{line_num}:{text}"
+                    # Check output budget
+                    if not full_output and total_chars + len(entry) > MAX_OUTPUT_CHARS:
+                        truncated = True
+                        break
+                    total_chars += len(entry)
+                    lines.append(entry)
             except (json.JSONDecodeError, KeyError):
                 continue
     else:
@@ -87,7 +124,17 @@ def cmd_grep(args: dict) -> list[str]:
         for line in proc.stdout.splitlines():
             if len(lines) >= max_results:
                 break
+            total_match_count += 1
+            if len(line) > LINE_TRUNCATE:
+                line = line[:LINE_TRUNCATE] + "…"
+            if not full_output and total_chars + len(line) > MAX_OUTPUT_CHARS:
+                truncated = True
+                break
+            total_chars += len(line)
             lines.append(line)
+
+    if truncated:
+        lines.append(f"[⚠️ Output truncated at {total_chars:,} chars ({len(lines)}/{total_match_count} matches shown). Use full=\"true\" to get all results.]")
 
     if not lines:
         return [f"No matches found for '{pattern}' in {search_path}"]

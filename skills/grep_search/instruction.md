@@ -1,4 +1,3 @@
-
 # Grep Search
 
 Search file contents, find files by pattern, list directories. All paths sandboxed to allowed roots ($PROJECT_ROOT, $HOME, /tmp).
@@ -7,9 +6,10 @@ Search file contents, find files by pattern, list directories. All paths sandbox
 
 ### `<grep>` — Search file contents
 Uses ripgrep (falls back to grep). Returns `file:line:match` format.
+Default output capped at ~25k chars with a truncation notice. Use `full="true"` to bypass the cap.
 
 <action>
-<grep pattern="regex_pattern" path="/optional/dir" glob="*.py" ignore_case="true" max_results="50" />
+<grep pattern="regex_pattern" path="/optional/dir" glob="*.py" exclude="dist/,*.lock" ignore_case="true" max_results="50" />
 </action>
 
 | Attribute | Required | Description |
@@ -17,8 +17,10 @@ Uses ripgrep (falls back to grep). Returns `file:line:match` format.
 | pattern | ✅ | Regex pattern to search |
 | path | ❌ | Directory to search (default: $PROJECT_ROOT) |
 | glob | ❌ | File glob filter (e.g. `*.py`, `*.{js,ts}`) |
+| exclude | ❌ | Comma-separated globs to exclude (e.g. `dist/,*.lock,build/`) |
 | ignore_case | ❌ | Case-insensitive match (`true`/`false`) |
 | max_results | ❌ | Max matches to return (default: 50, max: 200) |
+| full | ❌ | `"true"` bypasses the 25k char output cap |
 
 ### `<glob>` — Find files by pattern
 Returns relative paths sorted by modification time (newest first).
