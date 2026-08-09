@@ -89,7 +89,10 @@ class CookbookState:
             return
 
         for d in raw.get("downloads", []):
-            self.downloads.append(DownloadTask(**{k: v for k, v in d.items() if k in DownloadTask.__dataclass_fields__}))
+            # Only restore active downloads — finished/failed/cancelled are
+            # transient UI feedback and shouldn't survive restarts.
+            if d.get("status") in ("downloading", "pending"):
+                self.downloads.append(DownloadTask(**{k: v for k, v in d.items() if k in DownloadTask.__dataclass_fields__}))
         for s in raw.get("servers", []):
             self.servers.append(ServeTask(**{k: v for k, v in s.items() if k in ServeTask.__dataclass_fields__}))
 
@@ -100,8 +103,12 @@ class CookbookState:
 
     def save(self) -> None:
         _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        # Only persist active downloads — done/failed/cancelled are transient
+        # UI feedback. They stay in memory for current-session API responses
+        # but don't survive restarts.
+        active_downloads = [d for d in self.downloads if d.status in ("downloading", "pending")]
         data = {
-            "downloads": [asdict(d) for d in self.downloads],
+            "downloads": [asdict(d) for d in active_downloads],
             "servers": [asdict(s) for s in self.servers],
             "settings": asdict(self.settings),
         }

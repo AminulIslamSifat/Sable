@@ -29,7 +29,7 @@ _INCLUDE_RE = re.compile(r"^[A-Za-z0-9._\-*?/\[\]]+$")
 # Inline script executed in the subprocess — receives config via env vars.
 # Writes progress updates to a JSON file so the parent can read real stats.
 _DL_SCRIPT = '''\
-import os, sys, json, time, threading, fnmatch
+import os, sys, json, time, threading, fnmatch, re
 from pathlib import Path
 
 repo_id = os.environ["_DL_REPO"]
@@ -63,13 +63,51 @@ def _write_progress(force=False):
     except OSError:
         pass
 
+# ── Deduplicate split vs single GGUF files ──
+# Repos often have BOTH "model-q4_k_m.gguf" (single) AND
+# "model-q4_k_m-00001-of-00002.gguf" + "...-00002-of-..." (split).
+# A glob like *q4_k_m* matches all → downloads model twice.
+_SPLIT_RE = re.compile('^(.+)-([0-9]{5})-of-([0-9]{5})[.]gguf$')
+
+def _dedup_gguf_files(matched_files):
+    """Given list of (name, size) tuples matching a glob, remove duplicates.
+    If both split parts and a single file exist for same base, keep single."""
+    # Group split files by their base name
+    split_groups = {}  # base_name -> [(name, size), ...]
+    singles = []       # [(name, size), ...]
+
+    for name, size in matched_files:
+        m = _SPLIT_RE.match(name)
+        if m:
+            base = m.group(1)  # e.g. "model-q4_k_m"
+            split_groups.setdefault(base, []).append((name, size))
+        elif name.endswith('.gguf'):
+            # Check if this single file has corresponding splits
+            base = name[:-5]  # strip .gguf
+            singles.append((name, size, base))
+        else:
+            singles.append((name, size, None))
+
+    # Determine which split groups have a corresponding single file
+    single_bases = {s[2] for s in singles if s[2]}
+    result = []
+    for name, size, base in singles:
+        result.append((name, size))
+    for base, parts in split_groups.items():
+        if base not in single_bases:
+            # No single file exists — keep the splits
+            for name, size in parts:
+                result.append((name, size))
+        # else: single file exists, skip splits (already added above)
+    return result
+
 # ── Query total size from HF API ──
 def get_total_size():
     from huggingface_hub import HfApi
     api = HfApi(token=token)
     try:
         files = api.list_repo_tree(repo_id, recursive=True)
-        total = 0
+        matched = []
         for f in files:
             if not hasattr(f, "size") or f.size is None:
                 continue
@@ -78,8 +116,9 @@ def get_total_size():
                 continue
             if include and not fnmatch.fnmatch(name, include):
                 continue
-            total += f.size
-        return total
+            matched.append((name, f.size))
+        deduped = _dedup_gguf_files(matched)
+        return sum(s for _, s in deduped)
     except Exception:
         return 0
 
@@ -148,7 +187,27 @@ try:
             tqdm_class=HfProgressTqdm,
         )
     else:
-        allow_patterns = [include] if include else None
+        # Use explicit deduplicated filenames as allow_patterns instead of
+        # glob + ignore_patterns. snapshot_download doesn't reliably skip
+        # files via ignore_patterns when allow_patterns glob matches them.
+        if include:
+            from huggingface_hub import HfApi as _HfApi
+            _api = _HfApi(token=token)
+            try:
+                _files = _api.list_repo_tree(repo_id, recursive=True)
+                _matched = []
+                for _f in _files:
+                    if not hasattr(_f, "size") or _f.size is None:
+                        continue
+                    _name = _f.rfilename if hasattr(_f, "rfilename") else getattr(_f, "path", "")
+                    if fnmatch.fnmatch(_name, include):
+                        _matched.append((_name, _f.size))
+                _deduped = _dedup_gguf_files(_matched)
+                allow_patterns = [n for n, _ in _deduped]
+            except Exception:
+                allow_patterns = [include]
+        else:
+            allow_patterns = None
         snapshot_download(
             repo_id=repo_id,
             local_dir=target_dir,
