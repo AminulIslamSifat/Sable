@@ -58,7 +58,7 @@
     let html = "";
     for (const d of active) {
       const pct = Math.round(d.progress || 0);
-      const statusIcon = pct > 0 ? "⬇" : "⏳";
+      const statusIcon = pct > 0 ? '<i data-lucide="download" style="width:12px;height:12px;display:inline;vertical-align:middle;"></i>' : '<i data-lucide="hourglass" style="width:12px;height:12px;display:inline;vertical-align:middle;"></i>';
       const speedStr = fmtSpeed(d.speed_bps || 0);
       const bytesStr = fmtBytes(d.bytes_downloaded || 0) + (d.total_bytes ? " / " + fmtBytes(d.total_bytes) : "");
       html += `
@@ -79,15 +79,15 @@
     }
     for (const d of done) {
       html += `
-        <div class="cb-download-card cb-done">
+        <div class="cb-download-card cb-done cb-auto-dismiss">
           <div class="cb-dl-header">
-            <span class="cb-dl-repo">✓ ${escHtml(d.repo_id)}</span>
+            <span class="cb-dl-repo"><i data-lucide="circle-check" style="width:12px;height:12px;display:inline;vertical-align:middle;color:var(--success);"></i> ${escHtml(d.repo_id)}</span>
           </div>
         </div>`;
     }
     for (const d of failed) {
       html += `
-        <div class="cb-download-card cb-failed">
+        <div class="cb-download-card cb-failed cb-auto-dismiss">
           <div class="cb-dl-header">
             <span class="cb-dl-repo">✗ ${escHtml(d.repo_id)}</span>
           </div>
@@ -95,6 +95,15 @@
         </div>`;
     }
     el.innerHTML = html;
+
+    // Auto-dismiss done/failed cards after 5s
+    setTimeout(() => {
+      el.querySelectorAll(".cb-auto-dismiss").forEach((card) => {
+        card.style.transition = "opacity 0.4s";
+        card.style.opacity = "0";
+        setTimeout(() => card.remove(), 400);
+      });
+    }, 5000);
 
     // Bind stop buttons
     el.querySelectorAll(".cb-stop-dl-btn").forEach((btn) => {
@@ -188,7 +197,7 @@
       const incompatible = !r.fits;
       const cardClass = incompatible ? "cb-preset-card cb-incompatible" : "cb-preset-card";
       const scoreColor = incompatible ? "#f87171" : r.score >= 80 ? "#4ade80" : r.score >= 60 ? "#fbbf24" : "#f87171";
-      const speedIcon = r.speed === "fast" ? "⚡" : r.speed === "moderate" ? "🔄" : "🐢";
+      const speedIcon = r.speed === "fast" ? '<i data-lucide="zap" style="width:12px;height:12px;display:inline;vertical-align:middle;"></i>' : r.speed === "moderate" ? '<i data-lucide="refresh-cw" style="width:12px;height:12px;display:inline;vertical-align:middle;"></i>' : '<i data-lucide="gauge" style="width:12px;height:12px;display:inline;vertical-align:middle;"></i>';
       const btnHtml = incompatible
         ? `<button class="cb-preset-btn cb-btn-disabled" disabled title="${escHtml(r.notes)}">Won't Fit</button>`
         : `<button class="cb-preset-btn" data-repo="${escHtml(r.repo_id)}" data-include="${escHtml(r.include)}" data-label="${escHtml(r.label)}">Download & Serve</button>`;
@@ -196,13 +205,14 @@
       html += `
         <div class="${cardClass}" data-idx="${i}">
           <div class="cb-preset-label">
-            ${incompatible ? "🚫 " : ""}${escHtml(r.label)}
+            ${incompatible ? '<i data-lucide="circle-x" style="width:12px;height:12px;display:inline;vertical-align:middle;color:#f87171;"></i> ' : ""}${escHtml(r.label)}
             <span class="cb-score-badge" style="color:${scoreColor}">${incompatible ? "✗" : r.score}</span>
           </div>
           <div class="cb-preset-desc">${escHtml(r.description)}</div>
           <div class="cb-preset-meta">
             <span>${r.params_b}B · ${r.quant}</span>
-            <span>~${r.estimated_memory_gb} GB</span>
+            <span><i data-lucide="download" style="width:12px;height:12px;display:inline;vertical-align:middle;"></i> ${r.download_size_gb || '~' + r.estimated_memory_gb} GB</span>
+            <span><i data-lucide="cpu" style="width:12px;height:12px;display:inline;vertical-align:middle;"></i> ~${r.estimated_memory_gb} GB</span>
             ${incompatible ? "" : `<span>${speedIcon} ${r.speed}</span>`}
           </div>
           <div class="cb-preset-notes ${incompatible ? "cb-notes-red" : ""}">${escHtml(r.notes)}</div>
@@ -226,7 +236,7 @@
               model_label: btn.dataset.label,
             }),
           });
-          btn.textContent = "⬇ Downloading...";
+          btn.innerHTML = '<i data-lucide="download" style="width:12px;height:12px;display:inline;vertical-align:middle;"></i> Downloading...';
           showToast("Downloading " + btn.dataset.label + " — watch progress above");
           startPolling();
           refreshCookbook();
@@ -256,7 +266,10 @@
             <span class="cb-model-name">${escHtml(m.name)}</span>
             <span class="muted" style="font-size:11px;">${sizeStr}</span>
           </div>
-          <button class="cb-serve-btn" data-path="${escHtml(m.path)}" data-name="${escHtml(m.name)}">▶ Serve</button>
+          <div style="display:flex;gap:6px;">
+            <button class="cb-serve-btn" data-path="${escHtml(m.path)}" data-name="${escHtml(m.name)}">▶ Serve</button>
+            <button class="cb-delete-btn" data-path="${escHtml(m.path)}" data-name="${escHtml(m.name)}">🗑</button>
+          </div>
         </div>`;
     }
     el.innerHTML = html;
@@ -279,6 +292,26 @@
         btn.textContent = "▶ Serve";
       };
     });
+
+    el.querySelectorAll(".cb-delete-btn").forEach((btn) => {
+      btn.onclick = async () => {
+        if (!confirm("Delete " + btn.dataset.name + " from disk? This cannot be undone.")) return;
+        btn.disabled = true;
+        btn.textContent = "...";
+        try {
+          await cbFetch("/model", {
+            method: "DELETE",
+            body: JSON.stringify({ path: btn.dataset.path }),
+          });
+          showToast("Deleted " + btn.dataset.name);
+          refreshCookbook();
+        } catch (e) {
+          showToast("Delete failed: " + e.message, true);
+          btn.disabled = false;
+          btn.textContent = "🗑";
+        }
+      };
+    });
   }
 
   // ─── Logs Modal ─────────────────────────────────────────────────────────────
@@ -293,12 +326,13 @@
       <div class="cb-logs-modal-content">
         <div class="cb-logs-modal-header">
           <h4>Server Logs</h4>
-          <button class="cb-logs-close">✕</button>
+          <button class="cb-logs-close"><i data-lucide="x" style="width:14px;height:14px;"></i></button>
         </div>
         ${diagnosis ? `<div class="cb-diagnosis"><strong>⚠ ${escHtml(diagnosis.message)}</strong><ul>${diagnosis.suggestions.map((s) => `<li>${escHtml(s)}</li>`).join("")}</ul></div>` : ""}
         <pre class="cb-logs-text">${escHtml(logs || "No output yet")}</pre>
       </div>`;
     document.body.appendChild(modal);
+    if (typeof lucide !== "undefined") lucide.createIcons();
     modal.querySelector(".cb-logs-close").onclick = () => modal.remove();
     modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
   }
@@ -344,24 +378,22 @@
     } catch (e) { /* ignore */ }
   }
 
-  function initSaveSettings() {
-    const btn = document.getElementById("cbSaveSettings");
-    if (!btn) return;
-    btn.onclick = async () => {
-      const body = {
-        default_port: parseInt(document.getElementById("cbDefaultPort").value) || 8080,
-        default_ctx: parseInt(document.getElementById("cbDefaultCtx").value) || 4096,
-        auto_register: document.getElementById("cbAutoRegister").checked,
-      };
-      const token = document.getElementById("cbHfToken").value.trim();
-      if (token) body.hf_token = token;
-      try {
-        await cbFetch("/settings", { method: "POST", body: JSON.stringify(body) });
-        showToast("Cookbook settings saved");
-      } catch (e) {
-        showToast("Save failed: " + e.message, true);
-      }
+  async function _saveCookbookSettings() {
+    const body = {
+      default_port: parseInt(document.getElementById("cbDefaultPort").value) || 8080,
+      default_ctx: parseInt(document.getElementById("cbDefaultCtx").value) || 4096,
+      auto_register: document.getElementById("cbAutoRegister").checked,
     };
+    const token = document.getElementById("cbHfToken").value.trim();
+    if (token) body.hf_token = token;
+    await cbFetch("/settings", { method: "POST", body: JSON.stringify(body) });
+  }
+
+  function initSaveSettings() {
+    // Register with universal save system if available
+    if (window._universalSave) {
+      window._universalSave.register("cookbook", _saveCookbookSettings);
+    }
   }
 
   // ─── Polling for Live Progress ──────────────────────────────────────────────
@@ -393,6 +425,8 @@
       // Server might be restarting
       stopPolling();
     }
+    // Re-render lucide icons in dynamically inserted HTML
+    if (typeof lucide !== "undefined") lucide.createIcons();
   }
 
   // ─── Per-Model Instruction Settings ─────────────────────────────────────────

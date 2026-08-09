@@ -1086,8 +1086,10 @@ const AgentSettings = {
 
 // Wire up save button + lazy-load on first tab visit
 document.addEventListener("DOMContentLoaded", () => {
-  const saveBtn = document.getElementById("agentConfigSave");
-  if (saveBtn) saveBtn.addEventListener("click", () => AgentSettings.save());
+  // Register with universal save system if available
+  if (window._universalSave) {
+    window._universalSave.register("agents", () => AgentSettings.save());
+  }
 
   // Load config when Agents tab is clicked
   document.querySelectorAll(".settings-tab").forEach((tab) => {
