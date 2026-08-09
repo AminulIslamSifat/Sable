@@ -21,6 +21,7 @@ class ChatRequest(BaseModel):
     ref_file_ids: list[str] | None = None
     cwd: str | None = None
     open_file: str | None = None
+    skip_user_save: bool = False
 
 class NewChatRequest(BaseModel):
     model: str | None = None

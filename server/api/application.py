@@ -45,6 +45,7 @@ from .routes.research import router as research_router
 from .routes.tracknote import router as tracknote_router
 from .routes.setup import router as setup_router
 from .routes.cookbook import router as cookbook_router
+from .routes.checkpoints import router as checkpoints_router
 
 def _raise_nofile_limit() -> None:
     """Raise open file limit for agentic workloads (browsers, agents, streams)."""
@@ -235,6 +236,7 @@ app.include_router(research_router)
 app.include_router(tracknote_router)
 app.include_router(setup_router)
 app.include_router(cookbook_router)
+app.include_router(checkpoints_router)
 
 # Wire agent runtime event callback → SSE push
 from .routes.agents import _async_push_agent_event, push_agent_event

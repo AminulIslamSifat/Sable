@@ -213,6 +213,26 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_agent_ops_next_run ON agent_ops(next_run)"
         )
 
+        # --- Checkpoint table (shadow-git restore points) ---
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS checkpoints (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT NOT NULL,
+                message_id INTEGER NOT NULL,
+                tool_name TEXT NOT NULL DEFAULT '',
+                commit_sha TEXT NOT NULL,
+                project_root TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(chat_id) REFERENCES chats(id),
+                FOREIGN KEY(message_id) REFERENCES messages(id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_checkpoints_chat ON checkpoints(chat_id, message_id)"
+        )
+
 def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = None, mode: str | None = None, provider: str | None = None) -> None:
     now = utcnow()
     with get_db() as conn:
@@ -831,3 +851,45 @@ def migrate_skill_events_to_table() -> int:
         if migrated > 0:
             conn.execute("UPDATE messages SET skill_events = NULL")
     return migrated
+
+
+# --- Checkpoint helpers ---
+
+def save_checkpoint(chat_id: str, message_id: int, tool_name: str, commit_sha: str, project_root: str) -> int:
+    """Save a checkpoint record. Returns the checkpoint id."""
+    now = utcnow()
+    with get_db() as conn:
+        cur = conn.execute(
+            "INSERT INTO checkpoints (chat_id, message_id, tool_name, commit_sha, project_root, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (chat_id, message_id, tool_name, commit_sha, project_root, now),
+        )
+        return cur.lastrowid
+
+
+def get_checkpoints_for_chat(chat_id: str) -> list[dict]:
+    """Get all checkpoints for a chat, ordered by message_id."""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM checkpoints WHERE chat_id = ? ORDER BY message_id ASC",
+            (chat_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def get_checkpoint_by_sha(sha: str) -> dict | None:
+    """Get a checkpoint by commit SHA."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM checkpoints WHERE commit_sha = ?", (sha,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_latest_checkpoint_for_message(chat_id: str, message_id: int) -> dict | None:
+    """Get the latest checkpoint for a specific message (last tool call in that turn)."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM checkpoints WHERE chat_id = ? AND message_id <= ? ORDER BY id DESC LIMIT 1",
+            (chat_id, message_id),
+        ).fetchone()
+        return dict(row) if row else None
