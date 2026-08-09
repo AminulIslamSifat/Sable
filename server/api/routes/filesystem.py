@@ -50,8 +50,6 @@ def _is_allowed(path: str) -> bool:
 
 def _is_hidden(name: str) -> bool:
     """Check if a file/dir should be hidden."""
-    if name.startswith("."):
-        return True
     return name in _HIDDEN_DIRS
 
 
