@@ -1213,6 +1213,7 @@
     return sidebarRoot || localStorage.getItem("fs_ide_last_folder") || "";
   };
   window.openFsRoot = openRoot;
+  window.pickFsRoot = pickSidebarRoot;
   window.getIdeOpenFile = function () {
     return currentFilePath || "";
   };
