@@ -9,12 +9,13 @@
   <link rel="stylesheet" href="/static/css/variables.css?v=4">
   <link rel="stylesheet" href="/static/css/base.css?v=3">
   <link rel="stylesheet" href="/static/css/layout.css?v=51">
-  <link rel="stylesheet" href="/static/css/ide.css?v=1">
+  <link rel="stylesheet" href="/static/css/ide.css?v=4">
   <link rel="stylesheet" href="/static/css/chat.css?v=23">
-  <link rel="stylesheet" href="/static/css/panels.css?v=30">
+  <link rel="stylesheet" href="/static/css/panels.css?v=31">
   <link rel="stylesheet" href="/static/css/components.css?v=12">
   <link rel="stylesheet" href="/static/css/responsive.css?v=3">
   <link rel="stylesheet" href="/static/css/agents.css?v=31">
+  <link rel="stylesheet" href="/static/css/cookbook.css?v=1">
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v=2">
 
   <link rel="manifest" href="/static/assets/manifest.json">
@@ -70,6 +71,10 @@
   <aside id="chatCompact" class="chat-compact hidden">
     <div class="chat-compact-header">
       <span class="chat-compact-title" id="chatCompactTitle">New chat</span>
+      <div class="compact-header-actions">
+        <button class="compact-header-btn" id="compactAgentSwitch" title="Switch to Agent mode"><i data-lucide="message-square" class="icon-lucide"></i></button>
+        <button class="compact-header-btn" id="compactNewChat" title="New chat"><i data-lucide="square-pen" class="icon-lucide"></i></button>
+      </div>
     </div>
     <div class="chat-compact-messages" id="chatCompactMessages">
       <div class="chat-compact-empty" id="chatCompactEmpty">
@@ -78,8 +83,40 @@
       </div>
     </div>
     <div class="chat-compact-input">
-      <textarea id="chatCompactInput" placeholder="Chat..." rows="1"></textarea>
-      <button id="chatCompactSend" class="chat-compact-send" title="Send"><span class="icon-emoji">➤</span><i data-lucide="send" class="icon-lucide"></i><span class="btn-label-stop"></span></button>
+      <div class="compact-input-row">
+        <div class="compact-attach-cell">
+          <button class="compact-attach-btn" id="chatCompactAttach" title="Attach file"><span class="icon-emoji">+</span><i data-lucide="paperclip" class="icon-lucide"></i></button>
+        </div>
+        <input type="file" id="chatCompactFileInput" accept="image/*" multiple hidden>
+        <div class="compact-text-cell">
+          <textarea id="chatCompactInput" placeholder="Chat..." rows="1"></textarea>
+        </div>
+        <div class="compact-send-cell">
+          <button id="chatCompactSend" class="chat-compact-send" title="Send"><span class="icon-emoji">➤</span><i data-lucide="send" class="icon-lucide"></i><span class="btn-label-stop"></span></button>
+        </div>
+      </div>
+      <div class="compact-status-bar">
+        <div class="compact-status-left">
+          <div class="status-dropdown" id="compactThinkingDropdown" title="Thinking mode">
+            <div class="status-dropdown-trigger" id="compactThinkingTrigger">
+              <span class="status-dropdown-label" id="compactThinkingLabel"></span>
+            </div>
+            <div class="status-dropdown-menu" id="compactThinkingMenu"></div>
+          </div>
+        </div>
+        <div class="compact-status-center">
+          <div class="glass-dropdown" id="compactModelDropdown">
+            <button class="glass-dropdown-trigger" id="compactModelTrigger" title="Model">
+              <span class="glass-dropdown-label" id="compactModelLabel">Model</span>
+              <span class="glass-dropdown-arrow"><i data-lucide="chevron-down" style="width:10px;height:10px;"></i></span>
+            </button>
+            <div class="glass-dropdown-menu" id="compactModelMenu"></div>
+          </div>
+        </div>
+        <div class="compact-status-right">
+          <span class="status-context" id="compactContext" title="Context usage"></span>
+        </div>
+      </div>
     </div>
   </aside>
 
@@ -143,6 +180,8 @@
         <div class="header-cell header-icon-cell">
           <button id="sidebarToggle" class="icon-btn" title="Toggle sidebar"><span class="icon-emoji">☰</span><i data-lucide="panel-left-close" class="icon-lucide"></i></button>
         </div>
+        <!-- IDE Tab Bar (in top bar, between sidebar toggle and right buttons) -->
+        <div id="editorTabBar" class="ide-header-tab-bar hidden"></div>
         <div class="header-center-group">
           <div class="header-cell header-model-cell">
             <div class="glass-dropdown" id="modelDropdown">
@@ -355,7 +394,8 @@
             <span class="tn-card-icon">📝</span>
             <span class="tn-card-title">New Note / Todo</span>
           </div>
-          <input id="tnNoteTitle" class="tn-card-input" type="text" placeholder="What's on your mind?" />
+          <input id="tnNoteTitle" class="tn-card-input" type="text" placeholder="Title" />
+          <textarea id="tnNoteContent" class="tn-card-input" placeholder="Write something..." rows="3" style="resize:vertical;min-height:60px;margin-top:6px;font-family:inherit;font-size:inherit;"></textarea>
           <div class="tn-card-controls">
             <button id="tnNoteAdd" class="tn-card-btn tn-card-btn-secondary" title="Add note">+ Note</button>
             <button id="tnTodoAdd" class="tn-card-btn" title="Add todo checklist">☑ Todo</button>
@@ -373,7 +413,7 @@
             <select id="tnAgentSchedType"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="cron">Cron</option></select>
             <input id="tnAgentTime" type="time" />
           </div>
-          <button id="tnAgentAdd" class="tn-add-btn tn-full-width">Create Agent Op</button>
+          <button id="tnAgentAdd" class="tn-card-btn tn-full-width">Create Agent Op</button>
         </div>
         <div id="tnAgentList" class="tn-list"></div>
         <div id="tnAgentEmpty" class="tracknote-empty">No agent tasks queued</div>
@@ -422,6 +462,7 @@
         <button class="settings-tab" data-tab="search">Search Engine</button>
         <button class="settings-tab" data-tab="mcp">MCP</button>
         <button class="settings-tab" data-tab="tts">TTS</button>
+        <button class="settings-tab" data-tab="cookbook">Cookbook</button>
       </div>
       <div class="settings-body">
         <div id="tab-logs" class="settings-tab-content active">
@@ -488,6 +529,11 @@
               <option value="emoji" selected>Emoji</option>
               <option value="lucide">Lucide</option>
             </select>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+            <label for="maxToolOutputInput" style="font-size:13px;color:var(--text-dim);">Max Tool Output (chars)</label>
+            <input id="maxToolOutputInput" type="number" min="1000" step="10000" value="100000"
+              style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;width:110px;" />
           </div>
           <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
             <label style="font-size:13px;color:var(--text-dim);display:block;margin-bottom:8px;">Theme</label>
@@ -989,6 +1035,90 @@
             <button id="ttsDeleteBtn" class="btn-danger" style="font-size:13px;padding:8px 16px;" hidden>🗑 Remove Models</button>
           </div>
         </div>
+        <div id="tab-cookbook" class="settings-tab-content">
+          <h3 class="mem-title">📚 Cookbook — Local Models</h3>
+          <p class="muted mem-desc">Download, serve, and chat with local LLMs via llama.cpp. Models run entirely on your machine.</p>
+
+          <!-- Hardware Info -->
+          <div id="cbHardwareInfo" class="cb-hardware-info" style="margin-top:12px;"></div>
+
+          <!-- Active Downloads -->
+          <div id="cbDownloadsSection" style="margin-top:16px;">
+            <h4 class="muted" style="font-size:12px;font-weight:600;margin-bottom:8px;">Active Downloads</h4>
+            <div id="cbDownloadsList" class="cb-downloads-list">
+              <p class="muted" style="font-size:12px;font-style:italic;">No active downloads</p>
+            </div>
+          </div>
+
+          <!-- Running Servers -->
+          <div id="cbServersSection" style="margin-top:16px;">
+            <h4 class="muted" style="font-size:12px;font-weight:600;margin-bottom:8px;">Running Servers</h4>
+            <div id="cbServersList" class="cb-servers-list">
+              <p class="muted" style="font-size:12px;font-style:italic;">No servers running</p>
+            </div>
+          </div>
+
+          <!-- Recommendations -->
+          <div style="margin-top:20px;">
+            <h4 class="muted" style="font-size:12px;font-weight:600;margin-bottom:8px;">Recommended Models <span class="muted" style="font-weight:400;">(ranked for your hardware)</span></h4>
+            <div id="cbPresetsGrid" class="cb-presets-grid"></div>
+          </div>
+
+          <!-- Custom Download -->
+          <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+            <h4 class="muted" style="font-size:12px;font-weight:600;margin-bottom:8px;">Custom Download</h4>
+            <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
+              <div style="flex:1;min-width:200px;">
+                <label class="muted" style="font-size:11px;display:block;margin-bottom:4px;">Repo ID (org/model)</label>
+                <input id="cbRepoId" type="text" class="mem-input" placeholder="e.g. Qwen/Qwen2.5-3B-Instruct-GGUF" style="width:100%;">
+              </div>
+              <div style="flex:1;min-width:140px;">
+                <label class="muted" style="font-size:11px;display:block;margin-bottom:4px;">Include Pattern</label>
+                <input id="cbInclude" type="text" class="mem-input" placeholder="e.g. *q4_k_m*" style="width:100%;">
+              </div>
+              <button id="cbDownloadBtn" class="btn-primary" style="font-size:12px;padding:8px 14px;white-space:nowrap;">⬇ Download</button>
+            </div>
+          </div>
+
+          <!-- Cached Models -->
+          <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+            <h4 class="muted" style="font-size:12px;font-weight:600;margin-bottom:8px;">Cached Models</h4>
+            <div id="cbCachedModels" class="cb-cached-models">
+              <p class="muted" style="font-size:12px;font-style:italic;">No models downloaded yet</p>
+            </div>
+          </div>
+
+          <!-- Per-Model Instruction Settings -->
+          <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+            <h4 class="muted" style="font-size:12px;font-weight:600;margin-bottom:8px;">Model Instructions</h4>
+            <p class="muted" style="font-size:11px;margin-bottom:10px;">Configure what each local model receives as system instruction.</p>
+            <div id="cbModelSettings" class="cb-model-settings"></div>
+          </div>
+
+          <!-- Settings -->
+          <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+            <h4 class="muted" style="font-size:12px;font-weight:600;margin-bottom:8px;">Cookbook Settings</h4>
+            <div style="display:flex;flex-direction:column;gap:10px;">
+              <div style="display:flex;align-items:center;justify-content:space-between;">
+                <label class="muted" style="font-size:12px;">HuggingFace Token (for gated models)</label>
+                <input id="cbHfToken" type="password" class="mem-input" placeholder="hf_..." style="width:220px;">
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;">
+                <label class="muted" style="font-size:12px;">Default Port</label>
+                <input id="cbDefaultPort" type="number" class="mem-input" value="8080" style="width:100px;">
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;">
+                <label class="muted" style="font-size:12px;">Default Context Size</label>
+                <input id="cbDefaultCtx" type="number" class="mem-input" value="4096" style="width:100px;">
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;">
+                <label class="muted" style="font-size:12px;">Auto-register served models</label>
+                <input id="cbAutoRegister" type="checkbox" checked style="accent-color:var(--accent);">
+              </div>
+              <button id="cbSaveSettings" class="btn-primary" style="font-size:12px;padding:6px 14px;align-self:flex-start;">Save Settings</button>
+            </div>
+          </div>
+        </div>
         <div id="tab-agents" class="settings-tab-content">
           <h3 class="mem-title"><span class="icon-emoji">🤖</span><i data-lucide="bot" class="icon-lucide"></i> Agent Roles</h3>
           <p class="muted mem-desc">Define what each agent role does. These are injected into the system prompt when an agent is spawned with that role.</p>
@@ -1167,13 +1297,14 @@
       },
     };
   </script>
-  <script src="/static/app.js?v=62"></script>
+  <script src="/static/app.js?v=77"></script>
   <script src="/static/src/research.js?v=9"></script>
   <script src="/static/js/agents.js?v=22"></script>
-  <script src="/static/js/filesystem.js?v=24"></script>
-  <script src="/static/js/mode.js?v=18"></script>
+  <script src="/static/js/filesystem.js?v=28"></script>
+  <script src="/static/js/mode.js?v=19"></script>
   <script src="/static/js/resize-panels.js?v=1"></script>
   <script src="/static/js/terminal.js?v=4"></script>
+  <script src="/static/js/cookbook.js?v=1"></script>
 
   <script>
     /* Keep mode-toggle-compact pill indicator in sync with active button */

@@ -64,6 +64,7 @@ def models() -> dict[str, list[dict[str, Any]]]:
                 "thinking_modes": [
                     {"id": tm["id"], "label": tm["label"]} for tm in m.get("thinking_modes", [])
                 ],
+                "max_session_chars": m.get("max_session_chars"),
                 "custom": m.get("_custom", False),
             }
             for m in all_models

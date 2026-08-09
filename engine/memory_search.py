@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gc
 import json
+import logging
 import re
 import threading
 from datetime import datetime
@@ -12,11 +13,19 @@ from typing import Any
 
 import numpy as np
 
+logger = logging.getLogger("sable.memory_search")
+
 _BRAIN_DIR = Path(__file__).resolve().parent.parent / "Brain"
 _MEMORY_PATH = _BRAIN_DIR / "Memory.json"
 _PROTECTED_PATH = _BRAIN_DIR / "Protected.json"
 _SKILLS_PATH = _BRAIN_DIR / "skills.json"
-_CACHE_PATH = Path(__file__).resolve().parent.parent / "system" / "memory_cache.npz"
+_CACHE_DIR = Path(__file__).resolve().parent.parent / "system"
+_GEMINI_KEYS_PATH = _CACHE_DIR / ".gemini_api_keys.json"
+
+def _cache_path_for(model_name: str) -> Path:
+    """Per-model cache file so switching models doesn't invalidate other caches."""
+    slug = model_name.replace("/", "_").replace(" ", "_")
+    return _CACHE_DIR / f"memory_cache_{slug}.npz"
 
 # Empirically calibrated (2026-07-27) against the hybrid score
 # (0.7*vector + 0.3*keyword) via calibrate_thresholds.py — each value sits
@@ -31,6 +40,7 @@ MODEL_THRESHOLDS: dict[str, float] = {
     "jinaai/jina-embeddings-v2-small-en": 0.641,
     "snowflake/snowflake-arctic-embed-xs": 0.594,
     "BAAI/bge-small-en-v1.5": 0.538,
+    "google/gemini-embedding-001": 0.55,  # uncalibrated — needs threshold tuning
 }
 
 DEFAULT_MODEL = "snowflake/snowflake-arctic-embed-xs"
@@ -74,6 +84,98 @@ def _is_expired(entry: dict) -> bool:
         return datetime.fromisoformat(expires) < datetime.now()
     except ValueError:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Gemini API embedding backend
+# ---------------------------------------------------------------------------
+
+_GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
+# Per-model native output dimensionality (best quality = no MRL truncation)
+_GEMINI_DIMS: dict[str, int] = {
+    "gemini-embedding-001": 768,   # native 768
+    "gemini-embedding-2": 3072,    # native 3072 — use full for best quality
+}
+_GEMINI_EMBED_DIM = 768  # fallback for unknown models
+
+
+def _load_gemini_keys() -> list[str]:
+    """Load Gemini API keys from the shared keys file."""
+    if _GEMINI_KEYS_PATH.exists():
+        try:
+            data = json.loads(_GEMINI_KEYS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [k.strip() for k in data if isinstance(k, str) and k.strip()]
+        except (json.JSONDecodeError, OSError):
+            pass
+    return []
+
+
+class _GeminiEmbedder:
+    """Lightweight Gemini embedding API client matching FastEmbed's .embed() interface."""
+
+    def __init__(self, model_name: str):
+        # Strip our prefix: "google/gemini-embedding-001" -> "gemini-embedding-001"
+        self._api_model = model_name.split("/", 1)[-1]
+        self._dims = _GEMINI_DIMS.get(self._api_model, _GEMINI_EMBED_DIM)
+        self._keys = _load_gemini_keys()
+        self._key_idx = 0
+        if not self._keys:
+            raise RuntimeError("No Gemini API keys configured. Add keys in Settings → Providers.")
+
+    def _next_key(self) -> str:
+        key = self._keys[self._key_idx % len(self._keys)]
+        self._key_idx += 1
+        return key
+
+    def embed(self, texts: list[str], batch_size: int = 50, *, task_type: str = "RETRIEVAL_DOCUMENT"):
+        """Yield embedding vectors one at a time (matches FastEmbed generator interface)."""
+        import httpx
+
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            vectors = self._embed_batch_httpx(batch, task_type)
+            yield from vectors
+
+    def _embed_batch_httpx(self, texts: list[str], task_type: str) -> list[list[float]]:
+        """Call Gemini batchEmbedContents endpoint."""
+        import httpx
+
+        url = f"{_GEMINI_BASE}/models/{self._api_model}:batchEmbedContents"
+        key = self._next_key()
+        payload = {
+            "requests": [
+                {
+                    "model": f"models/{self._api_model}",
+                    "content": {"parts": [{"text": t}]},
+                    "taskType": task_type,
+                    "outputDimensionality": self._dims,
+                }
+                for t in texts
+            ]
+        }
+        resp = httpx.post(
+            url,
+            json=payload,
+            params={"key": key},
+            timeout=60.0,
+        )
+        if resp.status_code != 200:
+            logger.warning("Gemini embed API error %d: %s", resp.status_code, resp.text[:200])
+            # Retry once with next key
+            key = self._next_key()
+            resp = httpx.post(url, json=payload, params={"key": key}, timeout=60.0)
+            if resp.status_code != 200:
+                raise RuntimeError(f"Gemini embed failed: {resp.status_code} {resp.text[:200]}")
+
+        data = resp.json()
+        embeddings = data.get("embeddings", [])
+        if len(embeddings) != len(texts):
+            raise RuntimeError(
+                f"Gemini embed returned {len(embeddings)} vectors for {len(texts)} texts"
+            )
+        return [e["values"] for e in embeddings]
 
 
 class MemorySearcher:
@@ -133,15 +235,28 @@ class MemorySearcher:
     def _ensure_model(self) -> None:
         if self._model is not None:
             return
-        from fastembed import TextEmbedding
+        if self._model_name.startswith("google/"):
+            self._model = _GeminiEmbedder(self._model_name)
+        else:
+            from fastembed import TextEmbedding
+            self._model = TextEmbedding(model_name=self._model_name, enable_cpu_mem_arena=False)
 
-        self._model = TextEmbedding(model_name=self._model_name, enable_cpu_mem_arena=False)
+    def _embed_texts(self, texts: list[str], *, is_query: bool = False) -> np.ndarray:
+        """Embed texts, handling both FastEmbed and Gemini API models."""
+        if isinstance(self._model, _GeminiEmbedder):
+            task = "RETRIEVAL_QUERY" if is_query else "RETRIEVAL_DOCUMENT"
+            vecs = np.array(list(self._model.embed(texts, task_type=task)), dtype="float32")
+        else:
+            vecs = np.array(list(self._model.embed(texts, batch_size=32)), dtype="float32")
+        # Normalize
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        return vecs / np.where(norms == 0, 1.0, norms)
 
     def _save_cache(self) -> None:
         try:
             meta_json = json.dumps(self._entry_meta, ensure_ascii=False)
             np.savez_compressed(
-                _CACHE_PATH,
+                _cache_path_for(self._model_name),
                 vectors=self._normed_vectors,
                 entries=np.array(self._entries, dtype=object),
                 meta=np.array(meta_json),
@@ -151,13 +266,12 @@ class MemorySearcher:
             pass  # cache is best-effort; never break search over it
 
     def _load_cache_data(self) -> dict[str, Any] | None:
-        """Load raw cache arrays. Returns None if missing or model mismatch."""
-        if not _CACHE_PATH.exists():
+        """Load raw cache arrays for the current model. Returns None if missing."""
+        cache_path = _cache_path_for(self._model_name)
+        if not cache_path.exists():
             return None
         try:
-            data = np.load(_CACHE_PATH, allow_pickle=True)
-            if str(data["model_name"]) != self._model_name:
-                return None
+            data = np.load(cache_path, allow_pickle=True)
             return {
                 "vectors": data["vectors"],
                 "entries": list(data["entries"]),
@@ -206,23 +320,15 @@ class MemorySearcher:
 
                 if new_indices:
                     new_texts = [self._entries[i] for i in new_indices]
-                    new_vecs = np.array(
-                        list(self._model.embed(new_texts, batch_size=32)), dtype="float32"
-                    )
-                    norms = np.linalg.norm(new_vecs, axis=1, keepdims=True)
-                    new_vecs = new_vecs / np.where(norms == 0, 1.0, norms)
+                    new_vecs = self._embed_texts(new_texts)
                     for j, idx in enumerate(new_indices):
                         reuse_vectors[idx] = new_vecs[j]
 
                 self._normed_vectors = np.vstack(reuse_vectors)
                 self._entry_tokens = [_tokenize(e) for e in self._entries]
             else:
-                # No cache at all — full embed (batch_size=32 to keep peak RAM low)
-                vecs = np.array(
-                    list(self._model.embed(self._entries, batch_size=32)), dtype="float32"
-                )
-                norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-                self._normed_vectors = vecs / np.where(norms == 0, 1.0, norms)
+                # No cache at all — full embed
+                self._normed_vectors = self._embed_texts(self._entries)
                 self._entry_tokens = [_tokenize(e) for e in self._entries]
 
             self._save_cache()
@@ -309,11 +415,12 @@ class MemorySearcher:
                 self._add_entry(text, name, prompt or desc, "skill")
 
     def clear_cache(self) -> None:
-        """Delete the .npz cache file and force a full re-embed on next search."""
+        """Delete the current model's .npz cache file and force a full re-embed on next search."""
         with self._load_lock:
             try:
-                if _CACHE_PATH.exists():
-                    _CACHE_PATH.unlink()
+                cache_path = _cache_path_for(self._model_name)
+                if cache_path.exists():
+                    cache_path.unlink()
             except OSError:
                 pass
             self._normed_vectors = None
@@ -346,10 +453,8 @@ class MemorySearcher:
         with self._load_lock:
             if not self._entries or self._normed_vectors is None or self._model is None:
                 return []
-            q_vec = np.array(list(self._model.embed([query]))[0], dtype="float32")
-            q_norm_value = np.linalg.norm(q_vec)
-            q_norm = q_vec if q_norm_value == 0 else q_vec / q_norm_value
-            vector_scores = self._normed_vectors @ q_norm
+            q_vec = self._embed_texts([query], is_query=True)[0]
+            vector_scores = self._normed_vectors @ q_vec
 
             # Hybrid blend: vector similarity + keyword coverage
             # Skip keyword boost for very short queries (< 3 unique tokens)

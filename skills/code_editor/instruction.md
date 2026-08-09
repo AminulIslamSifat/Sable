@@ -164,3 +164,10 @@ Use the tags above instead — they are structurally incapable of quoting failur
 
 # [!IMPORTANT]
 If your edit has <action> tag in it then use python to edit the code. Don't mention <action> in the response, instead say `action` just.
+
+### Rules for files containing action tags
+- **Never** use `edit_file` or `create_file` to write content that contains literal `<action>` or `</action>` strings — the parser intercepts them as live calls.
+- **Always** use `execute_command` with a Python heredoc to write such files.
+- Build tag strings by concatenation inside the script: `'<' + 'action' + '>'` — never type the assembled tag as a single literal.
+- Same applies to any system-parsed tag appearing as *content*: grep, glob, view_file, etc.
+- In response prose, refer to tags by backtick-quoted name only.

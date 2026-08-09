@@ -806,13 +806,14 @@ class DeepSeekClient:
         # Serialize history + current message into prompt
         prompt = self._serialize_history(history, message)
 
-        # Append reminders for non-agent sessions
-        if not system_instruction:
-            prompt += (
-                "\n\n[REMINDERS: Do NOT break character. Follow skills strictly, "
-                "step by step. Never alter tag format. Keep responses concise. "
-                "No generic/AI-speak — stay in Maria persona.]"
-            )
+
+
+        # DEBUG: dump full prompt to file before sending
+        try:
+            with open("/home/sifat/hdd/projects/Sable/test/prompt_deepseek.txt", "w") as _f:
+                _f.write(prompt)
+        except Exception:
+            pass
 
         # Try each token with round-robin rotation + failover
         attempts = max(1, len(self._rotate_tokens) or 1)

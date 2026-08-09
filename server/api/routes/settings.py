@@ -547,6 +547,22 @@ async def list_all_mcp_tools() -> dict[str, Any]:
 @router.get("/api/settings/accounts")
 async def list_accounts() -> dict[str, Any]:
     def _scan() -> list[dict[str, Any]]:
+        # Load token presence maps
+        waf_tokens: dict = {}
+        ds_tokens: dict = {}
+        try:
+            waf_tokens = json.loads((_SYSTEM_DIR / ".qwen_tokens.json").read_text())
+        except Exception:
+            pass
+        try:
+            ds_tokens = json.loads((_SYSTEM_DIR / ".deepseek_tokens.json").read_text())
+        except Exception:
+            pass
+
+        # Load exhaustion status
+        from engine.config import get_all_exhaustion_status
+        exhaustion = get_all_exhaustion_status()
+
         accounts: list[dict[str, Any]] = []
         for entry in _SYSTEM_DIR.iterdir():
             m = re.match(r"browser-data-acc(\d+)$", entry.name)
@@ -556,6 +572,9 @@ async def list_accounts() -> dict[str, Any]:
                     "num": int(m.group(1)),
                     "email": _read_profile_email(entry),
                     "size_mb": _dir_size_mb(entry),
+                    "has_waf": entry.name in waf_tokens,
+                    "has_ds": entry.name in ds_tokens,
+                    "exhausted": exhaustion.get(entry.name, False),
                 })
         accounts.sort(key=lambda a: a["num"])
         return accounts
@@ -1466,4 +1485,35 @@ async def clear_search_cache() -> dict[str, Any]:
     invalidate_cache()
     logger.info("Search cache cleared via API")
     return {"cleared": True}
+
+
+# ─── General Settings (tool output limit, etc.) ─────────────────────────────
+
+@router.get("/api/settings/general")
+async def get_general_settings() -> dict[str, Any]:
+    """Return general app settings."""
+    settings = _read_system_settings()
+    return {
+        "max_tool_output_chars": settings.get("max_tool_output_chars", 100_000),
+    }
+
+
+@router.post("/api/settings/general")
+async def update_general_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    """Update general app settings."""
+    settings = _read_system_settings()
+
+    val = payload.get("max_tool_output_chars")
+    if val is not None:
+        try:
+            val = int(val)
+            if val < 1000:
+                raise ValueError
+            settings["max_tool_output_chars"] = val
+        except (ValueError, TypeError):
+            raise HTTPException(400, "max_tool_output_chars must be an integer >= 1000")
+
+    _write_system_settings(settings)
+    logger.info("General settings updated: max_tool_output_chars=%s", settings.get("max_tool_output_chars"))
+    return {"status": "ok", "max_tool_output_chars": settings.get("max_tool_output_chars", 100_000)}
 
