@@ -551,7 +551,7 @@ async def list_accounts() -> dict[str, Any]:
         waf_tokens: dict = {}
         ds_tokens: dict = {}
         try:
-            waf_tokens = json.loads((_SYSTEM_DIR / ".session_tokens.json").read_text())
+            waf_tokens = json.loads((_SYSTEM_DIR / ".qwen_tokens.json").read_text())
         except Exception:
             pass
         try:
@@ -1485,4 +1485,35 @@ async def clear_search_cache() -> dict[str, Any]:
     invalidate_cache()
     logger.info("Search cache cleared via API")
     return {"cleared": True}
+
+
+# ─── General Settings (tool output limit, etc.) ─────────────────────────────
+
+@router.get("/api/settings/general")
+async def get_general_settings() -> dict[str, Any]:
+    """Return general app settings."""
+    settings = _read_system_settings()
+    return {
+        "max_tool_output_chars": settings.get("max_tool_output_chars", 100_000),
+    }
+
+
+@router.post("/api/settings/general")
+async def update_general_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    """Update general app settings."""
+    settings = _read_system_settings()
+
+    val = payload.get("max_tool_output_chars")
+    if val is not None:
+        try:
+            val = int(val)
+            if val < 1000:
+                raise ValueError
+            settings["max_tool_output_chars"] = val
+        except (ValueError, TypeError):
+            raise HTTPException(400, "max_tool_output_chars must be an integer >= 1000")
+
+    _write_system_settings(settings)
+    logger.info("General settings updated: max_tool_output_chars=%s", settings.get("max_tool_output_chars"))
+    return {"status": "ok", "max_tool_output_chars": settings.get("max_tool_output_chars", 100_000)}
 

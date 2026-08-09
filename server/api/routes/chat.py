@@ -241,7 +241,7 @@ async def chat(request: ChatRequest):
     if not request.stream and _is_api_model(request.model):
         # _backend already resolved above at file resolution stage
         _api_backend = _backend or _resolve_api_backend(request.model)
-        _connector = get_connector(_api_backend)
+        _connector = get_connector(_api_backend, model_id=request.model)
         _cfg = get_model_config(request.model)
         _api_model = _cfg.get("api_model_type", _cfg["id"])
         # DeepSeek Vision ephemeral: one-shot side request, no session continuity
@@ -259,6 +259,8 @@ async def chat(request: ChatRequest):
             ref_file_ids=request.ref_file_ids,
             inject_instructions=not _ephemeral,
         )
+        if _api_backend == "local":
+            _chat_kwargs["model_id"] = request.model
         if _max_session_chars:
             _chat_kwargs["max_session_chars"] = _max_session_chars
         if _inline_files:
@@ -473,7 +475,7 @@ async def chat(request: ChatRequest):
                 stream_error = False
                 if _is_api_model(request.model):
                     _api_backend = _backend or _resolve_api_backend(request.model)
-                    _connector = get_connector(_api_backend)
+                    _connector = get_connector(_api_backend, model_id=request.model)
                     _cfg = get_model_config(request.model)
                     _api_model = _cfg.get("api_model_type", _cfg["id"])
                     _ephemeral = (_api_backend == "deepseek" and _api_model == "vision" and bool(request.ref_file_ids))
@@ -490,6 +492,8 @@ async def chat(request: ChatRequest):
                         ref_file_ids=request.ref_file_ids if round_index == 0 else None,
                         inject_instructions=not _ephemeral,
                     )
+                    if _api_backend == "local":
+                        _stream_kwargs["model_id"] = request.model
                     if _max_session_chars_stream:
                         _stream_kwargs["max_session_chars"] = _max_session_chars_stream
                     if _inline_files:
@@ -655,6 +659,11 @@ async def chat(request: ChatRequest):
                     if _incomplete_warn:
                         _guard_warnings.append(_incomplete_warn)
                 feedback = build_tool_feedback(round_skill_events)
+                # Truncate oversized tool output to protect context window
+                from engine.agents.loop import _get_max_tool_output_chars
+                _tool_cap = _get_max_tool_output_chars()
+                if feedback and len(feedback) > _tool_cap:
+                    feedback = feedback[:_tool_cap] + f"\n\n[OUTPUT TRUNCATED: {len(feedback)} chars → {_tool_cap} limit]"
                 # If no tool feedback but guard warnings exist, use warnings as feedback
                 # so the model sees them and self-corrects (auto-continue, no break)
                 if not feedback and _guard_warnings:

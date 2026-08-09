@@ -32,11 +32,19 @@ def resolve_backend(model_id: str | None) -> str | None:
     return cfg.get("api_backend")  # None for Qwen models
 
 
-def get_connector(backend: str) -> Any:
+def get_connector(backend: str, model_id: str | None = None) -> Any:
     """Get (or lazily create) the connector instance for a backend name.
 
+    For 'local' backend, pass model_id to resolve the correct endpoint.
     Raises KeyError if the backend has no registered connector.
     """
+    # Local backend needs per-model endpoint resolution
+    if backend == "local" and model_id:
+        from connectors.local.client import get_client
+        cfg = get_model_config(model_id)
+        endpoint = cfg.get("local_endpoint", "http://127.0.0.1:8080/v1")
+        return get_client(endpoint)
+
     if backend in _registry:
         return _registry[backend]
 
@@ -51,6 +59,9 @@ def get_connector(backend: str) -> Any:
         _registry[backend] = get_client()
     elif backend == "mistral":
         from connectors.mistral.client import get_client
+        _registry[backend] = get_client()
+    elif backend == "local":
+        from connectors.local.client import get_client
         _registry[backend] = get_client()
     else:
         raise KeyError(f"No connector registered for api_backend='{backend}'")
