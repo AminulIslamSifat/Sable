@@ -54,7 +54,7 @@
       launch.className = "research-launch";
       launch.innerHTML = `
         <div class="research-launch-head">
-          <span class="research-launch-title">🔬 Deep Research</span>
+          <span class="research-launch-title"><span class="icon-emoji">🔬</span><i data-lucide="microscope" class="icon-lucide"></i> Deep Research</span>
           <span class="research-launch-sub">LLM-in-the-loop · multi-round web research</span>
         </div>
         <textarea id="researchQuery" class="research-query" rows="3"
@@ -83,13 +83,13 @@
         </div>
         <div class="research-controls research-controls-fallback">
           <div class="research-fallback-col">
-            <div class="research-fallback-label">🧠 Model <span class="research-hint">top = 1st choice, then fallbacks</span></div>
+            <div class="research-fallback-label"><span class="icon-emoji">🧠</span><i data-lucide="cpu" class="icon-lucide"></i> Model <span class="research-hint">top = 1st choice, then fallbacks</span></div>
             <select id="researchModel1" class="research-select"></select>
             <select id="researchModel2" class="research-select"></select>
             <select id="researchModel3" class="research-select"></select>
           </div>
           <div class="research-fallback-col">
-            <div class="research-fallback-label">👤 Account <span class="research-hint">top = 1st choice, then fallbacks</span></div>
+            <div class="research-fallback-label"><span class="icon-emoji">👤</span><i data-lucide="user" class="icon-lucide"></i> Account <span class="research-hint">top = 1st choice, then fallbacks</span></div>
             <select id="researchAccount1" class="research-select"></select>
             <select id="researchAccount2" class="research-select"></select>
             <select id="researchAccount3" class="research-select"></select>
@@ -98,6 +98,7 @@
         <div id="researchStatus" class="research-status hidden"></div>
       `;
       container.appendChild(launch);
+      if (window.lucide) lucide.createIcons({ nodes: launch.querySelectorAll("[data-lucide]") });
       populateResearchSelectors(launch);
 
       // ── Middle: active runs (concurrent) ──
@@ -110,7 +111,7 @@
       const libWrap = document.createElement("div");
       libWrap.className = "research-library";
       libWrap.innerHTML = `
-        <div class="research-lib-head">📄 Past Research</div>
+        <div class="research-lib-head"><i data-lucide="file-text" style="width:14px;height:14px;display:inline;vertical-align:middle;margin-right:4px;"></i> Past Research</div>
         <div id="researchLibList" class="library-loading">Loading…</div>
       `;
       container.appendChild(libWrap);
@@ -251,7 +252,7 @@
         g.appendChild(c);
         const t = document.createElementNS(this.NS, "text");
         t.setAttribute("y", this._radius("report") + 12);
-        t.textContent = "📄 Report";
+        t.textContent = "Report";
         g.appendChild(t);
         this.svg.appendChild(g);
         rec.el = g;
@@ -505,8 +506,8 @@
         if (m) {
           const action = m[1].toLowerCase();
           const target = escHtml(m[2].trim());
-          const icon = action === "searching" ? "🔍" : action === "reading" ? "📄" : action === "decomposing" ? "🌳" : action === "extracting" ? "✨" : action === "writing" ? "✍️" : "🔄";
-          activityHtml = `<div class="research-activity"><span class="research-activity-icon">${icon}</span><span class="research-activity-action">${escHtml(action)}</span><span class="research-activity-target">${target}</span></div>`;
+          const iconName = action === "searching" ? "search" : action === "reading" ? "file-text" : action === "decomposing" ? "git-branch" : action === "extracting" ? "sparkles" : action === "writing" ? "pen-tool" : "refresh-cw";
+          activityHtml = `<div class="research-activity"><span class="research-activity-icon"><i data-lucide="${iconName}" style="width:14px;height:14px;display:inline;vertical-align:middle;"></i></span><span class="research-activity-action">${escHtml(action)}</span><span class="research-activity-target">${target}</span></div>`;
         } else {
           activityHtml = `<div class="research-activity"><span class="research-activity-target">${escHtml(detail)}</span></div>`;
         }
@@ -515,7 +516,7 @@
         <div class="research-progress-top">
           <span class="research-phase ${isErr ? "err" : ""}">
             <span class="research-live-dot ${isDone ? "done" : isErr ? "err" : "live"}"></span>
-            ${isDone ? "✓ " : isErr ? "✕ " : ""}${escHtml(label)}
+            ${isDone ? '<i data-lucide="circle-check" style="width:12px;height:12px;display:inline;vertical-align:middle;color:var(--success);"></i> ' : isErr ? '<i data-lucide="circle-x" style="width:12px;height:12px;display:inline;vertical-align:middle;color:var(--error);"></i> ' : ""}${escHtml(label)}
           </span>
           <span class="research-meta">${topics ? topics + " topics" : ""}${pages ? " · " + pages + " pages" : ""}${sources ? " · " + sources + " src" : ""} · <span class="research-elapsed">${_fmtMMSS((Date.now() - run.startedAt) / 1000)}</span></span>
         </div>
@@ -524,6 +525,7 @@
         ${maLine ? `<div class="research-status-text">${maLine}</div>` : ""}
         <div class="research-live-note" hidden></div>
       `;
+      if (typeof lucide !== "undefined") lucide.createIcons();
     }
 
     function attachResearchStream(sessionId) {
@@ -581,7 +583,7 @@
       if (ok) {
         const viewBtn = document.createElement("button");
         viewBtn.className = "research-view-btn";
-        viewBtn.textContent = "📖 View Report";
+        viewBtn.innerHTML = '<i data-lucide="book-open" style="width:14px;height:14px;display:inline;vertical-align:middle;"></i> View Report';
         viewBtn.addEventListener("click", () => viewResearchResult(sessionId));
         card.appendChild(viewBtn);
         loadResearchLibrary();
@@ -682,6 +684,7 @@
           grid.appendChild(card);
         });
         list.appendChild(grid);
+        if (typeof lucide !== "undefined") lucide.createIcons();
       } catch {
         list.innerHTML = '<div class="library-empty">Failed to load research library.</div>';
       }
