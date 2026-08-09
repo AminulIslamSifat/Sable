@@ -921,31 +921,52 @@
 
 
     // ── Emoji → Lucide mapping for chat messages ──
+    // Lean map: only high-frequency tech/dev emojis worth converting.
+    // All icon names verified against bundled lucide v1.28.0.
     const EMOJI_LUCIDE_MAP = {
-      "⚡": "zap", "🔥": "flame", "✅": "check-circle", "❌": "x-circle",
-      "⚠️": "alert-triangle", "💡": "lightbulb", "📝": "file-text", "🔧": "wrench",
-      "🚀": "rocket", "💻": "monitor", "📁": "folder", "🔒": "lock",
+      "⚡": "zap", "🔥": "flame", "✅": "circle-check", "❌": "circle-x",
+      "⚠️": "triangle-alert", "💡": "lightbulb", "📝": "file-pen", "🔧": "wrench",
+      "🚀": "rocket", "💻": "laptop", "📁": "folder", "🔒": "lock",
       "🌐": "globe", "⭐": "star", "❤️": "heart", "🎯": "target",
-      "📊": "bar-chart-2", "🐛": "bug", "✨": "sparkles", "🔄": "refresh-cw",
-      "📦": "package", "🗂️": "archive", "⏱️": "clock", "🧠": "cpu",
-      "💾": "hard-drive", "🛠️": "tool", "📌": "pin", "🔑": "key",
-      "🎉": "party-popper", "💬": "message-circle", "📎": "paperclip", "🖥️": "monitor",
+      "📊": "chart-bar", "🐛": "bug", "✨": "sparkles", "🔄": "refresh-cw",
+      "📦": "package", "🗂️": "folder-archive", "⏱️": "timer", "🧠": "brain",
+      "💾": "save", "🛠️": "hammer", "📌": "pin", "🔑": "key-round",
+      "🎉": "party-popper", "💬": "message-square", "📎": "paperclip", "🖥️": "monitor",
       "⬆️": "arrow-up", "⬇️": "arrow-down", "➡️": "arrow-right", "⬅️": "arrow-left",
-      "🔍": "search", "📋": "clipboard", "🗑️": "trash-2", "🗑": "trash-2", "⚙️": "settings",
-      "🏗️": "building", "🧪": "flask-conical", "📡": "radio", "🔗": "link",
-      "❓": "help-circle", "⛔": "ban", "❗": "alert-circle", "📄": "file",
-      "🔬": "microscope", "👁️": "eye", "✍️": "pen-tool", "🤖": "bot",
-      "⏳": "hourglass", "🐋": "database", "⟳": "refresh-cw", "✕": "x",
-      "✓": "check", "✗": "x", "⚙": "settings",
-      "ℹ️": "info", "📂": "folder-open", "🗒️": "notebook-pen", "🎨": "palette",
+      "🔍": "search", "📋": "clipboard-list", "🗑️": "trash2", "🗑": "trash2", "⚙️": "settings",
+      "🏗️": "building", "🧪": "flask-conical", "📡": "satellite-dish", "🔗": "link",
+      "❓": "circle-help", "⛔": "octagon-x", "❗": "circle-alert", "📄": "file-text",
+      "🔬": "microscope", "👁️": "eye", "✍️": "signature", "🤖": "bot",
+      "⏳": "hourglass", "🐋": "whale", "⟳": "refresh-cw", "✕": "x-circle",
+      "✓": "check", "✗": "x-circle", "⚙": "settings",
+      "ℹ️": "info", "📂": "folder-open", "🗒️": "notepad-text", "🎨": "palette",
+      "👀": "eye", "💀": "skull", "👻": "ghost",
     };
     const _EMOJI_RE = new RegExp(Object.keys(EMOJI_LUCIDE_MAP).map(e => e.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
 
     function lucideReplaceEmoji(html) {
       if (document.documentElement.getAttribute("data-icon-style") !== "lucide") return html;
+      if (!window.lucide || !window.lucide.icons) return html;
       return html.replace(_EMOJI_RE, (match) => {
-        const icon = EMOJI_LUCIDE_MAP[match];
-        return icon ? `<i data-lucide="${icon}" class="msg-lucide-icon"></i>` : match;
+        const iconName = EMOJI_LUCIDE_MAP[match];
+        if (!iconName) return match;
+        const iconDef = window.lucide.icons[iconName];
+        if (!iconDef) return `<i data-lucide="${iconName}" class="msg-lucide-icon"></i>`;
+        // Build inline SVG directly — no createIcons() needed
+        const [tag, attrs, children] = iconDef;
+        let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="msg-lucide-icon lucide-${iconName}">`;
+        if (children) {
+          for (const child of children) {
+            if (Array.isArray(child)) {
+              const [cTag, cAttrs] = child;
+              svg += `<${cTag}`;
+              for (const [k, v] of Object.entries(cAttrs)) svg += ` ${k}="${v}"`;
+              svg += "/>";
+            }
+          }
+        }
+        svg += "</svg>";
+        return svg;
       });
     }
 
@@ -954,11 +975,27 @@
       if (window.lucide) lucide.createIcons({ nodes: (container || document).querySelectorAll("[data-lucide]") });
     }
 
-    /** Returns emoji or lucide <i> tag depending on current icon style */
+    /** Returns emoji or inline lucide SVG depending on current icon style */
     function lucideIcon(emoji) {
       if (document.documentElement.getAttribute("data-icon-style") !== "lucide") return emoji;
-      const icon = EMOJI_LUCIDE_MAP[emoji];
-      return icon ? `<i data-lucide="${icon}" class="msg-lucide-icon"></i>` : emoji;
+      const iconName = EMOJI_LUCIDE_MAP[emoji];
+      if (!iconName || !window.lucide || !window.lucide.icons) return emoji;
+      const iconDef = window.lucide.icons[iconName];
+      if (!iconDef) return `<i data-lucide="${iconName}" class="msg-lucide-icon"></i>`;
+      const [tag, attrs, children] = iconDef;
+      let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="msg-lucide-icon lucide-${iconName}">`;
+      if (children) {
+        for (const child of children) {
+          if (Array.isArray(child)) {
+            const [cTag, cAttrs] = child;
+            svg += `<${cTag}`;
+            for (const [k, v] of Object.entries(cAttrs)) svg += ` ${k}="${v}"`;
+            svg += "/>";
+          }
+        }
+      }
+      svg += "</svg>";
+      return svg;
     }
 
     function countOpenFences(text) {
@@ -1020,28 +1057,32 @@
 
     /* ---------- mermaid post-render ---------- */
     let mermaidInited = false;
+    function _initMermaid() {
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: "dark",
+        securityLevel: "loose",
+        fontFamily: "Maple Mono, ui-monospace, monospace",
+        fontSize: 12,
+        flowchart: { nodeSpacing: 20, rankSpacing: 30, useMaxWidth: false },
+        themeVariables: {
+          primaryColor: "#c9a464",
+          primaryTextColor: "#eaeaea",
+          primaryBorderColor: "#26262a",
+          lineColor: "#85858c",
+          secondaryColor: "#1d1d20",
+          tertiaryColor: "#17171a",
+          fontSize: "12px"
+        }
+      });
+      mermaidInited = true;
+    }
     async function renderMermaidDiagrams(container) {
       const els = (container || document).querySelectorAll("pre.mermaid:not([data-processed])");
       if (!els.length) return;
       if (!window.mermaid) { await window._lazyLoadMermaid(); }
       if (!window.mermaid) return;
-      if (!mermaidInited) {
-        mermaid.initialize({
-          startOnLoad: false,
-          theme: "dark",
-          securityLevel: "loose",
-          fontFamily: "Maple Mono, ui-monospace, monospace",
-          themeVariables: {
-            primaryColor: "#c9a464",
-            primaryTextColor: "#eaeaea",
-            primaryBorderColor: "#26262a",
-            lineColor: "#85858c",
-            secondaryColor: "#1d1d20",
-            tertiaryColor: "#17171a"
-          }
-        });
-        mermaidInited = true;
-      }
+      if (!mermaidInited) _initMermaid();
       for (const el of els) {
         const code = el.textContent.trim();
         const id = `mmd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1051,13 +1092,25 @@
           wrapper.innerHTML = svg;
           const svgEl = wrapper.querySelector("svg");
           if (svgEl) {
-            svgEl.removeAttribute("width");
-            svgEl.removeAttribute("height");
-            svgEl.style.width = "auto";
-            svgEl.style.height = "auto";
+            // Keep mermaid's fixed width/height (useMaxWidth:false) so 12px text
+            // renders at true size. Only strip inline style (may force width:100%).
+            svgEl.removeAttribute("style");
           }
           el.innerHTML = wrapper.innerHTML;
           el.setAttribute("data-processed", "true");
+          // Fit/scroll toggle button
+          const mwrap = el.closest(".mermaid-wrap");
+          if (mwrap && !mwrap.querySelector(".mermaid-fit-btn")) {
+            const btn = document.createElement("button");
+            btn.className = "mermaid-fit-btn";
+            btn.title = "Toggle fit to width";
+            btn.textContent = "⤢";
+            btn.addEventListener("click", () => {
+              mwrap.classList.toggle("fit-width");
+              btn.textContent = mwrap.classList.contains("fit-width") ? "⤡" : "⤢";
+            });
+            mwrap.appendChild(btn);
+          }
         } catch (err) {
           el.innerHTML = `<div class="mermaid-error">Mermaid error: ${escHtml(err.message || String(err))}</div>`;
           el.setAttribute("data-processed", "true");
@@ -1148,6 +1201,7 @@
       pane.classList.add("active");
       activePane = pane;
       activeChatId = chatId;
+      _bindScrollListener(pane);
       updateSendBtn();
       renderTabBar();
       if (typeof window.updateCompactTitle === "function") {
@@ -1182,23 +1236,41 @@
 
     /* ---------- end multi-tab ---------- */
 
-    function isNearBottom() {
-      if (!activePane) return true;
-      return activePane.scrollHeight - activePane.scrollTop - activePane.clientHeight < activePane.clientHeight * 0.25;
+    // ── Smart auto-scroll: event-driven flag + rAF batching ──
+    // Pattern from Smashing Magazine / shadcn: track user intent via scroll
+    // event, batch writes with requestAnimationFrame, reset on new stream.
+    let _userScrolled = false;
+    let _scrollRafPending = false;
+    let _scrollForChat = null;
+
+    // Attach scroll listener whenever activePane changes (idempotent)
+    const _scrollBoundPanes = new WeakSet();
+    function _bindScrollListener(pane) {
+      if (!pane || _scrollBoundPanes.has(pane)) return;
+      _scrollBoundPanes.add(pane);
+      pane.addEventListener("scroll", () => {
+        const gap = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
+        _userScrolled = gap > 60;
+      }, { passive: true });
     }
 
-    let _scrollLast = 0;
-    let _scrollForChat = null;
+    // Call at stream start so previous scroll-up doesn't block new content
+    function resetScrollTracking() {
+      _userScrolled = false;
+      _scrollRafPending = false;
+    }
+
     function scrollBottom(force) {
       if (!activePane) return;
-      const now = performance.now();
-      if (_scrollForChat !== activeChatId) _scrollLast = 0;
+      if (_scrollForChat !== activeChatId) { _userScrolled = false; _scrollRafPending = false; }
       _scrollForChat = activeChatId;
-      if (!force && now - _scrollLast < 100) return;
-      _scrollLast = now;
-      if (force || isNearBottom()) {
-        activePane.scrollTop = activePane.scrollHeight;
-      }
+      if (!force && _userScrolled) return;
+      if (_scrollRafPending) return;
+      _scrollRafPending = true;
+      requestAnimationFrame(() => {
+        _scrollRafPending = false;
+        if (activePane) activePane.scrollTop = activePane.scrollHeight;
+      });
     }
 
     function clearEmptyState() {
@@ -1217,6 +1289,7 @@
     }
 
     function startStream(chatId) {
+      resetScrollTracking();
       const controller = new AbortController();
       activeStreams.set(chatId, controller);
       if (chatId === activeChatId) updateSendBtn();
@@ -2547,17 +2620,42 @@
             fast = true;
           }
         }
-        // Fast path: inside code fence — append to <code> directly until fence closes
-        if (!fast && _ansInFence && !_ANS_STRUCTURAL_RE.test(chunk)) {
+        // Fast path: inside code fence — ALL chars are literal, no markdown processing.
+        // Always append directly regardless of structural chars (fixes mermaid flicker).
+        if (!fast && _ansInFence) {
           const codeEls = answerContent.querySelectorAll(".code-block pre code");
           const codeEl = codeEls[codeEls.length - 1];
           if (codeEl) {
             codeEl.textContent += chunk;
+            // Detect fence closure → full re-render to finalize block
+            if (!countOpenFences(raw).inFence) {
+              _ansInFence = false;
+              answerContent.innerHTML = renderMarkdown(raw);
+              answerContent.querySelectorAll(".mermaid-wrap").forEach(wrap => {
+                const pre = wrap.querySelector("pre.mermaid");
+                if (!pre) return;
+                const code = pre.textContent;
+                const div = document.createElement("div");
+                div.className = "code-block";
+                div.innerHTML = `<pre><code class="language-mermaid">${escHtml(code)}</code></pre>`;
+                wrap.replaceWith(div);
+              });
+            }
             fast = true;
           }
         }
         if (!fast) {
           answerContent.innerHTML = renderMarkdown(raw);
+          // During streaming, neutralize mermaid-wrap to plain code (prevents flicker)
+          answerContent.querySelectorAll(".mermaid-wrap").forEach(wrap => {
+            const pre = wrap.querySelector("pre.mermaid");
+            if (!pre) return;
+            const code = pre.textContent;
+            const div = document.createElement("div");
+            div.className = "code-block";
+            div.innerHTML = `<pre><code class="language-mermaid">${escHtml(code)}</code></pre>`;
+            wrap.replaceWith(div);
+          });
           _ansInFence = countOpenFences(raw).inFence;
         }
 
@@ -2568,7 +2666,11 @@
         if (chunk.includes("data-lucide") || !_ansTimer) {
           activateLucideIcons(answerContent);
         }
-        if (!_ansTimer) { renderMermaidDiagrams(answerContent); renderMathJax(answerContent); }
+        if (!_ansTimer) {
+          // Final render: produce proper mermaid-wrap so renderMermaidDiagrams can find them
+          answerContent.innerHTML = renderMarkdown(raw);
+          renderMermaidDiagrams(answerContent); renderMathJax(answerContent);
+        }
       }
       function _enqueueAnswer(text) {
         _ansQueue += text;
@@ -3420,8 +3522,8 @@
         try {
           const res = await fetch("/api/filesystem/pick-folder");
           const data = await res.json();
-          if (data.path && window.openFsRoot) {
-            window.openFsRoot(data.path);
+          if (data.path && window.pickFsRoot) {
+            window.pickFsRoot(data.path);
           }
         } catch (err) {
           console.error("[StatusBar] pick-folder failed:", err);
@@ -3487,7 +3589,8 @@
             ['Thinking', d.thinking || 0, '#f59e0b'],
             ['Tool', d.tool || 0, '#10b981'],
           ];
-          let html = '<div style="padding:6px 10px 4px;font-weight:600;color:var(--text);font-size:10px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:2px;">Context — ' + fmt(total) + '/' + fmt(maxChars) + '</div>';
+          const totalPct = maxChars > 0 ? Math.min(100, (total / maxChars) * 100).toFixed(1) : '0.0';
+          let html = '<div style="padding:6px 10px 4px;font-weight:600;color:var(--text);font-size:10px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:2px;">Context — ' + fmt(total) + '/' + fmt(maxChars) + ' (' + totalPct + '%)</div>';
           for (const [label, val, color] of rows) {
             const pct = total > 0 ? Math.round(val / total * 100) : 0;
             html += '<div style="display:flex;align-items:center;gap:6px;padding:3px 10px;">'
@@ -5236,7 +5339,7 @@
     function renderTgSetup(container) {
       container.innerHTML = `
         <div class="email-setup">
-          <h3 style="margin-bottom:12px;font-size:15px;"><span class="icon-emoji">✈️</span> Configure Telegram</h3>
+          <h3 style="margin-bottom:12px;font-size:15px;"><span class="icon-emoji">✈️</span><i data-lucide="send" class="icon-lucide"></i> Configure Telegram</h3>
           <p style="font-size:12px;color:var(--muted);margin-bottom:16px;">Get API credentials from <a href="https://my.telegram.org/apps" target="_blank" style="color:var(--accent);">my.telegram.org/apps</a>. This is a read-only mini client — no sending.</p>
           <div class="email-form-grid">
             <label>API ID<input id="tg-api-id" type="number" placeholder="12345678" /></label>
@@ -5274,7 +5377,7 @@
     function renderTgDisconnected(container) {
       container.innerHTML = `
         <div class="email-setup">
-          <h3 style="margin-bottom:12px;font-size:15px;"><span class="icon-emoji">🔑</span> Sign In to Telegram</h3>
+          <h3 style="margin-bottom:12px;font-size:15px;"><span class="icon-emoji">🔑</span><i data-lucide="key-round" class="icon-lucide"></i> Sign In to Telegram</h3>
           <p style="font-size:12px;color:var(--muted);margin-bottom:16px;">Enter your phone number to receive a login code.</p>
           <div id="tg-signin-step1">
             <div class="email-form-grid">
@@ -5413,7 +5516,7 @@
       // Back button area
       const header = document.createElement('div');
       header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border);';
-      header.innerHTML = `<span style="font-size:14px;font-weight:600;"><span class="icon-emoji">✈️</span> Chats</span>
+      header.innerHTML = `<span style="font-size:14px;font-weight:600;"><span class="icon-emoji">✈️</span><i data-lucide="send" class="icon-lucide"></i> Chats</span>
         <button class="icon-btn" id="tg-refresh-chats" title="Refresh" style="width:auto;padding:4px 8px;font-size:11px;">↻</button>`;
       container.appendChild(header);
       container.appendChild(wrapper);
