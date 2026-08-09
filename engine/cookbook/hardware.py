@@ -239,7 +239,7 @@ def fetch_download_size(repo_id: str, include: str) -> float | None:
             size = f.get("size")
             if size is None or not name.endswith(".gguf"):
                 continue
-            if include and not _fnmatch.fnmatch(name, include):
+            if include and not _fnmatch.fnmatch(name.lower(), include.lower()):
                 continue
             matched.append((name, size))
         deduped = _dedup_gguf(matched)
