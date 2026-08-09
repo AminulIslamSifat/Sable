@@ -1047,41 +1047,11 @@
           <!-- Hardware Info -->
           <div id="cbHardwareInfo" class="cb-hardware-info" style="margin-top:12px;"></div>
 
-          <!-- Active Downloads -->
-          <div id="cbDownloadsSection" style="margin-top:16px;">
-            <h4 class="muted" style="font-size:12px;font-weight:600;margin-bottom:8px;">Active Downloads</h4>
-            <div id="cbDownloadsList" class="cb-downloads-list">
-              <p class="muted" style="font-size:12px;font-style:italic;">No active downloads</p>
-            </div>
-          </div>
-
           <!-- Running Servers -->
           <div id="cbServersSection" style="margin-top:16px;">
             <h4 class="muted" style="font-size:12px;font-weight:600;margin-bottom:8px;">Running Servers</h4>
             <div id="cbServersList" class="cb-servers-list">
               <p class="muted" style="font-size:12px;font-style:italic;">No servers running</p>
-            </div>
-          </div>
-
-          <!-- Recommendations -->
-          <div style="margin-top:20px;">
-            <h4 class="muted" style="font-size:12px;font-weight:600;margin-bottom:8px;">Recommended Models <span class="muted" style="font-weight:400;">(ranked for your hardware)</span></h4>
-            <div id="cbPresetsGrid" class="cb-presets-grid"></div>
-          </div>
-
-          <!-- Custom Download -->
-          <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
-            <h4 class="muted" style="font-size:12px;font-weight:600;margin-bottom:8px;">Custom Download</h4>
-            <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
-              <div style="flex:1;min-width:200px;">
-                <label class="muted" style="font-size:11px;display:block;margin-bottom:4px;">Repo ID (org/model)</label>
-                <input id="cbRepoId" type="text" class="mem-input" placeholder="e.g. Qwen/Qwen2.5-3B-Instruct-GGUF" style="width:100%;">
-              </div>
-              <div style="flex:1;min-width:140px;">
-                <label class="muted" style="font-size:11px;display:block;margin-bottom:4px;">Include Pattern</label>
-                <input id="cbInclude" type="text" class="mem-input" placeholder="e.g. *q4_k_m*" style="width:100%;">
-              </div>
-              <button id="cbDownloadBtn" class="btn-primary" style="font-size:12px;padding:8px 14px;white-space:nowrap;"><i data-lucide="download" class="icon-lucide"></i> Download</button>
             </div>
           </div>
 
@@ -1122,6 +1092,45 @@
               </div>
               <button id="cbSaveSettings" class="btn-primary" style="font-size:12px;padding:6px 14px;align-self:flex-start;">Save Settings</button>
             </div>
+          </div>
+
+          <!-- Custom Download -->
+          <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+            <h4 class="muted" style="font-size:12px;font-weight:600;margin-bottom:8px;">Custom Download</h4>
+            <!-- Search -->
+            <div style="margin-bottom:12px;">
+              <div style="display:flex;gap:8px;align-items:center;">
+                <input id="cbSearchInput" type="text" class="mem-input" data-no-save-track placeholder="Search models on HuggingFace (e.g. gemma 3n, llama 3 q4)" style="flex:1;">
+                <button id="cbSearchBtn" class="btn-primary" style="font-size:12px;padding:8px 14px;white-space:nowrap;"><i data-lucide="search" class="icon-lucide"></i> Search</button>
+              </div>
+              <div id="cbSearchResults" style="margin-top:8px;"></div>
+            </div>
+            <!-- Manual repo input -->
+            <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
+              <div style="flex:1;min-width:200px;">
+                <label class="muted" style="font-size:11px;display:block;margin-bottom:4px;">Repo ID (org/model)</label>
+                <input id="cbRepoId" type="text" class="mem-input" placeholder="e.g. Qwen/Qwen2.5-3B-Instruct-GGUF" style="width:100%;">
+              </div>
+              <div style="flex:1;min-width:140px;">
+                <label class="muted" style="font-size:11px;display:block;margin-bottom:4px;">Include Pattern</label>
+                <input id="cbInclude" type="text" class="mem-input" placeholder="e.g. *q4_k_m*" style="width:100%;">
+              </div>
+              <button id="cbDownloadBtn" class="btn-primary" style="font-size:12px;padding:8px 14px;white-space:nowrap;"><i data-lucide="download" class="icon-lucide"></i> Download</button>
+            </div>
+          </div>
+
+          <!-- Active Downloads -->
+          <div id="cbDownloadsSection" style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+            <h4 class="muted" style="font-size:12px;font-weight:600;margin-bottom:8px;">Active Downloads</h4>
+            <div id="cbDownloadsList" class="cb-downloads-list">
+              <p class="muted" style="font-size:12px;font-style:italic;">No active downloads</p>
+            </div>
+          </div>
+
+          <!-- Recommended Models -->
+          <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+            <h4 class="muted" style="font-size:12px;font-weight:600;margin-bottom:8px;">Recommended Models <span class="muted" style="font-weight:400;">(ranked for your hardware)</span></h4>
+            <div id="cbPresetsGrid" class="cb-presets-grid"></div>
           </div>
         </div>
         <div id="tab-agents" class="settings-tab-content">
@@ -1302,14 +1311,14 @@
       },
     };
   </script>
-  <script src="/static/app.js?v=79"></script>
+  <script src="/static/app.js?v=81"></script>
   <script src="/static/src/research.js?v=10"></script>
   <script src="/static/js/agents.js?v=23"></script>
   <script src="/static/js/filesystem.js?v=28"></script>
   <script src="/static/js/mode.js?v=19"></script>
   <script src="/static/js/resize-panels.js?v=1"></script>
   <script src="/static/js/terminal.js?v=4"></script>
-  <script src="/static/js/cookbook.js?v=3"></script>
+  <script src="/static/js/cookbook.js?v=4"></script>
 
   <script>
     /* Keep mode-toggle-compact pill indicator in sync with active button */

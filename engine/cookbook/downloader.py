@@ -114,7 +114,7 @@ def get_total_size():
             name = f.rfilename if hasattr(f, "rfilename") else getattr(f, "path", "")
             if filename and name != filename:
                 continue
-            if include and not fnmatch.fnmatch(name, include):
+            if include and not fnmatch.fnmatch(name.lower(), include.lower()):
                 continue
             matched.append((name, f.size))
         deduped = _dedup_gguf_files(matched)
@@ -200,7 +200,7 @@ try:
                     if not hasattr(_f, "size") or _f.size is None:
                         continue
                     _name = _f.rfilename if hasattr(_f, "rfilename") else getattr(_f, "path", "")
-                    if fnmatch.fnmatch(_name, include):
+                    if fnmatch.fnmatch(_name.lower(), include.lower()):
                         _matched.append((_name, _f.size))
                 _deduped = _dedup_gguf_files(_matched)
                 allow_patterns = [n for n, _ in _deduped]
@@ -355,12 +355,19 @@ class DownloadManager:
 
         returncode = proc.poll()
         if returncode == 0:
-            task.status = "done"
-            task.progress = 100.0
-            task.speed_bps = 0.0
-            if task.total_bytes > 0:
-                task.bytes_downloaded = task.total_bytes
-            logger.info("Download complete: %s", task.repo_id)
+            # Check if any GGUF files actually landed
+            gguf_files = list(target_dir.rglob("*.gguf")) if target_dir.exists() else []
+            if not gguf_files:
+                task.status = "failed"
+                task.error = "Download succeeded but no .gguf files found. This repo may only contain safetensors/pytorch weights — use a GGUF-specific repo or convert manually."
+                logger.warning("Download complete but no GGUF files: %s", task.repo_id)
+            else:
+                task.status = "done"
+                task.progress = 100.0
+                task.speed_bps = 0.0
+                if task.total_bytes > 0:
+                    task.bytes_downloaded = task.total_bytes
+                logger.info("Download complete: %s (%d gguf files)", task.repo_id, len(gguf_files))
         elif returncode in (-9, -15):
             task.status = "cancelled"
             logger.info("Download killed: %s", task.repo_id)
