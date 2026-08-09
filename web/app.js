@@ -1784,17 +1784,22 @@
 
     document.getElementById("tnNoteAdd")?.addEventListener("click", async () => {
       const title = document.getElementById("tnNoteTitle").value.trim();
-      if (!title) return;
-      await tnPost("/notes", { title, note_type: "note" });
+      const content = document.getElementById("tnNoteContent").value.trim();
+      if (!title && !content) return;
+      await tnPost("/notes", { title: title || "Untitled", content, note_type: "note" });
       document.getElementById("tnNoteTitle").value = "";
+      document.getElementById("tnNoteContent").value = "";
       loadNotes();
     });
 
     document.getElementById("tnTodoAdd")?.addEventListener("click", async () => {
       const title = document.getElementById("tnNoteTitle").value.trim();
-      if (!title) return;
-      await tnPost("/notes", { title, note_type: "checklist", items: [{ text: "New item", done: false }] });
+      const content = document.getElementById("tnNoteContent").value.trim();
+      if (!title && !content) return;
+      const firstItem = content || "New item";
+      await tnPost("/notes", { title: title || "Untitled", note_type: "checklist", items: [{ text: firstItem, done: false }] });
       document.getElementById("tnNoteTitle").value = "";
+      document.getElementById("tnNoteContent").value = "";
       loadNotes();
     });
 
@@ -3076,7 +3081,10 @@
           } else if (evt.type === "tool_progress") {
             ui.showToolProgress(evt);
           } else if (evt.type === "skill_start") {
-            if (evt.name === "ask_user") continue; // MCQ card rendered on skill_output
+            if (evt.name === "ask_user") {
+              if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
+              continue; // MCQ card rendered on skill_output
+            }
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
             ui.showToolDone();
             ui.addSkillStart(evt);
@@ -3716,6 +3724,7 @@
             if (provider === "gemini") return m.api_backend === "gemini";
             if (provider === "groq") return m.api_backend === "groq";
             if (provider === "mistral") return m.api_backend === "mistral";
+            if (provider === "local") return m.api_backend === "local";
             return m.api_backend === "qwen" || !m.api_backend; // qwen fallback
           })
         : modelList;
@@ -4693,6 +4702,7 @@
         if (tabName === 'general') { loadBrowserSettings(); initTelegramToggle(); }
         else if (tabName === 'account') loadAccountProfiles();
         else if (tabName === 'mcp') loadMcpServers();
+        else if (tabName === 'cookbook') { if (window._cbInit) window._cbInit(); }
       });
     });
 
@@ -6779,6 +6789,37 @@
       } catch {}
       // Also load context pass settings
       loadContextPassSettings();
+      // Load general settings (tool output limit)
+      loadGeneralSettings();
+    }
+
+    // ── General Settings (tool output cap) ──
+    const maxToolOutputInput = document.getElementById("maxToolOutputInput");
+
+    async function loadGeneralSettings() {
+      try {
+        const res = await fetch("/api/settings/general");
+        if (res.ok) {
+          const d = await res.json();
+          if (maxToolOutputInput && d.max_tool_output_chars) {
+            maxToolOutputInput.value = d.max_tool_output_chars;
+          }
+        }
+      } catch {}
+    }
+
+    if (maxToolOutputInput) {
+      maxToolOutputInput.addEventListener("change", async () => {
+        const val = parseInt(maxToolOutputInput.value, 10);
+        if (!val || val < 1000) { maxToolOutputInput.value = 100000; return; }
+        try {
+          await fetch("/api/settings/general", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ max_tool_output_chars: val }),
+          });
+        } catch {}
+      });
     }
 
     // ── Context Pass Settings ──

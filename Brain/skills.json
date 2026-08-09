@@ -6,6 +6,31 @@
       "trigger": "When optimizing, vacuuming, or restructuring a SQLite database",
       "prompt": "## SQLite Optimization Safety Protocol\n\n### Pre-flight (MANDATORY)\n1. Verify actual DB path from config — never assume\n2. Check if server/app is running that uses this DB\n3. If running: STOP THE SERVER FIRST\n4. Make a backup: `cp <db_path> <db_path>.bak.$(date +%s)`\n5. Check WAL mode: `sqlite3 <db> 'PRAGMA journal_mode;'`\n\n### Operations\n- PRAGMA tuning: safe anytime, even on live DB\n- CREATE INDEX: safe on live DB (may be slow)\n- Schema changes (new tables): safe on live DB\n- VACUUM: NEVER on live WAL DB. Stop server first.\n- Column data migration: do in code migration function, not manual SQL\n\n### Post-flight\n1. Restart server\n2. Verify data integrity: row counts, sample queries\n3. Check file size change\n4. Only suggest VACUUM if user explicitly asks AND server is stopped AND backup exists",
       "created": "2026-08-08"
+    },
+    {
+      "name": "summarize_recv_yield_log",
+      "description": "Parses a RECV/YIELD log, reconstructs the original chat messages, and provides a concise summary of the content and any notable patterns.",
+      "trigger": "When the user supplies a RECV/YIELD token log.",
+      "prompt": "Given a log containing lines like \"RECV: '...'\nYIELD: '...'\", extract the payloads in the order they appear, concatenate them to form the original messages, and output a brief summary of what was said and any anomalies (e.g., unexpected tokens, missing delimiters).",
+      "created": "2026-08-09"
+    },
+    {
+      "name": "adapt_to_user_schedule",
+      "description": "Adjusts assistant behavior based on user's irregular work hours (e.g., late-night/early-morning sessions) and playful tone preferences. Tracks session timing patterns to anticipate active periods.",
+      "trigger": [
+        "When user initiates a session outside typical 9-5 hours (especially <08:00 or >22:00 local time).",
+        "When user references sleep schedule or work-hour jokes.",
+        "On first message of a new session to check for schedule anomalies."
+      ],
+      "prompt": "1. **Time Awareness**: Note the local time of the session start. If outside 08:00-22:00, acknowledge the unusual hour with a lighthearted comment (e.g., 'Burning the midnight oil?' or 'Early bird today?').\n2. **Tone Matching**: Use playful/teasing language unless the user’s message is serious or urgent. Examples:\n   - For late-night: 'Missed you earlier… did [project] keep you up?'\n   - For early-morning: 'Rise and shine! What’s the [project] damage today?'\n3. **Pattern Tracking**: If the user frequently works irregular hours, gently suggest sleep/work-life balance after 3+ irregular sessions in a row (e.g., 'You’ve been grinding odd hours—hydrate and stretch!').\n4. **Project Context**: If the session is in a project directory (e.g., 'Sable'), reference it directly to show continuity (e.g., 'Back to Sable chaos?').\n5. **Avoid Overuse**: Skip the playful tone if the user’s message is technical/urgent or if they’ve previously dismissed such comments.",
+      "created": "2026-08-09"
+    },
+    {
+      "name": "summarize_home_script",
+      "description": "Retrieve and summarize the contents and functionality of a script located in the user's home directory, noting dependencies and execution steps.",
+      "trigger": "User asks to view or understand a script file located outside the current working directory, especially in the home folder.",
+      "prompt": "Locate the requested script file (e.g., send_gmail.py) in the user's home directory, read its contents, provide a concise summary of its purpose, key libraries (e.g., Playwright), how it operates (e.g., opens Chrome, composes Gmail, sends via Ctrl+Enter), and any required setup steps such as installing dependencies.",
+      "created": "2026-08-09"
     }
   ]
 }

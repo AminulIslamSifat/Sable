@@ -33,6 +33,7 @@ from engine.skills.handlers.grep_search import (
     handle_list_dir,
 )
 from engine.skills.handlers.simulacra import handle_run_simulacra
+from engine.skills.handlers.tracknote import handle_tracknote
 from engine.mcp.handler import handle_mcp_call
 
 HANDLER_MAP: dict[str, object] = {
@@ -58,6 +59,7 @@ HANDLER_MAP: dict[str, object] = {
     "glob": handle_glob,
     "list_dir": handle_list_dir,
     "run_simulacra": handle_run_simulacra,
+    "tracknote": handle_tracknote,
     "mcp_call": handle_mcp_call,
 }
 
@@ -84,5 +86,6 @@ __all__ = [
     "handle_glob",
     "handle_list_dir",
     "handle_run_simulacra",
+    "handle_tracknote",
     "handle_mcp_call",
 ]

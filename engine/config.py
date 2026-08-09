@@ -502,23 +502,12 @@ def save_qwen_tokens_for_account(
     bx_umidtoken: str,
     account: str | None = None,
 ) -> None:
-    """Append Qwen WAF tokens to the account's list (deduped by cookies, capped).
-
-    Keeps at most _QWEN_MAX_TOKENS_PER_ACCOUNT entries per account (FIFO eviction).
-    """
+    """Save Qwen WAF tokens for an account. Replaces any existing entry (1 per account)."""
     if not cookies:
         return
     acct = account or _resolve_active_account()
     store = load_qwen_token_store()
-    existing = store.get(acct, [])
-    entry = {"cookies": cookies, "bx_ua": bx_ua, "bx_umidtoken": bx_umidtoken}
-    # Dedupe by cookies value
-    if not any(e.get("cookies") == cookies for e in existing):
-        existing.append(entry)
-    # Cap: keep only the most recent N entries
-    if len(existing) > _QWEN_MAX_TOKENS_PER_ACCOUNT:
-        existing = existing[-_QWEN_MAX_TOKENS_PER_ACCOUNT:]
-    store[acct] = existing
+    store[acct] = [{"cookies": cookies, "bx_ua": bx_ua, "bx_umidtoken": bx_umidtoken}]
     save_qwen_token_store(store)
 
 
