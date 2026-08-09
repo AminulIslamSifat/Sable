@@ -77,6 +77,7 @@ async def chat(request: ChatRequest):
     if request.open_file:
         _ctx_parts += f" | file: {request.open_file}"
     timestamped_message = f"[{_ts}{_ctx_parts}]\n{request.message}"
+    _memory_context = None  # injected before user message in api_message
     _injected_memory_keys = get_injected_memory_keys(active_chat_id)
     _ms_cfg: dict[str, Any] = {"enabled": True, "top_k": 10}
     _searcher = get_searcher()
@@ -98,7 +99,7 @@ async def chat(request: ChatRequest):
             if _new_results:
                 _mem_block = _searcher.format_for_prompt(_new_results)
                 if _mem_block:
-                    timestamped_message = f"{_mem_block}\n\n{timestamped_message}"
+                    _memory_context = _mem_block  # stored separately, injected before user msg
                     for r in _new_results:
                         _injected_memory_keys.add(r["key"])
                     save_injected_memory_keys(active_chat_id, _injected_memory_keys)
@@ -147,43 +148,60 @@ async def chat(request: ChatRequest):
         _at.set_chat_settings(active_chat_id, request.model, request.thinking_mode, current_provider)
     except Exception:
         pass
-    add_message(active_chat_id, "user", timestamped_message, None, parent_id, memory_used=_memory_used or None)
+    _user_msg_id: int | None = None
+    if not request.skip_user_save:
+        _user_msg_id = add_message(active_chat_id, "user", timestamped_message, None, parent_id, memory_used=_memory_used or None)
+    # --- Checkpoint: capture project state BEFORE agent processes this turn ---
+    if _user_msg_id and request.cwd:
+        try:
+            from engine.checkpoint import get_checkpoint_manager
+            from server.database import save_checkpoint as _save_cp
+            _cp_mgr = get_checkpoint_manager(request.cwd)
+            _cp_sha = _cp_mgr.save_checkpoint(active_chat_id, _user_msg_id, "turn_start")
+            if _cp_sha:
+                _save_cp(active_chat_id, _user_msg_id, "turn_start", _cp_sha, request.cwd)
+        except Exception:
+            pass  # Checkpoints are best-effort; never break the chat flow
     # Separate API payload so injections don't leak into session history
-    api_message = timestamped_message
-    # Stateless backends (DeepSeek) always have parent_id=None.
-    # Check message count to avoid re-injecting title prompt on every message.
+    # Build context FIRST, user message always at the very end
+    _context_parts: list[str] = []
     _msg_count = get_db().execute(
         "SELECT COUNT(*) as c FROM messages WHERE chat_id = ?", (active_chat_id,)
     ).fetchone()["c"]
-    # Inject title instruction on first message (model-only, not saved to DB)
     if parent_id is None and _msg_count <= 1:
-        api_message += '\n\n[SYSTEM: First message of a new chat. Respond normally, but also emit <action><chat_title>Short descriptive title</chat_title></action> at the end of your response. If you are running another command, then put chat_title and that command in one action block.]'
-
-        # Inject upcoming schedule (last/next 10 days) so Maria knows what's coming
-        try:
-            from server.database import get_upcoming_schedules
-            _upcoming = get_upcoming_schedules(days=10)
-            if _upcoming:
-                _sched_lines = []
-                for _s in _upcoming:
-                    _stype = _s.get("schedule_type", "daily")
-                    _time = _s.get("time", "")
-                    _desc = _s.get("description", "")
-                    _title = _s.get("title", "")
-                    if _stype == "weekly":
-                        _days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-                        _dow = _s.get("day_of_week", 0)
-                        _day_name = _days[_dow] if 0 <= _dow <= 6 else "?"
-                        _sched_lines.append(f"- {_title} ({_day_name} {_time})" + (f" — {_desc}" if _desc else ""))
-                    elif _stype == "occasional":
-                        _sd = _s.get("start_date", "")[:10]
-                        _sched_lines.append(f"- {_title} ({_sd} {_time})" + (f" — {_desc}" if _desc else ""))
-                    else:
-                        _sched_lines.append(f"- {_title} (daily {_time})" + (f" — {_desc}" if _desc else ""))
-                _sched_block = "\n".join(_sched_lines)
-                api_message += f'\n\n[SCHEDULE CONTEXT — next 10 days:\n{_sched_block}]'
-        except Exception:
-            pass
+        _context_parts.append('[SYSTEM: First message of a new chat. Respond normally, but also emit ' + chr(60) + 'action' + chr(62) + chr(60) + 'chat_title' + chr(62) + 'Short descriptive title' + chr(60) + '/chat_title' + chr(62) + chr(60) + '/action' + chr(62) + ' at the end of your response. If you are running another command, then put chat_title and that command in one action block.]')
+    try:
+        from server.database import get_upcoming_schedules
+        _upcoming = get_upcoming_schedules(days=10)
+        if _upcoming:
+            _sched_lines = []
+            for _s in _upcoming:
+                _stype = _s.get("schedule_type", "daily")
+                _time = _s.get("time", "")
+                _desc = _s.get("description", "")
+                _title = _s.get("title", "")
+                if _stype == "weekly":
+                    _days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+                    _dow = _s.get("day_of_week", 0)
+                    _day_name = _days[_dow] if 0 <= _dow <= 6 else "?"
+                    _sched_lines.append(f"- {_title} ({_day_name} {_time})" + (f" \u2014 {_desc}" if _desc else ""))
+                elif _stype == "occasional":
+                    _sd = _s.get("start_date", "")[:10]
+                    _sched_lines.append(f"- {_title} ({_sd} {_time})" + (f" \u2014 {_desc}" if _desc else ""))
+                else:
+                    _sched_lines.append(f"- {_title} (daily {_time})" + (f" \u2014 {_desc}" if _desc else ""))
+            _sched_block = "\n".join(_sched_lines)
+            _context_parts.append(f'[SCHEDULE CONTEXT \u2014 next 10 days:\n{_sched_block}]')
+    except Exception:
+        pass
+    # Relevant memory context (already searched above)
+    if _memory_context:
+        _context_parts.append(_memory_context)
+    # Assemble: context first, user message always last
+    if _context_parts:
+        api_message = "\n\n".join(_context_parts) + "\n\n" + timestamped_message
+    else:
+        api_message = timestamped_message
 
     resolved_files: list[dict[str, Any]] | None = None
     _backend = _resolve_api_backend(request.model) if _is_api_model(request.model) else None
@@ -334,6 +352,8 @@ async def chat(request: ChatRequest):
         _guard = MainChatGuard()
         _all_tool_mem_used: list[dict[str, Any]] = []
         yield sse({"type": "status", "message": "processing"})
+        if _user_msg_id:
+            yield sse({"type": "user_message_id", "id": _user_msg_id})
         if _memory_used:
             yield sse({"type": "memory_used", "memories": _memory_used})
         try:
@@ -419,9 +439,12 @@ async def chat(request: ChatRequest):
                             for ev in engine.process_tag(
                                 item["name"], item.get("attrs", {}), item.get("content", "")
                             ):
-                                if ev.get("type") in ("skill_start", "skill_output", "skill_end", "file_edit"):
+                                if ev.get("type") in ("skill_start", "skill_output", "skill_end", "file_edit", "permission_request"):
                                     round_skill_events.append(ev)
                                 yield sse(ev)
+                                # When permission is requested, emit a transient status (not saved as answer)
+                                if ev.get("type") == "permission_request":
+                                    yield sse({"type": "approval_pending", "text": "⏳ Waiting for your approval on that command."})
                                 # Detect simulacra completion → emit sim_ready card
                                 if (ev.get("type") == "skill_end"
                                         and ev.get("name") == "run_simulacra"
@@ -432,7 +455,7 @@ async def chat(request: ChatRequest):
                                     yield sse({"type": "sim_ready", "filename": _fname})
                         else:
                             # tool_pending, tool_progress, etc — forward to frontend
-                            if itype in ("skill_start", "skill_output", "skill_end", "file_edit"):
+                            if itype in ("skill_start", "skill_output", "skill_end", "file_edit", "permission_request"):
                                 round_skill_events.append(item)
                             yield sse(item)
                 def emit_parsed(text: str) -> Generator[str, None, None]:
@@ -771,3 +794,70 @@ async def chat(request: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ─── Approval Gate Endpoints ──────────────────────────────────────────────────
+
+@router.post("/api/skills/approve/{tag_id}")
+async def approve_command(tag_id: str, request: Request):
+    """User approved a pending command — execute and return tool feedback."""
+    from engine.security.middleware import consume_pending_approval
+
+    pending = consume_pending_approval(tag_id)
+    if pending is None:
+        return {"ok": False, "error": "Approval expired or not found"}
+
+    engine = _get_skill_engine()
+    attrs = {**pending.attrs, "approved": "true"}
+
+    loop = asyncio.get_event_loop()
+    def _run():
+        return list(engine.process_tag(pending.name, attrs, pending.content))
+    try:
+        events = await loop.run_in_executor(None, _run)
+    except Exception as exc:
+        events = [{"type": "skill_end", "id": tag_id, "name": pending.name, "ok": False, "error": str(exc)}]
+
+    # Build tool feedback in standard format
+    from engine.skills.events import build_tool_feedback
+    # Prepend skill_start if missing
+    has_start = any(ev.get("type") == "skill_start" for ev in events)
+    if not has_start:
+        events = [{"type": "skill_start", "id": tag_id, "name": pending.name}] + events
+    feedback = build_tool_feedback(events) or f"[{pending.name}] OK"
+
+    # Save as skill_event attached to the last assistant message
+    from server.database import append_skill_event
+    chat_id = (await request.json()).get("chat_id") if request else None
+    if chat_id:
+        for ev in events:
+            append_skill_event(chat_id, ev)
+
+    return {"ok": True, "feedback": feedback}
+
+
+@router.post("/api/skills/deny/{tag_id}")
+async def deny_command(tag_id: str, request: Request):
+    """User denied a pending command — return tool feedback."""
+    from engine.security.middleware import consume_pending_approval
+
+    pending = consume_pending_approval(tag_id)
+    if pending is None:
+        return {"ok": False, "error": "Not found or expired"}
+
+    cmd_preview = pending.content[:200]
+    feedback = f"[{pending.name}] FAILED — User denied this command: {cmd_preview}"
+
+    # Save as skill_event attached to the last assistant message
+    from server.database import append_skill_event
+    chat_id = (await request.json()).get("chat_id") if request else None
+    if chat_id:
+        append_skill_event(chat_id, {
+            "type": "skill_start", "id": tag_id, "name": pending.name,
+        })
+        append_skill_event(chat_id, {
+            "type": "skill_end", "id": tag_id, "name": pending.name,
+            "ok": False, "error": "User denied this command",
+        })
+
+    return {"ok": True, "feedback": feedback}
