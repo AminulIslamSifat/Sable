@@ -12,7 +12,7 @@
     "create_file",
     "insert_file"
   ],
-  "default": false,
+  "default": true,
   "inline": false,
   "priority": 100,
   "scope": [
