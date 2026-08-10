@@ -125,6 +125,8 @@ class Agent:
     error: str | None = None
     tokens_used: int = 0
     skills_used: list[str] = field(default_factory=list)
+    tool_calls_total: int = 0  # Total tool invocations (all tags)
+    error_recoveries: int = 0  # Tool calls that returned SKILL ERROR
     created_at: float = field(default_factory=time.time)
     completed_at: float | None = None
     parent_id: str | None = None

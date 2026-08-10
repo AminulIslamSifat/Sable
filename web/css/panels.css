@@ -2493,3 +2493,473 @@ textarea:disabled {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* ---------- Project Folders ---------- */
+.project-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 14px 6px;
+  margin: 0;
+  background: transparent;
+  border-radius: 0;
+  border: none;
+  border-bottom: 1px solid var(--border);
+}
+.project-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-exit {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+  opacity: 0.7;
+  transition: opacity 0.15s;
+}
+.project-exit:hover { opacity: 1; color: var(--text); }
+
+.project-picker-btn.active {
+  color: var(--accent) !important;
+  background: color-mix(in srgb, var(--accent) 12%, transparent) !important;
+}
+
+.project-picker-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 4px;
+}
+.project-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text);
+  transition: background 0.12s;
+}
+.project-picker-item:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.project-picker-item.active { color: var(--accent); font-weight: 600; }
+.project-picker-item.add-new { color: var(--text-dim); border-top: 1px solid var(--border); margin-top: 4px; padding-top: 10px; }
+
+.project-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: color-mix(in srgb, var(--panel) 12%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.project-card-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.project-card-name { font-size: 13px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-card-meta { font-size: 11px; color: var(--text-dim); }
+.project-card-actions { display: flex; gap: 6px; flex-shrink: 0; margin-left: 8px; }
+.project-card-actions button {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.project-card-actions button:hover { color: var(--text); border-color: var(--text-dim); }
+.project-card-actions button.delete:hover { color: #e55; border-color: #e55; }
+
+/* ---------- Project Folder Dropdown (sidebar button) ---------- */
+.project-folder-dropdown {
+  z-index: 200;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  padding: 6px 0;
+  min-width: 180px;
+}
+.project-folder-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 8px;
+}
+
+.project-folder-item {
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--text);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.project-folder-item:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+
+/* ---------- Project Settings Button (in banner) ---------- */
+.project-settings-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+  transition: color 0.12s;
+  flex-shrink: 0;
+}
+.project-settings-btn:hover { color: var(--accent); }
+
+/* ---------- Project Settings Popup ---------- */
+.project-settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.15s ease;
+}
+.project-settings-modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+  padding: 24px;
+  width: 600px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  animation: slideUp 0.2s ease;
+}
+.project-settings-modal h4 {
+  margin: 0 0 18px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+.project-settings-modal label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.project-settings-modal input[type="text"] {
+  width: 100%;
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  box-sizing: border-box;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.project-settings-modal input[type="text"]:focus {
+  border-color: var(--accent);
+}
+.project-settings-modal .psm-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-2) 60%, transparent);
+  cursor: pointer;
+}
+.project-settings-modal .psm-toggle-row label {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+  user-select: none;
+}
+.project-settings-modal .psm-toggle-row input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--muted-2);
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  position: relative;
+  transition: all 0.15s ease;
+}
+.project-settings-modal .psm-toggle-row input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.project-settings-modal .psm-toggle-row input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 1px;
+  width: 5px;
+  height: 10px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.project-settings-modal .psm-btn-row {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 6px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-soft);
+}
+.project-settings-modal .psm-btn-row button {
+  padding: 8px 18px;
+  font-size: 13px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+/* ── Project Settings Modal: Sections ── */
+.psm-section {
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 4px;
+}
+.psm-section:last-of-type {
+  border-bottom: none;
+}
+.psm-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 4px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  transition: color 0.15s;
+}
+.psm-section-header:hover {
+  color: var(--accent);
+}
+.psm-chevron {
+  font-size: 11px;
+  width: 14px;
+  text-align: center;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+.psm-section-body {
+  padding: 4px 0 14px 0;
+}
+
+/* ── Project Settings Modal: Textarea ── */
+.psm-textarea {
+  width: 100%;
+  min-height: 100px;
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  box-sizing: border-box;
+  outline: none;
+  resize: vertical;
+  transition: border-color 0.15s;
+  line-height: 1.5;
+}
+.psm-textarea:focus {
+  border-color: var(--accent);
+}
+
+/* ── Project Settings Modal: Helper text ── */
+.psm-helper {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin: -8px 0 12px 0;
+  line-height: 1.4;
+}
+
+/* ── Project Settings Modal: Skills ── */
+.psm-skills-container {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.psm-skill-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-2) 60%, transparent);
+  cursor: pointer;
+}
+.psm-skill-row input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--muted-2);
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  position: relative;
+  transition: all 0.15s ease;
+}
+.psm-skill-row input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.psm-skill-row input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 1px;
+  width: 5px;
+  height: 10px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.psm-skill-name {
+  font-size: 13px;
+  color: var(--text);
+  flex: 1;
+}
+.psm-skill-badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+
+/* ---------- Sable Dialog (replaces native confirm/prompt/alert) ---------- */
+.sable-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9500;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.12s ease;
+}
+.sable-dialog {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+  padding: 24px 28px 20px;
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  animation: slideUp 0.18s ease;
+}
+.sable-dialog-title {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.sable-dialog-msg {
+  margin: 0 0 18px;
+  font-size: 13.5px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  white-space: pre-line;
+}
+.sable-dialog-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 12px;
+  margin-bottom: 18px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13.5px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.sable-dialog-input:focus {
+  border-color: var(--accent);
+}
+.sable-dialog-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+.sable-dialog-btn {
+  padding: 7px 18px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  transition: all 0.15s;
+}
+.sable-dialog-btn:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+.sable-dialog-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.sable-dialog-btn.primary:hover {
+  filter: brightness(1.15);
+}
+.sable-dialog-btn.danger {
+  background: var(--danger, #e5484d);
+  border-color: var(--danger, #e5484d);
+  color: #fff;
+}
+.sable-dialog-btn.danger:hover {
+  filter: brightness(1.15);
+}
+

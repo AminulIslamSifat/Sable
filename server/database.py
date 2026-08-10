@@ -233,19 +233,63 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_checkpoints_chat ON checkpoints(chat_id, message_id)"
         )
 
-def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = None, mode: str | None = None, provider: str | None = None) -> None:
+        # --- Projects table ---
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                path TEXT,
+                instruction_file TEXT,
+                instruction_text TEXT,
+                use_universal_memory INTEGER NOT NULL DEFAULT 1,
+                project_memory_enabled INTEGER NOT NULL DEFAULT 1,
+                facts TEXT,
+                git_repo TEXT,
+                git_username TEXT,
+                git_branch TEXT,
+                persona_enabled INTEGER NOT NULL DEFAULT 1,
+                output_format_enabled INTEGER NOT NULL DEFAULT 1,
+                skills_config TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        # Migrate existing projects table — add new columns if missing
+        proj_cols = {row["name"] for row in conn.execute("PRAGMA table_info(projects)").fetchall()}
+        new_proj_cols = {
+            "instruction_text": "TEXT",
+            "project_memory_enabled": "INTEGER NOT NULL DEFAULT 1",
+            "facts": "TEXT",
+            "git_repo": "TEXT",
+            "git_username": "TEXT",
+            "git_branch": "TEXT",
+            "persona_enabled": "INTEGER NOT NULL DEFAULT 1",
+            "output_format_enabled": "INTEGER NOT NULL DEFAULT 1",
+            "skills_config": "TEXT",
+        }
+        for col_name, col_def in new_proj_cols.items():
+            if col_name not in proj_cols:
+                conn.execute(f"ALTER TABLE projects ADD COLUMN {col_name} {col_def}")
+        if "project_id" not in chat_cols:
+            conn.execute("ALTER TABLE chats ADD COLUMN project_id TEXT")
+
+def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = None, mode: str | None = None, provider: str | None = None, project_id: str | None = None) -> None:
     now = utcnow()
     with get_db() as conn:
-        existing = conn.execute("SELECT id, mode, provider FROM chats WHERE id = ?", (chat_id,)).fetchone()
+        existing = conn.execute("SELECT id, mode, provider, project_id FROM chats WHERE id = ?", (chat_id,)).fetchone()
         if existing:
             if mode and not existing["mode"]:
                 conn.execute("UPDATE chats SET mode = ? WHERE id = ?", (mode, chat_id))
             if provider and not existing["provider"]:
                 conn.execute("UPDATE chats SET provider = ? WHERE id = ?", (provider, chat_id))
+            if project_id is not None and existing["project_id"] != project_id:
+                conn.execute("UPDATE chats SET project_id = ? WHERE id = ?", (project_id, chat_id))
             return
         conn.execute(
-            "INSERT INTO chats (id, title, parent_id, created_at, updated_at, mode, provider) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (chat_id, title, parent_id, now, now, mode, provider),
+            "INSERT INTO chats (id, title, parent_id, created_at, updated_at, mode, provider, project_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, title, parent_id, now, now, mode, provider, project_id),
         )
 
 def get_chat_mode(chat_id: str) -> str | None:
@@ -485,12 +529,106 @@ def search_messages(query: str, limit: int = 50) -> list[dict[str, Any]]:
         return results
 
 
-def list_chats() -> list[dict[str, Any]]:
+def get_chat_project_id(chat_id: str) -> str | None:
+    """Return the project_id associated with a chat, or None."""
     with get_db() as conn:
-        rows = conn.execute(
-            "SELECT id, title, parent_id, created_at, updated_at, provider FROM chats ORDER BY updated_at DESC"
-        ).fetchall()
+        row = conn.execute("SELECT project_id FROM chats WHERE id = ?", (chat_id,)).fetchone()
+        return row["project_id"] if row and row["project_id"] else None
+
+def list_chats(project_id: str | None = None) -> list[dict[str, Any]]:
+    with get_db() as conn:
+        if project_id is not None:
+            rows = conn.execute(
+                "SELECT id, title, parent_id, created_at, updated_at, provider, project_id FROM chats WHERE project_id = ? ORDER BY updated_at DESC",
+                (project_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, title, parent_id, created_at, updated_at, provider, project_id FROM chats ORDER BY updated_at DESC"
+            ).fetchall()
         return [dict(row) for row in rows]
+
+def list_projects() -> list[dict[str, Any]]:
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
+        return [dict(row) for row in rows]
+
+def create_project(project_id: str, name: str, path: str | None = None) -> dict[str, Any]:
+    now = utcnow()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO projects (id, name, path, instruction_file, instruction_text,
+               use_universal_memory, project_memory_enabled, persona_enabled,
+               output_format_enabled, created_at, updated_at)
+               VALUES (?, ?, ?, NULL, NULL, 1, 1, 1, 1, ?, ?)""",
+            (project_id, name, path, now, now),
+        )
+    return get_project(project_id) or {}
+
+def get_project(project_id: str) -> dict[str, Any] | None:
+    import json as _json
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        # Deserialize skills_config JSON string back to dict
+        if d.get("skills_config") and isinstance(d["skills_config"], str):
+            try:
+                d["skills_config"] = _json.loads(d["skills_config"])
+            except (ValueError, TypeError):
+                d["skills_config"] = {}
+        # Convert integer booleans to actual bools
+        for bool_col in ("use_universal_memory", "project_memory_enabled", "persona_enabled", "output_format_enabled"):
+            if bool_col in d:
+                d[bool_col] = bool(d[bool_col])
+        return d
+
+def update_project(project_id: str, **kwargs: Any) -> dict[str, Any] | None:
+    import json as _json
+    # Serialize skills_config dict to JSON string for storage
+    if "skills_config" in kwargs and isinstance(kwargs["skills_config"], dict):
+        kwargs["skills_config"] = _json.dumps(kwargs["skills_config"])
+    allowed = {"name", "path", "instruction_file", "instruction_text", "use_universal_memory",
+               "project_memory_enabled", "facts", "git_repo", "git_username", "git_branch",
+               "persona_enabled", "output_format_enabled", "skills_config"}
+    updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+    if not updates:
+        return get_project(project_id)
+    sets = ", ".join(f"{k} = ?" for k in updates)
+    vals = list(updates.values()) + [utcnow(), project_id]
+    with get_db() as conn:
+        conn.execute(f"UPDATE projects SET {sets}, updated_at = ? WHERE id = ?", vals)
+    return get_project(project_id)
+
+def delete_project(project_id: str) -> bool:
+    import shutil
+    from pathlib import Path as _Path
+    with get_db() as conn:
+        # Delete all chats belonging to this project
+        chat_ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM chats WHERE project_id = ?", (project_id,)
+        ).fetchall()]
+        for cid in chat_ids:
+            conn.execute(
+                "DELETE FROM skill_events WHERE message_id IN (SELECT id FROM messages WHERE chat_id = ?)",
+                (cid,),
+            )
+            conn.execute("DELETE FROM messages WHERE chat_id = ?", (cid,))
+            conn.execute("DELETE FROM chats WHERE id = ?", (cid,))
+        # Delete the project record
+        cur = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    # Clean up project folder on disk (memory, protected, cache, instruction)
+    proj_dir = _Path(__file__).resolve().parent.parent / "system" / "projects" / project_id
+    if proj_dir.exists():
+        shutil.rmtree(proj_dir, ignore_errors=True)
+    # Evict cached project searcher so it doesn't hold stale references
+    try:
+        from engine.memory_search import _project_searchers
+        _project_searchers.pop(project_id, None)
+    except Exception:
+        pass
+    return cur.rowcount > 0
 
 def delete_chat(chat_id: str) -> bool:
     with get_db() as conn:
