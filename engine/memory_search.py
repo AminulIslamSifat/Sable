@@ -22,10 +22,11 @@ _PROTECTED_PATH = _BRAIN_DIR / "Protected.json"
 _CACHE_DIR = Path(__file__).resolve().parent.parent / "system"
 _GEMINI_KEYS_PATH = _CACHE_DIR / ".gemini_api_keys.json"
 
-def _cache_path_for(model_name: str) -> Path:
+def _cache_path_for(model_name: str, base_dir: Path | None = None) -> Path:
     """Per-model cache file so switching models doesn't invalidate other caches."""
     slug = model_name.replace("/", "_").replace(" ", "_")
-    return _CACHE_DIR / f"memory_cache_{slug}.npz"
+    d = base_dir if base_dir else _CACHE_DIR
+    return d / f"memory_cache_{slug}.npz"
 
 # Empirically calibrated (2026-07-27) against the hybrid score
 # (0.7*vector + 0.3*keyword) via calibrate_thresholds.py — each value sits
@@ -195,7 +196,7 @@ class MemorySearcher:
                     cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self) -> None:
+    def __init__(self, memory_path: Path | None = None, protected_path: Path | None = None, cache_dir: Path | None = None) -> None:
         if self._initialized:
             return
         self._model_name: str = DEFAULT_MODEL
@@ -206,6 +207,9 @@ class MemorySearcher:
         self._entry_meta: list[dict[str, str]] = []
         self._entry_tokens: list[set[str]] = []
         self._load_lock = threading.RLock()
+        self._memory_path = memory_path or _MEMORY_PATH
+        self._protected_path = protected_path or _PROTECTED_PATH
+        self._cache_dir = cache_dir
         self._initialized = True
 
     @property
@@ -261,7 +265,7 @@ class MemorySearcher:
         try:
             meta_json = json.dumps(self._entry_meta, ensure_ascii=False)
             np.savez_compressed(
-                _cache_path_for(self._model_name),
+                _cache_path_for(self._model_name, self._cache_dir),
                 vectors=self._normed_vectors,
                 entries=np.array(self._entries, dtype=object),
                 meta=np.array(meta_json),
@@ -272,7 +276,7 @@ class MemorySearcher:
 
     def _load_cache_data(self) -> dict[str, Any] | None:
         """Load raw cache arrays for the current model. Returns None if missing."""
-        cache_path = _cache_path_for(self._model_name)
+        cache_path = _cache_path_for(self._model_name, self._cache_dir)
         if not cache_path.exists():
             return None
         try:
@@ -353,9 +357,9 @@ class MemorySearcher:
 
         # Load main memory (semantic, episodic, procedural, ephemeral)
         # (full vectorize path — cache miss or stale)
-        if _MEMORY_PATH.exists():
+        if self._memory_path.exists():
             try:
-                data = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
+                data = json.loads(self._memory_path.read_text(encoding="utf-8"))
             except Exception:
                 data = {}
             if isinstance(data, dict):
@@ -388,9 +392,9 @@ class MemorySearcher:
                     self._add_entry(text, k, v, "uncategorized")
 
         # Load protected memory (always active, never expires)
-        if _PROTECTED_PATH.exists():
+        if self._protected_path.exists():
             try:
-                pdata = json.loads(_PROTECTED_PATH.read_text(encoding="utf-8"))
+                pdata = json.loads(self._protected_path.read_text(encoding="utf-8"))
             except Exception:
                 pdata = {}
             entries = pdata.get("protected", []) if isinstance(pdata, dict) else []
@@ -406,10 +410,10 @@ class MemorySearcher:
 
     def _persist_episodic_access(self, keys: list[str], timestamp: str) -> None:
         """Write updated last_accessed timestamps back to Memory.json for episodic entries."""
-        if not _MEMORY_PATH.exists():
+        if not self._memory_path.exists():
             return
         try:
-            data = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
+            data = json.loads(self._memory_path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 return
             key_set = set(keys)
@@ -419,7 +423,7 @@ class MemorySearcher:
                     e["last_accessed"] = timestamp
                     changed = True
             if changed:
-                _MEMORY_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+                self._memory_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         except Exception:
             pass
 
@@ -457,6 +461,7 @@ class MemorySearcher:
         query: str,
         top_k: int = DEFAULT_TOP_K,
         threshold: float | None = None,
+        allowed_categories: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         self._ensure_loaded()
         with self._load_lock:
@@ -495,10 +500,12 @@ class MemorySearcher:
             ranked = np.argsort(-scores)
             results: list[dict[str, Any]] = []
             accessed_episodic_keys: list[str] = []
-            for idx in ranked[:top_k]:
+            for idx in ranked[:top_k * 3 if allowed_categories else top_k]:
                 if scores[idx] < cutoff:
                     break
                 meta = self._entry_meta[idx]
+                if allowed_categories is not None and meta["category"] not in allowed_categories:
+                    continue
                 results.append({
                     "key": meta["key"],
                     "value": meta["value"],
@@ -507,6 +514,9 @@ class MemorySearcher:
                 })
                 if meta["category"] == "episodic":
                     accessed_episodic_keys.append(meta["key"])
+
+            # Trim to top_k after category filtering
+            results = results[:top_k]
 
             # Update last_accessed for retrieved episodic entries
             if accessed_episodic_keys:
@@ -532,6 +542,33 @@ class MemorySearcher:
 
 def get_searcher() -> MemorySearcher:
     return MemorySearcher()
+
+
+_project_searchers: dict[str, MemorySearcher] = {}
+
+def get_project_searcher(project_id: str) -> MemorySearcher:
+    """Get or create a vector searcher scoped to a project's memory directory."""
+    if project_id in _project_searchers:
+        return _project_searchers[project_id]
+    proj_dir = Path(__file__).resolve().parent.parent / "system" / "projects" / project_id
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    mem_path = proj_dir / "Memory.json"
+    prot_path = proj_dir / "Protected.json"
+    # Bypass singleton __new__ to create independent instance
+    searcher = object.__new__(MemorySearcher)
+    searcher._initialized = False
+    searcher.__init__(memory_path=mem_path, protected_path=prot_path, cache_dir=proj_dir)
+    _project_searchers[project_id] = searcher
+    return searcher
+
+
+def reload_project_searcher(project_id: str) -> None:
+    """Force a project searcher to reload its entries from disk."""
+    if project_id in _project_searchers:
+        s = _project_searchers[project_id]
+        with s._load_lock:
+            s._normed_vectors = None
+            s._entries = []
 
 
 def list_available_models() -> list[dict[str, Any]]:

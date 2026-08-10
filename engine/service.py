@@ -182,11 +182,11 @@ class ChatService:
             thinking_enabled=thinking_enabled,
         )
 
-    async def sync_context(self) -> bool:
+    async def sync_context(self, project_id: str | None = None) -> bool:
         # Reuse cached headers from warmup to avoid a redundant browser launch
         if self._headers:
-            return await self._browser.sync_context(headers=self._headers)
-        return await self._browser.sync_context()
+            return await self._browser.sync_context(headers=self._headers, project_id=project_id)
+        return await self._browser.sync_context(project_id=project_id)
 
     async def stream_events(
         self,

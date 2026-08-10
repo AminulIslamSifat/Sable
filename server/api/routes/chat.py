@@ -82,6 +82,27 @@ async def chat(request: ChatRequest):
     _ms_cfg: dict[str, Any] = {"enabled": True, "top_k": 10}
     _searcher = get_searcher()
     _memory_used: list[dict[str, Any]] = []
+
+    # Resolve project memory toggles early for category filtering
+    _allowed_mem_cats: set[str] | None = None  # None = all categories
+    _proj_mem_enabled = False
+    _proj_mem_path = None
+    try:
+        from server.database import get_chat_project_id, get_project as _get_proj
+        _early_proj_id = get_chat_project_id(active_chat_id)
+        if _early_proj_id:
+            _early_proj = _get_proj(_early_proj_id)
+            if _early_proj:
+                _use_univ = _early_proj.get("use_universal_memory", True)
+                if not _use_univ:
+                    # Universal off → only protected memory passes through
+                    _allowed_mem_cats = {"protected"}
+                if _early_proj.get("project_memory_enabled"):
+                    _proj_mem_enabled = True
+                    _proj_mem_path = Path(__file__).resolve().parent.parent.parent / "system" / "projects" / _early_proj_id / "Memory.json"
+    except Exception:
+        pass
+
     try:
         if _MEMORY_SEARCH_SETTINGS.exists():
             _ms_cfg = json.loads(_MEMORY_SEARCH_SETTINGS.read_text(encoding="utf-8"))
@@ -94,7 +115,7 @@ async def chat(request: ChatRequest):
             pass
         _max_chars = _ms_cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS)
         if _ms_cfg.get("enabled", True) and len(request.message) <= _max_chars:
-            _mem_results = _searcher.search(request.message, top_k=_ms_cfg.get("top_k", 10))
+            _mem_results = _searcher.search(request.message, top_k=_ms_cfg.get("top_k", 10), allowed_categories=_allowed_mem_cats)
             _new_results = [r for r in _mem_results if r.get("key") and r["key"] not in _injected_memory_keys]
             if _new_results:
                 _mem_block = _searcher.format_for_prompt(_new_results)
@@ -112,6 +133,33 @@ async def chat(request: ChatRequest):
                         }
                         for r in _new_results
                     ]
+        # Project-scoped memory search (vector-based via dedicated project searcher)
+        if _proj_mem_enabled and _early_proj_id:
+            try:
+                from engine.memory_search import get_project_searcher
+                _proj_searcher = get_project_searcher(_early_proj_id)
+                _proj_results = _proj_searcher.search(request.message, top_k=5)
+                _proj_new = [r for r in _proj_results if r.get("key") and r["key"] not in _injected_memory_keys]
+                if _proj_new:
+                    for r in _proj_new:
+                        _injected_memory_keys.add(r["key"])
+                        _memory_used.append({
+                            "key": r.get("key", ""),
+                            "value": r.get("value", ""),
+                            "category": "project:" + r.get("category", "semantic"),
+                            "score": round(float(r.get("score", 0.0)), 3),
+                        })
+                    save_injected_memory_keys(active_chat_id, _injected_memory_keys)
+                    # Rebuild memory context with project entries included
+                    _all_lines = ["[RELEVANT MEMORY CONTEXT]"]
+                    for _mu in _memory_used:
+                        if _mu["key"]:
+                            _all_lines.append(f"- **{_mu['key']}**: {_mu['value']}")
+                        else:
+                            _all_lines.append(f"- {_mu['value']}")
+                    _memory_context = "\n".join(_all_lines)
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -256,6 +304,13 @@ async def chat(request: ChatRequest):
         touch_chat(active_chat_id, final_parent)
         result["memory_used"] = _memory_used
         return result
+    # Resolve project_id for this chat (for instruction overrides) — shared by all paths
+    _project_id = None
+    try:
+        from server.database import get_chat_project_id
+        _project_id = get_chat_project_id(active_chat_id)
+    except Exception:
+        pass
     if not request.stream and _is_api_model(request.model):
         # _backend already resolved above at file resolution stage
         _api_backend = _backend or _resolve_api_backend(request.model)
@@ -276,6 +331,7 @@ async def chat(request: ChatRequest):
             chat_id=None if _ephemeral else active_chat_id,
             ref_file_ids=request.ref_file_ids,
             inject_instructions=not _ephemeral,
+            project_id=_project_id,
         )
         if _api_backend == "local":
             _chat_kwargs["model_id"] = request.model
@@ -516,6 +572,7 @@ async def chat(request: ChatRequest):
                         chat_id=None if _ephemeral else active_chat_id,
                         ref_file_ids=request.ref_file_ids if round_index == 0 else None,
                         inject_instructions=not _ephemeral,
+                        project_id=_project_id,
                     )
                     if _api_backend == "local":
                         _stream_kwargs["model_id"] = request.model
@@ -661,6 +718,12 @@ async def chat(request: ChatRequest):
                     and (ev.get("result") or {}).get("pause")
                     for ev in round_skill_events
                 )
+                # permission_request pause: stop the stream so the user can approve/deny
+                # before the model continues. The approve/deny endpoints handle re-execution.
+                _permission_pause = any(
+                    ev.get("type") == "permission_request"
+                    for ev in round_skill_events
+                )
                 # --- MainChatGuard: inject warnings into feedback ---
                 _guard_warnings: list[str] = []
                 _guard_warnings_injected = False
@@ -694,7 +757,7 @@ async def chat(request: ChatRequest):
                 if not feedback and _guard_warnings:
                     feedback = "\n\n".join(_guard_warnings)
                     _guard_warnings_injected = True
-                if stream_error or error_message or not feedback or _ask_user_pause:
+                if stream_error or error_message or not feedback or _ask_user_pause or _permission_pause:
                     break
 
 
@@ -719,7 +782,7 @@ async def chat(request: ChatRequest):
                             if not _q.strip():
                                 continue
                             try:
-                                for r in _searcher.search(_q, top_k=_top_k):
+                                for r in _searcher.search(_q, top_k=_top_k, allowed_categories=_allowed_mem_cats):
                                     _mk = r.get("key", "")
                                     if _mk and _mk not in _seen_mem_keys and _mk not in _injected_memory_keys:
                                         _seen_mem_keys.add(_mk)

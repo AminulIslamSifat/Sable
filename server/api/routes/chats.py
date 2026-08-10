@@ -8,9 +8,13 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from engine.scraper import get_settings as get_scraper_settings
-from server.database import ensure_chat, list_chats, get_messages, delete_chat, search_messages, get_skill_events_for_message
+from server.database import (
+    ensure_chat, list_chats, get_messages, delete_chat, search_messages,
+    get_skill_events_for_message, list_projects, create_project, update_project,
+    delete_project, get_project,
+)
 from server.utils import retry_async, make_title, _resolve_api_backend
-from server.models import NewChatRequest, ContextPassRequest
+from server.models import NewChatRequest, ContextPassRequest, ProjectCreate, ProjectUpdate
 from connectors import get_connector
 from ..dependencies import service
 
@@ -25,14 +29,105 @@ def search_chats(q: str = "") -> dict[str, Any]:
     return {"results": search_messages(q.strip())}
 
 @router.get("/api/chats")
-def chats() -> dict[str, list[dict[str, Any]]]:
-    return {"chats": list_chats()}
+def chats(project_id: str | None = None) -> dict[str, list[dict[str, Any]]]:
+    return {"chats": list_chats(project_id=project_id)}
+
+# --- Projects CRUD ---
+
+@router.get("/api/projects")
+def projects_list() -> dict[str, list[dict[str, Any]]]:
+    return {"projects": list_projects()}
+
+@router.post("/api/projects")
+def projects_create(body: ProjectCreate) -> dict[str, Any]:
+    project_id = uuid.uuid4().hex
+    proj = create_project(project_id, body.name, body.path)
+    return {"id": proj["id"], "project": proj}
+
+@router.put("/api/projects/{project_id}")
+def projects_update(project_id: str, body: ProjectUpdate) -> dict[str, Any]:
+    existing = get_project(project_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Project not found")
+    proj = update_project(project_id, **body.model_dump(exclude_none=True))
+    return {"project": proj}
+
+@router.delete("/api/projects/{project_id}")
+def projects_delete(project_id: str) -> dict[str, Any]:
+    deleted = delete_project(project_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"deleted": True, "project_id": project_id}
+
+@router.post("/api/projects/{project_id}/instruction")
+async def projects_upload_instruction(project_id: str, body: dict[str, str]) -> dict[str, Any]:
+    """Save instruction text to system/projects/<id>/instruction.md and update DB."""
+    existing = get_project(project_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Project not found")
+    text = body.get("text", "")
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Empty instruction text")
+    # Ensure project folder exists
+    proj_dir = Path(__file__).resolve().parent.parent.parent / "system" / "projects" / project_id
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    instr_path = proj_dir / "instruction.md"
+    instr_path.write_text(text, encoding="utf-8")
+    # Update DB — store relative path and the text itself
+    update_project(project_id, instruction_file=str(instr_path), instruction_text=text)
+    return {"saved": True, "path": str(instr_path), "chars": len(text)}
+
+# Track CWD before project activation so deactivate can restore it
+_pre_project_cwd: str | None = None
+
+@router.post("/api/projects/{project_id}/activate")
+async def projects_activate(project_id: str) -> dict[str, Any]:
+    """Activate a project: switch CWD and sync context with project instruction."""
+    global _pre_project_cwd
+    proj = get_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    import os
+    # Remember CWD before switching so deactivate can restore it
+    _pre_project_cwd = os.getcwd()
+    if proj.get("path"):
+        p = Path(proj["path"])
+        if p.is_dir():
+            os.chdir(str(p))
+    # Sync context for Qwen (rebuilds instruction with project override)
+    try:
+        await service.sync_context(project_id=project_id)
+    except Exception as exc:
+        logger.warning("sync_context on activate failed: %s", exc)
+    return {"activated": True, "project_id": project_id, "old_cwd": _pre_project_cwd, "new_cwd": os.getcwd()}
+
+@router.post("/api/projects/deactivate")
+async def projects_deactivate(body: dict[str, str] | None = None) -> dict[str, Any]:
+    """Deactivate current project: revert CWD and sync context back to default."""
+    global _pre_project_cwd
+    import os
+    old_cwd = os.getcwd()
+    # Restore to the CWD that was active before project activation
+    restore_to = _pre_project_cwd
+    _pre_project_cwd = None
+    if restore_to and Path(restore_to).is_dir():
+        os.chdir(restore_to)
+    else:
+        # Fallback: Sable root
+        sable_root = Path(__file__).resolve().parent.parent.parent
+        os.chdir(str(sable_root))
+    # Sync context back to default (no project override)
+    try:
+        await service.sync_context(project_id=None)
+    except Exception as exc:
+        logger.warning("sync_context on deactivate failed: %s", exc)
+    return {"deactivated": True, "old_cwd": old_cwd, "new_cwd": os.getcwd()}
 
 @router.post("/api/chat/new")
 async def new_chat(request: NewChatRequest = NewChatRequest()) -> dict[str, str | None]:
     if get_scraper_settings().get("enabled"):
         chat_id = f"browser-{uuid.uuid4().hex}"
-        ensure_chat(chat_id, "New chat", None)
+        ensure_chat(chat_id, "New chat", None, project_id=request.project_id)
         return {"chat_id": chat_id}
     try:
         chat_id = await retry_async(
@@ -43,7 +138,7 @@ async def new_chat(request: NewChatRequest = NewChatRequest()) -> dict[str, str 
         return {"error": f"Session startup failed: {type(exc).__name__}: {exc}"}
     if not chat_id:
         return {"error": "Could not create chat session"}
-    ensure_chat(chat_id, "New chat", None)
+    ensure_chat(chat_id, "New chat", None, project_id=request.project_id)
     return {"chat_id": chat_id}
 
 @router.get("/api/chats/{chat_id}/messages")

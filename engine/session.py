@@ -308,26 +308,66 @@ class BrowserManager:
         print(f"[DEBUG] Image uploaded successfully! File ID: {file_id}")
         return file_obj
 
-    async def sync_context(self, headers: dict[str, str] | None = None) -> bool:
+    async def sync_context(self, headers: dict[str, str] | None = None, project_id: str | None = None) -> bool:
         """Sync persona instructions to Qwen via settings/update API (no Playwright DOM)."""
         if headers is None:
             await self.start()
 
         SETTINGS_URL = "https://chat.qwen.ai/api/v2/users/user/settings/update"
 
+        # Load project config if active
+        proj = None
+        if project_id:
+            try:
+                from server.database import get_project
+                proj = get_project(project_id)
+            except Exception:
+                pass
+
         # Build instruction payload from instruction/ files
         instruction_dir = Path(__file__).resolve().parent.parent / "instruction"
         instructions = ""
 
-        maria_path = instruction_dir / "Maria.md"
-        if maria_path.exists():
-            instructions += maria_path.read_text(encoding="utf-8") + "\n\n"
+        # Project instruction overrides Maria.md if defined
+        project_instruction = None
+        if proj and proj.get("instruction_text"):
+            project_instruction = proj["instruction_text"]
+        elif proj and proj.get("instruction_file"):
+            instr_path = Path(proj["instruction_file"])
+            if instr_path.exists():
+                project_instruction = instr_path.read_text(encoding="utf-8")
 
-        of_path = instruction_dir / "output_format.md"
-        if of_path.exists():
-            instructions += of_path.read_text(encoding="utf-8") + "\n\n"
+        if project_instruction and proj and proj.get("persona_enabled", True):
+            # Project instruction replaces Maria.md entirely
+            instructions += project_instruction + "\n\n"
+        else:
+            # Default: load Maria.md
+            maria_path = instruction_dir / "Maria.md"
+            if maria_path.exists():
+                instructions += maria_path.read_text(encoding="utf-8") + "\n\n"
 
-        # Auto-generated skill registry (replaces static skills.md)
+        # Output format — skip if project has it disabled
+        if not proj or proj.get("output_format_enabled", True):
+            of_path = instruction_dir / "output_format.md"
+            if of_path.exists():
+                instructions += of_path.read_text(encoding="utf-8") + "\n\n"
+
+        # Inject facts to remember if project has them
+        if proj and proj.get("facts"):
+            instructions += f"\n\n# Facts to Remember (Project: {proj.get('name', 'Unknown')})\n{proj['facts']}\n\n"
+
+        # Inject git details if project has them
+        if proj and any(proj.get(k) for k in ("git_repo", "git_username", "git_branch")):
+            instructions += "\n\n# Git Repository Details\n"
+            if proj.get("git_repo"):
+                instructions += f"- Repo: {proj['git_repo']}\n"
+            if proj.get("git_username"):
+                instructions += f"- Username: {proj['git_username']}\n"
+            if proj.get("git_branch"):
+                instructions += f"- Branch: {proj['git_branch']}\n"
+            instructions += "\n"
+
+        # Auto-generated skill registry (filtered by project skills_config if set)
         from engine.skills import SkillEngine
         from engine.skills.handlers import HANDLER_MAP
         _engine = SkillEngine(
@@ -335,7 +375,37 @@ class BrowserManager:
             handlers=HANDLER_MAP,
             agent_id="maria",
         )
-        instructions += _engine.get_registry_prompt()
+        skills_prompt = _engine.get_registry_prompt()
+        # If project has skills_config, filter out disabled skills
+        if proj and proj.get("skills_config"):
+            disabled = [k for k, v in proj["skills_config"].items() if not v]
+            if disabled:
+                # Filter out disabled skill sections from registry prompt
+                # Handles both ## (default skills) and ### (non-default skills) headers
+                lines = skills_prompt.split("\n")
+                filtered = []
+                skip = False
+                for line in lines:
+                    stripped = line.strip().lower()
+                    is_header = stripped.startswith("## ") or stripped.startswith("### ")
+                    # Check if this header matches a disabled skill
+                    new_skip = False
+                    if is_header:
+                        for ds in disabled:
+                            ds_norm = ds.lower().replace("_", " ")
+                            if ds_norm in stripped:
+                                new_skip = True
+                                break
+                    if new_skip:
+                        skip = True
+                        continue
+                    # End skip on next section header or *** separator
+                    if skip and (is_header or stripped == "***"):
+                        skip = False
+                    if not skip:
+                        filtered.append(line)
+                skills_prompt = "\n".join(filtered)
+        instructions += skills_prompt
         # Inject connected MCP tools into system prompt
         try:
             from engine.mcp.manager import get_mcp_manager

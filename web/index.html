@@ -8,10 +8,10 @@
 
   <link rel="stylesheet" href="/static/css/variables.css?v=4">
   <link rel="stylesheet" href="/static/css/base.css?v=5">
-  <link rel="stylesheet" href="/static/css/layout.css?v=51">
+  <link rel="stylesheet" href="/static/css/layout.css?v=53">
   <link rel="stylesheet" href="/static/css/ide.css?v=4">
   <link rel="stylesheet" href="/static/css/chat.css?v=33">
-  <link rel="stylesheet" href="/static/css/panels.css?v=44">
+  <link rel="stylesheet" href="/static/css/panels.css?v=54">
   <link rel="stylesheet" href="/static/css/components.css?v=14">
   <link rel="stylesheet" href="/static/css/responsive.css?v=6">
   <link rel="stylesheet" href="/static/css/agents.css?v=31">
@@ -156,6 +156,12 @@
       <div class="chat-search-float">
         <button id="newChatFloat" class="new-chat-icon" title="New chat">
           <span class="icon-emoji">＋</span><i data-lucide="square-pen" class="icon-lucide"></i>
+        </button>
+        <button id="projectMenuBtn" class="new-chat-icon project-menu-btn" title="Project options" style="display:none;">
+          <span class="icon-emoji">⋯</span><i data-lucide="more-horizontal" class="icon-lucide"></i>
+        </button>
+        <button id="projectFolderBtn" class="new-chat-icon project-folder-btn" title="Projects">
+          <span class="icon-emoji">📁</span><i data-lucide="folder" class="icon-lucide"></i>
         </button>
         <button id="chatSearchBtn" class="new-chat-icon chat-search-btn" title="Search chats">
           <span class="icon-emoji">🔍</span><i data-lucide="search" class="icon-lucide"></i>
@@ -471,6 +477,7 @@
         <button class="settings-tab" data-tab="account">Account</button>
         <button class="settings-tab" data-tab="cookbook">Cookbook</button>
         <button class="settings-tab" data-tab="logs">Live Logs</button>
+        <button class="settings-tab" data-tab="projects">Projects</button>
         <button class="settings-tab" data-tab="shortcuts"><span class="icon-emoji">⌨️</span> Shortcuts</button>
       </div>
       </div>
@@ -1358,6 +1365,15 @@
         </div>
 
         <!-- Shortcuts Tab -->
+        <div id="tab-projects" class="settings-tab-content">
+          <h3 class="mem-title">📁 Projects</h3>
+          <p class="muted" style="font-size:12px;margin:-4px 0 16px;">Organize chats into project folders. Each project can have its own instruction file and memory settings.</p>
+          <div class="mem-input-row" style="margin-bottom:16px;">
+            <input type="text" id="newProjectName" placeholder="Project name" style="flex:1;">
+            <button id="addProjectBtn" class="btn-primary" style="padding:6px 16px;font-size:12px;">+ Add Project</button>
+          </div>
+          <div id="projectsList" style="display:flex;flex-direction:column;gap:8px;"></div>
+        </div>
         <div id="tab-shortcuts" class="settings-tab-content">
           <h3 class="mem-title">⌨️ Keyboard Shortcuts</h3>
           <p class="muted" style="font-size:12px;margin:-4px 0 16px;">Click a keybinding to reassign. Press Escape to cancel recording.</p>
@@ -1477,7 +1493,7 @@
       } catch(e) {}
     })();
   </script>
-  <script src="/static/app.js?v=121"></script>
+  <script src="/static/app.js?v=141"></script>
   <script src="/static/src/research.js?v=10"></script>
   <script src="/static/js/agents.js?v=24"></script>
   <script src="/static/js/filesystem.js?v=31"></script>
