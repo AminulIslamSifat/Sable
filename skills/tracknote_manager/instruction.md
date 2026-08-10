@@ -13,15 +13,30 @@ Uses the `tracknote` tag inside an action block.
 
 | Action | Attributes | Description |
 |:--|:--|:--|
+| `list_notes` | all (true/false), type (note/checklist) | List notes/todos |
+| `list_schedules` | all (true/false) | List schedules |
+| `list_ops` | all (true/false) | List agent ops |
 | `add_note` | title, content, type (note/checklist) | Create a note |
 | `add_todo` | title, items (JSON array of text/done) | Create a checklist todo |
 | `add_schedule` | title, type, time, day_of_week, start_date, description | Add schedule entry |
 | `toggle_item` | note_id, index | Toggle a checklist item |
-| `delete` | kind (notes/schedules), id | Delete an entry |
+| `delete` | kind (notes/schedules/ops), id | Delete an entry |
 
 ## Examples
 
 ```xml
+<!-- List all notes -->
+<tracknote action="list_notes" />
+
+<!-- List only checklists, including archived -->
+<tracknote action="list_notes" type="checklist" all="true" />
+
+<!-- List active schedules -->
+<tracknote action="list_schedules" />
+
+<!-- List all agent ops -->
+<tracknote action="list_ops" all="true" />
+
 <!-- Add a todo -->
 <tracknote action="add_todo" title="Hydration Reminder" items='[{"text": "Drink water", "done": false}]' />
 

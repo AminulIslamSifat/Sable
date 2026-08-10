@@ -38,7 +38,27 @@ def handle_tracknote(
 
     yield _output_event(tag_id, f"$ tracknote {action}\n", "command")
 
-    if action == "add_note":
+    if action == "list_notes":
+        cli = []
+        if attrs.get("all", "").lower() in ("true", "1"):
+            cli.append("--all")
+        if attrs.get("type"):
+            cli += ["--type", attrs["type"]]
+        ok, out = _run_tracknote("notes", "list", cli)
+
+    elif action == "list_schedules":
+        cli = []
+        if attrs.get("all", "").lower() in ("true", "1"):
+            cli.append("--all")
+        ok, out = _run_tracknote("schedules", "list", cli)
+
+    elif action == "list_ops":
+        cli = []
+        if attrs.get("all", "").lower() in ("true", "1"):
+            cli.append("--all")
+        ok, out = _run_tracknote("ops", "list", cli)
+
+    elif action == "add_note":
         title = attrs.get("title", "")
         note_type = attrs.get("type", "note")
         cli = ["--title", title, "--type", note_type]
@@ -103,7 +123,7 @@ def handle_tracknote(
         ok, out = _run_tracknote(section, "remove", [item_id])
 
     else:
-        ok, out = False, f"Unknown tracknote action: {action!r}. Valid: add_note, add_todo, add_schedule, add_op, toggle_item, toggle_op, delete"
+        ok, out = False, f"Unknown tracknote action: {action!r}. Valid: list_notes, list_schedules, list_ops, add_note, add_todo, add_schedule, add_op, toggle_item, toggle_op, delete"
 
     yield _output_event(tag_id, out + "\n")
     yield _end_event(tag_id, name, ok, started, {"action": action})

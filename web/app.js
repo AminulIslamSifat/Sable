@@ -5060,38 +5060,231 @@
       if (e.target === settingsOverlay) closeSettings();
     });
 
-    // Ctrl+, toggles settings (VS Code parity)
-    document.addEventListener("keydown", (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === ",") {
-        e.preventDefault();
-        settingsOverlay.classList.contains("hidden") ? openSettings() : closeSettings();
+    // ── Configurable Keyboard Shortcut System ────────────────────────────────
+    const SHORTCUTS_STORAGE_KEY = 'SABLE_SHORTCUTS';
+
+    function openLibraryTab(tabName) {
+      libraryOverlay.classList.remove('hidden');
+      const tgTab = document.getElementById('libTelegramTab');
+      if (tgTab) tgTab.style.display = localStorage.getItem('sable_telegram_enabled') === 'true' ? '' : 'none';
+      libraryTabs.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+      libraryBody.querySelectorAll('.settings-tab-content').forEach(c => c.classList.remove('active'));
+      const tab = libraryTabs.querySelector(`[data-tab="${tabName}"]`);
+      if (tab) {
+        tab.classList.add('active');
+        const target = document.getElementById('tab-' + tabName);
+        if (target) target.classList.add('active');
+        loadLibraryTab(tabName);
+      }
+    }
+
+    function openSettingsTab(tabName) {
+      if (settingsOverlay.classList.contains('hidden')) openSettings();
+      document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.settings-tab-content').forEach(c => c.classList.remove('active'));
+      const tab = document.querySelector(`.settings-tab[data-tab="${tabName}"]`);
+      if (tab) {
+        tab.classList.add('active');
+        const target = document.getElementById('tab-' + tabName);
+        if (target) target.classList.add('active');
+        if (tabName === 'general') { loadBrowserSettings(); initTelegramToggle(); }
+        else if (tabName === 'account') loadAccountProfiles();
+        else if (tabName === 'mcp') loadMcpServers();
+        else if (tabName === 'cookbook') { if (window._cbInit) window._cbInit(); }
+        else if (tabName === 'shortcuts') renderShortcutsTab();
+      }
+    }
+
+    function openTrackNotePanel(mode) {
+      if (!document.body.classList.contains('tracknote-open')) {
+        document.body.classList.add('tracknote-open');
+        document.body.classList.remove('diff-open');
+        if (typeof AgentPanel !== 'undefined') AgentPanel.close();
+      }
+      setTrackNoteMode(mode);
+    }
+
+    const DEFAULT_SHORTCUTS = {
+      'open-deep-research': { keys: 'Alt+Shift+R', label: 'Open Deep Research', action: () => openLibraryTab('lib-research') },
+      'open-gallery': { keys: 'Alt+Shift+G', label: 'Open Gallery', action: () => openLibraryTab('lib-gallery') },
+      'open-library': { keys: 'Alt+L', label: 'Open Library', action: () => openLibrary() },
+      'open-memory': { keys: 'Alt+Shift+M', label: 'Open Memory', action: () => openSettingsTab('brain') },
+      'open-notes': { keys: 'Alt+Shift+N', label: 'Open Notes', action: () => openLibraryTab('lib-notes') },
+      'open-tasks': { keys: 'Alt+Shift+T', label: 'Open Tasks', action: () => openTrackNotePanel('todo') },
+      'search-conversations': { keys: 'Alt+F', label: 'Search Conversations', action: () => { const btn = document.getElementById('chatSearchBtn'); if (btn) btn.click(); } },
+      'toggle-sidebar': { keys: 'Alt+B', label: 'Toggle Sidebar', action: () => { const isMobile = window.matchMedia('(max-width: 860px)').matches; isMobile ? document.body.classList.toggle('sidebar-open') : document.body.classList.toggle('sidebar-collapsed'); } },
+      'focus-input': { keys: 'Alt+I', label: 'Focus Chat Input', action: () => inputEl?.focus() },
+      'new-session': { keys: 'Alt+N', label: 'New Session', action: () => createChat() },
+      'delete-session': { keys: 'Alt+Shift+D', label: 'Delete Session', action: () => { if (activeChatId) deleteChat(activeChatId); } },
+      'toggle-tts': { keys: 'Alt+Shift+S', label: 'Play/Stop TTS', action: () => { if (_ttsActive) stopGlobalTTS(); } },
+      'cheat-sheet': { keys: 'Alt+/', label: 'Shortcut Cheat Sheet', action: () => toggleCheatSheet() },
+      'open-agent-ops': { keys: 'Alt+Shift+A', label: 'Open Agent Ops', action: () => openTrackNotePanel('agent-tasks') },
+      'open-schedules': { keys: 'Alt+Shift+E', label: 'Open Schedules', action: () => openTrackNotePanel('schedule') },
+      'toggle-settings': { keys: 'Alt+,', label: 'Toggle Settings', action: () => settingsOverlay.classList.contains('hidden') ? openSettings() : closeSettings() },
+    };
+
+    function getShortcuts() {
+      try {
+        const stored = JSON.parse(localStorage.getItem(SHORTCUTS_STORAGE_KEY) || '{}');
+        const merged = {};
+        for (const [id, def] of Object.entries(DEFAULT_SHORTCUTS)) {
+          merged[id] = { ...def, keys: stored[id]?.keys || def.keys };
+        }
+        return merged;
+      } catch { return { ...DEFAULT_SHORTCUTS }; }
+    }
+
+    function saveShortcuts(shortcuts) {
+      const overrides = {};
+      for (const [id, sc] of Object.entries(shortcuts)) {
+        if (sc.keys !== DEFAULT_SHORTCUTS[id]?.keys) overrides[id] = { keys: sc.keys };
+      }
+      localStorage.setItem(SHORTCUTS_STORAGE_KEY, JSON.stringify(overrides));
+    }
+
+    function parseKeys(keysStr) {
+      const parts = keysStr.toLowerCase().split('+');
+      return {
+        ctrl: parts.includes('ctrl'),
+        shift: parts.includes('shift'),
+        alt: parts.includes('alt'),
+        meta: parts.includes('meta'),
+        key: parts.filter(p => !['ctrl','shift','alt','meta'].includes(p))[0] || '',
+      };
+    }
+
+    function matchesEvent(parsed, e) {
+      const key = e.key.toLowerCase();
+      const keyMatch = parsed.key === key || (parsed.key === '/' && e.key === '/') || (parsed.key === 'escape' && e.key === 'Escape');
+      return keyMatch && parsed.ctrl === (e.ctrlKey || e.metaKey) && parsed.shift === e.shiftKey && parsed.alt === e.altKey;
+    }
+
+    function isInputFocused() {
+      const el = document.activeElement;
+      if (!el) return false;
+      const tag = el.tagName.toLowerCase();
+      return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
+    }
+
+    // Global shortcut dispatcher
+    document.addEventListener('keydown', (e) => {
+      // Skip when recording a new shortcut
+      if (document.querySelector('.shortcut-recording')) return;
+
+      const shortcuts = getShortcuts();
+      for (const [id, sc] of Object.entries(shortcuts)) {
+        if (!sc.action) continue;
+        const parsed = parseKeys(sc.keys);
+        if (matchesEvent(parsed, e)) {
+          // Allow Escape and cheat-sheet even in inputs
+          if (isInputFocused() && id !== 'escape' && id !== 'cheat-sheet') continue;
+          e.preventDefault();
+          e.stopPropagation();
+          sc.action();
+          return;
+        }
       }
     });
 
-    // Ctrl+N — new chat
-    document.addEventListener("keydown", (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "n") {
-        e.preventDefault();
-        createChat();
-      }
-    });
+    // Cheat sheet overlay
+    const cheatSheetOverlay = document.getElementById('cheatSheetOverlay');
+    const cheatSheetClose = document.getElementById('cheatSheetClose');
+    const cheatSheetList = document.getElementById('cheatSheetList');
 
-    // Ctrl+K, O — open folder as project (chord shortcut)
-    let ctrlKPending = false;
-    document.addEventListener("keydown", (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
-        ctrlKPending = true;
-        e.preventDefault();
-        setTimeout(() => { ctrlKPending = false; }, 1500);
-        return;
+    function toggleCheatSheet() {
+      if (!cheatSheetOverlay) return;
+      const isHidden = cheatSheetOverlay.classList.contains('hidden');
+      if (isHidden) {
+        renderCheatSheet();
+        cheatSheetOverlay.classList.remove('hidden');
+      } else {
+        cheatSheetOverlay.classList.add('hidden');
       }
-      if (ctrlKPending && e.key.toLowerCase() === "o") {
-        e.preventDefault();
-        ctrlKPending = false;
-        const btn = document.getElementById("sbOpenFolderBtn") || document.getElementById("fsOpenFolderBtn");
-        if (btn && !btn.disabled) btn.click();
+    }
+
+    function renderCheatSheet() {
+      if (!cheatSheetList) return;
+      const shortcuts = getShortcuts();
+      cheatSheetList.innerHTML = '';
+      for (const [id, sc] of Object.entries(shortcuts)) {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border-light, rgba(255,255,255,0.06));';
+        row.innerHTML = `<span style="font-size:13px;">${sc.label}</span><kbd style="background:var(--bg-secondary, #2a2a2a);padding:2px 8px;border-radius:4px;font-size:12px;font-family:monospace;border:1px solid var(--border, #333);">${sc.keys}</kbd>`;
+        cheatSheetList.appendChild(row);
       }
-    });
+    }
+
+    if (cheatSheetClose) cheatSheetClose.addEventListener('click', () => cheatSheetOverlay?.classList.add('hidden'));
+    if (cheatSheetOverlay) cheatSheetOverlay.addEventListener('click', (e) => { if (e.target === cheatSheetOverlay) cheatSheetOverlay.classList.add('hidden'); });
+
+    // Shortcuts settings tab rendering
+    function renderShortcutsTab() {
+      const container = document.getElementById('shortcutsList');
+      if (!container) return;
+      const shortcuts = getShortcuts();
+      container.innerHTML = '';
+      for (const [id, sc] of Object.entries(shortcuts)) {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-secondary, rgba(255,255,255,0.03));border-radius:6px;border:1px solid var(--border, rgba(255,255,255,0.08));';
+        
+        const label = document.createElement('span');
+        label.style.cssText = 'font-size:13px;flex:1;';
+        label.textContent = sc.label;
+
+        const keyBtn = document.createElement('button');
+        keyBtn.className = 'icon-btn';
+        keyBtn.style.cssText = 'min-width:100px;padding:4px 12px;font-size:12px;font-family:monospace;text-align:center;background:var(--bg-tertiary, rgba(255,255,255,0.06));border:1px solid var(--border, rgba(255,255,255,0.1));border-radius:4px;cursor:pointer;color:var(--text-primary, #fff);';
+        keyBtn.textContent = sc.keys;
+        keyBtn.title = 'Click to reassign';
+
+        keyBtn.addEventListener('click', () => {
+          keyBtn.textContent = 'Press keys...';
+          keyBtn.classList.add('shortcut-recording');
+          keyBtn.style.borderColor = 'var(--accent, #7c3aed)';
+          
+          function onRecord(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.key === 'Escape') {
+              keyBtn.textContent = sc.keys;
+              keyBtn.classList.remove('shortcut-recording');
+              keyBtn.style.borderColor = '';
+              document.removeEventListener('keydown', onRecord, true);
+              return;
+            }
+            const parts = [];
+            if (e.ctrlKey || e.metaKey) parts.push('Ctrl');
+            if (e.shiftKey) parts.push('Shift');
+            if (e.altKey) parts.push('Alt');
+            const key = e.key.length === 1 ? e.key.toUpperCase() : e.key;
+            if (!['Control','Shift','Alt','Meta'].includes(e.key)) parts.push(key);
+            if (parts.length > 0 && !['Control','Shift','Alt','Meta'].includes(e.key)) {
+              const newKeys = parts.join('+');
+              shortcuts[id].keys = newKeys;
+              saveShortcuts(shortcuts);
+              keyBtn.textContent = newKeys;
+              keyBtn.classList.remove('shortcut-recording');
+              keyBtn.style.borderColor = '';
+              document.removeEventListener('keydown', onRecord, true);
+            }
+          }
+          document.addEventListener('keydown', onRecord, true);
+        });
+
+        row.appendChild(label);
+        row.appendChild(keyBtn);
+        container.appendChild(row);
+      }
+    }
+
+    // Reset shortcuts button
+    const shortcutsResetBtn = document.getElementById('shortcutsResetBtn');
+    if (shortcutsResetBtn) {
+      shortcutsResetBtn.addEventListener('click', () => {
+        localStorage.removeItem(SHORTCUTS_STORAGE_KEY);
+        renderShortcutsTab();
+      });
+    }
 
     // Tab switching (lazy-load per tab)
     document.querySelectorAll(".settings-tab").forEach((tab) => {
@@ -5106,6 +5299,7 @@
         else if (tabName === 'account') loadAccountProfiles();
         else if (tabName === 'mcp') loadMcpServers();
         else if (tabName === 'cookbook') { if (window._cbInit) window._cbInit(); }
+        else if (tabName === 'shortcuts') renderShortcutsTab();
       });
     });
 
@@ -6807,6 +7001,7 @@
       gemini:  { apiBase: "/api/settings/gemini",  name: "Gemini",  placeholder: "Paste API key (AIza…)" },
       groq:    { apiBase: "/api/settings/groq",    name: "Groq",    placeholder: "Paste API key (gsk_…)" },
       mistral: { apiBase: "/api/settings/mistral", name: "Mistral", placeholder: "Paste API key (key: …)" },
+      openai:  { apiBase: "/api/settings/openai",  name: "OpenAI",  placeholder: "Paste API key (sk-…)" },
     };
     const _keyEls = {
       select: document.getElementById("keyProviderSelect"),
@@ -6858,6 +7053,7 @@
     }
 
     function _switchKeyProvider(provider) {
+      if (!provider) return;
       _currentKeyProvider = provider;
       const meta = _keyProviderMeta[provider];
       if (_keyEls.input && meta) _keyEls.input.placeholder = meta.placeholder;
@@ -6904,6 +7100,16 @@
     let _fetchedModels = []; // cache of {id, label} from last fetch
 
     async function fetchProviderModels(provider) {
+      const urlFields = document.getElementById("customUrlFields");
+      if (urlFields) urlFields.style.display = (provider === "url") ? "flex" : "none";
+      if (provider === "url") {
+        modelSelect.disabled = true;
+        modelSelect.innerHTML = '<option value="">Enter URL and fetch models</option>';
+        modelLabelInput.value = "";
+        const _urlSt = document.getElementById("customUrlStatus");
+        if (_urlSt) _urlSt.textContent = "";
+        return;
+      }
       if (!provider) {
         modelSelect.disabled = true;
         modelSelect.innerHTML = '<option value="">Select provider first…</option>';
@@ -6912,12 +7118,16 @@
       modelSelect.disabled = true;
       modelSelect.innerHTML = '<option value="">Loading models…</option>';
       modelLabelInput.value = "";
+      const _modelsUrl = provider.startsWith("endpoint:")
+        ? `/api/settings/endpoints/${provider.slice("endpoint:".length)}/models`
+        : `/api/settings/providers/${provider}/models`;
       try {
-        const res = await fetch(`/api/settings/providers/${provider}/models`);
+        const res = await fetch(_modelsUrl);
         const data = await res.json();
         _fetchedModels = data.models || [];
         if (!data.available) {
-          modelSelect.innerHTML = '<option value="">⚠️ No API key configured for this provider</option>';
+          const _unavailMsg = data.error || "No API key configured for this provider";
+          modelSelect.innerHTML = '<option value="">⚠️ ' + _unavailMsg + '</option>';
           modelSelect.disabled = true;
           return;
         }
@@ -6950,10 +7160,172 @@
         modelLabelInput.value = selected ? selected.label : "";
       });
     }
+    const fetchUrlModelsBtn = document.getElementById("fetchUrlModelsBtn");
+    if (fetchUrlModelsBtn) {
+      fetchUrlModelsBtn.addEventListener("click", async () => {
+        const endpoint = document.getElementById("customModelEndpoint")?.value.trim();
+        const urlKey = document.getElementById("customModelUrlKey")?.value.trim();
+        const statusEl = document.getElementById("customUrlStatus");
+        if (!endpoint) { showToast("Enter the base URL first", "error"); return; }
+        if (statusEl) statusEl.textContent = "Fetching models…";
+        modelSelect.disabled = true;
+        modelSelect.innerHTML = '<option value="">Loading…</option>';
+        modelLabelInput.value = "";
+        try {
+          const res = await fetch("/api/settings/providers/custom/models", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ base_url: endpoint, api_key: urlKey }),
+          });
+          const data = await res.json();
+          _fetchedModels = data.models || [];
+          if (!res.ok || !data.available) {
+            const msg = (typeof data.error === "string" && data.error) || (typeof data.detail === "string" && data.detail) || "Failed to fetch models";
+            modelSelect.innerHTML = '<option value="">' + msg + '</option>';
+            modelSelect.disabled = true;
+            if (statusEl) statusEl.textContent = "";
+            showToast(msg, "error");
+            return;
+          }
+          if (_fetchedModels.length === 0) {
+            modelSelect.innerHTML = '<option value="">No models found at this endpoint</option>';
+            modelSelect.disabled = true;
+            if (statusEl) statusEl.textContent = "";
+            return;
+          }
+          modelSelect.innerHTML = '<option value="">— Choose a model —</option>';
+          _fetchedModels.forEach((m) => {
+            const opt = document.createElement("option");
+            opt.value = m.id;
+            opt.textContent = m.label;
+            modelSelect.appendChild(opt);
+          });
+          modelSelect.disabled = false;
+          if (statusEl) statusEl.textContent = _fetchedModels.length + " models found";
+        } catch (e) {
+          modelSelect.innerHTML = '<option value="">Failed to reach endpoint</option>';
+          modelSelect.disabled = true;
+          if (statusEl) statusEl.textContent = "";
+          showToast("Failed to reach endpoint", "error");
+        }
+      });
+    }
+
+    let _customEndpoints = [];
+
+    function _refreshEndpointOptions() {
+      const backendSel = document.getElementById("customModelBackend");
+      if (!backendSel) return;
+      Array.from(backendSel.querySelectorAll("option")).forEach((o) => {
+        if (o.value.startsWith("endpoint:")) o.remove();
+      });
+      _customEndpoints.forEach((ep) => {
+        const opt = document.createElement("option");
+        opt.value = "endpoint:" + ep.id;
+        opt.textContent = "🔗 " + ep.name;
+        backendSel.appendChild(opt);
+      });
+    }
+
+    async function loadCustomEndpoints() {
+      const listEl = document.getElementById("endpointList");
+      const statusEl = document.getElementById("endpointStatus");
+      if (!listEl) return;
+      try {
+        const res = await fetch("/api/settings/endpoints");
+        const data = await res.json();
+        _customEndpoints = data.endpoints || [];
+        listEl.innerHTML = "";
+        if (_customEndpoints.length === 0) {
+          listEl.innerHTML = '<div style="font-size:12px;color:var(--text);padding:4px 0;">No saved endpoints yet.</div>';
+        } else {
+          _customEndpoints.forEach((ep) => {
+            const row = document.createElement("div");
+            row.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--panel);";
+            const info = document.createElement("span");
+            info.style.cssText = "font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+            const nm = document.createElement("b");
+            nm.textContent = ep.name;
+            const urlSpan = document.createElement("span");
+            urlSpan.style.cssText = "font-family:monospace;font-size:10px;opacity:0.7;margin-left:6px;";
+            urlSpan.textContent = ep.base_url;
+            info.appendChild(nm);
+            info.appendChild(urlSpan);
+            if (ep.has_key) {
+              const kSpan = document.createElement("span");
+              kSpan.style.cssText = "font-size:10px;opacity:0.6;margin-left:6px;";
+              kSpan.textContent = "🔑 " + ep.api_key_masked;
+              info.appendChild(kSpan);
+            }
+            const del = document.createElement("button");
+            del.textContent = "✕";
+            del.title = "Remove endpoint";
+            del.style.cssText = "background:transparent;border:none;color:var(--danger);cursor:pointer;font-size:13px;padding:2px 6px;flex-shrink:0;";
+            del.addEventListener("click", async () => {
+              if (!confirm("Remove endpoint " + ep.name + "?")) return;
+              try {
+                await fetch("/api/settings/endpoints/" + ep.id, { method: "DELETE" });
+                showToast("Endpoint removed", "success");
+                loadCustomEndpoints();
+              } catch (e) {
+                showToast("Failed to remove endpoint", "error");
+              }
+            });
+            row.appendChild(info);
+            row.appendChild(del);
+            listEl.appendChild(row);
+          });
+        }
+        if (statusEl) statusEl.textContent = _customEndpoints.length ? (_customEndpoints.length + " endpoint" + (_customEndpoints.length !== 1 ? "s" : "") + " saved") : "";
+        _refreshEndpointOptions();
+      } catch (e) {
+        if (statusEl) statusEl.textContent = "Failed to load endpoints";
+      }
+    }
+
+    const addEndpointBtn = document.getElementById("addEndpointBtn");
+    if (addEndpointBtn) {
+      addEndpointBtn.addEventListener("click", async () => {
+        const epName = document.getElementById("endpointName")?.value.trim();
+        const epUrl = document.getElementById("endpointUrl")?.value.trim();
+        const epKey = document.getElementById("endpointKey")?.value.trim();
+        if (!epUrl) { showToast("Enter the base URL", "error"); return; }
+        try {
+          const res = await fetch("/api/settings/endpoints", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: epName, base_url: epUrl, api_key: epKey }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            showToast(err.detail || "Failed to save endpoint", "error");
+            return;
+          }
+          document.getElementById("endpointName").value = "";
+          document.getElementById("endpointUrl").value = "";
+          document.getElementById("endpointKey").value = "";
+          showToast("Endpoint saved", "success");
+          loadCustomEndpoints();
+        } catch (e) {
+          showToast("Failed to save endpoint", "error");
+        }
+      });
+    }
+
+    loadCustomEndpoints();
 
     document.querySelector('[data-tab="providers"]')?.addEventListener("click", () => {
-      _switchKeyProvider(_keyEls.select?.value || "gemini");
+      const selected = _keyEls.select?.value;
+      if (selected) {
+        _switchKeyProvider(selected);
+      } else {
+        // No provider selected — clear list and show hint
+        if (_keyEls.list) _keyEls.list.innerHTML = '<div style="font-size:12px;color:var(--text-muted, #888);padding:8px 0;">Select a provider above to manage API keys.</div>';
+        if (_keyEls.status) _keyEls.status.textContent = "";
+        if (_keyEls.input) _keyEls.input.placeholder = "Select a provider first…";
+      }
       loadCustomModels();
+      loadCustomEndpoints();
     });
 
     // --- Search Engine tab ---
@@ -7441,9 +7813,8 @@
     const addCustomModelBtn = document.getElementById("addCustomModelBtn");
     if (addCustomModelBtn) {
       addCustomModelBtn.addEventListener("click", async () => {
-        const mid = document.getElementById("customModelId")?.value;
-        const label = document.getElementById("customModelLabel")?.value.trim();
         const backend = document.getElementById("customModelBackend")?.value;
+        const label = document.getElementById("customModelLabel")?.value.trim();
         const capabilities = {
           image: document.getElementById("capImage")?.checked || false,
           video: document.getElementById("capVideo")?.checked || false,
@@ -7453,13 +7824,32 @@
         const supportsThinking = document.getElementById("capThinking")?.checked || false;
         const maxChars = parseInt(document.getElementById("customModelMaxChars")?.value) || 500000;
         if (!backend) { showToast("Select a provider first", "error"); return; }
-        if (!mid) { showToast("Select a model from the dropdown", "error"); return; }
         if (!label) { showToast("Enter a display name", "error"); return; }
+        let payload;
+        if (backend === "url") {
+          const endpoint = document.getElementById("customModelEndpoint")?.value.trim();
+          const urlKey = document.getElementById("customModelUrlKey")?.value.trim();
+          const mid = document.getElementById("customModelId")?.value;
+          if (!endpoint) { showToast("Enter the base URL", "error"); return; }
+          if (!mid) { showToast("Fetch models and pick one", "error"); return; }
+          const safeId = "url-" + mid.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+          payload = { id: safeId, label, api_backend: "local", api_model_type: mid, local_endpoint: endpoint, local_api_key: urlKey, max_session_chars: maxChars, capabilities, supports_thinking: supportsThinking };
+        } else if (backend.startsWith("endpoint:")) {
+          const epId = backend.slice("endpoint:".length);
+          const mid = document.getElementById("customModelId")?.value;
+          if (!mid) { showToast("Select a model from the dropdown", "error"); return; }
+          const safeId = epId + "-" + mid.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+          payload = { id: safeId, label, api_backend: "local", api_model_type: mid, endpoint_id: epId, max_session_chars: maxChars, capabilities, supports_thinking: supportsThinking };
+        } else {
+          const mid = document.getElementById("customModelId")?.value;
+          if (!mid) { showToast("Select a model from the dropdown", "error"); return; }
+          payload = { id: mid, label, api_backend: backend, max_session_chars: maxChars, capabilities, supports_thinking: supportsThinking };
+        }
         try {
           const res = await fetch("/api/settings/models", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: mid, label, api_backend: backend, max_session_chars: maxChars, capabilities, supports_thinking: supportsThinking }),
+            body: JSON.stringify(payload),
           });
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
@@ -7470,6 +7860,9 @@
           // Reset form
           modelSelect.value = "";
           modelLabelInput.value = "";
+          if (document.getElementById("customModelEndpoint")) document.getElementById("customModelEndpoint").value = "";
+          if (document.getElementById("customModelUrlKey")) document.getElementById("customModelUrlKey").value = "";
+          if (document.getElementById("customUrlStatus")) document.getElementById("customUrlStatus").textContent = "";
           document.getElementById("capImage").checked = false;
           document.getElementById("capVideo").checked = false;
           document.getElementById("capDocument").checked = false;
