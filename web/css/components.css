@@ -167,18 +167,9 @@
         white-space: nowrap;
       }
 
-      /* settings: scrollable tabs + tighter padding */
-      .settings-tabs {
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-        scrollbar-width: thin;
-        scrollbar-color: var(--border) transparent;
-        padding: 0 8px;
-      }
-      .settings-tabs::-webkit-scrollbar { height: 4px; }
-      .settings-tabs::-webkit-scrollbar-track { background: transparent; }
-      .settings-tabs::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
-      .settings-tab { padding: 10px 12px; font-size: var(--font-size-system); white-space: nowrap; }
+      /* settings: sidebar stays vertical at tablet, just narrower */
+      .settings-sidebar { min-width: 130px; max-width: 140px; }
+      .settings-tab { padding: 8px 12px; font-size: var(--font-size-system); }
       .settings-panel { max-width: 96vw; max-height: 90vh; }
       #tab-general, #tab-brain { padding: 12px 14px; }
       .settings-header { padding: 12px 14px; }
@@ -1164,6 +1155,11 @@
   background: color-mix(in srgb, #16a34a 15%, transparent);
   border-color: #16a34a;
   color: #4ade80;
+}
+.ab-allow-session:hover:not(:disabled) {
+  background: color-mix(in srgb, #0d9488 15%, transparent);
+  border-color: #0d9488;
+  color: #5eead4;
 }
 .ab-deny:hover:not(:disabled) {
   background: color-mix(in srgb, #dc2626 15%, transparent);

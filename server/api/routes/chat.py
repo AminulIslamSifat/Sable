@@ -437,7 +437,8 @@ async def chat(request: ChatRequest):
                             _guard.record_command(item["name"], item.get("content", ""))
                             # Execute the tag through the middleware pipeline
                             for ev in engine.process_tag(
-                                item["name"], item.get("attrs", {}), item.get("content", "")
+                                item["name"], item.get("attrs", {}), item.get("content", ""),
+                                chat_id=active_chat_id,
                             ):
                                 if ev.get("type") in ("skill_start", "skill_output", "skill_end", "file_edit", "permission_request"):
                                     round_skill_events.append(ev)
@@ -801,18 +802,26 @@ async def chat(request: ChatRequest):
 @router.post("/api/skills/approve/{tag_id}")
 async def approve_command(tag_id: str, request: Request):
     """User approved a pending command — execute and return tool feedback."""
-    from engine.security.middleware import consume_pending_approval
+    from engine.security.middleware import consume_pending_approval, cache_session_permission
+
+    body = await request.json() if request else {}
+    chat_id = body.get("chat_id")
+    session_approve = body.get("session", False)
 
     pending = consume_pending_approval(tag_id)
     if pending is None:
         return {"ok": False, "error": "Approval expired or not found"}
+
+    # Cache category for this session if "Allow for Session" was clicked
+    if session_approve and chat_id:
+        cache_session_permission(chat_id, pending.category)
 
     engine = _get_skill_engine()
     attrs = {**pending.attrs, "approved": "true"}
 
     loop = asyncio.get_event_loop()
     def _run():
-        return list(engine.process_tag(pending.name, attrs, pending.content))
+        return list(engine.process_tag(pending.name, attrs, pending.content, chat_id=chat_id))
     try:
         events = await loop.run_in_executor(None, _run)
     except Exception as exc:
@@ -828,12 +837,11 @@ async def approve_command(tag_id: str, request: Request):
 
     # Save as skill_event attached to the last assistant message
     from server.database import append_skill_event
-    chat_id = (await request.json()).get("chat_id") if request else None
     if chat_id:
         for ev in events:
             append_skill_event(chat_id, ev)
 
-    return {"ok": True, "feedback": feedback}
+    return {"ok": True, "feedback": feedback, "session_cached": session_approve}
 
 
 @router.post("/api/skills/deny/{tag_id}")

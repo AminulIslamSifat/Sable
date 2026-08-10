@@ -102,6 +102,29 @@ class PendingApproval:
 _pending_approvals: dict[str, PendingApproval] = {}
 _APPROVAL_TTL = 300  # seconds
 
+# ─── Session permission cache ─────────────────────────────────────────────────
+# chat_id → set of approved categories (persists for server lifetime)
+_session_permissions: dict[str, set[str]] = {}
+
+
+def cache_session_permission(chat_id: str, category: str) -> None:
+    """Cache an approved category for the session (chat)."""
+    if chat_id:
+        _session_permissions.setdefault(chat_id, set()).add(category)
+        logger.info("SESSION PERM CACHED: chat=%s category=%s", chat_id, category)
+
+
+def is_session_permitted(chat_id: str | None, category: str) -> bool:
+    """Check if a category is already approved for this session."""
+    if not chat_id:
+        return False
+    return category in _session_permissions.get(chat_id, set())
+
+
+def clear_session_permissions(chat_id: str) -> None:
+    """Clear all cached permissions for a chat (e.g. on chat delete)."""
+    _session_permissions.pop(chat_id, None)
+
 
 def get_pending_approval(tag_id: str) -> PendingApproval | None:
     """Retrieve a pending approval by tag_id. Returns None if expired."""
@@ -190,25 +213,32 @@ class SecurityMiddleware:
                 match = check_permission_required(ctx.content)
                 if match:
                     category, reason = match
-                    # Store pending approval
-                    _pending_approvals[ctx.tag_id] = PendingApproval(
-                        tag_id=ctx.tag_id,
-                        name=ctx.name,
-                        attrs=ctx.attrs,
-                        content=ctx.content,
-                        category=category,
-                        reason=reason,
-                    )
-                    logger.info(
-                        "PERMISSION REQUIRED: tag=%s category=%s cmd=%s",
-                        ctx.name, category, ctx.content[:100],
-                    )
-                    # Yield the permission request event to frontend
-                    yield permission_request_event(
-                        ctx.tag_id, ctx.name, ctx.content, category, reason,
-                    )
-                    # Stop pipeline — do NOT execute
-                    return
+                    # Check session cache — skip prompt if already approved for this chat
+                    if is_session_permitted(ctx.chat_id, category):
+                        logger.info(
+                            "SESSION PERM HIT: tag=%s category=%s chat=%s",
+                            ctx.name, category, ctx.chat_id,
+                        )
+                    else:
+                        # Store pending approval
+                        _pending_approvals[ctx.tag_id] = PendingApproval(
+                            tag_id=ctx.tag_id,
+                            name=ctx.name,
+                            attrs=ctx.attrs,
+                            content=ctx.content,
+                            category=category,
+                            reason=reason,
+                        )
+                        logger.info(
+                            "PERMISSION REQUIRED: tag=%s category=%s cmd=%s",
+                            ctx.name, category, ctx.content[:100],
+                        )
+                        # Yield the permission request event to frontend
+                        yield permission_request_event(
+                            ctx.tag_id, ctx.name, ctx.content, category, reason,
+                        )
+                        # Stop pipeline — do NOT execute
+                        return
 
         # --- 4. Scan attrs for injection (e.g. URLs in browser tags) ---
         for key, value in ctx.attrs.items():

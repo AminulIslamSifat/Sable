@@ -102,6 +102,7 @@ class SkillEngine:
         attrs: dict[str, str],
         content: str,
         namespace: str = "default",
+        chat_id: str | None = None,
     ) -> Generator[dict[str, Any], None, None]:
         """Run a single tag through the middleware pipeline.
 
@@ -113,6 +114,7 @@ class SkillEngine:
             attrs=attrs,
             content=content,
             namespace=namespace,
+            chat_id=chat_id,
         )
         yield from self._pipeline.execute(ctx)
 
