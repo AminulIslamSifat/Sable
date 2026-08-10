@@ -98,6 +98,14 @@
 .agent-check { color: #50c878; font-weight: bold; }
 .agent-x { color: #ff5050; font-weight: bold; }
 .agent-role { font-weight: 600; color: var(--text, #eaeaea); }
+.agent-model-badge {
+  font-size: 0.7em;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.08);
+  color: var(--muted, #a0a0a8);
+  font-weight: 400;
+}
 .agent-task-preview {
   color: var(--muted, #85858c);
   max-width: 120px;
@@ -775,25 +783,47 @@
   color: var(--text, #e0e0e0);
   font-family: monospace;
 }
-.arc-acct-add-row {
+.arc-pool-add-row {
   display: flex;
   align-items: center;
   gap: 6px;
   margin-top: 6px;
 }
-.arc-acct-add {
+.arc-pool-add-row select {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #2e2e3e);
+  background: rgba(20, 20, 24, 0.8);
+  color: var(--text, #e0e0e0);
   font-size: var(--font-size-system);
-  padding: 3px 8px;
-  border-radius: 4px;
-  border: 1px dashed var(--border, #2e2e3e);
-  background: transparent;
-  color: var(--muted, #85858c);
   cursor: pointer;
+  appearance: auto;
+}
+.arc-pool-add-row select:focus {
+  outline: none;
+  border-color: var(--accent, #7c5cbf);
+}
+.arc-pool-add-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #2e2e3e);
+  background: rgba(124, 92, 191, 0.12);
+  color: var(--accent, #7c5cbf);
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
   transition: all 0.15s;
 }
-.arc-acct-add:hover {
+.arc-pool-add-btn:hover {
+  background: rgba(124, 92, 191, 0.25);
   border-color: var(--accent, #7c5cbf);
-  color: var(--accent, #7c5cbf);
 }
 .arc-model {
   width: 100%;

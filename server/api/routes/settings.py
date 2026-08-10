@@ -1061,6 +1061,48 @@ async def set_context_pass_settings(request: Request) -> dict[str, Any]:
     return {"status": "ok", **settings}
 # ── /Context Pass Settings ─────────────────────────────────────────
 
+# ── Memory Consolidation Settings ─────────────────────────────────────
+_CONSOLIDATION_SETTINGS_PATH = BASE_DIR / "system/consolidation_settings.json"
+_CONSOLIDATION_DEFAULTS: dict[str, Any] = {
+    "model": "",                    # empty = use current chat model
+    "fallback_models": [],          # ordered list of fallback model IDs
+    "browser_profiles": [],         # ordered list of browser profile names for Qwen fallback
+}
+
+def _load_consolidation_settings() -> dict[str, Any]:
+    settings = dict(_CONSOLIDATION_DEFAULTS)
+    if _CONSOLIDATION_SETTINGS_PATH.exists():
+        try:
+            with open(_CONSOLIDATION_SETTINGS_PATH, "r", encoding="utf-8") as f:
+                stored = json.load(f)
+            if isinstance(stored, dict):
+                settings.update(stored)
+        except Exception:
+            pass
+    return settings
+
+def _save_consolidation_settings(settings: dict[str, Any]) -> None:
+    _CONSOLIDATION_SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+
+@router.get("/api/settings/consolidation")
+async def get_consolidation_settings() -> dict[str, Any]:
+    return _load_consolidation_settings()
+
+@router.post("/api/settings/consolidation")
+async def set_consolidation_settings(request: Request) -> dict[str, Any]:
+    body = await request.json()
+    settings = _load_consolidation_settings()
+    if "model" in body:
+        settings["model"] = str(body["model"]).strip()
+    if "fallback_models" in body:
+        fm = body["fallback_models"]
+        settings["fallback_models"] = [str(m).strip() for m in fm if isinstance(fm, list)] if isinstance(fm, list) else []
+    if "browser_profiles" in body:
+        bp = body["browser_profiles"]
+        settings["browser_profiles"] = [str(p).strip() for p in bp if isinstance(bp, list)] if isinstance(bp, list) else []
+    _save_consolidation_settings(settings)
+    return {"status": "ok", **settings}
+# ── /Memory Consolidation Settings ────────────────────────────────────
 
 # ── TTS Model Management ────────────────────────────────────────────
 _TTS_DIR = _SYSTEM_DIR / "models" / "tts"

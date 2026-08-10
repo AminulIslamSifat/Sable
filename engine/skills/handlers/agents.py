@@ -88,6 +88,9 @@ def handle_spawn_agent(
             from engine.agents.agent import AgentTodoList
             agent.todos = AgentTodoList.build_from_list(todos_list)
 
+        # Attach fallback chain from role config
+        agent.model_chain = role_cfg.model_chain
+
         runtime._agents[agent.id] = agent
 
         # DB insert (sync — sqlite3)

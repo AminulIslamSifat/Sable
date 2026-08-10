@@ -1,97 +1,147 @@
 
-_CONSOLIDATE_PROMPT_TEMPLATE_HISTORY = (
-    "[SYSTEM: Memory consolidation pass. You already have the full conversation above. Do NOT re-summarize it.]\n\n"
-    "CURRENT MEMORY STORE:\n<<CURRENT_MEMORY>>\n\n"
-    "TASK: Scan the conversation above. Extract facts worth remembering for future sessions.\n"
-    "Memory is now semantic-search backed, so granular entries are fine — prefer many specific entries over few broad ones.\n\n"
-    "WHAT TO CAPTURE:\n"
-    "- Architecture decisions, design patterns, project structure\n"
-    "- User preferences, workflows, tool configs, environment details\n"
-    "- Bugs found, workarounds discovered\n"
-    "- API behaviors, quirks, gotchas, version-specific notes\n"
-    "- File paths, command patterns, dependency relationships\n"
-    "- Anything that would save time or prevent confusion in a future session\n\n"
-    "AUTO-CLASSIFICATION:\n"
-    "- PROTECTED: Credentials, passwords, API keys, sudo configs, security-sensitive paths,\n"
-    "  identity info, anything that MUST NEVER be forgotten or accidentally deleted.\n"
-    "  Protected entries are immune to deletion — never include protected keys in the delete list.\n"
-    "- EPHEMERAL: Temporary workarounds, time-bound tasks, version-specific hacks,\n"
-    "  debugging notes for active issues, anything with a natural expiration.\n"
-    "  Ephemeral entries require an expires_at field (ISO 8601 datetime string).\n"
-    "- SEMANTIC/EPISODIC/PROCEDURAL: Everything else — classify normally.\n\n"
-    "RULES:\n"
-    "- Skip entries already present in the current memory store (check keys and values)\n"
-    "- Each entry should be self-contained and searchable by its key\n"
-    "- Keys should be short descriptive labels; values should be dense and specific\n"
-    "- Delete entries that are now outdated, superseded, or contradicted by new info\n"
-    "- NEVER delete protected entries — they are permanent regardless of staleness\n"
-    "- No maximum limit — capture everything genuinely useful\n"
-    "- Still skip pure greetings, trivial chat, and transient one-off tasks\n\n"
-    'OUTPUT: Raw JSON only, no markdown fences, no explanation.\n'
-    'Format: {\n'
+# ---------------------------------------------------------------------------
+# Shared building blocks — keeps both templates in sync
+# ---------------------------------------------------------------------------
+
+_CATEGORY_DEFS = (
+    "CATEGORIES (assign each entry to exactly one):\n"
+    "- semantic: Durable facts — user preferences, project architecture, tool configs,\n"
+    "  environment details, API behaviors, file paths, dependency relationships.\n"
+    "  This is the default. If it's a fact that stays true across sessions, it's semantic.\n"
+    "- episodic: Event-specific records tied to a particular interaction or debugging session.\n"
+    "  Only save if the exact sequence/context matters for future recall.\n"
+    "  Episodic memories decay over time — be stricter about what qualifies.\n"
+    "- procedural: How things are done — workflows, coding patterns, communication formats,\n"
+    "  preferred approaches. Shapes agent behavior rather than knowledge.\n"
+    "- protected: Credentials, API keys, sudo configs, security-sensitive paths, identity info.\n"
+    "  IMMUNE TO DELETION. Never include protected keys in the delete list.\n"
+    "- ephemeral: Time-bound workarounds, version-specific hacks, active debugging notes.\n"
+    "  MUST include an expires_at field (ISO 8601). Auto-deleted after expiry.\n"
+)
+
+_SELECTIVITY_RULES = (
+    "SELECTIVITY GATE (apply BEFORE adding any entry):\n"
+    "1. Would a future session actually search for this? If uncertain, skip it.\n"
+    "2. Does this duplicate or overlap with an existing entry? If yes, either skip it\n"
+    "   or put the old key in 'delete' and add the consolidated/updated version.\n"
+    "3. Is this a temporary detail that won't matter in 48 hours? Use ephemeral or skip.\n"
+    "4. Can two related facts be merged into ONE entry? Always prefer fewer, denser entries.\n"
+    "5. Hard cap: maximum 5 new entries per pass. If you have more candidates, keep only\n"
+    "   the 5 most impactful. Quality over quantity, always.\n"
+)
+
+_SUPERSession_RULES = (
+    "CONTRADICTION / UPDATE HANDLING:\n"
+    "- When new info contradicts or supersedes an existing entry, put the OLD key in\n"
+    "  'delete' and add the UPDATED version as a new entry in the correct category.\n"
+    "- The newer fact wins. Memory is a timeline, not an append-only log.\n"
+    "- Exception: protected entries are NEVER deleted, even when contradicted.\n"
+    "  Instead, add the updated info as a NEW protected entry with a distinct key.\n"
+)
+
+_OUTPUT_FORMAT = (
+    'OUTPUT: Raw JSON only. No markdown fences, no commentary, no explanation.\n'
+    'Format:\n'
+    '{\n'
     '  "add": {\n'
-    '    "semantic": [{"key": "...", "value": "..."}],\n'
-    '    "episodic": [{"key": "...", "value": "..."}],\n'
-    '    "procedural": [{"key": "...", "value": "..."}],\n'
-    '    "protected": [{"key": "...", "value": "..."}],\n'
-    '    "ephemeral": [{"key": "...", "value": "...", "expires_at": "2026-08-15T00:00:00"}]\n'
+    '    "semantic": [{"key": "short_label", "value": "dense specific fact"}],\n'
+    '    "episodic": [{"key": "short_label", "value": "context-rich event record"}],\n'
+    '    "procedural": [{"key": "short_label", "value": "workflow or pattern description"}],\n'
+    '    "protected": [{"key": "short_label", "value": "credential or sensitive config"}],\n'
+    '    "ephemeral": [{"key": "short_label", "value": "temporary note", "expires_at": "2026-08-15T00:00:00"}]\n'
     '  },\n'
-    '  "delete": ["exact_key_string"]\n'
+    '  "delete": ["exact_existing_key_to_remove"]\n'
     '}\n'
-    'Delete list must NEVER contain keys from the protected category.\n'
-    'If nothing qualifies, return exactly: {"add": {"semantic": [], "episodic": [], "procedural": [], "protected": [], "ephemeral": []}, "delete": []}\n\n'
-    'SKILL CREATION (important):\n'
-    'If the conversation have any workflow that will be useful as a skill, immediately create the skill. If user ask you to remember this process, make this a skill etc make that to a skill too.,\n'
-    'include a "create_skill" field in the JSON:\n'
-    '  "create_skill": {"name": "skill-name", "description": "...", "trigger": "when to use it", "prompt": "full instruction text"}\n'
-    'Auto create necessary workflow as skill even when user does not ask for it or the user is not aware about it.'
+    'Rules:\n'
+    '- Keys: short, descriptive, snake_case preferred. Must be unique within category.\n'
+    '- Values: self-contained, specific, searchable. No vague summaries.\n'
+    '- Delete list: exact key strings from CURRENT MEMORY STORE. NEVER delete protected keys.\n'
+    '- If nothing qualifies: {"add":{"semantic":[],"episodic":[],"procedural":[],"protected":[],"ephemeral":[]},"delete":[]}\n'
+)
+
+_CONSOLIDATE_PROMPT_TEMPLATE_HISTORY = (
+    "[SYSTEM: Memory consolidation pass. Full conversation is above — do NOT re-summarize.]\n\n"
+    "CURRENT MEMORY STORE:\n<<CURRENT_MEMORY>>\n\n"
+    "TASK: Extract durable facts from the conversation above that would help future sessions.\n"
+    "You are a strict filter, not a vacuum. Most conversations produce zero new memories.\n\n"
+    f"{_CATEGORY_DEFS}\n"
+    f"{_SELECTIVITY_RULES}\n"
+    f"{_SUPERSession_RULES}\n"
+    "ADDITIONAL RULES:\n"
+    "- Skip entries already present in CURRENT MEMORY STORE (match by key AND value).\n"
+    "- Skip greetings, trivial chat, transient one-off tasks, and obvious facts.\n"
+    "- Each entry must be self-contained — understandable without conversation context.\n\n"
+    f"{_OUTPUT_FORMAT}"
 )
 
 _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE = (
-    "[SYSTEM: Memory consolidation pass. Use this chat's message thread for context — do NOT ask for more context.]\n\n"
+    "[SYSTEM: Memory consolidation pass. Use the conversation summary below — do NOT request more context.]\n\n"
     "CURRENT MEMORY STORE:\n<<CURRENT_MEMORY>>\n\n"
-    "CONTEXT:\n<<CONVERSATION_SUMMARY>>\n\n"
-    "TASK: Based on the conversation in this thread, extract facts worth remembering for future sessions.\n"
-    "Memory is now semantic-search backed, so granular entries are fine — prefer many specific entries over few broad ones.\n\n"
-    "WHAT TO CAPTURE:\n"
-    "- Architecture decisions, design patterns, project structure\n"
-    "- User preferences, workflows, tool configs, environment details\n"
-    "- Bugs found, fixes applied, workarounds discovered\n"
-    "- API behaviors, quirks, gotchas, version-specific notes\n"
-    "- File paths, command patterns, dependency relationships\n"
-    "- Anything that would save time or prevent confusion in a future session\n\n"
-    "AUTO-CLASSIFICATION:\n"
-    "- PROTECTED: Credentials, passwords, API keys, sudo configs, security-sensitive paths,\n"
-    "  identity info, anything that MUST NEVER be forgotten or accidentally deleted.\n"
-    "  Protected entries are immune to deletion — never include protected keys in the delete list.\n"
-    "- EPHEMERAL: Temporary workarounds, time-bound tasks, version-specific hacks,\n"
-    "  debugging notes for active issues, anything with a natural expiration.\n"
-    "  Ephemeral entries require an expires_at field (ISO 8601 datetime string).\n"
-    "- SEMANTIC/EPISODIC/PROCEDURAL: Everything else — classify normally.\n\n"
-    "RULES:\n"
-    "- Skip entries already present in the current memory store (check keys and values)\n"
-    "- Each entry should be self-contained and searchable by its key\n"
-    "- Keys should be short descriptive labels; values should be dense and specific\n"
-    "- Delete entries that are now outdated, superseded, or contradicted by new info\n"
-    "- NEVER delete protected entries — they are permanent regardless of staleness\n"
-    "- No maximum limit — capture everything genuinely useful\n"
-    "- Still skip pure greetings, trivial chat, and transient one-off tasks\n\n"
-    'OUTPUT: Raw JSON only, no markdown fences, no explanation.\n'
-    'Format: {\n'
-    '  "add": {\n'
-    '    "semantic": [{"key": "...", "value": "..."}],\n'
-    '    "episodic": [{"key": "...", "value": "..."}],\n'
-    '    "procedural": [{"key": "...", "value": "..."}],\n'
-    '    "protected": [{"key": "...", "value": "..."}],\n'
-    '    "ephemeral": [{"key": "...", "value": "...", "expires_at": "2026-08-15T00:00:00"}]\n'
-    '  },\n'
-    '  "delete": ["exact_key_string"]\n'
+    "CONVERSATION CONTEXT:\n<<CONVERSATION_SUMMARY>>\n\n"
+    "TASK: Extract durable facts from the conversation that would help future sessions.\n"
+    "You are a strict filter, not a vacuum. Most conversations produce zero new memories.\n\n"
+    f"{_CATEGORY_DEFS}\n"
+    f"{_SELECTIVITY_RULES}\n"
+    f"{_SUPERSession_RULES}\n"
+    "ADDITIONAL RULES:\n"
+    "- Skip entries already present in CURRENT MEMORY STORE (match by key AND value).\n"
+    "- Skip greetings, trivial chat, transient one-off tasks, and obvious facts.\n"
+    "- Each entry must be self-contained — understandable without conversation context.\n\n"
+    f"{_OUTPUT_FORMAT}"
+)
+
+
+# ---------------------------------------------------------------------------
+# User Personality Assessment — purely analytical, clinical, data-driven
+# ---------------------------------------------------------------------------
+
+_PERSONALITY_OUTPUT_FORMAT = (
+    'OUTPUT: Raw JSON only. No markdown fences, no commentary.\n'
+    'Format:\n'
+    '{\n'
+    '  "strengths": [\n'
+    '    {"trait": "short label", "evidence": "specific observed behavior", "confidence": "high|medium|low"}\n'
+    '  ],\n'
+    '  "weaknesses": [\n'
+    '    {"trait": "short label", "evidence": "specific observed behavior", "confidence": "high|medium|low"}\n'
+    '  ],\n'
+    '  "contradictions": [\n'
+    '    {"claimed": "what they say/present", "actual": "what behavior shows", "evidence": "specific instance"}\n'
+    '  ],\n'
+    '  "blind_spots": [\n'
+    '    {"pattern": "recurring behavior they seem unaware of", "evidence": "specific instances"}\n'
+    '  ],\n'
+    '  "summary": "2-3 sentences. Clinical. Data-driven. No emotional framing. State what the data shows."\n'
     '}\n'
-    'Delete list must NEVER contain keys from the protected category.\n'
-    'If nothing qualifies, return exactly: {"add": {"semantic": [], "episodic": [], "procedural": [], "protected": [], "ephemeral": []}, "delete": []}\n\n'
-    'SKILL CREATION (important):\n'
-        'If the conversation have any workflow that will be useful as a skill, immediately create the skill. If user ask you to remember this process, make this a skill etc make that to a skill too.,\n'
-        'include a "create_skill" field in the JSON:\n'
-        '  "create_skill": {"name": "skill-name", "description": "...", "trigger": "when to use it", "prompt": "full instruction text"}\n'
-        'Auto create necessary workflow as skill even when user does not ask for it or the user is not aware about it.'
+    'Rules:\n'
+    '- Every claim MUST cite specific evidence from this conversation. No inference without data.\n'
+    '- "Strengths" = measurable positive patterns: follow-through, precision, creativity, discipline.\n'
+    '- "Weaknesses" = measurable negative patterns: avoidance, inconsistency, over-engineering, deflection.\n'
+    '- Confidence levels: high = 3+ instances, medium = 2 instances, low = 1 instance.\n'
+    '- Minimum 2 items per list (strengths and weaknesses). If insufficient data, return empty with reason.\n'
+    '- Contradictions and blind_spots can be empty arrays if no data supports them.\n'
+    '- Summary: write like a behavioral analyst filing a report. Zero emotional language.\n'
+)
+
+_PERSONALITY_ASSESSMENT_TEMPLATE = (
+    "[SYSTEM: Behavioral analysis pass. You are a clinical observer analyzing user interaction data.]\n\n"
+    "PREVIOUS ASSESSMENT (if any):\n<<PREVIOUS_PERSONALITY>>\n\n"
+    "TASK: Produce a data-driven behavioral profile of the user based on THIS conversation.\n"
+    "You are an analyst, not a judge. Report observable patterns. Do not moralize.\n\n"
+    "ANALYSIS AXES:\n"
+    "- Complexity handling: embrace / avoid / over-engineer / delegate\n"
+    "- Error response: own it / deflect / get defensive / ignore / fix silently\n"
+    "- Follow-through: complete tasks vs. start-and-abandon ratio\n"
+    "- Communication: direct / indirect / performative / precise / scattered\n"
+    "- Self-awareness: recognizes own patterns vs. repeats blindly\n"
+    "- Tool interaction: collaborative / dismissive / exploratory / rigid\n"
+    "- Decision making: decisive / avoidant / over-analytical / impulsive\n\n"
+    "RULES:\n"
+    "- If a previous assessment exists, UPDATE it. Retain entries still supported by evidence.\n"
+    "  Revise or remove entries contradicted by new data. Add new patterns.\n"
+    "- Only report what is directly observable in the conversation text. No speculation.\n"
+    "- No value judgments. 'Over-engineers solutions' not 'wastes time on pointless complexity'.\n"
+    "- If the conversation is too short or trivial to assess, return:\n"
+    '  {"strengths":[],"weaknesses":[],"contradictions":[],"blind_spots":[],"summary":"Insufficient data for assessment."}\n\n'
+    f"{_PERSONALITY_OUTPUT_FORMAT}"
 )

@@ -73,6 +73,7 @@ const AgentTopBar = {
     card.innerHTML =
       `<span class="agent-spinner"></span>` +
       `<span class="agent-role">${escHtml(role)}</span>` +
+      (model ? `<span class="agent-model-badge">${escHtml(model)}</span>` : "") +
       `<span class="agent-task-preview" title="${escAttr(task)}">${escHtml(task.slice(0, 30))}${task.length > 30 ? "…" : ""}</span>`;
     card.onclick = () => AgentPanel.open(agentId, role, task);
     this.cards.set(agentId, card);
@@ -152,10 +153,18 @@ function addAgentResultCard(ev) {
     jsonHtml = escHtml(rawResult);
   }
 
+  const modelLabel = data.model ? escHtml(data.model) : "";
+  const bdRaw = data.browser_data_dir || "";
+  const bdLabel = bdRaw ? bdRaw.split("/").pop() : "";
+  const metaParts = [duration];
+  if (modelLabel) metaParts.push(modelLabel);
+  if (bdLabel) metaParts.push(bdLabel);
+  metaParts.push(`${tokens} words`);
+
   card.innerHTML =
     `<span class="arc-title">${escHtml(role)} ${isSuccess ? "completed" : "failed"}</span>` +
     `<span class="arc-detail">${isSuccess ? escHtml((data.summary || "").slice(0, 120)) : escHtml(data.error || "Unknown error")}</span>` +
-    `<span class="arc-meta">${duration} · ${tokens} tokens</span>` +
+    `<span class="arc-meta">${metaParts.join(" · ")}</span>` +
     (rawResult ? `<div class="arc-json hidden">${jsonHtml}</div>` : "") +
     `<div class="arc-actions">` +
       (rawResult ? `<button class="arc-toggle">result</button>` : "") +
@@ -430,6 +439,24 @@ const AgentPanel = {
           }
         } else if (evt.type === "todo_progress") {
           if (evt.todos) this._renderTodos(evt.todos);
+        } else if (evt.type === "model_fallback") {
+          // Update header model badge live
+          const modelEl = this.el.querySelector(".agent-panel-model");
+          if (modelEl) modelEl.textContent = evt.to || "";
+          // Show fallback notice in conversation
+          const notice = document.createElement("div");
+          notice.className = "ap-msg ap-system";
+          notice.innerHTML = `<div class="ap-msg-role">system</div><div class="ap-msg-content"><em>⚡ Model fallback: ${escHtml(evt.from || "?")} → ${escHtml(evt.to || "?")}</em><br><small>${escHtml((evt.reason || "").slice(0, 150))}</small></div>`;
+          this.bodyEl.appendChild(notice);
+          this._scrollBottom();
+        } else if (evt.type === "browser_fallback") {
+          const bdEl = this.el.querySelector(".ap-browser-data");
+          if (bdEl) bdEl.textContent = evt.to || "None";
+          const notice = document.createElement("div");
+          notice.className = "ap-msg ap-system";
+          notice.innerHTML = `<div class="ap-msg-role">system</div><div class="ap-msg-content"><em>🔄 Browser fallback: ${escHtml(evt.from || "default")} → ${escHtml(evt.to || "?")}</em><br><small>${escHtml((evt.reason || "").slice(0, 150))}</small></div>`;
+          this.bodyEl.appendChild(notice);
+          this._scrollBottom();
         } else if (evt.type === "iteration") {
           if (this.iterEl) this.iterEl.textContent = `loop ${evt.iteration}`;
         } else if (evt.type === "done") {
@@ -829,6 +856,8 @@ const AgentSettings = {
         (r.allowed_skills || []).forEach((s) => skillSet.add(s));
       }
       this._allSkills = [...skillSet].sort();
+      // Populate datalists for dropdowns
+      await this._loadAccountDatalist();
       this._renderRoles();
       this.loaded = true;
     } catch (err) {
@@ -854,10 +883,22 @@ const AgentSettings = {
         `<option value="${escAttr(m.id)}" ${m.id === data.default_model ? "selected" : ""}>${escHtml(m.label)}${m.api_backend ? ` (${m.api_backend})` : ""}</option>`
       ).join("");
 
+      // Account select options (for all three pool dropdowns)
+      const accounts = this._accounts || [];
+      const acctOptions = accounts.map((a) =>
+        `<option value="${escAttr(a.name)}">${a.has_waf ? "🟢 " : "⚪ "}${escHtml(a.name)}</option>`
+      ).join("");
+
       // Account pool chips
-      const pool = data.account_pool || [];
+      const pool = data.browser_fallback_chain || [];
       const poolHtml = pool.map((acc) =>
         `<span class="arc-acct-chip">${escHtml(acc)}<button class="arc-chip-x" title="Remove">×</button></span>`
+      ).join("");
+
+      // Model chain chips
+      const chain = data.model_chain || [];
+      const chainHtml = chain.map((m) =>
+        `<span class="arc-acct-chip">${escHtml(m)}<button class="arc-chip-x" title="Remove">×</button></span>`
       ).join("");
 
       card.innerHTML =
@@ -890,11 +931,19 @@ const AgentSettings = {
             `<div><label>Max Parallel</label><input type="number" class="arc-parallel mem-input" value="${data.max_parallel}" min="1" max="10"></div>` +
           `</div>` +
           `<div class="arc-field">` +
-            `<label>Browser Account Pool <span class="arc-hint">(round-robin per spawn, qwen/deepseek only)</span></label>` +
+            `<label>Model Fallback Chain <span class="arc-hint">(up to 3, tried in order on failure)</span></label>` +
+            `<div class="arc-chain-pool">${chainHtml}</div>` +
+            `<div class="arc-pool-add-row">` +
+              `<select class="arc-chain-select mem-input"><option value="" disabled selected>Add model…</option>${modelOptions}</select>` +
+              `<button class="arc-pool-add-btn" title="Add to chain">+</button>` +
+            `</div>` +
+          `</div>` +
+          `<div class="arc-field">` +
+            `<label>Browser Account Fallback Chain <span class="arc-hint">(tried in order on failure, qwen only)</span></label>` +
             `<div class="arc-acct-pool">${poolHtml}</div>` +
-            `<div class="arc-acct-add-row">` +
-              `<input type="text" class="arc-acct-input mem-input" placeholder="browser-data-accN" style="width:180px;">` +
-              `<button class="arc-acct-add">+ add</button>` +
+            `<div class="arc-pool-add-row">` +
+              `<select class="arc-acct-select mem-input"><option value="" disabled selected>Add account…</option>${acctOptions}</select>` +
+              `<button class="arc-pool-add-btn" title="Add to pool">+</button>` +
             `</div>` +
           `</div>` +
         `</div>`;
@@ -903,31 +952,43 @@ const AgentSettings = {
       this._renderSkillChips(card.querySelector(".arc-default-skills"), data.default_skills || [], role + ":default");
       this._renderSkillChips(card.querySelector(".arc-allowed-skills"), data.allowed_skills || [], role + ":allowed");
 
-      // Account pool interactions
-      const poolEl = card.querySelector(".arc-acct-pool");
-      const acctInput = card.querySelector(".arc-acct-input");
-      const acctAddBtn = card.querySelector(".arc-acct-add");
-
-      // Remove chips
-      poolEl.querySelectorAll(".arc-chip-x").forEach((btn) => {
-        btn.onclick = (e) => {
-          e.stopPropagation();
-          btn.parentElement.remove();
-        };
-      });
-
-      // Add account
-      acctAddBtn.onclick = () => {
-        const val = acctInput.value.trim();
-        if (!val) return;
+      // Helper: create removable chip
+      const makeChip = (val) => {
         const chip = document.createElement("span");
         chip.className = "arc-acct-chip";
         chip.innerHTML = `${escHtml(val)}<button class="arc-chip-x" title="Remove">×</button>`;
         chip.querySelector(".arc-chip-x").onclick = (e) => { e.stopPropagation(); chip.remove(); };
-        poolEl.appendChild(chip);
-        acctInput.value = "";
+        return chip;
       };
-      acctInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); acctAddBtn.click(); } });
+
+      // Helper: wire select + add button for a pool
+      const wirePoolAdd = (poolEl, selectEl, addBtn, maxChips) => {
+        poolEl.querySelectorAll(".arc-chip-x").forEach((btn) => {
+          btn.onclick = (e) => { e.stopPropagation(); btn.parentElement.remove(); };
+        });
+        const doAdd = () => {
+          const val = selectEl.value;
+          if (!val) return;
+          if (maxChips && poolEl.querySelectorAll(".arc-acct-chip").length >= maxChips) return;
+          // Prevent duplicates
+          const existing = [...poolEl.querySelectorAll(".arc-acct-chip")].map(c => c.textContent.replace("×", "").trim());
+          if (existing.includes(val)) return;
+          poolEl.appendChild(makeChip(val));
+          selectEl.selectedIndex = 0;
+        };
+        addBtn.onclick = doAdd;
+        selectEl.addEventListener("change", doAdd);
+      };
+
+      // Get all add buttons and selects in DOM order within this card
+      const addBtns = card.querySelectorAll(".arc-pool-add-btn");
+      const selects = card.querySelectorAll(".arc-pool-add-row select");
+
+      // Model chain (max 3) — first row
+      wirePoolAdd(card.querySelector(".arc-chain-pool"), selects[0], addBtns[0], 3);
+
+      // Account pool — second row
+      wirePoolAdd(card.querySelector(".arc-acct-pool"), selects[1], addBtns[1], null);
 
       // Toggle collapse
       card.querySelector(".arc-header").onclick = () => {
@@ -939,6 +1000,17 @@ const AgentSettings = {
 
       container.appendChild(card);
       activateLucideIcons(card);
+    }
+  },
+
+  async _loadAccountDatalist() {
+    try {
+      const res = await fetch("/api/settings/accounts");
+      if (!res.ok) return;
+      const data = await res.json();
+      this._accounts = data.accounts || [];
+    } catch {
+      this._accounts = [];
     }
   },
 
@@ -1019,10 +1091,17 @@ const AgentSettings = {
         default_timeout: parseInt(card.querySelector(".arc-timeout").value) || 90,
         max_parallel: parseInt(card.querySelector(".arc-parallel").value) || 1,
       };
-      // Collect account pool chips
+      // Collect browser fallback chain chips
       const chips = card.querySelectorAll(".arc-acct-pool .arc-acct-chip");
       if (chips.length) {
         accountAssignments[role] = [...chips].map((c) => c.textContent.replace("×", "").trim());
+      }
+      // Collect model fallback chain
+      const chainChips = card.querySelectorAll(".arc-chain-pool .arc-acct-chip");
+      if (chainChips.length) {
+        roles[role].model_chain = [...chainChips].map((c) => c.textContent.replace("×", "").trim());
+      } else {
+        roles[role].model_chain = [];
       }
     });
 

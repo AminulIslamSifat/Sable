@@ -12,7 +12,7 @@ from typing import Any, Callable, Coroutine
 from engine.agents.agent import Agent
 from engine.agents.notifications import notification_queue
 from engine.agents.protocol import AgentEvent, AgentResult, AgentStatus, TaskAssignment
-from engine.agents.registry import get_role_config
+from engine.agents.registry import get_role_config, get_next_account
 from engine.agents.auto_turn import auto_turn
 from engine.agents.resilience import CircuitBreaker
 
@@ -57,6 +57,9 @@ class AgentRuntime:
         self._breakers: dict[str, CircuitBreaker] = {
             "deepseek": CircuitBreaker(threshold, reset),
             "qwen": CircuitBreaker(threshold, reset),
+            "gemini": CircuitBreaker(threshold, reset),
+            "groq": CircuitBreaker(threshold, reset),
+            "mistral": CircuitBreaker(threshold, reset),
         }
 
         # Loop limits (max iterations, tool call caps)
@@ -139,13 +142,19 @@ class AgentRuntime:
 
             # Resolve config: tag attrs > role_overrides > defaults
             role_cfg = get_role_config(assignment.role)
+            # Resolve browser account: explicit > pool (skip in-use) > None
+            browser_dir = assignment.browser_data_dir
+            if not browser_dir:
+                in_use = {a.browser_data_dir for a in self._agents.values() if a.browser_data_dir and a.status == AgentStatus.RUNNING}
+                browser_dir = get_next_account(assignment.role, in_use)
+
             agent = Agent(
                 role=assignment.role,
                 task=assignment.task,
                 context=assignment.context,
                 instruction=assignment.instruction,
                 model=assignment.model or role_cfg.default_model,
-                browser_data_dir=assignment.browser_data_dir,
+                browser_data_dir=browser_dir,
                 parent_id=assignment.parent_agent_id,
                 chat_id=chat_id,
                 depth=depth,
@@ -157,7 +166,7 @@ class AgentRuntime:
                 from engine.agents.agent import AgentTodoList
                 agent.todos = AgentTodoList.build_from_list(assignment.todos)
 
-            # Attach model fallback chain from role config
+            # Attach fallback chain from role config
             agent.model_chain = role_cfg.model_chain
 
             self._agents[agent.id] = agent
@@ -235,6 +244,8 @@ class AgentRuntime:
                         "words": agent.word_count,
                         "duration": agent.duration,
                         "skills_used": agent.skills_used,
+                        "model": agent.model,
+                        "browser_data_dir": agent.browser_data_dir or "",
                     },
                 ))
                 # Auto-turn: feed brief notification back to model
@@ -286,6 +297,8 @@ class AgentRuntime:
                     "duration": agent.duration,
                     "words": agent.word_count,
                     "skills_used": agent.skills_used,
+                    "model": agent.model,
+                    "browser_data_dir": agent.browser_data_dir or "",
                 }
                 # Check if auto_turn considers the chat busy (model mid-stream)
                 from engine.agents.auto_turn import auto_turn as _at

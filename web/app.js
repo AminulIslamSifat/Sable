@@ -4362,45 +4362,9 @@
       if (isStreaming) {
         // Skip consolidation — current chat is still responding
         showToast("⏭️ Skipped memory consolidation (chat still streaming)", "info");
-      } else if (oldChatId && scraperMode) {
-        // Scraper mode: send consolidation prompt into the active browser tab,
-        // wait for the model to respond with memory JSON, then create new chat.
-        showToast("🧠 Consolidating memory in browser...", "info");
-        try {
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 120000);
-          const res = await fetch("/api/memory/consolidate-scraper", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: oldChatId, model: selectedModel }),
-            signal: controller.signal,
-          });
-          clearTimeout(timeout);
-          if (res.ok) {
-            const data = await res.json();
-            if (data.status === "ok") {
-              const parts = [];
-              if (data.added) parts.push(`${data.added} added`);
-              if (data.deleted) parts.push(`${data.deleted} deleted`);
-              showToast(parts.length ? `🧠 ${parts.join(", ")}` : "🧠 Nothing new worth remembering", "success");
-            } else if (data.status === "skipped") {
-              showToast("🧠 Skipped — too few messages", "info");
-            } else {
-              showToast(`🧠 Consolidation failed: ${data.detail || "unknown"}`, "error");
-            }
-          } else {
-            const text = await res.text().catch(() => "");
-            showToast(`🧠 Consolidation failed (${res.status}): ${text.slice(0, 200)}`, "error");
-          }
-        } catch (e) {
-          if (e.name === "AbortError") {
-            showToast("🧠 Consolidation timed out (2min)", "error");
-          } else {
-            showToast("🧠 Consolidation error: " + e.message, "error");
-          }
-        }
       } else if (oldChatId) {
-        // API mode: fire-and-forget background consolidation
+        // Unified consolidation — backend handles model selection, fallback chain,
+        // and uses ephemeral chat_id internally (no pollution of source chat)
         consolidateMemory(oldChatId, selectedModel);
       }
       try {
@@ -6165,6 +6129,81 @@
       setTimeout(() => { protStatus.textContent = ""; }, 2000);
     });
 
+    // ── Memory Consolidation Settings ──
+    const consolidationModel = document.getElementById("consolidationModel");
+    const consolidationFB1 = document.getElementById("consolidationFallback1");
+    const consolidationFB2 = document.getElementById("consolidationFallback2");
+    const consolidationFB3 = document.getElementById("consolidationFallback3");
+    const consolidationP1 = document.getElementById("consolidationProfile1");
+    const consolidationP2 = document.getElementById("consolidationProfile2");
+    const consolidationP3 = document.getElementById("consolidationProfile3");
+
+
+    function populateConsolidationModels() {
+      const selects = [consolidationModel, consolidationFB1, consolidationFB2, consolidationFB3];
+      for (const sel of selects) {
+        if (!sel) continue;
+        const current = sel.value;
+        const isPrimary = sel === consolidationModel;
+        sel.innerHTML = isPrimary ? '<option value="">Default (current chat model)</option>' : '<option value="">— None —</option>';
+        for (const m of modelList) {
+          const opt = document.createElement("option");
+          opt.value = m.id;
+          opt.textContent = m.name || m.id;
+          sel.appendChild(opt);
+        }
+        sel.value = current;
+      }
+    }
+
+    async function populateConsolidationProfiles() {
+      const selects = [consolidationP1, consolidationP2, consolidationP3];
+      const profiles = [];
+      try {
+        const res = await fetch("/api/settings/accounts");
+        if (res.ok) {
+          const data = await res.json();
+          for (const acc of (data.accounts || [])) {
+            profiles.push({ name: acc.name, label: acc.email ? `${acc.name} (${acc.email})` : acc.name });
+          }
+        }
+      } catch {}
+      for (const sel of selects) {
+        if (!sel) continue;
+        const current = sel.value;
+        sel.innerHTML = '<option value="">— None —</option>';
+        for (const p of profiles) {
+          const opt = document.createElement("option");
+          opt.value = p.name;
+          opt.textContent = p.label;
+          sel.appendChild(opt);
+        }
+        sel.value = current;
+      }
+    }
+
+    async function loadConsolidationSettings() {
+      populateConsolidationModels();
+      await populateConsolidationProfiles();
+      try {
+        const res = await fetch("/api/settings/consolidation");
+        if (res.ok) {
+          const d = await res.json();
+          if (consolidationModel) consolidationModel.value = d.model || "";
+          const fbs = d.fallback_models || [];
+          if (consolidationFB1) consolidationFB1.value = fbs[0] || "";
+          if (consolidationFB2) consolidationFB2.value = fbs[1] || "";
+          if (consolidationFB3) consolidationFB3.value = fbs[2] || "";
+          const bps = d.browser_profiles || [];
+          if (consolidationP1) consolidationP1.value = bps[0] || "";
+          if (consolidationP2) consolidationP2.value = bps[1] || "";
+          if (consolidationP3) consolidationP3.value = bps[2] || "";
+        }
+      } catch {}
+    }
+
+    // ── /Memory Consolidation Settings ──
+
     // === Memory Search Settings ===
     const msModelSelect = document.getElementById("msModelSelect");
     const msTopK = document.getElementById("msTopK");
@@ -6325,6 +6364,7 @@
       loadMemory();
       loadProtected();
       loadMemorySearchSettings();
+      loadConsolidationSettings();
     });
 
     // Register Brain tab with universal save
@@ -6363,6 +6403,17 @@
         const data = await msRes.json();
         msInfo.textContent = `Active: ${data.current_model} | Threshold: ${data.current_threshold}`;
       }
+      // Save consolidation settings
+      const fallbackModels = [consolidationFB1?.value, consolidationFB2?.value, consolidationFB3?.value].filter(Boolean);
+      const browserProfiles = [consolidationP1?.value, consolidationP2?.value, consolidationP3?.value].filter(Boolean);
+      await fetch("/api/settings/consolidation", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: consolidationModel ? consolidationModel.value : "",
+          fallback_models: fallbackModels,
+          browser_profiles: browserProfiles,
+        }),
+      });
     });
 
     // === Skills Panel ===
@@ -7625,6 +7676,109 @@
       let saved = null;
       try { saved = localStorage.getItem(IDE_CHAT_FONT_KEY); } catch (e) {}
       if (saved) { ideChatFontSizeSelect.value = saved; applyIdeChatFontSize(saved); }
+    })();
+
+    // ---------- IDE Editor Font Family ----------
+    const IDE_FONT_FAMILY_KEY = "sable_ide_font_family";
+    const ideFontFamilySelect = document.getElementById("ideFontFamilySelect");
+
+    function applyIdeFontFamily(value) {
+      if (typeof monaco !== "undefined" && monaco.editor && monaco.editor.getEditors) {
+        monaco.editor.getEditors().forEach(ed => ed.updateOptions({ fontFamily: value }));
+      }
+    }
+
+    ideFontFamilySelect.addEventListener("change", () => {
+      const val = ideFontFamilySelect.value;
+      applyIdeFontFamily(val);
+      try { localStorage.setItem(IDE_FONT_FAMILY_KEY, val); } catch (e) {}
+    });
+
+    (function loadIdeFontFamily() {
+      let saved = null;
+      try { saved = localStorage.getItem(IDE_FONT_FAMILY_KEY); } catch (e) {}
+      if (saved) { ideFontFamilySelect.value = saved; applyIdeFontFamily(saved); }
+    })();
+
+    // ---------- IDE Theme ----------
+    const IDE_THEME_KEY = "sable_ide_theme";
+    const ideThemeSelect = document.getElementById("ideThemeSelect");
+
+    function applyIdeTheme(themeName) {
+      if (typeof monaco !== "undefined" && monaco.editor) {
+        monaco.editor.setTheme(themeName);
+      }
+    }
+
+    ideThemeSelect.addEventListener("change", () => {
+      const val = ideThemeSelect.value;
+      applyIdeTheme(val);
+      try { localStorage.setItem(IDE_THEME_KEY, val); } catch (e) {}
+    });
+
+    (function loadIdeTheme() {
+      let saved = null;
+      try { saved = localStorage.getItem(IDE_THEME_KEY); } catch (e) {}
+      if (saved) { ideThemeSelect.value = saved; applyIdeTheme(saved); }
+    })();
+
+    // ---------- IDE Auto-Save Toggle ----------
+    const IDE_AUTO_SAVE_KEY = "sable_ide_auto_save";
+    const ideAutoSaveToggle = document.getElementById("ideAutoSaveToggle");
+
+    function setAutoSaveUI(on) {
+      ideAutoSaveToggle.textContent = on ? "On" : "Off";
+      ideAutoSaveToggle.setAttribute("aria-checked", String(on));
+      ideAutoSaveToggle.style.background = on ? "var(--accent)" : "var(--panel)";
+      ideAutoSaveToggle.style.color = on ? "var(--bg)" : "var(--text-dim)";
+    }
+
+    ideAutoSaveToggle.addEventListener("click", () => {
+      const current = ideAutoSaveToggle.getAttribute("aria-checked") === "true";
+      const next = !current;
+      setAutoSaveUI(next);
+      try { localStorage.setItem(IDE_AUTO_SAVE_KEY, String(next)); } catch (e) {}
+      // Notify filesystem.js via custom event
+      window.dispatchEvent(new CustomEvent("ide-autosave-change", { detail: { enabled: next } }));
+    });
+
+    (function loadAutoSave() {
+      let saved = null;
+      try { saved = localStorage.getItem(IDE_AUTO_SAVE_KEY); } catch (e) {}
+      setAutoSaveUI(saved === "true");
+    })();
+
+    // ---------- IDE Sticky Scroll Toggle ----------
+    const IDE_STICKY_SCROLL_KEY = "sable_ide_sticky_scroll";
+    const ideStickyScrollToggle = document.getElementById("ideStickyScrollToggle");
+
+    function setStickyScrollUI(on) {
+      ideStickyScrollToggle.textContent = on ? "On" : "Off";
+      ideStickyScrollToggle.setAttribute("aria-checked", String(on));
+      ideStickyScrollToggle.style.background = on ? "var(--accent)" : "var(--panel)";
+      ideStickyScrollToggle.style.color = on ? "var(--bg)" : "var(--text-dim)";
+    }
+
+    function applyStickyScroll(on) {
+      if (typeof monaco !== "undefined" && monaco.editor && monaco.editor.getEditors) {
+        monaco.editor.getEditors().forEach(ed => ed.updateOptions({ stickyScroll: { enabled: on } }));
+      }
+    }
+
+    ideStickyScrollToggle.addEventListener("click", () => {
+      const current = ideStickyScrollToggle.getAttribute("aria-checked") === "true";
+      const next = !current;
+      setStickyScrollUI(next);
+      applyStickyScroll(next);
+      try { localStorage.setItem(IDE_STICKY_SCROLL_KEY, String(next)); } catch (e) {}
+    });
+
+    (function loadStickyScroll() {
+      let saved = null;
+      try { saved = localStorage.getItem(IDE_STICKY_SCROLL_KEY); } catch (e) {}
+      const on = saved === "true";
+      setStickyScrollUI(on);
+      applyStickyScroll(on);
     })();
 
     // ---------- Font Family ----------

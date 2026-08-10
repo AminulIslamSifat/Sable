@@ -16,6 +16,10 @@ class RoleConfig:
     model_chain: list[str] = field(default_factory=list)  # fallback models (excludes primary)
 
 
+# Fallback chain applied to ANY role that has no explicit model_chain configured.
+# Ensures no agent ever dies without at least attempting a model switch.
+_DEFAULT_MODEL_CHAIN: list[str] = ["deepseek-expert", "gemini-2.5-flash"]
+
 _MARKDOWN_INSTRUCTION = (
     "\n\nCRITICAL OUTPUT FORMAT RULES:\n"
     "- You MUST respond with ONLY a clean markdown document as your final answer.\n"
@@ -49,7 +53,10 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         default_model="qwen3.7-max",
         default_timeout=300,
         max_parallel=4,
-        required_sections=[],
+        required_sections=[
+            "Topic", "Findings", "Sources", "Summary", "Confidence",
+            "File Reviewed", "Critical Issues", "Warnings", "Info", "Verdict",
+        ],
     ),
     "coder": RoleConfig(
         system_prompt=(
@@ -68,7 +75,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         default_model="qwen3.7-max",
         default_timeout=300,
         max_parallel=1,
-        required_sections=["Description", "Files Modified"],
+        required_sections=["Description", "Files Modified", "Tests", "Notes"],
     ),
 
     "writer": RoleConfig(
@@ -86,7 +93,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         default_model="qwen3.7-max",
         default_timeout=300,
         max_parallel=2,
-        required_sections=["Title", "Structure Overview"],
+        required_sections=["Title", "Document Path", "Structure Overview", "Word Count", "Notes"],
     ),
 
     # ------------------------------------------------------------------
@@ -113,7 +120,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         default_model="qwen3.7-max",
         default_timeout=300,
         max_parallel=3,
-        required_sections=["Task", "Result"],
+        required_sections=["Task", "Diagnosis", "Actions Taken", "Result", "Notes"],
     ),
     "docs": RoleConfig(
         system_prompt=(
@@ -134,7 +141,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         default_model="qwen3.7-max",
         default_timeout=300,
         max_parallel=2,
-        required_sections=["Task", "Document Path"],
+        required_sections=["Task", "Document Path", "Structure Overview", "Notes"],
     ),
     "visuals": RoleConfig(
         system_prompt=(
@@ -156,7 +163,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         default_model="qwen3.7-max",
         default_timeout=300,
         max_parallel=2,
-        required_sections=["Task", "Output Path"],
+        required_sections=["Task", "Output Path", "Description", "Notes"],
     ),
     "tester": RoleConfig(
         system_prompt=(
@@ -177,7 +184,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         default_model="qwen3.7-max",
         default_timeout=300,
         max_parallel=2,
-        required_sections=["Bug Summary", "Root Cause", "Fix Applied"],
+        required_sections=["Bug Summary", "Root Cause", "Fix Applied", "Verification", "Notes"],
     ),
 
     # Scheduled agent ops — broad skill set for autonomous tasks
@@ -215,7 +222,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         default_model="qwen3.7-max",
         default_timeout=600,
         max_parallel=2,
-        required_sections=["Task", "Result"],
+        required_sections=["Task", "Result", "Notes"],
     ),
 }
 
@@ -242,61 +249,65 @@ def get_universal_skills() -> list[str]:
     return UNIVERSAL_SKILLS
 
 
-# Per-role account pools: {role: ["browser-data-acc1", "browser-data-acc2", ...]}
-# Agents spawned with the same role cycle through the list incrementally.
-_account_pools: dict[str, list[str]] = {}
+# Per-role browser account fallback chains: {role: ["browser-data-acc1", "browser-data-acc2", ...]}
+# Tried in order on failure (Qwen only). Also used for spawn assignment (skip in-use).
+_account_fallback_chains: dict[str, list[str]] = {}
 _account_counters: dict[str, int] = {}
 
 
 def apply_account_assignments(assignments: dict[str, list[str]]) -> None:
-    """Hot-reload per-role account pools from config.
+    """Hot-reload per-role browser account fallback chains from config.
 
     Accepts {role: [account1, account2, ...]} format.
     Also accepts legacy {role: "single-account"} and wraps it in a list.
     """
-    global _account_pools, _account_counters
-    _account_pools = {}
+    global _account_fallback_chains, _account_counters
+    _account_fallback_chains = {}
     for role, val in (assignments or {}).items():
         if isinstance(val, list):
-            _account_pools[role] = val
+            _account_fallback_chains[role] = val
         elif isinstance(val, str) and val:
-            _account_pools[role] = [val]
+            _account_fallback_chains[role] = [val]
         else:
-            _account_pools[role] = []
-    # Reset counters only for roles whose pool changed
-    _account_counters = {role: 0 for role in _account_pools}
+            _account_fallback_chains[role] = []
+    _account_counters = {role: 0 for role in _account_fallback_chains}
 
 
-def get_next_account(role: str) -> str | None:
-    """Get the next browser account for a role using round-robin.
+def get_next_account(role: str, in_use: set[str] | None = None) -> str | None:
+    """Get the next available browser account for a role.
 
-    Returns None if no pool is configured (falls back to active/default).
+    Skips accounts already in `in_use` set. Falls back to round-robin if all are busy.
+    Returns None if no chain is configured.
     """
-    pool = _account_pools.get(role)
-    if not pool:
+    chain = _account_fallback_chains.get(role)
+    if not chain:
         return None
+    if in_use:
+        for acc in chain:
+            if acc not in in_use:
+                return acc
     idx = _account_counters.get(role, 0)
-    account = pool[idx % len(pool)]
+    account = chain[idx % len(chain)]
     _account_counters[role] = idx + 1
     return account
 
 
 def get_account_pool(role: str) -> list[str]:
-    """Get the full account pool for a role (for API/config export)."""
-    return _account_pools.get(role, [])
+    """Get the full browser account fallback chain for a role."""
+    return _account_fallback_chains.get(role, [])
 
 
-def _load_model_chain_from_settings(role: str) -> list[str]:
-    """Load model_chain for a role from system/settings.json > agent > roles > {role} > model_chain."""
+def _load_role_list_from_settings(role: str, key: str) -> list[str]:
+    """Load a list field for a role from system/settings.json > agent > roles > {role} > {key}."""
     try:
         import json as _json
         from engine.config import _SYSTEM
         p = _SYSTEM / "settings.json"
         if p.is_file():
             data = _json.loads(p.read_text(encoding="utf-8"))
-            chain = data.get("agent", {}).get("roles", {}).get(role, {}).get("model_chain")
-            if isinstance(chain, list):
-                return [m for m in chain if isinstance(m, str)]
+            val = data.get("agent", {}).get("roles", {}).get(role, {}).get(key)
+            if isinstance(val, list):
+                return [v for v in val if isinstance(v, str)]
     except Exception:
         pass
     return []
@@ -306,10 +317,12 @@ def get_role_config(role: str) -> RoleConfig:
     """Get role config with any file-based overrides applied."""
     base = AGENT_ROLES.get(role, AGENT_ROLES["analyst"])
     ov = _role_overrides.get(role)
-    # Load model_chain: override > settings.json > empty
-    chain = _load_model_chain_from_settings(role)
+    # Load chains: override > settings.json > default fallback
+    chain = _load_role_list_from_settings(role, "model_chain")
     if ov and "model_chain" in ov:
         chain = ov["model_chain"]
+    if not chain:
+        chain = list(_DEFAULT_MODEL_CHAIN)  # Never leave a role without fallback
     if not ov:
         return RoleConfig(
             system_prompt=base.system_prompt,
@@ -355,6 +368,6 @@ def export_roles() -> dict[str, dict]:
             "max_parallel": cfg.max_parallel,
             "required_sections": cfg.required_sections,
             "model_chain": cfg.model_chain,
-            "account_pool": get_account_pool(name),
+            "browser_fallback_chain": get_account_pool(name),
         }
     return result
