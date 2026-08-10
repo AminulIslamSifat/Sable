@@ -80,3 +80,4 @@ mockups/
 system/
 system/memory_cache.npz
 instruction/personal.md
+Brain/user_personality.json

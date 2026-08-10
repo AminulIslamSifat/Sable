@@ -324,6 +324,14 @@ async def chat(request: ChatRequest):
         if _api_backend in _DIRECT_READ_BACKENDS and resolved_files:
             _inline_files = [f.get('path') for f in resolved_files if f.get('path')]
         _max_session_chars = _cfg.get("max_session_chars")
+        # Load DB history for cross-provider session seeding
+        _db_history = None
+        if not _ephemeral and active_chat_id:
+            try:
+                _db_msgs = get_messages(active_chat_id)
+                _db_history = [{"role": m["role"], "content": m["content"]} for m in _db_msgs if m["role"] in ("user", "assistant") and m["content"]]
+            except Exception:
+                pass
         _chat_kwargs: dict[str, Any] = dict(
             message=api_message,
             model=_api_model,
@@ -332,6 +340,7 @@ async def chat(request: ChatRequest):
             ref_file_ids=request.ref_file_ids,
             inject_instructions=not _ephemeral,
             project_id=_project_id,
+            db_history=_db_history,
         )
         if _api_backend == "local":
             _chat_kwargs["model_id"] = request.model
@@ -395,6 +404,7 @@ async def chat(request: ChatRequest):
             yield item
 
     async def event_stream():
+        nonlocal active_chat_id
         answer_parts: list[str] = []
         _raw_answer_parts: list[str] = []  # pre-parser raw text for guard checks
         thinking_parts: list[str] = []
@@ -565,6 +575,14 @@ async def chat(request: ChatRequest):
                     if _api_backend in _DIRECT_READ_BACKENDS and round_index == 0 and resolved_files:
                         _inline_files = [f.get('path') for f in resolved_files if f.get('path')]
                     _max_session_chars_stream = _cfg.get("max_session_chars")
+                    # Load DB history for cross-provider session seeding (first round only)
+                    _db_history_s = None
+                    if not _ephemeral and round_index == 0 and active_chat_id:
+                        try:
+                            _db_msgs_s = get_messages(active_chat_id)
+                            _db_history_s = [{"role": m["role"], "content": m["content"]} for m in _db_msgs_s if m["role"] in ("user", "assistant") and m["content"]]
+                        except Exception:
+                            pass
                     _stream_kwargs: dict[str, Any] = dict(
                         message=current_message,
                         model=_api_model,
@@ -573,6 +591,7 @@ async def chat(request: ChatRequest):
                         ref_file_ids=request.ref_file_ids if round_index == 0 else None,
                         inject_instructions=not _ephemeral,
                         project_id=_project_id,
+                        db_history=_db_history_s,
                     )
                     if _api_backend == "local":
                         _stream_kwargs["model_id"] = request.model
@@ -625,6 +644,103 @@ async def chat(request: ChatRequest):
                             yield _sse_line
                         final_parent = event.get("parent_id") or final_parent
                         current_parent = final_parent
+                    elif event_type == "chat_not_found":
+                        # Upstream Qwen session expired — create new one, inject full history, retry
+                        from engine.session import create_new_chat as _create_qwen_chat
+                        _old_chat_id = active_chat_id
+                        logger.warning("[session-recovery] CHAT_NOT_FOUND triggered for chat_id=%s", _old_chat_id)
+                        yield sse({"type": "status", "message": "recovering_session"})
+                        _new_headers = await service._ensure_headers()
+                        _new_qwen_id = await _create_qwen_chat(_new_headers, model=request.model)
+                        if not _new_qwen_id:
+                            _new_headers = await service._refresh_headers()
+                            _new_qwen_id = await _create_qwen_chat(_new_headers, model=request.model)
+                        if _new_qwen_id:
+                            logger.info("[session-recovery] New upstream session created: %s -> %s", _old_chat_id, _new_qwen_id)
+                            # Rename local chat + messages to new upstream session ID
+                            from server.database import rename_chat as _rename_chat
+                            _rename_chat(_old_chat_id, _new_qwen_id)
+                            active_chat_id = _new_qwen_id
+                            # Fetch full conversation history including tool calls/results
+                            _prev_msgs = get_messages(active_chat_id, include_skill_events=True)
+                            _history_lines = []
+                            for _pm in _prev_msgs:
+                                if _pm["role"] not in ("user", "assistant"):
+                                    continue
+                                if _pm["content"]:
+                                    _history_lines.append(f"[{_pm['role']}]: {_pm['content']}")
+                                # Append tool calls and results from skill_events
+                                for _sev in (_pm.get("skill_events") or []):
+                                    _sev_type = _sev.get("type", "")
+                                    if _sev_type == "skill_start":
+                                        _tc_name = _sev.get("name", "unknown")
+                                        _tc_attrs = _sev.get("data", {}).get("attrs", {})
+                                        _history_lines.append(f"[tool_call]: {_tc_name}({_tc_attrs})")
+                                    elif _sev_type == "skill_end":
+                                        _tr_name = _sev.get("name", "unknown")
+                                        _tr_ok = _sev.get("ok", True)
+                                        _tr_error = _sev.get("error")
+                                        _tr_result = str(_sev.get("result", ""))[:2000]
+                                        if _tr_error:
+                                            _history_lines.append(f"[tool_result]: {_tr_name} (ok={_tr_ok}): ERROR: {_tr_error}")
+                                        else:
+                                            _history_lines.append(f"[tool_result]: {_tr_name} (ok={_tr_ok}): {_tr_result}")
+                            _history_injected = len(_history_lines) > 0
+                            logger.info("[session-recovery] History injected: %d lines from %d messages for chat %s",
+                                        len(_history_lines), len(_prev_msgs), active_chat_id)
+                            _history_block = ""
+                            if _history_injected:
+                                _history_block = "[PREVIOUS CONVERSATION]\n" + "\n".join(_history_lines) + "\n[END PREVIOUS CONVERSATION]\n\n"
+                            _recovery_msg = _history_block + current_message
+                            # Re-stream with new session
+                            round_event_source = service.stream_events(
+                                message=_recovery_msg,
+                                chat_id=active_chat_id,
+                                parent_id=None,
+                                files=files_for_round,
+                                model=request.model,
+                                thinking_mode=request.thinking_mode,
+                            )
+                            yield sse({"type": "meta", "chat_id": active_chat_id, "parent_id": None})
+                            async for _recovery_event in round_event_source:
+                                _rec_type = _recovery_event.get("type")
+                                if _rec_type == "meta":
+                                    # Suppress upstream meta, we already sent ours
+                                    continue
+                                if _rec_type == "answer":
+                                    pending_thinking.clear()
+                                    _raw_chunk = str(_recovery_event.get("text", ""))
+                                    _raw_answer_parts.append(_raw_chunk)
+                                    _round_raw_parts.append(_raw_chunk)
+                                    async for _sse_line in _drain_sync_gen(emit_parsed(_raw_chunk)):
+                                        yield _sse_line
+                                    continue
+                                if _rec_type == "thinking":
+                                    _chunk = str(_recovery_event.get("text", ""))
+                                    thinking_parts.append(_chunk)
+                                    round_thinking_parts.append(_chunk)
+                                    pending_thinking.append(_chunk)
+                                    yield sse({"type": "thinking", "text": _chunk})
+                                    continue
+                                if _rec_type == "done":
+                                    pending_thinking.clear()
+                                    async for _sse_line in _drain_sync_gen(emit_flush()):
+                                        yield _sse_line
+                                    final_parent = _recovery_event.get("parent_id") or final_parent
+                                    current_parent = final_parent
+                                elif _rec_type == "error":
+                                    pending_thinking.clear()
+                                    async for _sse_line in _drain_sync_gen(emit_flush()):
+                                        yield _sse_line
+                                    error_message = str(_recovery_event.get("message", "Unknown error"))
+                                    stream_error = True
+                                yield sse(_recovery_event)
+                            # Skip normal post-round processing since we handled it inline
+                            break
+                        else:
+                            logger.error("[session-recovery] FAILED to create new upstream session for chat_id=%s", _old_chat_id)
+                            error_message = "Failed to recover: could not create new upstream session"
+                            stream_error = True
                     elif event_type == "error":
                         pending_thinking.clear()
                         async for _sse_line in _drain_sync_gen(emit_flush()):

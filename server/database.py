@@ -282,7 +282,7 @@ def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = N
         if existing:
             if mode and not existing["mode"]:
                 conn.execute("UPDATE chats SET mode = ? WHERE id = ?", (mode, chat_id))
-            if provider and not existing["provider"]:
+            if provider and existing["provider"] != provider:
                 conn.execute("UPDATE chats SET provider = ? WHERE id = ?", (provider, chat_id))
             if project_id is not None and existing["project_id"] != project_id:
                 conn.execute("UPDATE chats SET project_id = ? WHERE id = ?", (project_id, chat_id))
@@ -291,6 +291,12 @@ def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = N
             "INSERT INTO chats (id, title, parent_id, created_at, updated_at, mode, provider, project_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (chat_id, title, parent_id, now, now, mode, provider, project_id),
         )
+
+def rename_chat(old_id: str, new_id: str) -> None:
+    """Rename a chat and all its messages to a new ID (e.g. after upstream session recovery)."""
+    with get_db() as conn:
+        conn.execute("UPDATE chats SET id = ? WHERE id = ?", (new_id, old_id))
+        conn.execute("UPDATE messages SET chat_id = ? WHERE chat_id = ?", (new_id, old_id))
 
 def get_chat_mode(chat_id: str) -> str | None:
     with get_db() as conn:

@@ -288,6 +288,12 @@ class ChatService:
                                             "template": inner.get("template", ""),
                                         }
                                         return
+                                    if code == "CHAT_NOT_FOUND":
+                                        yield {
+                                            "type": "chat_not_found",
+                                            "message": f"Upstream session expired: {inner.get('details', '')}",
+                                        }
+                                        return
                                     yield {
                                         "type": "error",
                                         "message": f"API error [{code}]: {inner.get('details', 'Unknown error')}",
@@ -325,6 +331,12 @@ class ChatService:
                                                             "message": details,
                                                             "hours": hours,
                                                             "template": inner.get("template", ""),
+                                                        }
+                                                        return
+                                                    if code == "CHAT_NOT_FOUND":
+                                                        yield {
+                                                            "type": "chat_not_found",
+                                                            "message": f"Upstream session expired: {inner.get('details', '')}",
                                                         }
                                                         return
                                                     # Other API errors
@@ -431,6 +443,12 @@ class ChatService:
                                     "template": inner.get("template", ""),
                                 }
                                 return
+                            if code == "CHAT_NOT_FOUND":
+                                yield {
+                                    "type": "chat_not_found",
+                                    "message": f"Upstream session expired: {inner.get('details', '')}",
+                                }
+                                return
                             yield {
                                 "type": "error",
                                 "message": f"API error [{code}]: {inner.get('details', 'Unknown error')}",
@@ -480,6 +498,33 @@ class ChatService:
             elif event_type == "done":
                 final_chat_id = event.get("chat_id") or final_chat_id
                 final_parent_id = event.get("parent_id") or final_parent_id
+            elif event_type == "chat_not_found":
+                # Upstream session expired — create new one, inject history, retry once
+                from engine.session import create_new_chat as _cnc
+                _hdrs = await self._ensure_headers()
+                _new_id = await _cnc(_hdrs, model=model)
+                if not _new_id:
+                    _hdrs = await self._refresh_headers()
+                    _new_id = await _cnc(_hdrs, model=model)
+                if _new_id:
+                    # Re-call with new session, no history injection (non-streaming is simpler)
+                    async for _evt in self.stream_events(message, _new_id, None, files, model=model, thinking_mode=thinking_mode):
+                        _t = _evt.get("type")
+                        if _t == "thinking":
+                            thinking_parts.append(str(_evt.get("text", "")))
+                        elif _t == "answer":
+                            answer_parts.append(str(_evt.get("text", "")))
+                        elif _t in ("tool_call", "tool_result"):
+                            tool_events.append(_evt)
+                        elif _t == "meta":
+                            final_chat_id = _evt.get("chat_id") or final_chat_id
+                        elif _t == "done":
+                            final_chat_id = _evt.get("chat_id") or final_chat_id
+                            final_parent_id = _evt.get("parent_id") or final_parent_id
+                        elif _t == "error":
+                            error = str(_evt.get("message", "Unknown error"))
+                else:
+                    error = "Failed to recover: could not create new upstream session"
             elif event_type == "error":
                 error = str(event.get("message", "Unknown error"))
 

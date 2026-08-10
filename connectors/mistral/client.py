@@ -322,7 +322,12 @@ class MistralClient:
 
         system_instruction = kwargs.pop("system_instruction", None)
         project_id = kwargs.pop("project_id", None)
+        db_history = kwargs.pop("db_history", None)
         history = self._get_or_create_session(chat_id, inject_instructions, system_instruction=system_instruction, max_session_chars=max_session_chars, project_id=project_id)
+        # Seed from DB when session is fresh (cross-provider switch)
+        if db_history and chat_id and len(history) <= 1:
+            for _m in db_history:
+                history.append({"role": _m["role"], "content": _m["content"]})
 
         # Context summarization: check thresholds before sending
         effective_max = self._get_max_chars(chat_id)
@@ -496,6 +501,7 @@ class MistralClient:
             chat_id=chat_id,
             inject_instructions=inject_instructions,
             files=files,
+            **kwargs,
         ):
             etype = event.get("type")
             if etype == "answer":

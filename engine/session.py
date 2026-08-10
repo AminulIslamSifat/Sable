@@ -367,7 +367,7 @@ class BrowserManager:
                 instructions += f"- Branch: {proj['git_branch']}\n"
             instructions += "\n"
 
-        # Auto-generated skill registry (filtered by project skills_config if set)
+        # Auto-generated skill registry (filtered by disabled skills)
         from engine.skills import SkillEngine
         from engine.skills.handlers import HANDLER_MAP
         _engine = SkillEngine(
@@ -376,9 +376,20 @@ class BrowserManager:
             agent_id="maria",
         )
         skills_prompt = _engine.get_registry_prompt()
-        # If project has skills_config, filter out disabled skills
+        # Collect disabled skills from global file + project config
+        disabled: list[str] = []
+        _global_disabled_path = Path(__file__).resolve().parent.parent / "Brain" / "disabled_skills.json"
+        if _global_disabled_path.exists():
+            try:
+                import json as _json
+                _gd = _json.loads(_global_disabled_path.read_text(encoding="utf-8"))
+                if isinstance(_gd, list):
+                    disabled.extend(_gd)
+            except Exception:
+                pass
+        # If project has skills_config, merge those too
         if proj and proj.get("skills_config"):
-            disabled = [k for k, v in proj["skills_config"].items() if not v]
+            disabled.extend([k for k, v in proj["skills_config"].items() if not v])
             if disabled:
                 # Filter out disabled skill sections from registry prompt
                 # Handles both ## (default skills) and ### (non-default skills) headers
