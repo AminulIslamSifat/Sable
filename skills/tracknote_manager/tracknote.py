@@ -57,6 +57,11 @@ def notes_list(args):
         done = sum(1 for i in items if i.get("done"))
         count = f" ({done}/{len(items)})" if items else ""
         print(f"{pin}{typ} {r['id'][:8]}  {r['title']}{count}")
+        if r["content"]:
+            print(f"   📄 {r['content']}")
+        for i, item in enumerate(items):
+            mark = "✓" if item.get("done") else "○"
+            print(f"   {mark} [{i}] {item['text']}")
 
 def notes_get(args):
     c = conn(); r = find_row(c, "notes", args.id); c.close()

@@ -471,6 +471,7 @@
         <button class="settings-tab" data-tab="account">Account</button>
         <button class="settings-tab" data-tab="cookbook">Cookbook</button>
         <button class="settings-tab" data-tab="logs">Live Logs</button>
+        <button class="settings-tab" data-tab="shortcuts"><span class="icon-emoji">⌨️</span> Shortcuts</button>
       </div>
       </div>
       <div class="settings-main">
@@ -653,15 +654,35 @@
             <p style="font-size:11.5px;color:var(--text);margin:0 0 10px 0;">Multiple keys per provider — auto-rotates on rate limit or failure.</p>
             <div style="display:flex;gap:6px;margin-bottom:10px;align-items:center;">
               <select id="keyProviderSelect" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
+                <option value="">Select provider…</option>
                 <option value="gemini">Gemini</option>
                 <option value="groq">Groq</option>
                 <option value="mistral">Mistral</option>
+                <option value="openai">OpenAI</option>
               </select>
               <input id="apiKeyInput" type="password" placeholder="Paste API key…" style="flex:1;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
               <button id="addApiKeyBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">Add</button>
             </div>
             <div id="apiKeyList" style="display:flex;flex-direction:column;gap:6px;"></div>
             <div id="apiKeyStatus" style="font-size:11px;color:var(--text);margin-top:8px;"></div>
+          </div>
+
+          <!-- Custom Endpoints (saved OpenAI-compatible URLs) -->
+          <div style="margin-bottom:20px;border-top:1px solid var(--border);padding-top:16px;">
+            <label style="font-size:14px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+              <span class="icon-emoji">🔗</span><i data-lucide="link" class="icon-lucide"></i> Custom Endpoints
+            </label>
+            <p style="font-size:11.5px;color:var(--text);margin:0 0 10px 0;">Save an OpenAI-compatible URL once, then add unlimited models from it below — no re-typing.</p>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;align-items:center;">
+              <input id="endpointName" type="text" placeholder="Name (optional)" style="width:150px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
+              <input id="endpointUrl" type="text" placeholder="Base URL — e.g. https://api.groq.com/openai/v1" style="flex:1;min-width:200px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
+            </div>
+            <div style="display:flex;gap:6px;margin-bottom:10px;align-items:center;">
+              <input id="endpointKey" type="password" placeholder="API key (optional for local servers)" style="flex:1;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
+              <button id="addEndpointBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">Save Endpoint</button>
+            </div>
+            <div id="endpointList" style="display:flex;flex-direction:column;gap:6px;"></div>
+            <div id="endpointStatus" style="font-size:11px;color:var(--text);margin-top:8px;"></div>
           </div>
           <!-- Add Model -->
           <div style="margin-bottom:16px;border-top:1px solid var(--border);padding-top:16px;">
@@ -675,11 +696,22 @@
                 <option value="gemini">Gemini</option>
                 <option value="groq">Groq</option>
                 <option value="mistral">Mistral</option>
+                <option value="openai">OpenAI</option>
                 <option value="deepseek">DeepSeek</option>
+                <option value="url">Custom URL (OpenAI-compatible)</option>
               </select>
               <select id="customModelId" disabled style="flex:1;min-width:180px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
                 <option value="">Select provider first…</option>
               </select>
+            </div>
+            <!-- Custom URL endpoint fields (shown only when backend = "url") -->
+            <div id="customUrlFields" style="display:none;flex-direction:column;gap:6px;margin-bottom:10px;">
+              <div style="display:flex;gap:6px;align-items:center;">
+                <input id="customModelEndpoint" type="text" placeholder="Base URL — e.g. https://openrouter.ai/api/v1" style="flex:1;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
+                <button id="fetchUrlModelsBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">Fetch Models</button>
+              </div>
+              <input id="customModelUrlKey" type="password" placeholder="API key (optional for local servers)" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
+              <div id="customUrlStatus" style="font-size:11px;color:var(--text-dim);"></div>
             </div>
             <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;align-items:center;">
               <input id="customModelLabel" type="text" placeholder="Display name (auto-filled, editable)" style="flex:1;min-width:180px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
@@ -1324,9 +1356,30 @@
             <span id="agentConfigStatus" class="muted mem-status"></span>
           </div>
         </div>
+
+        <!-- Shortcuts Tab -->
+        <div id="tab-shortcuts" class="settings-tab-content">
+          <h3 class="mem-title">⌨️ Keyboard Shortcuts</h3>
+          <p class="muted" style="font-size:12px;margin:-4px 0 16px;">Click a keybinding to reassign. Press Escape to cancel recording.</p>
+          <div id="shortcutsList" style="display:flex;flex-direction:column;gap:6px;"></div>
+          <div class="mem-input-row mem-save-row" style="margin-top:20px;padding-top:14px;border-top:1px solid var(--border);">
+            <button id="shortcutsResetBtn" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">↩️</span> Reset to Defaults</button>
+          </div>
+        </div>
       </div>
       </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Cheat Sheet Overlay -->
+  <div id="cheatSheetOverlay" class="settings-overlay hidden">
+    <div class="settings-panel" style="max-width:520px;">
+      <div class="settings-header">
+        <h2><span class="icon-emoji">⌨️</span> Keyboard Shortcuts</h2>
+        <button id="cheatSheetClose" class="icon-btn" title="Close"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
+      </div>
+      <div id="cheatSheetList" style="padding:16px;display:flex;flex-direction:column;gap:4px;max-height:70vh;overflow-y:auto;"></div>
     </div>
   </div>
 
@@ -1424,7 +1477,7 @@
       } catch(e) {}
     })();
   </script>
-  <script src="/static/app.js?v=115"></script>
+  <script src="/static/app.js?v=121"></script>
   <script src="/static/src/research.js?v=10"></script>
   <script src="/static/js/agents.js?v=24"></script>
   <script src="/static/js/filesystem.js?v=31"></script>
