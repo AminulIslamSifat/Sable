@@ -707,7 +707,7 @@
           }
           i++; // closing fence
           if (/^mermaid$/i.test(lang)) {
-            out.push(`<div class="mermaid-wrap"><pre class="mermaid">${escHtml(codeLines.join("\n"))}</pre></div>`);
+            out.push(`<div class="mermaid-wrap"><div class="mermaid-scroll"><pre class="mermaid">${escHtml(codeLines.join("\n"))}</pre></div></div>`);
           } else if (/^svg$/i.test(lang)) {
             const rawSvg = codeLines.join("\n");
             const clean = window.DOMPurify ? DOMPurify.sanitize(rawSvg, { USE_PROFILES: { svg: true, svgFilters: true } }) : rawSvg;
@@ -822,7 +822,7 @@
               }
               lang = String(lang || "").trim();
               if (/^mermaid$/i.test(lang)) {
-                return `<div class="mermaid-wrap"><pre class="mermaid">${escHtml(text)}</pre></div>`;
+                return `<div class="mermaid-wrap"><div class="mermaid-scroll"><pre class="mermaid">${escHtml(text)}</pre></div></div>`;
               }
               if (/^svg$/i.test(lang)) {
                 const clean = DOMPurify ? DOMPurify.sanitize(text, { USE_PROFILES: { svg: true, svgFilters: true } }) : text;
@@ -1077,6 +1077,100 @@
       });
       mermaidInited = true;
     }
+    /* ---------- mermaid viewer controls (github-style) ---------- */
+    function _mmIcon(d) {
+      return `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+    }
+    function attachMermaidControls(mwrap, svgEl, code) {
+      const sc = mwrap.querySelector(".mermaid-scroll") || mwrap;
+      const baseW = parseFloat(svgEl.getAttribute("width")) || 800;
+      const baseH = parseFloat(svgEl.getAttribute("height")) || 600;
+      let scale = 1;
+      const mk = (title, icon, fn) => {
+        const b = document.createElement("button");
+        b.className = "mm-btn";
+        b.title = title;
+        b.innerHTML = icon;
+        b.addEventListener("click", e => { e.stopPropagation(); fn(b); });
+        return b;
+      };
+      const setZoom = f => {
+        scale = Math.min(4, Math.max(0.25, scale * f));
+        svgEl.style.width = baseW * scale + "px";
+        svgEl.style.height = baseH * scale + "px";
+      };
+      const pan = (dx, dy) => sc.scrollBy({ left: dx, top: dy, behavior: "smooth" });
+      const I = {
+        up: '<path d="m6 14 6-6 6 6"/>', down: '<path d="m6 10 6 6 6-6"/>',
+        left: '<path d="m14 6-6 6 6 6"/>', right: '<path d="m10 6 6 6-6 6"/>',
+        zin: '<path d="M12 5v14M5 12h14"/>', zout: '<path d="M5 12h14"/>',
+        reset: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+        full: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
+        copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+        fit: '<path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="m14 10 7-7"/><path d="m3 21 7-7"/>'
+      };
+      const top = document.createElement("div");
+      top.className = "mm-top";
+      const fit = mk("Fit to width", _mmIcon(I.fit), b => {
+        const on = mwrap.classList.toggle("mm-fit");
+        b.classList.toggle("mm-on", on);
+        if (on) { scale = 1; svgEl.style.width = ""; svgEl.style.height = ""; }
+      });
+      top.append(
+        fit,
+        mk("Toggle fullscreen", _mmIcon(I.full), () => mwrap.classList.toggle("mm-full")),
+        mk("Copy source", _mmIcon(I.copy), b => {
+          (navigator.clipboard ? navigator.clipboard.writeText(code) : Promise.reject())
+            .catch(() => {})
+            .finally(() => { b.classList.add("mm-ok"); setTimeout(() => b.classList.remove("mm-ok"), 900); });
+        })
+      );
+      const pad = document.createElement("div");
+      pad.className = "mm-pad";
+      pad.append(
+        mk("Pan up", _mmIcon(I.up), () => pan(0, -120)),
+        mk("Zoom in", _mmIcon(I.zin), () => setZoom(1.25)),
+        mk("Pan left", _mmIcon(I.left), () => pan(-120, 0)),
+        mk("Reset view", _mmIcon(I.reset), () => {
+          scale = 1;
+          svgEl.style.width = ""; svgEl.style.height = "";
+          mwrap.classList.remove("mm-fit");
+          fit.classList.remove("mm-on");
+          sc.scrollTo({ top: 0, left: 0, behavior: "smooth" });
+        }),
+        mk("Pan right", _mmIcon(I.right), () => pan(120, 0)),
+        mk("Pan down", _mmIcon(I.down), () => pan(0, 120)),
+        mk("Zoom out", _mmIcon(I.zout), () => setZoom(0.8))
+      );
+      const root = document.createElement("div");
+      root.className = "mm-controls";
+      root.append(top, pad);
+      mwrap.appendChild(root);
+      // drag to pan
+      sc.addEventListener("pointerdown", e => {
+        if (e.button !== 0 || e.target.closest(".mm-btn")) return;
+        const sx = e.clientX, sy = e.clientY, sl = sc.scrollLeft, st = sc.scrollTop;
+        sc.classList.add("mm-drag");
+        const move = ev => { sc.scrollLeft = sl - (ev.clientX - sx); sc.scrollTop = st - (ev.clientY - sy); };
+        const done = () => {
+          sc.classList.remove("mm-drag");
+          removeEventListener("pointermove", move);
+          removeEventListener("pointerup", done);
+        };
+        addEventListener("pointermove", move);
+        addEventListener("pointerup", done);
+      });
+      // ctrl/cmd + wheel = zoom
+      sc.addEventListener("wheel", e => {
+        if (!e.ctrlKey && !e.metaKey) return;
+        e.preventDefault();
+        setZoom(e.deltaY < 0 ? 1.15 : 1 / 1.15);
+      }, { passive: false });
+      // esc exits fullscreen
+      document.addEventListener("keydown", e => {
+        if (e.key === "Escape") mwrap.classList.remove("mm-full");
+      });
+    }
     async function renderMermaidDiagrams(container) {
       const els = (container || document).querySelectorAll("pre.mermaid:not([data-processed])");
       if (!els.length) return;
@@ -1096,20 +1190,12 @@
             // renders at true size. Only strip inline style (may force width:100%).
             svgEl.removeAttribute("style");
           }
-          el.innerHTML = wrapper.innerHTML;
+          el.replaceChildren(svgEl);
           el.setAttribute("data-processed", "true");
-          // Fit/scroll toggle button
+          // GitHub-style viewer controls (zoom / pan / reset / fullscreen / copy)
           const mwrap = el.closest(".mermaid-wrap");
-          if (mwrap && !mwrap.querySelector(".mermaid-fit-btn")) {
-            const btn = document.createElement("button");
-            btn.className = "mermaid-fit-btn";
-            btn.title = "Toggle fit to width";
-            btn.textContent = "⤢";
-            btn.addEventListener("click", () => {
-              mwrap.classList.toggle("fit-width");
-              btn.textContent = mwrap.classList.contains("fit-width") ? "⤡" : "⤢";
-            });
-            mwrap.appendChild(btn);
+          if (mwrap && svgEl && !mwrap.querySelector(".mm-controls")) {
+            attachMermaidControls(mwrap, svgEl, code);
           }
         } catch (err) {
           el.innerHTML = `<div class="mermaid-error">Mermaid error: ${escHtml(err.message || String(err))}</div>`;
@@ -6415,6 +6501,63 @@
         }),
       });
     });
+
+    // === Personality Assessment (Brain tab) ===
+    const personalityToggle = document.getElementById("personalityToggle");
+    const personalitySection = document.getElementById("personalitySection");
+    const personalityContent = document.getElementById("personalityContent");
+    const personalityArrow = document.getElementById("personalityArrow");
+    let _personalityLoaded = false;
+
+    if (personalityToggle) {
+      personalityToggle.addEventListener("click", async () => {
+        const isOpen = personalitySection.style.display !== "none";
+        personalitySection.style.display = isOpen ? "none" : "";
+        personalityArrow.textContent = isOpen ? "▶" : "▼";
+        if (!isOpen && !_personalityLoaded) {
+          _personalityLoaded = true;
+          try {
+            const res = await fetch("/api/settings/personality");
+            const data = await res.json();
+            if (data.personality) {
+              personalityContent.innerHTML = renderPersonality(data.personality);
+            } else {
+              personalityContent.innerHTML = '<p class="muted" style="font-style:italic;">No assessment yet. It generates after your next memory consolidation.</p>';
+            }
+          } catch {
+            personalityContent.innerHTML = '<p class="muted">Failed to load personality data.</p>';
+          }
+        }
+      });
+    }
+
+    function renderPersonality(p) {
+      let html = "";
+      const renderList = (items, label, color) => {
+        if (!items || !items.length) return "";
+        let s = `<div style="margin-bottom:12px;"><strong style="color:${color};font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">${label}</strong><ul style="margin:4px 0 0;padding-left:16px;list-style:disc;">`;
+        items.forEach(item => {
+          if (typeof item === "object" && item.trait) {
+            s += `<li style="margin-bottom:4px;"><strong>${item.trait}</strong> <span class="muted" style="font-size:11px;">(${item.confidence || "—"})</span><br><span class="muted" style="font-size:11px;">${item.evidence || ""}</span></li>`;
+          } else if (typeof item === "object" && item.pattern) {
+            s += `<li style="margin-bottom:4px;"><strong>${item.pattern}</strong><br><span class="muted" style="font-size:11px;">${item.evidence || ""}</span></li>`;
+          } else if (typeof item === "object" && item.claimed) {
+            s += `<li style="margin-bottom:4px;">Says: <em>"${item.claimed}"</em> → Does: <em>"${item.actual}"</em></li>`;
+          } else {
+            s += `<li style="margin-bottom:4px;">${item}</li>`;
+          }
+        });
+        return s + "</ul></div>";
+      };
+      html += renderList(p.strengths, "Strengths", "#4ade80");
+      html += renderList(p.weaknesses, "Weaknesses", "#f87171");
+      html += renderList(p.contradictions, "Contradictions", "#fbbf24");
+      html += renderList(p.blind_spots, "Blind Spots", "#a78bfa");
+      if (p.summary) {
+        html += `<div style="margin-top:12px;padding:10px;background:var(--bg-secondary);border-radius:8px;border:1px solid var(--border);"><strong style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">Summary</strong><p style="margin:6px 0 0;" class="muted">${p.summary}</p></div>`;
+      }
+      return html || '<p class="muted">Empty assessment.</p>';
+    }
 
     // === Skills Panel ===
     const skillsGrid = document.getElementById("skillsGrid");
