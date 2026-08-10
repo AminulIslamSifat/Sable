@@ -77,6 +77,56 @@ async def update_memory(payload: dict[str, Any]) -> dict[str, str]:
     get_searcher().reload_memory()
     return {"status": "ok"}
 
+
+@router.delete("/api/settings/memory")
+async def delete_memory_entry(payload: dict[str, Any]) -> dict[str, str]:
+    """Delete a single memory entry by category and key."""
+    category = payload.get("category", "")
+    key = payload.get("key", "")
+    if not category or not key:
+        raise HTTPException(status_code=400, detail="Missing 'category' or 'key'")
+    if not _MEMORY_PATH.exists():
+        raise HTTPException(status_code=404, detail="Memory file not found")
+    try:
+        data = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to read memory file")
+    if not isinstance(data, dict) or category not in data:
+        raise HTTPException(status_code=404, detail=f"Category '{category}' not found")
+    entries = data[category]
+    original_len = len(entries)
+    data[category] = [e for e in entries if e.get("key") != key]
+    if len(data[category]) == original_len:
+        raise HTTPException(status_code=404, detail=f"Entry with key '{key}' not found in '{category}'")
+    _MEMORY_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    get_searcher().reload_memory()
+    return {"status": "ok", "deleted": key}
+
+
+@router.delete("/api/settings/memory/protected")
+async def delete_protected_entry(payload: dict[str, Any]) -> dict[str, str]:
+    """Delete a single protected memory entry by key."""
+    key = payload.get("key", "")
+    if not key:
+        raise HTTPException(status_code=400, detail="Missing 'key'")
+    if not _PROTECTED_PATH.exists():
+        raise HTTPException(status_code=404, detail="Protected memory file not found")
+    try:
+        data = json.loads(_PROTECTED_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to read protected memory file")
+    entries = data.get("protected", []) if isinstance(data, dict) else []
+    original_len = len(entries)
+    entries = [e for e in entries if e.get("key") != key]
+    if len(entries) == original_len:
+        raise HTTPException(status_code=404, detail=f"Protected entry with key '{key}' not found")
+    _PROTECTED_PATH.write_text(
+        json.dumps({"protected": entries}, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    get_searcher().reload_memory()
+    return {"status": "ok", "deleted": key}
+
+
 @router.get("/api/settings/memory/protected")
 async def get_protected_memory() -> dict[str, Any]:
     if not _PROTECTED_PATH.exists():

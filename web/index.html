@@ -949,36 +949,6 @@
             <span id="personalStatus" class="muted mem-status"></span>
           </div>
 
-          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🔒</span><i data-lucide="lock" class="icon-lucide"></i> Protected Memory</h3>
-          <p class="muted mem-desc">Stored in Brain/Protected.json. Cannot be deleted by consolidation. Boosted in search.</p>
-          <div id="protectedList" class="mem-list"></div>
-          <div class="mem-input-row">
-            <input type="text" id="protKeyInput" placeholder="Key" class="mem-input mem-key">
-            <input type="text" id="protValInput" placeholder="Core fact (never forget)" class="mem-input mem-val">
-            <button id="protAddBtn" class="icon-btn" style="width:auto;padding:6px 12px;font-size:12px;">+ Add</button>
-          </div>
-          <div class="mem-input-row mem-save-row">
-            <button id="protSaveBtn" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">💾</span><i data-lucide="hard-drive" class="icon-lucide"></i>&nbsp; Save</button>
-            <span id="protStatus" class="muted mem-status"></span>
-          </div>
-
-          <h3 class="mem-title" style="margin-top:20px;">Memory Entries</h3>
-          <p class="muted mem-desc">Stored in Brain/Memory.json. Injected into context on sync.</p>
-          <div id="memoryList" class="mem-list"></div>
-          <div class="mem-input-row">
-            <input type="text" id="memKeyInput" placeholder="Key (e.g. Favorite color)" class="mem-input mem-key">
-            <input type="text" id="memValInput" placeholder="Value" class="mem-input mem-val">
-            <button id="memAddBtn" class="icon-btn" style="width:auto;padding:6px 12px;font-size:12px;">+ Add</button>
-          </div>
-          <div class="mem-input-row" id="memExpiryRow" style="display:none;">
-            <label class="muted" style="font-size:12px;"><span class="icon-emoji">⏳</span><i data-lucide="hourglass" class="icon-lucide"></i> Expires:</label>
-            <input type="datetime-local" id="memExpiryInput" class="mem-input" style="flex:1;">
-          </div>
-          <div class="mem-input-row mem-save-row">
-            <button id="memSaveBtn" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">💾</span><i data-lucide="hard-drive" class="icon-lucide"></i> Save</button>
-            <span id="memStatus" class="muted mem-status"></span>
-          </div>
-
           <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🧠</span><i data-lucide="brain" class="icon-lucide"></i> Memory Consolidation</h3>
           <p class="muted mem-desc">Settings for automatic memory extraction when creating a new chat.</p>
 
@@ -1062,17 +1032,11 @@
             <p class="muted" style="font-size:11px;margin:0;">Force-reindex all memories. Only needed after editing Memory.json manually or changing the embedding model.</p>
           </div>
 
-          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);cursor:pointer;user-select:none;" id="personalityToggle"><span class="icon-emoji">🪞</span><i data-lucide="scan-face" class="icon-lucide"></i> Personality Assessment <span id="personalityArrow" style="font-size:11px;opacity:0.5;">▶</span></h3>
-          <div id="personalitySection" style="display:none;">
-            <p class="muted mem-desc">Behavioral profile generated during memory consolidation. Stored in Brain/user_personality.json. Updated automatically.</p>
-            <div id="personalityContent" style="margin-top:10px;font-size:12px;line-height:1.6;"></div>
-          </div>
-
         </div>
         <div id="tab-skills" class="settings-tab-content">
           <h3 class="mem-title">Skills</h3>
-          <p class="muted mem-desc">Registered agentic skills. Click a card for details.</p>
-          <div id="skillsGrid" class="skills-grid"></div>
+          <p class="muted mem-desc">Toggle skills on/off. View details and instructions in Library > Skills.</p>
+          <div id="skillsToggleList" style="display:flex;flex-direction:column;gap:6px;margin-top:10px;"></div>
         </div>
         
         <div id="tab-ide" class="settings-tab-content">
@@ -1403,27 +1367,29 @@
   <div id="libraryOverlay" class="settings-overlay hidden">
     <div class="settings-panel library-panel">
       <div class="settings-header">
-        <h2><span class="icon-emoji">📚</span><i data-lucide="book-open" class="icon-lucide" style="width:18px;height:18px;margin-right:6px;"></i> Library</h2>
+        <h2><i data-lucide="book-open" class="icon-lucide" style="width:18px;height:18px;margin-right:6px;"></i> Library</h2>
         <button id="libraryClose" class="icon-btn" title="Close"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
       </div>
       <div class="settings-content-row">
       <div class="settings-sidebar">
       <div class="settings-tabs" id="libraryTabs">
-        <button class="settings-tab active" data-tab="lib-agents">Agents</button>
-        <button class="settings-tab" data-tab="lib-research">Research</button>
+        <button class="settings-tab active" data-tab="lib-research">Research</button>
         <button class="settings-tab" data-tab="lib-notes">Notes</button>
+        <button class="settings-tab" data-tab="lib-agents">Agents</button>
         <button class="settings-tab" data-tab="lib-gallery">Gallery</button>
+        <button class="settings-tab" data-tab="lib-memory">Memory</button>
         <button class="settings-tab" data-tab="lib-skills">Skills</button>
-        <button class="settings-tab" data-tab="lib-email"><span class="icon-emoji">📧</span><i data-lucide="mail" class="icon-lucide"></i> Email</button>
-        <button class="settings-tab" data-tab="lib-telegram" id="libTelegramTab" style="display:none;"><span class="icon-emoji">✈️</span><i data-lucide="send" class="icon-lucide"></i> Telegram</button>
+        <button class="settings-tab" data-tab="lib-email">Email</button>
+        <button class="settings-tab" data-tab="lib-telegram" id="libTelegramTab" style="display:none;">Telegram</button>
       </div>
       </div>
       <div class="settings-main">
       <div class="settings-body library-body" id="libraryBody">
-        <div id="tab-lib-agents" class="settings-tab-content active"></div>
-        <div id="tab-lib-research" class="settings-tab-content"></div>
+        <div id="tab-lib-research" class="settings-tab-content active"></div>
         <div id="tab-lib-notes" class="settings-tab-content"></div>
+        <div id="tab-lib-agents" class="settings-tab-content"></div>
         <div id="tab-lib-gallery" class="settings-tab-content"></div>
+        <div id="tab-lib-memory" class="settings-tab-content"></div>
         <div id="tab-lib-skills" class="settings-tab-content"></div>
         <div id="tab-lib-email" class="settings-tab-content"></div>
         <div id="tab-lib-telegram" class="settings-tab-content"></div>
@@ -1441,11 +1407,7 @@
       <div class="skill-detail-row"><span class="label">Path</span><span class="value" id="skillDetailPath" style="font-family:monospace;font-size:11px;opacity:0.7;"></span></div>
       <div class="skill-detail-row" id="skillScriptsRow" style="display:none;"><span class="label">Scripts</span><div class="skill-detail-scripts" id="skillDetailScripts"></div></div>
       <div class="skill-instruction" id="skillInstruction"></div>
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;">
-        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);cursor:pointer;">
-          <input type="checkbox" id="skillDisableToggle" style="accent-color:var(--danger,#ff5050);width:15px;height:15px;cursor:pointer;">
-          Disable skill
-        </label>
+      <div style="display:flex;align-items:center;justify-content:flex-end;margin-top:12px;">
         <button class="skill-detail-close" id="skillDetailClose">Close</button>
       </div>
     </div>
@@ -1493,7 +1455,7 @@
       } catch(e) {}
     })();
   </script>
-  <script src="/static/app.js?v=141"></script>
+  <script src="/static/app.js?v=148"></script>
   <script src="/static/src/research.js?v=10"></script>
   <script src="/static/js/agents.js?v=24"></script>
   <script src="/static/js/filesystem.js?v=31"></script>

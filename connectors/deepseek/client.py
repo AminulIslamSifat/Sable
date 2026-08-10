@@ -769,9 +769,14 @@ class DeepSeekClient:
         model_type = model
         file_ids = [str(fid) for fid in (ref_file_ids or []) if str(fid).strip()]
         project_id = kwargs.pop("project_id", None)
+        db_history = kwargs.pop("db_history", None)
 
         # Build client-side history (instructions as first entry, sliding window)
         history = self._get_or_create_session(chat_id, inject_instructions, system_instruction=system_instruction, project_id=project_id)
+        # Seed from DB when session is fresh (cross-provider switch)
+        if db_history and chat_id and len(history) <= 1:
+            for _m in db_history:
+                history.append({"role": _m["role"], "content": _m["content"]})
 
         # Context summarization: check thresholds before sending
         if chat_id:
@@ -914,6 +919,7 @@ class DeepSeekClient:
             chat_id=chat_id,
             ref_file_ids=ref_file_ids,
             inject_instructions=inject_instructions,
+            **kwargs,
         ):
             etype = event.get("type")
             if etype == "answer":

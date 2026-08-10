@@ -1,7 +1,7 @@
 {
   "model": "snowflake/snowflake-arctic-embed-xs",
   "top_k": 5,
-  "enabled": true,
+  "enabled": false,
   "max_prompt_chars": 20000,
   "model_thresholds": {}
 }
