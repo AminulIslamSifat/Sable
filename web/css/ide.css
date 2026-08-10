@@ -542,6 +542,10 @@ body[data-mode="ide"] .header-cell {
     0px 1px 4px 0px rgba(0, 0, 0, 0.3);
 }
 
+/* Run button + its cell: only visible in IDE mode */
+.header-icon-cell:has(#runFileBtn) { display: none !important; }
+body[data-mode="ide"] .header-icon-cell:has(#runFileBtn) { display: flex !important; }
+
 /* --- IDE mode: visibility overrides --- */
 body[data-mode="ide"] .sidebar { display: none; }
 body[data-mode="ide"] .chat-compact { display: flex; }

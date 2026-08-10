@@ -1019,6 +1019,12 @@
             <p class="muted" style="font-size:11px;margin:0;">Force-reindex all memories. Only needed after editing Memory.json manually or changing the embedding model.</p>
           </div>
 
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);cursor:pointer;user-select:none;" id="personalityToggle"><span class="icon-emoji">🪞</span><i data-lucide="scan-face" class="icon-lucide"></i> Personality Assessment <span id="personalityArrow" style="font-size:11px;opacity:0.5;">▶</span></h3>
+          <div id="personalitySection" style="display:none;">
+            <p class="muted mem-desc">Behavioral profile generated during memory consolidation. Stored in Brain/user_personality.json. Updated automatically.</p>
+            <div id="personalityContent" style="margin-top:10px;font-size:12px;line-height:1.6;"></div>
+          </div>
+
         </div>
         <div id="tab-skills" class="settings-tab-content">
           <h3 class="mem-title">Skills</h3>
