@@ -302,7 +302,7 @@ def _load_consolidation_settings() -> dict[str, Any]:
     return defaults
 
 async def _try_consolidation_call(
-    model: str, prompt: str, browser_profile: str = ""
+    model: str, prompt: str, browser_profile: str = "", system_instruction: str = ""
 ) -> dict[str, Any] | None:
     """Try a single consolidation model call. Returns result dict or None on failure.
     
@@ -318,21 +318,27 @@ async def _try_consolidation_call(
             # API-backed model (Gemini/Groq/Mistral/DeepSeek/etc.)
             if api_backend in _CONSOLIDATION_BACKENDS:
                 connector = get_connector(api_backend)
+                _extra_kwargs = {}
+                if system_instruction:
+                    _extra_kwargs["system_instruction"] = system_instruction
                 result = await retry_async(
                     lambda: connector.chat(
                         message=prompt,
                         model=model,
                         inject_instructions=False,
                         chat_id=None,
+                        **_extra_kwargs,
                     ),
                     label=f"memory_consolidate_{api_backend}",
                 )
             elif _is_deepseek_api_model(model):
                 ds_cfg = get_model_config(model)
                 ds_api_type = ds_cfg.get("api_model_type")
+                # DeepSeek chat() has no kwargs — prepend system instruction
+                ds_msg = f"{system_instruction}\n\n{prompt}" if system_instruction else prompt
                 result = await retry_async(
                     lambda: get_deepseek_client().chat(
-                        message=prompt,
+                        message=ds_msg,
                         model=ds_api_type,
                         thinking_mode="fast",
                         chat_id=None,
@@ -341,26 +347,31 @@ async def _try_consolidation_call(
                     label="memory_consolidate_ds",
                 )
             else:
+                _api_kwargs = {}
+                if system_instruction:
+                    _api_kwargs["system_instruction"] = system_instruction
                 result = await retry_async(
                     lambda: service.chat(
                         message=prompt,
                         chat_id=None,
                         parent_id=None,
                         model=model,
+                        **_api_kwargs,
                     ),
                     label="memory_consolidate_api",
                 )
         elif browser_profile:
-            # Qwen with specific browser profile
+            # Qwen with specific browser profile — no system_instruction support, prepend
             from engine.config import _SYSTEM
             acc_dir = _SYSTEM / browser_profile
             if not acc_dir.exists():
                 return None
+            qwen_msg = f"{system_instruction}\n\n{prompt}" if system_instruction else prompt
             temp_service = ChatService(user_data_dir=str(acc_dir))
             try:
                 result = await retry_async(
                     lambda: temp_service.chat(
-                        message=prompt,
+                        message=qwen_msg,
                         chat_id=None,
                         model=model,
                     ),
@@ -369,10 +380,11 @@ async def _try_consolidation_call(
             finally:
                 await temp_service.close()
         else:
-            # Default Qwen service
+            # Default Qwen service — no system_instruction support, prepend
+            qwen_msg = f"{system_instruction}\n\n{prompt}" if system_instruction else prompt
             result = await retry_async(
                 lambda: service.chat(
-                    message=prompt,
+                    message=qwen_msg,
                     chat_id=None,
                     parent_id=None,
                     model=model,
@@ -402,13 +414,14 @@ async def _run_personality_assessment(conv_text: str, model: str) -> bool:
             except Exception:
                 previous = ""
 
-        prompt = _PERSONALITY_ASSESSMENT_TEMPLATE
-        prompt = prompt.replace("<<PREVIOUS_PERSONALITY>>", previous or "(none)")
+        # Build system instruction (template) and user message (conversation)
+        system_instruction = _PERSONALITY_ASSESSMENT_TEMPLATE
+        system_instruction = system_instruction.replace("<<PREVIOUS_PERSONALITY>>", previous or "(none)")
 
-        # Append conversation context
-        prompt += f"\n\nCONVERSATION DATA:\n{conv_text}"
+        # Conversation goes as user message
+        prompt = f"CONVERSATION DATA:\n{conv_text}"
 
-        result = await _try_consolidation_call(model, prompt)
+        result = await _try_consolidation_call(model, prompt, system_instruction=system_instruction)
         if not result:
             return False
 
