@@ -224,8 +224,14 @@
       e.preventDefault();
       const isOpen = document.body.classList.contains("diff-open");
       if (isOpen) {
+        if (window._libReaderDocked && window._libReaderTempHidden && window._restoreLibReaderContent) {
+          window._restoreLibReaderContent();
+        }
         document.body.classList.remove("diff-open");
       } else {
+        if (window._libReaderDocked && window._tempShowFileViewer) {
+          window._tempShowFileViewer();
+        }
         document.body.classList.add("diff-open");
         document.body.classList.remove("tracknote-open");
         if (typeof AgentPanel !== "undefined") AgentPanel.close();

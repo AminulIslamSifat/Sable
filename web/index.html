@@ -7,19 +7,19 @@
   <link rel="icon" type="image/svg+xml" href="/static/assets/favicon.svg?v=3">
 
   <link rel="stylesheet" href="/static/css/variables.css?v=4">
-  <link rel="stylesheet" href="/static/css/base.css?v=3">
+  <link rel="stylesheet" href="/static/css/base.css?v=4">
   <link rel="stylesheet" href="/static/css/layout.css?v=51">
   <link rel="stylesheet" href="/static/css/ide.css?v=4">
-  <link rel="stylesheet" href="/static/css/chat.css?v=28">
-  <link rel="stylesheet" href="/static/css/panels.css?v=32">
-  <link rel="stylesheet" href="/static/css/components.css?v=13">
-  <link rel="stylesheet" href="/static/css/responsive.css?v=3">
+  <link rel="stylesheet" href="/static/css/chat.css?v=33">
+  <link rel="stylesheet" href="/static/css/panels.css?v=44">
+  <link rel="stylesheet" href="/static/css/components.css?v=14">
+  <link rel="stylesheet" href="/static/css/responsive.css?v=5">
   <link rel="stylesheet" href="/static/css/agents.css?v=31">
   <link rel="stylesheet" href="/static/css/cookbook.css?v=1">
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v=2">
 
   <link rel="manifest" href="/static/assets/manifest.json">
-  <meta name="theme-color" content="#7c5cbf">
+  <meta name="theme-color" content="#0f0e17">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="apple-touch-icon" href="/static/assets/icon-192.png">
@@ -455,35 +455,39 @@
         <h2>Settings</h2>
         <button id="settingsClose" class="icon-btn" title="Close"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
       </div>
+      <div class="settings-content-row">
+      <div class="settings-sidebar">
       <div class="settings-tabs">
-        <button class="settings-tab active" data-tab="logs">Live Logs</button>
-        <button class="settings-tab" data-tab="general">General</button>
-        <button class="settings-tab" data-tab="account">Account</button>
-        <button class="settings-tab" data-tab="backup">Backup</button>
+        <button class="settings-tab active" data-tab="general">General</button>
+        <button class="settings-tab" data-tab="providers">Providers</button>
+        <button class="settings-tab" data-tab="search">Search Engine</button>
         <button class="settings-tab" data-tab="brain">Brain</button>
         <button class="settings-tab" data-tab="skills">Skills</button>
         <button class="settings-tab" data-tab="agents">Agents</button>
-        <button class="settings-tab" data-tab="providers">Providers</button>
-        <button class="settings-tab" data-tab="search">Search Engine</button>
         <button class="settings-tab" data-tab="mcp">MCP</button>
         <button class="settings-tab" data-tab="ide">IDE</button>
         <button class="settings-tab" data-tab="tts">TTS</button>
+        <button class="settings-tab" data-tab="backup">Backup</button>
+        <button class="settings-tab" data-tab="account">Account</button>
         <button class="settings-tab" data-tab="cookbook">Cookbook</button>
+        <button class="settings-tab" data-tab="logs">Live Logs</button>
       </div>
+      </div>
+      <div class="settings-main">
       <div class="settings-body">
       <!-- Universal floating save button -->
       <div id="universalSaveBar" class="universal-save-bar hidden">
         <span class="universal-save-hint">Unsaved changes</span>
         <button id="universalSaveBtn" class="btn-primary universal-save-btn">💾 Save All</button>
       </div>
-        <div id="tab-logs" class="settings-tab-content active">
+        <div id="tab-logs" class="settings-tab-content">
           <div class="log-toolbar">
             <label class="log-toggle"><input type="checkbox" id="logAutoScroll" checked> Auto-scroll</label>
             <button id="logClear" class="icon-btn" title="Clear logs"><span class="icon-emoji">🗑</span><i data-lucide="trash-2" class="icon-lucide"></i></button>
           </div>
           <pre id="logViewer" class="log-viewer"></pre>
         </div>
-        <div id="tab-general" class="settings-tab-content">
+        <div id="tab-general" class="settings-tab-content active">
           <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
             <label for="fontSizeSelect" style="font-size:13px;color:var(--text-dim);">Response Font Size</label>
             <select id="fontSizeSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
@@ -1321,6 +1325,8 @@
           </div>
         </div>
       </div>
+      </div>
+      </div>
     </div>
   </div>
 
@@ -1331,6 +1337,8 @@
         <h2><span class="icon-emoji">📚</span><i data-lucide="book-open" class="icon-lucide" style="width:18px;height:18px;margin-right:6px;"></i> Library</h2>
         <button id="libraryClose" class="icon-btn" title="Close"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
       </div>
+      <div class="settings-content-row">
+      <div class="settings-sidebar">
       <div class="settings-tabs" id="libraryTabs">
         <button class="settings-tab active" data-tab="lib-agents">Agents</button>
         <button class="settings-tab" data-tab="lib-research">Research</button>
@@ -1340,6 +1348,8 @@
         <button class="settings-tab" data-tab="lib-email"><span class="icon-emoji">📧</span><i data-lucide="mail" class="icon-lucide"></i> Email</button>
         <button class="settings-tab" data-tab="lib-telegram" id="libTelegramTab" style="display:none;"><span class="icon-emoji">✈️</span><i data-lucide="send" class="icon-lucide"></i> Telegram</button>
       </div>
+      </div>
+      <div class="settings-main">
       <div class="settings-body library-body" id="libraryBody">
         <div id="tab-lib-agents" class="settings-tab-content active"></div>
         <div id="tab-lib-research" class="settings-tab-content"></div>
@@ -1348,6 +1358,8 @@
         <div id="tab-lib-skills" class="settings-tab-content"></div>
         <div id="tab-lib-email" class="settings-tab-content"></div>
         <div id="tab-lib-telegram" class="settings-tab-content"></div>
+      </div>
+      </div>
       </div>
     </div>
   </div>
@@ -1402,10 +1414,10 @@
       },
     };
   </script>
-  <script src="/static/app.js?v=110"></script>
+  <script src="/static/app.js?v=115"></script>
   <script src="/static/src/research.js?v=10"></script>
   <script src="/static/js/agents.js?v=24"></script>
-  <script src="/static/js/filesystem.js?v=28"></script>
+  <script src="/static/js/filesystem.js?v=31"></script>
   <script src="/static/js/mode.js?v=19"></script>
   <script src="/static/js/resize-panels.js?v=1"></script>
   <script src="/static/js/terminal.js?v=4"></script>
