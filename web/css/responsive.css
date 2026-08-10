@@ -32,7 +32,7 @@
       .md-content pre code { font-size: 11px; }
       .header-model-wrap select { font-size: 11px; }
 
-      /* settings: near-fullscreen on tiny screens */
+      /* settings: near-fullscreen on tiny screens, revert to horizontal tabs */
       .settings-panel {
         width: 100vw;
         max-width: 100vw;
@@ -40,7 +40,38 @@
         max-height: 100dvh;
         border-radius: 0;
       }
-      .settings-tab { padding: 9px 10px; font-size: 11.5px; }
+      .settings-content-row {
+        flex-direction: column;
+      }
+      .settings-sidebar {
+        flex-direction: row;
+        min-width: unset;
+        max-width: unset;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+        overflow: hidden;
+        flex-shrink: 0;
+      }
+      .settings-tabs {
+        flex-direction: row;
+        overflow-x: auto;
+        overflow-y: hidden;
+        padding: 0 8px;
+        -webkit-overflow-scrolling: touch;
+      }
+      .settings-tabs::-webkit-scrollbar { height: 4px; width: 0; }
+      .settings-tab {
+        padding: 9px 10px;
+        font-size: 11.5px;
+        border-left: none;
+        border-bottom: 2px solid transparent;
+        text-align: center;
+      }
+      .settings-tab.active {
+        border-left-color: transparent;
+        border-bottom-color: var(--accent);
+      }
+      .settings-main { min-height: 0; }
 
       /* Brain tab mobile fixes */
       .mem-tab-bar { flex-wrap: wrap; gap: 4px; }

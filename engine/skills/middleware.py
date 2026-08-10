@@ -32,6 +32,7 @@ class TagContext:
     events: list[dict[str, Any]] = field(default_factory=list)
     error: str | None = None
     namespace: str = "default"
+    chat_id: str | None = None
 
     def emit(self, event: dict[str, Any]) -> None:
         self.events.append(event)

@@ -1778,14 +1778,32 @@
     const diffToggleBtn = document.getElementById("diffToggleBtn");
     const MAX_DIFF_CARDS = 12;
 
-    if (diffCloseBtn) diffCloseBtn.addEventListener("click", () => document.body.classList.remove("diff-open"));
+    if (diffCloseBtn) diffCloseBtn.addEventListener("click", () => {
+      if (_libReaderDocked && _libReaderTempHidden) {
+        // File viewer was temporarily shown — close it, restore markdown reader
+        _restoreLibReaderContent();
+        document.body.classList.remove("diff-open");
+      } else if (_libReaderDocked) {
+        undockLibraryReader();
+      } else {
+        document.body.classList.remove("diff-open");
+      }
+    });
     if (diffClearBtn) diffClearBtn.addEventListener("click", () => { if (diffCardsEl) diffCardsEl.innerHTML = ""; });
     if (diffToggleBtn) diffToggleBtn.addEventListener("click", () => {
-      const opening = !document.body.classList.contains("diff-open");
-      document.body.classList.toggle("diff-open");
-      if (opening) {
-        document.body.classList.remove("tracknote-open");
-        if (typeof AgentPanel !== "undefined") AgentPanel.close();
+      if (_libReaderDocked && !_libReaderTempHidden) {
+        // Temporarily show file viewer, hide markdown reader
+        _tempShowFileViewer();
+      } else if (_libReaderDocked && _libReaderTempHidden) {
+        // Restore markdown reader
+        _restoreLibReaderContent();
+      } else {
+        const opening = !document.body.classList.contains("diff-open");
+        document.body.classList.toggle("diff-open");
+        if (opening) {
+          document.body.classList.remove("tracknote-open");
+          if (typeof AgentPanel !== "undefined") AgentPanel.close();
+        }
       }
     });
 
@@ -2615,11 +2633,13 @@
         </div>
         <div class="ab-actions">
           <button class="ab-allow"><i data-lucide="check"></i> Allow</button>
+          <button class="ab-allow-session"><i data-lucide="shield-check"></i> Allow for Session</button>
           <button class="ab-deny"><i data-lucide="x"></i> Deny</button>
         </div>
       `;
 
       const allowBtn = banner.querySelector('.ab-allow');
+      const allowSessionBtn = banner.querySelector('.ab-allow-session');
       const denyBtn = banner.querySelector('.ab-deny');
 
       allowBtn.addEventListener('click', async () => {
@@ -2692,8 +2712,45 @@
         setTimeout(() => banner.classList.add('hidden'), 4000);
       });
 
+
+      allowSessionBtn.addEventListener('click', async () => {
+        allowBtn.disabled = true;
+        allowSessionBtn.disabled = true;
+        denyBtn.disabled = true;
+        activePane?.querySelectorAll('.approval-pending-note').forEach(el => el.remove());
+        try {
+          const resp = await fetch('/api/skills/approve/' + id, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({chat_id: activeChatId, session: true}) });
+          banner.classList.add('ab-resolved');
+          if (resp.ok && activePane) {
+            const note = document.createElement('div');
+            note.className = 'approval-chat-note';
+            note.textContent = '\u2713 Approved for this session \u2014 same category won\u2019t ask again';
+            activePane.querySelector('.messages')?.appendChild(note);
+            activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
+          }
+          const data = await resp.json();
+          const st = document.createElement('span');
+          st.className = 'ab-status ok';
+          st.textContent = 'session ✓';
+          banner.querySelector('.ab-actions').replaceWith(st);
+          if (data.feedback) {
+            setTimeout(() => sendAutoTurnMessage(data.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
+          }
+        } catch(e) {
+          banner.classList.add('ab-resolved');
+          const st = document.createElement('span');
+          st.className = 'ab-status no';
+          st.textContent = 'error';
+          banner.querySelector('.ab-actions')?.replaceWith(st);
+        }
+        setTimeout(() => banner.classList.add('hidden'), 4000);
+      });
+
+
+
       denyBtn.addEventListener('click', async () => {
         allowBtn.disabled = true;
+        allowSessionBtn.disabled = true;
         denyBtn.disabled = true;
         // Remove transient "waiting" note
         activePane?.querySelectorAll('.approval-pending-note').forEach(el => el.remove());
@@ -5980,6 +6037,7 @@
         const res = await fetch(`/api/library/read/${section}/${encodeURIComponent(filename)}`);
         const data = await res.json();
         if (data.error) { showToast(data.error, "error"); return; }
+        const htmlContent = renderMarkdownSimple(data.content);
         // Show in a simple modal overlay
         const existing = document.getElementById("libraryReaderOverlay");
         if (existing) existing.remove();
@@ -5990,16 +6048,112 @@
           <div class="settings-panel library-reader-panel">
             <div class="settings-header">
               <h2>${escHtml(title)}</h2>
-              <button class="icon-btn" id="libraryReaderClose"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
+              <div style="display:flex;gap:4px;">
+                <button class="icon-btn" id="libraryReaderDock" title="Dock to sidebar"><i data-lucide="panel-right" class="icon-lucide"></i></button>
+                <button class="icon-btn" id="libraryReaderClose"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
+              </div>
             </div>
-            <div class="library-reader-content">${renderMarkdownSimple(data.content)}</div>
+            <div class="library-reader-content">${htmlContent}</div>
           </div>
         `;
         document.body.appendChild(overlay);
         overlay.querySelector("#libraryReaderClose").addEventListener("click", () => overlay.remove());
         overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+        overlay.querySelector("#libraryReaderDock").addEventListener("click", () => {
+          overlay.remove();
+          dockLibraryToSidebar(title, htmlContent);
+        });
         lucide.createIcons({ nodes: overlay.querySelectorAll("[data-lucide]") });
       } catch { showToast("Failed to load file", "error"); }
+    }
+
+    let _libReaderDocked = false;
+    let _libReaderTempHidden = false;
+    let _diffSidebarOriginalHTML = "";
+    let _libReaderCurrentHTML = "";
+    // Expose for filesystem.js Ctrl+B handler
+    window._libReaderDocked = false;
+    window._libReaderTempHidden = false;
+    window._tempShowFileViewer = null;
+    window._restoreLibReaderContent = null;
+
+    function dockLibraryToSidebar(title, htmlContent) {
+      const diffSidebar = document.getElementById("diffSidebar");
+      if (!diffSidebar) return;
+
+      if (!_libReaderDocked) {
+        _diffSidebarOriginalHTML = diffSidebar.innerHTML;
+      }
+
+      _libReaderDocked = true;
+      _libReaderTempHidden = false;
+      window._libReaderDocked = true;
+      window._libReaderTempHidden = false;
+      _libReaderCurrentHTML = `
+        <div class="diff-sidebar-header">
+          <span class="diff-sidebar-title">${escHtml(title)}</span>
+          <button class="new-chat-icon sidebar-close-icon" id="libReaderSidebarClose" title="Close"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
+        </div>
+        <div class="library-reader-content" style="flex:1;overflow-y:auto;padding:12px;">${htmlContent}</div>
+      `;
+      diffSidebar.innerHTML = _libReaderCurrentHTML;
+      document.body.classList.add("diff-open");
+      diffSidebar.querySelector("#libReaderSidebarClose").addEventListener("click", () => undockLibraryReader());
+      lucide.createIcons({ nodes: diffSidebar.querySelectorAll("[data-lucide]") });
+    }
+
+    window._tempShowFileViewer = function _tempShowFileViewer() {
+      const diffSidebar = document.getElementById("diffSidebar");
+      if (!diffSidebar) return;
+      _libReaderTempHidden = true;
+      window._libReaderTempHidden = true;
+      diffSidebar.innerHTML = _diffSidebarOriginalHTML;
+      // Re-bind file viewer buttons
+      const newCloseBtn = diffSidebar.querySelector("#diffClose");
+      const newClearBtn = diffSidebar.querySelector("#diffClear");
+      if (newCloseBtn) newCloseBtn.addEventListener("click", () => {
+        _restoreLibReaderContent();
+        document.body.classList.remove("diff-open");
+      });
+      if (newClearBtn) newClearBtn.addEventListener("click", () => { const dc = document.getElementById("diffCards"); if (dc) dc.innerHTML = ""; });
+      const fsPill = diffSidebar.querySelector("#fsModePill");
+      if (fsPill && typeof initFsModePill === "function") initFsModePill();
+    }
+
+    window._restoreLibReaderContent = function _restoreLibReaderContent() {
+      const diffSidebar = document.getElementById("diffSidebar");
+      if (!diffSidebar || !_libReaderDocked) return;
+      _libReaderTempHidden = false;
+      window._libReaderTempHidden = false;
+      diffSidebar.innerHTML = _libReaderCurrentHTML;
+      diffSidebar.querySelector("#libReaderSidebarClose").addEventListener("click", () => undockLibraryReader());
+      lucide.createIcons({ nodes: diffSidebar.querySelectorAll("[data-lucide]") });
+    }
+
+    function undockLibraryReader(closeAfter = true) {
+      const diffSidebar = document.getElementById("diffSidebar");
+      if (!diffSidebar || !_libReaderDocked) return;
+
+      diffSidebar.innerHTML = _diffSidebarOriginalHTML;
+      _diffSidebarOriginalHTML = "";
+      _libReaderDocked = false;
+      _libReaderTempHidden = false;
+      window._libReaderDocked = false;
+      window._libReaderTempHidden = false;
+      _libReaderCurrentHTML = "";
+
+      const newCloseBtn = diffSidebar.querySelector("#diffClose");
+      const newClearBtn = diffSidebar.querySelector("#diffClear");
+      if (newCloseBtn) newCloseBtn.addEventListener("click", () => {
+        if (_libReaderDocked) { undockLibraryReader(); } else { document.body.classList.remove("diff-open"); }
+      });
+      if (newClearBtn) newClearBtn.addEventListener("click", () => { const dc = document.getElementById("diffCards"); if (dc) dc.innerHTML = ""; });
+      const fsPill = diffSidebar.querySelector("#fsModePill");
+      if (fsPill && typeof initFsModePill === "function") initFsModePill();
+
+      if (closeAfter) {
+        document.body.classList.remove("diff-open");
+      }
     }
 
     function renderMarkdownSimple(md) {
