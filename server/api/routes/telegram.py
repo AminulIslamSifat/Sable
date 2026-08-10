@@ -159,8 +159,19 @@ async def telegram_status():
 
 @router.post("/config")
 async def save_telegram_config(req: TelegramConfig):
-    """Save Telegram API credentials."""
-    _save_config({"api_id": req.api_id, "api_hash": req.api_hash, "enabled": req.enabled})
+    """Save Telegram API credentials.
+
+    Merges with existing config so toggling enabled/disabled doesn't
+    overwrite real credentials with placeholder zeros.
+    """
+    existing = _load_config() or {}
+    # Only overwrite credentials if non-placeholder values are provided
+    new_cfg = dict(existing)
+    if req.api_id != 0 and req.api_hash:
+        new_cfg["api_id"] = req.api_id
+        new_cfg["api_hash"] = req.api_hash
+    new_cfg["enabled"] = req.enabled
+    _save_config(new_cfg)
     return {"ok": True}
 
 

@@ -79,6 +79,30 @@ def skills() -> dict[str, list[dict[str, Any]]]:
 def skills_browse() -> dict[str, list[dict[str, Any]]]:
     return {"skills": browse_skills()}
 
+_DISABLED_SKILLS_PATH = Path(__file__).resolve().parent.parent.parent.parent / "Brain" / "disabled_skills.json"
+
+@router.get("/api/settings/disabled-skills")
+def get_disabled_skills() -> dict[str, list[str]]:
+    if _DISABLED_SKILLS_PATH.exists():
+        try:
+            import json
+            data = json.loads(_DISABLED_SKILLS_PATH.read_text(encoding="utf-8"))
+            return {"disabled": data if isinstance(data, list) else []}
+        except Exception:
+            return {"disabled": []}
+    return {"disabled": []}
+
+@router.post("/api/settings/disabled-skills")
+async def set_disabled_skills(request: Request) -> dict[str, str]:
+    import json
+    body = await request.json()
+    disabled = body.get("disabled", [])
+    if not isinstance(disabled, list):
+        raise HTTPException(status_code=400, detail="disabled must be a list")
+    _DISABLED_SKILLS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _DISABLED_SKILLS_PATH.write_text(json.dumps(disabled), encoding="utf-8")
+    return {"status": "ok"}
+
 @router.post("/api/sync-context")
 async def sync_context_route() -> dict[str, Any]:
     success = await service.sync_context()

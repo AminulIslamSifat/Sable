@@ -141,8 +141,10 @@ class CheckpointManager:
             if result.returncode != 0:
                 return {"ok": False, "error": result.stderr[:500]}
 
-            # Clean files that didn't exist at that point
-            result = self._git("clean", "-fd")
+            # Clean files that didn't exist at that point.
+            # Exclude system/ — it holds sessions, configs, and credentials
+            # that must survive checkpoint restores.
+            result = self._git("clean", "-fd", "-e", "system/")
             if result.returncode != 0:
                 logger.warning("clean after restore: %s", result.stderr[:200])
 
