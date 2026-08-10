@@ -18,7 +18,7 @@ logger = logging.getLogger("sable.memory_search")
 _BRAIN_DIR = Path(__file__).resolve().parent.parent / "Brain"
 _MEMORY_PATH = _BRAIN_DIR / "Memory.json"
 _PROTECTED_PATH = _BRAIN_DIR / "Protected.json"
-_SKILLS_PATH = _BRAIN_DIR / "skills.json"
+
 _CACHE_DIR = Path(__file__).resolve().parent.parent / "system"
 _GEMINI_KEYS_PATH = _CACHE_DIR / ".gemini_api_keys.json"
 
@@ -49,6 +49,7 @@ DEFAULT_TOP_K = 10
 VECTOR_WEIGHT = 0.7
 KEYWORD_WEIGHT = 0.3
 PROTECTED_BOOST = 0.15
+EPISODIC_DECAY_RATE = 0.95  # Score multiplier per day since last access
 
 _STOPWORDS = frozenset({
     "the","a","an","is","are","was","were","be","been","being",
@@ -333,9 +334,12 @@ class MemorySearcher:
 
             self._save_cache()
 
-    def _add_entry(self, text: str, key: str, value: str, category: str) -> None:
+    def _add_entry(self, text: str, key: str, value: str, category: str, extra_meta: dict | None = None) -> None:
         self._entries.append(text)
-        self._entry_meta.append({"key": key, "value": value, "category": category})
+        meta: dict[str, Any] = {"key": key, "value": value, "category": category}
+        if extra_meta:
+            meta.update(extra_meta)
+        self._entry_meta.append(meta)
         self._entry_tokens.append(_tokenize(text))
 
     def _load_memory_entries(self) -> None:
@@ -362,7 +366,10 @@ class MemorySearcher:
                         if not v:
                             continue
                         text = f"{k}: {v}" if k else v
-                        self._add_entry(text, k, v, cat_key)
+                        extra = None
+                        if cat_key == "episodic" and e.get("last_accessed"):
+                            extra = {"last_accessed": str(e["last_accessed"])}
+                        self._add_entry(text, k, v, cat_key, extra)
             elif isinstance(data, list):
                 for e in data:
                     if isinstance(e, dict):
@@ -393,26 +400,24 @@ class MemorySearcher:
                 text = f"{k}: {v}" if k else v
                 self._add_entry(text, k, v, "protected")
 
-        # Load user-created skills (same pattern as protected)
-        if _SKILLS_PATH.exists():
-            try:
-                sdata = json.loads(_SKILLS_PATH.read_text(encoding="utf-8"))
-            except Exception:
-                sdata = {}
-            skills = sdata.get("skills", []) if isinstance(sdata, dict) else []
-            for s in skills:
-                if not isinstance(s, dict):
-                    continue
-                name = str(s.get("name", "")).strip()
-                desc = str(s.get("description", "")).strip()
-                trigger = str(s.get("trigger", "")).strip()
-                prompt = str(s.get("prompt", "")).strip()
-                if not name:
-                    continue
-                text = f"[SKILL] {name}: {desc}"
-                if trigger:
-                    text += f" | Trigger: {trigger}"
-                self._add_entry(text, name, prompt or desc, "skill")
+    def _persist_episodic_access(self, keys: list[str], timestamp: str) -> None:
+        """Write updated last_accessed timestamps back to Memory.json for episodic entries."""
+        if not _MEMORY_PATH.exists():
+            return
+        try:
+            data = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return
+            key_set = set(keys)
+            changed = False
+            for e in data.get("episodic", []):
+                if isinstance(e, dict) and e.get("key") in key_set:
+                    e["last_accessed"] = timestamp
+                    changed = True
+            if changed:
+                _MEMORY_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
 
     def clear_cache(self) -> None:
         """Delete the current model's .npz cache file and force a full re-embed on next search."""
@@ -469,14 +474,23 @@ class MemorySearcher:
                 keyword_scores = np.zeros(len(self._entry_tokens), dtype="float32")
             scores = VECTOR_WEIGHT * vector_scores + KEYWORD_WEIGHT * keyword_scores
 
-            # Protected entries get a relevance boost
+            # Protected entries get a relevance boost; episodic entries decay over time
+            now = datetime.now()
             for i, meta in enumerate(self._entry_meta):
                 if meta["category"] == "protected":
                     scores[i] += PROTECTED_BOOST
+                elif meta["category"] == "episodic" and "last_accessed" in meta:
+                    try:
+                        last = datetime.fromisoformat(meta["last_accessed"])
+                        days_since = max(0, (now - last).total_seconds() / 86400)
+                        scores[i] *= EPISODIC_DECAY_RATE ** days_since
+                    except (ValueError, TypeError):
+                        pass
 
             cutoff = threshold if threshold is not None else self.threshold
             ranked = np.argsort(-scores)
             results: list[dict[str, Any]] = []
+            accessed_episodic_keys: list[str] = []
             for idx in ranked[:top_k]:
                 if scores[idx] < cutoff:
                     break
@@ -487,6 +501,17 @@ class MemorySearcher:
                     "category": meta["category"],
                     "score": float(scores[idx]),
                 })
+                if meta["category"] == "episodic":
+                    accessed_episodic_keys.append(meta["key"])
+
+            # Update last_accessed for retrieved episodic entries
+            if accessed_episodic_keys:
+                now_str = now.isoformat()
+                for meta in self._entry_meta:
+                    if meta["category"] == "episodic" and meta["key"] in accessed_episodic_keys:
+                        meta["last_accessed"] = now_str
+                self._persist_episodic_access(accessed_episodic_keys, now_str)
+
             return results
 
     def format_for_prompt(self, results: list[dict[str, Any]]) -> str:

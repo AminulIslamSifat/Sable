@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -8,12 +10,17 @@ from engine.config import get_model_config
 from engine.memory_search import get_searcher, list_available_models
 from connectors.deepseek.client import get_client as get_deepseek_client
 from connectors import get_connector
-from instruction.mem_cmd import _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY, _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE
+from instruction.mem_cmd import (
+    _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY,
+    _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE,
+    _PERSONALITY_ASSESSMENT_TEMPLATE,
+)
 
-from server.config import _MEMORY_PATH, _PROTECTED_PATH, _PERSONAL_PATH, _MEMORY_SEARCH_SETTINGS, _DEFAULT_MAX_PROMPT_CHARS
+from server.config import _MEMORY_PATH, _PROTECTED_PATH, _PERSONALITY_PATH, _PERSONAL_PATH, _MEMORY_SEARCH_SETTINGS, _DEFAULT_MAX_PROMPT_CHARS
 from server.database import get_messages, get_injected_memory_keys, get_parent_id
 from server.utils import retry_async, _is_deepseek_api_model, _resolve_api_backend, logger
 from ..dependencies import service
+from engine.service import ChatService
 
 router = APIRouter()
 
@@ -206,16 +213,276 @@ async def update_personal_preferences(payload: dict[str, Any]) -> dict[str, str]
     _PERSONAL_PATH.write_text(content, encoding="utf-8")
     return {"status": "ok"}
 
+def _dedup_and_resolve_adds(
+    adds: dict[str, list[dict[str, str]]],
+    existing: dict[str, list[dict[str, str]]],
+    searcher,
+) -> tuple[dict[str, list[dict[str, str]]], int, int]:
+    """Post-consolidation dedup and contradiction resolution.
+    
+    For each new entry in semantic/episodic/procedural:
+    - Embed it and search against existing memory
+    - If best match similarity >= 0.85: skip (duplicate)
+    - If best match similarity >= 0.70 and < 0.85: update existing entry in-place (contradiction/update)
+    - Otherwise: add as new
+    
+    Returns (filtered_adds, skipped_count, updated_count).
+    """
+    from engine.memory_search import MemorySearcher
+    
+    MERGE_THRESHOLD = 0.85
+    UPDATE_THRESHOLD = 0.70
+    
+    skipped = 0
+    updated = 0
+    filtered: dict[str, list[dict[str, str]]] = {}
+    
+    for cat in ("semantic", "episodic", "procedural"):
+        new_list = adds.get(cat, [])
+        if not isinstance(new_list, list) or not new_list:
+            filtered[cat] = []
+            continue
+            
+        existing_list = existing.get(cat, [])
+        existing_texts = []
+        for e in existing_list:
+            if isinstance(e, dict):
+                k = str(e.get("key", "")).strip()
+                v = str(e.get("value", "")).strip()
+                existing_texts.append(f"{k}: {v}" if k else v)
+        
+        kept: list[dict[str, str]] = []
+        for entry in new_list:
+            if not isinstance(entry, dict) or not entry.get("key"):
+                continue
+            
+            entry_text = f"{entry['key']}: {entry.get('value', '')}"
+            
+            # Search against ALL existing memory (not just same category)
+            results = searcher.search(entry_text, top_k=3)
+            
+            if results:
+                best_score = results[0]["score"]
+                best_key = results[0]["key"]
+                
+                if best_score >= MERGE_THRESHOLD:
+                    # Duplicate — skip
+                    skipped += 1
+                    continue
+                elif best_score >= UPDATE_THRESHOLD and best_key != entry["key"]:
+                    # Potential contradiction/update — replace existing entry's value
+                    for e in existing_list:
+                        if isinstance(e, dict) and e.get("key") == best_key:
+                            e["value"] = entry.get("value", "")
+                            updated += 1
+                            break
+                    continue
+            
+            kept.append({"key": entry["key"], "value": entry.get("value", "")})
+        
+        filtered[cat] = kept
+    
+    # Pass through protected and ephemeral unchanged
+    filtered["protected"] = adds.get("protected", [])
+    filtered["ephemeral"] = adds.get("ephemeral", [])
+    
+    return filtered, skipped, updated
+
+def _load_consolidation_settings() -> dict[str, Any]:
+    """Load consolidation settings from system/consolidation_settings.json."""
+    defaults: dict[str, Any] = {"model": "", "fallback_models": [], "browser_profiles": []}
+    path = Path(__file__).resolve().parent.parent.parent.parent / "system" / "consolidation_settings.json"
+    if path.exists():
+        try:
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(stored, dict):
+                defaults.update(stored)
+        except Exception:
+            pass
+    return defaults
+
+async def _try_consolidation_call(
+    model: str, prompt: str, browser_profile: str = ""
+) -> dict[str, Any] | None:
+    """Try a single consolidation model call. Returns result dict or None on failure.
+    
+    Always uses chat_id=None and parent_id=None so the Qwen service creates a fresh
+    server-side session automatically. Consolidation must NOT reuse the source
+    conversation's chat_id (different browser profiles won't have it, and appending
+    to the same chat pollutes history).
+    """
+    try:
+        api_backend = _resolve_api_backend(model)
+
+        if api_backend:
+            # API-backed model (Gemini/Groq/Mistral/DeepSeek/etc.)
+            if api_backend in _CONSOLIDATION_BACKENDS:
+                connector = get_connector(api_backend)
+                result = await retry_async(
+                    lambda: connector.chat(
+                        message=prompt,
+                        model=model,
+                        inject_instructions=False,
+                        chat_id=None,
+                    ),
+                    label=f"memory_consolidate_{api_backend}",
+                )
+            elif _is_deepseek_api_model(model):
+                ds_cfg = get_model_config(model)
+                ds_api_type = ds_cfg.get("api_model_type")
+                result = await retry_async(
+                    lambda: get_deepseek_client().chat(
+                        message=prompt,
+                        model=ds_api_type,
+                        thinking_mode="fast",
+                        chat_id=None,
+                        inject_instructions=False,
+                    ),
+                    label="memory_consolidate_ds",
+                )
+            else:
+                result = await retry_async(
+                    lambda: service.chat(
+                        message=prompt,
+                        chat_id=None,
+                        parent_id=None,
+                        model=model,
+                    ),
+                    label="memory_consolidate_api",
+                )
+        elif browser_profile:
+            # Qwen with specific browser profile
+            from engine.config import _SYSTEM
+            acc_dir = _SYSTEM / browser_profile
+            if not acc_dir.exists():
+                return None
+            temp_service = ChatService(user_data_dir=str(acc_dir))
+            try:
+                result = await retry_async(
+                    lambda: temp_service.chat(
+                        message=prompt,
+                        chat_id=None,
+                        model=model,
+                    ),
+                    label=f"memory_consolidate_profile_{browser_profile}",
+                )
+            finally:
+                await temp_service.close()
+        else:
+            # Default Qwen service
+            result = await retry_async(
+                lambda: service.chat(
+                    message=prompt,
+                    chat_id=None,
+                    parent_id=None,
+                    model=model,
+                ),
+                label="memory_consolidate_default",
+            )
+
+        answer = result.get("answer", "").strip()
+        if answer:
+            return result
+        return None
+    except Exception:
+        return None
+
+async def _run_personality_assessment(conv_text: str, model: str) -> bool:
+    """Run personality assessment on the conversation and save to Brain/user_personality.json.
+    
+    Returns True if assessment was saved, False otherwise.
+    Non-blocking failure — consolidation should not fail if personality assessment fails.
+    """
+    try:
+        # Load previous assessment if exists
+        previous = ""
+        if _PERSONALITY_PATH.exists():
+            try:
+                previous = _PERSONALITY_PATH.read_text(encoding="utf-8")
+            except Exception:
+                previous = ""
+
+        prompt = _PERSONALITY_ASSESSMENT_TEMPLATE
+        prompt = prompt.replace("<<PREVIOUS_PERSONALITY>>", previous or "(none)")
+
+        # Append conversation context
+        prompt += f"\n\nCONVERSATION DATA:\n{conv_text}"
+
+        result = await _try_consolidation_call(model, prompt)
+        if not result:
+            return False
+
+        raw = result.get("answer", "").strip()
+        # Strip markdown fences if present
+        if raw.startswith("```"):
+            lines = raw.split("\n")
+            lines = [l for l in lines if not l.strip().startswith("```")]
+            raw = "\n".join(lines).strip()
+
+        # Parse JSON
+        try:
+            personality = json.loads(raw)
+        except json.JSONDecodeError:
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start != -1 and end > start:
+                try:
+                    personality = json.loads(raw[start:end + 1])
+                except json.JSONDecodeError:
+                    return False
+            else:
+                return False
+
+        if not isinstance(personality, dict):
+            return False
+
+        # Validate minimal structure
+        required_keys = {"strengths", "weaknesses", "contradictions", "blind_spots", "summary"}
+        if not required_keys.issubset(personality.keys()):
+            return False
+
+        # Save
+        _PERSONALITY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _PERSONALITY_PATH.write_text(
+            json.dumps(personality, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        return True
+    except Exception:
+        return False
+
+
+@router.get("/api/settings/personality")
+async def get_personality() -> dict[str, Any]:
+    """Load user personality assessment from Brain/user_personality.json."""
+    if not _PERSONALITY_PATH.exists():
+        return {"personality": None}
+    try:
+        data = json.loads(_PERSONALITY_PATH.read_text(encoding="utf-8"))
+        return {"personality": data}
+    except Exception:
+        return {"personality": None}
+
+
 @router.post("/api/memory/consolidate")
 async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     chat_id = payload.get("chat_id")
-    model = payload.get("model")
-    mode = payload.get("mode", "scraper")
     if not chat_id:
         raise HTTPException(status_code=400, detail="Missing 'chat_id'")
+
     messages = get_messages(chat_id)
     if len(messages) < 2:
         return {"status": "skipped", "reason": "too few messages"}
+
+    # Load consolidation settings
+    settings = _load_consolidation_settings()
+    model = settings.get("model") or payload.get("model") or ""
+    if not model:
+        return {"status": "error", "detail": "No model specified"}
+
+    fallback_models: list[str] = settings.get("fallback_models", [])
+    browser_profiles: list[str] = settings.get("browser_profiles", [])
+
+    # Build memory context
     injected_keys = get_injected_memory_keys(chat_id)
     filtered_memory: dict[str, list] = {}
     if _MEMORY_PATH.exists() and injected_keys:
@@ -230,66 +497,48 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             pass
     current_memory = json.dumps(filtered_memory, indent=2) if filtered_memory else "{}"
-    if mode == "api":
-        prompt = _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE
-        prompt = prompt.replace("<<CURRENT_MEMORY>>", current_memory)
-        backend = _resolve_api_backend(model)
-        try:
-            if backend in _CONSOLIDATION_BACKENDS:
-                # Groq / Gemini / Mistral: pass full conversation inline, one-shot call
-                conv_text = _format_conversation(messages)
-                prompt = prompt.replace("<<CONVERSATION_SUMMARY>>", conv_text)
-                connector = get_connector(backend)
-                result = await retry_async(
-                    lambda: connector.chat(
-                        message=prompt,
-                        model=model,
-                        inject_instructions=False,
-                        chat_id=None,
-                    ),
-                    label=f"memory_consolidate_{backend}",
-                )
-            elif _is_deepseek_api_model(model):
-                prompt = prompt.replace("<<CONVERSATION_SUMMARY>>", "(See conversation thread above — do not request more context.)")
-                _ds_cfg = get_model_config(model)
-                _ds_api_type = _ds_cfg.get("api_model_type")
-                result = await retry_async(
-                    lambda: get_deepseek_client().chat(
-                        message=prompt,
-                        model=_ds_api_type,
-                        thinking_mode="fast",
-                        chat_id=chat_id,
-                        inject_instructions=False,
-                    ),
-                    label="memory_consolidate_api_ds",
-                )
-            else:
-                prompt = prompt.replace("<<CONVERSATION_SUMMARY>>", "(See conversation thread above — do not request more context.)")
-                parent_id = get_parent_id(chat_id, None)
-                result = await retry_async(
-                    lambda: service.chat(
-                        message=prompt,
-                        chat_id=chat_id,
-                        parent_id=parent_id,
-                        model=model,
-                    ),
-                    label="memory_consolidate_api",
-                )
-        except Exception as exc:
-            return {"status": "error", "detail": f"Model call failed: {exc}"}
+
+    # Always use standalone template with inline conversation
+    prompt = _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE
+    prompt = prompt.replace("<<CURRENT_MEMORY>>", current_memory)
+    conv_text = _format_conversation(messages)
+    prompt = prompt.replace("<<CONVERSATION_SUMMARY>>", conv_text)
+
+    # Fallback chain
+    result: dict[str, Any] | None = None
+    attempts: list[str] = []
+
+    # 1. Try primary model
+    result = await _try_consolidation_call(model, prompt)
+    if result:
+        attempts.append(f"{model} ✓")
     else:
-        prompt = _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY.replace("<<CURRENT_MEMORY>>", current_memory)
-        try:
-            result = await retry_async(
-                lambda: service.chat(
-                    message=prompt,
-                    chat_id=chat_id,
-                    model=model,
-                ),
-                label="memory_consolidate_scraper",
-            )
-        except Exception as exc:
-            return {"status": "error", "detail": f"Model call failed: {exc}"}
+        attempts.append(f"{model} ✗")
+
+        # 2. Determine fallback strategy based on primary model type
+        api_backend = _resolve_api_backend(model)
+
+        if not api_backend and browser_profiles:
+            # Qwen failed → try browser profiles
+            for profile in browser_profiles[:3]:
+                result = await _try_consolidation_call(model, prompt, browser_profile=profile)
+                if result:
+                    attempts.append(f"{model}@{profile} ✓")
+                    break
+                attempts.append(f"{model}@{profile} ✗")
+
+        if not result and fallback_models:
+            # Try fallback models (API or Qwen)
+            for fb_model in fallback_models[:3]:
+                result = await _try_consolidation_call(fb_model, prompt)
+                if result:
+                    attempts.append(f"{fb_model} ✓")
+                    break
+                attempts.append(f"{fb_model} ✗")
+
+    if not result:
+        return {"status": "error", "detail": f"All consolidation attempts failed: {' → '.join(attempts)}"}
+
     raw_answer = str(result.get("answer", ""))
     cleaned = raw_answer.strip()
     if cleaned.startswith("```"):
@@ -328,6 +577,13 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
                 existing = {}
         except Exception:
             existing = {}
+    # Post-consolidation dedup and contradiction resolution
+    try:
+        searcher = get_searcher()
+        adds, dedup_skipped, dedup_updated = _dedup_and_resolve_adds(adds, existing, searcher)
+    except Exception:
+        dedup_skipped = 0
+        dedup_updated = 0
     protected_keys: set[str] = set()
     for e in existing.get("protected", []):
         if isinstance(e, dict) and e.get("key"):
@@ -399,7 +655,11 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(skill_data, dict) and skill_data.get("name"):
         skill_created = _save_user_skill(skill_data)
     total_added = added_count + prot_added + eph_added
-    result: dict[str, Any] = {"status": "ok", "added": total_added, "deleted": deleted_count}
+
+    # Fire personality assessment in background — non-blocking, won't delay response
+    asyncio.create_task(_run_personality_assessment(conv_text, model))
+
+    result: dict[str, Any] = {"status": "ok", "added": total_added, "deleted": deleted_count, "dedup_skipped": dedup_skipped, "dedup_updated": dedup_updated}
     if skill_created:
         result["skill_created"] = skill_data["name"]
     return result
@@ -484,6 +744,13 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
                 existing = {}
         except Exception:
             existing = {}
+    # Post-consolidation dedup and contradiction resolution
+    try:
+        searcher = get_searcher()
+        adds, dedup_skipped, dedup_updated = _dedup_and_resolve_adds(adds, existing, searcher)
+    except Exception:
+        dedup_skipped = 0
+        dedup_updated = 0
     protected_keys: set[str] = set()
     for e in existing.get("protected", []):
         if isinstance(e, dict) and e.get("key"):
@@ -550,4 +817,9 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
     _MEMORY_PATH.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
     get_searcher().reload_memory()
     total_added = added_count + prot_added + eph_added
-    return {"status": "ok", "added": total_added, "deleted": deleted_count}
+
+    # Fire personality assessment in background
+    conv_text = _format_conversation(messages)
+    asyncio.create_task(_run_personality_assessment(conv_text, model))
+
+    return {"status": "ok", "added": total_added, "deleted": deleted_count, "dedup_skipped": dedup_skipped, "dedup_updated": dedup_updated}

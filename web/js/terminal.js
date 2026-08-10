@@ -369,4 +369,25 @@
     const th = termTheme();
     sessions.forEach((s) => { s.term.options.theme = th; });
   }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+  /* ---------- Exposed: run a command in the active terminal ---------- */
+  window.runInTerminal = function (cmd) {
+    open();
+    // Wait briefly for session to be ready if just opened
+    const trySend = () => {
+      const s = active();
+      if (s && s.ws && s.ws.readyState === WebSocket.OPEN) {
+        s.ws.send(JSON.stringify({ type: 'input', data: cmd + '\n' }));
+        return true;
+      }
+      return false;
+    };
+    if (!trySend()) {
+      // Retry after short delay for newly created sessions
+      let attempts = 0;
+      const iv = setInterval(() => {
+        if (trySend() || ++attempts > 20) clearInterval(iv);
+      }, 100);
+    }
+  };
 })();
