@@ -102,10 +102,10 @@ class AgentTodoList:
             for sub in item.subtasks:
                 lines.append(f"   • {sub}")
         lines.append("")
-        lines.append("Complete the current task. When finished, use this tag:")
-        lines.append('<todo_done summary="what you accomplished" />')
-        lines.append("To add sub-steps to the current task:")
-        lines.append('<todo_sub content="description of sub-step" />')
+        lines.append("⚠️ YOU MUST complete the CURRENT task above before stopping.")
+        lines.append("When finished with it, output: <todo_done summary=\"what you accomplished\" />")
+        lines.append("Then IMMEDIATELY start the next task. Do NOT pause or give a final answer.")
+        lines.append("To add sub-steps: <todo_sub content=\"description of sub-step\" />")
         return "\n".join(lines)
 
 
@@ -135,6 +135,8 @@ class Agent:
     system_prompt: str | None = None  # Built skill registry + output format for API backends
     todos: AgentTodoList | None = None  # Structured task plan (None = simple task, no tracking)
     teacher_interventions: int = 0  # How many times the teacher has intervened
+    model_chain: list[str] = field(default_factory=list)  # Fallback models from role config
+    _fallback_index: int = 0  # Current position in model_chain (0 = primary model)
 
     # Per-agent SSE stream queue — frontend panel subscribes via /api/agents/{id}/stream
     stream_queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=200), repr=False)

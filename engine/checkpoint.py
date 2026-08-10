@@ -12,14 +12,35 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import subprocess
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+def _get_checkpoint_base() -> Path:
+    """Platform-appropriate checkpoint storage directory."""
+    if platform.system() == "Windows":
+        # %APPDATA%/sable/checkpoints
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "sable" / "checkpoints"
+        return Path.home() / "AppData" / "Roaming" / "sable" / "checkpoints"
+    elif platform.system() == "Darwin":
+        # ~/Library/Application Support/sable/checkpoints
+        return Path.home() / "Library" / "Application Support" / "sable" / "checkpoints"
+    else:
+        # Linux/other: XDG standard
+        xdg = os.environ.get("XDG_DATA_HOME")
+        if xdg:
+            return Path(xdg) / "sable" / "checkpoints"
+        return Path.home() / ".local" / "share" / "sable" / "checkpoints"
+
+
 # Where shadow repos live
-CHECKPOINT_BASE = Path.home() / ".local" / "share" / "sable" / "checkpoints"
+CHECKPOINT_BASE = _get_checkpoint_base()
 
 # Files/dirs to exclude from snapshots
 EXCLUDE_PATTERNS = [
