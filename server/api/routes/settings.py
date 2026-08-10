@@ -239,6 +239,43 @@ async def remove_mistral_api_key(index: int) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# OpenAI API key management
+# ---------------------------------------------------------------------------
+
+@router.post("/api/settings/openai/api-key")
+async def add_openai_api_key(request: Request) -> dict[str, Any]:
+    """Add an OpenAI API key to the pool."""
+    from connectors.openai.client import get_client as get_openai_client
+    body = await request.json()
+    key = body.get("api_key", "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="Missing 'api_key' field")
+    client = get_openai_client()
+    if key in client._keys:
+        raise HTTPException(status_code=409, detail="Key already exists")
+    client.add_key(key)
+    return {"status": "ok", "keys": client.list_keys(), "available": client.is_available}
+
+
+@router.get("/api/settings/openai/keys")
+async def list_openai_keys() -> dict[str, Any]:
+    """List all configured OpenAI API keys (masked)."""
+    from connectors.openai.client import get_client as get_openai_client
+    client = get_openai_client()
+    return {"keys": client.list_keys(), "available": client.is_available}
+
+
+@router.delete("/api/settings/openai/api-key/{index}")
+async def remove_openai_api_key(index: int) -> dict[str, Any]:
+    """Remove an OpenAI API key by index."""
+    from connectors.openai.client import get_client as get_openai_client
+    client = get_openai_client()
+    if not client.remove_key(index):
+        raise HTTPException(status_code=404, detail="Key not found at that index")
+    return {"status": "ok", "keys": client.list_keys(), "available": client.is_available}
+
+
+# ---------------------------------------------------------------------------
 # Provider model listing (fetch available models from a provider's API)
 # ---------------------------------------------------------------------------
 
@@ -331,7 +368,201 @@ async def list_provider_models(provider: str) -> dict[str, Any]:
             logger.warning("Mistral model fetch failed: %s", exc)
             return {"models": [], "available": True, "error": str(exc)}
 
+    elif provider == "openai":
+        from connectors.openai.client import get_client as get_openai_client
+        client = get_openai_client()
+        if not client.is_available:
+            return {"models": [], "available": False}
+        key = client._current_key
+        try:
+            async with _httpx.AsyncClient(timeout=15.0) as http:
+                r = await http.get(
+                    "https://api.openai.com/v1/models",
+                    headers={"Authorization": f"Bearer {key}"},
+                )
+                r.raise_for_status()
+                data = r.json()
+                models = []
+                for m in data.get("data", []):
+                    mid = m.get("id", "")
+                    # Focus on chat-capable models; skip embeddings/tts/whisper/etc.
+                    if not mid or any(s in mid for s in ("embedding", "tts", "whisper", "dall-e", "babbage", "davinci")):
+                        continue
+                    label = mid.replace("-", " ").replace("_", " ").title()
+                    models.append({"id": mid, "label": label})
+                # Sort so gpt-4o / o-series / gpt-4.1 appear first
+                models.sort(key=lambda m: m["id"])
+                return {"models": models, "available": True}
+        except Exception as exc:
+            logger.warning("OpenAI model fetch failed: %s", exc)
+            return {"models": [], "available": True, "error": str(exc)}
+
     raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
+
+
+@router.post("/api/settings/providers/custom/models")
+async def fetch_custom_endpoint_models(request: Request) -> dict[str, Any]:
+    """Fetch the model list from an arbitrary OpenAI-compatible endpoint.
+
+    Body: {"base_url": "https://.../v1", "api_key": "optional"}
+    Hits {base_url}/models and normalizes the response.
+    """
+    import httpx as _httpx
+    body = await request.json()
+    base_url = (body.get("base_url") or "").strip().rstrip("/")
+    api_key = (body.get("api_key") or "").strip()
+    if not base_url:
+        raise HTTPException(status_code=400, detail="Missing base_url")
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with _httpx.AsyncClient(timeout=15.0) as http:
+            r = await http.get(f"{base_url}/models", headers=headers)
+            r.raise_for_status()
+            data = r.json()
+            # OpenAI-compatible: {"data": [{"id": ...}, ...]} — tolerate a bare list too
+            raw = data.get("data", data if isinstance(data, list) else [])
+            models = []
+            for m in raw:
+                mid = m.get("id", "") if isinstance(m, dict) else str(m)
+                if not mid:
+                    continue
+                # Skip obvious non-chat models
+                if any(s in mid.lower() for s in ("embedding", "tts", "whisper", "dall-e")):
+                    continue
+                label = mid.replace("-", " ").replace("_", " ").replace("/", " / ").title()
+                models.append({"id": mid, "label": label})
+            models.sort(key=lambda m: m["id"])
+            return {"models": models, "available": True}
+    except _httpx.HTTPStatusError as exc:
+        code = exc.response.status_code
+        if code in (401, 403):
+            return {"models": [], "available": False, "error": "Auth rejected — check the API key"}
+        return {"models": [], "available": False, "error": f"Endpoint returned {code}"}
+    except Exception as exc:
+        logger.warning("Custom endpoint model fetch failed (%s): %s", base_url, exc)
+        return {"models": [], "available": False, "error": f"Could not reach endpoint: {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# Custom endpoint providers (saved OpenAI-compatible endpoints)
+# ---------------------------------------------------------------------------
+
+_ENDPOINTS_PATH = _SYSTEM_DIR / ".custom_endpoints.json"
+
+
+def _load_endpoints() -> list[dict[str, Any]]:
+    if _ENDPOINTS_PATH.exists():
+        try:
+            data = json.loads(_ENDPOINTS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [e for e in data if isinstance(e, dict) and e.get("id")]
+        except (json.JSONDecodeError, OSError):
+            pass
+    return []
+
+
+def _save_endpoints(endpoints: list[dict[str, Any]]) -> None:
+    _ENDPOINTS_PATH.write_text(json.dumps(endpoints, indent=2) + "\n", encoding="utf-8")
+
+
+def _mask_endpoint_key(key: str) -> str:
+    if not key:
+        return ""
+    return key[:8] + "..." + key[-4:] if len(key) > 12 else "***"
+
+
+async def _fetch_openai_models(base_url: str, api_key: str = "") -> dict[str, Any]:
+    """Fetch + normalize models from any OpenAI-compatible /models endpoint."""
+    import httpx as _httpx
+    base_url = base_url.strip().rstrip("/")
+    api_key = api_key.strip()
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with _httpx.AsyncClient(timeout=15.0) as http:
+            r = await http.get(f"{base_url}/models", headers=headers)
+            r.raise_for_status()
+            data = r.json()
+            raw = data.get("data", data if isinstance(data, list) else [])
+            models = []
+            for m in raw:
+                mid = m.get("id", "") if isinstance(m, dict) else str(m)
+                if not mid:
+                    continue
+                if any(s in mid.lower() for s in ("embedding", "tts", "whisper", "dall-e")):
+                    continue
+                label = mid.replace("-", " ").replace("_", " ").replace("/", " / ").title()
+                models.append({"id": mid, "label": label})
+            models.sort(key=lambda m: m["id"])
+            return {"models": models, "available": True}
+    except _httpx.HTTPStatusError as exc:
+        code = exc.response.status_code
+        if code in (401, 403):
+            return {"models": [], "available": False, "error": "Auth rejected - check the API key"}
+        return {"models": [], "available": False, "error": f"Endpoint returned {code}"}
+    except Exception as exc:
+        logger.warning("Endpoint model fetch failed (%s): %s", base_url, exc)
+        return {"models": [], "available": False, "error": f"Could not reach endpoint: {exc}"}
+
+
+@router.get("/api/settings/endpoints")
+async def list_custom_endpoints() -> dict[str, Any]:
+    """List saved custom endpoints (api_key masked)."""
+    eps = _load_endpoints()
+    return {"endpoints": [
+        {
+            "id": e.get("id", ""),
+            "name": e.get("name", ""),
+            "base_url": e.get("base_url", ""),
+            "api_key_masked": _mask_endpoint_key(e.get("api_key", "")),
+            "has_key": bool(e.get("api_key")),
+        }
+        for e in eps
+    ]}
+
+
+@router.post("/api/settings/endpoints")
+async def add_custom_endpoint(request: Request) -> dict[str, Any]:
+    """Save a custom OpenAI-compatible endpoint as a reusable provider."""
+    import uuid as _uuid
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    base_url = (body.get("base_url") or "").strip().rstrip("/")
+    api_key = (body.get("api_key") or "").strip()
+    if not base_url:
+        raise HTTPException(status_code=400, detail="Missing base_url")
+    if not name:
+        from urllib.parse import urlparse
+        name = urlparse(base_url).netloc or "Custom Endpoint"
+    eps = _load_endpoints()
+    ep = {"id": "ep-" + _uuid.uuid4().hex[:8], "name": name, "base_url": base_url, "api_key": api_key}
+    eps.append(ep)
+    _save_endpoints(eps)
+    return {"status": "ok", "endpoint": {
+        "id": ep["id"], "name": ep["name"], "base_url": ep["base_url"],
+        "api_key_masked": _mask_endpoint_key(api_key), "has_key": bool(api_key),
+    }}
+
+
+@router.delete("/api/settings/endpoints/{endpoint_id}")
+async def delete_custom_endpoint(endpoint_id: str) -> dict[str, Any]:
+    """Remove a saved custom endpoint."""
+    eps = _load_endpoints()
+    new_eps = [e for e in eps if e.get("id") != endpoint_id]
+    if len(new_eps) == len(eps):
+        raise HTTPException(status_code=404, detail="Endpoint not found")
+    _save_endpoints(new_eps)
+    return {"status": "ok"}
+
+
+@router.get("/api/settings/endpoints/{endpoint_id}/models")
+async def list_custom_endpoint_models(endpoint_id: str) -> dict[str, Any]:
+    """Fetch models from a saved endpoint using its stored URL + key."""
+    eps = _load_endpoints()
+    ep = next((e for e in eps if e.get("id") == endpoint_id), None)
+    if not ep:
+        raise HTTPException(status_code=404, detail="Endpoint not found")
+    return await _fetch_openai_models(ep.get("base_url", ""), ep.get("api_key", ""))
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +604,24 @@ async def add_model(request: Request) -> dict[str, Any]:
         "thinking_modes": thinking_modes,
         "_custom": True,
     }
+    # Custom endpoint: either a saved endpoint (endpoint_id) or inline (local_endpoint)
+    endpoint_id = (body.get("endpoint_id") or "").strip()
+    if endpoint_id:
+        eps = _load_endpoints()
+        ep = next((e for e in eps if e.get("id") == endpoint_id), None)
+        if not ep:
+            raise HTTPException(status_code=400, detail="Saved endpoint not found")
+        model_def["api_backend"] = "local"
+        model_def["local_endpoint"] = ep.get("base_url", "")
+        if ep.get("api_key"):
+            model_def["local_api_key"] = ep["api_key"]
+    else:
+        local_endpoint = (body.get("local_endpoint") or "").strip()
+        if local_endpoint:
+            model_def["local_endpoint"] = local_endpoint
+            local_api_key = (body.get("local_api_key") or "").strip()
+            if local_api_key:
+                model_def["local_api_key"] = local_api_key
     add_custom_model(model_def)
     return {"status": "ok", "model": model_def}
 

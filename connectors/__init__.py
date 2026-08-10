@@ -43,7 +43,8 @@ def get_connector(backend: str, model_id: str | None = None) -> Any:
         from connectors.local.client import get_client
         cfg = get_model_config(model_id)
         endpoint = cfg.get("local_endpoint", "http://127.0.0.1:8080/v1")
-        return get_client(endpoint)
+        api_key = cfg.get("local_api_key") or "sable-local"
+        return get_client(endpoint, api_key)
 
     if backend in _registry:
         return _registry[backend]
@@ -59,6 +60,9 @@ def get_connector(backend: str, model_id: str | None = None) -> Any:
         _registry[backend] = get_client()
     elif backend == "mistral":
         from connectors.mistral.client import get_client
+        _registry[backend] = get_client()
+    elif backend == "openai":
+        from connectors.openai.client import get_client
         _registry[backend] = get_client()
     elif backend == "local":
         from connectors.local.client import get_client
