@@ -196,6 +196,9 @@
           <div class="header-agent-cell" id="agentTopBarSlot"></div>
         </div>
         <div class="header-cell header-icon-cell">
+          <button id="runFileBtn" class="icon-btn" title="Run current file"><span class="icon-emoji">▶</span><i data-lucide="play" class="icon-lucide"></i></button>
+        </div>
+        <div class="header-cell header-icon-cell">
           <button id="terminalToggle" class="icon-btn" title="Toggle terminal"><span class="icon-emoji">🖥</span><i data-lucide="terminal" class="icon-lucide"></i></button>
         </div>
         <div class="header-cell header-icon-cell">
@@ -463,6 +466,7 @@
         <button class="settings-tab" data-tab="providers">Providers</button>
         <button class="settings-tab" data-tab="search">Search Engine</button>
         <button class="settings-tab" data-tab="mcp">MCP</button>
+        <button class="settings-tab" data-tab="ide">IDE</button>
         <button class="settings-tab" data-tab="tts">TTS</button>
         <button class="settings-tab" data-tab="cookbook">Cookbook</button>
       </div>
@@ -498,27 +502,6 @@
               <option value="14px">Medium (14px)</option>
               <option value="15px">Large (15px)</option>
               <option value="16px">Extra Large (16px)</option>
-            </select>
-          </div>
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
-            <label for="editorFontSizeSelect" style="font-size:13px;color:var(--text-dim);">Editor Font Size</label>
-            <select id="editorFontSizeSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
-              <option value="11">Small (11px)</option>
-              <option value="12">Compact (12px)</option>
-              <option value="13" selected>Default (13px)</option>
-              <option value="14">Medium (14px)</option>
-              <option value="15">Large (15px)</option>
-              <option value="16">Extra Large (16px)</option>
-            </select>
-          </div>
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
-            <label for="ideChatFontSizeSelect" style="font-size:13px;color:var(--text-dim);">IDE Chat Font Size</label>
-            <select id="ideChatFontSizeSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
-              <option value="11px">Small (11px)</option>
-              <option value="12px">Compact (12px)</option>
-              <option value="13px" selected>Default (13px)</option>
-              <option value="14px">Medium (14px)</option>
-              <option value="15px">Large (15px)</option>
             </select>
           </div>
           <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
@@ -953,6 +936,49 @@
             <span id="memStatus" class="muted mem-status"></span>
           </div>
 
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🧠</span><i data-lucide="brain" class="icon-lucide"></i> Memory Consolidation</h3>
+          <p class="muted mem-desc">Settings for automatic memory extraction when creating a new chat.</p>
+
+          <div style="display:flex;flex-direction:column;gap:14px;margin-top:10px;">
+            <div>
+              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Consolidation Model</label>
+              <select id="consolidationModel" class="mem-input" style="width:100%;max-width:320px;">
+                <option value="">Default (current chat model)</option>
+              </select>
+              <p class="muted" style="font-size:11px;margin:3px 0 0;">Model used to extract memories when pressing New Chat. Leave empty to use whatever model the chat was using.</p>
+            </div>
+
+            <div>
+              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Fallback Models</label>
+              <select id="consolidationFallback1" class="mem-input" style="width:100%;max-width:320px;margin-bottom:4px;">
+                <option value="">— None —</option>
+              </select>
+              <select id="consolidationFallback2" class="mem-input" style="width:100%;max-width:320px;margin-bottom:4px;">
+                <option value="">— None —</option>
+              </select>
+              <select id="consolidationFallback3" class="mem-input" style="width:100%;max-width:320px;">
+                <option value="">— None —</option>
+              </select>
+              <p class="muted" style="font-size:11px;margin:3px 0 0;">If the primary model fails, these are tried in order (up to 3).</p>
+            </div>
+
+            <div>
+              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Qwen Browser Profile Fallbacks</label>
+              <select id="consolidationProfile1" class="mem-input" style="width:100%;max-width:320px;margin-bottom:4px;">
+                <option value="">— None —</option>
+              </select>
+              <select id="consolidationProfile2" class="mem-input" style="width:100%;max-width:320px;margin-bottom:4px;">
+                <option value="">— None —</option>
+              </select>
+              <select id="consolidationProfile3" class="mem-input" style="width:100%;max-width:320px;">
+                <option value="">— None —</option>
+              </select>
+              <p class="muted" style="font-size:11px;margin:3px 0 0;">If Qwen fails, retry with these browser profiles before trying fallback models.</p>
+            </div>
+
+
+          </div>
+
           <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">⚙️</span><i data-lucide="settings" class="icon-lucide"></i> Memory Engine Config</h3>
           <p class="muted mem-desc">Controls how memories are retrieved and injected into conversations. Changes here affect response quality.</p>
 
@@ -1000,6 +1026,63 @@
           <div id="skillsGrid" class="skills-grid"></div>
         </div>
         
+        <div id="tab-ide" class="settings-tab-content">
+          <h3 class="mem-title"><span class="icon-emoji">💻</span><i data-lucide="code" class="icon-lucide"></i> IDE</h3>
+          <p class="muted mem-desc">Configure the built-in Monaco editor — font, theme, auto-save, and more.</p>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+            <label for="editorFontSizeSelect" style="font-size:13px;color:var(--text-dim);">Editor Font Size</label>
+            <select id="editorFontSizeSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
+              <option value="11">Small (11px)</option>
+              <option value="12">Compact (12px)</option>
+              <option value="13" selected>Default (13px)</option>
+              <option value="14">Medium (14px)</option>
+              <option value="15">Large (15px)</option>
+              <option value="16">Extra Large (16px)</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+            <label for="ideChatFontSizeSelect" style="font-size:13px;color:var(--text-dim);">IDE Chat Font Size</label>
+            <select id="ideChatFontSizeSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
+              <option value="11px">Small (11px)</option>
+              <option value="12px">Compact (12px)</option>
+              <option value="13px" selected>Default (13px)</option>
+              <option value="14px">Medium (14px)</option>
+              <option value="15px">Large (15px)</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+            <label for="ideFontFamilySelect" style="font-size:13px;color:var(--text-dim);">Editor Font Family</label>
+            <select id="ideFontFamilySelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
+              <option value="JetBrains Mono, Fira Code, monospace" selected>JetBrains Mono</option>
+              <option value="Fira Code, monospace">Fira Code</option>
+              <option value="Maple Mono, ui-monospace, monospace">Maple Mono</option>
+              <option value="'Cascadia Code', monospace">Cascadia Code</option>
+              <option value="'Source Code Pro', monospace">Source Code Pro</option>
+              <option value="monospace">System Monospace</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+            <label for="ideThemeSelect" style="font-size:13px;color:var(--text-dim);">Editor Theme</label>
+            <select id="ideThemeSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
+              <option value="sable-dark" selected>Sable Dark</option>
+              <option value="vs-dark">VS Dark</option>
+              <option value="vs">VS Light</option>
+              <option value="hc-black">High Contrast Dark</option>
+              <option value="hc-light">High Contrast Light</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+            <label for="ideAutoSaveToggle" style="font-size:13px;color:var(--text-dim);">Auto-Save</label>
+            <button id="ideAutoSaveToggle" class="toggle-btn" role="switch" aria-checked="false"
+              style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 14px;font-size:12px;font-family:inherit;cursor:pointer;min-width:50px;">Off</button>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+            <label for="ideStickyScrollToggle" style="font-size:13px;color:var(--text-dim);">Sticky Scroll</label>
+            <button id="ideStickyScrollToggle" class="toggle-btn" role="switch" aria-checked="false"
+              style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 14px;font-size:12px;font-family:inherit;cursor:pointer;min-width:50px;">Off</button>
+          </div>
+        </div>
+
         <div id="tab-tts" class="settings-tab-content">
           <h3 class="mem-title"><span class="icon-emoji">🔊</span><i data-lucide="volume-2" class="icon-lucide"></i> Text-to-Speech</h3>
           <p class="muted mem-desc">Offline TTS powered by Kokoro. Download the model files to enable speech synthesis.</p>
@@ -1313,9 +1396,9 @@
       },
     };
   </script>
-  <script src="/static/app.js?v=106"></script>
+  <script src="/static/app.js?v=108"></script>
   <script src="/static/src/research.js?v=10"></script>
-  <script src="/static/js/agents.js?v=23"></script>
+  <script src="/static/js/agents.js?v=24"></script>
   <script src="/static/js/filesystem.js?v=28"></script>
   <script src="/static/js/mode.js?v=19"></script>
   <script src="/static/js/resize-panels.js?v=1"></script>

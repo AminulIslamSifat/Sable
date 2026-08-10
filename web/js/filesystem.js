@@ -138,6 +138,22 @@
     return parseInt(localStorage.getItem("sable_editor_font_size") || "13", 10);
   }
 
+  function getIdeFontFamily() {
+    return localStorage.getItem("sable_ide_font_family") || "JetBrains Mono, Fira Code, monospace";
+  }
+
+  function getIdeStickyScroll() {
+    return localStorage.getItem("sable_ide_sticky_scroll") === "true";
+  }
+
+  function getIdeAutoSave() {
+    return localStorage.getItem("sable_ide_auto_save") === "true";
+  }
+
+  function getIdeTheme() {
+    return localStorage.getItem("sable_ide_theme") || "sable-dark";
+  }
+
   /* ---------- Lucide helpers ---------- */
   function icon(name, size) {
     return `<i data-lucide="${name}" style="width:${size || 14}px;height:${size || 14}px;"></i>`;
@@ -688,11 +704,12 @@
     } else {
       model = monaco.editor.createModel(data.content, monacoLang(ext));
     }
+    const ideTheme = getIdeTheme();
     monacoEditor = monaco.editor.create(wrapEl, {
       model,
-      theme: "sable-dark",
+      theme: ideTheme,
       fontSize: getEditorFontSize(),
-      fontFamily: "JetBrains Mono, Fira Code, monospace",
+      fontFamily: getIdeFontFamily(),
       minimap: { enabled: false },
       lineNumbers: "on",
       wordWrap: "on",
@@ -704,7 +721,25 @@
       scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
       automaticLayout: true,
       unicodeHighlight: { ambiguousCharacters: false, invisibleCharacters: false },
-      stickyScroll: { enabled: false },
+      stickyScroll: { enabled: getIdeStickyScroll() },
+    });
+
+    // Auto-save timer
+    let autoSaveTimer = null;
+    function startAutoSave() {
+      if (autoSaveTimer) clearInterval(autoSaveTimer);
+      autoSaveTimer = setInterval(() => {
+        if (isDirty && currentFilePath) doSave();
+      }, 2000);
+    }
+    function stopAutoSave() {
+      if (autoSaveTimer) { clearInterval(autoSaveTimer); autoSaveTimer = null; }
+    }
+    if (getIdeAutoSave()) startAutoSave();
+
+    // Listen for auto-save toggle from settings
+    window.addEventListener("ide-autosave-change", (e) => {
+      if (e.detail.enabled) startAutoSave(); else stopAutoSave();
     });
 
     // Track dirty state
@@ -1217,6 +1252,87 @@
   window.getIdeOpenFile = function () {
     return currentFilePath || "";
   };
+
+  /* ---------- Run button: language-aware execution ---------- */
+  const runBtn = document.getElementById("runFileBtn");
+  if (runBtn) {
+    runBtn.addEventListener("click", () => {
+      const fp = currentFilePath;
+      if (!fp) return;
+      const ext = fp.split(".").pop().toLowerCase();
+      const name = fp.split("/").pop();
+
+      // HTML → read content, inject <base> for relative asset resolution, open as blob
+      if (ext === "html" || ext === "htm") {
+        const dir = fp.substring(0, fp.lastIndexOf("/"));
+        fetch(`/api/filesystem/read?path=${encodeURIComponent(fp)}`)
+          .then(r => r.json())
+          .then(data => {
+            if (data.error) { alert(data.error); return; }
+            // Inject <base> so relative css/js/img paths resolve via serve-dir
+            const baseTag = `<base href="/api/filesystem/serve-dir/?base=${encodeURIComponent(dir)}&">`;
+            let html = data.content;
+            if (/<head[^>]*>/i.test(html)) {
+              html = html.replace(/<head([^>]*)>/i, `<head$1>${baseTag}`);
+            } else {
+              html = baseTag + html;
+            }
+            const blob = new Blob([html], { type: "text/html" });
+            window.open(URL.createObjectURL(blob), "_blank");
+          })
+          .catch(() => alert("Failed to read HTML file"));
+        return;
+      }
+
+      // Language → command map
+      const commands = {
+        py: `python3 ${name}`,
+        python: `python3 ${name}`,
+        js: `node ${name}`,
+        mjs: `node ${name}`,
+        ts: `npx tsx ${name}`,
+        tsx: `npx tsx ${name}`,
+        java: `javac ${name} && java ${name.replace(".java", "")}`,
+        go: `go run ${name}`,
+        c: `gcc -o /tmp/${name.replace(".c", "")} ${name} && /tmp/${name.replace(".c", "")}`,
+        cpp: `g++ -o /tmp/${name.replace(/\.cpp$/, "")} ${name} && /tmp/${name.replace(/\.cpp$/, "")}`,
+        cc: `g++ -o /tmp/${name.replace(/\.cc$/, "")} ${name} && /tmp/${name.replace(/\.cc$/, "")}`,
+        rs: `rustc ${name} && ./${name.replace(".rs", "")}`,
+        sh: `bash ${name}`,
+        bash: `bash ${name}`,
+        rb: `ruby ${name}`,
+        php: `php ${name}`,
+        pl: `perl ${name}`,
+        lua: `lua ${name}`,
+        r: `Rscript ${name}`,
+        swift: `swift ${name}`,
+        kt: `kotlinc ${name} -include-runtime -d /tmp/out.jar && java -jar /tmp/out.jar`,
+        dart: `dart run ${name}`,
+      };
+
+      const cmd = commands[ext];
+      if (!cmd) {
+        alert(`No run command configured for .${ext} files.\nAdd it to the run map in filesystem.js or use the terminal directly.`);
+        return;
+      }
+
+      // Auto-save before running if enabled
+      if (getIdeAutoSave() && typeof monaco !== "undefined" && monacoEditor) {
+        const content = monacoEditor.getValue();
+        fetch("/api/filesystem/write", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: fp, content }),
+        }).then(() => {
+          if (window.runInTerminal) window.runInTerminal(cmd);
+        }).catch(() => {
+          if (window.runInTerminal) window.runInTerminal(cmd);
+        });
+      } else {
+        if (window.runInTerminal) window.runInTerminal(cmd);
+      }
+    });
+  }
 
   /* ---------- Open file at position (Problems panel jump) ---------- */
   window.openIdeFileAt = async function (filePath, line, col) {

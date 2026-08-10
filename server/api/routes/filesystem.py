@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Query, Request
+from fastapi.responses import FileResponse
 
 router = APIRouter()
 
@@ -327,6 +328,53 @@ def filesystem_read(path: str = Query(..., description="File path to read")) -> 
         }
     except Exception as e:
         return {"error": f"Read failed: {e}"}
+
+
+# --------------------------------------------------------------------------
+# Serve raw file (for HTML preview with working relative paths)
+# --------------------------------------------------------------------------
+
+_MIME_MAP = {
+    ".html": "text/html", ".htm": "text/html",
+    ".css": "text/css", ".js": "application/javascript", ".mjs": "application/javascript",
+    ".json": "application/json", ".xml": "application/xml",
+    ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
+    ".ico": "image/x-icon", ".woff": "font/woff", ".woff2": "font/woff2",
+    ".ttf": "font/ttf", ".otf": "font/otf",
+    ".txt": "text/plain", ".md": "text/plain",
+}
+
+
+@router.get("/api/filesystem/serve")
+def filesystem_serve(path: str = Query(..., description="File path to serve raw")) -> Any:
+    """Serve a raw file with correct MIME type. Used for HTML preview."""
+    if not _is_allowed(path):
+        return {"error": "Access denied — path outside allowed roots"}
+
+    target = Path(path)
+    if not target.exists() or not target.is_file():
+        return {"error": "File does not exist"}
+
+    ext = target.suffix.lower()
+    media_type = _MIME_MAP.get(ext, "application/octet-stream")
+    return FileResponse(str(target), media_type=media_type)
+
+
+@router.get("/api/filesystem/serve-dir/{sub_path:path}")
+def filesystem_serve_dir(sub_path: str, base: str = Query(..., description="Base directory")) -> Any:
+    """Serve files relative to a base directory. For HTML preview asset resolution."""
+    full = os.path.normpath(os.path.join(base, sub_path))
+    if not _is_allowed(full):
+        return {"error": "Access denied"}
+
+    target = Path(full)
+    if not target.exists() or not target.is_file():
+        return {"error": "Not found"}
+
+    ext = target.suffix.lower()
+    media_type = _MIME_MAP.get(ext, "application/octet-stream")
+    return FileResponse(str(target), media_type=media_type)
 
 
 # --------------------------------------------------------------------------

@@ -17,7 +17,7 @@ from typing import Any
 
 from engine.agents.agent import Agent
 from engine.agents.resilience import CircuitBreaker, LoopDetector
-from engine.agents.registry import get_role_config
+from engine.agents.registry import get_role_config, get_account_pool
 
 logger = logging.getLogger("sable")
 
@@ -203,18 +203,22 @@ async def run_agent_llm_loop(
     # Initial breaker check (fallback chain handles mid-loop failures)
     initial_breaker = _resolve_breaker(agent, breakers)
     if not initial_breaker.can_execute():
-        # Check if any fallback model has an open breaker
+        # Check if any fallback model has a viable breaker
         has_viable_fallback = False
         if agent.model_chain:
             for fb_model in agent.model_chain:
-                fb_backend = "qwen" if "qwen" in fb_model else "deepseek"
-                fb_breaker = breakers.get(fb_backend)
+                fb_key = _get_backend_key(fb_model)
+                fb_breaker = breakers.get(fb_key)
                 if fb_breaker and fb_breaker.can_execute():
                     has_viable_fallback = True
                     break
+                # No breaker registered for this backend = not tripped = viable
+                if fb_breaker is None:
+                    has_viable_fallback = True
+                    break
         if not has_viable_fallback:
-            backend = "qwen" if "qwen" in agent.model else "deepseek"
-            raise RuntimeError(f"Circuit breaker open for {backend} — provider unavailable")
+            key = _get_backend_key(agent.model)
+            raise RuntimeError(f"Circuit breaker open for {key} — provider unavailable")
 
     # Build first message: system prompt + tool guide + task
     system_prompt = role_cfg.system_prompt
@@ -554,8 +558,19 @@ async def _try_teacher_escalation(agent: Agent, stuck_reason: str) -> str | None
 
 
 def _get_backend_type(model: str) -> str:
-    """Classify a model as 'qwen' or 'api' (stateless API backend)."""
-    if "qwen" in model.lower():
+    """Classify a model as 'qwen' or 'api' based on actual API backend config."""
+    from engine.config import get_model_config
+    cfg = get_model_config(model)
+    backend = cfg.get("api_backend", "")
+    logger.info("[FALLBACK-DEBUG] _get_backend_type: model=%s cfg_id=%s api_backend='%s'",
+                model, cfg.get("id", "?"), backend)
+    if backend in ("gemini", "groq", "mistral", "deepseek"):
+        return "api"
+    if backend == "qwen":
+        return "qwen"
+    # Fallback: check model name only if no explicit backend configured
+    if "qwen" in model.lower() and not backend:
+        logger.warning("[FALLBACK-DEBUG] _get_backend_type: FALLBACK to 'qwen' via name match (no api_backend configured)")
         return "qwen"
     return "api"
 
@@ -618,7 +633,10 @@ async def _migrate_conversation(agent: Agent, old_model: str, new_model: str) ->
 
 async def _try_fallback_model(agent: Agent, failed_model: str) -> str | None:
     """Try the next model in the fallback chain. Returns new model name or None if exhausted."""
+    logger.info("[FALLBACK-DEBUG] _try_fallback_model: agent=%s failed=%s chain=%s idx=%d",
+                agent.id, failed_model, agent.model_chain, agent._fallback_index)
     if not agent.model_chain:
+        logger.warning("[FALLBACK-DEBUG] _try_fallback_model: EMPTY model_chain!")
         return None
 
     # Find next untried model in chain
@@ -628,15 +646,47 @@ async def _try_fallback_model(agent: Agent, failed_model: str) -> str | None:
         if fallback_model == failed_model:
             continue  # Skip the one that just failed
         agent._fallback_index = i + 1
+        logger.info("[FALLBACK-DEBUG] _try_fallback_model: selected %s (idx now %d)", fallback_model, agent._fallback_index)
         return fallback_model
 
+    logger.warning("[FALLBACK-DEBUG] _try_fallback_model: ALL models exhausted!")
     return None  # All fallbacks exhausted
+
+
+def _try_browser_fallback(agent: Agent) -> str | None:
+    """Try the next browser profile from the account pool (Qwen only).
+
+    Returns the next available profile or None if exhausted.
+    """
+    pool = get_account_pool(agent.role)
+    if not pool:
+        return None
+    current = agent.browser_data_dir or ""
+    try:
+        idx = pool.index(current) + 1
+    except ValueError:
+        idx = 0
+    if idx >= len(pool):
+        return None
+    return pool[idx]
+
+
+def _get_backend_key(model: str) -> str:
+    """Map model name to its circuit breaker key."""
+    from engine.config import get_model_config
+    cfg = get_model_config(model)
+    backend = cfg.get("api_backend", "")
+    if backend in ("gemini", "groq", "mistral", "deepseek"):
+        return backend
+    if "qwen" in model:
+        return "qwen"
+    return backend or "qwen"
 
 
 def _resolve_breaker(agent: Agent, breakers: dict[str, CircuitBreaker]) -> CircuitBreaker:
     """Get the correct circuit breaker for the agent's current model."""
-    backend = "qwen" if "qwen" in agent.model else "deepseek"
-    return breakers.get(backend, list(breakers.values())[0])
+    key = _get_backend_key(agent.model)
+    return breakers.get(key, list(breakers.values())[0])
 
 
 async def _send_with_retry(
@@ -656,6 +706,9 @@ async def _send_with_retry(
     last_exc: Exception | None = None
     breaker = _resolve_breaker(agent, breakers)
 
+    logger.info("[FALLBACK-DEBUG] agent=%s model=%s model_chain=%s _fallback_index=%d",
+                agent.id, agent.model, agent.model_chain, agent._fallback_index)
+
     for attempt in range(max_retries):
         try:
             text, new_pid = await _call_llm(agent, message, parent_id, is_first_turn)
@@ -664,13 +717,57 @@ async def _send_with_retry(
         except Exception as exc:
             last_exc = exc
             breaker.record_failure()
+            logger.warning("[FALLBACK-DEBUG] agent=%s attempt=%d/%d FAILED: %s",
+                           agent.id, attempt + 1, max_retries, exc)
             if attempt == max_retries - 1:
                 break  # Exhausted retries — try fallback below
             delay = (2 ** attempt) + random.uniform(0, 1)
             logger.warning("Agent %s retry %d/%d: %s (%.1fs)", agent.id, attempt + 1, max_retries, exc, delay)
             await asyncio.sleep(delay)
 
-    # All retries failed — try fallback model chain
+    # All retries failed with current model+profile.
+    backend_type = _get_backend_type(agent.model)
+    logger.info("[FALLBACK-DEBUG] agent=%s retries exhausted. backend_type=%s, attempting fallback",
+                agent.id, backend_type)
+    # Qwen: exhaust ALL browser profiles first, THEN switch model.
+    # Non-Qwen: go straight to model fallback.
+    if _get_backend_type(agent.model) == "qwen":
+        browser_profile = _try_browser_fallback(agent)
+        if browser_profile:
+            old_profile = agent.browser_data_dir or "default"
+            logger.info("[agent %s] Browser fallback: %s → %s", agent.id, old_profile, browser_profile)
+            agent.push_stream_event({
+                "type": "browser_fallback",
+                "from": old_profile,
+                "to": browser_profile,
+                "reason": str(last_exc)[:200] if last_exc else "retries exhausted",
+            })
+            agent.browser_data_dir = browser_profile
+            agent.qwen_session_id = None
+            parent_id = None
+            is_first_turn = True
+
+            breaker = _resolve_breaker(agent, breakers)
+            for attempt in range(max_retries):
+                try:
+                    text, new_pid = await _call_llm(agent, message, parent_id, is_first_turn)
+                    breaker.record_success()
+                    logger.info("[agent %s] Browser fallback to %s succeeded", agent.id, browser_profile)
+                    return text, new_pid
+                except Exception as exc3:
+                    last_exc = exc3
+                    breaker.record_failure()
+                    if attempt == max_retries - 1:
+                        break
+                    delay = (2 ** attempt) + random.uniform(0, 1)
+                    logger.warning("Agent %s browser fallback retry %d/%d: %s (%.1fs)", agent.id, attempt + 1, max_retries, exc3, delay)
+                    await asyncio.sleep(delay)
+
+            # This browser profile also failed — try next one recursively
+            return await _send_with_retry(agent, message, parent_id, breakers, is_first_turn, max_retries)
+
+    # All browser profiles exhausted (or not Qwen) — try model fallback chain
+    logger.info("[FALLBACK-DEBUG] agent=%s entering model fallback section", agent.id)
     fallback_model = await _try_fallback_model(agent, agent.model)
     if fallback_model:
         old_model = agent.model
@@ -682,24 +779,19 @@ async def _send_with_retry(
             "reason": str(last_exc)[:200] if last_exc else "unknown",
         })
 
-        # Migrate conversation history across backend types
         migration_ctx = await _migrate_conversation(agent, old_model, fallback_model)
         agent.model = fallback_model
 
-        # If migrating to Qwen, reset session so a fresh one is created
         if _get_backend_type(fallback_model) == "qwen":
             agent.qwen_session_id = None
-            parent_id = None  # Fresh session
+            parent_id = None
             is_first_turn = True
 
-        # Prepend migration context to the current message
         if migration_ctx:
             message = f"{migration_ctx}\n\n---\n\n{message}"
 
-        # Resolve breaker for the new model
         breaker = _resolve_breaker(agent, breakers)
 
-        # Retry with the new model (full retry budget)
         for attempt in range(max_retries):
             try:
                 text, new_pid = await _call_llm(agent, message, parent_id, is_first_turn)
@@ -715,10 +807,11 @@ async def _send_with_retry(
                 logger.warning("Agent %s fallback retry %d/%d: %s (%.1fs)", agent.id, attempt + 1, max_retries, exc2, delay)
                 await asyncio.sleep(delay)
 
-        # Fallback also failed — try next in chain recursively
+        # Model fallback also failed — try next in chain recursively
         return await _send_with_retry(agent, message, parent_id, breakers, is_first_turn, max_retries)
 
-    # No fallbacks left — raise original error
+    # No fallbacks left at all — raise
+    logger.error("[FALLBACK-DEBUG] agent=%s NO FALLBACK AVAILABLE. Raising: %s", agent.id, last_exc)
     raise last_exc or RuntimeError("All retries and fallbacks exhausted")
 
 
@@ -957,6 +1050,29 @@ async def _call_qwen(
     # Create or reuse upstream Qwen session
     chat_id = agent.qwen_session_id
     if is_first_turn or not chat_id:
+        # Clear stale system instruction so it doesn't conflict with agent prompt
+        # Only if agent has its own browser profile — never touch Maria's active session
+        if agent.browser_data_dir:
+            try:
+                import uuid as _uuid
+                import httpx as _httpx
+                _hdrs = dict(headers)
+                _hdrs.update({
+                    "Content-Type": "application/json",
+                    "Version": "0.2.80",
+                    "source": "web",
+                    "Origin": "https://chat.qwen.ai",
+                    "Referer": "https://chat.qwen.ai/settings/personalization",
+                    "X-Request-Id": str(_uuid.uuid4()),
+                })
+                async with _httpx.AsyncClient(timeout=15) as _client:
+                    await _client.post(
+                        "https://chat.qwen.ai/api/v2/users/user/settings/update",
+                        json={"personalization": {"name": "", "description": "", "style": "Default", "instruction": ""}},
+                        headers=_hdrs,
+                    )
+            except Exception as exc:
+                logger.warning("Agent %s: clear instruction failed: %s", agent.id, exc)
         chat_id = await create_new_chat(headers, model=agent.model)
         if not chat_id:
             # Retry with fresh headers (re-fetch from browser if needed)
@@ -1084,6 +1200,8 @@ def _validate_markdown_output(text: str, required_sections: list[str]) -> bool:
     """Check if response is a pure markdown document containing required ## headers.
 
     Rejects any response that contains JSON objects/arrays or isn't pure markdown.
+    When required_sections is empty, applies a minimum quality gate: the response
+    must contain at least one ## header to be considered a valid final answer.
     """
     stripped = text.strip()
     if not stripped:
@@ -1102,7 +1220,14 @@ def _validate_markdown_output(text: str, required_sections: list[str]) -> bool:
         return False
     # Check that required section headers exist (case-insensitive)
     text_lower = stripped.lower()
-    return all(f"## {s.lower()}" in text_lower for s in required_sections)
+    if required_sections:
+        # Threshold: at least 2 required sections must be present
+        # (handles roles with dual formats like analyst where only one set applies)
+        found = sum(1 for s in required_sections if f"## {s.lower()}" in text_lower)
+        return found >= 2
+    # No required sections — minimum quality gate: must have at least one ## header
+    # Catches mid-thought responses that aren't actual final answers
+    return "## " in stripped
 
 
 async def _persist_message(agent_id: str, role: str, content: str) -> None:
