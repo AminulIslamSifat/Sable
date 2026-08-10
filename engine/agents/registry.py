@@ -13,6 +13,7 @@ class RoleConfig:
     default_timeout: float
     max_parallel: int
     required_sections: list[str] = field(default_factory=list)
+    model_chain: list[str] = field(default_factory=list)  # fallback models (excludes primary)
 
 
 _MARKDOWN_INSTRUCTION = (
@@ -285,12 +286,41 @@ def get_account_pool(role: str) -> list[str]:
     return _account_pools.get(role, [])
 
 
+def _load_model_chain_from_settings(role: str) -> list[str]:
+    """Load model_chain for a role from system/settings.json > agent > roles > {role} > model_chain."""
+    try:
+        import json as _json
+        from engine.config import _SYSTEM
+        p = _SYSTEM / "settings.json"
+        if p.is_file():
+            data = _json.loads(p.read_text(encoding="utf-8"))
+            chain = data.get("agent", {}).get("roles", {}).get(role, {}).get("model_chain")
+            if isinstance(chain, list):
+                return [m for m in chain if isinstance(m, str)]
+    except Exception:
+        pass
+    return []
+
+
 def get_role_config(role: str) -> RoleConfig:
     """Get role config with any file-based overrides applied."""
     base = AGENT_ROLES.get(role, AGENT_ROLES["analyst"])
     ov = _role_overrides.get(role)
+    # Load model_chain: override > settings.json > empty
+    chain = _load_model_chain_from_settings(role)
+    if ov and "model_chain" in ov:
+        chain = ov["model_chain"]
     if not ov:
-        return base
+        return RoleConfig(
+            system_prompt=base.system_prompt,
+            allowed_skills=base.allowed_skills,
+            default_skills=base.default_skills,
+            default_model=base.default_model,
+            default_timeout=base.default_timeout,
+            max_parallel=base.max_parallel,
+            required_sections=base.required_sections,
+            model_chain=chain,
+        )
     # Merge: override fields replace base fields
     return RoleConfig(
         system_prompt=ov.get("system_prompt", base.system_prompt),
@@ -300,6 +330,7 @@ def get_role_config(role: str) -> RoleConfig:
         default_timeout=ov.get("default_timeout", base.default_timeout),
         max_parallel=ov.get("max_parallel", base.max_parallel),
         required_sections=ov.get("required_sections", ov.get("required_json_keys", base.required_sections)),
+        model_chain=chain,
     )
 
 
@@ -323,6 +354,7 @@ def export_roles() -> dict[str, dict]:
             "default_timeout": cfg.default_timeout,
             "max_parallel": cfg.max_parallel,
             "required_sections": cfg.required_sections,
+            "model_chain": cfg.model_chain,
             "account_pool": get_account_pool(name),
         }
     return result

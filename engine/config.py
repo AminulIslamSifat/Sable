@@ -64,7 +64,6 @@ NEW_CHAT_URL = "https://chat.qwen.ai/api/v2/chats/new"
 STOP_URL = "https://chat.qwen.ai/api/v2/chat/completions/stop"
 
 # Each model carries its own list of selectable "thinking modes" — some
-# models only support one mode (e.g. qwen3.8-max was Thinking-only),
 # others support several (qwen3.7-max: Fast/Thinking, qwen3.7-plus:
 # Fast/Auto/Thinking). Each thinking mode entry maps directly onto the
 # feature_config fields the upstream API expects. Add/remove model or mode
