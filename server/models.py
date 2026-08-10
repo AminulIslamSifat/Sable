@@ -25,6 +25,26 @@ class ChatRequest(BaseModel):
 
 class NewChatRequest(BaseModel):
     model: str | None = None
+    project_id: str | None = None
+
+class ProjectCreate(BaseModel):
+    name: str
+    path: str | None = None
+
+class ProjectUpdate(BaseModel):
+    name: str | None = None
+    path: str | None = None
+    instruction_file: str | None = None
+    instruction_text: str | None = None
+    use_universal_memory: bool | None = None
+    project_memory_enabled: bool | None = None
+    facts: str | None = None
+    git_repo: str | None = None
+    git_username: str | None = None
+    git_branch: str | None = None
+    persona_enabled: bool | None = None
+    output_format_enabled: bool | None = None
+    skills_config: dict | None = None
 
 class ContextPassRequest(BaseModel):
     chat_id: str

@@ -17,7 +17,7 @@ from instruction.mem_cmd import (
 )
 
 from server.config import _MEMORY_PATH, _PROTECTED_PATH, _PERSONALITY_PATH, _PERSONAL_PATH, _MEMORY_SEARCH_SETTINGS, _DEFAULT_MAX_PROMPT_CHARS
-from server.database import get_messages, get_injected_memory_keys, get_parent_id
+from server.database import get_messages, get_injected_memory_keys, get_parent_id, get_chat_project_id, get_project
 from server.utils import retry_async, _is_deepseek_api_model, _resolve_api_backend, logger
 from ..dependencies import service
 from engine.service import ChatService
@@ -524,6 +524,19 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     if not chat_id:
         raise HTTPException(status_code=400, detail="Missing 'chat_id'")
 
+    # Resolve project-scoped memory path
+    _mem_path = _MEMORY_PATH  # default: global memory
+    try:
+        _proj_id = get_chat_project_id(chat_id)
+        if _proj_id:
+            _proj = get_project(_proj_id)
+            if _proj and _proj.get("project_memory_enabled"):
+                _proj_mem_dir = Path(__file__).resolve().parent.parent.parent / "system" / "projects" / _proj_id
+                _proj_mem_dir.mkdir(parents=True, exist_ok=True)
+                _mem_path = _proj_mem_dir / "Memory.json"
+    except Exception:
+        pass
+
     messages = get_messages(chat_id)
     if len(messages) < 2:
         return {"status": "skipped", "reason": "too few messages"}
@@ -540,9 +553,9 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     # Build memory context
     injected_keys = get_injected_memory_keys(chat_id)
     filtered_memory: dict[str, list] = {}
-    if _MEMORY_PATH.exists() and injected_keys:
+    if _mem_path.exists() and injected_keys:
         try:
-            full_memory = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
+            full_memory = json.loads(_mem_path.read_text(encoding="utf-8"))
             if isinstance(full_memory, dict):
                 for category, entries in full_memory.items():
                     if isinstance(entries, list):
@@ -625,9 +638,9 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(deletes, list):
         deletes = []
     existing: dict[str, list[dict[str, str]]] = {}
-    if _MEMORY_PATH.exists():
+    if _mem_path.exists():
         try:
-            existing = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
+            existing = json.loads(_mem_path.read_text(encoding="utf-8"))
             if not isinstance(existing, dict):
                 existing = {}
         except Exception:
@@ -671,6 +684,7 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     prot_added = 0
     if isinstance(prot_new, list) and prot_new:
         existing_prot: list[dict[str, str]] = []
+        # Protected memory ALWAYS read from universal
         if _PROTECTED_PATH.exists():
             try:
                 pdata = json.loads(_PROTECTED_PATH.read_text(encoding="utf-8"))
@@ -683,6 +697,7 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
                 existing_prot.append({"key": entry["key"], "value": entry.get("value", "")})
                 prot_keys.add(entry["key"])
                 prot_added += 1
+        # Protected memory ALWAYS goes to universal, never project-scoped
         _PROTECTED_PATH.parent.mkdir(parents=True, exist_ok=True)
         _PROTECTED_PATH.write_text(
             json.dumps({"protected": existing_prot}, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -701,9 +716,17 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
                 eph_keys.add(entry["key"])
                 eph_added += 1
         existing["ephemeral"] = eph_list
-    _MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _MEMORY_PATH.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
-    get_searcher().reload_memory()
+    _mem_path.parent.mkdir(parents=True, exist_ok=True)
+    _mem_path.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+    if _mem_path != _MEMORY_PATH:
+        # Project-scoped memory — reload project searcher
+        try:
+            from engine.memory_search import reload_project_searcher
+            reload_project_searcher(_proj_id)
+        except Exception:
+            pass
+    else:
+        get_searcher().reload_memory()
     # Handle optional skill creation
     skill_created = False
     skill_data = new_entries.get("create_skill")
@@ -730,9 +753,9 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
         return {"status": "skipped", "reason": "too few messages"}
     injected_keys = get_injected_memory_keys(chat_id)
     filtered_memory: dict[str, list] = {}
-    if _MEMORY_PATH.exists() and injected_keys:
+    if _mem_path.exists() and injected_keys:
         try:
-            full_memory = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
+            full_memory = json.loads(_mem_path.read_text(encoding="utf-8"))
             if isinstance(full_memory, dict):
                 for category, entries in full_memory.items():
                     if isinstance(entries, list):
@@ -792,9 +815,9 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(deletes, list):
         deletes = []
     existing: dict[str, list[dict[str, str]]] = {}
-    if _MEMORY_PATH.exists():
+    if _mem_path.exists():
         try:
-            existing = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
+            existing = json.loads(_mem_path.read_text(encoding="utf-8"))
             if not isinstance(existing, dict):
                 existing = {}
         except Exception:
@@ -838,6 +861,7 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
     prot_added = 0
     if isinstance(prot_new, list) and prot_new:
         existing_prot: list[dict[str, str]] = []
+        # Protected memory ALWAYS read from universal
         if _PROTECTED_PATH.exists():
             try:
                 pdata = json.loads(_PROTECTED_PATH.read_text(encoding="utf-8"))
@@ -850,6 +874,7 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
                 existing_prot.append({"key": entry["key"], "value": entry.get("value", "")})
                 prot_keys.add(entry["key"])
                 prot_added += 1
+        # Protected memory ALWAYS goes to universal, never project-scoped
         _PROTECTED_PATH.parent.mkdir(parents=True, exist_ok=True)
         _PROTECTED_PATH.write_text(
             json.dumps({"protected": existing_prot}, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -868,9 +893,17 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
                 eph_keys.add(entry["key"])
                 eph_added += 1
         existing["ephemeral"] = eph_list
-    _MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _MEMORY_PATH.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
-    get_searcher().reload_memory()
+    _mem_path.parent.mkdir(parents=True, exist_ok=True)
+    _mem_path.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+    if _mem_path != _MEMORY_PATH:
+        # Project-scoped memory — reload project searcher
+        try:
+            from engine.memory_search import reload_project_searcher
+            reload_project_searcher(_proj_id)
+        except Exception:
+            pass
+    else:
+        get_searcher().reload_memory()
     total_added = added_count + prot_added + eph_added
 
     # Fire personality assessment in background

@@ -93,35 +93,21 @@ def _save_keys(keys: list[str]) -> None:
     _KEYS_PATH.write_text(json.dumps(keys, indent=2), encoding="utf-8")
 
 
-def _load_instructions() -> str:
-    """Load and concatenate instruction files + dynamic skill registry for system prompt injection."""
-    parts: list[str] = []
-    for fname in _INSTRUCTION_FILES:
-        fpath = _INSTRUCTION_DIR / fname
-        if fpath.exists():
-            parts.append(fpath.read_text(encoding="utf-8").strip())
-    # Append auto-generated skill registry
-    from engine.skills import SkillEngine
-    from engine.skills.handlers import HANDLER_MAP
-    _engine = SkillEngine(
-        skills_dir=Path(__file__).resolve().parent.parent.parent / "skills",
-        handlers=HANDLER_MAP,
-        agent_id="maria",
-    )
-    parts.append(_engine.get_registry_prompt())
+_instruction_cache: str | None = None
+_cached_project_id: str | None = "__none__"
 
-    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-    OUTPUT_ROOT = PROJECT_ROOT / "output"
-    ASSETS_DIR = OUTPUT_ROOT / "assets"
-    parts.append(
-        f"\n\n***\n\n# SYSTEM DIRECTORIES\n"
-        f"PROJECT_ROOT={PROJECT_ROOT}\n"
-        f"OUTPUT_ROOT={OUTPUT_ROOT}\n"
-        f"ASSETS_DIR={ASSETS_DIR}\n"
-        f"All <OUTPUT_ROOT> tags in your instructions should be replaced with {OUTPUT_ROOT}\n"
-        f"All <PROJECT_ROOT> tags in your instructions should be replaced with {PROJECT_ROOT}\n"
-    )
-    return "\n\n".join(parts)
+
+def _load_instructions(project_id: str | None = None) -> str:
+    """Load instruction context. Project-aware via shared builder."""
+    global _instruction_cache, _cached_project_id
+    if project_id != _cached_project_id:
+        _instruction_cache = None
+        _cached_project_id = project_id
+    if _instruction_cache is not None:
+        return _instruction_cache
+    from connectors.common.instruction_builder import build_instructions
+    _instruction_cache = build_instructions(project_id=project_id)
+    return _instruction_cache
 
 
 
@@ -287,6 +273,7 @@ class GeminiClient:
         self, chat_id: str | None, inject_instructions: bool,
         system_instruction: str | None = None,
         max_session_chars: int | None = None,
+        project_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Get existing session history or create a new one (sliding window)."""
         # Store per-session max chars if provided
@@ -303,7 +290,7 @@ class GeminiClient:
 
         history: list[dict[str, Any]] = []
         # Explicit system_instruction takes priority over default inject
-        instructions = system_instruction if system_instruction else (_load_instructions() if inject_instructions else None)
+        instructions = system_instruction if system_instruction else (_load_instructions(project_id=project_id) if inject_instructions else None)
         if instructions:
             history.append({
                     "role": "user",
@@ -344,7 +331,8 @@ class GeminiClient:
         url = f"{BASE_URL}/models/{model_id}:streamGenerateContent"
 
         system_instruction = kwargs.pop("system_instruction", None)
-        history = self._get_or_create_session(chat_id, inject_instructions, system_instruction=system_instruction, max_session_chars=max_session_chars)
+        project_id = kwargs.pop("project_id", None)
+        history = self._get_or_create_session(chat_id, inject_instructions, system_instruction=system_instruction, max_session_chars=max_session_chars, project_id=project_id)
 
         # Context summarization: check thresholds before sending
         effective_max = self._get_max_chars(chat_id)

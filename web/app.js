@@ -253,6 +253,8 @@
     let chatSearchQuery = '';
     let chatSearchResults = null; // null = not searched, array = search results
     let activeChatId = null;
+    let activeProjectId = null;
+    let projectList = [];
     let parentId    = null;
     const activeStreams = new Map(); // chatId → AbortController
     const openTabs = new Map(); // chatId → { pane: HTMLElement, title: string }
@@ -1227,6 +1229,100 @@
       toastTimer = setTimeout(() => toastEl.classList.remove("show"), 3500);
     }
     window.showToast = showToast; // expose for filesystem.js
+
+
+    /* ---------- Sable Dialog — themed replacement for confirm/prompt/alert ---------- */
+    function sableDialog({ title, message, type = 'confirm', defaultValue = '', danger = false }) {
+      return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'sable-dialog-overlay';
+
+        const modal = document.createElement('div');
+        modal.className = 'sable-dialog';
+
+        if (title) {
+          const t = document.createElement('div');
+          t.className = 'sable-dialog-title';
+          t.textContent = title;
+          modal.appendChild(t);
+        }
+
+        if (message) {
+          const m = document.createElement('div');
+          m.className = 'sable-dialog-msg';
+          m.textContent = message;
+          modal.appendChild(m);
+        }
+
+        let inputEl = null;
+        if (type === 'prompt') {
+          inputEl = document.createElement('input');
+          inputEl.type = 'text';
+          inputEl.className = 'sable-dialog-input';
+          inputEl.value = defaultValue || '';
+          modal.appendChild(inputEl);
+        }
+
+        const actions = document.createElement('div');
+        actions.className = 'sable-dialog-actions';
+
+        if (type !== 'alert') {
+          const cancelBtn = document.createElement('button');
+          cancelBtn.className = 'sable-dialog-btn';
+          cancelBtn.textContent = 'Cancel';
+          cancelBtn.onclick = () => { overlay.remove(); resolve(type === 'prompt' ? null : false); };
+          actions.appendChild(cancelBtn);
+        }
+
+        const okBtn = document.createElement('button');
+        okBtn.className = 'sable-dialog-btn primary' + (danger ? ' danger' : '');
+        okBtn.textContent = type === 'alert' ? 'OK' : (danger ? 'Delete' : 'Confirm');
+        okBtn.onclick = () => {
+          overlay.remove();
+          if (type === 'prompt') resolve(inputEl.value);
+          else resolve(true);
+        };
+        actions.appendChild(okBtn);
+        modal.appendChild(actions);
+
+        overlay.appendChild(modal);
+        document.body.appendChild(overlay);
+
+        // Focus input or OK button
+        if (inputEl) {
+          inputEl.focus();
+          inputEl.select();
+          inputEl.addEventListener('keydown', e => {
+            if (e.key === 'Enter') okBtn.click();
+            if (e.key === 'Escape') cancelBtn?.click();
+          });
+        } else {
+          okBtn.focus();
+        }
+
+        // Escape key closes
+        overlay.addEventListener('keydown', e => {
+          if (e.key === 'Escape') {
+            overlay.remove();
+            resolve(type === 'prompt' ? null : false);
+          }
+        });
+
+        // Click backdrop to cancel
+        overlay.addEventListener('mousedown', e => {
+          if (e.target === overlay) {
+            overlay.remove();
+            resolve(type === 'prompt' ? null : false);
+          }
+        });
+      });
+    }
+
+    // Drop-in async replacements for native dialogs
+    window.sableConfirm = (msg, opts = {}) => sableDialog({ message: msg, type: 'confirm', ...opts });
+    window.sablePrompt = (msg, def = '') => sableDialog({ message: msg, type: 'prompt', defaultValue: def });
+    window.sableAlert = (msg, opts = {}) => sableDialog({ message: msg, type: 'alert', ...opts });
+
 
     // mobile: tap to dismiss toast immediately
     toastEl.addEventListener("click", () => {
@@ -3623,8 +3719,9 @@
 
     let scraperChatsCollapsed = false;
 
-    function renderChats() {
+    async function renderChats() {
       chatsEl.innerHTML = '';
+      chatsEl.classList.remove('has-project-banner');
 
       // Split chats: scraper (browser-*) vs API
       const q = chatSearchQuery.toLowerCase().trim();
@@ -3665,6 +3762,26 @@
         }
         return;
       }
+      // ── Project folder / banner at top of chat list ──
+      await loadProjects();
+      // Show/hide project menu button based on active project
+      const projectMenuBtn = document.getElementById('projectMenuBtn');
+      if (projectMenuBtn) projectMenuBtn.style.display = activeProjectId ? '' : 'none';
+      const projectFolderBtnEl = document.getElementById('projectFolderBtn');
+      if (projectFolderBtnEl) projectFolderBtnEl.style.display = activeProjectId ? 'none' : '';
+
+      if (activeProjectId) {
+        const proj = projectList.find(p => p.id === activeProjectId);
+        const banner = document.createElement('div');
+        banner.className = 'project-banner';
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'project-name';
+        nameSpan.textContent = proj ? proj.name : 'Project';
+        banner.appendChild(nameSpan);
+        chatsEl.classList.add('has-project-banner');
+        chatsEl.appendChild(banner);
+      }
+
       const filtered = q ? chatList.filter(c => (c.title || '').toLowerCase().includes(q)) : chatList;
       const apiChats = filtered.filter(c => !c.id.startsWith('browser-'));
       const scraperChats = filtered.filter(c => c.id.startsWith('browser-'));
@@ -3714,6 +3831,9 @@
         }
         chatsEl.appendChild(renderChatRow(chat));
       }
+
+      // Activate lucide icons for dynamically created project elements
+      if (typeof lucide !== 'undefined') lucide.createIcons();
 
       // Scraper chats at bottom in collapsible section
       if (scraperChats.length > 0) {
@@ -4068,6 +4188,451 @@
 
     // thinking mode change handled inline per-button above
 
+    async function loadProjects() {
+      try {
+        const data = await fetch('/api/projects').then(r => r.json());
+        projectList = data.projects || [];
+      } catch (err) {
+        console.error("Failed to load projects:", err);
+      }
+    }
+
+
+
+    // ── Projects Settings Tab ────────────────────────────────────────────────
+    async function renderProjectsTab() {
+      await loadProjects();
+      const list = document.getElementById('projectsList');
+      if (!list) return;
+      list.innerHTML = '';
+
+      if (projectList.length === 0) {
+        list.innerHTML = '<p class="muted" style="font-size:12px;text-align:center;padding:20px;">No projects yet. Create one above.</p>';
+        return;
+      }
+
+      for (const proj of projectList) {
+        const card = document.createElement('div');
+        card.className = 'project-card';
+
+        const info = document.createElement('div');
+        info.className = 'project-card-info';
+        const nameEl = document.createElement('div');
+        nameEl.className = 'project-card-name';
+        nameEl.textContent = proj.name;
+        const metaEl = document.createElement('div');
+        metaEl.className = 'project-card-meta';
+        metaEl.textContent = (proj.path || 'No path') + ' \u00b7 Universal memory: ' + (proj.use_universal_memory ? 'ON' : 'OFF');
+        info.appendChild(nameEl);
+        info.appendChild(metaEl);
+
+        const actions = document.createElement('div');
+        actions.className = 'project-card-actions';
+
+        const toggleBtn = document.createElement('button');
+        toggleBtn.textContent = proj.use_universal_memory ? 'Memory ON' : 'Memory OFF';
+        toggleBtn.onclick = () => {
+          fetch('/api/projects/' + proj.id, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ use_universal_memory: !proj.use_universal_memory })
+          }).then(() => renderProjectsTab());
+        };
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'delete';
+        delBtn.textContent = 'Delete';
+        delBtn.onclick = async () => {
+          if (await sableConfirm('Delete project "' + proj.name + '"? Chats will be moved to global.', { danger: true })) {
+            fetch('/api/projects/' + proj.id, { method: 'DELETE' }).then(() => {
+              if (activeProjectId === proj.id) { activeProjectId = null; loadChats(); }
+              renderProjectsTab();
+            });
+          }
+        };
+
+        actions.appendChild(toggleBtn);
+        actions.appendChild(delBtn);
+        card.appendChild(info);
+        card.appendChild(actions);
+        list.appendChild(card);
+      }
+    }
+
+    // ── Project Settings Popup ───────────────────────────────────────────────
+    function showProjectSettingsPopup(proj, anchorEl) {
+      const existingOverlay = document.querySelector('.project-settings-overlay');
+      if (existingOverlay) existingOverlay.remove();
+
+      const overlay = document.createElement('div');
+      overlay.className = 'project-settings-overlay';
+
+      const modal = document.createElement('div');
+      modal.className = 'project-settings-modal';
+
+      const title = document.createElement('h4');
+      title.textContent = proj.name + ' Settings';
+      modal.appendChild(title);
+
+      // Helper: create toggle row
+      const makeToggle = (id, labelText, checked) => {
+        const row = document.createElement('div');
+        row.className = 'psm-toggle-row';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.id = id;
+        cb.checked = !!checked;
+        const lbl = document.createElement('label');
+        lbl.textContent = labelText;
+        lbl.htmlFor = id;
+        row.appendChild(cb);
+        row.appendChild(lbl);
+        row.addEventListener('click', (e) => {
+          if (e.target !== cb) cb.checked = !cb.checked;
+        });
+        return { row, cb };
+      };
+
+      // Helper: create labeled text input
+      const makeTextInput = (labelText, value, placeholder) => {
+        const lbl = document.createElement('label');
+        lbl.textContent = labelText;
+        const inp = document.createElement('input');
+        inp.type = 'text';
+        inp.value = value || '';
+        if (placeholder) inp.placeholder = placeholder;
+        return { lbl, inp };
+      };
+
+      // Helper: create collapsible section
+      const makeSection = (headerText, collapsed) => {
+        const section = document.createElement('div');
+        section.className = 'psm-section';
+        const header = document.createElement('div');
+        header.className = 'psm-section-header';
+        const chevron = document.createElement('span');
+        chevron.className = 'psm-chevron';
+        chevron.textContent = collapsed ? '▸' : '▾';
+        const hText = document.createElement('span');
+        hText.textContent = headerText;
+        header.appendChild(chevron);
+        header.appendChild(hText);
+        const body = document.createElement('div');
+        body.className = 'psm-section-body';
+        if (collapsed) body.style.display = 'none';
+        header.addEventListener('click', () => {
+          const hidden = body.style.display === 'none';
+          body.style.display = hidden ? '' : 'none';
+          chevron.textContent = hidden ? '▾' : '▸';
+        });
+        section.appendChild(header);
+        section.appendChild(body);
+        return { section, body };
+      };
+
+      // ── A. General ──
+      const generalSec = makeSection('General', false);
+      const nameField = makeTextInput('Name', proj.name, 'Project name');
+      generalSec.body.appendChild(nameField.lbl);
+      generalSec.body.appendChild(nameField.inp);
+      const pathField = makeTextInput('Project Path', proj.path, '/path/to/project');
+      generalSec.body.appendChild(pathField.lbl);
+      generalSec.body.appendChild(pathField.inp);
+      modal.appendChild(generalSec.section);
+
+      // ── B. Instructions ──
+      const instrSec = makeSection('Instructions', false);
+      const personaTog = makeToggle('psm-persona', 'Use custom persona instructions', proj.persona_enabled);
+      instrSec.body.appendChild(personaTog.row);
+
+      const instrTextarea = document.createElement('textarea');
+      instrTextarea.className = 'psm-textarea';
+      instrTextarea.placeholder = 'Enter custom instructions...';
+      instrTextarea.value = proj.instruction_text || '';
+      const instrHelper = document.createElement('div');
+      instrHelper.className = 'psm-helper';
+      instrHelper.textContent = 'This replaces Maria.md when active';
+      instrSec.body.appendChild(instrTextarea);
+      instrSec.body.appendChild(instrHelper);
+
+      const updateInstrVisibility = () => {
+        instrTextarea.style.display = personaTog.cb.checked ? '' : 'none';
+        instrHelper.style.display = personaTog.cb.checked ? '' : 'none';
+      };
+      personaTog.cb.addEventListener('change', updateInstrVisibility);
+      updateInstrVisibility();
+      modal.appendChild(instrSec.section);
+
+      // ── C. Output & Memory ──
+      const memSec = makeSection('Output & Memory', false);
+      const outFmtTog = makeToggle('psm-outfmt', 'Output format rules', proj.output_format_enabled !== false);
+      const univMemTog = makeToggle('psm-univmem', 'Universal memory', proj.use_universal_memory);
+      const projMemTog = makeToggle('psm-projmem', 'Project memory', proj.project_memory_enabled);
+      memSec.body.appendChild(outFmtTog.row);
+      memSec.body.appendChild(univMemTog.row);
+      memSec.body.appendChild(projMemTog.row);
+
+      const factsLbl = document.createElement('label');
+      factsLbl.textContent = 'Key Facts';
+      const factsArea = document.createElement('textarea');
+      factsArea.className = 'psm-textarea';
+      factsArea.placeholder = 'Key facts to remember for this project...';
+      factsArea.value = proj.facts || '';
+      memSec.body.appendChild(factsLbl);
+      memSec.body.appendChild(factsArea);
+      modal.appendChild(memSec.section);
+
+      // ── D. Git Repository ──
+      const gitSec = makeSection('Git Repository', !(proj.git_repo || proj.git_username || proj.git_branch));
+      const gitRepoField = makeTextInput('Repo URL', proj.git_repo, 'https://github.com/user/repo');
+      const gitUserField = makeTextInput('Username', proj.git_username, 'git username');
+      const gitBranchField = makeTextInput('Branch', proj.git_branch, 'main');
+      gitSec.body.appendChild(gitRepoField.lbl);
+      gitSec.body.appendChild(gitRepoField.inp);
+      gitSec.body.appendChild(gitUserField.lbl);
+      gitSec.body.appendChild(gitUserField.inp);
+      gitSec.body.appendChild(gitBranchField.lbl);
+      gitSec.body.appendChild(gitBranchField.inp);
+      modal.appendChild(gitSec.section);
+
+      // ── E. Skills ──
+      const skillsSec = makeSection('Skills', true);
+      const skillsContainer = document.createElement('div');
+      skillsContainer.className = 'psm-skills-container';
+      const skillsLoading = document.createElement('div');
+      skillsLoading.className = 'psm-helper';
+      skillsLoading.textContent = 'Loading skills...';
+      skillsContainer.appendChild(skillsLoading);
+      skillsSec.body.appendChild(skillsContainer);
+      modal.appendChild(skillsSec.section);
+
+      const skillCheckboxes = [];
+      fetch('/api/skills').then(r => r.json()).then(data => {
+        skillsLoading.remove();
+        const skills = data.skills || [];
+        if (skills.length === 0) {
+          const none = document.createElement('div');
+          none.className = 'psm-helper';
+          none.textContent = 'No skills available';
+          skillsContainer.appendChild(none);
+          return;
+        }
+        const config = proj.skills_config || {};
+        skills.forEach(sk => {
+          const row = document.createElement('div');
+          row.className = 'psm-skill-row';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = config[sk.key] !== undefined ? !!config[sk.key] : true;
+          const nameSpan = document.createElement('span');
+          nameSpan.className = 'psm-skill-name';
+          nameSpan.textContent = sk.name || sk.key;
+          const badge = document.createElement('span');
+          badge.className = 'psm-skill-badge';
+          badge.textContent = sk.category || 'general';
+          row.appendChild(cb);
+          row.appendChild(nameSpan);
+          row.appendChild(badge);
+          row.addEventListener('click', (e) => {
+            if (e.target !== cb) cb.checked = !cb.checked;
+          });
+          skillsContainer.appendChild(row);
+          skillCheckboxes.push({ key: sk.key, cb });
+        });
+      }).catch(() => {
+        skillsLoading.textContent = 'Failed to load skills';
+      });
+
+      // ── Buttons ──
+      const btnRow = document.createElement('div');
+      btnRow.className = 'psm-btn-row';
+
+      const delBtn = document.createElement('button');
+      delBtn.textContent = 'Delete';
+      delBtn.className = 'btn-danger';
+      delBtn.onclick = async () => {
+        if (await sableConfirm('Delete "' + proj.name + '"?', { danger: true })) {
+          const wasActive = activeProjectId === proj.id;
+          fetch('/api/projects/' + proj.id, { method: 'DELETE' }).then(() => {
+            overlay.remove();
+            if (wasActive) {
+              activeProjectId = null;
+              // Revert CWD back to Sable root since project is gone
+              fetch('/api/projects/deactivate', { method: 'POST' }).then(() => {
+                loadProjects().then(() => loadChats());
+              });
+            } else {
+              loadProjects().then(() => loadChats());
+            }
+          });
+        }
+      };
+
+      const saveBtn = document.createElement('button');
+      saveBtn.textContent = 'Save';
+      saveBtn.className = 'btn-primary';
+      saveBtn.onclick = () => {
+        const skillsConfig = {};
+        skillCheckboxes.forEach(({ key, cb }) => { skillsConfig[key] = cb.checked; });
+
+        const payload = {
+          name: nameField.inp.value.trim(),
+          path: pathField.inp.value.trim() || null,
+          persona_enabled: personaTog.cb.checked,
+          instruction_text: personaTog.cb.checked ? instrTextarea.value : null,
+          output_format_enabled: outFmtTog.cb.checked,
+          use_universal_memory: univMemTog.cb.checked,
+          project_memory_enabled: projMemTog.cb.checked,
+          facts: factsArea.value.trim() || null,
+          git_repo: gitRepoField.inp.value.trim() || null,
+          git_username: gitUserField.inp.value.trim() || null,
+          git_branch: gitBranchField.inp.value.trim() || null,
+          skills_config: skillsConfig
+        };
+
+        const doSave = () => {
+          fetch('/api/projects/' + proj.id, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          }).then(r => r.json()).then(() => {
+            overlay.remove();
+            showToast('Project updated', 'success');
+            loadProjects().then(() => loadChats());
+          });
+        };
+
+        if (personaTog.cb.checked && instrTextarea.value !== (proj.instruction_text || '')) {
+          fetch('/api/projects/' + proj.id + '/instruction', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: instrTextarea.value })
+          }).then(() => doSave()).catch(() => doSave());
+        } else {
+          doSave();
+        }
+      };
+
+      btnRow.appendChild(delBtn);
+      btnRow.appendChild(saveBtn);
+      modal.appendChild(btnRow);
+
+      overlay.appendChild(modal);
+      document.body.appendChild(overlay);
+
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) overlay.remove();
+      });
+
+      const escHandler = (e) => {
+        if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escHandler); }
+      };
+      document.addEventListener('keydown', escHandler);
+
+      nameField.inp.focus();
+      nameField.inp.select();
+    }
+
+    // ── Project Folder Dropdown (sidebar button) ────────────────────────────
+    // ── Project Folder Dropdown (sidebar button) ────────────────────────────
+    function showProjectFolderDropdown() {
+      const btn = document.getElementById('projectFolderBtn');
+      if (!btn) return;
+      const existing = document.querySelector('.project-folder-dropdown');
+      if (existing) { existing.remove(); btn.classList.remove('active'); return; }
+
+      const dd = document.createElement('div');
+      dd.className = 'project-folder-dropdown';
+
+      // "All Chats" — deactivate project
+      const allItem = document.createElement('div');
+      allItem.className = 'project-folder-item' + (!activeProjectId ? ' active' : '');
+      allItem.innerHTML = '<span class="icon-emoji">💬</span><i data-lucide="message-square" class="icon-lucide"></i> All Chats';
+      allItem.onclick = () => {
+        dd.remove(); btn.classList.remove('active');
+        if (activeProjectId) {
+          fetch('/api/projects/deactivate', { method: 'POST' }).then(async (r) => {
+            const data = await r.json().catch(() => ({}));
+            activeProjectId = null;
+            if (data.new_cwd && typeof window.pickFsRoot === 'function') window.pickFsRoot(data.new_cwd);
+            await createChat();
+            fetch('/api/sync-context', { method: 'POST' });
+          });
+        }
+      };
+      dd.appendChild(allItem);
+
+      const newItem = document.createElement('div');
+      newItem.className = 'project-folder-item';
+      newItem.innerHTML = '<span class="icon-emoji">+</span><i data-lucide="square-pen" class="icon-lucide"></i> New Chat';
+      newItem.onclick = () => { dd.remove(); btn.classList.remove('active'); createChat(); };
+      dd.appendChild(newItem);
+
+      const sep = document.createElement('div');
+      sep.className = 'project-folder-sep';
+      dd.appendChild(sep);
+
+      for (const proj of projectList) {
+        const item = document.createElement('div');
+        item.className = 'project-folder-item' + (activeProjectId === proj.id ? ' active' : '');
+        item.innerHTML = '<span class="icon-emoji">\ud83d\udcc1</span><i data-lucide="folder" class="icon-lucide"></i> ' + proj.name;
+        item.onclick = () => {
+          dd.remove(); btn.classList.remove('active');
+          if (activeProjectId === proj.id) return; // already active
+          fetch('/api/projects/' + proj.id + '/activate', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+              activeProjectId = proj.id;
+              if (data.new_cwd && typeof window.pickFsRoot === 'function') window.pickFsRoot(data.new_cwd);
+              createChat();
+            })
+            .catch(() => {
+              activeProjectId = proj.id;
+              createChat();
+            });
+        };
+        dd.appendChild(item);
+      }
+
+      const addProj = document.createElement('div');
+      addProj.className = 'project-folder-item add-new';
+      addProj.innerHTML = '<span class="icon-emoji">+</span><i data-lucide="plus" class="icon-lucide"></i> New Project';
+      addProj.onclick = async () => {
+        dd.remove(); btn.classList.remove('active');
+        const name = await sablePrompt('Project name:');
+        if (name && name.trim()) {
+          fetch('/api/projects', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name.trim() })
+          }).then(r => r.json()).then(data => {
+            if (data.id) {
+              fetch('/api/projects/' + data.id + '/activate', { method: 'POST' })
+                .then(() => { activeProjectId = data.id; loadProjects().then(() => loadChats()); })
+                .catch(() => { activeProjectId = data.id; loadProjects().then(() => loadChats()); });
+            }
+            else showToast(data.error || 'Failed', 'error');
+          });
+        }
+      };
+      dd.appendChild(addProj);
+
+      const rect = btn.getBoundingClientRect();
+      dd.style.position = 'fixed';
+      dd.style.top = (rect.bottom + 4) + 'px';
+      dd.style.left = rect.left + 'px';
+      dd.style.minWidth = Math.max(rect.width, 180) + 'px';
+      document.body.appendChild(dd);
+      if (typeof lucide !== 'undefined') lucide.createIcons();
+
+      const closeHandler = (e) => {
+        if (!dd.contains(e.target) && e.target !== btn) {
+          dd.remove(); btn.classList.remove('active');
+          document.removeEventListener('click', closeHandler, true);
+        }
+      };
+      setTimeout(() => document.addEventListener('click', closeHandler, true), 0);
+    }
+
     async function loadChats(mode) {
       try {
         // skeleton loading placeholders
@@ -4077,7 +4642,11 @@
           skel.className = 'skeleton-chat';
           chatsEl.appendChild(skel);
         }
-        const url = mode ? `/api/chats?mode=${encodeURIComponent(mode)}` : "/api/chats";
+        const params = new URLSearchParams();
+        if (mode) params.set('mode', mode);
+        if (activeProjectId) params.set('project_id', activeProjectId);
+        const qs = params.toString();
+        const url = qs ? `/api/chats?${qs}` : "/api/chats";
         const data = await fetch(url).then(r => r.json());
         chatList = data.chats || [];
         renderChats();
@@ -4243,7 +4812,7 @@
     }
 
     async function deleteChat(chatId) {
-      if (!confirm("Delete this chat?")) return;
+      if (!await sableConfirm("Delete this chat?", { danger: true })) return;
       try {
         const res = await fetch(`/api/chats/${chatId}`, { method: "DELETE" });
         const data = await res.json().catch(() => ({}));
@@ -4261,7 +4830,7 @@
     }
 
     document.getElementById('deleteAllChatsBtn').addEventListener('click', async () => {
-      if (!confirm('Delete ALL chats? This cannot be undone.')) return;
+      if (!await sableConfirm('Delete ALL chats? This cannot be undone.', { danger: true })) return;
       try {
         const res = await fetch('/api/chats', { method: 'DELETE' });
         const data = await res.json().catch(() => ({}));
@@ -4291,7 +4860,7 @@
 
     // ── Strip Browser Profiles ──────────────────────────────────
     document.getElementById('stripProfilesBtn').addEventListener('click', async () => {
-      if (!confirm('Strip all browser profiles down to bare session data? Caches will be removed.')) return;
+      if (!await sableConfirm('Strip all browser profiles down to bare session data? Caches will be removed.')) return;
       const btn = document.getElementById('stripProfilesBtn');
       const status = document.getElementById('stripProfilesStatus');
       btn.disabled = true;
@@ -4325,7 +4894,7 @@
 
     // ── Data Export / Import ─────────────────────────────────────
     async function _streamDataOp(url, btnId, statusEl, confirmMsg, busyLabel, doneFn) {
-      if (!confirm(confirmMsg)) return;
+      if (!await sableConfirm(confirmMsg)) return;
       const btn = document.getElementById(btnId);
       btn.disabled = true;
       btn.textContent = '⏳ ' + busyLabel + '…';
@@ -4415,7 +4984,7 @@
     const restartServiceBtn = document.getElementById('restartServiceBtn');
     if (stopServiceBtn) {
       stopServiceBtn.addEventListener('click', async () => {
-        if (!confirm('Stop the Sable service? The UI will go offline.')) return;
+        if (!await sableConfirm('Stop the Sable service? The UI will go offline.')) return;
         stopServiceBtn.textContent = 'Stopping…';
         try { await fetch('/api/settings/service/stop', { method: 'POST' }); } catch {}
         showToast('Service stopping — UI will go offline', 'info');
@@ -4423,7 +4992,7 @@
     }
     if (restartServiceBtn) {
       restartServiceBtn.addEventListener('click', async () => {
-        if (!confirm('Restart the Sable service? Brief downtime (~20s).')) return;
+        if (!await sableConfirm('Restart the Sable service? Brief downtime (~20s).')) return;
         restartServiceBtn.textContent = 'Restarting…';
         try { await fetch('/api/settings/service/restart', { method: 'POST' }); } catch {}
         showToast('Restarting — back in ~20s', 'info');
@@ -4514,7 +5083,7 @@
         const res  = await fetch("/api/chat/new", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: selectedModel })
+          body: JSON.stringify({ model: selectedModel, project_id: activeProjectId })
         });
         const text = await res.text();
         let data = {};
@@ -4928,9 +5497,65 @@
     const newChatFloatBtn = document.getElementById("newChatFloat");
     if (newChatFloatBtn) {
         newChatFloatBtn.addEventListener("click", createChat);
+
+
+
     }
 
     // Chat search toggle + filter
+    const projectFolderBtn = document.getElementById('projectFolderBtn');
+    if (projectFolderBtn) {
+      projectFolderBtn.addEventListener('click', () => { loadProjects().then(() => showProjectFolderDropdown()); });
+    }
+
+    // Project ... menu button
+    (() => {
+      const pmb = document.getElementById('projectMenuBtn');
+      if (!pmb) return;
+      pmb.addEventListener('click', (e) => {
+        e.stopPropagation();
+        document.querySelectorAll('.project-menu-dropdown').forEach(el => el.remove());
+        if (!activeProjectId) return;
+        const proj = projectList.find(p => p.id === activeProjectId);
+        if (!proj) return;
+
+        const dd = document.createElement('div');
+        dd.className = 'project-folder-dropdown project-menu-dropdown';
+        const rect = pmb.getBoundingClientRect();
+        dd.style.position = 'fixed';
+        dd.style.top = (rect.bottom + 4) + 'px';
+        dd.style.left = (rect.right - 180) + 'px';
+
+        const items = [
+          { label: 'Settings', icon: 'settings', action: () => showProjectSettingsPopup(proj, pmb) },
+          { label: 'Exit Project', icon: 'arrow-left', action: () => {
+              fetch('/api/projects/deactivate', { method: 'POST' }).then(async (r) => {
+                const data = await r.json().catch(() => ({}));
+                activeProjectId = null;
+                if (data.new_cwd && typeof window.pickFsRoot === 'function') window.pickFsRoot(data.new_cwd);
+                await createChat();
+                fetch('/api/sync-context', { method: 'POST' });
+              });
+            } },
+        ];
+
+        items.forEach(item => {
+          const row = document.createElement('div');
+          row.className = 'project-folder-item';
+          row.innerHTML = '<i data-lucide="' + item.icon + '" class="icon-lucide" style="width:14px;height:14px;margin-right:8px;vertical-align:-2px;"></i>' + item.label;
+          row.onclick = () => { dd.remove(); item.action(); };
+          dd.appendChild(row);
+        });
+
+        document.body.appendChild(dd);
+        if (typeof lucide !== 'undefined') lucide.createIcons({ nodes: [dd] });
+
+        const close = (ev) => { if (!dd.contains(ev.target) && ev.target !== pmb) { dd.remove(); document.removeEventListener('click', close, true); } };
+        setTimeout(() => document.addEventListener('click', close, true), 0);
+      });
+    })();
+
+
     const chatSearchBtn = document.getElementById('chatSearchBtn');
     const chatSearchInput = document.getElementById('chatSearch');
     if (chatSearchBtn && chatSearchInput) {
@@ -5091,7 +5716,32 @@
         else if (tabName === 'account') loadAccountProfiles();
         else if (tabName === 'mcp') loadMcpServers();
         else if (tabName === 'cookbook') { if (window._cbInit) window._cbInit(); }
-        else if (tabName === 'shortcuts') renderShortcutsTab();
+        else if (tabName === 'projects') renderProjectsTab();
+
+      // Wire addProjectBtn if not already wired
+      const _addProjBtn = document.getElementById('addProjectBtn');
+      if (_addProjBtn && !_addProjBtn._wired) {
+        _addProjBtn._wired = true;
+        _addProjBtn.onclick = () => {
+          const nameInput = document.getElementById('newProjectName');
+          const name = nameInput ? nameInput.value.trim() : '';
+          if (!name) { showToast('Enter a project name', 'error'); return; }
+          fetch('/api/projects', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+          }).then(r => r.json()).then(data => {
+            if (data.id) {
+              if (nameInput) nameInput.value = '';
+              showToast('Project created', 'success');
+              renderProjectsTab();
+            } else {
+              showToast(data.error || 'Failed', 'error');
+            }
+          });
+        };
+      }
+      else if (tabName === 'shortcuts') renderShortcutsTab();
       }
     }
 
@@ -5665,7 +6315,7 @@
       container.querySelector('#em-refresh-btn').addEventListener('click', () => refreshEmailPanel());
       container.querySelector('#em-compose-btn').addEventListener('click', () => showComposeForm(container));
       container.querySelector('#em-disconnect-btn').addEventListener('click', async () => {
-        if (confirm('Disconnect email?')) {
+        if (await sableConfirm('Disconnect email?')) {
           await fetch('/api/email/config', { method: 'DELETE' });
           renderEmailPanel(container);
         }
@@ -7036,7 +7686,7 @@
           delBtn.style.cssText = "background:transparent;border:none;color:var(--danger);cursor:pointer;font-size:13px;padding:2px 6px;border-radius:4px;";
           delBtn.title = "Remove key";
           delBtn.addEventListener("click", async () => {
-            if (!confirm(`Remove this ${meta.name} API key?`)) return;
+            if (!await sableConfirm(`Remove this ${meta.name} API key?`, { danger: true })) return;
             try {
               await fetch(`${meta.apiBase}/api-key/${k.index}`, { method: "DELETE" });
               _loadKeysFor(_currentKeyProvider);
@@ -7262,7 +7912,7 @@
             del.title = "Remove endpoint";
             del.style.cssText = "background:transparent;border:none;color:var(--danger);cursor:pointer;font-size:13px;padding:2px 6px;flex-shrink:0;";
             del.addEventListener("click", async () => {
-              if (!confirm("Remove endpoint " + ep.name + "?")) return;
+              if (!await sableConfirm("Remove endpoint " + ep.name + "?", { danger: true })) return;
               try {
                 await fetch("/api/settings/endpoints/" + ep.id, { method: "DELETE" });
                 showToast("Endpoint removed", "success");
@@ -7790,7 +8440,7 @@
           delBtn.title = "Remove model";
           delBtn.addEventListener("click", async (e) => {
             e.stopPropagation();
-            if (!confirm(`Remove "${m.label}" from your model list?`)) return;
+            if (!await sableConfirm(`Remove "${m.label}" from your model list?`, { danger: true })) return;
             try {
               await fetch(`/api/settings/models/${encodeURIComponent(m.id)}`, { method: "DELETE" });
               showToast("Model removed", "success");
@@ -8188,7 +8838,7 @@
         accountProfileCards.querySelectorAll(".account-delete-btn").forEach((btn) => {
           btn.addEventListener("click", async () => {
             const profile = btn.dataset.profile;
-            if (!confirm(`Delete ${profile}?\n\nThis permanently removes the browser data directory.`)) return;
+            if (!await sableConfirm(`Delete ${profile}?\n\nThis permanently removes the browser data directory.`, { danger: true })) return;
             btn.disabled = true;
             btn.textContent = "Deleting…";
             try {
@@ -8623,7 +9273,7 @@
     }
 
     async function mcpRemove(name) {
-      if (!confirm(`Remove MCP server '${name}'?`)) return;
+      if (!await sableConfirm(`Remove MCP server '${name}'?`, { danger: true })) return;
       try {
         const res = await fetch(`/api/settings/mcp/${name}`, {method: "DELETE"});
         if (res.ok) {
@@ -9010,7 +9660,7 @@
   }
 
   async function restoreAccountProfile(profile, btn) {
-    if (!confirm('Restore ' + profile + ' from backup?\n\nThis DELETES the current profile and replaces it with the .bak snapshot.')) return;
+    if (!await sableConfirm('Restore ' + profile + ' from backup?\n\nThis DELETES the current profile and replaces it with the .bak snapshot.', { danger: true })) return;
     btn.disabled = true;
     btn.textContent = 'Restoring…';
     try {
@@ -9072,7 +9722,7 @@
   });
 
   document.getElementById('restoreAllBtn')?.addEventListener('click', async () => {
-    if (!confirm('Restore ALL profiles from .bak snapshots?\nThis DELETES current data and replaces with backups.')) return;
+    if (!await sableConfirm('Restore ALL profiles from .bak snapshots?\nThis DELETES current data and replaces with backups.', { danger: true })) return;
     const btn = document.getElementById('restoreAllBtn');
     btn.disabled = true; btn.textContent = '⬇ Restoring…';
     try {
@@ -9196,7 +9846,7 @@
         showToast(res.ok ? (d.message || 'WAF token refreshed') : (d.detail || 'Refresh failed'), res.ok ? 'success' : 'error');
       } catch { showToast('Refresh failed', 'error'); }
     } else if (action === 'clear-browser-cache') {
-      if (!confirm('Strip all browser profile caches? This keeps session data but removes cache/junk.')) return;
+      if (!await sableConfirm('Strip all browser profile caches? This keeps session data but removes cache/junk.')) return;
       showToast('Stripping browser profiles…', 'info');
       try {
         const res = await fetch('/api/settings/browser/strip-profiles', { method: 'POST' });

@@ -443,6 +443,7 @@ async def run_agent_llm_loop(
                 raise asyncio.CancelledError("Agent killed by orchestrator")
 
             tag_name = tag["name"]
+            agent.tool_calls_total += 1
 
             try:
                 from engine.skills import get_skill_engine
@@ -484,6 +485,7 @@ async def run_agent_llm_loop(
             except Exception as exc:
                 agent.push_stream_event({"type": "skill_end", "name": tag_name, "ok": False, "error": str(exc)})
                 tool_results.append(f"SKILL ERROR ({tag_name}): {type(exc).__name__}: {exc}")
+                agent.error_recoveries += 1
 
         # Feed results back as next message
         combined = "\n---\n".join(tool_results)
