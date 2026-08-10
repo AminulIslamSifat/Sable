@@ -200,11 +200,21 @@ async def run_agent_llm_loop(
         max_total=lim.get("max_total_tool_calls", 50),
     )
 
-    backend = "qwen" if "qwen" in agent.model else "deepseek"
-    breaker = breakers[backend]
-
-    if not breaker.can_execute():
-        raise RuntimeError(f"Circuit breaker open for {backend} — provider unavailable")
+    # Initial breaker check (fallback chain handles mid-loop failures)
+    initial_breaker = _resolve_breaker(agent, breakers)
+    if not initial_breaker.can_execute():
+        # Check if any fallback model has an open breaker
+        has_viable_fallback = False
+        if agent.model_chain:
+            for fb_model in agent.model_chain:
+                fb_backend = "qwen" if "qwen" in fb_model else "deepseek"
+                fb_breaker = breakers.get(fb_backend)
+                if fb_breaker and fb_breaker.can_execute():
+                    has_viable_fallback = True
+                    break
+        if not has_viable_fallback:
+            backend = "qwen" if "qwen" in agent.model else "deepseek"
+            raise RuntimeError(f"Circuit breaker open for {backend} — provider unavailable")
 
     # Build first message: system prompt + tool guide + task
     system_prompt = role_cfg.system_prompt
@@ -235,7 +245,12 @@ async def run_agent_llm_loop(
         first_message += (
             f"\n\nYour execution plan:\n{plan_lines}\n\n"
             f"Work through these steps in order. Start with step 1.\n\n"
-            f"You must follow the todo list strictly. When completing a task, mark it done with <todo_done summary=\"...\"/> before progressing to the next task."
+            f"CRITICAL TODO RULES:\n"
+            f"1. You MUST work through EVERY task in order. Do NOT skip or stop early.\n"
+            f"2. When you finish a task, you MUST output <todo_done summary=\"...\"/> BEFORE doing anything else.\n"
+            f"3. After marking a task done, IMMEDIATELY start the next task. Do NOT pause or provide a final answer.\n"
+            f"4. Only provide your final markdown answer AFTER all tasks are marked complete.\n"
+            f"5. If you are unsure whether a task is done, err on the side of doing more work, not less."
         )
 
     # Track conversation for DB/history (not sent to API)
@@ -257,7 +272,7 @@ async def run_agent_llm_loop(
         agent.push_stream_event({"type": "iteration", "iteration": iteration + 1})
         # Call LLM
         response_text, new_parent_id = await _send_with_retry(
-            agent, current_message, parent_id, breaker, is_first_turn
+            agent, current_message, parent_id, breakers, is_first_turn
         )
         if new_parent_id:
             parent_id = new_parent_id
@@ -308,7 +323,17 @@ async def run_agent_llm_loop(
                     agent.messages.append({"role": "user", "content": current_message})
                     await _persist_message(agent.id, "user", current_message)
                     continue
-                # More todos remain — continue loop, next iteration gets updated context
+                else:
+                    # More todos remain — explicitly acknowledge completion and direct to next task
+                    completed_content = agent.todos.todos[agent.todos.current_index - 1].content if agent.todos.current_index > 0 else "previous task"
+                    next_task = nxt.content if nxt else "next task"
+                    todo_ack = (
+                        f"[TODO PROGRESS] Task \"{completed_content}\" marked complete. ✅\n"
+                        f"Now work on: \"{next_task}\"\n"
+                        f"Continue executing. Do NOT stop or provide a final answer until ALL tasks are done."
+                    )
+                    agent.messages.append({"role": "user", "content": todo_ack})
+                    await _persist_message(agent.id, "user", todo_ack)
 
             # Strip todo tags from response so they don't leak into skill parsing or message history
             response_text = re.sub(r'<todo_done\s+summary="[^"]*"\s*/?>', '', response_text)
@@ -321,7 +346,7 @@ async def run_agent_llm_loop(
             agent.messages.append({"role": "user", "content": format_warning})
             await _persist_message(agent.id, "user", format_warning)
             response_text, new_parent_id = await _send_with_retry(
-                agent, format_warning, parent_id, breaker, False
+                agent, format_warning, parent_id, breakers, False
             )
             if new_parent_id:
                 parent_id = new_parent_id
@@ -341,6 +366,23 @@ async def run_agent_llm_loop(
         response_text = re.sub(r'\n{3,}', '\n\n', response_text).strip()
 
         if not tags:
+            # No tool calls → check if this is a premature stop (thin response while todos remain)
+            has_active_todos = agent.todos and not agent.todos.all_done
+            is_thin_response = len(response_text.strip()) < 200
+
+            if has_active_todos and is_thin_response:
+                # Agent stopped mid-plan with a short non-action response — nudge to continue
+                continue_msg = (
+                    "[CONTINUE REQUIRED] You stopped before completing all tasks.\n"
+                    f"You still have {len(agent.todos.todos) - agent.todos.current_index} task(s) remaining.\n"
+                    f"Current task: \"{agent.todos.current.content}\"\n"
+                    "Do NOT provide a final answer yet. Continue working on the current task using tools.\n"
+                    "Only stop when ALL tasks are marked done."
+                )
+                agent.messages.append({"role": "user", "content": continue_msg})
+                await _persist_message(agent.id, "user", continue_msg)
+                continue  # Loop back — give the agent another turn
+
             # No tool calls → validate as final markdown answer
             if _validate_markdown_output(response_text, role_cfg.required_sections):
                 return response_text
@@ -350,12 +392,24 @@ async def run_agent_llm_loop(
             agent.messages.append({"role": "user", "content": reminder})
             await _persist_message(agent.id, "user", reminder)
             response_text, new_parent_id = await _send_with_retry(
-                agent, reminder, parent_id, breaker, False
+                agent, reminder, parent_id, breakers, False
             )
             if new_parent_id:
                 parent_id = new_parent_id
             agent.messages.append({"role": "assistant", "content": response_text})
             await _persist_message(agent.id, "assistant", response_text)
+
+            # Second chance: if still thin with active todos, nudge again instead of accepting
+            if has_active_todos and len(response_text.strip()) < 200:
+                continue_msg2 = (
+                    "[STILL INCOMPLETE] Your response does not contain a valid final answer or tool calls.\n"
+                    f"Remaining tasks: {len(agent.todos.todos) - agent.todos.current_index}\n"
+                    "Continue working. Use tools to complete the current task."
+                )
+                agent.messages.append({"role": "user", "content": continue_msg2})
+                await _persist_message(agent.id, "user", continue_msg2)
+                continue
+
             return response_text  # Accept even if still malformed (degraded)
 
         # Loop detection — warning-based (mirrors MainChatGuard, never hard-kills)
@@ -465,14 +519,14 @@ async def run_agent_llm_loop(
         guided_msg = f"[MENTOR INTERVENTION]\n{teacher_guidance}\n\nYou have ONE final attempt. Provide your best markdown answer now."
         agent.messages.append({"role": "user", "content": guided_msg})
         await _persist_message(agent.id, "user", guided_msg)
-        response_text, _ = await _send_with_retry(agent, guided_msg, parent_id, breaker, False)
+        response_text, _ = await _send_with_retry(agent, guided_msg, parent_id, breakers, False)
         return response_text
 
     # No teacher or teacher failed — force final answer
     force_msg = "Maximum steps reached. Provide your final markdown answer NOW with whatever you have. Use proper ## headers for each section."
     agent.messages.append({"role": "user", "content": force_msg})
     await _persist_message(agent.id, "user", force_msg)
-    response_text, _ = await _send_with_retry(agent, force_msg, parent_id, breaker, False)
+    response_text, _ = await _send_with_retry(agent, force_msg, parent_id, breakers, False)
     return response_text
 
 
@@ -499,28 +553,173 @@ async def _try_teacher_escalation(agent: Agent, stuck_reason: str) -> str | None
     return guidance
 
 
+def _get_backend_type(model: str) -> str:
+    """Classify a model as 'qwen' or 'api' (stateless API backend)."""
+    if "qwen" in model.lower():
+        return "qwen"
+    return "api"
+
+
+async def _migrate_conversation(agent: Agent, old_model: str, new_model: str) -> str | None:
+    """Migrate conversation history when switching between backend types.
+
+    Qwen→API: serialize agent.messages into a context prefix for the new backend.
+    API→Qwen: inject accumulated history as a single first message, reset parent_id.
+
+    Returns a migration context string to prepend, or None if no migration needed.
+    """
+    old_type = _get_backend_type(old_model)
+    new_type = _get_backend_type(new_model)
+
+    if old_type == new_type:
+        return None  # Same backend type — no migration needed
+
+    # Collect meaningful conversation content (skip system prompts)
+    conv_parts = []
+    for msg in agent.messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if role == "system":
+            continue
+        if not content.strip():
+            continue
+        conv_parts.append(f"[{role.upper()}]: {content}")
+
+    if not conv_parts:
+        return None
+
+    history_text = "\n\n".join(conv_parts)
+
+    if old_type == "qwen" and new_type == "api":
+        # Qwen had server-side history; agent.messages has our local copy.
+        # Inject as context prefix so the API backend knows what happened.
+        migration = (
+            f"[CONVERSATION MIGRATION] Previous model ({old_model}) became unavailable.\n"
+            f"Here is the conversation history so far:\n\n{history_text}\n\n"
+            f"[END HISTORY] Continue from where you left off using the new model."
+        )
+        logger.info("[agent %s] Migrated Qwen→API (%s→%s), %d messages", agent.id, old_model, new_model, len(conv_parts))
+        return migration
+
+    if old_type == "api" and new_type == "qwen":
+        # API backend had client-side history. Qwen needs this as first message context.
+        # Reset qwen_session_id so a fresh session is created.
+        agent.qwen_session_id = None
+        migration = (
+            f"[CONVERSATION MIGRATION] Previous model ({old_model}) became unavailable.\n"
+            f"Here is the conversation history so far:\n\n{history_text}\n\n"
+            f"[END HISTORY] Continue from where you left off using the new model."
+        )
+        logger.info("[agent %s] Migrated API→Qwen (%s→%s), %d messages, session reset", agent.id, old_model, new_model, len(conv_parts))
+        return migration
+
+    return None
+
+
+async def _try_fallback_model(agent: Agent, failed_model: str) -> str | None:
+    """Try the next model in the fallback chain. Returns new model name or None if exhausted."""
+    if not agent.model_chain:
+        return None
+
+    # Find next untried model in chain
+    for i, fallback_model in enumerate(agent.model_chain):
+        if i < agent._fallback_index:
+            continue  # Already tried
+        if fallback_model == failed_model:
+            continue  # Skip the one that just failed
+        agent._fallback_index = i + 1
+        return fallback_model
+
+    return None  # All fallbacks exhausted
+
+
+def _resolve_breaker(agent: Agent, breakers: dict[str, CircuitBreaker]) -> CircuitBreaker:
+    """Get the correct circuit breaker for the agent's current model."""
+    backend = "qwen" if "qwen" in agent.model else "deepseek"
+    return breakers.get(backend, list(breakers.values())[0])
+
+
 async def _send_with_retry(
     agent: Agent,
     message: str,
     parent_id: str | None,
-    breaker: CircuitBreaker,
+    breakers: dict[str, CircuitBreaker],
     is_first_turn: bool,
     max_retries: int = 3,
 ) -> tuple[str, str | None]:
-    """Send message to LLM with exponential backoff. Returns (response_text, new_parent_id)."""
+    """Send message to LLM with exponential backoff + model fallback chain.
+
+    On persistent failure (all retries exhausted OR circuit breaker open),
+    tries the next model in agent.model_chain with conversation migration.
+    Returns (response_text, new_parent_id).
+    """
+    last_exc: Exception | None = None
+    breaker = _resolve_breaker(agent, breakers)
+
     for attempt in range(max_retries):
         try:
             text, new_pid = await _call_llm(agent, message, parent_id, is_first_turn)
             breaker.record_success()
             return text, new_pid
         except Exception as exc:
+            last_exc = exc
             breaker.record_failure()
             if attempt == max_retries - 1:
-                raise
+                break  # Exhausted retries — try fallback below
             delay = (2 ** attempt) + random.uniform(0, 1)
             logger.warning("Agent %s retry %d/%d: %s (%.1fs)", agent.id, attempt + 1, max_retries, exc, delay)
             await asyncio.sleep(delay)
-    raise RuntimeError("Unreachable")
+
+    # All retries failed — try fallback model chain
+    fallback_model = await _try_fallback_model(agent, agent.model)
+    if fallback_model:
+        old_model = agent.model
+        logger.info("[agent %s] Falling back: %s → %s", agent.id, old_model, fallback_model)
+        agent.push_stream_event({
+            "type": "model_fallback",
+            "from": old_model,
+            "to": fallback_model,
+            "reason": str(last_exc)[:200] if last_exc else "unknown",
+        })
+
+        # Migrate conversation history across backend types
+        migration_ctx = await _migrate_conversation(agent, old_model, fallback_model)
+        agent.model = fallback_model
+
+        # If migrating to Qwen, reset session so a fresh one is created
+        if _get_backend_type(fallback_model) == "qwen":
+            agent.qwen_session_id = None
+            parent_id = None  # Fresh session
+            is_first_turn = True
+
+        # Prepend migration context to the current message
+        if migration_ctx:
+            message = f"{migration_ctx}\n\n---\n\n{message}"
+
+        # Resolve breaker for the new model
+        breaker = _resolve_breaker(agent, breakers)
+
+        # Retry with the new model (full retry budget)
+        for attempt in range(max_retries):
+            try:
+                text, new_pid = await _call_llm(agent, message, parent_id, is_first_turn)
+                breaker.record_success()
+                logger.info("[agent %s] Fallback to %s succeeded", agent.id, fallback_model)
+                return text, new_pid
+            except Exception as exc2:
+                last_exc = exc2
+                breaker.record_failure()
+                if attempt == max_retries - 1:
+                    break
+                delay = (2 ** attempt) + random.uniform(0, 1)
+                logger.warning("Agent %s fallback retry %d/%d: %s (%.1fs)", agent.id, attempt + 1, max_retries, exc2, delay)
+                await asyncio.sleep(delay)
+
+        # Fallback also failed — try next in chain recursively
+        return await _send_with_retry(agent, message, parent_id, breakers, is_first_turn, max_retries)
+
+    # No fallbacks left — raise original error
+    raise last_exc or RuntimeError("All retries and fallbacks exhausted")
 
 
 async def _call_llm(

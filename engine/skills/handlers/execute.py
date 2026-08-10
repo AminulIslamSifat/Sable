@@ -87,7 +87,6 @@ def handle_execute_command(
             yield _end_event(tag_id, name, False, started, error='Blocked: SSD tree write guard')
             return
 
-
     editor_target = parse_editor_command(cmd)
     editor_chunks: list[str] = []
     editor_chars = 0

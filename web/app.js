@@ -1270,7 +1270,14 @@
       _scrollRafPending = true;
       requestAnimationFrame(() => {
         _scrollRafPending = false;
-        if (activePane) activePane.scrollTop = activePane.scrollHeight;
+        if (!activePane) return;
+        // Re-check position at paint time — user may have scrolled up between
+        // the scrollBottom() call and this rAF firing (race during fast streaming)
+        if (!force) {
+          const gap = activePane.scrollHeight - activePane.scrollTop - activePane.clientHeight;
+          if (gap > 80) { _userScrolled = true; return; }
+        }
+        activePane.scrollTop = activePane.scrollHeight;
       });
     }
 

@@ -157,6 +157,9 @@ class AgentRuntime:
                 from engine.agents.agent import AgentTodoList
                 agent.todos = AgentTodoList.build_from_list(assignment.todos)
 
+            # Attach model fallback chain from role config
+            agent.model_chain = role_cfg.model_chain
+
             self._agents[agent.id] = agent
 
         # DB persist

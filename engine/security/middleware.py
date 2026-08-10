@@ -77,6 +77,9 @@ _PERMISSION_REQUIRED: list[tuple[re.Pattern, str, str]] = [
     # System state
     (re.compile(r"crontab\s+-r", re.I), "system", "Wipe entire crontab"),
     (re.compile(r"sysctl\s+-w", re.I), "system", "Runtime kernel parameter change"),
+
+    # SSD tree write guard
+    (re.compile(r"(?:cp|mv|tee|cat\s*>|echo\s*>)\s+.*?/home/sifat/Projects/Sable", re.I), "filesystem", "Direct write to SSD Sable tree (edit HDD first)"),
 ]
 
 # Tags whose content is a shell command

@@ -54,7 +54,10 @@ def _strip_one_profile(profile: Path) -> tuple[str, float, float]:
                 shutil.copytree(src, dest, symlinks=True)
             else:
                 shutil.copy2(src, dest)
-    shutil.rmtree(profile)
+    if profile.is_symlink():
+        profile.unlink()
+    else:
+        shutil.rmtree(profile)
     profile.mkdir(parents=True)
     for item in tmp.iterdir():
         dest = profile / item.name
