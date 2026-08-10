@@ -82,7 +82,11 @@ def _is_expired(entry: dict) -> bool:
     if not expires:
         return False
     try:
-        return datetime.fromisoformat(expires) < datetime.now()
+        dt = datetime.fromisoformat(expires)
+        # Normalize: strip tzinfo to compare naive-to-naive
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        return dt < datetime.now()
     except ValueError:
         return False
 

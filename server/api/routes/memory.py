@@ -454,7 +454,49 @@ async def _run_personality_assessment(conv_text: str, model: str) -> bool:
         if not required_keys.issubset(personality.keys()):
             return False
 
-        # Save
+        # Skip write if model says insufficient data (protects existing entries)
+        if "insufficient data" in str(personality.get("summary", "")).lower():
+            return False
+
+        # Programmatic merge: preserve existing entries, add new ones
+        _IDENT_FIELD = {
+            "strengths": "trait",
+            "weaknesses": "trait",
+            "contradictions": "claimed",
+            "blind_spots": "pattern",
+        }
+        if previous:
+            try:
+                prev_data = json.loads(previous)
+            except (json.JSONDecodeError, TypeError):
+                prev_data = {}
+        else:
+            prev_data = {}
+
+        if isinstance(prev_data, dict):
+            for cat, id_field in _IDENT_FIELD.items():
+                existing_entries = prev_data.get(cat, [])
+                new_entries = personality.get(cat, [])
+                if not isinstance(existing_entries, list):
+                    existing_entries = []
+                if not isinstance(new_entries, list):
+                    new_entries = []
+                # Build set of identifiers from new entries for dedup
+                new_ids = {
+                    str(e.get(id_field, "")).lower().strip()
+                    for e in new_entries if isinstance(e, dict) and e.get(id_field)
+                }
+                # Keep existing entries not contradicted/removed by new assessment
+                merged = [
+                    e for e in existing_entries
+                    if isinstance(e, dict)
+                    and str(e.get(id_field, "")).lower().strip() not in new_ids
+                ]
+                # Append all new entries
+                merged.extend(e for e in new_entries if isinstance(e, dict))
+                personality[cat] = merged
+
+        # Save merged result
         _PERSONALITY_PATH.parent.mkdir(parents=True, exist_ok=True)
         _PERSONALITY_PATH.write_text(
             json.dumps(personality, indent=2, ensure_ascii=False), encoding="utf-8"
