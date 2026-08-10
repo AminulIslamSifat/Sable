@@ -7,13 +7,13 @@
   <link rel="icon" type="image/svg+xml" href="/static/assets/favicon.svg?v=3">
 
   <link rel="stylesheet" href="/static/css/variables.css?v=4">
-  <link rel="stylesheet" href="/static/css/base.css?v=4">
+  <link rel="stylesheet" href="/static/css/base.css?v=5">
   <link rel="stylesheet" href="/static/css/layout.css?v=51">
   <link rel="stylesheet" href="/static/css/ide.css?v=4">
   <link rel="stylesheet" href="/static/css/chat.css?v=33">
   <link rel="stylesheet" href="/static/css/panels.css?v=44">
   <link rel="stylesheet" href="/static/css/components.css?v=14">
-  <link rel="stylesheet" href="/static/css/responsive.css?v=5">
+  <link rel="stylesheet" href="/static/css/responsive.css?v=6">
   <link rel="stylesheet" href="/static/css/agents.css?v=31">
   <link rel="stylesheet" href="/static/css/cookbook.css?v=1">
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v=2">
@@ -1413,6 +1413,16 @@
         return "/static/vendor/monaco/vs/base/worker/workerMain.js";
       },
     };
+  </script>
+  <script>
+    // Lock to portrait on mobile — prevents rotation flash/jank
+    (function() {
+      try {
+        if (screen.orientation && screen.orientation.lock) {
+          screen.orientation.lock('portrait').catch(function(){});
+        }
+      } catch(e) {}
+    })();
   </script>
   <script src="/static/app.js?v=115"></script>
   <script src="/static/src/research.js?v=10"></script>

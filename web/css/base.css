@@ -1,19 +1,4 @@
 
-    /* Lock to portrait — prevents rotation in PWA/mobile app wrappers */
-    @media screen and (orientation: landscape) {
-      html {
-        transform: rotate(-90deg);
-        transform-origin: left top;
-        width: 100vh;
-        height: 100vw;
-        overflow-x: hidden;
-        position: absolute;
-        top: 100%;
-        left: 0;
-      }
-    }
-
-
     /* ---------- login gate ---------- */
     .login-overlay {
       position: fixed;
