@@ -497,6 +497,7 @@ async def chat(request: ChatRequest):
                 except Exception:
                     pass
                 stream_error = False
+                _cmd_history_start = len(_guard._command_history)
                 if _is_api_model(request.model):
                     _api_backend = _backend or _resolve_api_backend(request.model)
                     _connector = get_connector(_api_backend, model_id=request.model)
@@ -700,12 +701,38 @@ async def chat(request: ChatRequest):
                 try:
                     _max_chars_tool = _ms_cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS)
                     if _ms_cfg.get("enabled", True) and feedback and len(feedback) <= _max_chars_tool:
-                        _tool_mem = _searcher.search(feedback, top_k=_ms_cfg.get("top_k", 10))
-                        _new_mem = [r for r in _tool_mem if r.get("key") and r["key"] not in _injected_memory_keys]
+                        _top_k = _ms_cfg.get("top_k", 10)
+                        # Multi-source memory search: tool result + model response + tool call inputs
+                        _search_queries: list[str] = [feedback[:800]]
+                        # Source 2: model response text this round
+                        _round_resp = "".join(round_answer_parts).strip()
+                        if _round_resp:
+                            _search_queries.append(_round_resp[:500])
+                        # Source 3: tool call inputs from this round
+                        _round_cmds = _guard._command_history[_cmd_history_start:]
+                        for _cmd_sig in _round_cmds[:5]:  # cap to avoid excessive searches
+                            _search_queries.append(_cmd_sig[:300])
+                        # Search all sources, merge and deduplicate
+                        _all_mem_results: list[dict[str, Any]] = []
+                        _seen_mem_keys: set[str] = set()
+                        for _q in _search_queries:
+                            if not _q.strip():
+                                continue
+                            try:
+                                for r in _searcher.search(_q, top_k=_top_k):
+                                    _mk = r.get("key", "")
+                                    if _mk and _mk not in _seen_mem_keys and _mk not in _injected_memory_keys:
+                                        _seen_mem_keys.add(_mk)
+                                        _all_mem_results.append(r)
+                            except Exception:
+                                continue
+                        # Rank by score, take top_k overall
+                        _all_mem_results.sort(key=lambda r: float(r.get("score", 0.0)), reverse=True)
+                        _new_mem = _all_mem_results[:_top_k]
                         if _new_mem:
                             _tool_block = _searcher.format_for_prompt(_new_mem)
                             if _tool_block:
-                                feedback = f"{_tool_block}\n\n{feedback}"  # memory stays unwrapped, tool part is already wrapped
+                                feedback = f"{_tool_block}\n\n{feedback}"
                                 for r in _new_mem:
                                     _injected_memory_keys.add(r["key"])
                                 save_injected_memory_keys(active_chat_id, _injected_memory_keys)
