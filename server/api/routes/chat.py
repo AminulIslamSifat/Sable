@@ -56,14 +56,22 @@ router = APIRouter()
 
 @router.post("/api/chat")
 async def chat(request: ChatRequest):
+    logger.info("[CHAT-ENTRY] request.chat_id=%s model=%s parent_id=%s message=%.80s", request.chat_id, request.model, request.parent_id, request.message)
     scraper_enabled = get_scraper_settings().get("enabled")
     active_chat_id = request.chat_id
+    # Treat local-* placeholders as no chat — need a real upstream session
+    if active_chat_id and active_chat_id.startswith("local-"):
+        logger.info("[CHAT-RESOLVE] discarding placeholder %s", active_chat_id)
+        active_chat_id = None
+    logger.info("[CHAT-RESOLVE] initial active_chat_id=%s (from request.chat_id=%s)", active_chat_id, request.chat_id)
     if not active_chat_id and scraper_enabled:
         active_chat_id = f"browser-{uuid.uuid4().hex}"
+        logger.info("[CHAT-RESOLVE] scraper fallback -> %s", active_chat_id)
     if not active_chat_id:
         if _is_api_model(request.model):
             # API models manage sessions client-side — instant local ID
             active_chat_id = str(uuid.uuid4())
+            logger.info("[CHAT-RESOLVE] API model -> new uuid %s", active_chat_id)
         else:
             # Qwen needs a real server-side session before anything else
             try:
@@ -83,6 +91,8 @@ async def chat(request: ChatRequest):
                 return {"error": f"Session startup failed: {type(exc).__name__}: {exc}"}
             if not active_chat_id:
                 return {"error": "Could not create chat session"}
+            logger.info("[CHAT-RESOLVE] Qwen session created -> %s", active_chat_id)
+    logger.info("[CHAT-RESOLVED] final active_chat_id=%s (was request.chat_id=%s)", active_chat_id, request.chat_id)
     _ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     _ctx_parts = ""
     if request.cwd:
@@ -201,7 +211,9 @@ async def chat(request: ChatRequest):
     ensure_chat(active_chat_id, title, request.parent_id, mode=current_mode, provider=current_provider)
     set_title_if_default(active_chat_id, title)
     # Server tail is authoritative — client leaf is fallback for first-message only
-    parent_id = get_parent_id(active_chat_id, None) or request.parent_id
+    _server_parent = get_parent_id(active_chat_id, None)
+    parent_id = _server_parent or request.parent_id
+    logger.info("[CHAT-PARENT] chat=%s server_parent=%s request_parent=%s resolved_parent=%s msg_count=%s", active_chat_id, _server_parent, request.parent_id, parent_id, _msg_count if '_msg_count' in dir() else '?')
     # Reject bare integer parent_ids (DB row id leak from frontend — invalid upstream token)
     if parent_id and parent_id.isdigit():
         parent_id = None
@@ -214,6 +226,7 @@ async def chat(request: ChatRequest):
     _user_msg_id: int | None = None
     if not request.skip_user_save:
         _user_msg_id = add_message(active_chat_id, "user", timestamped_message, None, parent_id, memory_used=_memory_used or None)
+        logger.info("[CHAT-SAVE-USER] chat=%s msg_id=%s parent=%s content=%.60s", active_chat_id, _user_msg_id, parent_id, timestamped_message)
     # --- Checkpoint: capture project state BEFORE agent processes this turn ---
     if _user_msg_id and request.cwd:
         try:
@@ -300,6 +313,7 @@ async def chat(request: ChatRequest):
                 else:
                     logger.warning("Could not resolve file: %s", f["path"])
     if not request.stream and scraper_enabled:
+        logger.info("[CHAT-NONSTREAM-SCRAPER] chat=%s parent=%s", active_chat_id, parent_id)
         result = await scraper_service.chat(
             message=api_message,
             chat_id=active_chat_id,
@@ -327,6 +341,7 @@ async def chat(request: ChatRequest):
     except Exception:
         pass
     if not request.stream and _is_api_model(request.model):
+        logger.info("[CHAT-NONSTREAM-API] chat=%s model=%s backend=%s ephemeral=%s", active_chat_id, request.model, _backend, (_api_backend == "deepseek" and _cfg.get("api_model_type") == "vision" and bool(request.ref_file_ids)))
         # _backend already resolved above at file resolution stage
         _api_backend = _backend or _resolve_api_backend(request.model)
         _connector = get_connector(_api_backend, model_id=request.model)
@@ -373,6 +388,7 @@ async def chat(request: ChatRequest):
         result["memory_used"] = _memory_used
         return result
     if not request.stream and not scraper_enabled:
+        logger.info("[CHAT-NONSTREAM-QWEN] chat=%s parent=%s", active_chat_id, parent_id)
         result = await retry_async(
             lambda: service.chat(
                 message=api_message,
@@ -432,7 +448,9 @@ async def chat(request: ChatRequest):
         saved_message_id: int | None = None
         _guard = MainChatGuard()
         _all_tool_mem_used: list[dict[str, Any]] = []
+        logger.info("[SSE-START] chat=%s user_msg_id=%s parent=%s model=%s", active_chat_id, _user_msg_id, parent_id, request.model)
         yield sse({"type": "status", "message": "processing"})
+        yield sse({"type": "chat_id", "chat_id": active_chat_id})
         if _user_msg_id:
             yield sse({"type": "user_message_id", "id": _user_msg_id})
         if _memory_used:
@@ -553,6 +571,7 @@ async def chat(request: ChatRequest):
                         round_answer_parts.append(leftover)
                         yield sse({"type": "answer", "text": leftover})
                 files_for_round = resolved_files if round_index == 0 else None
+                logger.info("[SSE-ROUND] chat=%s round=%d parent=%s final_parent=%s msg_len=%d", active_chat_id, round_index, current_parent, final_parent, len(current_message))
                 # Drain pending agent notifications into this turn's context
                 try:
                     from engine.agents.notifications import notification_queue as _nq
@@ -657,7 +676,9 @@ async def chat(request: ChatRequest):
                         pending_thinking.clear()
                         async for _sse_line in _drain_sync_gen(emit_flush()):
                             yield _sse_line
-                        final_parent = event.get("parent_id") or final_parent
+                        _event_parent = event.get("parent_id")
+                        logger.info("[SSE-DONE] chat=%s event_parent=%s prev_final_parent=%s", active_chat_id, _event_parent, final_parent)
+                        final_parent = _event_parent or final_parent
                         current_parent = final_parent
                     elif event_type == "chat_not_found":
                         # Upstream Qwen session expired — create new one, inject full history, retry
@@ -889,6 +910,7 @@ async def chat(request: ChatRequest):
                     feedback = "\n\n".join(_guard_warnings)
                     _guard_warnings_injected = True
                 if stream_error or error_message or not feedback or _ask_user_pause or _permission_pause:
+                    logger.info("[SSE-BREAK] chat=%s round=%d stream_error=%s error=%s no_feedback=%s ask_pause=%s perm_pause=%s", active_chat_id, round_index, stream_error, bool(error_message), not feedback, _ask_user_pause, _permission_pause)
                     break
 
 
@@ -959,6 +981,7 @@ async def chat(request: ChatRequest):
                         active_chat_id, round_index,
                     )
                     yield sse({"type": "status", "message": "high_skill_round_count", "round": round_index})
+                logger.info("[SSE-CONTINUE] chat=%s next_round=%d feedback_len=%d guard_warnings=%d", active_chat_id, round_index + 1, len(feedback or ""), len(_guard_warnings))
                 round_index += 1
                 if _guard_warnings and not _guard_warnings_injected:
                     # Only prepend warnings if they weren't already used as feedback
@@ -976,12 +999,14 @@ async def chat(request: ChatRequest):
                     }
                 )
         except Exception as exc:
+            logger.exception("[SSE-EXCEPTION] chat=%s round=%d error=%s", active_chat_id, round_index, exc)
             error_message = f"{type(exc).__name__}: {exc}"
             try:
                 yield sse({"type": "error", "message": f"Server error: {error_message}"})
             except Exception:
                 pass
         finally:
+            logger.info("[SSE-FINALLY] chat=%s rounds=%d answer_len=%d thinking_len=%d skill_events=%d error=%s", active_chat_id, round_index + 1, len("".join(answer_parts)), len("".join(thinking_parts)), len(skill_events), bool(error_message))
             answer = "".join(answer_parts)
             thinking = "".join(thinking_parts)
             if not answer and skill_events:
@@ -998,9 +1023,12 @@ async def chat(request: ChatRequest):
             stored_content = answer or error_message or ""
             if saved_message_id is not None:
                 update_message(saved_message_id, stored_content, thinking, final_parent, skill_events)
+                logger.info("[CHAT-SAVE-ASSISTANT] UPDATE chat=%s msg_id=%s parent=%s len=%d", active_chat_id, saved_message_id, final_parent, len(stored_content))
             else:
-                add_message(active_chat_id, "assistant", stored_content, thinking, final_parent, skill_events)
+                _asst_id = add_message(active_chat_id, "assistant", stored_content, thinking, final_parent, skill_events)
+                logger.info("[CHAT-SAVE-ASSISTANT] NEW chat=%s msg_id=%s parent=%s len=%d", active_chat_id, _asst_id, final_parent, len(stored_content))
             touch_chat(active_chat_id, final_parent)
+            logger.info("[CHAT-DONE] chat=%s final_parent=%s error=%s rounds=%d", active_chat_id, final_parent, bool(error_message), round_index + 1)
             # Release auto-turn lock — drains any queued agent results
             try:
                 from engine.agents.auto_turn import auto_turn as _at_done

@@ -354,6 +354,14 @@ class ChatService:
                                     except json.JSONDecodeError:
                                         continue
 
+                                    # DEBUG: log first few SSE payloads to find response_id field
+                                    if chosen_response_id is None:
+                                        logger.debug("[parent-id-debug] SSE keys: %s | top-level response_id=%r | response.created=%r",
+                                                     list(data.keys()), data.get("response_id"), data.get("response.created"))
+                                        _delta_dbg = data.get("choices", [{}])[0].get("delta", {}) if data.get("choices") else {}
+                                        if _delta_dbg:
+                                            logger.debug("[parent-id-debug] delta keys: %s", list(_delta_dbg.keys()))
+
                                     created = data.get("response.created")
                                     if isinstance(created, dict):
                                         response_id = created.get("response_id")

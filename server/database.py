@@ -276,10 +276,13 @@ def init_db() -> None:
             conn.execute("ALTER TABLE chats ADD COLUMN project_id TEXT")
 
 def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = None, mode: str | None = None, provider: str | None = None, project_id: str | None = None) -> None:
+    import logging as _logging
+    _db_log = _logging.getLogger(__name__)
     now = utcnow()
     with get_db() as conn:
         existing = conn.execute("SELECT id, mode, provider, project_id FROM chats WHERE id = ?", (chat_id,)).fetchone()
         if existing:
+            _db_log.info("[DB-ENSURE-CHAT] EXISTS chat=%s mode=%s provider=%s", chat_id, existing["mode"], existing["provider"])
             if mode and not existing["mode"]:
                 conn.execute("UPDATE chats SET mode = ? WHERE id = ?", (mode, chat_id))
             if provider and existing["provider"] != provider:
@@ -291,6 +294,7 @@ def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = N
             "INSERT INTO chats (id, title, parent_id, created_at, updated_at, mode, provider, project_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (chat_id, title, parent_id, now, now, mode, provider, project_id),
         )
+        _db_log.info("[DB-ENSURE-CHAT] CREATED chat=%s title=%.40s parent=%s mode=%s provider=%s", chat_id, title, parent_id, mode, provider)
 
 def rename_chat(old_id: str, new_id: str) -> None:
     """Rename a chat and all its messages to a new ID (e.g. after upstream session recovery)."""
@@ -338,6 +342,8 @@ def save_injected_memory_keys(chat_id: str, keys: set[str]) -> None:
         )
 
 def touch_chat(chat_id: str, parent_id: str | None = None) -> None:
+    import logging as _logging
+    _db_log = _logging.getLogger(__name__)
     """Update chat timestamp and optionally advance the cached tail pointer.
 
     When parent_id is None, derives it from the latest message in the chat so
@@ -356,8 +362,10 @@ def touch_chat(chat_id: str, parent_id: str | None = None) -> None:
                 "UPDATE chats SET updated_at = ?, parent_id = ? WHERE id = ?",
                 (now, parent_id, chat_id),
             )
+            _db_log.info("[DB-TOUCH] chat=%s parent=%s", chat_id, parent_id)
         else:
             conn.execute("UPDATE chats SET updated_at = ? WHERE id = ?", (now, chat_id))
+            _db_log.info("[DB-TOUCH] chat=%s parent=None (timestamp only)", chat_id)
 
 def save_chat_url(chat_id: str, url: str) -> None:
     with get_db() as conn:
@@ -388,6 +396,8 @@ def add_message(
     skill_events: list[dict[str, Any]] | None = None,
     memory_used: list[dict[str, Any]] | None = None,
 ) -> int:
+    import logging as _logging
+    _db_log = _logging.getLogger(__name__)
     now = utcnow()
     memory_used_json = json.dumps(memory_used, ensure_ascii=False) if memory_used else None
     with get_db() as conn:
@@ -398,6 +408,7 @@ def add_message(
         )
         msg_id = int(cur.lastrowid)
         _write_skill_events(conn, msg_id, skill_events)
+        _db_log.info("[DB-ADD-MSG] id=%d chat=%s role=%s parent=%s len=%d", msg_id, chat_id, role, parent_id, len(content or ""))
         return msg_id
 
 def update_message(
@@ -663,11 +674,16 @@ def get_chat_tail_id(chat_id: str) -> str | None:
 
 
 def get_parent_id(chat_id: str, requested_parent_id: str | None) -> str | None:
+    import logging as _logging
+    _db_log = _logging.getLogger(__name__)
     if requested_parent_id:
+        _db_log.info("[DB-GET-PARENT] chat=%s using requested=%s", chat_id, requested_parent_id)
         return requested_parent_id
     with get_db() as conn:
         row = conn.execute("SELECT parent_id FROM chats WHERE id = ?", (chat_id,)).fetchone()
-        return row["parent_id"] if row else None
+        _result = row["parent_id"] if row else None
+        _db_log.info("[DB-GET-PARENT] chat=%s db_parent=%s chat_exists=%s", chat_id, _result, bool(row))
+        return _result
 
 
 # --- Agent persistence ---

@@ -1396,6 +1396,8 @@
     function closeTab(chatId) {
       const tab = openTabs.get(chatId);
       if (!tab) return;
+      // Clean up observer references for this tab's placeholders
+      _cleanupHistoryObservers();
       tab.pane.remove();
       openTabs.delete(chatId);
 
@@ -1479,6 +1481,7 @@
     }
 
     function _toggleStreamIndicator(chatId, streaming) {
+      if (!chatId) return;
       const row = chatsEl.querySelector(`.chat-row[data-chat-id="${CSS.escape(chatId)}"]`);
       if (row) {
         row.classList.toggle('streaming', streaming);
@@ -3564,10 +3567,40 @@
           try { evt = JSON.parse(line.slice(6)); }
           catch { continue; }
 
-          if (evt.type === "meta") {
+          if (evt.type === "chat_id") {
+            // Backend created a real session — adopt the new chat_id
+            const newChatId = evt.chat_id;
+            if (newChatId && newChatId !== activeChatId) {
+              const oldId = activeChatId;
+              activeChatId = newChatId;
+              // Transfer stream state from placeholder to real ID
+              if (oldId && activeStreams.has(oldId)) {
+                const ctrl = activeStreams.get(oldId);
+                activeStreams.delete(oldId);
+                activeStreams.set(newChatId, ctrl);
+                _toggleStreamIndicator(oldId, false);
+                _toggleStreamIndicator(newChatId, true);
+              }
+              // Rename tab and update state
+              if (openTabs.has(oldId)) {
+                const tab = openTabs.get(oldId);
+                openTabs.delete(oldId);
+                openTabs.set(newChatId, tab);
+                if (tab.pane) tab.pane.dataset.chatId = newChatId;
+              }
+              // Update tab button data attribute and label
+              const tabBtn = document.querySelector(`[data-chat-id="${CSS.escape(oldId)}"]`);
+              if (tabBtn) {
+                tabBtn.dataset.chatId = newChatId;
+              }
+              parentId = null; // first message, no parent yet
+              saveActiveChat();
+              loadChats(); // refresh sidebar with real chat_id
+            }
+          } else if (evt.type === "meta") {
             // Only adopt parent_id if the user is still viewing this stream's
             // chat — prevents a background stream from hijacking state.
-            if (activeChatId === streamChatId) {
+            if (activeChatId === streamChatId || !streamChatId) {
               parentId = evt.parent_id || parentId;
               saveActiveChat();
             }
@@ -3601,7 +3634,7 @@
             ui.appendAnswer(evt.text || "");
           } else if (evt.type === "done") {
             gotDone = true;
-            if (activeChatId === streamChatId) {
+            if (activeChatId === streamChatId || !streamChatId) {
               parentId = evt.parent_id || parentId;
               saveActiveChat();
             }
@@ -4684,11 +4717,92 @@
       }
     }
 
+    // ── History lazy-render observer ──
+    // Messages loaded from history start as raw-text placeholders.
+    // Only the last 20 assistant-iterations are fully rendered immediately.
+    // Older messages get fully rendered when scrolled into view.
+    let _observedPlaceholders = []; // track observed elements for cleanup
+
+    function _cleanupHistoryObservers() {
+      for (const el of _observedPlaceholders) {
+        _historyObserver.unobserve(el);
+        el._sableMsg = null; // release message data from RAM
+      }
+      _observedPlaceholders = [];
+    }
+
+    const _historyObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const el = entry.target;
+        if (el.dataset.historyRendered === "1") continue;
+        el.dataset.historyRendered = "1";
+        _historyObserver.unobserve(el);
+        // Remove from tracking array
+        const idx = _observedPlaceholders.indexOf(el);
+        if (idx !== -1) _observedPlaceholders.splice(idx, 1);
+        const msgData = el._sableMsg;
+        if (!msgData) continue;
+        // Full render: clear placeholder, render rich content directly into el
+        el.innerHTML = "";
+        el.classList.remove("history-placeholder");
+        // Point activePane at el so addHistoryMessage + any async _lazyLoadSkillEvents
+        // append to the correct container. We intentionally do NOT restore activePane
+        // here — the next observer callback or user action will set it correctly.
+        activePane = el;
+        addHistoryMessage(msgData);
+        renderMathJax(el);
+      }
+    }, { rootMargin: "200px 0px" });
+
+    /**
+     * Create a lightweight raw-text placeholder for a history message.
+     * No markdown, no MathJax, no mermaid — just escaped text.
+     */
+    function _createRawPlaceholder(msg) {
+      const div = document.createElement("div");
+      div.className = `msg ${msg.role === "user" ? "user" : "bot"} history-placeholder`;
+      div.dataset.msgId = msg.id || "";
+      div.dataset.historyRendered = "0";
+      div._sableMsg = msg;
+
+      if (msg.role === "user") {
+        let displayContent = msg.content || "";
+        const memMatch = displayContent.match(/^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n/);
+        if (memMatch) displayContent = displayContent.slice(memMatch[0].length);
+        const tsMatch = displayContent.match(/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\n?/);
+        if (tsMatch) displayContent = displayContent.slice(tsMatch[0].length);
+
+        const textEl = document.createElement("div");
+        textEl.className = "user-text";
+        textEl.textContent = displayContent;
+        div.appendChild(textEl);
+      } else {
+        const content = document.createElement("div");
+        content.className = "md-content";
+        content.textContent = msg.content || "";
+        div.appendChild(content);
+      }
+
+      // Tool call count indicator for assistant messages with skill events
+      if (msg.role !== "user" && (msg.has_skill_events || (Array.isArray(msg.skill_events) && msg.skill_events.length))) {
+        const indicator = document.createElement("div");
+        indicator.className = "history-tool-indicator";
+        indicator.style.cssText = "font-size:11px;opacity:0.5;padding:2px 8px;font-style:italic;";
+        indicator.textContent = "\u2699 tool calls (scroll to expand)";
+        div.appendChild(indicator);
+      }
+
+      return div;
+    }
+
     async function loadMessages(chatId) {
       try {
-        // Phase 1: Load last 50 messages (fast, no skill_events)
-        console.log("[DEBUG loadMessages] called for", chatId, "stack:", new Error().stack?.split('\n').slice(1,4).join(' | '));
-        const data = await fetch(`/api/chats/${chatId}/messages?limit=50&include_skill_events=true`).then(r => r.json());
+        console.log("[loadMessages] called for", chatId);
+        // Clean up previous chat's observer references to free RAM
+        _cleanupHistoryObservers();
+        // Phase 1: Load ALL messages as raw text (no skill_events = fast)
+        const data = await fetch(`/api/chats/${chatId}/messages?include_skill_events=false`).then(r => r.json());
         const pane = ensurePane(chatId);
         pane.innerHTML = "";
         const chars = data.context_chars || 0;
@@ -4696,26 +4810,47 @@
         window._statusContextChars = chars;
         updateStatusBarContext();
         const messages = data.messages || [];
-        console.log("[DEBUG loadMessages] got", messages.length, "messages, ids:", messages.map(m => m.id));
+        console.log("[loadMessages] got", messages.length, "messages (raw)");
         if (messages.length === 0) {
           pane.innerHTML = `<div class="empty"><h2>New conversation</h2><p>Send the first message.</p></div>`;
           return [];
         }
-        // Temporarily point activePane at target so addHistoryMessage appends correctly
+
+        // Phase 2: Find last 20 assistant-message iteration boundaries
+        // An "iteration" = an assistant message (with its preceding user message)
+        const assistantIndices = [];
+        for (let i = 0; i < messages.length; i++) {
+          if (messages[i].role !== "user") assistantIndices.push(i);
+        }
+        const renderFromIndex = assistantIndices.length > 20
+          ? assistantIndices[assistantIndices.length - 20]
+          : 0;
+
+        // Phase 3: Build DOM — raw placeholders for old, full render for recent
         const prevPane = activePane;
         activePane = pane;
-        for (const msg of messages) addHistoryMessage(msg);
-        console.log("[DEBUG loadMessages] after render, pane children:", pane.children.length);
-        activePane = prevPane;
-        renderMathJax(pane);
-        if (chatId === activeChatId) scrollBottom(true);
 
-        // Phase 2: Load older messages in background (if there are more)
-        if (messages.length === 50) {
-          const oldestId = messages[0]?.id;
-          if (oldestId) _loadOlderMessages(chatId, oldestId, pane);
+        for (let i = 0; i < messages.length; i++) {
+          const msg = messages[i];
+          if (i < renderFromIndex) {
+            // Old message: raw text placeholder, observed for lazy render
+            const placeholder = _createRawPlaceholder(msg);
+            pane.appendChild(placeholder);
+            _historyObserver.observe(placeholder);
+            _observedPlaceholders.push(placeholder);
+          } else {
+            // Recent message: full rich render
+            addHistoryMessage(msg);
+          }
         }
 
+        activePane = prevPane;
+
+        // Phase 4: Single batched MathJax pass for all rendered content
+        renderMathJax(pane);
+
+        if (chatId === activeChatId) scrollBottom(true);
+        console.log("[loadMessages] done,", messages.length, "msgs,", renderFromIndex, "deferred");
         return messages;
       } catch (err) {
         console.error("Failed to load messages:", err);
@@ -4723,28 +4858,7 @@
       }
     }
 
-    async function _loadOlderMessages(chatId, beforeId, pane) {
-      try {
-        const data = await fetch(`/api/chats/${chatId}/messages?before_id=${beforeId}&include_skill_events=true`).then(r => r.json());
-        const older = data.messages || [];
-        if (older.length === 0) return;
-        const prevPane = activePane;
-        activePane = pane;
-        // Prepend older messages at the top
-        const frag = document.createDocumentFragment();
-        const tempDiv = document.createElement("div");
-        activePane = tempDiv;
-        for (const msg of older) addHistoryMessage(msg);
-        activePane = prevPane;
-        // Insert at the beginning of the pane (after any empty state)
-        const empty = pane.querySelector(".empty");
-        if (empty) empty.remove();
-        pane.insertBefore(tempDiv, pane.firstChild);
-        renderMathJax(pane);
-      } catch (err) {
-        console.error("Failed to load older messages:", err);
-      }
-    }
+    // _loadOlderMessages removed — all messages loaded upfront as raw text
 
     /**
      * Rebuild the model dropdown filtered to the provider's model group.
@@ -5109,52 +5223,37 @@
       return _consolidationPromise;
     }
 
-    async function createChat() {
-      if (creating) return null;
-      setCreating(true);
+    // Lightweight new chat — no server call, just open a blank tab.
+    // Real chat_id comes from backend via SSE when first message is sent.
+    function startNewChat() {
       const oldChatId = activeChatId;
       const isStreaming = oldChatId && activeStreams.has(oldChatId);
       if (isStreaming) {
-        // Skip consolidation — current chat is still responding
         showToast("⏭️ Skipped memory consolidation (chat still streaming)", "info");
       } else if (oldChatId) {
-        // Unified consolidation — backend handles model selection, fallback chain,
-        // and uses ephemeral chat_id internally (no pollution of source chat)
         consolidateMemory(oldChatId, selectedModel);
       }
-      try {
-        const res  = await fetch("/api/chat/new", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: selectedModel, project_id: activeProjectId })
-        });
-        const text = await res.text();
-        let data = {};
-        try { data = JSON.parse(text); } catch (_) { data = { error: `Server ${res.status}: ${text.slice(0, 300)}` }; }
-        if (!data.chat_id) {
-          showToast(data.error || "Could not create chat", "error");
-          return null;
-        }
-        // Open as a new tab
-        switchToTab(data.chat_id);
-        parentId = null;
-        lockModelDropdown(null); // unlock dropdown for fresh chat
-        if (typeof onChatOpened === "function") onChatOpened(activeChatId);
-        saveActiveChat();
-        await loadChats();
-        // Reset context ring for fresh chat
-        contextCharsCache.set(activeChatId, 0);
-        window._statusContextChars = 0;
-        updateStatusBarContext();
-        // Pane already has empty state from createTabPane
-        inputEl.focus();
-        return activeChatId;
-      } catch (err) {
-        showToast("Network error: " + err.message, "error");
-        return null;
-      } finally {
-        setCreating(false);
-      }
+      // Use a unique client-side-only placeholder so openTabs map has a key.
+      // This is NOT sent to the backend — sendMessage passes null when it sees this.
+      const placeholder = "_new_" + Date.now();
+      // Add dummy entry to sidebar so it shows up immediately
+      chatList.unshift({ id: placeholder, title: "New chat", created_at: new Date().toISOString(), provider: null });
+      renderChats();
+      switchToTab(placeholder);
+      parentId = null;
+      lockModelDropdown(null);
+      if (typeof onChatOpened === "function") onChatOpened(activeChatId);
+      saveActiveChat();
+      contextCharsCache.set(activeChatId, 0);
+      window._statusContextChars = 0;
+      updateStatusBarContext();
+      inputEl.focus();
+      return activeChatId;
+    }
+
+    // Legacy alias — some code paths may still call createChat()
+    async function createChat() {
+      return startNewChat();
     }
 
     /* ============================= attachments ============================= */
@@ -5297,10 +5396,7 @@
       if (typeof parseAgentMention === "function") {
         const mention = parseAgentMention(message);
         if (mention) {
-          if (!activeChatId) {
-            const created = await createChat();
-            if (!created) return;
-          }
+          // Agent mentions also skip createChat — let backend handle it
           inputEl.value = "";
           autoResize();
           hideMentionPopup();
@@ -5321,13 +5417,12 @@
 
       // Consolidation now runs fully in background — no queueing needed
 
-      if (!activeChatId) {
-        const created = await createChat();
-        if (!created) return;
-      }
+      // First message with no chat or placeholder — send with null chat_id
+      // Backend creates real session and returns it via SSE chat_id event
+      const isNewChat = !activeChatId || (activeChatId && activeChatId.startsWith("_new_"));
 
       // Mode cross-guard: block sending from mismatched provider chats
-      const activeMeta = chatList.find(c => c.id === activeChatId);
+      const activeMeta = activeChatId ? chatList.find(c => c.id === activeChatId) : null;
       if (activeMeta?.provider) {
         if (scraperMode && activeMeta.provider !== "scraping") {
           showToast("This chat is locked to " + activeMeta.provider + " — switch off scraper mode or start a new chat.", "error");
@@ -5339,7 +5434,7 @@
         }
       }
 
-      const streamChatId = activeChatId;
+      const streamChatId = (activeChatId && !activeChatId.startsWith("_new_")) ? activeChatId : null;
       const controller = startStream(streamChatId);
       inputEl.value = "";
       autoResize();

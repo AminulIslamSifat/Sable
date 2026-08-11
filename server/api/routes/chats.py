@@ -146,7 +146,11 @@ def chat_messages(
     - before_id: load messages older than this id (for infinite scroll)
     - include_skill_events: if true, embed skill_events in response (heavy)
     """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    _log.info("[API-MESSAGES] chat=%s limit=%s before_id=%s skill_events=%s", chat_id, limit, before_id, include_skill_events)
     messages = get_messages(chat_id, limit=limit, before_id=before_id, include_skill_events=include_skill_events)
+    _log.info("[API-MESSAGES] chat=%s returned %d messages", chat_id, len(messages))
     # Compute total context chars for the full chat (not just the paginated slice)
     from server.database import get_db
     with get_db() as conn:

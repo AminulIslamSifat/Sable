@@ -370,9 +370,10 @@ async def run_agent_llm_loop(
         response_text = re.sub(r'\n{3,}', '\n\n', response_text).strip()
 
         if not tags:
-            # No tool calls → check if this is a premature stop (thin response while todos remain)
+            # No tool calls → check if this is a premature stop
             has_active_todos = agent.todos and not agent.todos.all_done
             is_thin_response = len(response_text.strip()) < 200
+            is_early_iteration = iteration < 3  # Haven't done enough work yet
 
             if has_active_todos and is_thin_response:
                 # Agent stopped mid-plan with a short non-action response — nudge to continue
@@ -386,6 +387,17 @@ async def run_agent_llm_loop(
                 agent.messages.append({"role": "user", "content": continue_msg})
                 await _persist_message(agent.id, "user", continue_msg)
                 continue  # Loop back — give the agent another turn
+
+            # No todos but very early + thin response → agent hasn't done enough work
+            if not has_active_todos and is_thin_response and is_early_iteration and agent.tool_calls_total > 0:
+                nudge_msg = (
+                    "[TOO EARLY TO STOP] You've only used %d tool(s) so far and your response is too short to be a complete answer.\n"
+                    "Continue investigating using your available tools. Read files, search, run commands.\n"
+                    "Only provide your final markdown answer AFTER thorough investigation."
+                ) % agent.tool_calls_total
+                agent.messages.append({"role": "user", "content": nudge_msg})
+                await _persist_message(agent.id, "user", nudge_msg)
+                continue
 
             # No tool calls → validate as final markdown answer
             if _validate_markdown_output(response_text, role_cfg.required_sections):
