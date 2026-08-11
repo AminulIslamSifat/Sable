@@ -61,15 +61,28 @@ async def chat(request: ChatRequest):
     if not active_chat_id and scraper_enabled:
         active_chat_id = f"browser-{uuid.uuid4().hex}"
     if not active_chat_id:
-        try:
-            active_chat_id = await retry_async(
-                lambda: service.create_chat(model=request.model),
-                label="create_chat",
-            )
-        except Exception as exc:
-            return {"error": f"Session startup failed: {type(exc).__name__}: {exc}"}
-        if not active_chat_id:
-            return {"error": "Could not create chat session"}
+        if _is_api_model(request.model):
+            # API models manage sessions client-side — instant local ID
+            active_chat_id = str(uuid.uuid4())
+        else:
+            # Qwen needs a real server-side session before anything else
+            try:
+                from engine.session import create_new_chat as _create_qwen_chat
+                _headers = await service._ensure_headers()
+                active_chat_id = await retry_async(
+                    lambda: _create_qwen_chat(_headers, model=request.model),
+                    label="create_chat",
+                )
+                if not active_chat_id:
+                    _headers = await service._refresh_headers()
+                    active_chat_id = await retry_async(
+                        lambda: _create_qwen_chat(_headers, model=request.model),
+                        label="create_chat_retry",
+                    )
+            except Exception as exc:
+                return {"error": f"Session startup failed: {type(exc).__name__}: {exc}"}
+            if not active_chat_id:
+                return {"error": "Could not create chat session"}
     _ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     _ctx_parts = ""
     if request.cwd:
@@ -176,8 +189,10 @@ async def chat(request: ChatRequest):
         current_provider = _resolve_api_backend(request.model)
     else:
         current_provider = "qwen"
+    # Lock boundary: qwen vs scraping vs api (all API backends are interchangeable)
+    _lock_group = lambda p: "api" if p not in ("qwen", "scraping") else p
     locked_provider = get_chat_provider(active_chat_id)
-    if locked_provider and locked_provider != current_provider:
+    if locked_provider and _lock_group(locked_provider) != _lock_group(current_provider):
         return {
             "error": f"This chat is locked to {locked_provider}. "
                      f"You can't use {current_provider} here — start a new chat."

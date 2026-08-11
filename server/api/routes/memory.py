@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +31,232 @@ _MEM_BLOCK_RE = _re.compile(r'^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n')
 _TS_RE = _re.compile(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\n?')
 
 _CONSOLIDATION_BACKENDS = frozenset({"groq", "gemini", "mistral"})
+
+# ── Background consolidation infrastructure ─────────────────────────────
+_consolidation_results: dict[str, dict[str, Any]] = {}
+_consolidation_lock = threading.Lock()
+
+
+def _store_consolidation_result(chat_id: str, result: dict[str, Any]) -> None:
+    """Store consolidation result for polling."""
+    with _consolidation_lock:
+        _consolidation_results[chat_id] = {**result, "_ts": time.time()}
+
+
+def _get_consolidation_result(chat_id: str) -> dict[str, Any] | None:
+    """Retrieve and remove consolidation result."""
+    with _consolidation_lock:
+        entry = _consolidation_results.pop(chat_id, None)
+    if entry:
+        entry.pop("_ts", None)
+    return entry
+
+
+def _run_consolidation_in_thread(
+    chat_id: str, mem_path: Path, messages: list[dict], model: str,
+    fallback_models: list[str], browser_profiles: list[str],
+    current_memory: str, conv_text: str, proj_id: str | None,
+) -> None:
+    """Run full consolidation work in a separate thread with its own event loop."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_do_consolidation_work(
+            chat_id, mem_path, messages, model, fallback_models,
+            browser_profiles, current_memory, conv_text, proj_id,
+        ))
+    except Exception as exc:
+        _store_consolidation_result(chat_id, {"status": "error", "detail": f"Thread error: {exc}"})
+    finally:
+        loop.close()
+
+
+async def _do_consolidation_work(
+    chat_id: str, mem_path: Path, messages: list[dict], model: str,
+    fallback_models: list[str], browser_profiles: list[str],
+    current_memory: str, conv_text: str, proj_id: str | None,
+) -> None:
+    """Actual consolidation logic — runs inside the background thread's event loop."""
+    # Build prompt
+    prompt = _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE
+    prompt = prompt.replace("<<CURRENT_MEMORY>>", current_memory)
+    prompt = prompt.replace("<<CONVERSATION_SUMMARY>>", conv_text)
+
+    # Fallback chain
+    result: dict[str, Any] | None = None
+    attempts: list[str] = []
+
+    result = await _try_consolidation_call(model, prompt)
+    if result:
+        attempts.append(f"{model} ✓")
+    else:
+        attempts.append(f"{model} ✗")
+        api_backend = _resolve_api_backend(model)
+        if not api_backend and browser_profiles:
+            for profile in browser_profiles[:3]:
+                result = await _try_consolidation_call(model, prompt, browser_profile=profile)
+                if result:
+                    attempts.append(f"{model}@{profile} ✓")
+                    break
+                attempts.append(f"{model}@{profile} ✗")
+        if not result and fallback_models:
+            for fb_model in fallback_models[:3]:
+                result = await _try_consolidation_call(fb_model, prompt)
+                if result:
+                    attempts.append(f"{fb_model} ✓")
+                    break
+                attempts.append(f"{fb_model} ✗")
+
+    if not result:
+        _store_consolidation_result(chat_id, {"status": "error", "detail": f"All consolidation attempts failed: {' → '.join(attempts)}"})
+        return
+
+    raw_answer = str(result.get("answer", ""))
+    cleaned = raw_answer.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        lines = [l for l in lines if not l.strip().startswith("```")]
+        cleaned = "\n".join(lines).strip()
+    try:
+        new_entries = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start_idx = cleaned.find("{")
+        end_idx = cleaned.rfind("}")
+        if start_idx != -1 and end_idx > start_idx:
+            try:
+                new_entries = json.loads(cleaned[start_idx : end_idx + 1])
+            except json.JSONDecodeError:
+                _store_consolidation_result(chat_id, {"status": "error", "detail": "Model returned invalid JSON", "raw": raw_answer[:500]})
+                return
+        else:
+            _store_consolidation_result(chat_id, {"status": "error", "detail": "No JSON object found in response", "raw": raw_answer[:500]})
+            return
+
+    if not isinstance(new_entries, dict):
+        _store_consolidation_result(chat_id, {"status": "error", "detail": "Expected dict with add/delete keys"})
+        return
+
+    if "add" in new_entries:
+        adds = new_entries["add"]
+        deletes = new_entries.get("delete", [])
+    else:
+        adds = {k: v for k, v in new_entries.items() if k in ("semantic", "episodic", "procedural", "protected", "ephemeral")}
+        deletes = []
+    if not isinstance(adds, dict):
+        adds = {}
+    if not isinstance(deletes, list):
+        deletes = []
+
+    existing: dict[str, list[dict[str, str]]] = {}
+    if mem_path.exists():
+        try:
+            existing = json.loads(mem_path.read_text(encoding="utf-8"))
+            if not isinstance(existing, dict):
+                existing = {}
+        except Exception:
+            existing = {}
+
+    # Dedup
+    try:
+        searcher = get_searcher()
+        adds, dedup_skipped, dedup_updated = _dedup_and_resolve_adds(adds, existing, searcher)
+    except Exception:
+        dedup_skipped = 0
+        dedup_updated = 0
+
+    protected_keys: set[str] = set()
+    for e in existing.get("protected", []):
+        if isinstance(e, dict) and e.get("key"):
+            protected_keys.add(e["key"])
+    for entry in adds.get("protected", []):
+        if isinstance(entry, dict) and entry.get("key"):
+            protected_keys.add(entry["key"])
+
+    deleted_count = 0
+    delete_keys = {str(k) for k in deletes if k} - protected_keys
+    if delete_keys:
+        for cat in ("semantic", "episodic", "procedural", "ephemeral"):
+            cat_list = existing.get(cat, [])
+            before = len(cat_list)
+            existing[cat] = [e for e in cat_list if not isinstance(e, dict) or e.get("key", "") not in delete_keys]
+            deleted_count += before - len(existing[cat])
+
+    added_count = 0
+    for cat in ("semantic", "episodic", "procedural"):
+        existing_list = existing.get(cat, [])
+        new_list = adds.get(cat, [])
+        if not isinstance(new_list, list):
+            continue
+        existing_keys = {e.get("key", "") for e in existing_list if isinstance(e, dict)}
+        for entry in new_list:
+            if isinstance(entry, dict) and entry.get("key") and entry["key"] not in existing_keys:
+                existing_list.append({"key": entry["key"], "value": entry.get("value", "")})
+                existing_keys.add(entry["key"])
+                added_count += 1
+        existing[cat] = existing_list
+
+    prot_new = adds.get("protected", [])
+    prot_added = 0
+    if isinstance(prot_new, list) and prot_new:
+        existing_prot: list[dict[str, str]] = []
+        if _PROTECTED_PATH.exists():
+            try:
+                pdata = json.loads(_PROTECTED_PATH.read_text(encoding="utf-8"))
+                existing_prot = pdata.get("protected", []) if isinstance(pdata, dict) else []
+            except Exception:
+                existing_prot = []
+        prot_keys = {e.get("key", "") for e in existing_prot if isinstance(e, dict)}
+        for entry in prot_new:
+            if isinstance(entry, dict) and entry.get("key") and entry["key"] not in prot_keys:
+                existing_prot.append({"key": entry["key"], "value": entry.get("value", "")})
+                prot_keys.add(entry["key"])
+                prot_added += 1
+        _PROTECTED_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _PROTECTED_PATH.write_text(
+            json.dumps({"protected": existing_prot}, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+    eph_new = adds.get("ephemeral", [])
+    eph_added = 0
+    if isinstance(eph_new, list) and eph_new:
+        eph_list = existing.get("ephemeral", [])
+        eph_keys = {e.get("key", "") for e in eph_list if isinstance(e, dict)}
+        for entry in eph_new:
+            if isinstance(entry, dict) and entry.get("key") and entry["key"] not in eph_keys:
+                eph_entry: dict[str, Any] = {"key": entry["key"], "value": entry.get("value", "")}
+                if entry.get("expires_at"):
+                    eph_entry["expires_at"] = str(entry["expires_at"])
+                eph_list.append(eph_entry)
+                eph_keys.add(entry["key"])
+                eph_added += 1
+        existing["ephemeral"] = eph_list
+
+    mem_path.parent.mkdir(parents=True, exist_ok=True)
+    mem_path.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    if mem_path != _MEMORY_PATH:
+        try:
+            from engine.memory_search import reload_project_searcher
+            reload_project_searcher(proj_id)
+        except Exception:
+            pass
+    else:
+        get_searcher().reload_memory()
+
+    skill_created = False
+    skill_data = new_entries.get("create_skill")
+    if isinstance(skill_data, dict) and skill_data.get("name"):
+        skill_created = _save_user_skill(skill_data)
+
+    total_added = added_count + prot_added + eph_added
+
+    # Personality assessment — fire-and-forget within the thread
+    asyncio.create_task(_run_personality_assessment(conv_text, model))
+
+    final: dict[str, Any] = {"status": "ok", "added": total_added, "deleted": deleted_count, "dedup_skipped": dedup_skipped, "dedup_updated": dedup_updated}
+    if skill_created:
+        final["skill_created"] = skill_data["name"]
+    _store_consolidation_result(chat_id, final)
 
 
 def _format_conversation(messages: list[dict[str, Any]], max_chars: int = 50_000) -> str:
@@ -570,12 +798,24 @@ async def get_personality() -> dict[str, Any]:
 
 @router.post("/api/memory/consolidate")
 async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
+    """Kick off consolidation in a background thread. Returns instantly."""
     chat_id = payload.get("chat_id")
     if not chat_id:
         raise HTTPException(status_code=400, detail="Missing 'chat_id'")
 
+    # Quick validation only — heavy work deferred to thread
+    messages = await asyncio.to_thread(get_messages, chat_id)
+    if len(messages) < 2:
+        return {"status": "skipped", "reason": "too few messages"}
+
+    settings = _load_consolidation_settings()
+    model = settings.get("model") or payload.get("model") or ""
+    if not model:
+        return {"status": "error", "detail": "No model specified"}
+
     # Resolve project-scoped memory path
-    _mem_path = _MEMORY_PATH  # default: global memory
+    _mem_path = _MEMORY_PATH
+    _proj_id: str | None = None
     try:
         _proj_id = get_chat_project_id(chat_id)
         if _proj_id:
@@ -587,20 +827,7 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         pass
 
-    messages = get_messages(chat_id)
-    if len(messages) < 2:
-        return {"status": "skipped", "reason": "too few messages"}
-
-    # Load consolidation settings
-    settings = _load_consolidation_settings()
-    model = settings.get("model") or payload.get("model") or ""
-    if not model:
-        return {"status": "error", "detail": "No model specified"}
-
-    fallback_models: list[str] = settings.get("fallback_models", [])
-    browser_profiles: list[str] = settings.get("browser_profiles", [])
-
-    # Build memory context
+    # Build memory context (lightweight enough for main thread)
     injected_keys = get_injected_memory_keys(chat_id)
     filtered_memory: dict[str, list] = {}
     if _mem_path.exists() and injected_keys:
@@ -615,181 +842,28 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             pass
     current_memory = json.dumps(filtered_memory, indent=2) if filtered_memory else "{}"
-
-    # Always use standalone template with inline conversation
-    prompt = _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE
-    prompt = prompt.replace("<<CURRENT_MEMORY>>", current_memory)
     conv_text = _format_conversation(messages)
-    prompt = prompt.replace("<<CONVERSATION_SUMMARY>>", conv_text)
 
-    # Fallback chain
-    result: dict[str, Any] | None = None
-    attempts: list[str] = []
+    # Spawn background thread — zero blocking
+    t = threading.Thread(
+        target=_run_consolidation_in_thread,
+        args=(chat_id, _mem_path, messages, model,
+              settings.get("fallback_models", []),
+              settings.get("browser_profiles", []),
+              current_memory, conv_text, _proj_id),
+        daemon=True,
+    )
+    t.start()
 
-    # 1. Try primary model
-    result = await _try_consolidation_call(model, prompt)
-    if result:
-        attempts.append(f"{model} ✓")
-    else:
-        attempts.append(f"{model} ✗")
+    return {"status": "processing", "chat_id": chat_id}
 
-        # 2. Determine fallback strategy based on primary model type
-        api_backend = _resolve_api_backend(model)
 
-        if not api_backend and browser_profiles:
-            # Qwen failed → try browser profiles
-            for profile in browser_profiles[:3]:
-                result = await _try_consolidation_call(model, prompt, browser_profile=profile)
-                if result:
-                    attempts.append(f"{model}@{profile} ✓")
-                    break
-                attempts.append(f"{model}@{profile} ✗")
-
-        if not result and fallback_models:
-            # Try fallback models (API or Qwen)
-            for fb_model in fallback_models[:3]:
-                result = await _try_consolidation_call(fb_model, prompt)
-                if result:
-                    attempts.append(f"{fb_model} ✓")
-                    break
-                attempts.append(f"{fb_model} ✗")
-
-    if not result:
-        return {"status": "error", "detail": f"All consolidation attempts failed: {' → '.join(attempts)}"}
-
-    raw_answer = str(result.get("answer", ""))
-    cleaned = raw_answer.strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
-        cleaned = "\n".join(lines).strip()
-    try:
-        new_entries = json.loads(cleaned)
-    except json.JSONDecodeError:
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start != -1 and end > start:
-            try:
-                new_entries = json.loads(cleaned[start : end + 1])
-            except json.JSONDecodeError:
-                return {"status": "error", "detail": "Model returned invalid JSON", "raw": raw_answer[:500]}
-        else:
-            return {"status": "error", "detail": "No JSON object found in response", "raw": raw_answer[:500]}
-    if not isinstance(new_entries, dict):
-        return {"status": "error", "detail": "Expected dict with add/delete keys"}
-    if "add" in new_entries:
-        adds = new_entries["add"]
-        deletes = new_entries.get("delete", [])
-    else:
-        adds = {k: v for k, v in new_entries.items() if k in ("semantic", "episodic", "procedural", "protected", "ephemeral")}
-        deletes = []
-    if not isinstance(adds, dict):
-        adds = {}
-    if not isinstance(deletes, list):
-        deletes = []
-    existing: dict[str, list[dict[str, str]]] = {}
-    if _mem_path.exists():
-        try:
-            existing = json.loads(_mem_path.read_text(encoding="utf-8"))
-            if not isinstance(existing, dict):
-                existing = {}
-        except Exception:
-            existing = {}
-    # Post-consolidation dedup and contradiction resolution
-    try:
-        searcher = get_searcher()
-        adds, dedup_skipped, dedup_updated = _dedup_and_resolve_adds(adds, existing, searcher)
-    except Exception:
-        dedup_skipped = 0
-        dedup_updated = 0
-    protected_keys: set[str] = set()
-    for e in existing.get("protected", []):
-        if isinstance(e, dict) and e.get("key"):
-            protected_keys.add(e["key"])
-    for entry in adds.get("protected", []):
-        if isinstance(entry, dict) and entry.get("key"):
-            protected_keys.add(entry["key"])
-    deleted_count = 0
-    delete_keys = {str(k) for k in deletes if k} - protected_keys
-    if delete_keys:
-        for cat in ("semantic", "episodic", "procedural", "ephemeral"):
-            cat_list = existing.get(cat, [])
-            before = len(cat_list)
-            existing[cat] = [e for e in cat_list if not isinstance(e, dict) or e.get("key", "") not in delete_keys]
-            deleted_count += before - len(existing[cat])
-    added_count = 0
-    for cat in ("semantic", "episodic", "procedural"):
-        existing_list = existing.get(cat, [])
-        new_list = adds.get(cat, [])
-        if not isinstance(new_list, list):
-            continue
-        existing_keys = {e.get("key", "") for e in existing_list if isinstance(e, dict)}
-        for entry in new_list:
-            if isinstance(entry, dict) and entry.get("key") and entry["key"] not in existing_keys:
-                existing_list.append({"key": entry["key"], "value": entry.get("value", "")})
-                existing_keys.add(entry["key"])
-                added_count += 1
-        existing[cat] = existing_list
-    prot_new = adds.get("protected", [])
-    prot_added = 0
-    if isinstance(prot_new, list) and prot_new:
-        existing_prot: list[dict[str, str]] = []
-        # Protected memory ALWAYS read from universal
-        if _PROTECTED_PATH.exists():
-            try:
-                pdata = json.loads(_PROTECTED_PATH.read_text(encoding="utf-8"))
-                existing_prot = pdata.get("protected", []) if isinstance(pdata, dict) else []
-            except Exception:
-                existing_prot = []
-        prot_keys = {e.get("key", "") for e in existing_prot if isinstance(e, dict)}
-        for entry in prot_new:
-            if isinstance(entry, dict) and entry.get("key") and entry["key"] not in prot_keys:
-                existing_prot.append({"key": entry["key"], "value": entry.get("value", "")})
-                prot_keys.add(entry["key"])
-                prot_added += 1
-        # Protected memory ALWAYS goes to universal, never project-scoped
-        _PROTECTED_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _PROTECTED_PATH.write_text(
-            json.dumps({"protected": existing_prot}, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-    eph_new = adds.get("ephemeral", [])
-    eph_added = 0
-    if isinstance(eph_new, list) and eph_new:
-        eph_list = existing.get("ephemeral", [])
-        eph_keys = {e.get("key", "") for e in eph_list if isinstance(e, dict)}
-        for entry in eph_new:
-            if isinstance(entry, dict) and entry.get("key") and entry["key"] not in eph_keys:
-                eph_entry: dict[str, Any] = {"key": entry["key"], "value": entry.get("value", "")}
-                if entry.get("expires_at"):
-                    eph_entry["expires_at"] = str(entry["expires_at"])
-                eph_list.append(eph_entry)
-                eph_keys.add(entry["key"])
-                eph_added += 1
-        existing["ephemeral"] = eph_list
-    _mem_path.parent.mkdir(parents=True, exist_ok=True)
-    _mem_path.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
-    if _mem_path != _MEMORY_PATH:
-        # Project-scoped memory — reload project searcher
-        try:
-            from engine.memory_search import reload_project_searcher
-            reload_project_searcher(_proj_id)
-        except Exception:
-            pass
-    else:
-        get_searcher().reload_memory()
-    # Handle optional skill creation
-    skill_created = False
-    skill_data = new_entries.get("create_skill")
-    if isinstance(skill_data, dict) and skill_data.get("name"):
-        skill_created = _save_user_skill(skill_data)
-    total_added = added_count + prot_added + eph_added
-
-    # Fire personality assessment in background — non-blocking, won't delay response
-    asyncio.create_task(_run_personality_assessment(conv_text, model))
-
-    result: dict[str, Any] = {"status": "ok", "added": total_added, "deleted": deleted_count, "dedup_skipped": dedup_skipped, "dedup_updated": dedup_updated}
-    if skill_created:
-        result["skill_created"] = skill_data["name"]
+@router.get("/api/memory/consolidate/result/{chat_id}")
+async def get_consolidation_result(chat_id: str) -> dict[str, Any]:
+    """Poll endpoint for background consolidation results."""
+    result = _get_consolidation_result(chat_id)
+    if result is None:
+        return {"status": "pending"}
     return result
 
 @router.post("/api/memory/consolidate-scraper")

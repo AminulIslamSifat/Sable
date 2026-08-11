@@ -1510,6 +1510,21 @@
           }
         })
         .catch(() => {});
+      // Sync sidebar title from server (covers missed chat_title SSE events)
+      fetch(`/api/chats`)
+        .then(r => r.json())
+        .then(d => {
+          const meta = (d.chats || []).find(c => c.id === chatId);
+          if (meta && meta.title && meta.title !== "New chat") {
+            const cm = chatList.find(c => c.id === chatId);
+            if (cm) cm.title = meta.title;
+            const row = chatsEl.querySelector(`.chat-row[data-chat-id="${CSS.escape(chatId)}"] .chat-item`);
+            if (row) row.textContent = meta.title;
+            const tab = openTabs.get(chatId);
+            if (tab) { tab.title = meta.title; renderTabBar(); }
+          }
+        })
+        .catch(() => {});
     }
 
     function setCreating(val) {
@@ -3554,23 +3569,6 @@
             // chat — prevents a background stream from hijacking state.
             if (activeChatId === streamChatId) {
               parentId = evt.parent_id || parentId;
-              // Handle upstream session recovery: chat_id may have changed
-              if (evt.chat_id && evt.chat_id !== activeChatId) {
-                const oldId = activeChatId;
-                activeChatId = evt.chat_id;
-                // Update sidebar entry ID
-                const sidebarBtn = document.querySelector(`[data-chat-id="${oldId}"]`);
-                if (sidebarBtn) sidebarBtn.dataset.chatId = activeChatId;
-                // Update tab pane
-                const tabEntry = openTabs.get(oldId);
-                if (tabEntry) {
-                  tabEntry.pane.dataset.chatId = activeChatId;
-                  openTabs.delete(oldId);
-                  openTabs.set(activeChatId, tabEntry);
-                }
-                saveActiveChat();
-                console.log("[session-recovery] chat_id renamed:", oldId, "->", activeChatId);
-              }
               saveActiveChat();
             }
           } else if (evt.type === "status") {
@@ -5035,33 +5033,25 @@
 
 
 
-    // --- Consolidation queue: messages sent while consolidation is pending get queued ---
+    // --- Consolidation: fire-and-forget with background polling ---
     let _consolidationPromise = null;
     let _messageQueue = [];
 
-    function consolidateMemory(chatId, model, useTimeout = false) {
-      const cid = chatId || activeChatId;
-      if (!cid) return Promise.resolve();
-      const mode = scraperMode ? 'scraper' : 'api';
-      showToast("🧠 Consolidating memory...", "info");
-
-      const controller = new AbortController();
-      const timeout = useTimeout ? setTimeout(() => controller.abort(), 30000) : null;
-
-      _consolidationPromise = fetch("/api/memory/consolidate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: cid, model: model || selectedModel, mode: mode }),
-        signal: useTimeout ? controller.signal : undefined
-      })
-        .then(async (res) => {
-          clearTimeout(timeout);
-          if (!res.ok) {
-            const text = await res.text().catch(() => "");
-            showToast(`🧠 Consolidation failed (${res.status}): ${text.slice(0, 200)}`, "error");
+    function _pollConsolidationResult(chatId, maxAttempts = 60) {
+      let attempts = 0;
+      const poll = async () => {
+        attempts++;
+        try {
+          const res = await fetch(`/api/memory/consolidate/result/${chatId}`);
+          if (!res.ok) return;
+          const data = await res.json();
+          if (data.status === "pending") {
+            if (attempts < maxAttempts) {
+              setTimeout(poll, 2000);
+            }
             return;
           }
-          const data = await res.json();
+          // Got a real result
           if (data.status === "ok") {
             if (data.added > 0 || data.deleted > 0) {
               const parts = [];
@@ -5076,23 +5066,44 @@
           } else {
             showToast(`🧠 Consolidation failed: ${data.detail || "unknown error"}`, "error");
           }
+        } catch (e) {
+          // Silently stop polling on network errors
+        }
+      };
+      setTimeout(poll, 2000);
+    }
+
+    function consolidateMemory(chatId, model, useTimeout = false) {
+      const cid = chatId || activeChatId;
+      if (!cid) return Promise.resolve();
+      showToast("🧠 Consolidating memory...", "info");
+
+      _consolidationPromise = fetch("/api/memory/consolidate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: cid, model: model || selectedModel }),
+      })
+        .then(async (res) => {
+          if (!res.ok) {
+            const text = await res.text().catch(() => "");
+            showToast(`🧠 Consolidation failed (${res.status}): ${text.slice(0, 200)}`, "error");
+            return;
+          }
+          const data = await res.json();
+          if (data.status === "processing") {
+            // Backend accepted — poll for result
+            _pollConsolidationResult(cid);
+          } else if (data.status === "skipped") {
+            showToast("🧠 Skipped — too few messages", "info");
+          } else if (data.status === "error") {
+            showToast(`🧠 Consolidation failed: ${data.detail || "unknown error"}`, "error");
+          }
         })
         .catch((e) => {
-          clearTimeout(timeout);
-          if (e.name === "AbortError") {
-            showToast("🧠 Consolidation timed out (30s)", "error");
-          } else {
-            showToast("🧠 Consolidation error: " + e.message, "error");
-          }
+          showToast("🧠 Consolidation error: " + e.message, "error");
         })
         .finally(() => {
           _consolidationPromise = null;
-          // Flush queued messages
-          const queued = _messageQueue.splice(0);
-          if (queued.length) {
-            inputEl.value = queued[0];
-            sendMessage();
-          }
         });
 
       return _consolidationPromise;
@@ -5308,15 +5319,7 @@
         }
       }
 
-      // Queue message if consolidation is still running in SCRAPER mode only
-      // API mode consolidation runs independently without blocking user input
-      if (_consolidationPromise && scraperMode) {
-        _messageQueue.push(message);
-        inputEl.value = "";
-        autoResize();
-        showToast("🧠 Message queued — waiting for memory consolidation...", "info");
-        return;
-      }
+      // Consolidation now runs fully in background — no queueing needed
 
       if (!activeChatId) {
         const created = await createChat();
@@ -5422,10 +5425,10 @@
         }
       } finally {
         ui.finalize();
-        endStream(streamChatId);
+        endStream(activeChatId);
 
         // After first message, provider is now locked in DB — lock the dropdown
-        const meta = chatList.find(c => c.id === streamChatId);
+        const meta = chatList.find(c => c.id === activeChatId);
         if (meta && !meta.provider) {
           const prov = scraperMode ? "scraping"
             : (modelList.find(m => m.id === selectedModel)?.api_backend || "qwen");

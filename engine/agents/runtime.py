@@ -253,9 +253,10 @@ class AgentRuntime:
                     await auto_turn.on_agent_done(agent.chat_id, agent.id, agent.role, result, task=agent.task)
 
                 # Memory trigger: consolidate agent knowledge if thresholds exceeded
+                # Fire-and-forget — never blocks agent completion
                 try:
                     from engine.agents.memory_trigger import trigger_agent_memory
-                    await trigger_agent_memory(agent)
+                    asyncio.create_task(trigger_agent_memory(agent))
                 except Exception as exc:
                     logger.debug("[memory_trigger] Failed for agent %s: %s", agent.id, exc)
 

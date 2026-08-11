@@ -125,19 +125,11 @@ async def projects_deactivate(body: dict[str, str] | None = None) -> dict[str, A
 
 @router.post("/api/chat/new")
 async def new_chat(request: NewChatRequest = NewChatRequest()) -> dict[str, str | None]:
-    if get_scraper_settings().get("enabled"):
-        chat_id = f"browser-{uuid.uuid4().hex}"
-        ensure_chat(chat_id, "New chat", None, project_id=request.project_id)
-        return {"chat_id": chat_id}
-    try:
-        chat_id = await retry_async(
-            lambda: service.create_chat(model=request.model),
-            label="create_chat",
-        )
-    except Exception as exc:
-        return {"error": f"Session startup failed: {type(exc).__name__}: {exc}"}
-    if not chat_id:
-        return {"error": "Could not create chat session"}
+    # Always generate a local UUID instantly — no browser launch, no API call.
+    # The actual model-specific session is created lazily on first message send
+    # by /api/chat, which knows the correct model and provider at that point.
+    prefix = "browser-" if get_scraper_settings().get("enabled") else "local-"
+    chat_id = f"{prefix}{uuid.uuid4().hex}"
     ensure_chat(chat_id, "New chat", None, project_id=request.project_id)
     return {"chat_id": chat_id}
 
