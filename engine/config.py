@@ -15,16 +15,32 @@ _PERSISTENT_OVERRIDE = os.getenv("SABLE_PERSISTENT_ROOT")
 PERSISTENT_ROOT = (
     Path(_PERSISTENT_OVERRIDE).resolve()
     if _PERSISTENT_OVERRIDE
-    else Path.home() / "hdd" / "projects" / "Sable"
+    else _ROOT
 )
 
 # --------------------------------------------------------------------------
 # Server bind settings — single source of truth for the FastAPI/uvicorn app.
 # Override with SABLE_HOST / SABLE_PORT environment variables when needed.
+# If SABLE_PORT is not set, tries 61770 then 61771 (auto-increment on conflict).
 # --------------------------------------------------------------------------
 HOST = os.getenv("SABLE_HOST", "0.0.0.0")
-_DEFAULT_PORT = "61771" if "/home/sifat/hdd/" in str(_ROOT) else "61770"
-PORT = int(os.getenv("SABLE_PORT", _DEFAULT_PORT))
+
+def _resolve_port() -> int:
+    """Pick a free port: explicit env > 61770 > 61771 > 61772."""
+    explicit = os.getenv("SABLE_PORT")
+    if explicit:
+        return int(explicit)
+    import socket
+    for candidate in (61770, 61771, 61772):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("0.0.0.0", candidate))
+                return candidate
+        except OSError:
+            continue
+    return 61770  # fallback; uvicorn will raise the real error
+
+PORT = _resolve_port()
 
 # --------------------------------------------------------------------------
 # Runtime data paths — single source of truth used by server.py and any

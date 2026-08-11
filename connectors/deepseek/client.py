@@ -792,12 +792,7 @@ class DeepSeekClient:
 
 
 
-        # DEBUG: dump full prompt to file before sending
-        try:
-            with open("/home/sifat/hdd/projects/Sable/test/prompt_deepseek.txt", "w") as _f:
-                _f.write(prompt)
-        except Exception:
-            pass
+
 
         # Try each token with round-robin rotation + failover
         attempts = max(1, len(self._rotate_tokens) or 1)

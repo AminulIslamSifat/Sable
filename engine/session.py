@@ -480,7 +480,7 @@ class BrowserManager:
                 # Step 2: Update personalization instruction
                 instr_payload = {
                     "personalization": {
-                        "name": "Sifat",
+                        "name": os.getenv("SABLE_USER_NAME", "User"),
                         "description": "",
                         "style": "Default",
                         "instruction": instructions,

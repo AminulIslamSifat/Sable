@@ -972,7 +972,7 @@
 
   /* ---------- Utilities ---------- */
   function shorten(p) {
-    return p.replace(/^\/home\/sifat/, "~");
+    return p.replace(/^\/home\/[^/]+/, "~");
   }
 
   function esc(str) {

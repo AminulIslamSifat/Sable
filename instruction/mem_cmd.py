@@ -13,6 +13,7 @@ _CATEGORY_DEFS = (
     "  Episodic memories decay over time — be stricter about what qualifies.\n"
     "- procedural: How things are done — workflows, coding patterns, communication formats,\n"
     "  preferred approaches. Shapes agent behavior rather than knowledge.\n"
+    "  Procedural entries use EXTENDED FORMAT with keyword and trigger fields (see OUTPUT FORMAT).\n"
     "- protected: Credentials, API keys, sudo configs, security-sensitive paths, identity info.\n"
     "  IMMUNE TO DELETION. Never include protected keys in the delete list.\n"
     "- ephemeral: Time-bound workarounds, version-specific hacks, active debugging notes.\n"
@@ -46,7 +47,12 @@ _OUTPUT_FORMAT = (
     '  "add": {\n'
     '    "semantic": [{"key": "short_label", "value": "dense specific fact"}],\n'
     '    "episodic": [{"key": "short_label", "value": "context-rich event record"}],\n'
-    '    "procedural": [{"key": "short_label", "value": "workflow or pattern description"}],\n'
+    '    "procedural": [{\n'
+    '      "key": "short_label",\n'
+    '      "value": "detailed workflow or pattern description",\n'
+    '      "keyword": "primary search term that identifies this procedure",\n'
+    '      "trigger": "when/how to use this — conditions, contexts, or cues"\n'
+    '    }],\n'
     '    "protected": [{"key": "short_label", "value": "credential or sensitive config"}],\n'
     '    "ephemeral": [{"key": "short_label", "value": "temporary note", "expires_at": "2026-08-15T00:00:00"}]\n'
     '  },\n'
@@ -56,12 +62,16 @@ _OUTPUT_FORMAT = (
     '- Keys: short, descriptive, snake_case preferred. Must be unique within category.\n'
     '- Values: self-contained, specific, searchable. No vague summaries.\n'
     '- Delete list: exact key strings from CURRENT MEMORY STORE. NEVER delete protected keys.\n'
+    '- Procedural entries MUST include keyword and trigger fields. date is auto-injected by the system.\n'
+    '- keyword: a concise search term (1-3 words) that best identifies this procedure.\n'
+    '- trigger: specific conditions or contexts when this procedure should be recalled.\n'
     '- If nothing qualifies: {"add":{"semantic":[],"episodic":[],"procedural":[],"protected":[],"ephemeral":[]},"delete":[]}\n'
 )
 
 _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY = (
     "[SYSTEM: Memory consolidation pass. Full conversation is above — do NOT re-summarize.]\n\n"
     "CURRENT MEMORY STORE:\n<<CURRENT_MEMORY>>\n\n"
+    "<<SIMILARITY_CONTEXT>>\n\n"
     "TASK: Extract durable facts from the conversation above that would help future sessions.\n"
     "You are a strict filter, not a vacuum. Most conversations produce zero new memories.\n\n"
     f"{_CATEGORY_DEFS}\n"
@@ -69,6 +79,7 @@ _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY = (
     f"{_SUPERSession_RULES}\n"
     "ADDITIONAL RULES:\n"
     "- Skip entries already present in CURRENT MEMORY STORE (match by key AND value).\n"
+    "- CHECK SIMILARITY CONTEXT above before adding — skip or consolidate if semantically close.\n"
     "- Skip greetings, trivial chat, transient one-off tasks, and obvious facts.\n"
     "- Each entry must be self-contained — understandable without conversation context.\n\n"
     f"{_OUTPUT_FORMAT}"
@@ -77,6 +88,7 @@ _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY = (
 _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE = (
     "[SYSTEM: Memory consolidation pass. Use the conversation summary below — do NOT request more context.]\n\n"
     "CURRENT MEMORY STORE:\n<<CURRENT_MEMORY>>\n\n"
+    "<<SIMILARITY_CONTEXT>>\n\n"
     "CONVERSATION CONTEXT:\n<<CONVERSATION_SUMMARY>>\n\n"
     "TASK: Extract durable facts from the conversation that would help future sessions.\n"
     "You are a strict filter, not a vacuum. Most conversations produce zero new memories.\n\n"
@@ -85,6 +97,7 @@ _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE = (
     f"{_SUPERSession_RULES}\n"
     "ADDITIONAL RULES:\n"
     "- Skip entries already present in CURRENT MEMORY STORE (match by key AND value).\n"
+    "- CHECK SIMILARITY CONTEXT above before adding — skip or consolidate if semantically close.\n"
     "- Skip greetings, trivial chat, transient one-off tasks, and obvious facts.\n"
     "- Each entry must be self-contained — understandable without conversation context.\n\n"
     f"{_OUTPUT_FORMAT}"
@@ -121,6 +134,31 @@ _PERSONALITY_OUTPUT_FORMAT = (
     '- Minimum 2 items per list (strengths and weaknesses). If insufficient data, return empty with reason.\n'
     '- Contradictions and blind_spots can be empty arrays if no data supports them.\n'
     '- Summary: write like a behavioral analyst filing a report. Zero emotional language.\n'
+)
+
+_DEDUP_REVIEW_PROMPT_TEMPLATE = (
+    "[SYSTEM: Two memory entries overlap. Resolve them into the correct final state.]\n\n"
+    "ENTRY A (existing):\n  Key: <<EXISTING_KEY>>\n  Value: <<EXISTING_VALUE>>\n\n"
+    "ENTRY B (new):\n  Key: <<NEW_KEY>>\n  Value: <<NEW_VALUE>>\n\n"
+    "Similarity: <<SCORE>>\n\n"
+    "INSTRUCTIONS:\n"
+    "1. OVERLAPPING (same fact, different wording) → MERGE: delete both, output ONE combined entry that captures all information from both.\n"
+    "2. CONTRADICTORY (conflicting facts) → REPLACE: delete the EARLIER/OUTDATED entry, output the CORRECT one.\n"
+    "3. DISTINCT (different topics despite surface similarity) → KEEP BOTH: output both entries unchanged.\n\n"
+    "OUTPUT: Raw JSON only. No markdown, no commentary.\n"
+    'Format: {"action": "merge|replace|keep_both", "entries": [{"key": "...", "value": "..."}], "reason": "brief justification"}\n'
+    "Rules:\n"
+    "- If action is 'merge', entries must contain exactly ONE consolidated entry.\n"
+    "- If action is 'replace', entries must contain exactly ONE entry (the survivor).\n"
+    "- If action is 'keep_both', entries must contain exactly TWO entries (both unchanged).\n"
+    "- Protected entries must NEVER be deleted or overwritten → always keep_both.\n"
+    "- If uncertain, prefer keep_both over data loss.\n"
+)
+
+_SIMILARITY_CONTEXT_HEADER = (
+    "EXISTING ENTRIES WITH HIGH SIMILARITY TO CONVERSATION TOPICS:\n"
+    "(These existing memories are semantically close to topics discussed. "
+    "Consider whether new entries would duplicate or contradict these BEFORE adding.)\n"
 )
 
 _PERSONALITY_ASSESSMENT_TEMPLATE = (

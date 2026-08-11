@@ -25,6 +25,19 @@ _AGENT_OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent / "output" / "
 EventCallback = Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]]
 
 
+def _notify_desktop(title: str, body: str, urgency: str = "normal") -> None:
+    """Fire-and-forget desktop notification via notify-send."""
+    import shutil, subprocess
+    try:
+        if shutil.which("notify-send"):
+            subprocess.Popen(
+                ["notify-send", "-u", urgency, "-a", "Sable", title, body],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+    except Exception:
+        pass
+
+
 class AgentRuntime:
     """Manages agent lifecycle: spawn → run → complete/fail.
 
@@ -219,6 +232,7 @@ class AgentRuntime:
             agent.mark_running()
             from server.database import update_agent_status
             update_agent_status(agent.id, "running")
+            _notify_desktop("Agent Started", f"[{agent.role}] {agent.task[:80]}")
 
             try:
                 from engine.agents.loop import run_agent_llm_loop
@@ -227,6 +241,7 @@ class AgentRuntime:
                     timeout=timeout,
                 )
                 agent.mark_completed(result)
+                _notify_desktop("Agent Done ✓", f"[{agent.role}] {(result or 'No result')[:120]}")
                 # Signal panel stream that the agent is done
                 agent.push_stream_event({"type": "done", "result": (result or "")[:500]})
                 update_agent_status(
@@ -263,6 +278,7 @@ class AgentRuntime:
             except asyncio.TimeoutError:
                 partial = agent.messages[-1]["content"] if agent.messages else ""
                 agent.mark_failed(f"Timed out after {timeout}s")
+                _notify_desktop("Agent Failed ✗", f"[{agent.role}] Timed out after {timeout}s", urgency="critical")
                 agent.push_stream_event({"type": "error", "message": f"Timed out after {timeout}s"})
                 agent.result = partial
                 update_agent_status(agent.id, "timed_out", error=agent.error, result=partial)
@@ -280,6 +296,7 @@ class AgentRuntime:
 
             except Exception as exc:
                 agent.mark_failed(f"{type(exc).__name__}: {exc}")
+                _notify_desktop("Agent Failed ✗", f"[{agent.role}] {type(exc).__name__}: {exc}"[:150], urgency="critical")
                 agent.push_stream_event({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
                 update_agent_status(agent.id, "failed", error=agent.error)
                 # Persist failure reason into agent conversation history

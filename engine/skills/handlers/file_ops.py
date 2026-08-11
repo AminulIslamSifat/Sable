@@ -63,8 +63,8 @@ def handle_edit_file(
     path = os.path.expandvars(os.path.expanduser(path))
 
     if is_ssd_tree_write(path):
-        yield _output_event(tag_id, "[BLOCKED] Cannot edit files in /home/sifat/Projects/Sable directly.\nEdit in /home/sifat/hdd/projects/Sable first, dont touch ssd Sable.\n", "stderr")
-        yield _end_event(tag_id, name, False, started, error="Blocked: SSD tree write guard")
+        yield _output_event(tag_id, "[BLOCKED] Cannot edit files in the protected tree directly.\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Blocked: protected tree write guard")
         return
 
     if not content.strip():
@@ -106,8 +106,8 @@ def handle_create_file(
     path = os.path.expandvars(os.path.expanduser(path))
 
     if is_ssd_tree_write(path):
-        yield _output_event(tag_id, "[BLOCKED] Cannot edit files in /home/sifat/Projects/Sable directly.\nEdit in /home/sifat/hdd/projects/Sable first, dont touch ssd Sable.\n", "stderr")
-        yield _end_event(tag_id, name, False, started, error="Blocked: SSD tree write guard")
+        yield _output_event(tag_id, "[BLOCKED] Cannot edit files in the protected tree directly.\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Blocked: protected tree write guard")
         return
     overwrite = attrs.get("overwrite", "").lower() in ("true", "1", "yes")
 
@@ -141,8 +141,8 @@ def handle_insert_file(
     path = os.path.expandvars(os.path.expanduser(path))
 
     if is_ssd_tree_write(path):
-        yield _output_event(tag_id, "[BLOCKED] Cannot edit files in /home/sifat/Projects/Sable directly.\nEdit in /home/sifat/hdd/projects/Sable first, dont touch ssd Sable.\n", "stderr")
-        yield _end_event(tag_id, name, False, started, error="Blocked: SSD tree write guard")
+        yield _output_event(tag_id, "[BLOCKED] Cannot edit files in the protected tree directly.\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Blocked: protected tree write guard")
         return
 
     at_line = attrs.get("at_line") or attrs.get("at-line")

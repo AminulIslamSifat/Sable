@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 ALLOWED_ROOTS = [
-    Path(os.environ.get("PROJECT_ROOT", "/home/sifat/hdd/projects/Sable")).resolve(),
+    Path(os.environ.get("PROJECT_ROOT", str(Path.cwd()))).resolve(),
     Path.home().resolve(),
     Path("/tmp").resolve(),
 ]

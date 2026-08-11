@@ -24,4 +24,4 @@ in an action block like any other skill tag.
 
 ## Example
 
-<action><mcp_call server="github" tool="search_repositories">{"query": "user:sifat", "per_page": 10}</mcp_call></action>
+<action><mcp_call server="github" tool="search_repositories">{"query": "user:example", "per_page": 10}</mcp_call></action>

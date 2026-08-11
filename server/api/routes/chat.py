@@ -102,7 +102,7 @@ async def chat(request: ChatRequest):
     timestamped_message = f"[{_ts}{_ctx_parts}]\n{request.message}"
     _memory_context = None  # injected before user message in api_message
     _injected_memory_keys = get_injected_memory_keys(active_chat_id)
-    _ms_cfg: dict[str, Any] = {"enabled": True, "top_k": 10}
+    _ms_cfg: dict[str, Any] = {"enabled": True, "top_skill": 5, "top_memory": 4, "top_total": 9}
     _searcher = get_searcher()
     _memory_used: list[dict[str, Any]] = []
 
@@ -138,7 +138,13 @@ async def chat(request: ChatRequest):
             pass
         _max_chars = _ms_cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS)
         if _ms_cfg.get("enabled", True) and len(request.message) <= _max_chars:
-            _mem_results = _searcher.search(request.message, top_k=_ms_cfg.get("top_k", 10), allowed_categories=_allowed_mem_cats)
+            _mem_results = _searcher.search(
+                request.message,
+                allowed_categories=_allowed_mem_cats,
+                top_skill=_ms_cfg.get("top_skill", 5),
+                top_memory=_ms_cfg.get("top_memory", 4),
+                top_total=_ms_cfg.get("top_total", 9),
+            )
             _new_results = [r for r in _mem_results if r.get("key") and r["key"] not in _injected_memory_keys]
             if _new_results:
                 _mem_block = _searcher.format_for_prompt(_new_results)
@@ -737,7 +743,7 @@ async def chat(request: ChatRequest):
                                 model=request.model,
                                 thinking_mode=request.thinking_mode,
                             )
-                            yield sse({"type": "meta", "chat_id": active_chat_id, "parent_id": None})
+                            yield sse({"type": "chat_id", "chat_id": active_chat_id})
                             async for _recovery_event in round_event_source:
                                 _rec_type = _recovery_event.get("type")
                                 if _rec_type == "meta":
@@ -1033,6 +1039,16 @@ async def chat(request: ChatRequest):
             try:
                 from engine.agents.auto_turn import auto_turn as _at_done
                 _at_done.mark_stream_done(active_chat_id)
+            except Exception:
+                pass
+            # Desktop notification (non-blocking)
+            try:
+                import subprocess, shutil
+                if shutil.which("notify-send"):
+                    subprocess.Popen(
+                        ["notify-send", "-u", "low", "-i", "dialog-information", "Maria", "Done responding 🌙"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
             except Exception:
                 pass
     return StreamingResponse(

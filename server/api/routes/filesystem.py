@@ -15,7 +15,7 @@ router = APIRouter()
 
 # Allowed browse roots (read-only from UI)
 _BROWSE_ROOTS = (
-    "/home/sifat",
+    str(Path.home()),
     "/tmp",
 )
 
@@ -237,12 +237,11 @@ def filesystem_pick_folder() -> dict[str, Any]:
 @router.get("/api/filesystem/roots")
 def filesystem_roots() -> list[dict[str, Any]]:
     """Return quick-access browse roots."""
+    _home = str(Path.home())
     quick_paths = [
-        "/home/sifat/Projects/Sable",
-        "/home/sifat/hdd/projects/Sable",
-        "/home/sifat/hdd",
-        "/home/sifat/Projects",
-        "/home/sifat",
+        os.getenv("PROJECT_ROOT", ""),
+        os.getenv("SABLE_PERSISTENT_ROOT", ""),
+        _home,
         "/tmp",
     ]
     roots = []

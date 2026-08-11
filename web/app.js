@@ -1396,8 +1396,6 @@
     function closeTab(chatId) {
       const tab = openTabs.get(chatId);
       if (!tab) return;
-      // Clean up observer references for this tab's placeholders
-      _cleanupHistoryObservers();
       tab.pane.remove();
       openTabs.delete(chatId);
 
@@ -2375,9 +2373,8 @@
         activateLucideIcons(wrap);
       }
 
-      // For assistant messages with round_text events, skip main content rendering —
-      // _renderSkillEvents will replay text + skills in streaming order via round_text.
-      // This prevents the "all text first, then all commands" mesh.
+      // For assistant messages with round_text events, skip main content —
+      // _renderSkillEvents replays text + skills in streaming order via round_text.
       const skipMainContent = message.role !== "user" && hasRoundText;
       const msgDiv = skipMainContent ? null : addMessage(message.role === "user" ? "user" : "bot", displayContent);
       if (message.role === "user" && msgDiv) {
@@ -2485,12 +2482,9 @@
         _attachBotToolbar(msgDiv);
       }
 
-      // --- 2. Render skill_events (embedded or lazy-loaded) ---
+      // --- 2. Render skill_events ---
       if (events.length > 0) {
         _renderSkillEvents(events);
-      } else if (message.has_skill_events && message.id) {
-        // Lazy-load skill_events from the API
-        _lazyLoadSkillEvents(message.id, message.chat_id || activeChatId);
       }
     }
 
@@ -2556,7 +2550,8 @@
       activateLucideIcons(toolbar);
     }
 
-    function _renderSkillEvents(events) {
+    function _renderSkillEvents(events, container) {
+      const pane = container || activePane;
       const cards = {};
       let group = null;
       for (const evt of events) {
@@ -2569,7 +2564,7 @@
               <summary><i data-lucide="chevron-right" class="thinking-chevron"></i>Thinking</summary>
               <div class="thinking-body">${escHtml(evt.text || "")}</div>
             </details>`;
-          activePane.appendChild(wrap);
+          pane.appendChild(wrap);
           activateLucideIcons(wrap);
         } else if (evt.type === "round_text") {
           if (evt.text && evt.text.trim()) {
@@ -2582,7 +2577,7 @@
             renderMathJax(content);
             activateLucideIcons(content);
             textDiv.appendChild(content);
-            activePane.appendChild(textDiv);
+            pane.appendChild(textDiv);
             _attachBotToolbar(textDiv);
           }
         } else if (evt.type === "skill_start") {
@@ -2591,7 +2586,7 @@
             group = document.createElement("div");
             group.className = "skill-stack";
             group.style.display = "flex";
-            activePane.appendChild(group);
+            pane.appendChild(group);
           }
           const card = createSkillCard(evt);
           group.appendChild(card);
@@ -2600,7 +2595,7 @@
         } else if (evt.type === "skill_output") {
           if (evt.name === "ask_user") {
             try {
-              const card = renderAskUserCard(JSON.parse(evt.text), activePane);
+              const card = renderAskUserCard(JSON.parse(evt.text), pane);
               card.classList.add("answered");
               card.querySelectorAll("button").forEach(b => b.disabled = true);
             } catch(e) { /* skip malformed */ }
@@ -2620,9 +2615,9 @@
           const note = document.createElement('div');
           note.className = 'approval-pending-note';
           note.textContent = '🔒 Permission was requested: ' + (evt.data?.command || evt.name || '').slice(0, 60);
-          if (activePane) {
-            const turn = activePane.querySelector('.turn:last-child');
-            (turn || activePane).appendChild(note);
+          if (pane) {
+            const turn = pane.querySelector('.turn:last-child');
+            (turn || pane).appendChild(note);
           }
         } else if (evt.type === "agent_result") {
           if (typeof addAgentResultCard === "function") {
@@ -2638,31 +2633,21 @@
           if (Array.isArray(evt.memories) && evt.memories.length) {
             const chip = createMemoryChip(evt.memories);
             chip.classList.add("memory-chip-tool");
-            const allCards = activePane.querySelectorAll(".skill-card");
+            const allCards = pane.querySelectorAll(".skill-card");
             const target = allCards.length ? allCards[allCards.length - 1] : null;
             if (target) {
               const right = target.querySelector(".skill-header-right");
               if (right) right.insertBefore(chip, right.firstChild);
               else target.querySelector(".skill-header")?.appendChild(chip);
             } else {
-              activePane.appendChild(chip);
+              pane.appendChild(chip);
             }
           }
         }
       }
     }
 
-    async function _lazyLoadSkillEvents(messageId, chatId) {
-      try {
-        const data = await fetch(`/api/chats/${chatId}/messages/${messageId}/events`).then(r => r.json());
-        const events = data.skill_events || [];
-        if (events.length > 0) {
-          _renderSkillEvents(events);
-        }
-      } catch (err) {
-        console.error("Failed to lazy-load skill events:", err);
-      }
-    }
+
 
     // ── Ask User MCQ Card ──
     function renderAskUserCard(payload, container) {
@@ -4717,148 +4702,100 @@
       }
     }
 
-    // ── History lazy-render observer ──
-    // Messages loaded from history start as raw-text placeholders.
-    // Only the last 20 assistant-iterations are fully rendered immediately.
-    // Older messages get fully rendered when scrolled into view.
-    let _observedPlaceholders = []; // track observed elements for cleanup
 
-    function _cleanupHistoryObservers() {
-      for (const el of _observedPlaceholders) {
-        _historyObserver.unobserve(el);
-        el._sableMsg = null; // release message data from RAM
+
+    // ── History loading screen ──
+    function _showHistoryLoading(show) {
+      let el = document.getElementById("historyLoadingOverlay");
+      if (show) {
+        if (!el) {
+          el = document.createElement("div");
+          el.id = "historyLoadingOverlay";
+          el.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(10,10,14,0.85);z-index:999;backdrop-filter:blur(4px);";
+          el.innerHTML = '<div style="text-align:center;color:#aaa;font-size:14px;"><div class="spinner" style="margin:0 auto 12px;width:28px;height:28px;border:2px solid rgba(255,255,255,0.1);border-top-color:#7c6aef;border-radius:50%;animation:spin .7s linear infinite;"></div>Loading conversation…</div>';
+        }
+        chatEl.style.position = "relative";
+        chatEl.appendChild(el);
+      } else if (el) {
+        el.remove();
       }
-      _observedPlaceholders = [];
-    }
-
-    const _historyObserver = new IntersectionObserver((entries) => {
-      for (const entry of entries) {
-        if (!entry.isIntersecting) continue;
-        const el = entry.target;
-        if (el.dataset.historyRendered === "1") continue;
-        el.dataset.historyRendered = "1";
-        _historyObserver.unobserve(el);
-        // Remove from tracking array
-        const idx = _observedPlaceholders.indexOf(el);
-        if (idx !== -1) _observedPlaceholders.splice(idx, 1);
-        const msgData = el._sableMsg;
-        if (!msgData) continue;
-        // Full render: clear placeholder, render rich content directly into el
-        el.innerHTML = "";
-        el.classList.remove("history-placeholder");
-        // Point activePane at el so addHistoryMessage + any async _lazyLoadSkillEvents
-        // append to the correct container. We intentionally do NOT restore activePane
-        // here — the next observer callback or user action will set it correctly.
-        activePane = el;
-        addHistoryMessage(msgData);
-        renderMathJax(el);
-      }
-    }, { rootMargin: "200px 0px" });
-
-    /**
-     * Create a lightweight raw-text placeholder for a history message.
-     * No markdown, no MathJax, no mermaid — just escaped text.
-     */
-    function _createRawPlaceholder(msg) {
-      const div = document.createElement("div");
-      div.className = `msg ${msg.role === "user" ? "user" : "bot"} history-placeholder`;
-      div.dataset.msgId = msg.id || "";
-      div.dataset.historyRendered = "0";
-      div._sableMsg = msg;
-
-      if (msg.role === "user") {
-        let displayContent = msg.content || "";
-        const memMatch = displayContent.match(/^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n/);
-        if (memMatch) displayContent = displayContent.slice(memMatch[0].length);
-        const tsMatch = displayContent.match(/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\n?/);
-        if (tsMatch) displayContent = displayContent.slice(tsMatch[0].length);
-
-        const textEl = document.createElement("div");
-        textEl.className = "user-text";
-        textEl.textContent = displayContent;
-        div.appendChild(textEl);
-      } else {
-        const content = document.createElement("div");
-        content.className = "md-content";
-        content.textContent = msg.content || "";
-        div.appendChild(content);
-      }
-
-      // Tool call count indicator for assistant messages with skill events
-      if (msg.role !== "user" && (msg.has_skill_events || (Array.isArray(msg.skill_events) && msg.skill_events.length))) {
-        const indicator = document.createElement("div");
-        indicator.className = "history-tool-indicator";
-        indicator.style.cssText = "font-size:11px;opacity:0.5;padding:2px 8px;font-style:italic;";
-        indicator.textContent = "\u2699 tool calls (scroll to expand)";
-        div.appendChild(indicator);
-      }
-
-      return div;
     }
 
     async function loadMessages(chatId) {
       try {
         console.log("[loadMessages] called for", chatId);
-        // Clean up previous chat's observer references to free RAM
-        _cleanupHistoryObservers();
-        // Phase 1: Load ALL messages as raw text (no skill_events = fast)
-        const data = await fetch(`/api/chats/${chatId}/messages?include_skill_events=false`).then(r => r.json());
+        _showHistoryLoading(true);
+
+        // Single fetch — all messages WITH skill events
+        const data = await fetch(`/api/chats/${chatId}/messages?include_skill_events=true`).then(r => r.json());
         const pane = ensurePane(chatId);
         pane.innerHTML = "";
         const chars = data.context_chars || 0;
         contextCharsCache.set(chatId, chars);
         window._statusContextChars = chars;
         updateStatusBarContext();
-        const messages = data.messages || [];
-        console.log("[loadMessages] got", messages.length, "messages (raw)");
-        if (messages.length === 0) {
-          pane.innerHTML = `<div class="empty"><h2>New conversation</h2><p>Send the first message.</p></div>`;
+        let messages = data.messages || [];
+        const total = messages.length;
+        // Release the wrapper object — only the messages array matters now
+        data.messages = null;
+        console.log("[loadMessages] got", total, "messages (full)");
+        if (total === 0) {
+          pane.innerHTML = '<div class="empty"><h2>New conversation</h2><p>Send the first message.</p></div>';
+          _showHistoryLoading(false);
           return [];
         }
 
-        // Phase 2: Find last 20 assistant-message iteration boundaries
-        // An "iteration" = an assistant message (with its preceding user message)
-        const assistantIndices = [];
-        for (let i = 0; i < messages.length; i++) {
-          if (messages[i].role !== "user") assistantIndices.push(i);
-        }
-        const renderFromIndex = assistantIndices.length > 20
-          ? assistantIndices[assistantIndices.length - 20]
-          : 0;
-
-        // Phase 3: Build DOM — raw placeholders for old, full render for recent
+        // Sequential render — every message in order, full content + skill events.
+        // After rendering each message, null its heavy fields so GC can reclaim
+        // the raw data during the periodic yields. This prevents the entire
+        // response payload from staying alive in RAM for the whole render loop.
         const prevPane = activePane;
         activePane = pane;
 
+        // Track last message's parent info before releasing data
+        let _lastParentId = null;
+        let _lastId = null;
+
         for (let i = 0; i < messages.length; i++) {
           const msg = messages[i];
-          if (i < renderFromIndex) {
-            // Old message: raw text placeholder, observed for lazy render
-            const placeholder = _createRawPlaceholder(msg);
-            pane.appendChild(placeholder);
-            _historyObserver.observe(placeholder);
-            _observedPlaceholders.push(placeholder);
-          } else {
-            // Recent message: full rich render
-            addHistoryMessage(msg);
+          // Capture parent chain from the last message before nulling
+          if (i === messages.length - 1) {
+            _lastParentId = msg.parent_id || null;
+            _lastId = msg.id || null;
           }
+          addHistoryMessage(msg);
+          // Release per-message payload so GC can collect it
+          msg.content = null;
+          msg.thinking = null;
+          if (msg.skill_events) {
+            for (let j = 0; j < msg.skill_events.length; j++) {
+              if (msg.skill_events[j].event_data) msg.skill_events[j].event_data = null;
+              msg.skill_events[j] = null;
+            }
+            msg.skill_events = null;
+          }
+          messages[i] = null;
+          // Yield every 6 messages — gives GC a breath and keeps UI responsive
+          if (i % 6 === 5) await new Promise(r => setTimeout(r, 16));
         }
+        messages = null; // release the array itself
 
         activePane = prevPane;
 
-        // Phase 4: Single batched MathJax pass for all rendered content
+        // Single batched MathJax pass for all rendered content
         renderMathJax(pane);
 
         if (chatId === activeChatId) scrollBottom(true);
-        console.log("[loadMessages] done,", messages.length, "msgs,", renderFromIndex, "deferred");
-        return messages;
+        console.log("[loadMessages] done,", total, "msgs rendered");
+        _showHistoryLoading(false);
+        // Return minimal parent info (not the full array) so callers can derive parentId
+        return [{ parent_id: _lastParentId, id: _lastId }];
       } catch (err) {
         console.error("Failed to load messages:", err);
+        _showHistoryLoading(false);
         return [];
       }
     }
-
-    // _loadOlderMessages removed — all messages loaded upfront as raw text
 
     /**
      * Rebuild the model dropdown filtered to the provider's model group.
@@ -7612,7 +7549,9 @@
 
     // === Memory Search Settings ===
     const msModelSelect = document.getElementById("msModelSelect");
-    const msTopK = document.getElementById("msTopK");
+    const msTopSkill = document.getElementById("msTopSkill");
+    const msTopMemory = document.getElementById("msTopMemory");
+    const msTopTotal = document.getElementById("msTopTotal");
     const msThresholdEditor = document.getElementById("msThresholdEditor");
     const msEnabled = document.getElementById("msEnabled");
     const msSaveBtn = document.getElementById("msSaveBtn");
@@ -7626,6 +7565,10 @@
       header.style.cssText = "font-size:11px;margin:0 0 2px;text-transform:uppercase;letter-spacing:0.5px;";
       header.textContent = "Per-model thresholds (blank = calibrated default)";
       msThresholdEditor.appendChild(header);
+      const colHeader = document.createElement("div");
+      colHeader.style.cssText = "display:flex;align-items:center;gap:8px;font-size:10px;color:var(--text-muted);";
+      colHeader.innerHTML = '<span style="flex:1;"></span><span style="width:70px;text-align:center;">Skill (proc)</span><span style="width:70px;text-align:center;">Memory (std)</span>';
+      msThresholdEditor.appendChild(colHeader);
       (models || []).forEach((m) => {
         const row = document.createElement("div");
         row.style.cssText = "display:flex;align-items:center;gap:8px;";
@@ -7634,19 +7577,24 @@
         label.style.cssText = "font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
         label.textContent = m.id.split("/").pop();
         label.title = m.id;
-        const input = document.createElement("input");
-        input.type = "number";
-        input.step = "0.001";
-        input.min = "0";
-        input.max = "1";
-        input.className = "mem-input";
-        input.style.cssText = "width:80px;";
-        input.placeholder = String(m.threshold);
-        input.dataset.model = m.id;
         const custom = customThresholds?.[m.id];
-        if (custom !== undefined && custom !== null) input.value = custom;
+        const customProc = (custom && typeof custom === "object") ? custom.proc : undefined;
+        const customStd = (custom && typeof custom === "object") ? custom.std : (typeof custom === "number" ? custom : undefined);
+        const procInput = document.createElement("input");
+        procInput.type = "number"; procInput.step = "0.01"; procInput.min = "0"; procInput.max = "10";
+        procInput.className = "mem-input"; procInput.style.cssText = "width:70px;";
+        procInput.placeholder = String(m.proc_threshold ?? "—");
+        procInput.dataset.model = m.id; procInput.dataset.field = "proc";
+        if (customProc !== undefined) procInput.value = customProc;
+        const stdInput = document.createElement("input");
+        stdInput.type = "number"; stdInput.step = "0.01"; stdInput.min = "0"; stdInput.max = "10";
+        stdInput.className = "mem-input"; stdInput.style.cssText = "width:70px;";
+        stdInput.placeholder = String(m.std_threshold ?? "—");
+        stdInput.dataset.model = m.id; stdInput.dataset.field = "std";
+        if (customStd !== undefined) stdInput.value = customStd;
         row.appendChild(label);
-        row.appendChild(input);
+        row.appendChild(procInput);
+        row.appendChild(stdInput);
         msThresholdEditor.appendChild(row);
       });
     }
@@ -7661,15 +7609,17 @@
         (data.available_models || []).forEach((m) => {
           const opt = document.createElement("option");
           opt.value = m.id;
-          opt.textContent = `${m.id.split("/").pop()} (θ=${m.threshold})`;
+          opt.textContent = `${m.id.split("/").pop()} (proc:${m.proc_threshold} std:${m.std_threshold})`;
           if (m.id === data.current_model) opt.selected = true;
           msModelSelect.appendChild(opt);
         });
-        msTopK.value = data.top_k || 10;
+        msTopSkill.value = data.top_skill || 5;
+        msTopMemory.value = data.top_memory || 4;
+        msTopTotal.value = data.top_total || 9;
         document.getElementById("msMaxChars").value = data.max_prompt_chars || 20000;
         buildThresholdEditor(data.available_models, data.model_thresholds);
         msEnabled.checked = data.enabled !== false;
-        msInfo.textContent = `Active: ${data.current_model} | Threshold: ${data.current_threshold}`;
+        msInfo.textContent = `Active: ${data.current_model} | proc:${data.current_proc_threshold ?? "—"} std:${data.current_threshold}`;
         _msLoaded = true;
       } catch (e) { console.error("loadMemorySearchSettings failed", e); }
     }
@@ -7678,14 +7628,20 @@
       try {
         const modelThresholds = {};
         msThresholdEditor.querySelectorAll("input[data-model]").forEach((inp) => {
-          if (inp.value.trim() !== "") modelThresholds[inp.dataset.model] = parseFloat(inp.value);
+          const mid = inp.dataset.model;
+          if (!modelThresholds[mid]) modelThresholds[mid] = {};
+          if (inp.value.trim() !== "") modelThresholds[mid][inp.dataset.field] = parseFloat(inp.value);
         });
+        // Clean empty objects
+        Object.keys(modelThresholds).forEach(k => { if (!Object.keys(modelThresholds[k]).length) delete modelThresholds[k]; });
         const res = await fetch("/api/settings/memory-search", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             model: msModelSelect.value,
-            top_k: parseInt(msTopK.value) || 10,
+            top_skill: parseInt(msTopSkill.value) || 5,
+            top_memory: parseInt(msTopMemory.value) || 4,
+            top_total: parseInt(msTopTotal.value) || 9,
             max_prompt_chars: parseInt(document.getElementById("msMaxChars").value) || 20000,
             model_thresholds: modelThresholds,
             enabled: msEnabled.checked,
@@ -7693,7 +7649,7 @@
         });
         if (res.ok) {
           const data = await res.json();
-          msInfo.textContent = `Active: ${data.current_model} | Threshold: ${data.current_threshold}`;
+          msInfo.textContent = `Active: ${data.current_model} | proc:${data.current_proc_threshold ?? "—"} std:${data.current_threshold}`;
           showToast("✅ Memory search settings saved", "success");
         } else {
           showToast("✕ Failed to save", "error");
@@ -7776,13 +7732,18 @@
       // Save memory search settings
       const modelThresholds = {};
       msThresholdEditor.querySelectorAll("input[data-model]").forEach((inp) => {
-        if (inp.value.trim() !== "") modelThresholds[inp.dataset.model] = parseFloat(inp.value);
+        const mid = inp.dataset.model;
+        if (!modelThresholds[mid]) modelThresholds[mid] = {};
+        if (inp.value.trim() !== "") modelThresholds[mid][inp.dataset.field] = parseFloat(inp.value);
       });
+      Object.keys(modelThresholds).forEach(k => { if (!Object.keys(modelThresholds[k]).length) delete modelThresholds[k]; });
       const msRes = await fetch("/api/settings/memory-search", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: msModelSelect.value,
-          top_k: parseInt(msTopK.value) || 10,
+          top_skill: parseInt(msTopSkill.value) || 5,
+          top_memory: parseInt(msTopMemory.value) || 4,
+          top_total: parseInt(msTopTotal.value) || 9,
           max_prompt_chars: parseInt(document.getElementById("msMaxChars").value) || 20000,
           model_thresholds: modelThresholds,
           enabled: msEnabled.checked,
@@ -7790,7 +7751,7 @@
       });
       if (msRes.ok) {
         const data = await msRes.json();
-        msInfo.textContent = `Active: ${data.current_model} | Threshold: ${data.current_threshold}`;
+        msInfo.textContent = `Active: ${data.current_model} | proc:${data.current_proc_threshold ?? "—"} std:${data.current_threshold}`;
       }
       // Save consolidation settings
       const fallbackModels = [consolidationFB1?.value, consolidationFB2?.value, consolidationFB3?.value].filter(Boolean);

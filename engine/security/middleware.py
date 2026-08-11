@@ -8,6 +8,7 @@ validates paths, and enforces approval gates for sensitive operations.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -78,8 +79,11 @@ _PERMISSION_REQUIRED: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r"crontab\s+-r", re.I), "system", "Wipe entire crontab"),
     (re.compile(r"sysctl\s+-w", re.I), "system", "Runtime kernel parameter change"),
 
-    # SSD tree write guard
-    (re.compile(r"(?:cp|mv|tee|cat\s*>|echo\s*>)\s+.*?/home/sifat/Projects/Sable", re.I), "filesystem", "Direct write to SSD Sable tree (edit HDD first)"),
+    # Protected tree write guard (pattern built dynamically if env var is set)
+    *([
+        (re.compile(r"(?:cp|mv|tee|cat\s*>|echo\s*>)\s+.*?" + re.escape(p), re.I), "filesystem", f"Direct write to protected tree")
+        for p in os.getenv("SABLE_PROTECTED_TREE", "").split(",") if p.strip()
+    ]),
 ]
 
 # Tags whose content is a shell command

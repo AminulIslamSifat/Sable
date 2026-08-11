@@ -63,13 +63,17 @@ def safe_under(base: Path, raw: str) -> Path:
 
 
 
-# --- SSD tree write guard ---
-_SSD_TREE_PREFIXES = (
-    "/home/sifat/Projects/Sable",
+# --- Protected tree write guard ---
+# Set SABLE_PROTECTED_TREE env var to a path to enable write protection.
+# If unset, the guard is a no-op.
+_SSD_TREE_PREFIXES = tuple(
+    p.strip() for p in os.getenv("SABLE_PROTECTED_TREE", "").split(",") if p.strip()
 )
 
 def is_ssd_tree_write(path: str) -> bool:
-    """Return True if the resolved path falls inside the SSD live tree."""
+    """Return True if the resolved path falls inside a protected tree."""
+    if not _SSD_TREE_PREFIXES:
+        return False
     resolved = str(Path(path).resolve()) if not path.startswith("/") else path
     return any(resolved.startswith(p) for p in _SSD_TREE_PREFIXES)
 

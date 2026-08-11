@@ -28,29 +28,60 @@ def _cache_path_for(model_name: str, base_dir: Path | None = None) -> Path:
     d = base_dir if base_dir else _CACHE_DIR
     return d / f"memory_cache_{slug}.npz"
 
-# Empirically calibrated (2026-07-27) against the hybrid score
-# (0.7*vector + 0.3*keyword) via calibrate_thresholds.py — each value sits
-# between that model's false-positive ceiling and true-match floor.
+# Per-model thresholds for MultiRRF/MultiField scoring (calibrated 2026-08-11).
+# Each model produces different score distributions, so thresholds are per-model.
+# "proc" = procedural MultiRRF threshold (4-field, scores ~2.5–4.5)
+# "std"  = standard MultiField threshold (2-field, scores ~1.0–2.2)
 # NOTE: thenlper/gte-base could NOT be calibrated — fastembed returns ragged
-# embeddings for it (numpy "inhomogeneous shape" error on load), so it's
-# currently unusable anyway; its value below is just the old guess.
-# Calibrated 2026-07-28 (v2) against hybrid score (0.7v + 0.3k) using 50
-# clean user prompts (memory-context prefix stripped) vs 85-entry Memory.json.
-# balanced = midpoint(p25, median).
-MODEL_THRESHOLDS: dict[str, float] = {
-    "jinaai/jina-embeddings-v2-small-en": 0.641,
-    "snowflake/snowflake-arctic-embed-xs": 0.594,
-    "BAAI/bge-small-en-v1.5": 0.538,
-    "google/gemini-embedding-001": 0.55,  # uncalibrated — needs threshold tuning
+# embeddings for it (numpy "inhomogeneous shape" error on load).
+MODEL_THRESHOLDS: dict[str, dict[str, float]] = {
+    "snowflake/snowflake-arctic-embed-xs": {"proc": 2.57, "std": 1.49},
+    "jinaai/jina-embeddings-v2-small-en": {"proc": 2.57, "std": 1.55},
+    "BAAI/bge-small-en-v1.5": {"proc": 2.20, "std": 1.29},
+    "google/gemini-embedding-001": {"proc": 2.70, "std": 1.45},  # uncalibrated
 }
 
 DEFAULT_MODEL = "snowflake/snowflake-arctic-embed-xs"
 DEFAULT_TOP_K = 10
 
+# Legacy weights (kept for backward compat)
 VECTOR_WEIGHT = 0.7
 KEYWORD_WEIGHT = 0.3
 PROTECTED_BOOST = 0.15
 EPISODIC_DECAY_RATE = 0.95  # Score multiplier per day since last access
+
+# ─── MultiRRF / MultiField scoring (calibrated 2026-08-11) ──────────────────
+# Procedural: 4-field weighted RRF
+PROC_FIELD_WEIGHTS: dict[str, float] = {"key": 2.0, "keyword": 1.8, "trigger": 1.5, "value": 0.8}
+# Other types: 2-field weighted
+STD_FIELD_WEIGHTS: dict[str, float] = {"key": 2.0, "value": 1.0}
+# Hybrid blend per field
+FIELD_VEC_WEIGHT = 0.6
+FIELD_KW_WEIGHT = 0.4
+
+# Calibrated thresholds (fallback defaults — per-model values in MODEL_THRESHOLDS)
+PROC_THRESHOLD_MULTI = 2.57   # Procedural MultiRRF scores range ~2.5–4.0
+STD_THRESHOLD_MULTI = 1.49    # Semantic/Episodic/Ephemeral MultiField range ~1.4–2.2
+
+# Default allocation (overridable in settings)
+DEFAULT_TOP_SKILL = 5     # max procedural results
+DEFAULT_TOP_MEMORY = 4    # max semantic/episodic/ephemeral results
+DEFAULT_TOP_TOTAL = 9     # total injected (proc gets ceil, others get floor)
+
+# ─── Guard: reject garbage before embedding ──────────────────────────────────
+_GARBAGE_WORDS = frozenset({
+    "fuck", "shit", "ass", "bitch", "dick", "cock", "pussy", "cunt",
+    "motherfucker", "bullshit", "asshole", "dumbass", "jackass",
+    "penis", "vagina", "boobs", "tits", "nigger", "faggot",
+    "retard", "whore", "slut", "bastard", "wanker", "twat",
+    "cum", "semen", "orgasm", "masturbate", "porn",
+    "kill", "yourself", "kys",
+    "lol", "lmao", "rofl", "xd", "hehe", "haha",
+    "asdf", "qwerty", "zxcv",
+    "blah", "bluh", "bleh", "meh",
+    "damn", "hell", "wtf", "stfu",
+    "fucking", "fucked", "bull", "crap",
+})
 
 _STOPWORDS = frozenset({
     "the","a","an","is","are","was","were","be","been","being",
@@ -76,6 +107,23 @@ def _keyword_score(query_tokens: set[str], entry_tokens: set[str]) -> float:
     if not query_tokens:
         return 0.0
     return len(query_tokens & entry_tokens) / len(query_tokens)
+
+
+def _is_valid_query(query: str) -> bool:
+    """Guard: reject garbage before any embedding compute. Zero-cost string checks."""
+    stripped = query.strip()
+    if not stripped or len(stripped) < 3:
+        return False
+    alpha_num = re.findall(r'[a-zA-Z0-9]', stripped)
+    if len(alpha_num) < 3:
+        return False
+    tokens = _tokenize(stripped)
+    if not tokens or len(tokens) < 2:
+        return False
+    garbage_count = sum(1 for t in tokens if t in _GARBAGE_WORDS)
+    if garbage_count > 0 and garbage_count / len(tokens) > 0.5:
+        return False
+    return True
 
 
 def _is_expired(entry: dict) -> bool:
@@ -210,6 +258,11 @@ class MemorySearcher:
         self._memory_path = memory_path or _MEMORY_PATH
         self._protected_path = protected_path or _PROTECTED_PATH
         self._cache_dir = cache_dir
+        # Procedural MultiRRF storage (separate from main vector index)
+        self._proc_entries: list[dict] = []  # raw procedural entries with keyword/trigger
+        self._proc_field_vecs: dict[str, np.ndarray] = {}  # field -> normalized vectors
+        self._proc_field_tokens: dict[str, list[set[str]]] = {}  # field -> tokenized
+        self._proc_index_built = False
         self._initialized = True
 
     @property
@@ -218,12 +271,22 @@ class MemorySearcher:
 
     @property
     def threshold(self) -> float:
-        return self.get_threshold(self._model_name)
+        """Legacy compat — returns std threshold."""
+        return self.get_std_threshold(self._model_name)
 
-    def get_threshold(self, model_name: str) -> float:
-        if model_name in self._custom_thresholds:
-            return self._custom_thresholds[model_name]
-        return MODEL_THRESHOLDS.get(model_name, 0.5)
+    def get_proc_threshold(self, model_name: str | None = None) -> float:
+        """Procedural MultiRRF threshold for the given model."""
+        model = model_name or self._model_name
+        if model in self._custom_thresholds and isinstance(self._custom_thresholds[model], dict):
+            return self._custom_thresholds[model].get("proc", PROC_THRESHOLD_MULTI)
+        return MODEL_THRESHOLDS.get(model, {}).get("proc", PROC_THRESHOLD_MULTI)
+
+    def get_std_threshold(self, model_name: str | None = None) -> float:
+        """Standard MultiField threshold for the given model."""
+        model = model_name or self._model_name
+        if model in self._custom_thresholds and isinstance(self._custom_thresholds[model], dict):
+            return self._custom_thresholds[model].get("std", STD_THRESHOLD_MULTI)
+        return MODEL_THRESHOLDS.get(model, {}).get("std", STD_THRESHOLD_MULTI)
 
     def set_model(self, model_name: str) -> None:
         with self._load_lock:
@@ -231,14 +294,31 @@ class MemorySearcher:
                 self._model_name = model_name
                 self._model = None
                 self._normed_vectors = None
+                self._proc_index_built = False
 
-    def set_thresholds(self, thresholds: dict[str, float]) -> None:
+    def set_thresholds(self, thresholds: dict[str, Any]) -> None:
+        """
+        Accepts either:
+          - New format: {"model_name": {"proc": X, "std": Y}}
+          - Legacy flat: {"model_name": 0.5} (treated as std only)
+        """
         with self._load_lock:
-            self._custom_thresholds = {
-                k: max(0.0, min(1.0, float(v))) for k, v in thresholds.items()
-            }
+            result: dict[str, Any] = {}
+            for model, val in thresholds.items():
+                if isinstance(val, dict):
+                    result[str(model)] = {
+                        "proc": float(val.get("proc", PROC_THRESHOLD_MULTI)),
+                        "std": float(val.get("std", STD_THRESHOLD_MULTI)),
+                    }
+                else:
+                    # Legacy: single float → treat as std threshold
+                    result[str(model)] = {
+                        "proc": PROC_THRESHOLD_MULTI,
+                        "std": float(val),
+                    }
+            self._custom_thresholds = result
 
-    def get_custom_thresholds(self) -> dict[str, float]:
+    def get_custom_thresholds(self) -> dict[str, Any]:
         return dict(self._custom_thresholds)
 
     def _ensure_model(self) -> None:
@@ -354,6 +434,7 @@ class MemorySearcher:
         self._entries = []
         self._entry_meta = []
         self._entry_tokens = []
+        self._proc_entries = []  # Reset procedural
 
         # Load main memory (semantic, episodic, procedural, ephemeral)
         # (full vectorize path — cache miss or stale)
@@ -373,6 +454,14 @@ class MemorySearcher:
                         v = str(e.get("value", "")).strip()
                         if not v:
                             continue
+                        # Store procedural entries separately with enriched fields
+                        if cat_key == "procedural":
+                            self._proc_entries.append({
+                                "key": k,
+                                "value": v,
+                                "keyword": str(e.get("keyword", "")).strip(),
+                                "trigger": str(e.get("trigger", "")).strip(),
+                            })
                         text = f"{k}: {v}" if k else v
                         extra = None
                         if cat_key == "episodic" and e.get("last_accessed"):
@@ -407,6 +496,121 @@ class MemorySearcher:
                     continue
                 text = f"{k}: {v}" if k else v
                 self._add_entry(text, k, v, "protected")
+
+    def _build_procedural_index(self) -> None:
+        """Build 4-field vector index for procedural entries (MultiRRF)."""
+        if self._proc_index_built or not self._proc_entries:
+            return
+        self._proc_field_vecs = {}
+        self._proc_field_tokens = {}
+        for field in PROC_FIELD_WEIGHTS:
+            texts = [e.get(field, "") or e.get("value", "") for e in self._proc_entries]
+            vecs = self._embed_texts(texts)
+            self._proc_field_vecs[field] = vecs
+            self._proc_field_tokens[field] = [_tokenize(t) for t in texts]
+        self._proc_index_built = True
+
+    def _score_procedural(self, q_vec: np.ndarray, q_tokens: set[str]) -> list[dict]:
+        """MultiRRF scoring for procedural entries. Returns sorted results."""
+        if not self._proc_entries:
+            return []
+        n = len(self._proc_entries)
+        final_scores = np.zeros(n, dtype="float32")
+        for field, weight in PROC_FIELD_WEIGHTS.items():
+            vec_scores = self._proc_field_vecs[field] @ q_vec
+            if len(q_tokens) >= 2:
+                kw_scores = np.array(
+                    [_keyword_score(q_tokens, et) for et in self._proc_field_tokens[field]],
+                    dtype="float32",
+                )
+            else:
+                kw_scores = np.zeros(n, dtype="float32")
+            hybrid = FIELD_VEC_WEIGHT * vec_scores + FIELD_KW_WEIGHT * kw_scores
+            final_scores += weight * hybrid
+
+        cutoff = self.get_proc_threshold()
+        ranked = np.argsort(-final_scores)
+        results = []
+        for idx in ranked:
+            if final_scores[idx] < cutoff:
+                break
+            results.append({
+                "key": self._proc_entries[idx]["key"],
+                "value": self._proc_entries[idx]["value"],
+                "category": "procedural",
+                "score": float(final_scores[idx]),
+            })
+        return results
+
+    def _score_standard(self, q_vec: np.ndarray, q_tokens: set[str], allowed_categories: set[str] | None) -> list[dict]:
+        """MultiField (2-field) scoring for semantic/episodic/ephemeral/protected."""
+        if not self._entries or self._normed_vectors is None:
+            return []
+        # 2-field scoring: key and value separately
+        n = len(self._entries)
+        # Key scores: embed just the keys
+        key_texts = [m["key"] for m in self._entry_meta]
+        # Value scores: use the existing combined vectors as proxy for value
+        # (full re-embed of keys is expensive; use combined vector for value, keyword overlap for key)
+        vec_scores = self._normed_vectors @ q_vec
+
+        # Keyword scoring per entry
+        if len(q_tokens) >= 3:
+            kw_scores = np.array(
+                [_keyword_score(q_tokens, et) for et in self._entry_tokens],
+                dtype="float32",
+            )
+        else:
+            kw_scores = np.zeros(n, dtype="float32")
+
+        # Weighted: key gets higher weight via keyword, value via vector
+        scores = STD_FIELD_WEIGHTS["key"] * (FIELD_VEC_WEIGHT * vec_scores + FIELD_KW_WEIGHT * kw_scores) + \
+                 STD_FIELD_WEIGHTS["value"] * vec_scores
+
+        # Apply episodic decay and protected boost
+        now = datetime.now()
+        for i, meta in enumerate(self._entry_meta):
+            if meta["category"] == "protected":
+                scores[i] += PROTECTED_BOOST
+            elif meta["category"] == "episodic" and "last_accessed" in meta:
+                try:
+                    last = datetime.fromisoformat(meta["last_accessed"])
+                    days_since = max(0, (now - last).total_seconds() / 86400)
+                    scores[i] *= EPISODIC_DECAY_RATE ** days_since
+                except (ValueError, TypeError):
+                    pass
+
+        cutoff = self.get_std_threshold()
+        ranked = np.argsort(-scores)
+        results = []
+        accessed_episodic_keys: list[str] = []
+        for idx in ranked:
+            if scores[idx] < cutoff:
+                break
+            meta = self._entry_meta[idx]
+            # Skip procedural (handled separately) and filter categories
+            if meta["category"] == "procedural":
+                continue
+            if allowed_categories is not None and meta["category"] not in allowed_categories:
+                continue
+            results.append({
+                "key": meta["key"],
+                "value": meta["value"],
+                "category": meta["category"],
+                "score": float(scores[idx]),
+            })
+            if meta["category"] == "episodic":
+                accessed_episodic_keys.append(meta["key"])
+
+        # Update episodic access times
+        if accessed_episodic_keys:
+            now_str = now.isoformat()
+            for meta in self._entry_meta:
+                if meta["category"] == "episodic" and meta["key"] in accessed_episodic_keys:
+                    meta["last_accessed"] = now_str
+            self._persist_episodic_access(accessed_episodic_keys, now_str)
+
+        return results
 
     def _persist_episodic_access(self, keys: list[str], timestamp: str) -> None:
         """Write updated last_accessed timestamps back to Memory.json for episodic entries."""
@@ -454,6 +658,10 @@ class MemorySearcher:
             self._entries = []
             self._entry_meta = []
             self._entry_tokens = []
+            self._proc_entries = []
+            self._proc_field_vecs = {}
+            self._proc_field_tokens = {}
+            self._proc_index_built = False
             gc.collect()
 
     def search(
@@ -462,71 +670,55 @@ class MemorySearcher:
         top_k: int = DEFAULT_TOP_K,
         threshold: float | None = None,
         allowed_categories: set[str] | None = None,
+        top_skill: int | None = None,
+        top_memory: int | None = None,
+        top_total: int | None = None,
     ) -> list[dict[str, Any]]:
+        """
+        Search memory with MultiRRF (procedural) + MultiField (others).
+        Procedural gets priority allocation: ceil(top_total/2) slots, others get floor.
+        """
+        # Guard: reject garbage before any embedding
+        if not _is_valid_query(query):
+            return []
+
         self._ensure_loaded()
         with self._load_lock:
             if not self._entries or self._normed_vectors is None or self._model is None:
                 return []
+
+            # Resolve allocation
+            _top_skill = top_skill if top_skill is not None else DEFAULT_TOP_SKILL
+            _top_memory = top_memory if top_memory is not None else DEFAULT_TOP_MEMORY
+            _top_total = top_total if top_total is not None else DEFAULT_TOP_TOTAL
+
+            # Embed query once (shared across both scorers)
             q_vec = self._embed_texts([query], is_query=True)[0]
-            vector_scores = self._normed_vectors @ q_vec
+            q_tokens = _tokenize(query)
 
-            # Hybrid blend: vector similarity + keyword coverage
-            # Skip keyword boost for very short queries (< 3 unique tokens)
-            # to prevent single common words from maxing out coverage.
-            query_tokens = _tokenize(query)
-            if len(query_tokens) >= 3:
-                keyword_scores = np.array(
-                    [_keyword_score(query_tokens, et) for et in self._entry_tokens],
-                    dtype="float32",
-                )
-            else:
-                keyword_scores = np.zeros(len(self._entry_tokens), dtype="float32")
-            scores = VECTOR_WEIGHT * vector_scores + KEYWORD_WEIGHT * keyword_scores
+            # Build procedural index if needed
+            if self._proc_entries and not self._proc_index_built:
+                self._build_procedural_index()
 
-            # Protected entries get a relevance boost; episodic entries decay over time
-            now = datetime.now()
-            for i, meta in enumerate(self._entry_meta):
-                if meta["category"] == "protected":
-                    scores[i] += PROTECTED_BOOST
-                elif meta["category"] == "episodic" and "last_accessed" in meta:
-                    try:
-                        last = datetime.fromisoformat(meta["last_accessed"])
-                        days_since = max(0, (now - last).total_seconds() / 86400)
-                        scores[i] *= EPISODIC_DECAY_RATE ** days_since
-                    except (ValueError, TypeError):
-                        pass
+            # Score procedural (MultiRRF, 4-field)
+            proc_results = self._score_procedural(q_vec, q_tokens)
 
-            cutoff = threshold if threshold is not None else self.threshold
-            ranked = np.argsort(-scores)
-            results: list[dict[str, Any]] = []
-            accessed_episodic_keys: list[str] = []
-            for idx in ranked[:top_k * 3 if allowed_categories else top_k]:
-                if scores[idx] < cutoff:
-                    break
-                meta = self._entry_meta[idx]
-                if allowed_categories is not None and meta["category"] not in allowed_categories:
-                    continue
-                results.append({
-                    "key": meta["key"],
-                    "value": meta["value"],
-                    "category": meta["category"],
-                    "score": float(scores[idx]),
-                })
-                if meta["category"] == "episodic":
-                    accessed_episodic_keys.append(meta["key"])
+            # Score standard (MultiField, 2-field) — excludes procedural
+            std_results = self._score_standard(q_vec, q_tokens, allowed_categories)
 
-            # Trim to top_k after category filtering
-            results = results[:top_k]
+            # Priority allocation: procedural gets ceil(top_total/2), others get floor
+            proc_slots = min(_top_skill, -(-_top_total // 2))  # ceil division
+            mem_slots = min(_top_memory, _top_total // 2)
 
-            # Update last_accessed for retrieved episodic entries
-            if accessed_episodic_keys:
-                now_str = now.isoformat()
-                for meta in self._entry_meta:
-                    if meta["category"] == "episodic" and meta["key"] in accessed_episodic_keys:
-                        meta["last_accessed"] = now_str
-                self._persist_episodic_access(accessed_episodic_keys, now_str)
+            # Fill procedural first (priority)
+            final_proc = proc_results[:proc_slots]
+            # Fill others with remaining budget
+            remaining = _top_total - len(final_proc)
+            final_mem = std_results[:min(mem_slots, remaining)]
 
-            return results
+            # Merge: procedural first, then others
+            results = final_proc + final_mem
+            return results[:_top_total]
 
     def format_for_prompt(self, results: list[dict[str, Any]]) -> str:
         if not results:
@@ -573,6 +765,6 @@ def reload_project_searcher(project_id: str) -> None:
 
 def list_available_models() -> list[dict[str, Any]]:
     return [
-        {"id": name, "threshold": thresh}
-        for name, thresh in MODEL_THRESHOLDS.items()
+        {"id": name, "proc_threshold": t["proc"], "std_threshold": t["std"]}
+        for name, t in MODEL_THRESHOLDS.items()
     ]

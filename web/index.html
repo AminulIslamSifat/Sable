@@ -1002,11 +1002,21 @@
               <p class="muted" style="font-size:11px;margin:3px 0 0;">The AI model that converts your memories into searchable vectors. Changing this requires re-indexing all memories.</p>
             </div>
 
-            <div>
-              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Top-K Results</label>
-              <input type="number" id="msTopK" class="mem-input" style="width:80px;" min="1" max="50" value="10">
-              <p class="muted" style="font-size:11px;margin:3px 0 0;">How many relevant memories to inject per message. Higher = more context but uses more tokens. 5–15 is typical.</p>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;">
+              <div>
+                <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Top Skills</label>
+                <input type="number" id="msTopSkill" class="mem-input" style="width:70px;" min="1" max="20" value="5">
+              </div>
+              <div>
+                <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Top Memory</label>
+                <input type="number" id="msTopMemory" class="mem-input" style="width:70px;" min="1" max="20" value="4">
+              </div>
+              <div>
+                <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Top Total</label>
+                <input type="number" id="msTopTotal" class="mem-input" style="width:70px;" min="2" max="40" value="9">
+              </div>
             </div>
+            <p class="muted" style="font-size:11px;margin:0;">Procedural (skills) get priority allocation. Total = skills + memory injected per message.</p>
 
             <div>
               <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Max Prompt Length (chars)</label>
@@ -1455,7 +1465,7 @@
       } catch(e) {}
     })();
   </script>
-  <script src="/static/app.js?v=148"></script>
+  <script src="/static/app.js?v=150"></script>
   <script src="/static/src/research.js?v=10"></script>
   <script src="/static/js/agents.js?v=24"></script>
   <script src="/static/js/filesystem.js?v=31"></script>

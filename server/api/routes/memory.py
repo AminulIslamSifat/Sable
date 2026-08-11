@@ -15,6 +15,8 @@ from connectors import get_connector
 from instruction.mem_cmd import (
     _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY,
     _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE,
+    _DEDUP_REVIEW_PROMPT_TEMPLATE,
+    _SIMILARITY_CONTEXT_HEADER,
     _PERSONALITY_ASSESSMENT_TEMPLATE,
 )
 
@@ -35,6 +37,22 @@ _CONSOLIDATION_BACKENDS = frozenset({"groq", "gemini", "mistral"})
 # ── Background consolidation infrastructure ─────────────────────────────
 _consolidation_results: dict[str, dict[str, Any]] = {}
 _consolidation_lock = threading.Lock()
+
+
+
+
+def _build_stored_entry(entry: dict, category: str) -> dict:
+    """Build stored memory entry. For procedural: preserve keyword/trigger, inject date."""
+    stored: dict[str, Any] = {"key": entry["key"], "value": entry.get("value", "")}
+    if category == "procedural":
+        if entry.get("keyword"):
+            stored["keyword"] = entry["keyword"]
+        if entry.get("trigger"):
+            stored["trigger"] = entry["trigger"]
+        from datetime import date as _date
+        stored["date"] = _date.today().isoformat()
+    return stored
+
 
 
 def _store_consolidation_result(chat_id: str, result: dict[str, Any]) -> None:
@@ -77,9 +95,27 @@ async def _do_consolidation_work(
     current_memory: str, conv_text: str, proj_id: str | None,
 ) -> None:
     """Actual consolidation logic — runs inside the background thread's event loop."""
+    # Build similarity context
+    similarity_context = ""
+    try:
+        searcher = get_searcher()
+        sim_results = searcher.search(conv_text[:3000], top_k=10)
+        if sim_results:
+            lines = [_SIMILARITY_CONTEXT_HEADER]
+            for r in sim_results:
+                if r.get("score", 0) >= 0.5:
+                    lines.append(f'- [{r["category"]}] "{r["key"]}": "{r["value"][:120]}" (relevance: {r["score"]:.2f})')
+            if len(lines) > 1:
+                similarity_context = "\n".join(lines)
+    except Exception:
+        pass
+    if not similarity_context:
+        similarity_context = "(No similar existing entries found.)"
+
     # Build prompt
     prompt = _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE
     prompt = prompt.replace("<<CURRENT_MEMORY>>", current_memory)
+    prompt = prompt.replace("<<SIMILARITY_CONTEXT>>", similarity_context)
     prompt = prompt.replace("<<CONVERSATION_SUMMARY>>", conv_text)
 
     # Fallback chain
@@ -156,13 +192,13 @@ async def _do_consolidation_work(
         except Exception:
             existing = {}
 
-    # Dedup
+    # Dedup with conflict collection
+    review_queue: list[dict[str, Any]] = []
     try:
         searcher = get_searcher()
-        adds, dedup_skipped, dedup_updated = _dedup_and_resolve_adds(adds, existing, searcher)
+        adds, review_queue = _dedup_and_resolve_adds(adds, existing, searcher)
     except Exception:
-        dedup_skipped = 0
-        dedup_updated = 0
+        review_queue = []
 
     protected_keys: set[str] = set()
     for e in existing.get("protected", []):
@@ -190,7 +226,7 @@ async def _do_consolidation_work(
         existing_keys = {e.get("key", "") for e in existing_list if isinstance(e, dict)}
         for entry in new_list:
             if isinstance(entry, dict) and entry.get("key") and entry["key"] not in existing_keys:
-                existing_list.append({"key": entry["key"], "value": entry.get("value", "")})
+                existing_list.append(_build_stored_entry(entry, cat))
                 existing_keys.add(entry["key"])
                 added_count += 1
         existing[cat] = existing_list
@@ -253,7 +289,11 @@ async def _do_consolidation_work(
     # Personality assessment — fire-and-forget within the thread
     asyncio.create_task(_run_personality_assessment(conv_text, model))
 
-    final: dict[str, Any] = {"status": "ok", "added": total_added, "deleted": deleted_count, "dedup_skipped": dedup_skipped, "dedup_updated": dedup_updated}
+    # Background dedup review — fire-and-forget, never blocks response
+    if review_queue:
+        asyncio.create_task(_run_dedup_review(review_queue, mem_path, model))
+
+    final: dict[str, Any] = {"status": "ok", "added": total_added, "deleted": deleted_count, "dedup_review_count": len(review_queue)}
     if skill_created:
         final["skill_created"] = skill_data["name"]
     _store_consolidation_result(chat_id, final)
@@ -381,7 +421,7 @@ async def update_protected_memory(payload: dict[str, Any]) -> dict[str, str]:
 @router.get("/api/settings/memory-search")
 async def get_memory_search_settings() -> dict[str, Any]:
     searcher = get_searcher()
-    cfg: dict[str, Any] = {"enabled": True, "top_k": 10}
+    cfg: dict[str, Any] = {"enabled": True, "top_skill": 5, "top_memory": 4, "top_total": 9}
     if _MEMORY_SEARCH_SETTINGS.exists():
         try:
             cfg = json.loads(_MEMORY_SEARCH_SETTINGS.read_text(encoding="utf-8"))
@@ -389,18 +429,23 @@ async def get_memory_search_settings() -> dict[str, Any]:
             pass
     return {
         "enabled": cfg.get("enabled", True),
-        "top_k": cfg.get("top_k", 10),
+        "top_skill": cfg.get("top_skill", 5),
+        "top_memory": cfg.get("top_memory", 4),
+        "top_total": cfg.get("top_total", 9),
         "max_prompt_chars": cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS),
         "model_thresholds": searcher.get_custom_thresholds(),
         "current_model": searcher.model_name,
         "current_threshold": searcher.threshold,
+        "current_proc_threshold": searcher.get_proc_threshold(),
         "available_models": list_available_models(),
     }
 
 @router.post("/api/settings/memory-search")
 async def update_memory_search_settings(payload: dict[str, Any]) -> dict[str, Any]:
     model = payload.get("model")
-    top_k = payload.get("top_k")
+    top_skill = payload.get("top_skill")
+    top_memory = payload.get("top_memory")
+    top_total = payload.get("top_total")
     enabled = payload.get("enabled")
     max_prompt_chars = payload.get("max_prompt_chars")
     model_thresholds = payload.get("model_thresholds")
@@ -414,17 +459,39 @@ async def update_memory_search_settings(payload: dict[str, Any]) -> dict[str, An
         cfg["model"] = str(model)
         get_searcher().set_model(str(model))
     if isinstance(model_thresholds, dict):
-        clean: dict[str, float] = {}
+        clean: dict[str, Any] = {}
         for k, v in model_thresholds.items():
-            try:
-                if v not in (None, "", "auto"):
-                    clean[str(k)] = float(v)
-            except (TypeError, ValueError):
+            if v in (None, "", "auto"):
                 continue
+            if isinstance(v, dict):
+                # New format: {"proc": X, "std": Y}
+                entry: dict[str, float] = {}
+                if "proc" in v and v["proc"] not in (None, "", "auto"):
+                    try:
+                        entry["proc"] = float(v["proc"])
+                    except (TypeError, ValueError):
+                        pass
+                if "std" in v and v["std"] not in (None, "", "auto"):
+                    try:
+                        entry["std"] = float(v["std"])
+                    except (TypeError, ValueError):
+                        pass
+                if entry:
+                    clean[str(k)] = entry
+            else:
+                # Legacy: single float
+                try:
+                    clean[str(k)] = float(v)
+                except (TypeError, ValueError):
+                    continue
         cfg["model_thresholds"] = clean
         get_searcher().set_thresholds(clean)
-    if top_k is not None:
-        cfg["top_k"] = int(top_k)
+    if top_skill is not None:
+        cfg["top_skill"] = int(top_skill)
+    if top_memory is not None:
+        cfg["top_memory"] = int(top_memory)
+    if top_total is not None:
+        cfg["top_total"] = int(top_total)
     if max_prompt_chars is not None:
         cfg["max_prompt_chars"] = max(1000, int(max_prompt_chars))
     if enabled is not None:
@@ -495,24 +562,23 @@ def _dedup_and_resolve_adds(
     adds: dict[str, list[dict[str, str]]],
     existing: dict[str, list[dict[str, str]]],
     searcher,
-) -> tuple[dict[str, list[dict[str, str]]], int, int]:
-    """Post-consolidation dedup and contradiction resolution.
+) -> tuple[dict[str, list[dict[str, str]]], list[dict[str, Any]]]:
+    """Post-consolidation dedup with conflict collection for background LLM review.
     
     For each new entry in semantic/episodic/procedural:
     - Embed it and search against existing memory
-    - If best match similarity >= 0.85: skip (duplicate)
-    - If best match similarity >= 0.70 and < 0.85: update existing entry in-place (contradiction/update)
+    - If best match similarity >= 0.70: collect into review queue (LLM decides later)
     - Otherwise: add as new
     
-    Returns (filtered_adds, skipped_count, updated_count).
+    Also performs intra-batch dedup: cross-checks kept entries against each other
+    using token overlap to catch duplicates born in the same consolidation pass.
+    
+    Returns (filtered_adds, review_queue).
     """
-    from engine.memory_search import MemorySearcher
+    REVIEW_THRESHOLD = 0.70
+    INTRA_BATCH_OVERLAP = 0.60
     
-    MERGE_THRESHOLD = 0.85
-    UPDATE_THRESHOLD = 0.70
-    
-    skipped = 0
-    updated = 0
+    review_queue: list[dict[str, Any]] = []
     filtered: dict[str, list[dict[str, str]]] = {}
     
     for cat in ("semantic", "episodic", "procedural"):
@@ -520,14 +586,6 @@ def _dedup_and_resolve_adds(
         if not isinstance(new_list, list) or not new_list:
             filtered[cat] = []
             continue
-            
-        existing_list = existing.get(cat, [])
-        existing_texts = []
-        for e in existing_list:
-            if isinstance(e, dict):
-                k = str(e.get("key", "")).strip()
-                v = str(e.get("value", "")).strip()
-                existing_texts.append(f"{k}: {v}" if k else v)
         
         kept: list[dict[str, str]] = []
         for entry in new_list:
@@ -537,26 +595,52 @@ def _dedup_and_resolve_adds(
             entry_text = f"{entry['key']}: {entry.get('value', '')}"
             
             # Search against ALL existing memory (not just same category)
-            results = searcher.search(entry_text, top_k=3)
+            try:
+                results = searcher.search(entry_text, top_k=3)
+            except Exception:
+                results = []
             
             if results:
-                best_score = results[0]["score"]
-                best_key = results[0]["key"]
+                best = results[0]
+                best_score = best.get("score", 0.0)
                 
-                if best_score >= MERGE_THRESHOLD:
-                    # Duplicate — skip
-                    skipped += 1
-                    continue
-                elif best_score >= UPDATE_THRESHOLD and best_key != entry["key"]:
-                    # Potential contradiction/update — replace existing entry's value
-                    for e in existing_list:
-                        if isinstance(e, dict) and e.get("key") == best_key:
-                            e["value"] = entry.get("value", "")
-                            updated += 1
-                            break
+                if best_score >= REVIEW_THRESHOLD:
+                    # High similarity — queue for background LLM review
+                    review_queue.append({
+                        "category": cat,
+                        "new_entry": _build_stored_entry(entry, cat),
+                        "existing_entry": {"key": best.get("key", ""), "value": best.get("value", "")},
+                        "score": best_score,
+                    })
                     continue
             
-            kept.append({"key": entry["key"], "value": entry.get("value", "")})
+            kept.append(_build_stored_entry(entry, cat))
+        
+        # Intra-batch dedup: cross-check kept entries against each other
+        if len(kept) > 1:
+            deduped_kept: list[dict[str, str]] = [kept[0]]
+            for candidate in kept[1:]:
+                cand_text = f"{candidate['key']} {candidate.get('value', '')}".lower()
+                cand_tokens = set(cand_text.split())
+                is_dup = False
+                for accepted in deduped_kept:
+                    acc_text = f"{accepted['key']} {accepted.get('value', '')}".lower()
+                    acc_tokens = set(acc_text.split())
+                    if not cand_tokens or not acc_tokens:
+                        continue
+                    overlap = len(cand_tokens & acc_tokens) / max(len(cand_tokens), len(acc_tokens))
+                    if overlap >= INTRA_BATCH_OVERLAP:
+                        review_queue.append({
+                            "category": cat,
+                            "new_entry": candidate,
+                            "existing_entry": accepted,
+                            "score": overlap,
+                        })
+                        is_dup = True
+                        break
+                if not is_dup:
+                    deduped_kept.append(candidate)
+            kept = deduped_kept
         
         filtered[cat] = kept
     
@@ -564,7 +648,140 @@ def _dedup_and_resolve_adds(
     filtered["protected"] = adds.get("protected", [])
     filtered["ephemeral"] = adds.get("ephemeral", [])
     
-    return filtered, skipped, updated
+    return filtered, review_queue
+
+
+async def _run_dedup_review(
+    review_queue: list[dict[str, Any]],
+    mem_path: Path,
+    model: str,
+) -> None:
+    """Background LLM review of high-similarity memory conflicts.
+    
+    For each conflict pair, asks the LLM to decide: merge, replace, or keep_both.
+    Applies decisions directly to the memory file. Non-blocking — runs as asyncio task.
+    """
+    if not review_queue:
+        return
+    
+    try:
+        data = json.loads(mem_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return
+    except Exception:
+        logger.warning("dedup_review: failed to read memory file, skipping review")
+        return
+    
+    applied = 0
+    skipped_llm = 0
+    
+    for conflict in review_queue:
+        cat = conflict["category"]
+        new_entry = conflict["new_entry"]
+        existing_entry = conflict["existing_entry"]
+        score = conflict["score"]
+        
+        # Build review prompt
+        prompt = _DEDUP_REVIEW_PROMPT_TEMPLATE
+        prompt = prompt.replace("<<EXISTING_KEY>>", existing_entry.get("key", ""))
+        prompt = prompt.replace("<<EXISTING_VALUE>>", existing_entry.get("value", ""))
+        prompt = prompt.replace("<<NEW_KEY>>", new_entry.get("key", ""))
+        prompt = prompt.replace("<<NEW_VALUE>>", new_entry.get("value", ""))
+        prompt = prompt.replace("<<SCORE>>", f"{score:.2f}")
+        
+        try:
+            result = await _try_consolidation_call(model, prompt)
+        except Exception:
+            logger.warning(f"dedup_review: LLM call failed for '{new_entry.get('key')}', leaving un-added")
+            skipped_llm += 1
+            continue
+        
+        if not result:
+            skipped_llm += 1
+            continue
+        
+        raw = result.get("answer", "").strip()
+        # Strip markdown fences
+        if raw.startswith("```"):
+            lines = raw.split("\n")
+            lines = [l for l in lines if not l.strip().startswith("```")]
+            raw = "\n".join(lines).strip()
+        
+        # Parse JSON
+        try:
+            decision_data = json.loads(raw)
+        except json.JSONDecodeError:
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start != -1 and end > start:
+                try:
+                    decision_data = json.loads(raw[start:end + 1])
+                except json.JSONDecodeError:
+                    logger.warning(f"dedup_review: invalid JSON for '{new_entry.get('key')}'")
+                    skipped_llm += 1
+                    continue
+            else:
+                skipped_llm += 1
+                continue
+        
+        action = str(decision_data.get("action", "")).lower().strip()
+        entries = decision_data.get("entries", [])
+        if not isinstance(entries, list):
+            entries = []
+        
+        cat_list: list[dict[str, str]] = data.get(cat, [])
+        if not isinstance(cat_list, list):
+            cat_list = []
+        
+        if action == "merge":
+            # Remove both originals, add merged entry
+            existing_key = existing_entry.get("key", "")
+            new_key = new_entry.get("key", "")
+            cat_list = [e for e in cat_list if not (isinstance(e, dict) and e.get("key") in (existing_key, new_key))]
+            if entries:
+                merged = entries[0]
+                cat_list.append(_build_stored_entry(merged, cat))
+            data[cat] = cat_list
+            logger.info(f"dedup_review: MERGE '{existing_key}' + '{new_key}'")
+            applied += 1
+        
+        elif action == "replace":
+            # Remove outdated entry, add survivor
+            existing_key = existing_entry.get("key", "")
+            new_key = new_entry.get("key", "")
+            cat_list = [e for e in cat_list if not (isinstance(e, dict) and e.get("key") in (existing_key, new_key))]
+            if entries:
+                survivor = entries[0]
+                cat_list.append(_build_stored_entry(survivor, cat))
+            data[cat] = cat_list
+            logger.info(f"dedup_review: REPLACE '{existing_key}' ← '{new_key}'")
+            applied += 1
+        
+        elif action == "keep_both":
+            # Ensure both entries exist
+            existing_keys = {e.get("key", "") for e in cat_list if isinstance(e, dict)}
+            for e in entries:
+                ek = str(e.get("key", ""))
+                if ek and ek not in existing_keys:
+                    cat_list.append(_build_stored_entry(e, cat))
+                    existing_keys.add(ek)
+            data[cat] = cat_list
+            logger.info(f"dedup_review: KEEP_BOTH '{new_entry.get('key')}' + '{existing_entry.get('key')}'")
+            applied += 1
+        
+        else:
+            logger.warning(f"dedup_review: unknown action '{action}' for '{new_entry.get('key')}', leaving un-added")
+            skipped_llm += 1
+    
+    # Write updated memory back to disk
+    if applied > 0:
+        try:
+            mem_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            get_searcher().reload_memory()
+            logger.info(f"dedup_review: applied {applied} decisions, {skipped_llm} skipped")
+        except Exception as exc:
+            logger.warning(f"dedup_review: failed to write memory file: {exc}")
+
 
 def _load_consolidation_settings() -> dict[str, Any]:
     """Load consolidation settings from system/consolidation_settings.json."""
@@ -889,7 +1106,27 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             pass
     current_memory = json.dumps(filtered_memory, indent=2) if filtered_memory else "{}"
+
+    # Build similarity context for scraper endpoint
+    similarity_context = ""
+    try:
+        searcher = get_searcher()
+        conv_text_sim = _format_conversation(messages)
+        sim_results = searcher.search(conv_text_sim[:3000], top_k=10)
+        if sim_results:
+            lines = [_SIMILARITY_CONTEXT_HEADER]
+            for r in sim_results:
+                if r.get("score", 0) >= 0.5:
+                    lines.append(f'- [{r["category"]}] "{r["key"]}": "{r["value"][:120]}" (relevance: {r["score"]:.2f})')
+            if len(lines) > 1:
+                similarity_context = "\n".join(lines)
+    except Exception:
+        pass
+    if not similarity_context:
+        similarity_context = "(No similar existing entries found.)"
+
     prompt = _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY.replace("<<CURRENT_MEMORY>>", current_memory)
+    prompt = prompt.replace("<<SIMILARITY_CONTEXT>>", similarity_context)
     answer_parts: list[str] = []
     error_msg: str | None = None
     try:
@@ -946,13 +1183,13 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
                 existing = {}
         except Exception:
             existing = {}
-    # Post-consolidation dedup and contradiction resolution
+    # Post-consolidation dedup with conflict collection
+    review_queue: list[dict[str, Any]] = []
     try:
         searcher = get_searcher()
-        adds, dedup_skipped, dedup_updated = _dedup_and_resolve_adds(adds, existing, searcher)
+        adds, review_queue = _dedup_and_resolve_adds(adds, existing, searcher)
     except Exception:
-        dedup_skipped = 0
-        dedup_updated = 0
+        review_queue = []
     protected_keys: set[str] = set()
     for e in existing.get("protected", []):
         if isinstance(e, dict) and e.get("key"):
@@ -977,7 +1214,7 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
         existing_keys = {e.get("key", "") for e in existing_list if isinstance(e, dict)}
         for entry in new_list:
             if isinstance(entry, dict) and entry.get("key") and entry["key"] not in existing_keys:
-                existing_list.append({"key": entry["key"], "value": entry.get("value", "")})
+                existing_list.append(_build_stored_entry(entry, cat))
                 existing_keys.add(entry["key"])
                 added_count += 1
         existing[cat] = existing_list
@@ -1034,4 +1271,8 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
     conv_text = _format_conversation(messages)
     asyncio.create_task(_run_personality_assessment(conv_text, model))
 
-    return {"status": "ok", "added": total_added, "deleted": deleted_count, "dedup_skipped": dedup_skipped, "dedup_updated": dedup_updated}
+    # Background dedup review — fire-and-forget
+    if review_queue:
+        asyncio.create_task(_run_dedup_review(review_queue, _mem_path, model))
+
+    return {"status": "ok", "added": total_added, "deleted": deleted_count, "dedup_review_count": len(review_queue)}
