@@ -1374,6 +1374,20 @@
       return pane;
     }
 
+    /* ---------- Pane loading overlay ---------- */
+    function showPaneLoading(pane) {
+      if (!pane || pane.querySelector(".pane-loading")) return;
+      const overlay = document.createElement("div");
+      overlay.className = "pane-loading";
+      overlay.innerHTML = '<div class="spinner"></div>';
+      pane.appendChild(overlay);
+    }
+    function hidePaneLoading(pane) {
+      if (!pane) return;
+      const overlay = pane.querySelector(".pane-loading");
+      if (overlay) overlay.remove();
+    }
+
     function switchToTab(chatId) {
       const pane = ensurePane(chatId);
       // Hide all panes, show target
@@ -4688,9 +4702,8 @@
 
     async function loadMessages(chatId) {
       try {
-        // Phase 1: Load last 50 messages (fast, no skill_events)
-        console.log("[DEBUG loadMessages] called for", chatId, "stack:", new Error().stack?.split('\n').slice(1,4).join(' | '));
-        const data = await fetch(`/api/chats/${chatId}/messages?limit=50&include_skill_events=true`).then(r => r.json());
+        // Single fetch — all messages at once, no pagination
+        const data = await fetch(`/api/chats/${chatId}/messages?include_skill_events=true`).then(r => r.json());
         const pane = ensurePane(chatId);
         pane.innerHTML = "";
         const chars = data.context_chars || 0;
@@ -4698,53 +4711,32 @@
         window._statusContextChars = chars;
         updateStatusBarContext();
         const messages = data.messages || [];
-        console.log("[DEBUG loadMessages] got", messages.length, "messages, ids:", messages.map(m => m.id));
         if (messages.length === 0) {
           pane.innerHTML = `<div class="empty"><h2>New conversation</h2><p>Send the first message.</p></div>`;
           return [];
         }
-        // Temporarily point activePane at target so addHistoryMessage appends correctly
+
+        // Render messages sequentially in small batches, yielding to the
+        // browser between batches so GC can reclaim intermediate objects.
+        // This prevents RAM spikes from holding all DOM construction in one
+        // synchronous burst while still loading everything upfront.
+        const BATCH_SIZE = 10;
         const prevPane = activePane;
         activePane = pane;
-        for (const msg of messages) addHistoryMessage(msg);
-        console.log("[DEBUG loadMessages] after render, pane children:", pane.children.length);
+        for (let i = 0; i < messages.length; i += BATCH_SIZE) {
+          const batch = messages.slice(i, i + BATCH_SIZE);
+          for (const msg of batch) addHistoryMessage(msg);
+          // Yield to browser every batch so it can GC and keep spinner animated
+          await new Promise(r => requestAnimationFrame(r));
+        }
         activePane = prevPane;
         renderMathJax(pane);
         if (chatId === activeChatId) scrollBottom(true);
-
-        // Phase 2: Load older messages in background (if there are more)
-        if (messages.length === 50) {
-          const oldestId = messages[0]?.id;
-          if (oldestId) _loadOlderMessages(chatId, oldestId, pane);
-        }
 
         return messages;
       } catch (err) {
         console.error("Failed to load messages:", err);
         return [];
-      }
-    }
-
-    async function _loadOlderMessages(chatId, beforeId, pane) {
-      try {
-        const data = await fetch(`/api/chats/${chatId}/messages?before_id=${beforeId}&include_skill_events=true`).then(r => r.json());
-        const older = data.messages || [];
-        if (older.length === 0) return;
-        const prevPane = activePane;
-        activePane = pane;
-        // Prepend older messages at the top
-        const frag = document.createDocumentFragment();
-        const tempDiv = document.createElement("div");
-        activePane = tempDiv;
-        for (const msg of older) addHistoryMessage(msg);
-        activePane = prevPane;
-        // Insert at the beginning of the pane (after any empty state)
-        const empty = pane.querySelector(".empty");
-        if (empty) empty.remove();
-        pane.insertBefore(tempDiv, pane.firstChild);
-        renderMathJax(pane);
-      } catch (err) {
-        console.error("Failed to load older messages:", err);
       }
     }
 
@@ -4820,7 +4812,10 @@
       // Use _loadingChats guard to prevent duplicate loads from race conditions
       if (!alreadyOpen && !_loadingChats.has(chatId)) {
         _loadingChats.add(chatId);
+        const targetPane = ensurePane(chatId);
+        showPaneLoading(targetPane);
         const msgs = await loadMessages(chatId);
+        hidePaneLoading(targetPane);
         _loadingChats.delete(chatId);
         // Derive parentId from the actual message chain
         if (Array.isArray(msgs) && msgs.length) {
@@ -5101,6 +5096,9 @@
     async function createChat() {
       if (creating) return null;
       setCreating(true);
+      // Show loading overlay on current pane while creating new chat
+      const loadingPane = activePane;
+      showPaneLoading(loadingPane);
       const oldChatId = activeChatId;
       const isStreaming = oldChatId && activeStreams.has(oldChatId);
       if (isStreaming) {
@@ -5142,6 +5140,7 @@
         showToast("Network error: " + err.message, "error");
         return null;
       } finally {
+        hidePaneLoading(loadingPane);
         setCreating(false);
       }
     }

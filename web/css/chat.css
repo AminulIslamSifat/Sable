@@ -158,6 +158,30 @@
     }
     .tab-pane.active { display: flex; }
 
+    /* Loading overlay — transparent with blur so messages render visibly underneath */
+    .pane-loading {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      background: rgba(0, 0, 0, 0.15);
+      backdrop-filter: blur(2px);
+      pointer-events: none;
+    }
+    .pane-loading .spinner {
+      width: 24px;
+      height: 24px;
+      border: 2px solid var(--border-subtle, rgba(255,255,255,0.08));
+      border-top-color: var(--accent, #7c6aef);
+      border-radius: 50%;
+      animation: paneLoadSpin 0.7s linear infinite;
+    }
+    @keyframes paneLoadSpin {
+      to { transform: rotate(360deg); }
+    }
+
     .msg {
       width: var(--chat-width);
       max-width: var(--chat-width);
