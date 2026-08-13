@@ -503,7 +503,7 @@ async def run_agent_llm_loop(
         _agent_cfg = _get_agent_model_cfg(agent.model)
         _agent_caps = _agent_cfg.get("capabilities", {})
         _agent_backend = _agent_cfg.get("api_backend")
-        _AGENT_DIRECT_READ = {"gemini", "groq", "mistral"}
+        _AGENT_DIRECT_READ = {"gemini", "groq", "mistral", "openai"}
         if _round_image_paths:
             if _agent_caps.get("image", False) and _agent_backend in _AGENT_DIRECT_READ:
                 _pending_agent_images.extend(_round_image_paths)
