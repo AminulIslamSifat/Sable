@@ -294,6 +294,12 @@ class ChatService:
                                             "message": f"Upstream session expired: {inner.get('details', '')}",
                                         }
                                         return
+                                    if code == "PARENT_NOT_FOUND":
+                                        yield {
+                                            "type": "parent_not_found",
+                                            "message": f"Stale parent_id: {inner.get('details', '')}",
+                                        }
+                                        return
                                     yield {
                                         "type": "error",
                                         "message": f"API error [{code}]: {inner.get('details', 'Unknown error')}",
@@ -337,6 +343,12 @@ class ChatService:
                                                         yield {
                                                             "type": "chat_not_found",
                                                             "message": f"Upstream session expired: {inner.get('details', '')}",
+                                                        }
+                                                        return
+                                                    if code == "PARENT_NOT_FOUND":
+                                                        yield {
+                                                            "type": "parent_not_found",
+                                                            "message": f"Stale parent_id: {inner.get('details', '')}",
                                                         }
                                                         return
                                                     # Other API errors
@@ -447,6 +459,12 @@ class ChatService:
                                 yield {
                                     "type": "chat_not_found",
                                     "message": f"Upstream session expired: {inner.get('details', '')}",
+                                }
+                                return
+                            if code == "PARENT_NOT_FOUND":
+                                yield {
+                                    "type": "parent_not_found",
+                                    "message": f"Stale parent_id: {inner.get('details', '')}",
                                 }
                                 return
                             yield {
