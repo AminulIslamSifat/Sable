@@ -18,6 +18,7 @@ logger = logging.getLogger("sable.memory_search")
 _BRAIN_DIR = Path(__file__).resolve().parent.parent / "Brain"
 _MEMORY_PATH = _BRAIN_DIR / "Memory.json"
 _PROTECTED_PATH = _BRAIN_DIR / "Protected.json"
+_PROCEDURAL_PATH = _BRAIN_DIR / "Procedural.json"
 
 _CACHE_DIR = Path(__file__).resolve().parent.parent / "system"
 _GEMINI_KEYS_PATH = _CACHE_DIR / ".gemini_api_keys.json"
@@ -355,15 +356,15 @@ class MemorySearcher:
         self._entry_meta = []
         self._entry_tokens = []
 
-        # Load main memory (semantic, episodic, procedural, ephemeral)
-        # (full vectorize path — cache miss or stale)
+        # Load main memory (semantic, episodic, ephemeral — NOT procedural)
+        # Procedural is loaded separately from Procedural.json
         if self._memory_path.exists():
             try:
                 data = json.loads(self._memory_path.read_text(encoding="utf-8"))
             except Exception:
                 data = {}
             if isinstance(data, dict):
-                for cat_key in ("semantic", "episodic", "procedural", "ephemeral"):
+                for cat_key in ("semantic", "episodic", "ephemeral"):
                     for e in data.get(cat_key, []):
                         if not isinstance(e, dict):
                             continue
@@ -407,6 +408,34 @@ class MemorySearcher:
                     continue
                 text = f"{k}: {v}" if k else v
                 self._add_entry(text, k, v, "protected")
+
+        # Load procedural memory from separate file
+        if _PROCEDURAL_PATH.exists():
+            try:
+                proc_data = json.loads(_PROCEDURAL_PATH.read_text(encoding="utf-8"))
+            except Exception:
+                proc_data = {}
+            proc_entries = proc_data.get("procedural", []) if isinstance(proc_data, dict) else []
+            for e in proc_entries:
+                if not isinstance(e, dict):
+                    continue
+                k = str(e.get("key", "")).strip()
+                v = str(e.get("value", "")).strip()
+                if not v:
+                    continue
+                text = f"{k}: {v}" if k else v
+                trigger = str(e.get("trigger", "")).strip()
+                keywords = e.get("keywords", [])
+                if trigger:
+                    text += f" | trigger: {trigger}"
+                if isinstance(keywords, list) and keywords:
+                    text += f" | keywords: {' '.join(str(kw) for kw in keywords)}"
+                proc_extra: dict[str, Any] = {}
+                if trigger:
+                    proc_extra["trigger"] = trigger
+                if isinstance(keywords, list) and keywords:
+                    proc_extra["keywords"] = [str(kw) for kw in keywords]
+                self._add_entry(text, k, v, "procedural", proc_extra if proc_extra else None)
 
     def _persist_episodic_access(self, keys: list[str], timestamp: str) -> None:
         """Write updated last_accessed timestamps back to Memory.json for episodic entries."""
@@ -462,7 +491,15 @@ class MemorySearcher:
         top_k: int = DEFAULT_TOP_K,
         threshold: float | None = None,
         allowed_categories: set[str] | None = None,
+        top_memory: int | None = None,
+        top_procedural: int | None = None,
+        top_total: int | None = None,
     ) -> list[dict[str, Any]]:
+        """Search memories with split budget: top_memory for semantic/episodic/ephemeral,
+        top_procedural for procedural entries, top_total as combined cap.
+        Procedural gets priority — its slots are filled first, then remaining budget
+        goes to other categories. Falls back to legacy top_k if new params not provided.
+        """
         self._ensure_loaded()
         with self._load_lock:
             if not self._entries or self._normed_vectors is None or self._model is None:
@@ -471,8 +508,6 @@ class MemorySearcher:
             vector_scores = self._normed_vectors @ q_vec
 
             # Hybrid blend: vector similarity + keyword coverage
-            # Skip keyword boost for very short queries (< 3 unique tokens)
-            # to prevent single common words from maxing out coverage.
             query_tokens = _tokenize(query)
             if len(query_tokens) >= 3:
                 keyword_scores = np.array(
@@ -483,8 +518,10 @@ class MemorySearcher:
                 keyword_scores = np.zeros(len(self._entry_tokens), dtype="float32")
             scores = VECTOR_WEIGHT * vector_scores + KEYWORD_WEIGHT * keyword_scores
 
-            # Protected entries get a relevance boost; episodic entries decay over time
+            # Category-specific scoring adjustments
             now = datetime.now()
+            query_lower = query.lower()
+            query_tokens_set = set(query_lower.split())
             for i, meta in enumerate(self._entry_meta):
                 if meta["category"] == "protected":
                     scores[i] += PROTECTED_BOOST
@@ -495,17 +532,60 @@ class MemorySearcher:
                         scores[i] *= EPISODIC_DECAY_RATE ** days_since
                     except (ValueError, TypeError):
                         pass
+                elif meta["category"] == "procedural":
+                    proc_keywords = meta.get("keywords", [])
+                    if proc_keywords:
+                        matched = sum(1 for kw in proc_keywords if str(kw).lower() in query_lower)
+                        if matched > 0:
+                            scores[i] += 0.15 * (matched / len(proc_keywords))
+                    proc_trigger = meta.get("trigger", "")
+                    if proc_trigger:
+                        trigger_words = set(str(proc_trigger).lower().split())
+                        overlap = len(trigger_words & query_tokens_set)
+                        if overlap >= 2:
+                            scores[i] += 0.1
 
             cutoff = threshold if threshold is not None else self.threshold
             ranked = np.argsort(-scores)
+
+            # Split-budget selection: procedural priority within total cap
+            use_split = top_total is not None
+            if use_split:
+                _tm = top_memory if top_memory is not None else 5
+                _tp = top_procedural if top_procedural is not None else 3
+                _tt = top_total
+                # Procedural gets priority: fill up to min(top_procedural, top_total)
+                # Then other categories fill remaining slots up to top_total
+                proc_budget = min(_tp, _tt)
+                other_budget = _tt - proc_budget
+                # But also respect top_memory cap for non-procedural
+                other_budget = min(other_budget, _tm)
+            else:
+                proc_budget = top_k
+                other_budget = top_k
+                _tt = top_k
+
             results: list[dict[str, Any]] = []
             accessed_episodic_keys: list[str] = []
-            for idx in ranked[:top_k * 3 if allowed_categories else top_k]:
+            proc_count = 0
+            other_count = 0
+            scan_limit = max(proc_budget, other_budget) * 4
+
+            for idx in ranked[:scan_limit]:
                 if scores[idx] < cutoff:
                     break
                 meta = self._entry_meta[idx]
                 if allowed_categories is not None and meta["category"] not in allowed_categories:
                     continue
+                is_proc = meta["category"] == "procedural"
+                if is_proc:
+                    if proc_count >= proc_budget:
+                        continue
+                    proc_count += 1
+                else:
+                    if other_count >= other_budget:
+                        continue
+                    other_count += 1
                 results.append({
                     "key": meta["key"],
                     "value": meta["value"],
@@ -514,9 +594,8 @@ class MemorySearcher:
                 })
                 if meta["category"] == "episodic":
                     accessed_episodic_keys.append(meta["key"])
-
-            # Trim to top_k after category filtering
-            results = results[:top_k]
+                if proc_count >= proc_budget and other_count >= other_budget:
+                    break
 
             # Update last_accessed for retrieved episodic entries
             if accessed_episodic_keys:
