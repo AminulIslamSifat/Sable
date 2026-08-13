@@ -17,9 +17,9 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/stars/AminulIslamSifat/Sable?style=social" alt="Stars"/>
-  <img src="https://img.shields.io/github/forks/AminulIslamSifat/Sable?style=social" alt="Forks"/>
-  <img src="https://img.shields.io/github/watchers/AminulIslamSifat/Sable?style=social" alt="Watchers"/>
+  <img src="https://img.shields.io/github/stars/AminulIslamSifat/Sable" alt="Stars"/>
+  <img src="https://img.shields.io/github/forks/AminulIslamSifat/Sable" alt="Forks"/>
+  <img src="https://img.shields.io/github/watchers/AminulIslamSifat/Sable" alt="Watchers"/>
   <img src="https://img.shields.io/github/commit-activity/m/AminulIslamSifat/Sable" alt="Commits/month"/>
   <img src="https://img.shields.io/github/last-commit/AminulIslamSifat/Sable" alt="Last commit"/>
   <img src="https://img.shields.io/github/repo-size/AminulIslamSifat/Sable" alt="Repo size"/>

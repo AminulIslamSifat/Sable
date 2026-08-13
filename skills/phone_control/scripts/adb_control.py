@@ -30,7 +30,7 @@ Commands:
     home                         Press Home key
     recents                      Open Recents
     lock                         Lock screen (press Power)
-    unlock                       Attempt to unlock (swipe up + enter PIN if set)
+    unlock [pin]                 Attempt to unlock (swipe up + enter PIN if provided)
     wait <ms>                    Wait for specified milliseconds
     scroll_to <text> [max_swipes] Scroll until element with text is visible (max 5 swipes)
     check <text>                 Check if element with text exists (returns 'FOUND' or 'NOT_FOUND')
@@ -92,10 +92,8 @@ def check_device() -> bool:
 _DUMP_REMOTE = "/sdcard/window_dump.xml"
 _DUMP_LOCAL  = "/tmp/adb_window_dump.xml"
 
-# Lock-screen PIN used by do_unlock(). Stored in plaintext here by request —
-# keep this file's permissions locked down (e.g. `chmod 600 adb_control.py`)
-# since anyone who can read it can read your PIN.
-UNLOCK_PIN = "1996120"
+# The lock-screen PIN is NOT stored here. It must be passed at runtime as
+# `unlock <pin>` so no secret lives in this file.
 
 
 def dump_ui(local_path: str = _DUMP_LOCAL) -> Optional[ET.Element]:
@@ -397,11 +395,12 @@ def is_screen_locked() -> Optional[bool]:
     return None
 
 
-def do_unlock() -> str:
+def do_unlock(pin: Optional[str] = None) -> str:
     """
     Check whether the device is actually locked; if so, wake it, swipe up,
-    and if a PIN field appears, type UNLOCK_PIN and press Enter. No-ops if
-    the device is already unlocked.
+    and if a PIN field appears, type the provided pin and press Enter.
+    No-ops if the device is already unlocked. If a PIN is required but none
+    was supplied, returns an error prompting the caller to provide one.
     """
     locked = is_screen_locked()
     if locked is False:
@@ -428,9 +427,14 @@ def do_unlock() -> str:
         still_locked = is_screen_locked()
         if still_locked is False:
             return f"Swipe-up unlocked the device (no PIN required). {swipe_result}"
-        # Unclear state — fall through and try the PIN anyway as a best effort.
+        # Unclear state — fall through; a PIN is attempted only if provided.
 
-    type_result = do_input_text(UNLOCK_PIN)
+    if not pin:
+        return (f"ERROR: Device is locked and requires a PIN/password, but none was "
+                f"provided. Ask the user for the unlock PIN, then re-run: unlock <pin>. "
+                f"({swipe_result})")
+
+    type_result = do_input_text(pin)
     time.sleep(0.2)
     enter_result = do_key("KEYCODE_ENTER")
     time.sleep(0.4)
@@ -669,7 +673,8 @@ def _dispatch(cmd: str, args: list[str]) -> str:
             return do_key("KEYCODE_POWER")
 
         elif cmd == "unlock":
-            return do_unlock()
+            pin = args[0] if args else None
+            return do_unlock(pin)
 
         elif cmd == "wait":
             ms = int(args[0]) if args else 1000
