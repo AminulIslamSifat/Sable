@@ -65,6 +65,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE chats ADD COLUMN mode TEXT")
         if "provider" not in chat_cols:
             conn.execute("ALTER TABLE chats ADD COLUMN provider TEXT")
+        if "upstream_session_id" not in chat_cols:
+            conn.execute("ALTER TABLE chats ADD COLUMN upstream_session_id TEXT")
 
         # --- Multi-agent tables ---
         conn.execute(
@@ -275,10 +277,10 @@ def init_db() -> None:
         if "project_id" not in chat_cols:
             conn.execute("ALTER TABLE chats ADD COLUMN project_id TEXT")
 
-def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = None, mode: str | None = None, provider: str | None = None, project_id: str | None = None) -> None:
+def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = None, mode: str | None = None, provider: str | None = None, project_id: str | None = None, upstream_session_id: str | None = None) -> None:
     now = utcnow()
     with get_db() as conn:
-        existing = conn.execute("SELECT id, mode, provider, project_id FROM chats WHERE id = ?", (chat_id,)).fetchone()
+        existing = conn.execute("SELECT id, mode, provider, project_id, upstream_session_id FROM chats WHERE id = ?", (chat_id,)).fetchone()
         if existing:
             if mode and not existing["mode"]:
                 conn.execute("UPDATE chats SET mode = ? WHERE id = ?", (mode, chat_id))
@@ -286,10 +288,12 @@ def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = N
                 conn.execute("UPDATE chats SET provider = ? WHERE id = ?", (provider, chat_id))
             if project_id is not None and existing["project_id"] != project_id:
                 conn.execute("UPDATE chats SET project_id = ? WHERE id = ?", (project_id, chat_id))
+            if upstream_session_id and existing["upstream_session_id"] != upstream_session_id:
+                conn.execute("UPDATE chats SET upstream_session_id = ? WHERE id = ?", (upstream_session_id, chat_id))
             return
         conn.execute(
-            "INSERT INTO chats (id, title, parent_id, created_at, updated_at, mode, provider, project_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (chat_id, title, parent_id, now, now, mode, provider, project_id),
+            "INSERT INTO chats (id, title, parent_id, created_at, updated_at, mode, provider, project_id, upstream_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, title, parent_id, now, now, mode, provider, project_id, upstream_session_id),
         )
 
 def rename_chat(old_id: str, new_id: str) -> None:
@@ -307,6 +311,17 @@ def get_chat_provider(chat_id: str) -> str | None:
     with get_db() as conn:
         row = conn.execute("SELECT provider FROM chats WHERE id = ?", (chat_id,)).fetchone()
     return row["provider"] if row and row["provider"] else None
+
+def get_upstream_session_id(chat_id: str) -> str | None:
+    """Get the upstream session ID for a chat (Qwen/DeepSeek server-side session)."""
+    with get_db() as conn:
+        row = conn.execute("SELECT upstream_session_id FROM chats WHERE id = ?", (chat_id,)).fetchone()
+    return row["upstream_session_id"] if row and row["upstream_session_id"] else None
+
+def set_upstream_session_id(chat_id: str, session_id: str | None) -> None:
+    """Set or update the upstream session ID for a chat (pass None to clear)."""
+    with get_db() as conn:
+        conn.execute("UPDATE chats SET upstream_session_id = ? WHERE id = ?", (session_id, chat_id))
 
 def set_title_if_default(chat_id: str, title: str) -> None:
     with get_db() as conn:
