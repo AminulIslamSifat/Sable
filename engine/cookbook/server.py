@@ -256,7 +256,10 @@ class ServeManager:
             "api_model_type": task.model_label,
             "local_endpoint": f"http://{task.host}:{task.port}/v1",
             "capabilities": {"image": False, "video": False, "document": False, "audio": False},
-            "thinking_modes": [{"id": "fast", "label": "Fast", "thinking_enabled": False}],
+            "thinking_modes": [
+                {"id": "fast", "label": "Fast", "thinking_enabled": False},
+                {"id": "thinking", "label": "Thinking", "thinking_enabled": True},
+            ],
             "_custom": True,
             "_cookbook": True,
         })

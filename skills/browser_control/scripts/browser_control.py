@@ -23,7 +23,9 @@ Usage:
 import asyncio
 import json
 import os
+import shutil
 import signal
+import subprocess
 import sys
 import time
 import base64
@@ -32,6 +34,37 @@ from pathlib import Path
 SOCKET_PATH = "/tmp/sable_browser.sock"
 PID_FILE = "/tmp/sable_browser.pid"
 SCREENSHOT_DIR = "/tmp/sable_browser_screenshots"
+CDP_PORT_FILE = "/tmp/sable_browser_cdp_port"
+
+
+def _find_system_chrome() -> str | None:
+    """Locate a real Chrome/Chromium binary on this system."""
+    import glob as _glob
+
+    candidates = [
+        "google-chrome-stable",
+        "google-chrome",
+        "chromium-browser",
+        "chromium",
+        "/opt/helium-browser-bin/chrome",   # Helium (Chromium-based)
+        "/opt/google/chrome/chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+        "/snap/bin/chromium",
+    ]
+    for c in candidates:
+        found = shutil.which(c) if "/" not in c else (c if os.path.isfile(c) else None)
+        if found:
+            return found
+    # Last resort: Playwright-bundled Chromium (newest first)
+    pw_globs = sorted(
+        _glob.glob(os.path.expanduser("~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome")),
+        reverse=True,
+    )
+    if pw_globs:
+        return pw_globs[0]
+    return None
 
 
 # ─── Daemon ───────────────────────────────────────────────────────────────────
@@ -50,6 +83,7 @@ class BrowserDaemon:
         self.context = None
         self.page = None  # active page
         self.server = None
+        self._chrome_proc = None  # subprocess handle for system Chrome
         # DevTools capture buffers
         self._network_log: list[dict] = []
         self._console_log: list[dict] = []
@@ -66,54 +100,83 @@ class BrowserDaemon:
     """
 
     async def start_browser(self):
+        """Launch real system Chrome via subprocess, connect over CDP (stealth)."""
         from playwright.async_api import async_playwright
-        self.pw = await async_playwright().start()
 
-        # Select browser engine
-        launcher = getattr(self.pw, self.browser_type, self.pw.chromium)
-        launch_opts: dict = {
-            "headless": self.headless,
-            "args": [
-                "--disable-blink-features=AutomationControlled",  # hide automation flag
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disk-cache-size=2097152",       # cap HTTP cache at 2MB
-                "--disable-gpu-shader-cache",      # no GPU shader accumulation
-                "--disable-component-update",     # stop component_crx_cache growth
-            ],
-        }
-        if self.executable_path:
-            launch_opts["executable_path"] = self.executable_path
+        # Resolve Chrome binary — prefer explicit path, then system search
+        chrome_path = self.executable_path or _find_system_chrome()
+        if not chrome_path:
+            raise RuntimeError(
+                "No system Chrome/Chromium found. Install google-chrome or "
+                "pass --executable=/path/to/chrome"
+            )
 
+        # Pick a free port for CDP
+        import socket as _sock
+        with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            cdp_port = s.getsockname()[1]
+        Path(CDP_PORT_FILE).write_text(str(cdp_port))
+
+        # Clean stale lock files from previous hard kills
         if self.user_data_dir:
-            # Clean stale Chromium lock files from previous hard kills
-            for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie", "DevToolsActivePort"):
+            for lock_name in ("SingletonLock", "SingletonSocket",
+                              "SingletonCookie", "DevToolsActivePort"):
                 lock_path = Path(self.user_data_dir) / lock_name
                 if lock_path.exists():
                     lock_path.unlink(missing_ok=True)
 
-            # Persistent context — reuses cookies/sessions from profile dir
-            self.context = await launcher.launch_persistent_context(
-                self.user_data_dir,
-                viewport={"width": 1280, "height": 800},
-                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                           "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-                locale="en-US",
-                timezone_id="Asia/Dhaka",
-                **launch_opts,
-            )
-            self.browser = None  # persistent context has no separate browser obj
-            self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
+        # Build Chrome launch args (stealth-first, matching deepseek engine)
+        cmd = [
+            chrome_path,
+            f"--remote-debugging-port={cdp_port}",
+            f"--user-data-dir={self.user_data_dir}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--no-sandbox",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-infobars",
+            "--disable-dev-shm-usage",
+            "--disk-cache-size=2097152",
+            "--disable-gpu-shader-cache",
+            "--disable-component-update",
+        ]
+        if self.headless:
+            cmd.append("--headless=new")
+        # Wayland/X11 display
+        if os.environ.get("WAYLAND_DISPLAY"):
+            cmd.append("--ozone-platform=wayland")
+        elif os.environ.get("DISPLAY"):
+            pass  # X11 is default
+
+        # Launch Chrome as a real process — no Playwright fingerprints
+        self._chrome_proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # Wait for CDP endpoint to become available
+        cdp_url = f"http://127.0.0.1:{cdp_port}"
+        for _ in range(40):  # up to 8s
+            try:
+                with _sock.create_connection(("127.0.0.1", cdp_port), timeout=0.2):
+                    break
+            except OSError:
+                await asyncio.sleep(0.2)
         else:
-            self.browser = await launcher.launch(**launch_opts)
-            self.context = await self.browser.new_context(
-                viewport={"width": 1280, "height": 800},
-                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                           "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-                locale="en-US",
-                timezone_id="Asia/Dhaka",
-            )
-            self.page = await self.context.new_page()
+            self._chrome_proc.kill()
+            raise RuntimeError("Chrome launched but CDP port never opened")
+
+        # Connect Playwright over CDP — invisible automation layer
+        self.pw = await async_playwright().start()
+        self.browser = await self.pw.chromium.connect_over_cdp(cdp_url)
+
+        # Grab default context (Chrome's own, with real fingerprint)
+        self.context = self.browser.contexts[0] if self.browser.contexts \
+            else await self.browser.new_context()
+        self.page = self.context.pages[0] if self.context.pages \
+            else await self.context.new_page()
 
         # Inject stealth patches before any page JS runs
         await self.context.add_init_script(self._STEALTH_JS)
@@ -159,12 +222,29 @@ class BrowserDaemon:
             })
 
     async def stop_browser(self):
-        if self.browser:
-            await self.browser.close()
-        elif self.context:
-            await self.context.close()
+        try:
+            if self.browser:
+                await self.browser.close()
+            elif self.context:
+                await self.context.close()
+        except Exception:
+            pass
         if self.pw:
-            await self.pw.stop()
+            try:
+                await self.pw.stop()
+            except Exception:
+                pass
+        # Kill the Chrome subprocess we spawned
+        proc = getattr(self, "_chrome_proc", None)
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        # Clean up CDP port file
+        if os.path.exists(CDP_PORT_FILE):
+            os.unlink(CDP_PORT_FILE, missing_ok=True)
 
     @property
     def pages(self):
