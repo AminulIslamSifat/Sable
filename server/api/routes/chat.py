@@ -821,6 +821,56 @@ async def chat(request: ChatRequest):
                             logger.error("[session-recovery] FAILED to create new upstream session for chat_id=%s", _old_chat_id)
                             error_message = "Failed to recover: could not create new upstream session"
                             stream_error = True
+                    elif event_type == "parent_not_found":
+                        # Stale parent_id — chat still exists upstream, just retry with parent_id=None
+                        logger.warning("[parent-recovery] PARENT_NOT_FOUND for chat_id=%s, retrying with parent_id=None", active_chat_id)
+                        yield sse({"type": "status", "message": "recovering_parent"})
+                        # Clear stale parent_id from DB
+                        touch_chat(active_chat_id, None)
+                        current_parent = None
+                        final_parent = None
+                        # Re-stream same message with no parent
+                        round_event_source = service.stream_events(
+                            message=current_message,
+                            chat_id=_upstream_session_id,
+                            parent_id=None,
+                            files=files_for_round,
+                            model=request.model,
+                            thinking_mode=request.thinking_mode,
+                        )
+                        async for _recovery_event in round_event_source:
+                            _rec_type = _recovery_event.get("type")
+                            if _rec_type == "meta":
+                                continue
+                            if _rec_type == "answer":
+                                pending_thinking.clear()
+                                _raw_chunk = str(_recovery_event.get("text", ""))
+                                _raw_answer_parts.append(_raw_chunk)
+                                _round_raw_parts.append(_raw_chunk)
+                                async for _sse_line in _drain_sync_gen(emit_parsed(_raw_chunk)):
+                                    yield _sse_line
+                                continue
+                            if _rec_type == "thinking":
+                                _chunk = str(_recovery_event.get("text", ""))
+                                thinking_parts.append(_chunk)
+                                round_thinking_parts.append(_chunk)
+                                pending_thinking.append(_chunk)
+                                yield sse({"type": "thinking", "text": _chunk})
+                                continue
+                            if _rec_type == "done":
+                                pending_thinking.clear()
+                                async for _sse_line in _drain_sync_gen(emit_flush()):
+                                    yield _sse_line
+                                final_parent = _recovery_event.get("parent_id") or final_parent
+                                current_parent = final_parent
+                            elif _rec_type == "error":
+                                pending_thinking.clear()
+                                async for _sse_line in _drain_sync_gen(emit_flush()):
+                                    yield _sse_line
+                                error_message = str(_recovery_event.get("message", "Unknown error"))
+                                stream_error = True
+                            yield sse(_recovery_event)
+                        break
                     elif event_type == "error":
                         pending_thinking.clear()
                         async for _sse_line in _drain_sync_gen(emit_flush()):
