@@ -50,7 +50,7 @@ from server.models import ChatRequest
 from ..dependencies import service, sse
 
 # Backends that read local files directly (base64 inline) — no Playwright upload needed
-_DIRECT_READ_BACKENDS = frozenset({"gemini", "groq", "mistral"})
+_DIRECT_READ_BACKENDS = frozenset({"gemini", "groq", "mistral", "openai"})
 
 router = APIRouter()
 
@@ -578,13 +578,26 @@ async def chat(request: ChatRequest):
                         round_answer_parts.append(leftover)
                         yield sse({"type": "answer", "text": leftover})
                 files_for_round = resolved_files if round_index == 0 else None
-                # For non-API models (Qwen/scraper): handle pending skill images
+                # For non-API models (Qwen/scraper): upload pending skill images to Qwen OSS
                 if _pending_skill_images and not _is_api_model(request.model):
-                    current_message += (
-                        f"\n\n[NOTE: {len(_pending_skill_images)} image(s) were produced by tools "
-                        f"but the current model ({request.model}) does not support inline image injection. "
-                        f"The image content is not accessible.]"
-                    )
+                    _uploaded_metas = []
+                    for _img_path in _pending_skill_images:
+                        try:
+                            _meta = await service.upload_image(_img_path)
+                            if _meta:
+                                _uploaded_metas.append(_meta)
+                            else:
+                                logger.warning("Qwen image upload failed for: %s", _img_path)
+                        except Exception as _up_exc:
+                            logger.warning("Qwen image upload error for %s: %s", _img_path, _up_exc)
+                    if _uploaded_metas:
+                        files_for_round = _uploaded_metas
+                    else:
+                        current_message += (
+                            f"\n\n[NOTE: {len(_pending_skill_images)} image(s) were produced by tools "
+                            f"but could not be uploaded for this model. "
+                            f"The image content is not accessible.]"
+                        )
                     _pending_skill_images = []
                 # Drain pending agent notifications into this turn's context
                 try:

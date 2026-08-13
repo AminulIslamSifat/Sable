@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="icon.svg" width="96" height="96" alt="Sable"/>
+  <img src="output/assets/icon.svg" width="96" height="96" alt="Sable"/>
 </p>
 
 <h1 align="center">Sable</h1>
