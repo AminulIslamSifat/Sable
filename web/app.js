@@ -1520,8 +1520,8 @@
         // The stale chatId is already gone; clean up the migrated entry.
         activeStreams.delete(activeChatId);
       }
-      // Always refresh — chatId may have been renamed by session recovery,
-      // leaving activeChatId pointing at the new ID while the old one finishes.
+      // Always refresh — activeChatId may differ from streamChatId if a meta
+      // event updated it during streaming.
       updateSendBtn();
       _toggleStreamIndicator(chatId, false);
       // Also clear indicator on migrated ID if different

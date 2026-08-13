@@ -58,18 +58,24 @@ router = APIRouter()
 async def chat(request: ChatRequest):
     scraper_enabled = get_scraper_settings().get("enabled")
     active_chat_id = request.chat_id
+    _upstream_session_id: str | None = None
     if not active_chat_id and scraper_enabled:
         active_chat_id = f"browser-{uuid.uuid4().hex}"
     if not active_chat_id:
-        try:
-            active_chat_id = await retry_async(
-                lambda: service.create_chat(model=request.model),
-                label="create_chat",
-            )
-        except Exception as exc:
-            return {"error": f"Session startup failed: {type(exc).__name__}: {exc}"}
-        if not active_chat_id:
-            return {"error": "Could not create chat session"}
+        # Always generate a local Sable UUID for the chat.
+        # Upstream session (Qwen) is created separately and stored in upstream_session_id.
+        active_chat_id = uuid.uuid4().hex
+        if not scraper_enabled and not _is_api_model(request.model):
+            # Qwen model — create upstream session and store separately
+            try:
+                _upstream_session_id = await retry_async(
+                    lambda: service.create_chat(model=request.model),
+                    label="create_chat",
+                )
+            except Exception as exc:
+                return {"error": f"Session startup failed: {type(exc).__name__}: {exc}"}
+            if not _upstream_session_id:
+                return {"error": "Could not create chat session"}
     _ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     _ctx_parts = ""
     if request.cwd:
@@ -178,12 +184,20 @@ async def chat(request: ChatRequest):
         current_provider = "qwen"
     locked_provider = get_chat_provider(active_chat_id)
     if locked_provider and locked_provider != current_provider:
-        return {
-            "error": f"This chat is locked to {locked_provider}. "
-                     f"You can't use {current_provider} here — start a new chat."
-        }
+        # Qwen chats are locked to Qwen only (upstream session coupling).
+        # API model chats (deepseek/gemini/groq/mistral/openai/local) can switch freely.
+        _is_qwen_locked = locked_provider == "qwen" or current_provider == "qwen"
+        if _is_qwen_locked:
+            return {
+                "error": f"This chat is locked to {locked_provider}. "
+                         f"You can't use {current_provider} here — start a new chat."
+            }
     title = make_title(request.message)
-    ensure_chat(active_chat_id, title, request.parent_id, mode=current_mode, provider=current_provider)
+    ensure_chat(active_chat_id, title, request.parent_id, mode=current_mode, provider=current_provider, upstream_session_id=_upstream_session_id)
+    # For existing chats, load upstream_session_id from DB if not already set
+    if not _upstream_session_id:
+        from server.database import get_upstream_session_id as _get_usid
+        _upstream_session_id = _get_usid(active_chat_id)
     set_title_if_default(active_chat_id, title)
     # Server tail is authoritative — client leaf is fallback for first-message only
     parent_id = get_parent_id(active_chat_id, None) or request.parent_id
@@ -404,7 +418,7 @@ async def chat(request: ChatRequest):
             yield item
 
     async def event_stream():
-        nonlocal active_chat_id
+        nonlocal active_chat_id, _upstream_session_id
         answer_parts: list[str] = []
         _raw_answer_parts: list[str] = []  # pre-parser raw text for guard checks
         thinking_parts: list[str] = []
@@ -417,6 +431,8 @@ async def chat(request: ChatRequest):
         saved_message_id: int | None = None
         _guard = MainChatGuard()
         _all_tool_mem_used: list[dict[str, Any]] = []
+        # Always send local chat_id to frontend (authoritative for new + existing chats)
+        yield sse({"type": "meta", "chat_id": active_chat_id, "parent_id": parent_id})
         yield sse({"type": "status", "message": "processing"})
         if _user_msg_id:
             yield sse({"type": "user_message_id", "id": _user_msg_id})
@@ -610,10 +626,13 @@ async def chat(request: ChatRequest):
                         thinking_mode=request.thinking_mode,
                     )
                 else:
+                    # Qwen uses upstream_session_id for the server-side session;
+                    # active_chat_id is the local Sable UUID.
+                    _qwen_chat_id = _upstream_session_id or active_chat_id
                     round_event_source = retry_stream(
                         lambda: service.stream_events(
                             message=current_message,
-                            chat_id=active_chat_id,
+                            chat_id=_qwen_chat_id,
                             parent_id=current_parent,
                             files=files_for_round,
                             model=request.model,
@@ -623,6 +642,9 @@ async def chat(request: ChatRequest):
                     )
                 async for event in round_event_source:
                     event_type = event.get("type")
+                    # Suppress upstream meta events — local chat_id is authoritative
+                    if event_type == "meta":
+                        continue
                     if event_type == "answer":
                         pending_thinking.clear()
                         _raw_chunk = str(event.get("text", ""))
@@ -647,8 +669,7 @@ async def chat(request: ChatRequest):
                     elif event_type == "chat_not_found":
                         # Upstream Qwen session expired — create new one, inject full history, retry
                         from engine.session import create_new_chat as _create_qwen_chat
-                        _old_chat_id = active_chat_id
-                        logger.warning("[session-recovery] CHAT_NOT_FOUND triggered for chat_id=%s", _old_chat_id)
+                        logger.warning("[session-recovery] CHAT_NOT_FOUND triggered for chat_id=%s (upstream=%s)", active_chat_id, _upstream_session_id)
                         yield sse({"type": "status", "message": "recovering_session"})
                         _new_headers = await service._ensure_headers()
                         _new_qwen_id = await _create_qwen_chat(_new_headers, model=request.model)
@@ -656,11 +677,11 @@ async def chat(request: ChatRequest):
                             _new_headers = await service._refresh_headers()
                             _new_qwen_id = await _create_qwen_chat(_new_headers, model=request.model)
                         if _new_qwen_id:
-                            logger.info("[session-recovery] New upstream session created: %s -> %s", _old_chat_id, _new_qwen_id)
-                            # Rename local chat + messages to new upstream session ID
-                            from server.database import rename_chat as _rename_chat
-                            _rename_chat(_old_chat_id, _new_qwen_id)
-                            active_chat_id = _new_qwen_id
+                            logger.info("[session-recovery] New upstream session: %s -> %s (local chat stays %s)", _upstream_session_id, _new_qwen_id, active_chat_id)
+                            # Update upstream_session_id in DB; local chat_id stays the same
+                            from server.database import set_upstream_session_id as _set_usid
+                            _set_usid(active_chat_id, _new_qwen_id)
+                            _upstream_session_id = _new_qwen_id
                             # Fetch full conversation history including tool calls/results
                             _prev_msgs = get_messages(active_chat_id, include_skill_events=True)
                             _history_lines = []
@@ -692,16 +713,16 @@ async def chat(request: ChatRequest):
                             if _history_injected:
                                 _history_block = "[PREVIOUS CONVERSATION]\n" + "\n".join(_history_lines) + "\n[END PREVIOUS CONVERSATION]\n\n"
                             _recovery_msg = _history_block + current_message
-                            # Re-stream with new session
+                            # Re-stream with new upstream session
                             round_event_source = service.stream_events(
                                 message=_recovery_msg,
-                                chat_id=active_chat_id,
+                                chat_id=_upstream_session_id,
                                 parent_id=None,
                                 files=files_for_round,
                                 model=request.model,
                                 thinking_mode=request.thinking_mode,
                             )
-                            yield sse({"type": "meta", "chat_id": active_chat_id, "parent_id": None})
+                            # No meta event needed — local chat_id hasn't changed
                             async for _recovery_event in round_event_source:
                                 _rec_type = _recovery_event.get("type")
                                 if _rec_type == "meta":
