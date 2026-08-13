@@ -129,17 +129,24 @@ async def new_chat(request: NewChatRequest = NewChatRequest()) -> dict[str, str 
         chat_id = f"browser-{uuid.uuid4().hex}"
         ensure_chat(chat_id, "New chat", None, project_id=request.project_id)
         return {"chat_id": chat_id}
-    try:
-        chat_id = await retry_async(
-            lambda: service.create_chat(model=request.model),
-            label="create_chat",
-        )
-    except Exception as exc:
-        return {"error": f"Session startup failed: {type(exc).__name__}: {exc}"}
-    if not chat_id:
-        return {"error": "Could not create chat session"}
-    ensure_chat(chat_id, "New chat", None, project_id=request.project_id)
-    return {"chat_id": chat_id}
+    # Always use a local Sable UUID as the chat_id.
+    # For Qwen models, create upstream session separately and store in DB.
+    from server.utils import _is_api_model
+    local_chat_id = uuid.uuid4().hex
+    upstream_session_id = None
+    if not _is_api_model(request.model):
+        # Qwen model — create upstream session
+        try:
+            upstream_session_id = await retry_async(
+                lambda: service.create_chat(model=request.model),
+                label="create_chat",
+            )
+        except Exception as exc:
+            return {"error": f"Session startup failed: {type(exc).__name__}: {exc}"}
+        if not upstream_session_id:
+            return {"error": "Could not create chat session"}
+    ensure_chat(local_chat_id, "New chat", None, project_id=request.project_id, upstream_session_id=upstream_session_id)
+    return {"chat_id": local_chat_id}
 
 @router.get("/api/chats/{chat_id}/messages")
 def chat_messages(

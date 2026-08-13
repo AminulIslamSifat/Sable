@@ -512,12 +512,13 @@ class BrowserManager:
 
 
 async def create_new_chat(headers: dict[str, str], model: str | None = None) -> str | None:
-    """Create a new chat session on the server and return the server-generated chat_id.
+    """Create a new upstream Qwen session and return its session ID.
 
-    `model`, if given, selects which entry from config.MODELS this chat is
-    created for (falls back to the default MODEL). Keeping this in sync with
-    whatever model build_body() uses matters — the server associates the
-    chat session with a model at creation time.
+    This returns the **upstream** Qwen session ID, NOT a local Sable chat_id.
+    Callers should store it via ``set_upstream_session_id(local_chat_id, result)``.
+
+    `model`, if given, selects which entry from config.MODELS this session is
+    created for (falls back to the default MODEL).
     """
     model_id = get_model_config(model)["id"]
     body = {

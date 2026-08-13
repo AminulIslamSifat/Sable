@@ -620,8 +620,13 @@ async def _migrate_conversation(agent: Agent, old_model: str, new_model: str) ->
 
     if old_type == "api" and new_type == "qwen":
         # API backend had client-side history. Qwen needs this as first message context.
-        # Reset qwen_session_id so a fresh session is created.
+        # Reset upstream session so a fresh one is created.
         agent.qwen_session_id = None
+        try:
+            from server.database import set_upstream_session_id as _set_usid
+            _set_usid(agent.chat_id, None)
+        except Exception:
+            pass
         migration = (
             f"[CONVERSATION MIGRATION] Previous model ({old_model}) became unavailable.\n"
             f"Here is the conversation history so far:\n\n{history_text}\n\n"
@@ -746,6 +751,11 @@ async def _send_with_retry(
             })
             agent.browser_data_dir = browser_profile
             agent.qwen_session_id = None
+            try:
+                from server.database import set_upstream_session_id as _set_usid
+                _set_usid(agent.chat_id, None)
+            except Exception:
+                pass
             parent_id = None
             is_first_turn = True
 
@@ -786,6 +796,11 @@ async def _send_with_retry(
 
         if _get_backend_type(fallback_model) == "qwen":
             agent.qwen_session_id = None
+            try:
+                from server.database import set_upstream_session_id as _set_usid
+                _set_usid(agent.chat_id, None)
+            except Exception:
+                pass
             parent_id = None
             is_first_turn = True
 
@@ -1050,7 +1065,9 @@ async def _call_qwen(
     headers = await _get_agent_qwen_headers(agent)
 
     # Create or reuse upstream Qwen session
-    chat_id = agent.qwen_session_id
+    # Prefer DB-stored upstream_session_id; fall back to in-memory cache
+    from server.database import get_upstream_session_id as _get_usid, set_upstream_session_id as _set_usid
+    chat_id = _get_usid(agent.chat_id) or agent.qwen_session_id
     if is_first_turn or not chat_id:
         # Clear stale system instruction so it doesn't conflict with agent prompt
         # Only if agent has its own browser profile — never touch Maria's active session
@@ -1087,6 +1104,7 @@ async def _call_qwen(
         if not chat_id:
             raise RuntimeError("Could not create Qwen chat session for agent")
         agent.qwen_session_id = chat_id
+        _set_usid(agent.chat_id, chat_id)
 
     body = build_body(message, chat_id, parent_id, model=agent.model)
     params = {"chat_id": chat_id}
