@@ -271,12 +271,15 @@ async def run_agent_llm_loop(
 
     # Main loop
     current_message = first_message
+    _pending_agent_images: list[str] = []  # image paths from get_file to inject next round
 
     for iteration in range(max_iterations):
         agent.push_stream_event({"type": "iteration", "iteration": iteration + 1})
-        # Call LLM
+        # Call LLM (inject pending skill images if model supports vision)
+        _files_for_round: list[str] | None = _pending_agent_images or None
+        _pending_agent_images = []
         response_text, new_parent_id = await _send_with_retry(
-            agent, current_message, parent_id, breakers, is_first_turn
+            agent, current_message, parent_id, breakers, is_first_turn, files=_files_for_round
         )
         if new_parent_id:
             parent_id = new_parent_id
@@ -437,6 +440,7 @@ async def run_agent_llm_loop(
 
         # Execute skills
         tool_results = []
+        _round_image_paths: list[str] = []
         for tag in tags:
             # Check cancellation between tool calls
             if agent.cancelled:
@@ -467,6 +471,13 @@ async def run_agent_llm_loop(
                     if isinstance(evt, dict):
                         agent.push_stream_event(evt)
 
+                # Collect image paths from skill results
+                for _evt in events:
+                    if isinstance(_evt, dict) and _evt.get("type") == "skill_end" and _evt.get("ok"):
+                        _res = _evt.get("result", {})
+                        if _res.get("kind") == "image" and _res.get("path"):
+                            _round_image_paths.append(_res["path"])
+
                 feedback = build_tool_feedback(events)
                 # Truncate oversized tool output to protect context window
                 max_chars = _get_max_tool_output_chars()
@@ -486,6 +497,23 @@ async def run_agent_llm_loop(
                 agent.push_stream_event({"type": "skill_end", "name": tag_name, "ok": False, "error": str(exc)})
                 tool_results.append(f"SKILL ERROR ({tag_name}): {type(exc).__name__}: {exc}")
                 agent.error_recoveries += 1
+
+        # Extract image paths from skill results for multimodal injection next round
+        from engine.config import get_model_config as _get_agent_model_cfg
+        _agent_cfg = _get_agent_model_cfg(agent.model)
+        _agent_caps = _agent_cfg.get("capabilities", {})
+        _agent_backend = _agent_cfg.get("api_backend")
+        _AGENT_DIRECT_READ = {"gemini", "groq", "mistral"}
+        if _round_image_paths:
+            if _agent_caps.get("image", False) and _agent_backend in _AGENT_DIRECT_READ:
+                _pending_agent_images.extend(_round_image_paths)
+            else:
+                _reason = "does not support image input" if not _agent_caps.get("image", False) else "does not support inline file injection"
+                tool_results.append(
+                    f"[NOTE: {len(_round_image_paths)} image(s) were produced by tools "
+                    f"but this model ({agent.model}) {_reason}. "
+                    f"The image content is not accessible.]"
+                )
 
         # Feed results back as next message
         combined = "\n---\n".join(tool_results)
@@ -703,6 +731,7 @@ async def _send_with_retry(
     breakers: dict[str, CircuitBreaker],
     is_first_turn: bool,
     max_retries: int = 3,
+    files: list[str] | None = None,
 ) -> tuple[str, str | None]:
     """Send message to LLM with exponential backoff + model fallback chain.
 
@@ -718,7 +747,7 @@ async def _send_with_retry(
 
     for attempt in range(max_retries):
         try:
-            text, new_pid = await _call_llm(agent, message, parent_id, is_first_turn)
+            text, new_pid = await _call_llm(agent, message, parent_id, is_first_turn, files=files)
             breaker.record_success()
             return text, new_pid
         except Exception as exc:
@@ -833,7 +862,8 @@ async def _send_with_retry(
 
 
 async def _call_llm(
-    agent: Agent, message: str, parent_id: str | None, is_first_turn: bool
+    agent: Agent, message: str, parent_id: str | None, is_first_turn: bool,
+    files: list[str] | None = None,
 ) -> tuple[str, str | None]:
     """Route to the appropriate backend. Returns (accumulated_text, new_parent_id)."""
     from engine.config import get_model_config
@@ -854,7 +884,7 @@ async def _call_llm(
     if backend == "deepseek":
         return await _call_deepseek(agent, message)
     if backend in ("gemini", "groq", "mistral"):
-        return await _call_api_backend(agent, message, backend, system_instruction=agent.system_prompt)
+        return await _call_api_backend(agent, message, backend, system_instruction=agent.system_prompt, files=files)
     if backend == "local":
         return await _call_local(agent, message)
     # Default: Qwen (no api_backend = scraper-based)
@@ -913,7 +943,7 @@ async def _call_deepseek(agent: Agent, message: str) -> tuple[str, str | None]:
     return accumulated, None  # DeepSeek client tracks parent internally
 
 
-async def _call_api_backend(agent: Agent, message: str, backend: str, *, system_instruction: str | None = None) -> tuple[str, str | None]:
+async def _call_api_backend(agent: Agent, message: str, backend: str, *, system_instruction: str | None = None, files: list[str] | None = None) -> tuple[str, str | None]:
     """Gemini / Groq / Mistral: stateless API call with internal key rotation.
 
     These backends don't need browser tokens — they rotate API keys internally.
@@ -933,6 +963,7 @@ async def _call_api_backend(agent: Agent, message: str, backend: str, *, system_
         chat_id=f"agent-{agent.id}",
         inject_instructions=False,
         system_instruction=system_instruction,
+        files=files,
     ):
         etype = event.get("type")
         if etype == "answer":

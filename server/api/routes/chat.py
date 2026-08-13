@@ -452,6 +452,7 @@ async def chat(request: ChatRequest):
         current_parent = parent_id
         round_index = 0
         saved_message_id: int | None = None
+        _pending_skill_images: list[str] = []  # image paths from get_file to inject next round
         _guard = MainChatGuard()
         _all_tool_mem_used: list[dict[str, Any]] = []
         # Always send local chat_id to frontend (authoritative for new + existing chats)
@@ -577,6 +578,14 @@ async def chat(request: ChatRequest):
                         round_answer_parts.append(leftover)
                         yield sse({"type": "answer", "text": leftover})
                 files_for_round = resolved_files if round_index == 0 else None
+                # For non-API models (Qwen/scraper): handle pending skill images
+                if _pending_skill_images and not _is_api_model(request.model):
+                    current_message += (
+                        f"\n\n[NOTE: {len(_pending_skill_images)} image(s) were produced by tools "
+                        f"but the current model ({request.model}) does not support inline image injection. "
+                        f"The image content is not accessible.]"
+                    )
+                    _pending_skill_images = []
                 # Drain pending agent notifications into this turn's context
                 try:
                     from engine.agents.notifications import notification_queue as _nq
@@ -609,10 +618,24 @@ async def chat(request: ChatRequest):
                     _cfg = get_model_config(request.model)
                     _api_model = _cfg.get("api_model_type", _cfg["id"])
                     _ephemeral = (_api_backend == "deepseek" and _api_model == "vision" and bool(request.ref_file_ids))
-                    # Collect local file paths for direct-read backends (first round only)
+                    # Collect local file paths for direct-read backends
                     _inline_files = None
                     if _api_backend in _DIRECT_READ_BACKENDS and round_index == 0 and resolved_files:
                         _inline_files = [f.get('path') for f in resolved_files if f.get('path')]
+                    # Inject skill-produced images (from get_file) if model supports vision
+                    if _pending_skill_images:
+                        _caps = _cfg.get("capabilities", {})
+                        if _caps.get("image", False) and _api_backend in _DIRECT_READ_BACKENDS:
+                            _inline_files = (_inline_files or []) + _pending_skill_images
+                        else:
+                            # Model can't see images or backend doesn't support inline files
+                            _reason = "does not support image input" if not _caps.get("image", False) else "does not support inline file injection"
+                            current_message += (
+                                f"\n\n[NOTE: {len(_pending_skill_images)} image(s) were produced by tools "
+                                f"but this model ({request.model}) {_reason}. "
+                                f"The image content is not accessible.]"
+                            )
+                        _pending_skill_images = []
                     _max_session_chars_stream = _cfg.get("max_session_chars")
                     # Load DB history for cross-provider session seeding (first round only)
                     _db_history_s = None
@@ -907,6 +930,12 @@ async def chat(request: ChatRequest):
                     if _incomplete_warn:
                         _guard_warnings.append(_incomplete_warn)
                 feedback = build_tool_feedback(round_skill_events)
+                # Extract image paths from skill results for multimodal injection next round
+                for _ev in round_skill_events:
+                    if _ev.get("type") == "skill_end" and _ev.get("ok"):
+                        _res = _ev.get("result", {})
+                        if _res.get("kind") == "image" and _res.get("path"):
+                            _pending_skill_images.append(_res["path"])
                 # Truncate oversized tool output to protect context window
                 from engine.agents.loop import _get_max_tool_output_chars
                 _tool_cap = _get_max_tool_output_chars()
