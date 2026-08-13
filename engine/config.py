@@ -33,6 +33,7 @@ PORT = int(os.getenv("SABLE_PORT", _DEFAULT_PORT))
 BRAIN_DIR = _ROOT / "Brain"
 MEMORY_PATH = BRAIN_DIR / "Memory.json"
 PROTECTED_PATH = BRAIN_DIR / "Protected.json"
+PROCEDURAL_PATH = BRAIN_DIR / "Procedural.json"
 PERSONALITY_PATH = BRAIN_DIR / "user_personality.json"
 INSTRUCTION_DIR = _ROOT / "instruction"
 PERSONAL_PATH = INSTRUCTION_DIR / "personal.md"

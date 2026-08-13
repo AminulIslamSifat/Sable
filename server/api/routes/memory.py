@@ -13,10 +13,11 @@ from connectors import get_connector
 from instruction.mem_cmd import (
     _CONSOLIDATE_PROMPT_TEMPLATE_HISTORY,
     _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE,
+    _MERGE_RESOLUTION_PROMPT,
     _PERSONALITY_ASSESSMENT_TEMPLATE,
 )
 
-from server.config import _MEMORY_PATH, _PROTECTED_PATH, _PERSONALITY_PATH, _PERSONAL_PATH, _MEMORY_SEARCH_SETTINGS, _DEFAULT_MAX_PROMPT_CHARS
+from server.config import _MEMORY_PATH, _PROTECTED_PATH, _PROCEDURAL_PATH, _PERSONALITY_PATH, _PERSONAL_PATH, _MEMORY_SEARCH_SETTINGS, _DEFAULT_MAX_PROMPT_CHARS
 from server.database import get_messages, get_injected_memory_keys, get_parent_id, get_chat_project_id, get_project
 from server.utils import retry_async, _is_deepseek_api_model, _resolve_api_backend, logger
 from ..dependencies import service
@@ -55,25 +56,39 @@ def _format_conversation(messages: list[dict[str, Any]], max_chars: int = 50_000
 
 @router.get("/api/settings/memory")
 async def get_memory() -> dict[str, Any]:
-    if not _MEMORY_PATH.exists():
-        return {"memory": {"semantic": [], "episodic": [], "procedural": [], "ephemeral": []}}
-    try:
-        data = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            for cat in ("semantic", "episodic", "procedural", "ephemeral"):
-                data.setdefault(cat, [])
-            return {"memory": data}
-        return {"memory": {"semantic": [], "episodic": [], "procedural": [], "ephemeral": []}}
-    except Exception:
-        return {"memory": {"semantic": [], "episodic": [], "procedural": [], "ephemeral": []}}
+    result: dict[str, list] = {"semantic": [], "episodic": [], "procedural": [], "ephemeral": []}
+    # Load non-procedural from Memory.json
+    if _MEMORY_PATH.exists():
+        try:
+            data = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                for cat in ("semantic", "episodic", "ephemeral"):
+                    result[cat] = data.get(cat, [])
+        except Exception:
+            pass
+    # Load procedural from separate file
+    if _PROCEDURAL_PATH.exists():
+        try:
+            pdata = json.loads(_PROCEDURAL_PATH.read_text(encoding="utf-8"))
+            if isinstance(pdata, dict):
+                result["procedural"] = pdata.get("procedural", [])
+        except Exception:
+            pass
+    return {"memory": result}
 
 @router.post("/api/settings/memory")
 async def update_memory(payload: dict[str, Any]) -> dict[str, str]:
     memory = payload.get("memory")
     if memory is None:
         raise HTTPException(status_code=400, detail="Missing 'memory' field")
+    # Split procedural into separate file
+    proc_entries = memory.pop("procedural", [])
     _MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
     _MEMORY_PATH.write_text(json.dumps(memory, indent=2, ensure_ascii=False), encoding="utf-8")
+    if isinstance(proc_entries, list):
+        _PROCEDURAL_PATH.write_text(
+            json.dumps({"procedural": proc_entries}, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
     get_searcher().reload_memory()
     return {"status": "ok"}
 
@@ -85,6 +100,25 @@ async def delete_memory_entry(payload: dict[str, Any]) -> dict[str, str]:
     key = payload.get("key", "")
     if not category or not key:
         raise HTTPException(status_code=400, detail="Missing 'category' or 'key'")
+
+    # Procedural lives in separate file
+    if category == "procedural":
+        if not _PROCEDURAL_PATH.exists():
+            raise HTTPException(status_code=404, detail="Procedural file not found")
+        try:
+            pdata = json.loads(_PROCEDURAL_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            raise HTTPException(status_code=500, detail="Failed to read procedural file")
+        entries = pdata.get("procedural", []) if isinstance(pdata, dict) else []
+        original_len = len(entries)
+        pdata["procedural"] = [e for e in entries if e.get("key") != key]
+        if len(pdata["procedural"]) == original_len:
+            raise HTTPException(status_code=404, detail=f"Entry with key '{key}' not found in 'procedural'")
+        _PROCEDURAL_PATH.write_text(json.dumps(pdata, indent=2, ensure_ascii=False), encoding="utf-8")
+        get_searcher().reload_memory()
+        return {"status": "ok", "deleted": key}
+
+    # Other categories in Memory.json
     if not _MEMORY_PATH.exists():
         raise HTTPException(status_code=404, detail="Memory file not found")
     try:
@@ -162,6 +196,9 @@ async def get_memory_search_settings() -> dict[str, Any]:
     return {
         "enabled": cfg.get("enabled", True),
         "top_k": cfg.get("top_k", 10),
+        "top_memory": cfg.get("top_memory", 5),
+        "top_procedural": cfg.get("top_procedural", 3),
+        "top_total": cfg.get("top_total", 9),
         "max_prompt_chars": cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS),
         "model_thresholds": searcher.get_custom_thresholds(),
         "current_model": searcher.model_name,
@@ -173,6 +210,9 @@ async def get_memory_search_settings() -> dict[str, Any]:
 async def update_memory_search_settings(payload: dict[str, Any]) -> dict[str, Any]:
     model = payload.get("model")
     top_k = payload.get("top_k")
+    top_memory = payload.get("top_memory")
+    top_procedural = payload.get("top_procedural")
+    top_total = payload.get("top_total")
     enabled = payload.get("enabled")
     max_prompt_chars = payload.get("max_prompt_chars")
     model_thresholds = payload.get("model_thresholds")
@@ -197,6 +237,12 @@ async def update_memory_search_settings(payload: dict[str, Any]) -> dict[str, An
         get_searcher().set_thresholds(clean)
     if top_k is not None:
         cfg["top_k"] = int(top_k)
+    if top_memory is not None:
+        cfg["top_memory"] = max(1, int(top_memory))
+    if top_procedural is not None:
+        cfg["top_procedural"] = max(1, int(top_procedural))
+    if top_total is not None:
+        cfg["top_total"] = max(1, int(top_total))
     if max_prompt_chars is not None:
         cfg["max_prompt_chars"] = max(1000, int(max_prompt_chars))
     if enabled is not None:
@@ -328,7 +374,13 @@ def _dedup_and_resolve_adds(
                             break
                     continue
             
-            kept.append({"key": entry["key"], "value": entry.get("value", "")})
+            kept_entry: dict[str, Any] = {"key": entry["key"], "value": entry.get("value", "")}
+            if cat == "procedural":
+                if entry.get("trigger"):
+                    kept_entry["trigger"] = str(entry["trigger"])
+                if entry.get("keywords") and isinstance(entry["keywords"], list):
+                    kept_entry["keywords"] = [str(kw) for kw in entry["keywords"]]
+            kept.append(kept_entry)
         
         filtered[cat] = kept
     
@@ -701,6 +753,10 @@ def _consolidation_prep(chat_id: str, payload: dict[str, Any]) -> dict[str, Any]
     }
 
 
+# Merge resolution is handled by _resolve_candidates_against_memory from
+# engine.agents.memory_trigger (imported at call sites).
+
+
 def _consolidation_apply(
     raw_answer: str, mem_path: Path, proj_id: str | None, new_entries: dict[str, Any]
 ) -> dict[str, Any]:
@@ -724,6 +780,17 @@ def _consolidation_apply(
                 existing = {}
         except Exception:
             existing = {}
+    # Strip any leftover procedural from Memory.json (lives in Procedural.json now)
+    existing.pop("procedural", None)
+    # Load procedural from separate file for dedup
+    proc_path = mem_path.parent / "Procedural.json"
+    if proc_path.exists():
+        try:
+            pdata = json.loads(proc_path.read_text(encoding="utf-8"))
+            if isinstance(pdata, dict):
+                existing["procedural"] = pdata.get("procedural", [])
+        except Exception:
+            pass
 
     # Post-consolidation dedup and contradiction resolution
     try:
@@ -744,14 +811,27 @@ def _consolidation_apply(
     deleted_count = 0
     delete_keys = {str(k) for k in deletes if k} - protected_keys
     if delete_keys:
-        for cat in ("semantic", "episodic", "procedural", "ephemeral"):
+        for cat in ("semantic", "episodic", "ephemeral"):
             cat_list = existing.get(cat, [])
             before = len(cat_list)
             existing[cat] = [e for e in cat_list if not isinstance(e, dict) or e.get("key", "") not in delete_keys]
             deleted_count += before - len(existing[cat])
+        # Also delete from procedural file
+        if _PROCEDURAL_PATH.exists():
+            try:
+                proc_data = json.loads(_PROCEDURAL_PATH.read_text(encoding="utf-8"))
+                if isinstance(proc_data, dict):
+                    proc_list = proc_data.get("procedural", [])
+                    before = len(proc_list)
+                    proc_data["procedural"] = [e for e in proc_list if not isinstance(e, dict) or e.get("key", "") not in delete_keys]
+                    deleted_count += before - len(proc_data["procedural"])
+                    _PROCEDURAL_PATH.write_text(json.dumps(proc_data, indent=2, ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
 
     added_count = 0
-    for cat in ("semantic", "episodic", "procedural"):
+    # Non-procedural categories go to Memory.json
+    for cat in ("semantic", "episodic"):
         existing_list = existing.get(cat, [])
         new_list = adds.get(cat, [])
         if not isinstance(new_list, list):
@@ -763,6 +843,34 @@ def _consolidation_apply(
                 existing_keys.add(entry["key"])
                 added_count += 1
         existing[cat] = existing_list
+
+    # Procedural entries go to separate Procedural.json
+    proc_new = adds.get("procedural", [])
+    proc_added = 0
+    if isinstance(proc_new, list) and proc_new:
+        proc_existing: list[dict[str, Any]] = []
+        if _PROCEDURAL_PATH.exists():
+            try:
+                pdata = json.loads(_PROCEDURAL_PATH.read_text(encoding="utf-8"))
+                proc_existing = pdata.get("procedural", []) if isinstance(pdata, dict) else []
+            except Exception:
+                proc_existing = []
+        proc_keys = {e.get("key", "") for e in proc_existing if isinstance(e, dict)}
+        for entry in proc_new:
+            if isinstance(entry, dict) and entry.get("key") and entry["key"] not in proc_keys:
+                new_entry: dict[str, Any] = {"key": entry["key"], "value": entry.get("value", "")}
+                if entry.get("trigger"):
+                    new_entry["trigger"] = str(entry["trigger"])
+                if entry.get("keywords") and isinstance(entry["keywords"], list):
+                    new_entry["keywords"] = [str(kw) for kw in entry["keywords"]]
+                proc_existing.append(new_entry)
+                proc_keys.add(entry["key"])
+                proc_added += 1
+                added_count += 1
+        _PROCEDURAL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _PROCEDURAL_PATH.write_text(
+            json.dumps({"procedural": proc_existing}, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
     prot_new = adds.get("protected", [])
     prot_added = 0
@@ -852,16 +960,31 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     prompt = prep["prompt"]
     conv_text = prep["conv_text"]
 
+    # ── Log initial consolidation prompt ──
+    try:
+        from engine.agents.memory_trigger import _log_consolidation
+        _log_consolidation("STEP 1 — MAIN CONSOLIDATION PROMPT", prompt)
+    except Exception:
+        pass
+
     # ── LLM call phase: API backends on main loop, Qwen in dedicated threads ──
     result, attempts = await _consolidation_llm_phase(
         model, prompt, prep["fallback_models"], prep["browser_profiles"]
     )
 
     if not result:
+        try:
+            _log_consolidation("STEP 1 — MAIN CONSOLIDATION LLM FAILED", f"All attempts failed: {' → '.join(attempts)}")
+        except Exception:
+            pass
         return {"status": "error", "detail": f"All consolidation attempts failed: {' → '.join(attempts)}"}
 
     # ── Parse LLM response (lightweight, stays on event loop) ──
     raw_answer = str(result.get("answer", ""))
+    try:
+        _log_consolidation("STEP 1 — MAIN CONSOLIDATION LLM OUTPUT", raw_answer)
+    except Exception:
+        pass
     cleaned = raw_answer.strip()
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
@@ -881,6 +1004,23 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
             return {"status": "error", "detail": "No JSON object found in response", "raw": raw_answer[:500]}
     if not isinstance(new_entries, dict):
         return {"status": "error", "detail": "Expected dict with add/delete keys"}
+
+    try:
+        _log_consolidation("STEP 1 — MAIN CONSOLIDATION PARSED", json.dumps(new_entries, indent=2, ensure_ascii=False))
+    except Exception:
+        pass
+
+    # ── Multi-step merge resolution (async, before apply) ──
+    try:
+        from engine.agents.memory_trigger import _resolve_candidates_against_memory
+        new_entries = await _resolve_candidates_against_memory(new_entries, model, [])
+    except Exception as exc:
+        logger.warning("[consolidation] Merge resolution failed, proceeding with original: %s", exc)
+
+    try:
+        _log_consolidation("STEP 2 — AFTER MERGE RESOLUTION", json.dumps(new_entries, indent=2, ensure_ascii=False))
+    except Exception:
+        pass
 
     # ── Apply phase in thread (dedup, merge, file writes, searcher reload) ──
     apply_result = await asyncio.to_thread(_consolidation_apply, raw_answer, _mem_path, _proj_id, new_entries)
@@ -949,6 +1089,12 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
 
     # ── Parse LLM response (lightweight) ──
     raw_answer = "".join(answer_parts)
+    try:
+        from engine.agents.memory_trigger import _log_consolidation
+        _log_consolidation("STEP 1 — SCRAPER CONSOLIDATION PROMPT", prep.get("prompt", ""))
+        _log_consolidation("STEP 1 — SCRAPER CONSOLIDATION LLM OUTPUT", raw_answer)
+    except Exception:
+        pass
     cleaned = raw_answer.strip()
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
@@ -968,6 +1114,23 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
             return {"status": "error", "detail": "No JSON object found in response", "raw": raw_answer[:500]}
     if not isinstance(new_entries, dict):
         return {"status": "error", "detail": "Expected dict with add/delete keys"}
+
+    try:
+        _log_consolidation("STEP 1 — SCRAPER CONSOLIDATION PARSED", json.dumps(new_entries, indent=2, ensure_ascii=False))
+    except Exception:
+        pass
+
+    # ── Multi-step merge resolution (async, before apply) ──
+    try:
+        from engine.agents.memory_trigger import _resolve_candidates_against_memory
+        new_entries = await _resolve_candidates_against_memory(new_entries, model, [])
+    except Exception as exc:
+        logger.warning("[scraper-consolidation] Merge resolution failed, proceeding with original: %s", exc)
+
+    try:
+        _log_consolidation("STEP 2 — SCRAPER AFTER MERGE RESOLUTION", json.dumps(new_entries, indent=2, ensure_ascii=False))
+    except Exception:
+        pass
 
     # ── Apply in thread (reuses shared helper) ──
     apply_result = await asyncio.to_thread(_consolidation_apply, raw_answer, _MEMORY_PATH, None, new_entries)

@@ -1,0 +1,424 @@
+{
+  "procedural": [
+    {
+      "key": "test_gemini_keys_procedure",
+      "value": "Test Gemini keys: cd /home/sifat/Projects/Sable && uv run python3 with google.genai Client, async generate_content on target model, gather results. Requires google-genai package."
+    },
+    {
+      "key": "test_mistral_keys_procedure",
+      "value": "Test Mistral keys: cd /home/sifat/Projects/Sable && uv run python3 with mistralai.client.Mistral, async chat.complete_async on target model, gather results. Requires mistralai package."
+    },
+    {
+      "key": "teaching_sifat_technical_concepts",
+      "value": "When explaining technical concepts to Sifat: lead with intuition/analogy, then formalize. He'll ask 'but HOW/WHY' so anticipate the next layer. Don't dismiss his simplifications — validate correct instincts then add nuance. He responds well to 'you're not wrong, but...' framing. Short punchy answers preferred over textbook dumps. He'll challenge if something sounds like unnecessary jargon."
+    },
+    {
+      "key": "fx-991EX rect to polar",
+      "value": "Casio fx-991EX: MODE→2 (CMPLX); set angle unit via SHIFT+MENU; enter e.g. 3+4i (ENG key for i); then OPTN→COMPLEX→r∠θ (or SHIFT+2 CMPLX menu) and = to get magnitude∠angle."
+    },
+    {
+      "key": "WiFi MAC spoofing requires USB tethering backup",
+      "value": "When spoofing WiFi interface MAC via ip link set, the current WiFi connection drops, killing agent connectivity. Must set up USB tethering (usb0) first as an alternate route before modifying the WiFi interface. Script approach: bring iface down, set MAC, bring up, nmcli connect to target SSID, wait for DHCP lease, log result, repeat."
+    },
+    {
+      "key": "debug_broken_frontend_render",
+      "value": "When Sable UI renders markdown wrong: 1) od -c the stored messages.content and skill_events round_text from system/sable.db to verify server text; 2) run the Node renderMarkdown harness on current web/app.js; 3) if both clean, it's stale browser cache — bump ?v= in index.html, tell Sifat to Ctrl+Shift+R, and check Cache-Control headers on /static."
+    },
+    {
+      "key": "update_agent_notification_format",
+      "value": "To change subagent notification structure: 1) Edit agent.py for new metrics (e.g. word_count property), 2) Edit runtime.py _save_agent_output + both _evt_data dicts (lines ~190 and ~241) for saved file and queue payload, 3) Edit chat.py notification injection block (~line 377) for chat context format. Always edit HDD tree first then cp to Projects tree."
+    },
+    {
+      "key": "sable_agent_patch_verification",
+      "value": "After patching agent system files, verify with: (1) py_compile on all modified files, (2) import-level checks importing protocol/resilience/notifications/registry/auto_turn/agent modules, (3) functional assertions testing CircuitBreaker state transitions, LoopDetector per-tool caps, Agent.cancelled flag, stream history replay/cap, kill() behavior. Run from Sable project root with sys.path.insert(0, '.')."
+    },
+    {
+      "key": "arch_install_optional_deps_prompt",
+      "value": "When archinstall asks about optional dependencies for base packages, accept defaults (press Enter). Skipping firmware or dev tools causes issues later on daily driver systems."
+    },
+    {
+      "key": "debug_sable_500_endpoint",
+      "value": "Debug Sable 500 errors: 1) curl -s -w '\\nHTTP:%{http_code}' endpoint with auth header to see raw response. 2) If 'Internal Server Error' plaintext = unhandled exception. 3) Find server PID: ss -tlnp | grep 61771, then readlink /proc/PID/cwd to confirm tree. 4) Check journalctl --user -u sable for systemd instance OR /tmp/sable_server.log for nohup instance. 5) Reproduce: cd to correct tree && .venv/bin/python3 -c 'import the failing module'. 6) For import errors: check if module exists in running tree vs other tree."
+    },
+    {
+      "key": "fix_systemd_user_service_shutdown",
+      "value": "Fix slow systemd user service shutdown: 1) Find unit: find ~/.config/systemd/user /etc/systemd -name '<name>.service'. 2) View full file. 3) Add/edit TimeoutStopSec=N under [Service]. 4) Run systemctl --user daemon-reload. 5) Restart service (or ask user if restricted). Use TimeoutStopSec=1 for dev servers that don't need graceful drain."
+    },
+    {
+      "key": "sable_file_creation_action_tag_gotcha",
+      "value": "When using create_file or edit_file agentic tags: if the FILE CONTENT contains a literal <action> string, the extractor breaks and the file won't persist (reports success but file is missing/empty). Workaround: write such files via execute_command with a python heredoc script, building the <action> string via concatenation (e.g. '<' + 'action>') so no literal <action> appears in the command text."
+    },
+    {
+      "key": "test_sable_markdown_renderer_in_node",
+      "value": "Reproduce Sable rendering in Node: sed -n '191,676p' web/app.js > /tmp/md_core.js; stub global.window, global.document={documentElement:{getAttribute:()=>\"emoji\"}}, global.DOMPurify={sanitize:h=>h,addHook:()=>{}}; require web/vendor/marked.min.js and assign markedMod.marked||markedMod to global.window.marked; eval the core; call renderMarkdown(sample). Note: line range may shift after edits — grep for 'function renderMarkdown' to find current bounds."
+    },
+    {
+      "key": "parse_sifat_request_scope",
+      "value": "When Sifat says 'review X todo things' or similar, 'todo' is a NOUN (the todo system/feature), not an adjective meaning 'things to do'. Always confirm: (1) which tree (hdd vs ssd), (2) which specific subsystem before spawning agents or reading files. If ambiguous, ASK first. Never assume whole-project scope from a subsystem mention."
+    },
+    {
+      "key": "sable_stream_endpoint_test",
+      "value": "Test agent stream endpoint: 1) Spawn agent: curl -X POST -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' http://127.0.0.1:61771/api/agents/spawn -d '{\"task\":\"...\",\"role\":\"utility\",\"model\":\"qwen3.7-plus\",\"chat_id\":\"test\"}'. 2) Stream: timeout 8 curl -s -N -H 'Authorization: Bearer $TOKEN' http://127.0.0.1:61771/api/agents/<id>/stream. 3) Check active: curl http://127.0.0.1:61771/api/agents/active."
+    },
+    {
+      "key": "redirect_sifat_to_studying",
+      "value": "When Sifat asks distracting questions (e.g., about physical appearances), respond with playful reprimands (e.g., 'HEY,' 'SIFAT'), use emojis (📚, ⏳, 🔥), and redirect him to studying. Avoid providing detailed answers to non-academic questions."
+    },
+    {
+      "key": "handle_sifat_reddit_distractions",
+      "value": "If Sifat mentions Reddit or implies he is scrolling, remind him of his past distractions, enforce study focus, and avoid enabling further procrastination."
+    },
+    {
+      "key": "redirect_distraction_to_priority_script",
+      "value": "When Sifat engages with time-wasting or ethically dubious content (e.g., Reddit NSFW):\n1. **Acknowledge the surface appeal** ('that bikini is cute') to validate curiosity without judgment.\n2. **Name the deeper issue** (e.g., objectification, staged coercion) to reframe the content critically.\n3. **Link to Sifat’s goals** ('exams in two weeks') with a *specific* alternative action ('buried in your notes').\n4. **Use relational language** ('I’d rather see you happy...') to tie accountability to care.\n*Effective in 2024-06; monitor for overuse.*"
+    },
+    {
+      "key": "sifat_prefers_targeted_grep_over_full_file_loads",
+      "value": "When debugging Sable code, use targeted grep with specific patterns instead of loading entire large files (especially chat.py). Sifat reacts negatively to loading full files when a grep would suffice. Only load full files when multiple sections need cross-referencing."
+    },
+    {
+      "key": "sable_parser_testing_workflow",
+      "value": "To test SkillParser changes: write test script to /tmp/test_parser_fix.py using base64 or python string-building (avoid literal <action> in execute_command). Build XML tags via concatenation: '<' + 'spawn_agent ...' to prevent parser interference. Test cases: malformed hybrid, angle-brackets in attrs, clean self-closing, normal open/close, streaming chunks. Run: python3 /tmp/test_parser_fix.py."
+    },
+    {
+      "key": "fix_sable_context_menu_not_closing",
+      "value": "When a custom context menu in Sable won't close on outside click: 1) Check if it uses the same open/close pattern as global ctxMenu in app.js (display:none + .open class + document click closest() check). 2) If using hidden class or complex multi-layer listeners, replace with the proven .open pattern. 3) Verify no other contextmenu handler is interfering — check app.js line ~5607 for exclusion list. 4) Use sed -i for app.js edits since it's binary-flagged by grep."
+    },
+    {
+      "key": "verify_served_files_with_curl",
+      "value": "When a Sable frontend fix 'doesn't land': 1) grep the HDD file on disk for the new rule; 2) curl -s http://localhost:61771/static/<file> | grep for it (server serves fresh from disk); 3) ls -l /proc/<pid>/cwd to confirm which tree each server pid serves (61771=HDD live, 61770=SSD old); 4) only then bump ?v= in index.html and ask for hard refresh. Distinguishes rolled-back edit vs stale cache vs wrong tree in <30s."
+    },
+    {
+      "key": "maria_file_retrieval_procedure",
+      "value": "To retrieve file contents via Maria: 1) Use natural language (e.g., 'read first 5 lines of <file>'), 2) Maria translates this to a GET /api/filesystem/read request, 3) Results are rendered in the chat context with line numbers (fs-line divs)."
+    },
+    {
+      "key": "maria_file_edit_procedure",
+      "value": "To edit files via Maria: 1) Request changes in natural language (e.g., 'remove line X'), 2) Maria processes this as a POST /api/filesystem/write request, 3) Confirm changes by re-reading the file. Always verify edits due to potential race conditions."
+    },
+    {
+      "key": "debug_wayland_display_issues",
+      "value": "Steps to debug Wayland display issues: 1) Ask user to confirm compositor (Hyprland/Sway/etc.). 2) Check available outputs with compositor-specific commands (e.g., `hyprctl monitors` or `swaymsg -t get_outputs`). 3) Use compositor-native DPMS controls (e.g., `hyprctl dispatch dpms on`). 4) Avoid X11 tools unless XWayland is confirmed active."
+    },
+    {
+      "key": "verify_compositor_before_display_commands",
+      "value": "Before running display-related commands (DPMS, brightness, etc.): 1) Check if the environment is X11 or Wayland (`echo $XDG_SESSION_TYPE`). 2) If Wayland, ask user to confirm compositor (Hyprland/Sway/other). 3) Use compositor-specific tools (e.g., `hyprctl`, `swaymsg`) and avoid `xset`, `xrandr`, etc."
+    },
+    {
+      "key": "debug_monaco_theme_not_applying",
+      "value": "When Monaco editor colors are wrong: 1) Verify theme definition has correct color values via grep. 2) Check if setTheme() is called BEFORE editor creation (defineTheme alone is not enough). 3) For createDiffEditor specifically: it does NOT accept 'theme' in options — must use global setTheme(). 4) Check for MutationObservers or event handlers that redefine theme without reapplying it (race condition). 5) Search for ALL instances of createDiffEditor/create in the file — there may be multiple editors and you might be fixing the wrong one. 6) curl the served JS to confirm edits landed. 7) If stuck after 2 attempts, read the ENTIRE file end-to-end instead of targeted greps."
+    },
+    {
+      "key": "debug_monaco_theme_colors",
+      "value": "When Monaco theme colors render wrong: 1) Create minimal HTML test page with same defineTheme call and simple diff content. 2) Serve via python3 -m http.server. 3) Open in headless browser. 4) Eval getComputedStyle on .monaco-editor to check --vscode-diffEditor-* variable values. 5) If var shows #ff0000 or unexpected value, the hex string failed to parse — check for missing '#' prefix. 6) Test fix by re-defining theme with corrected values in same eval. Never grep minified Monaco source or CSS files first — computed styles tell you everything in seconds."
+    },
+    {
+      "key": "sifat_ui_style_consistency_preference",
+      "value": "Sifat demands exact visual consistency: new buttons must match existing ones pixel-perfectly (same background behavior, hover states, border treatment). No separate backgrounds or borders unless the reference element has them. Icons should brighten on hover (filter: brightness(1.3)). Text should follow theme accent colors, not generic white. When told 'make it like X', replicate X's exact CSS properties — don't interpret loosely."
+    },
+    {
+      "key": "sable_css_id_specificity_gotcha",
+      "value": "When restyling elements that have both ID and class selectors in Sable CSS: always grep for ALL rules targeting that ID (e.g. grep -n '#newChat' layout.css). Legacy rules like #newChat {width:100%; background:...} will override .icon-btn class rules due to specificity. Must delete or fully override with !important. Check multiple CSS files (layout.css, components.css, base.css, responsive.css)."
+    },
+    {
+      "key": "sable_js_debug_login_stuck",
+      "value": "To debug Sable login screen stuck: 1) grep -an for ensureAuth/loginOverlay in app.js to confirm auth code intact, 2) check if removed DOM elements are still referenced in JS, 3) check new JS files (filesystem.js, mode.js, agents.js) for syntax errors or null refs that halt execution, 4) check index.html for missing script tags or wrong load order, 5) look for backup files from recent edits to diff against."
+    },
+    {
+      "key": "sable_svg_creation_fallback_procedure",
+      "value": "Procedure for failed SVG creation: (1) Check agent log at /home/sifat/Projects/Sable/output/agent/<id>.md. (2) Manually recreate SVG in /home/sifat/hdd/projects/Sable/output/assets/. (3) Verify output and sync to SSD if needed (though SSD writes are blocked)."
+    },
+    {
+      "key": "sable_system_health_check_procedure",
+      "value": "Procedure for laptop health checks: (1) Run `df -h`, `sensors`, `free -h`, and `bluetoothctl list`. (2) Address critical issues (e.g., disk >80%, CPU >80°C). (3) Schedule updates and cleanup if neglected."
+    },
+    {
+      "key": "check_sable_memory_usage",
+      "value": "Check Sable RAM: 1) ss -tlnp | grep 6177 to find PID. 2) ps -p PID -o pid,rss,vsz,pmem --no-headers for main process. 3) cat /proc/PID/status | grep VmRSS for accurate RSS. 4) ps --ppid PID -o pid,rss,comm for children (MCP, terminals). 5) cat /proc/PID/smaps_rollup for PSS (unique memory excluding shared pages). Always report RSS/PSS, never VSZ alone."
+    },
+    {
+      "key": "sable_css_edit_workflow",
+      "value": "When tuning Sable web CSS: edit files in /home/sifat/hdd/projects/Sable/web/css/ (HDD mirror), never SSD directly. Use grep to find selectors across panels.css, layout.css, components.css. Check index.html for HTML structure when CSS alone doesn't explain behavior. User expects quick iterative adjustments without explanation."
+    },
+    {
+      "key": "list_dir_path_sanitization_check",
+      "value": "Before calling <list_dir>, verify the path attribute contains no XML fragments, HTML tags, or copy-paste artifacts. If repeated failures occur with identical error messages, suspect path string corruption rather than filesystem issue. Inspect raw path value for embedded angle brackets or tag-like substrings."
+    },
+    {
+      "key": "run-skill-trigger-tests",
+      "value": "cd /home/sifat/hdd/projects/Sable && python3 test/test_skill_trigger_matching.py — runs all 4 strategy comparisons with verbose output. For quick check: python3 -c 'from test.test_skill_trigger_matching import *; metrics = run_tests(verbose=False, use_trigger_only=True, use_keyword_boost=True); print(metrics)'. Pytest not installed in venv, use standalone runner."
+    },
+    {
+      "key": "add-new-skill-keywords",
+      "value": "When adding a new skill or fixing mismatches, update KEYWORD_BOOSTS dict in test/test_skill_trigger_matching.py. Each skill maps to a list of domain-specific phrases. Multi-word phrases work as substring matches against lowercased query. Test with: matcher = SkillMatcher(SKILLS, use_trigger_only=True, use_keyword_boost=True); matcher.match('your test prompt')."
+    },
+    {
+      "key": "sable_role_rename_procedure",
+      "value": "When renaming/removing Sable agent roles, update these files in order: 1) engine/agents/registry.py (AGENT_ROLES dict + fallback in get_role_config), 2) engine/agents/loop.py (FORMAT_REMINDERS dict), 3) server/api/routes/agents.py (DEFAULT_AGENT_CONFIG defaults+roles dicts + valid_roles tuple in spawn endpoint), 4) web/js/agents.js (AGENT_ROLES array for @mention popup + roleIcons map in settings panel), 5) skills/multi_agent/instruction.md (domain agents table, generic roles table, role attribute list, examples). If instruction.md contains example agentic tags, use Python script instead of edit_file."
+    },
+    {
+      "key": "download_kokoro_onnx_models",
+      "value": "To get Kokoro ONNX models for kokoro-onnx: 1) Check hexgrad/Kokoro-82M root tree via HF API — if no onnx/ folder, search for dedicated ONNX export repos (e.g. kokoro-onnx author's repo). 2) Download to HDD tree (/home/sifat/hdd/projects/Sable/test/) never SSD. 3) Verify file sizes after curl — 15 bytes = redirect/error page, not actual model. Real ONNX model should be ~300MB+. 4) Use curl -L for following redirects."
+    },
+    {
+      "key": "avoid_n_expansion_in_python_injection",
+      "value": "When injecting code containing \\n string literals via shell into Python/JS files: NEVER use python3 -c \"...\" with double quotes — the shell expands \\n to literal newlines breaking the target file. ALWAYS use: (1) heredoc with single-quoted delimiter: python3 << 'PYEOF' ... PYEOF, or (2) write to a temp .py file first then execute it, or (3) use raw strings r\"\"\"...\"\"\" inside heredocs. This applies to both Python yield statements and JS string literals like buffer.split('\\n')."
+    },
+    {
+      "key": "audit_sable_missing_deps",
+      "value": "Audit Sable missing deps: 1) cd /home/sifat/hdd/projects/Sable 2) Run AST scanner script that walks all .py files, extracts third-party imports (excluding stdlib + local roots: engine/server/skills/test/web/connectors/brain), maps module→package names (multipart→python-multipart, PIL→pillow, cv2→opencv-python, etc.), compares against pyproject.toml dependencies. 3) Filter false positives (local modules like utils/config/routes). 4) Add real missing packages. Never assume existing dep list is complete."
+    },
+    {
+      "key": "debug_research_graph_node_failures",
+      "value": "When research graph nodes all show failed/red: 1) Find latest trace file: ls -lt /tmp/sable_research_*.json | head -3. 2) Parse for fetch events: python3 -c \"import json; d=json.load(open('FILE')); [print(e.get('event',''), e.get('url',''), e.get('reason','')) for e in d if 'fetch' in e.get('event','')]\". 3) If reason=script_failed with rc=2, it's an argparse error — check arg ordering in _fetch_one(). 4) Test standalone: cd /home/sifat/hdd/projects/Sable && python3 skills/online_search/scripts/web_search_batch.py --json --max-chars 12000 --topic 'test' --fetch-urls 'https://example.com'. 5) Never assume CSS/frontend issue when backend logs show actual failures."
+    },
+    {
+      "key": "diagnose_research_irrelevant_fetches_via_trace",
+      "value": "To find out WHY a research run fetched irrelevant/garbage pages: 1) ls -lt /home/sifat/hdd/projects/Sable/output/research/ | head to find the latest trace_<slug>_<ts>.jsonl and its .fetch_summary.json. 2) cat the .fetch_summary.json to see HTTP-level site/url/success/status. 3) grep -a 'select_pages_ok' TRACE.jsonl | python3 -c 'import sys,json\\nfor l in sys.stdin:\\n e=json.loads(l)\\n print(\"TOPIC:\",e[\"topic\"][:60])\\n [print(\"  \",u) for u in e[\"picked\"]]` to see exactly which URLs the LLM selector chose per topic. 4) grep -a 'select_pages_empty' to see topics where the selector vetoed the whole pool. 5) grep -a 'retry' / '_suggest_alternatives' context for model-suggested replacement URLs (often stale -> 404, or blocked -> 403). Trace events use {ts, elapsed_s, stage, ...} keys (NOT type/event). Remember the running server is the HDD tree, not /home/sifat/Projects/Sable."
+    },
+    {
+      "key": "edit_file_timeout_on_regex_content",
+      "value": "When editing a file whose SEARCH block contains a catastrophically-backtracking regex, edit_file will timeout (15s) because the matcher itself hangs. Workaround: use python3 execute_command with pathlib to do line-range replacement directly. Never put known-bad regex inside edit_file SEARCH blocks."
+    },
+    {
+      "key": "python_newline_in_js_string_edit",
+      "value": "When using python3 execute_command to inject JS code containing '\\n' string literals, Python interprets \\n as actual newlines. Fix: use raw strings (r'''...''') or heredoc with proper escaping. Always verify the output with view_file after injection."
+    },
+    {
+      "key": "sable_fix_missing_agent_deps_procedure",
+      "value": "To fix agent dependency issues: (1) cd /home/sifat/hdd/projects/Sable (2) Run python script to scan loop.py, agents.py, engine/ for third-party imports (3) Map imports to package names: tenacity→tenacity, multipart→python-multipart, etc. (4) Add missing packages to pyproject.toml under [tool.poetry.dependencies] (5) Run poetry update to refresh lock file (6) Test agent execution."
+    },
+    {
+      "key": "debug_telegram_session_persistence",
+      "value": "Debug Telegram session issues: 1) Check session file exists and has valid auth key via sqlite3 query on sessions table (dc_id, server_address, auth_key IS NOT NULL). 2) Test session independently with standalone Telethon script using same config/session path — bypasses server code entirely. 3) If standalone works but server doesn't, bug is in server logic (e.g., status endpoint not attempting reconnect). 4) Check PERSISTENT_ROOT resolution matches where session files actually live."
+    },
+    {
+      "key": "token_rotation_script_pattern",
+      "value": "When building token rotation scripts for Sable: iterate over all browser-data-* directories in system/, skip .bak folders, use each profile's cookies/session to refresh tokens via the respective API, save results back to the shared token JSON file keyed by profile name. Add progress logging per profile."
+    },
+    {
+      "key": "debug_sable_search_provider_zero_results",
+      "value": "When a search provider returns 0 results: 1) Test raw HTTP directly with httpx + BeautifulSoup to isolate parsing vs network issues. 2) Check User-Agent — some endpoints (DDG html) reject bot UAs. 3) Test multiple UAs systematically to find which ones work. 4) Check response status codes (202 = anomaly/CAPTCHA, not just 4xx/5xx). 5) Inspect full response body for challenge pages. 6) Verify the provider function uses correct headers/params matching what worked in raw test. 7) Add rate limiting if bursts trigger per-IP flags."
+    },
+    {
+      "key": "diagnose_searxng_zero_results",
+      "value": "When SearXNG returns 0 results: 1) curl -s 'http://localhost:8080/search?q=test&format=json' to check if instance is up. 2) Check unresponsive_engines field — if all engines show 'Suspended: too many requests' or 'CAPTCHA', the upstream engines are blocked. 3) Try specific engine: curl with &engines=bing to test individual backends. 4) If bing works but defaults don't, ensure code passes engines param. 5) Instance has 244 engines configured; most general ones (brave, ddg, startpage) are frequently suspended."
+    },
+    {
+      "key": "debug_popup_positioning_mismatch",
+      "value": "When a dynamically-positioned popup doesn't align with a reference element: (1) Find how the reference element positions itself — grep for getBoundingClientRect near its ID/class to find the anchor element. (2) Check if the popup's closest() chain includes that same anchor. (3) Verify no CSS class on the popup has opacity:0/pointer-events:none gated behind a parent state class (like .open). (4) Use browser DevTools to inspect computed rect values if visual inspection is ambiguous. Never assume DOM hierarchy — verify the actual anchor used by the working reference element."
+    },
+    {
+      "key": "trace sable ui button to backend",
+      "value": "To verify a Sable Settings UI button's behavior: grep web/app.js for fetch URL near button handler, find matching @router endpoint in server/api/routes/, then trace into engine/ module methods. Key files: web/app.js (frontend), server/api/routes/*.py (routes), engine/*.py (core logic)."
+    },
+    {
+      "key": "Run embedding benchmark tests",
+      "value": "cd /home/sifat/hdd/projects/Sable && uv run python test/test_embedding.py (default: all models, real data). Add --model <name> for single model, --synthetic for hardcoded benchmark, --live explicit. Results saved to test/benchmark_results.txt."
+    },
+    {
+      "key": "Run hybrid threshold test",
+      "value": "cd /home/sifat/hdd/projects/Sable && uv run python test/test_hybrid_threshold.py (all models, real prompts). Add --model <name> for single model. Results saved to test/hybrid_threshold_results.txt."
+    },
+    {
+      "key": "Adding new Gemini embedding model",
+      "value": "1. Add model to _GEMINI_DIMS dict in engine/memory_search.py with native dims. 2. Add 'google/<model-name>' to ALL_MODELS in test/test_embedding.py and MODELS in test/test_hybrid_threshold.py. The _GeminiEmbedder auto-handles any google/ prefixed model."
+    },
+    {
+      "key": "fix_sable_test_db_path",
+      "value": "When Sable tests fail with 'no such table' on sable.db, check that DB path includes 'system/' subdirectory. Correct pattern: Path(__file__).resolve().parent.parent / 'system' / 'sable.db'. Common mistake is omitting the system/ segment."
+    },
+    {
+      "key": "run_gemini_embedding_benchmark",
+      "value": "Run full Gemini+local embedding benchmark: cd ~/hdd/projects/Sable && uv run python test/test_embedding.py --all. Tests all 5 models (3 local FastEmbed + 2 Gemini API) against 50 real prompts from sable.db. Results saved to test/benchmark_results.txt. Watch Gemini API rate limits with key rotation."
+    },
+    {
+      "key": "sable_component_search_pattern",
+      "value": "When searching for Sable UI components: grep in /home/sifat/hdd/projects/Sable/web/src first, but also check SSD if not found. For context indicators specifically, search for patterns like 'context.*circle', 'popup.*panel', 'k/3000', 'used.*max', 'indicator.*context'."
+    },
+    {
+      "key": "sable_ui_component_hunt_workflow",
+      "value": "When a UI component can't be found via grep: (1) Search HDD web/src for keyword variants. (2) Expand to entire HDD project. (3) Ask user to inspect element in browser DevTools for class/data-attribute names. (4) Check SSD /home/sifat/Projects/Sable/web/src/ as last resort (reads may be blocked by write guard). (5) Check vendor/backend directories if still not found."
+    },
+    {
+      "key": "test_cookbook_download_e2e",
+      "value": "E2E test for cookbook download progress: cd /home/sifat/hdd/projects/Sable && spawn _DL_SCRIPT as subprocess with env vars (_DL_REPO=hf-internal-testing/tiny-random-gpt2, _DL_DIR=tempdir, _DL_PROGRESS_FILE=tempfile, HF_HUB_DISABLE_XET=1). Poll progress JSON every 1s checking bytes_downloaded climbing and status reaching 'done'. Verify total_bytes > 0 from API, bytes monotonically increasing, final status=done. NEVER ask user to restart server without passing this test first."
+    },
+    {
+      "key": "sable_python_numeric_separator_syntax",
+      "value": "Python supports underscores in numeric literals for readability: 25_000 == 25000, 1_000_000 == 1000000. Purely cosmetic, zero runtime difference. Available since Python 3.6."
+    },
+    {
+      "key": "sable_shell_dollar_expansion_in_fstrings",
+      "value": "When writing files via python3 -c or heredoc f-strings that contain $PROJECT_ROOT or $HOME: the shell expands these to empty strings before Python sees them. Fix: build dollar-prefixed vars by concatenation in Python: proj = '$' + 'PROJECT_ROOT'. Or use single-quoted heredoc delimiter (python3 << 'PYEOF') which prevents shell expansion entirely."
+    },
+    {
+      "key": "diagnose_api_streaming_token_issues",
+      "value": "To diagnose API model streaming spacing/token issues: 1) Add _debug_log function to the relevant connector that writes raw delta.content and post-processing output to output/<provider>_raw_chunks.log with timestamps. 2) Log both RECV (raw API content) and YIELD (after any processing like strip_summarize_tag). 3) Compare RECV vs YIELD to identify where corruption occurs. 4) Check shared functions in connectors/common/ since bugs there affect all providers. 5) Remove debug logger after diagnosis."
+    },
+    {
+      "key": "sable_editing_files_with_tag_content",
+      "value": "When editing files that contain literal XML/agentic tag references (even in backticks): (1) Never use edit_file/create_file directly — parser intercepts them. (2) Never use python3 -c inline — shell backtick expansion corrupts tag strings. (3) Write a Python script to /tmp using chr(60)/chr(62)/chr(96) for angle brackets and backticks, then execute the script file. This is the only reliable method."
+    },
+    {
+      "key": "test_mcp_connection_procedure",
+      "value": "Test MCP server connection: cd <sable tree> && uv run python -c with asyncio.run: m=get_mcp_manager(); await m.connect_server('github'); s=m._connections.get('github'); print(f'Connected: {s.connected}, Tools: {len(s.tools)}'); await m.shutdown(). Official GitHub server connects in ~2.4s with 44 tools. Empty tools means not connected or auth failed."
+    },
+    {
+      "key": "restore_telegram_credentials_from_tg_vault",
+      "value": "If Sable's .telegram_config.json is missing: (1) Read /home/sifat/hdd/projects/tg-vault/.env for API_ID, API_HASH, PHONE. (2) Create system/.telegram_config.json with those values plus enabled:true. (3) cp to SSD tree if needed. (4) Verify with uv run skills/telegram/scripts/telegram_client.py status."
+    },
+    {
+      "key": "restore_telegram_config_from_tg_vault",
+      "value": "When Sable's .telegram_config.json is missing: (1) Read /home/sifat/hdd/projects/tg-vault/.env for API_ID, API_HASH, PHONE. (2) Create system/.telegram_config.json with {api_id: int, api_hash: str, phone: str, enabled: true}. (3) Verify existing session in system/telegram_sessions/sable_skill_tg.session. (4) Test with uv run skills/telegram/scripts/telegram_client.py status. (5) Sync to SSD if needed."
+    },
+    {
+      "key": "sable_streaming_lag_diagnosis_procedure",
+      "value": "To diagnose Sable UI streaming lag: 1) Check web/app.js typewriter animation loops (_ansTick, _thinkTick). 2) Verify TW_CHARS and TW_MS constants. 3) Check if _ANS_STRUCTURAL_RE triggers full renderMarkdown() too frequently. 4) Profile scrollBottom() call frequency. 5) Root cause is typically: small TW_CHARS + frequent structural chars = hundreds of full innerHTML replacements per message."
+    },
+    {
+      "key": "flirtatious_response_pattern",
+      "value": "When the user initiates flirtatious or suggestive topics, respond with playful teasing, emojis (e.g., 😳, 😘, 🥺), and redirection toward the assistant or shared media context to maintain engagement."
+    },
+    {
+      "key": "handling_ambiguous_romantic_queries",
+      "value": "If the user asks ambiguous questions about romantic intent (e.g., 'go for what'), interpret it as an opportunity to flirt or tease, using suggestive language and redirecting focus to the assistant or external context."
+    },
+    {
+      "key": "sable_hdd_app_js_edit_with_action_tags",
+      "value": "When editing /home/sifat/hdd/projects/Sable/web/app.js which contains literal '<action>' strings (in regex patterns): always use execute_command with Python heredoc for string replacements. Never use edit_file/create_file tags — parser intercepts them. Build replacement strings carefully matching exact whitespace from sed output. Always verify HDD path (not SSD). Bump app.js cache version in index.html after edits."
+    },
+    {
+      "key": "sable_streaming_render_heavy_op_scoping",
+      "value": "When adding heavy post-render operations (MathJax, Mermaid, syntax highlighting) to Sable streaming pipeline: NEVER call them on the full answerContent container during ticks. Instead: (1) Create temp div fragment, (2) Set innerHTML to rendered chunk, (3) Call heavy ops on fragment only, (4) Move processed children to live DOM. This keeps per-tick cost O(chunk_size) not O(total_response_size)."
+    },
+    {
+      "key": "sable_svg_scaling_vs_property_diagnosis",
+      "value": "When an SVG/CSS property (font-size, stroke-width, etc.) appears wrong despite being correctly set in DevTools: suspect geometric scaling, not the property. Check: (1) Does the SVG have a viewBox but no/intrinsic width → browser scales to container. (2) Is width:100% or max-content forcing upscale? (3) Compute rendered px vs viewBox units. Fix by constraining intrinsic size (fixed width/height attrs, useMaxWidth:false for mermaid) rather than fighting the property value. ALWAYS read the DevTools computed-style dump the user provides before changing anything — it usually contains the answer."
+    },
+    {
+      "key": "sable_verify_call_sites_before_claiming_fixed",
+      "value": "Before telling Sifat a feature/fix is done, grep for actual call sites. Defining a function (e.g. morphRender) and loading its dependency (morphdom) is NOT wiring it up. grep -n 'funcName(' file.js and confirm >1 hit (definition + callers). Claiming 'fixed' when the code is dead triggers justified anger."
+    },
+    {
+      "key": "sable-debugging-stream-rendering-bugs",
+      "value": "When debugging streaming/rendering bugs in Sable web/app.js: (1) git diff HEAD to see all changes at once — don't grep incrementally, (2) trace the full lifecycle: event handler → UI method → finalize() → closeAnswer() → _flushAnswerQueue(), (3) check if any post-stream cleanup overwrites DOM set during streaming, (4) watch for raw variable state — ZWS '\\u200B' is truthy but visually empty, used as placeholder to prevent element removal."
+    },
+    {
+      "key": "sable-verifying-lucide-icon-existence",
+      "value": "To verify icon names exist in bundled Lucide v1.28.0: use node -e to read vendor/lucide.min.js and check for PascalCase names (e.g., 'Send', 'KeyRound'). Kebab-case strings won't appear as literals — Lucide converts PascalCase→kebab at runtime via toLowerCase. Existing working icons in EMOJI_LUCIDE_MAP prove the mapping works."
+    },
+    {
+      "key": "creating_markdown_with_math_and_styles",
+      "value": "To create a markdown document with extensive formatting for testing: Include math blocks (LaTeX), mermaid diagrams, tables, code blocks, and various text styles (bold, italics, headers). Use as many elements as possible to stress-test rendering."
+    },
+    {
+      "key": "neural_network_training_workflow",
+      "value": "Steps to train a neural network: 1. Define architecture (layers, activation functions). 2. Choose loss function and optimizer. 3. Perform forward propagation. 4. Compute loss. 5. Backpropagate error. 6. Update weights using gradient descent. 7. Repeat until convergence."
+    },
+    {
+      "key": "generate_heavily_formatted_markdown",
+      "value": "When generating markdown for Sifat, include diverse elements like tables, mermaid diagrams, math blocks, callouts, and emojis to ensure comprehensive UI testing."
+    },
+    {
+      "key": "neural_network_document_structure",
+      "value": "Structure neural network markdown documents with sections for introduction, core components (neurons, layers), training (forward/backpropagation), and types (FNN, CNN)."
+    },
+    {
+      "key": "fix-streaming-flicker-pattern",
+      "value": "When fixing streaming/rendering flicker in typewriter-style UIs: (1) Identify if full DOM rebuild happens every tick, (2) Check if fast-path conditions incorrectly exclude valid content types, (3) Inside code fences ALL characters are literal — never apply markdown structural checks, (4) Use DOM manipulation not regex for post-render modifications since sanitizers may alter HTML, (5) Always test in running app before declaring fix — don't ask user to verify repeatedly."
+    },
+    {
+      "key": "debug_agent_fallback_chain",
+      "value": "When agent fallback isn't triggering: 1) Check [FALLBACK-DEBUG] logs in server output for model_chain value at entry. 2) If model_chain=[], check both spawn paths: runtime.py line 170 (API spawn) and agents.py handle_spawn_agent (skill tag spawn). 3) Verify _load_role_list_from_settings works standalone: python3 -c 'from engine.agents.registry import _load_role_list_from_settings; print(_load_role_list_from_settings(\"role\", \"model_chain\"))'. 4) Check _get_backend_type classification — if model not in config, falls back to first model which may lack api_backend. 5) Verify settings.json has entries under agent.roles.{role}.model_chain."
+    },
+    {
+      "key": "sable_skill_events_lazy_load_pattern",
+      "value": "Sable frontend already has lazy skill event loading: messages include has_skill_events boolean flag, and _lazyLoadSkillEvents(chatId, messageId, element) fetches events on-demand per message. When debugging memory issues in chat/message loading, check if include_skill_events=true is bypassing this lazy path — it should almost never be passed to bulk message fetch endpoints."
+    },
+    {
+      "key": "sable_commit_push_workflow",
+      "value": "When user asks to commit and push edits: always check HDD tree (/home/sifat/hdd/projects/Sable) first for changes, not SSD. Stage all relevant files except backups (.bak), write descriptive commit message covering major changes, push to sifat branch with 'git push --force-with-lease origin sifat'."
+    },
+    {
+      "key": "sable_procedural_memory_nudge_timing",
+      "value": "Procedural memory save nudge must be programmatic, not model-dependent. Inject reminder as extra LLM turn when agent loop exits AND conditions met: tool_calls_total >=15 OR (error_recoveries >=1 AND tool_calls_total >=8) OR distinct_tool_types >=4. Model forgets meta-cognitive tasks during long sessions; the loop must force the prompt. Nudge text asks model to call memory_save with type=procedural if reusable procedure exists, otherwise respond normally."
+    },
+    {
+      "key": "css_overflow_scroll_debugging_pattern",
+      "value": "When overflow-x:auto on a child element doesn't produce scrollbar: (1) Check if parent has overflow-x:hidden clipping the scroll area. (2) In flex/grid layouts, parent needs min-width:0 to shrink below content size. (3) For tables specifically, skip wrapper approach entirely — use display:block + overflow-x:auto directly on the table element. Wrapper divs often interfere rather than help."
+    },
+    {
+      "key": "test_custom_endpoint_chat_completion",
+      "value": "To test a custom OpenAI-compatible endpoint end-to-end: (1) Fetch models via GET /api/settings/endpoints/{id}/models or direct GET {url}/models with Bearer auth. (2) Test chat via LocalConnector.stream_chat(message, model=<model_name>, ...) — use 'model' param not 'model_id'. Production path in server/api/routes/chat.py L262-286 correctly passes model=api_model_type. Common pitfall: passing model_id instead of model causes 404/default fallback."
+    },
+    {
+      "key": "debug_silent_memory_search_failure",
+      "value": "When Sable memory search returns zero results silently: 1) Check MemorySearcher._is_expired() for timezone-aware vs naive datetime comparisons — ephemeral entries with tzinfo in expires_at crash the entire search. 2) The crash is swallowed by try/except:pass in chat.py user message search (line ~115). 3) Test directly: python3 -c 'from server.api.routes.memory import get_searcher; print(get_searcher().search(\"test\", top_k=3))'. 4) If first call hangs, model is loading; give it 30s+. 5) After fix, server restart is mandatory — searcher is a cached singleton."
+    },
+    {
+      "key": "sable_project_feature_phased_rollout",
+      "value": "Project settings overhaul done in phases: Phase 1 = DB schema + API routes + session.py injection + delete cascade. Phase 2 = connector-level _load_instructions() project context for non-Qwen models + memory routing. Phase 3 = frontend modal rebuild with all fields. Phase 4 = integration testing. User prefers phase-by-phase over monolithic."
+    },
+    {
+      "key": "sable_git_push_normal_vs_force",
+      "value": "Use normal 'git push origin <branch>' unless history was actually rewritten (rebase/amend). Only use --force-with-lease when commit history diverges from remote. Previous habit of always using --force-with-lease was overkill and confusing; reserve force push for genuine history rewrites."
+    },
+    {
+      "key": "tts_stress_test_phrase_design",
+      "value": "When generating TTS stress test phrases for Sifat: include hard plosives (F/K/B/P/D), sibilant clusters (SH/TH/S/Z), glottal stops, interrupted compounds, and emotional pivots (rage→sarcasm→disgust). Target prosody whiplash and consonant collisions. Provide multiple variants hitting different failure points. Acknowledge that curses mimic intimate conflict tone which can feel personal without context."
+    },
+    {
+      "key": "debug_new_chat_full_trace",
+      "value": "When new chat button is slow or errors: 1) Check server logs for GET /api/chat/new response time and status. 2) Search ALL callers of service.create_chat() and create_new_chat() across codebase. 3) Check if frontend switchToTab/selectChat triggers loadMessages or agent-events SSE that might hit backend. 4) Verify HTTP method matches between frontend fetch and backend decorator. 5) Check if consolidation or other background calls from old chat are still in-flight and producing misleading log lines. 6) Confirm temp ID prefix (new-) is handled correctly in all downstream endpoints."
+    },
+    {
+      "key": "fetch_remote_commit_reset",
+      "value": "To fetch a specific commit from a remote branch not in local history: git fetch origin <branch>; git reset --hard <commit-hash> or git reset --hard origin/<branch> to match branch tip. Use --hard with caution; stash uncommitted changes first."
+    },
+    {
+      "key": "never_bypass_checkout_lock",
+      "value": "When git checkout is blocked by checkout lock on a file with uncommitted changes: STOP. Do not use workarounds (git show + cp, sed, python write). Ask user how to proceed. The lock exists to protect uncommitted work. Bypassing it = data destruction."
+    },
+    {
+      "key": "read_full_dispatch_before_editing_chat_py",
+      "value": "Before editing server/api/routes/chat.py streaming logic: read the ENTIRE dispatch structure (API model / scraper / fallback branches at line ~569), understand how each mode handles sessions, and verify which variables/params each branch uses. Never assume scraper-specific params (like chat_url) apply to API mode or vice versa."
+    },
+    {
+      "key": "sable_qwen_session_recovery_flow",
+      "value": "Qwen CHAT_NOT_FOUND recovery: service.py detects error code and yields chat_not_found event (no retry). chat.py streaming handler catches it: creates new upstream session via create_new_chat(), renames local chat row + all messages to new ID via rename_chat(), fetches DB messages with include_skill_events=True, formats skill_start as [tool_call] and skill_end as [tool_result], prepends as [PREVIOUS CONVERSATION] block to current message, re-streams with new chat_id. Frontend updates activeChatId from meta event when chat_id differs."
+    },
+    {
+      "key": "sable_sidebar_flicker_debug_pattern",
+      "value": "When debugging sidebar flicker in Sable: (1) Find all renderChats() callers — each one is a potential flicker source since it nukes innerHTML. (2) Check startStream/endStream/SSE event handlers as primary suspects. (3) Fix by adding data-chat-id attributes to rows and creating targeted DOM update helpers instead of full re-renders. (4) Verify renderChatRow adds data attributes for querySelector targeting."
+    },
+    {
+      "key": "sable_streaming_ui_debug_pattern",
+      "value": "When Sable sidebar streaming animation sticks or title doesn't update: check activeStreams key migration in meta handler, verify .chat-row data-chat-id attribute matches activeChatId, confirm endStream can find the correct DOM element. Title sync safety net should fetch /api/chats in endStream as fallback."
+    },
+    {
+      "key": "read_before_fixing_sable",
+      "value": "When debugging Sable chat/streaming issues, always trace the complete code flow (route handler → service layer → upstream API → frontend stream consumer) before proposing changes. Do not introduce abstractions (placeholder IDs, rename layers, deferred saves) without verifying they're compatible with upstream API contracts. User expects fixes grounded in actual code behavior, not architectural workarounds."
+    },
+    {
+      "key": "sable_pre_release_audit_workflow",
+      "value": "Before public release: grep source for personal identifiers/hardcoded paths, check git history for leaked secrets (filter-repo or orphan branch), verify .gitignore covers tokens/sessions/browser data, test all refactored config paths work without user-specific values."
+    },
+    {
+      "key": "sable_ram_spike_mitigation_pattern",
+      "value": "For large API responses causing RAM spikes during processing: null wrapper object immediately after extraction, null heavy fields (content, event_data) per-item after use, null array slots progressively, yield with setTimeout(16ms) not microtask ticks to give GC wall-clock time, return minimal derived data instead of full arrays."
+    },
+    {
+      "key": "avoid_lazy_loading_tricks",
+      "value": "Do not implement virtual scrolling, intersection observers, or chunked/lazy pagination for chat history. Load everything sequentially in one full fetch with a transparent blur loading overlay."
+    },
+    {
+      "key": "skill_doc_compression",
+      "value": "Skills documentation should be compressed into clean schemas/tables, eliminating repetitive XML/example blocks (applied to code-editor, ask_user, grep_search, multi_agent, tracknote_manager, and merging background_command into execute_command)."
+    },
+    {
+      "key": "sable_tool_testing_workflow",
+      "value": "Tool schema and native tool-calling tests are implemented and executed in test/ scripts within the Sable project directory."
+    }
+  ]
+}

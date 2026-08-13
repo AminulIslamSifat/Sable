@@ -23,6 +23,7 @@ logger = logging.getLogger("sable.agents.memory_trigger")
 _BRAIN_DIR = Path(__file__).resolve().parent.parent.parent / "Brain"
 _MEMORY_PATH = _BRAIN_DIR / "Memory.json"
 _PROTECTED_PATH = _BRAIN_DIR / "Protected.json"
+_PROCEDURAL_PATH = _BRAIN_DIR / "Procedural.json"
 _SETTINGS_PATH = Path(__file__).resolve().parent.parent.parent / "system" / "consolidation_settings.json"
 
 # Thresholds — any single condition triggers consolidation
@@ -32,6 +33,26 @@ THRESHOLD_ERROR_RECOVERIES = 3
 
 # Max conversation chars sent to consolidation LLM
 _MAX_AGENT_CONV_CHARS = 30_000
+
+# Similarity threshold for triggering merge resolution (pure cosine on normalized vectors)
+_MERGE_SIMILARITY_THRESHOLD = 0.7
+
+# Consolidation audit log
+_CONSOLIDATION_LOG_PATH = Path(__file__).resolve().parent.parent.parent / "system" / "consolidation.txt"
+
+
+def _log_consolidation(section: str, content: str) -> None:
+    """Append a timestamped section to system/consolidation.txt for debugging."""
+    from datetime import datetime
+    try:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        entry = f"\n{'='*80}\n[{ts}] {section}\n{'='*80}\n{content}\n"
+        _CONSOLIDATION_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_CONSOLIDATION_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(entry)
+    except Exception as exc:
+        logger.warning("[memory_trigger] Failed to write consolidation log: %s", exc)
+
 
 _AGENT_CONSOLIDATION_PROMPT = (
     "[SYSTEM: Agent memory consolidation. Extract reusable knowledge from this agent's work session.]\n\n"
@@ -130,6 +151,218 @@ def _load_current_memory() -> str:
         return "{}"
 
 
+async def _resolve_candidates_against_memory(
+    parsed: dict[str, Any],
+    model: str,
+    fallback_models: list[str],
+) -> dict[str, Any]:
+    """Multi-step merge resolution: compare candidates against existing memory via
+    vector similarity, then batch-call LLM to decide accept/skip/merge/replace.
+
+    Returns a modified parsed dict with resolved additions and deletions.
+    """
+    from instruction.mem_cmd import _MERGE_RESOLUTION_PROMPT
+
+    # Collect all candidate entries from the consolidation result
+    candidates: list[dict[str, Any]] = []
+    adds = parsed.get("add", {})
+    if isinstance(adds, dict):
+        for cat in ("semantic", "episodic", "procedural", "protected", "ephemeral"):
+            for entry in adds.get(cat, []):
+                if isinstance(entry, dict) and entry.get("key") and entry.get("value"):
+                    cand: dict[str, Any] = {
+                        "key": entry["key"],
+                        "value": entry["value"],
+                        "category": cat,
+                    }
+                    if cat == "procedural":
+                        if entry.get("trigger"):
+                            cand["trigger"] = str(entry["trigger"])
+                        if entry.get("keywords") and isinstance(entry["keywords"], list):
+                            cand["keywords"] = [str(kw) for kw in entry["keywords"]]
+                    candidates.append(cand)
+
+    if not candidates:
+        _log_consolidation("MERGE RESOLUTION — SKIP", "No candidate entries to resolve.")
+        return parsed  # Nothing to resolve
+
+    _log_consolidation(
+        "MERGE RESOLUTION — CANDIDATES",
+        json.dumps(candidates, indent=2, ensure_ascii=False),
+    )
+
+    # Search for similar existing memories using vector similarity
+    try:
+        from engine.memory_search import get_searcher
+        searcher = get_searcher()
+        searcher._ensure_loaded()
+    except Exception as exc:
+        logger.warning("[memory_trigger] Could not load searcher for merge resolution: %s", exc)
+        return parsed  # Fall back to original behavior
+
+    # Build candidate texts and embed them
+    candidate_texts = [f"{c['key']}: {c['value']}" for c in candidates]
+    try:
+        candidate_vecs = searcher._embed_texts(candidate_texts, is_query=True)
+    except Exception as exc:
+        logger.warning("[memory_trigger] Failed to embed candidates: %s", exc)
+        return parsed
+
+    # Compute cosine similarity against all existing entries (vectors are already normalized)
+    if searcher._normed_vectors is None or len(searcher._normed_vectors) == 0:
+        return parsed  # No existing memory to compare against
+
+    sim_matrix = candidate_vecs @ searcher._normed_vectors.T  # (n_candidates, n_existing)
+
+    # For each candidate, find existing entries above threshold
+    pairs_text_parts: list[str] = []
+    has_conflicts = False
+
+    for i, cand in enumerate(candidates):
+        sims = sim_matrix[i]
+        matches: list[tuple[int, float]] = []
+        for j in range(len(sims)):
+            if sims[j] >= _MERGE_SIMILARITY_THRESHOLD:
+                matches.append((j, float(sims[j])))
+        matches.sort(key=lambda x: -x[1])
+        matches = matches[:5]  # Top 5 matches per candidate
+
+        if matches:
+            has_conflicts = True
+            pair_block = f"CANDIDATE [{cand['category']}]:\n  key: {cand['key']}\n  value: {cand['value']}\n"
+            if cand.get("trigger"):
+                pair_block += f"  trigger: {cand['trigger']}\n"
+            if cand.get("keywords"):
+                pair_block += f"  keywords: {cand['keywords']}\n"
+            pair_block += "\nSIMILAR EXISTING:\n"
+            for idx, score in matches:
+                meta = searcher._entry_meta[idx]
+                pair_block += f"  [{meta['category']}] key={meta['key']} | score={score:.3f}\n    value: {meta['value']}\n"
+            pairs_text_parts.append(pair_block)
+
+    if not has_conflicts:
+        _log_consolidation("MERGE RESOLUTION — NO CONFLICTS", f"No candidates above {_MERGE_SIMILARITY_THRESHOLD} similarity threshold. Skipping merge resolution.")
+        logger.info("[memory_trigger] No candidates above %.2f similarity — skipping merge resolution", _MERGE_SIMILARITY_THRESHOLD)
+        return parsed
+
+    # Build the batch prompt
+    pairs_text = "\n---\n".join(pairs_text_parts)
+    prompt = _MERGE_RESOLUTION_PROMPT.replace("<<CANDIDATE_PAIRS>>", pairs_text)
+
+    _log_consolidation("MERGE RESOLUTION — PAIRS SENT TO LLM", pairs_text)
+    _log_consolidation("MERGE RESOLUTION — PROMPT", prompt)
+
+    # Call LLM for resolution
+    result = await _try_consolidation_call(model, prompt)
+    if not result:
+        for fb_model in fallback_models[:2]:
+            result = await _try_consolidation_call(fb_model, prompt)
+            if result:
+                break
+
+    if not result:
+        _log_consolidation("MERGE RESOLUTION — LLM FAILED", f"All models failed (primary={model}, fallbacks={fallback_models[:2]})")
+        logger.warning("[memory_trigger] Merge resolution LLM call failed — using original consolidation")
+        return parsed
+
+    raw_answer = result.get("answer", "")
+    _log_consolidation("MERGE RESOLUTION — LLM RAW OUTPUT", raw_answer)
+
+    resolved = _parse_consolidation_response(raw_answer)
+    if not resolved or "decisions" not in resolved:
+        _log_consolidation("MERGE RESOLUTION — PARSE FAILED", f"Could not parse JSON from LLM output. Raw: {raw_answer[:500]}")
+        logger.warning("[memory_trigger] Invalid merge resolution JSON — using original consolidation")
+        return parsed
+
+    decisions = resolved["decisions"]
+    if not isinstance(decisions, list):
+        return parsed
+
+    # Apply decisions to transform the parsed consolidation result
+    # Build lookup: (category, key) -> decision
+    decision_map: dict[tuple[str, str], dict[str, Any]] = {}
+    for d in decisions:
+        if isinstance(d, dict) and d.get("candidate_key") and d.get("action"):
+            decision_map[(d.get("category", ""), d["candidate_key"])] = d
+
+    new_adds: dict[str, list] = {}
+    extra_deletes: list[str] = list(parsed.get("delete", []))
+
+    for cat in ("semantic", "episodic", "procedural", "protected", "ephemeral"):
+        cat_entries = adds.get(cat, []) if isinstance(adds, dict) else []
+        resolved_entries: list[dict[str, Any]] = []
+
+        for entry in cat_entries:
+            if not isinstance(entry, dict) or not entry.get("key"):
+                continue
+            decision = decision_map.get((cat, entry["key"]))
+            if not decision:
+                # No decision found — keep as-is (accept by default)
+                resolved_entries.append(entry)
+                continue
+
+            action = decision.get("action", "accept")
+            if action == "skip":
+                continue  # Drop this candidate
+            elif action == "accept":
+                resolved_entries.append(entry)
+            elif action == "merge":
+                merged_value = decision.get("merged_value") or entry.get("value", "")
+                existing_key = decision.get("existing_key")
+                # Replace the existing entry with merged version
+                if existing_key:
+                    extra_deletes.append(existing_key)
+                merged_entry: dict[str, Any] = {"key": entry["key"], "value": merged_value}
+                # Preserve trigger/keywords for procedural merges
+                if cat == "procedural":
+                    mt = decision.get("merged_trigger")
+                    mk = decision.get("merged_keywords")
+                    if mt:
+                        merged_entry["trigger"] = str(mt)
+                    else:
+                        merged_entry["trigger"] = entry.get("trigger", "")
+                    if mk and isinstance(mk, list):
+                        merged_entry["keywords"] = [str(kw) for kw in mk]
+                    elif entry.get("keywords"):
+                        merged_entry["keywords"] = entry["keywords"]
+                resolved_entries.append(merged_entry)
+            elif action == "replace":
+                existing_key = decision.get("existing_key")
+                if existing_key:
+                    extra_deletes.append(existing_key)
+                resolved_entries.append(entry)
+
+        if resolved_entries:
+            new_adds[cat] = resolved_entries
+
+    # Deduplicate deletes
+    seen_deletes: set[str] = set()
+    unique_deletes: list[str] = []
+    for k in extra_deletes:
+        if k and k not in seen_deletes:
+            seen_deletes.add(k)
+            unique_deletes.append(k)
+
+    resolved_parsed = {"add": new_adds, "delete": unique_deletes}
+
+    _log_consolidation(
+        "MERGE RESOLUTION — FINAL DECISIONS",
+        json.dumps(decisions, indent=2, ensure_ascii=False),
+    )
+    _log_consolidation(
+        "MERGE RESOLUTION — RESOLVED RESULT",
+        json.dumps(resolved_parsed, indent=2, ensure_ascii=False),
+    )
+
+    logger.info(
+        "[memory_trigger] Merge resolution: %d decisions applied, %d candidates remaining, %d extra deletes",
+        len(decisions),
+        sum(len(v) for v in new_adds.values()),
+        len(unique_deletes) - len(parsed.get("delete", [])),
+    )
+    return resolved_parsed
+
+
 def _apply_memory_changes(result: dict[str, Any]) -> dict[str, int]:
     """Apply consolidation results to Memory.json. Returns counts."""
     adds = result.get("add", {})
@@ -140,7 +373,7 @@ def _apply_memory_changes(result: dict[str, Any]) -> dict[str, int]:
     if not isinstance(deletes, list):
         deletes = []
 
-    # Load existing memory
+    # Load existing memory (non-procedural only)
     existing: dict[str, list] = {}
     if _MEMORY_PATH.exists():
         try:
@@ -149,6 +382,16 @@ def _apply_memory_changes(result: dict[str, Any]) -> dict[str, int]:
                 existing = {}
         except Exception:
             existing = {}
+    # Strip any leftover procedural from Memory.json (lives in Procedural.json now)
+    existing.pop("procedural", None)
+    # Load procedural from separate file for dedup
+    if _PROCEDURAL_PATH.exists():
+        try:
+            pdata = json.loads(_PROCEDURAL_PATH.read_text(encoding="utf-8"))
+            if isinstance(pdata, dict):
+                existing["procedural"] = pdata.get("procedural", [])
+        except Exception:
+            pass
 
     # Protected keys are never deleted
     protected_keys: set[str] = set()
@@ -168,15 +411,28 @@ def _apply_memory_changes(result: dict[str, Any]) -> dict[str, int]:
     deleted_count = 0
     delete_keys = {str(k) for k in deletes if k} - protected_keys
     if delete_keys:
-        for cat in ("semantic", "episodic", "procedural", "ephemeral"):
+        for cat in ("semantic", "episodic", "ephemeral"):
             cat_list = existing.get(cat, [])
             before = len(cat_list)
             existing[cat] = [e for e in cat_list if not isinstance(e, dict) or e.get("key", "") not in delete_keys]
             deleted_count += before - len(existing[cat])
+        # Also delete from procedural file
+        if _PROCEDURAL_PATH.exists():
+            try:
+                proc_data = json.loads(_PROCEDURAL_PATH.read_text(encoding="utf-8"))
+                if isinstance(proc_data, dict):
+                    proc_list = proc_data.get("procedural", [])
+                    before = len(proc_list)
+                    proc_data["procedural"] = [e for e in proc_list if not isinstance(e, dict) or e.get("key", "") not in delete_keys]
+                    deleted_count += before - len(proc_data["procedural"])
+                    _PROCEDURAL_PATH.write_text(json.dumps(proc_data, indent=2, ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
 
     # Apply additions (skip duplicates by key)
     added_count = 0
-    for cat in ("semantic", "episodic", "procedural"):
+    # Non-procedural categories go to Memory.json
+    for cat in ("semantic", "episodic"):
         existing_list = existing.get(cat, [])
         new_list = adds.get(cat, [])
         if not isinstance(new_list, list):
@@ -189,7 +445,33 @@ def _apply_memory_changes(result: dict[str, Any]) -> dict[str, int]:
                 added_count += 1
         existing[cat] = existing_list
 
-    # Write back
+    # Procedural entries go to separate Procedural.json
+    proc_new = adds.get("procedural", [])
+    if isinstance(proc_new, list) and proc_new:
+        proc_existing: list[dict[str, Any]] = []
+        if _PROCEDURAL_PATH.exists():
+            try:
+                pdata = json.loads(_PROCEDURAL_PATH.read_text(encoding="utf-8"))
+                proc_existing = pdata.get("procedural", []) if isinstance(pdata, dict) else []
+            except Exception:
+                proc_existing = []
+        proc_keys = {e.get("key", "") for e in proc_existing if isinstance(e, dict)}
+        for entry in proc_new:
+            if isinstance(entry, dict) and entry.get("key") and entry["key"] not in proc_keys:
+                new_entry: dict[str, Any] = {"key": entry["key"], "value": entry.get("value", "")}
+                if entry.get("trigger"):
+                    new_entry["trigger"] = str(entry["trigger"])
+                if entry.get("keywords") and isinstance(entry["keywords"], list):
+                    new_entry["keywords"] = [str(kw) for kw in entry["keywords"]]
+                proc_existing.append(new_entry)
+                proc_keys.add(entry["key"])
+                added_count += 1
+        _PROCEDURAL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _PROCEDURAL_PATH.write_text(
+            json.dumps({"procedural": proc_existing}, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+    # Write back Memory.json (non-procedural only)
     if added_count > 0 or deleted_count > 0:
         _MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
         _MEMORY_PATH.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -328,6 +610,8 @@ async def trigger_agent_memory(agent) -> dict[str, Any] | None:
     prompt = prompt.replace("<<ERROR_RECOVERIES>>", str(agent.error_recoveries))
     prompt = prompt.replace("<<CONVERSATION>>", conversation)
 
+    _log_consolidation(f"STEP 1 — INITIAL CONSOLIDATION PROMPT (agent={agent.id})", prompt)
+
     # Try primary model, then fallbacks
     result = await _try_consolidation_call(model, prompt)
     if not result:
@@ -337,15 +621,24 @@ async def trigger_agent_memory(agent) -> dict[str, Any] | None:
                 break
 
     if not result:
+        _log_consolidation(f"STEP 1 — LLM FAILED (agent={agent.id})", f"All models failed (primary={model}, fallbacks={fallback_models[:2]})")
         logger.warning("[memory_trigger] All consolidation attempts failed for agent %s", agent.id)
         return {"status": "failed", "agent_id": agent.id}
 
     # Parse response
     raw_answer = result.get("answer", "")
+    _log_consolidation(f"STEP 1 — LLM RAW OUTPUT (agent={agent.id})", raw_answer)
+
     parsed = _parse_consolidation_response(raw_answer)
     if not parsed:
+        _log_consolidation(f"STEP 1 — PARSE FAILED (agent={agent.id})", f"Could not parse JSON. Raw: {raw_answer[:500]}")
         logger.warning("[memory_trigger] Invalid JSON from consolidation for agent %s", agent.id)
         return {"status": "parse_error", "agent_id": agent.id}
+
+    _log_consolidation(f"STEP 1 — PARSED RESULT (agent={agent.id})", json.dumps(parsed, indent=2, ensure_ascii=False))
+
+    # Multi-step merge resolution: compare candidates against existing memory
+    parsed = await _resolve_candidates_against_memory(parsed, model, fallback_models)
 
     # Apply changes
     counts = _apply_memory_changes(parsed)
