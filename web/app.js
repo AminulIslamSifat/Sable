@@ -95,6 +95,10 @@
           _authBounced = false;
           showPhase(null);
           if (_loginResolve) { _loginResolve(); _loginResolve = null; }
+          // Reload tracknote data if panel is open (failed requests won't retry on their own)
+          if (document.body.classList.contains("tracknote-open")) {
+            loadSchedules(); loadNotes(); loadAgentOps();
+          }
         } else {
           loginError.textContent = "Invalid token. Try again.";
           loginError.classList.remove("hidden");
@@ -1509,16 +1513,38 @@
     }
 
     function endStream(chatId) {
-      activeStreams.delete(chatId);
-      if (chatId === activeChatId) updateSendBtn();
+      if (activeStreams.has(chatId)) {
+        activeStreams.delete(chatId);
+      } else if (activeChatId !== chatId && activeStreams.has(activeChatId)) {
+        // Session recovery migrated the stream to a new ID mid-flight.
+        // The stale chatId is already gone; clean up the migrated entry.
+        activeStreams.delete(activeChatId);
+      }
+      // Always refresh — chatId may have been renamed by session recovery,
+      // leaving activeChatId pointing at the new ID while the old one finishes.
+      updateSendBtn();
       _toggleStreamIndicator(chatId, false);
-      // Refresh context ring after message completes
-      fetch(`/api/chats/${chatId}/messages?limit=1`)
+      // Also clear indicator on migrated ID if different
+      if (activeChatId !== chatId) _toggleStreamIndicator(activeChatId, false);
+      // Bump updated_at so the chat jumps to top of sidebar — only re-render if it moved
+      const _bumpId = (activeChatId !== chatId) ? activeChatId : chatId;
+      const _meta = chatList.find(c => c.id === _bumpId);
+      if (_meta) {
+        // Check if already on top BEFORE bumping
+        const _wasFirst = chatList.filter(c => !c.id.startsWith('browser-'))
+          .sort((a, b) => (b.updated_at || b.created_at || '').localeCompare(a.updated_at || a.created_at || ''))[0];
+        const _needsMove = !_wasFirst || _wasFirst.id !== _bumpId;
+        _meta.updated_at = new Date().toISOString();
+        if (_needsMove) renderChats();
+      }
+      // Refresh context ring after message completes (use activeChatId if migrated)
+      const _ringId = (chatId !== activeChatId) ? activeChatId : chatId;
+      fetch(`/api/chats/${_ringId}/messages?limit=1`)
         .then(r => r.json())
         .then(d => {
           const chars = d.context_chars || 0;
-          contextCharsCache.set(chatId, chars);
-          if (chatId === activeChatId) {
+          contextCharsCache.set(_ringId, chars);
+          if (_ringId === activeChatId) {
             window._statusContextChars = chars;
             updateStatusBarContext();
           }
@@ -1972,22 +1998,22 @@
     function esc(s) { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
     const TN_API = "/api";
     async function tnFetch(path) {
-      const r = await fetch(TN_API + path, { headers: { authorization: "Bearer " + (localStorage.getItem("sable_token") || "") } });
+      const r = await fetch(TN_API + path);
       if (!r.ok) throw new Error(r.statusText);
       return r.json();
     }
     async function tnPost(path, body) {
-      const r = await fetch(TN_API + path, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + (localStorage.getItem("sable_token") || "") }, body: JSON.stringify(body) });
+      const r = await fetch(TN_API + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       if (!r.ok) throw new Error(r.statusText);
       return r.json();
     }
     async function tnPut(path, body) {
-      const r = await fetch(TN_API + path, { method: "PUT", headers: { "content-type": "application/json", authorization: "Bearer " + (localStorage.getItem("sable_token") || "") }, body: JSON.stringify(body) });
+      const r = await fetch(TN_API + path, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       if (!r.ok) throw new Error(r.statusText);
       return r.json();
     }
     async function tnDelete(path) {
-      const r = await fetch(TN_API + path, { method: "DELETE", headers: { authorization: "Bearer " + (localStorage.getItem("sable_token") || "") } });
+      const r = await fetch(TN_API + path, { method: "DELETE" });
       if (!r.ok) throw new Error(r.statusText);
       return r.json();
     }
@@ -2770,10 +2796,13 @@
           console.log('[approval] response status:', resp.status);
           banner.classList.add('ab-resolved');
           if (resp.ok && activePane) {
-            const note = document.createElement('div');
-            note.className = 'approval-chat-note';
-            note.textContent = '\u2713 Command approved \u2014 result saved for next turn';
-            activePane.querySelector('.messages')?.appendChild(note);
+            const card = createSkillCard({ name: name, data: { content: command } });
+            const status = card.querySelector('.skill-status');
+            status.textContent = 'approved \u2713';
+            status.style.color = 'var(--ok)';
+            const turn = activePane.querySelector('.turn:last-child');
+            const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
+            if (target) { target.appendChild(card); activateLucideIcons(card); }
             activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
           }
           if (resp.headers.get('content-type')?.includes('text/event-stream')) {
@@ -2806,9 +2835,18 @@
               out.className = 'ab-output';
               out.textContent = output.slice(0, 500);
               banner.appendChild(out);
+              // Also fill the skill card output in the chat
+              if (activePane) {
+                const lastCard = activePane.querySelector('.turn:last-child .skill-card:last-of-type');
+                if (lastCard) {
+                  lastCard.querySelector('.skill-output').textContent = output.slice(0, 2000);
+                  const st = lastCard.querySelector('.skill-status');
+                  if (st) { st.textContent = 'done \u2713'; st.style.color = 'var(--ok)'; }
+                }
+              }
             }
             // Auto-trigger model turn so it sees the result
-            setTimeout(() => sendAutoTurnMessage('[System: Command was approved and executed. Continue.]'), 300);
+            setTimeout(() => sendAutoTurnMessage('[System: Command was approved and executed. Continue.]', { skipUserBubble: true, skipUserSave: true }), 300);
           } else {
             const data = await resp.json();
             const st = document.createElement('span');
@@ -2839,10 +2877,13 @@
           const resp = await fetch('/api/skills/approve/' + id, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({chat_id: activeChatId, session: true}) });
           banner.classList.add('ab-resolved');
           if (resp.ok && activePane) {
-            const note = document.createElement('div');
-            note.className = 'approval-chat-note';
-            note.textContent = '\u2713 Approved for this session \u2014 same category won\u2019t ask again';
-            activePane.querySelector('.messages')?.appendChild(note);
+            const card = createSkillCard({ name: name, data: { content: command } });
+            const status = card.querySelector('.skill-status');
+            status.textContent = 'approved (session) \u2713';
+            status.style.color = 'var(--ok)';
+            const turn = activePane.querySelector('.turn:last-child');
+            const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
+            if (target) { target.appendChild(card); activateLucideIcons(card); }
             activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
           }
           const data = await resp.json();
@@ -2876,10 +2917,14 @@
         st.className = 'ab-status no';
         st.textContent = 'denied';
         if (activePane) {
-          const note = document.createElement('div');
-          note.className = 'approval-chat-note denied';
-          note.textContent = '✗ Command denied — model will be informed';
-          activePane.querySelector('.messages')?.appendChild(note);
+          const card = createSkillCard({ name: name, data: { content: command } });
+          const status = card.querySelector('.skill-status');
+          status.textContent = 'denied ✗';
+          status.style.color = 'var(--danger)';
+          card.querySelector('.skill-output').textContent = '[denied by user]';
+          const turn = activePane.querySelector('.turn:last-child');
+          const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
+          if (target) { target.appendChild(card); activateLucideIcons(card); }
           activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
         }
         banner.querySelector('.ab-actions').replaceWith(st);
@@ -3572,6 +3617,13 @@
               if (evt.chat_id && evt.chat_id !== activeChatId) {
                 const oldId = activeChatId;
                 activeChatId = evt.chat_id;
+                // Migrate the active stream entry so stop-button and
+                // isStreaming() keep working under the new ID.
+                const _ctrl = activeStreams.get(oldId);
+                if (_ctrl) {
+                  activeStreams.delete(oldId);
+                  activeStreams.set(activeChatId, _ctrl);
+                }
                 // Update sidebar entry ID
                 const sidebarBtn = document.querySelector(`[data-chat-id="${oldId}"]`);
                 if (sidebarBtn) sidebarBtn.dataset.chatId = activeChatId;
@@ -3582,6 +3634,7 @@
                   openTabs.delete(oldId);
                   openTabs.set(activeChatId, tabEntry);
                 }
+                updateSendBtn();
                 saveActiveChat();
                 console.log("[session-recovery] chat_id renamed:", oldId, "->", activeChatId);
               }
@@ -3822,7 +3875,8 @@
       }
 
       const filtered = q ? chatList.filter(c => (c.title || '').toLowerCase().includes(q)) : chatList;
-      const apiChats = filtered.filter(c => !c.id.startsWith('browser-'));
+      const apiChats = filtered.filter(c => !c.id.startsWith('browser-'))
+        .sort((a, b) => (b.updated_at || b.created_at || '').localeCompare(a.updated_at || a.created_at || ''));
       const scraperChats = filtered.filter(c => c.id.startsWith('browser-'));
 
       const __groupOf = (c) => {
@@ -5275,6 +5329,15 @@
       if (isStreaming()) {
         const ctrl = activeStreams.get(activeChatId);
         if (ctrl) ctrl.abort();
+        // Fallback: if abort doesn't end the stream within 3s, force-clean
+        const _stuckId = activeChatId;
+        setTimeout(() => {
+          if (activeStreams.has(_stuckId)) {
+            activeStreams.delete(_stuckId);
+            updateSendBtn();
+            _toggleStreamIndicator(_stuckId, false);
+          }
+        }, 3000);
         return;
       }
 
