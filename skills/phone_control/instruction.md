@@ -190,17 +190,20 @@ Check lock state anytime via `info`'s `lock_state` field (`locked` /
 lock check and no-ops if already unlocked:
 
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py unlock</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py unlock [pin]</execute_command>
 ```
 
 Behavior:
 1. Checks lock state first via `dumpsys` (`isStatusBarKeyguard` / `dumpsys trust`). If already unlocked, it's a no-op — `"Device already unlocked — no action taken."`
 2. If locked: wakes the screen, swipes up, then dumps the UI to see if a PIN/password field appeared.
-3. If a PIN field shows (or the state is ambiguous), types the stored PIN and presses Enter.
-4. Re-checks lock state and reports one of: unlocked via swipe, unlocked via PIN, still locked (warning), or state could not be confirmed (some ROMs don't expose the keyguard flag — treat this as "probably fine, verify with `dump` before proceeding" rather than a hard failure).
+3. If a PIN field shows (or the state is ambiguous) and a `pin` argument was supplied, types it and presses Enter.
+4. If a PIN is required but **no `pin` was provided**, the script returns an error telling you to supply one — in that case, ask the user for their unlock PIN/password, then re-run `unlock <pin>`.
+5. Re-checks lock state and reports one of: unlocked via swipe, unlocked via PIN, still locked (warning), or state could not be confirmed (some ROMs don't expose the keyguard flag — treat this as "probably fine, verify with `dump` before proceeding" rather than a hard failure).
 
-The PIN is stored as a constant in the script itself, not passed as an
-argument — never prompt the user for it or print it in logs/output.
+The PIN is **never stored** in the script — it is passed at runtime as
+`unlock <pin>`. If you don't already know it (e.g. from the user earlier in
+the session) and the device is locked, ask the user for the pass before
+retrying. Never print the PIN into chat, logs, or sequence files.
 
 If `unlock` reports still-locked or unconfirmed twice in a row, stop and
 report to the user rather than retrying indefinitely — repeated failed PIN
@@ -382,7 +385,7 @@ Read the dump output. Confirm the expected next screen elements are visible.
 
 ### Unlock then act
 ```xml
-<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py unlock</execute_command>
+<execute_command>python3 PROJECT_ROOT/skills/phone_control/scripts/adb_control.py unlock [pin]</execute_command>
 ```
 Check the result string for `still appears locked` before proceeding — don't
 chain further taps onto a lock screen.
@@ -399,5 +402,5 @@ chain further taps onto a lock screen.
 6. **Handle NOT_FOUND gracefully.** If `tap_text` fails, run `dump` to see what's actually on screen, then re-plan.
 7. **One action, one step.** Never try to combine multiple UI actions in a single `execute_command` unless using `&&` for truly atomic sequences.
 8. **Report coordinates used.** Always state which element was resolved and at which coordinates — no silent guesses.
-9. **Never surface the unlock PIN.** It lives in the script as a constant — don't echo it into chat, logs, or sequence files.
+9. **Never surface the unlock PIN.** It's passed at runtime as an argument — don't echo it into chat, logs, or sequence files.
 10. **Don't retry `unlock` more than once on failure.** Repeated wrong-PIN attempts risk tripping Android's lockout screen. Stop and report instead.
