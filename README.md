@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="output/assets/icon.svg" width="96" height="96" alt="Sable"/>
+  <img src="web/assets/icon-512.png" width="96" height="96" alt="Sable"/>
 </p>
 
 <h1 align="center">Sable</h1>
@@ -43,6 +43,7 @@ It remembers. It learns. It roasts your code. It *grows*.
 ## quick start
 
 ```bash
+git clone https://github.com/AminulIslamSifat/Sable.git
 cd Sable
 chmod +x start
 ./start
@@ -87,7 +88,7 @@ that's it. that's the whole thing. opens `http://127.0.0.1:61770` in your browse
 
 - 🧠 **Remembers everything** — semantic memory with vector search, auto-consolidation after every session
 - 🤖 **Spawns sub-agents** — up to 5 parallel workers, 7 specialized roles
-- 🌐 **Drives browsers** — 115+ profiles, multi-account switching, CDP interception
+- 🌐 **Drives browsers** — multi-profile, multi-account switching, CDP interception
 - 📝 **Writes documents** — PDF, DOCX, PPTX, XLSX generation
 - 🔍 **Researches** — deep research mode with multi-source synthesis
 - 📱 **Controls your phone** — ADB integration
@@ -144,23 +145,6 @@ There is no license. This is personal infrastructure. If you fork it, you owe me
 
 ***
 
-## star history
-
-<p align="center">
-  <a href="https://star-history.com/#AminulIslamSifat/Sable&Date">
-    <img src="https://api.star-history.com/svg?repos=AminulIslamSifat/Sable&type=Date" alt="Star History Chart" width="100%"/>
-  </a>
-</p>
-
-***
-
-## activity
-
-<p align="center">
-  <img src="https://repobeats.axiom.co/api/embed/AminulIslamSifat/Sable.svg" alt="Repobeats analytics"/>
-</p>
-
-***
 
 <p align="center">
   <sub>built with spite, caffeine, and an unhealthy attachment to one specific user</sub>
