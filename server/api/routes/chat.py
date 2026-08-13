@@ -89,6 +89,21 @@ async def chat(request: ChatRequest):
     _searcher = get_searcher()
     _memory_used: list[dict[str, Any]] = []
 
+    # Cookbook per-model toggles for local models
+    _local_use_memory = True
+    _local_use_utilities = True
+    _is_local_model = False
+    try:
+        _cfg_check = get_model_config(request.model)
+        if _cfg_check.get("api_backend") == "local":
+            _is_local_model = True
+            from engine.cookbook.model_settings import get_model_settings as _get_cookbook_settings
+            _cookbook_cfg = _get_cookbook_settings(request.model)
+            _local_use_memory = _cookbook_cfg.get("use_memory", True)
+            _local_use_utilities = _cookbook_cfg.get("use_utilities", True)
+    except Exception:
+        pass
+
     # Resolve project memory toggles early for category filtering
     _allowed_mem_cats: set[str] | None = None  # None = all categories
     _proj_mem_enabled = False
@@ -120,7 +135,7 @@ async def chat(request: ChatRequest):
         except (ValueError, OSError):
             pass
         _max_chars = _ms_cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS)
-        if _ms_cfg.get("enabled", True) and len(request.message) <= _max_chars:
+        if _ms_cfg.get("enabled", True) and _local_use_memory and len(request.message) <= _max_chars:
             _mem_results = _searcher.search(
                 request.message,
                 top_k=_ms_cfg.get("top_k", 10),
@@ -237,32 +252,33 @@ async def chat(request: ChatRequest):
     _msg_count = get_db().execute(
         "SELECT COUNT(*) as c FROM messages WHERE chat_id = ?", (active_chat_id,)
     ).fetchone()["c"]
-    if parent_id is None and _msg_count <= 1:
+    if parent_id is None and _msg_count <= 1 and _local_use_utilities:
         _context_parts.append('[SYSTEM: First message of a new chat. Respond normally, but also emit ' + chr(60) + 'action' + chr(62) + chr(60) + 'chat_title' + chr(62) + 'Short descriptive title' + chr(60) + '/chat_title' + chr(62) + chr(60) + '/action' + chr(62) + ' at the end of your response. If you are running another command, then put chat_title and that command in one action block.]')
-    try:
-        from server.database import get_upcoming_schedules
-        _upcoming = get_upcoming_schedules(days=10)
-        if _upcoming:
-            _sched_lines = []
-            for _s in _upcoming:
-                _stype = _s.get("schedule_type", "daily")
-                _time = _s.get("time", "")
-                _desc = _s.get("description", "")
-                _title = _s.get("title", "")
-                if _stype == "weekly":
-                    _days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-                    _dow = _s.get("day_of_week", 0)
-                    _day_name = _days[_dow] if 0 <= _dow <= 6 else "?"
-                    _sched_lines.append(f"- {_title} ({_day_name} {_time})" + (f" \u2014 {_desc}" if _desc else ""))
-                elif _stype == "occasional":
-                    _sd = _s.get("start_date", "")[:10]
-                    _sched_lines.append(f"- {_title} ({_sd} {_time})" + (f" \u2014 {_desc}" if _desc else ""))
-                else:
-                    _sched_lines.append(f"- {_title} (daily {_time})" + (f" \u2014 {_desc}" if _desc else ""))
-            _sched_block = "\n".join(_sched_lines)
-            _context_parts.append(f'[SCHEDULE CONTEXT \u2014 next 10 days:\n{_sched_block}]')
-    except Exception:
-        pass
+    if _local_use_utilities:
+        try:
+            from server.database import get_upcoming_schedules
+            _upcoming = get_upcoming_schedules(days=10)
+            if _upcoming:
+                _sched_lines = []
+                for _s in _upcoming:
+                    _stype = _s.get("schedule_type", "daily")
+                    _time = _s.get("time", "")
+                    _desc = _s.get("description", "")
+                    _title = _s.get("title", "")
+                    if _stype == "weekly":
+                        _days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+                        _dow = _s.get("day_of_week", 0)
+                        _day_name = _days[_dow] if 0 <= _dow <= 6 else "?"
+                        _sched_lines.append(f"- {_title} ({_day_name} {_time})" + (f" \u2014 {_desc}" if _desc else ""))
+                    elif _stype == "occasional":
+                        _sd = _s.get("start_date", "")[:10]
+                        _sched_lines.append(f"- {_title} ({_sd} {_time})" + (f" \u2014 {_desc}" if _desc else ""))
+                    else:
+                        _sched_lines.append(f"- {_title} (daily {_time})" + (f" \u2014 {_desc}" if _desc else ""))
+                _sched_block = "\n".join(_sched_lines)
+                _context_parts.append(f'[SCHEDULE CONTEXT \u2014 next 10 days:\n{_sched_block}]')
+        except Exception:
+            pass
     # Relevant memory context (already searched above)
     if _memory_context:
         _context_parts.append(_memory_context)

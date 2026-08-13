@@ -18,6 +18,8 @@ _SETTINGS_FILE = Path(__file__).resolve().parent.parent.parent / "system" / "coo
 _DEFAULTS: dict[str, Any] = {
     "use_maria": True,
     "use_output_format": True,
+    "use_memory": True,
+    "use_utilities": True,
     "skills": [],
     "distilled": False,
 }
@@ -56,7 +58,7 @@ def update_model_settings(model_id: str, updates: dict[str, Any]) -> dict[str, A
     all_settings = _load()
     current = all_settings.get(model_id, dict(_DEFAULTS))
 
-    for key in ("use_maria", "use_output_format", "distilled"):
+    for key in ("use_maria", "use_output_format", "use_memory", "use_utilities", "distilled"):
         if key in updates:
             current[key] = bool(updates[key])
     if "skills" in updates:

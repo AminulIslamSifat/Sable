@@ -841,6 +841,16 @@ async def _call_llm(
     cfg = get_model_config(agent.model)
     backend = cfg.get("api_backend")
 
+    # Debug: log every LLM dispatch to see what's actually being routed
+    try:
+        from engine.config import OUTPUT_ROOT as _out_root
+        _dbg = _out_root / "llm_dispatch_log.txt"
+        with open(_dbg, "a") as _df:
+            from datetime import datetime as _dt
+            _df.write(f"{_dt.now().isoformat()} | model={agent.model} | backend={backend} | msg_len={len(message)}\n")
+    except Exception:
+        pass
+
     if backend == "deepseek":
         return await _call_deepseek(agent, message)
     if backend in ("gemini", "groq", "mistral"):
@@ -1019,6 +1029,24 @@ async def _call_local(agent: Agent, message: str) -> tuple[str, str | None]:
         "messages": messages,
         "stream": True,
     }
+
+    # Debug: dump full payload to log file for local model inspection
+    try:
+        from engine.config import OUTPUT_ROOT as _out_root
+        _log_file = _out_root / "local_model_payload.txt"
+        _log_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(_log_file, "a", encoding="utf-8") as _f:
+            from datetime import datetime as _dt
+            _f.write(f"\n{'='*80}\n")
+            _f.write(f"TIMESTAMP: {_dt.now().isoformat()}\n")
+            _f.write(f"MODEL: {api_model}\n")
+            _f.write(f"ENDPOINT: {endpoint}\n")
+            _f.write(f"MESSAGE COUNT: {len(messages)}\n")
+            _f.write(f"{'='*80}\n")
+            _f.write(json.dumps(payload, indent=2, ensure_ascii=False))
+            _f.write("\n")
+    except Exception:
+        pass  # never let logging break inference
 
     accumulated = ""
     async with httpx.AsyncClient(timeout=300.0) as client:
