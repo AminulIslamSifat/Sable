@@ -51,6 +51,11 @@ class LocalConnector:
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream chat completion from local model."""
+        # Pop db_history from kwargs (passed by chat route for session seeding)
+        db_history = kwargs.pop("db_history", None)
+        if db_history and not history:
+            history = db_history
+
         # Build system prompt: explicit > cookbook settings > empty
         effective_prompt = system_prompt
         if not effective_prompt and inject_instructions:
@@ -69,7 +74,14 @@ class LocalConnector:
             messages.append({"role": "system", "content": effective_prompt})
         if history:
             messages.extend(history)
-        messages.append({"role": "user", "content": message})
+        # Avoid duplicating the current message if db_history already includes it
+        if not (messages and messages[-1].get("role") == "user" and messages[-1].get("content") == message):
+            messages.append({"role": "user", "content": message})
+
+        # Determine thinking mode from parameter
+        _enable_thinking = False
+        if thinking_mode and thinking_mode != "fast":
+            _enable_thinking = True
 
         payload = {
             "model": model or "default",
@@ -77,7 +89,27 @@ class LocalConnector:
             "stream": True,
             "temperature": kwargs.get("temperature", 0.7),
             "max_tokens": kwargs.get("max_tokens", 4096),
+            "chat_template_kwargs": {"enable_thinking": _enable_thinking},
         }
+
+        # Debug: dump full payload to log file
+        try:
+            from engine.config import OUTPUT_ROOT as _out_root
+            import json as _json
+            _log_file = _out_root / "local_model_payload.txt"
+            _log_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(_log_file, "a", encoding="utf-8") as _f:
+                from datetime import datetime as _dt
+                _f.write(f"\n{'='*80}\n")
+                _f.write(f"TIMESTAMP: {_dt.now().isoformat()}\n")
+                _f.write(f"MODEL: {model}\n")
+                _f.write(f"ENDPOINT: {self._endpoint}\n")
+                _f.write(f"MESSAGE COUNT: {len(messages)}\n")
+                _f.write(f"{'='*80}\n")
+                _f.write(_json.dumps(payload, indent=2, ensure_ascii=False))
+                _f.write("\n")
+        except Exception:
+            pass
 
         try:
             async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
@@ -102,7 +134,10 @@ class LocalConnector:
                             import json
                             chunk = json.loads(data)
                             delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            reasoning = delta.get("reasoning_content", "")
                             content = delta.get("content", "")
+                            if reasoning:
+                                yield {"type": "thinking", "text": reasoning}
                             if content:
                                 yield {"type": "answer", "text": content}
                         except (ValueError, IndexError, KeyError):

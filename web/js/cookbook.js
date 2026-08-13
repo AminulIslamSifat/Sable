@@ -542,7 +542,7 @@
       } catch (e) { /* no settings yet */ }
 
       container.innerHTML = models.map(m => {
-        const cfg = allSettings[m.id] || { use_maria: true, use_output_format: true, skills: [], distilled: false };
+        const cfg = allSettings[m.id] || { use_maria: true, use_output_format: true, use_memory: true, use_utilities: true, skills: [], distilled: false };
         const isDistilled = cfg.distilled;
         const disabledAttr = isDistilled ? "disabled" : "";
         const grayClass = isDistilled ? "cb-ms-grayed" : "";
@@ -570,6 +570,14 @@
             <label class="cb-ms-toggle">
               <input type="checkbox" ${cfg.use_output_format ? "checked" : ""} ${disabledAttr} data-model="${m.id}" data-key="use_output_format">
               <span>output_format.md</span>
+            </label>
+            <label class="cb-ms-toggle">
+              <input type="checkbox" ${cfg.use_memory ? "checked" : ""} ${disabledAttr} data-model="${m.id}" data-key="use_memory">
+              <span>Memory</span>
+            </label>
+            <label class="cb-ms-toggle">
+              <input type="checkbox" ${cfg.use_utilities ? "checked" : ""} ${disabledAttr} data-model="${m.id}" data-key="use_utilities">
+              <span>Utilities <em class="muted">(schedule, chat_title)</em></span>
             </label>
             <div class="cb-ms-skills">
               <div class="cb-ms-skills-label">Skills</div>
