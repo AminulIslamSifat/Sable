@@ -5112,10 +5112,12 @@
           }
           const data = await res.json();
           if (data.status === "ok") {
-            if (data.added > 0 || data.deleted > 0) {
+            if (data.added > 0 || data.deleted > 0 || data.dedup_skipped > 0 || data.dedup_updated > 0) {
               const parts = [];
               if (data.added) parts.push(`${data.added} added`);
               if (data.deleted) parts.push(`${data.deleted} deleted`);
+              if (data.dedup_skipped) parts.push(`${data.dedup_skipped} merged`);
+              if (data.dedup_updated) parts.push(`${data.dedup_updated} updated`);
               showToast(`🧠 ${parts.join(", ")}`, "success");
             } else {
               showToast("🧠 Nothing new worth remembering", "info");
@@ -7576,7 +7578,6 @@
 
     // === Memory Search Settings ===
     const msModelSelect = document.getElementById("msModelSelect");
-    const msTopK = document.getElementById("msTopK");
     const msThresholdEditor = document.getElementById("msThresholdEditor");
     const msEnabled = document.getElementById("msEnabled");
     const msSaveBtn = document.getElementById("msSaveBtn");
@@ -7629,7 +7630,9 @@
           if (m.id === data.current_model) opt.selected = true;
           msModelSelect.appendChild(opt);
         });
-        msTopK.value = data.top_k || 10;
+        document.getElementById("msTopMemory").value = data.top_memory || 5;
+        document.getElementById("msTopProcedural").value = data.top_procedural || 3;
+        document.getElementById("msTopTotal").value = data.top_total || 9;
         document.getElementById("msMaxChars").value = data.max_prompt_chars || 20000;
         buildThresholdEditor(data.available_models, data.model_thresholds);
         msEnabled.checked = data.enabled !== false;
@@ -7649,7 +7652,9 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             model: msModelSelect.value,
-            top_k: parseInt(msTopK.value) || 10,
+            top_memory: parseInt(document.getElementById("msTopMemory").value) || 5,
+            top_procedural: parseInt(document.getElementById("msTopProcedural").value) || 3,
+            top_total: parseInt(document.getElementById("msTopTotal").value) || 9,
             max_prompt_chars: parseInt(document.getElementById("msMaxChars").value) || 20000,
             model_thresholds: modelThresholds,
             enabled: msEnabled.checked,
@@ -7746,7 +7751,9 @@
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: msModelSelect.value,
-          top_k: parseInt(msTopK.value) || 10,
+          top_memory: parseInt(document.getElementById("msTopMemory").value) || 5,
+          top_procedural: parseInt(document.getElementById("msTopProcedural").value) || 3,
+          top_total: parseInt(document.getElementById("msTopTotal").value) || 9,
           max_prompt_chars: parseInt(document.getElementById("msMaxChars").value) || 20000,
           model_thresholds: modelThresholds,
           enabled: msEnabled.checked,

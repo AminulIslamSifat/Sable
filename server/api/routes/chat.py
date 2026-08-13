@@ -121,7 +121,14 @@ async def chat(request: ChatRequest):
             pass
         _max_chars = _ms_cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS)
         if _ms_cfg.get("enabled", True) and len(request.message) <= _max_chars:
-            _mem_results = _searcher.search(request.message, top_k=_ms_cfg.get("top_k", 10), allowed_categories=_allowed_mem_cats)
+            _mem_results = _searcher.search(
+                request.message,
+                top_k=_ms_cfg.get("top_k", 10),
+                allowed_categories=_allowed_mem_cats,
+                top_memory=_ms_cfg.get("top_memory"),
+                top_procedural=_ms_cfg.get("top_procedural"),
+                top_total=_ms_cfg.get("top_total"),
+            )
             _new_results = [r for r in _mem_results if r.get("key") and r["key"] not in _injected_memory_keys]
             if _new_results:
                 _mem_block = _searcher.format_for_prompt(_new_results)
@@ -902,6 +909,9 @@ async def chat(request: ChatRequest):
                     _max_chars_tool = _ms_cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS)
                     if _ms_cfg.get("enabled", True) and feedback and len(feedback) <= _max_chars_tool:
                         _top_k = _ms_cfg.get("top_k", 10)
+                        _tm = _ms_cfg.get("top_memory")
+                        _tp = _ms_cfg.get("top_procedural")
+                        _tt = _ms_cfg.get("top_total")
                         # Multi-source memory search: tool result + model response + tool call inputs
                         _search_queries: list[str] = [feedback[:800]]
                         # Source 2: model response text this round
@@ -919,7 +929,7 @@ async def chat(request: ChatRequest):
                             if not _q.strip():
                                 continue
                             try:
-                                for r in _searcher.search(_q, top_k=_top_k, allowed_categories=_allowed_mem_cats):
+                                for r in _searcher.search(_q, top_k=_top_k, allowed_categories=_allowed_mem_cats, top_memory=_tm, top_procedural=_tp, top_total=_tt):
                                     _mk = r.get("key", "")
                                     if _mk and _mk not in _seen_mem_keys and _mk not in _injected_memory_keys:
                                         _seen_mem_keys.add(_mk)

@@ -13,6 +13,14 @@ _CATEGORY_DEFS = (
     "  Episodic memories decay over time — be stricter about what qualifies.\n"
     "- procedural: How things are done — workflows, coding patterns, communication formats,\n"
     "  preferred approaches. Shapes agent behavior rather than knowledge.\n"
+    "  PROCEDURAL ENTRIES REQUIRE TWO EXTRA FIELDS:\n"
+    "    - \"trigger\": short phrase describing WHEN this procedure should activate\n"
+    "      (e.g. \"when editing CSS files\", \"on agent loop exit with high tool count\")\n"
+    "    - \"keywords\": JSON array of 2-5 keyword strings for fast matching\n"
+    "      (e.g. [\"css\", \"edit\", \"hdd\"], [\"agent\", \"loop\", \"tool_calls\"])\n"
+    "  Be AGGRESSIVE about extracting procedural memory. Any repeated workflow,\n"
+    "  debugging sequence, fix pattern, or user-corrected approach is procedural.\n"
+    "  If the user corrected how something was done, that correction IS a procedure.\n"
     "- protected: Credentials, API keys, sudo configs, security-sensitive paths, identity info.\n"
     "  IMMUNE TO DELETION. Never include protected keys in the delete list.\n"
     "- ephemeral: Time-bound workarounds, version-specific hacks, active debugging notes.\n"
@@ -46,7 +54,7 @@ _OUTPUT_FORMAT = (
     '  "add": {\n'
     '    "semantic": [{"key": "short_label", "value": "dense specific fact"}],\n'
     '    "episodic": [{"key": "short_label", "value": "context-rich event record"}],\n'
-    '    "procedural": [{"key": "short_label", "value": "workflow or pattern description"}],\n'
+    '    "procedural": [{"key": "short_label", "value": "workflow or pattern description", "trigger": "when X happens", "keywords": ["kw1", "kw2"]}],\n'
     '    "protected": [{"key": "short_label", "value": "credential or sensitive config"}],\n'
     '    "ephemeral": [{"key": "short_label", "value": "temporary note", "expires_at": "2026-08-15T00:00:00"}]\n'
     '  },\n'
@@ -55,6 +63,7 @@ _OUTPUT_FORMAT = (
     'Rules:\n'
     '- Keys: short, descriptive, snake_case preferred. Must be unique within category.\n'
     '- Values: self-contained, specific, searchable. No vague summaries.\n'
+    '- Procedural entries MUST include "trigger" (string) and "keywords" (array of 2-5 strings).\n'
     '- Delete list: exact key strings from CURRENT MEMORY STORE. NEVER delete protected keys.\n'
     '- If nothing qualifies: {"add":{"semantic":[],"episodic":[],"procedural":[],"protected":[],"ephemeral":[]},"delete":[]}\n'
 )
@@ -94,6 +103,48 @@ _CONSOLIDATE_PROMPT_TEMPLATE_STANDALONE = (
 # ---------------------------------------------------------------------------
 # User Personality Assessment — purely analytical, clinical, data-driven
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Merge / Dedup Resolution — second-pass LLM call for conflicting candidates
+# ---------------------------------------------------------------------------
+
+_MERGE_RESOLUTION_PROMPT = (
+    "[SYSTEM: Memory merge resolution. Decide how to handle new candidate memories that are "
+    "similar to existing ones.]\n\n"
+    "Below are CANDIDATE entries (from a consolidation pass) paired with EXISTING memories "
+    "they are similar to.\n\n"
+    "<<CANDIDATE_PAIRS>>\n\n"
+    "TASK: For each candidate, decide ONE action:\n"
+    "- accept: The candidate is genuinely distinct. Add it as-is.\n"
+    "- skip: The candidate is redundant with the existing entry. Discard the candidate.\n"
+    "- merge: Combine the candidate and existing entry into ONE better entry. "
+    "Provide the merged key+value. The existing entry will be replaced.\n"
+    "- replace: The candidate supersedes the existing entry. "
+    "The existing entry will be deleted and the candidate added.\n\n"
+    "RULES:\n"
+    "- Protected entries can NEVER be deleted or replaced. Only 'skip' or 'accept' for those.\n"
+    "- Prefer fewer, denser entries. When in doubt between merge and accept, choose merge.\n"
+    "- 'replace' only when the candidate clearly corrects or updates outdated info.\n"
+    "- Be decisive. Don't hedge.\n\n"
+    'OUTPUT: Raw JSON only. No markdown fences, no commentary.\n'
+    'Format:\n'
+    '{\n'
+    '  "decisions": [\n'
+    '    {\n'
+    '      "candidate_key": "exact key from candidate",\n'
+    '      "category": "semantic|episodic|procedural|protected|ephemeral",\n'
+    '      "action": "accept|skip|merge|replace",\n'
+    '      "existing_key": "key of matched existing entry (null if accept with no match)",\n'
+    '      "merged_value": "combined value text (only when action=merge, null otherwise)",\n'
+    '      "merged_trigger": "merged trigger phrase (only for procedural merge, null otherwise)",\n'
+    '      "merged_keywords": ["merged keyword array"] (only for procedural merge, null otherwise)\n'
+    '    }\n'
+    '  ]\n'
+    '}\n'
+    '- One decision per candidate. Every candidate MUST have exactly one decision.\n'
+    '- If no candidates were provided: {"decisions": []}\n'
+)
+
 
 _PERSONALITY_OUTPUT_FORMAT = (
     'OUTPUT: Raw JSON only. No markdown fences, no commentary.\n'
