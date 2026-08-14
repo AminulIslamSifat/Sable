@@ -27,6 +27,16 @@ MAX_CONTEXT_CHARS = 12000
 DEFAULT_MAX_TOOL_OUTPUT_CHARS = 100_000
 
 
+def _get_teacher_failure_threshold() -> int:
+    """Load teacher.failure_threshold from agent_config.json (default 3)."""
+    from engine.config import AGENT_CONFIG_PATH
+    try:
+        cfg = json.loads(AGENT_CONFIG_PATH.read_text(encoding="utf-8"))
+        return int(cfg.get("teacher", {}).get("failure_threshold", 3))
+    except Exception:
+        return 3
+
+
 def _get_max_tool_output_chars() -> int:
     """Read tool output cap from system/settings.json (default 100k)."""
     try:
@@ -268,6 +278,8 @@ async def run_agent_llm_loop(
     # Session state
     parent_id: str | None = None  # Qwen parent tracking
     is_first_turn = True
+    consecutive_failures = 0
+    failure_threshold = _get_teacher_failure_threshold()
 
     # Main loop
     current_message = first_message
@@ -490,6 +502,8 @@ async def run_agent_llm_loop(
 
                 if tag_name not in agent.skills_used:
                     agent.skills_used.append(tag_name)
+                consecutive_failures = 0  # reset on success
+
             except asyncio.CancelledError:
                 agent.push_stream_event({"type": "skill_end", "name": tag_name, "ok": False, "error": "Killed"})
                 raise
@@ -497,6 +511,16 @@ async def run_agent_llm_loop(
                 agent.push_stream_event({"type": "skill_end", "name": tag_name, "ok": False, "error": str(exc)})
                 tool_results.append(f"SKILL ERROR ({tag_name}): {type(exc).__name__}: {exc}")
                 agent.error_recoveries += 1
+                consecutive_failures += 1
+                if consecutive_failures >= failure_threshold:
+                    guidance = await _try_teacher_escalation(
+                        agent,
+                        f"Agent hit {consecutive_failures} consecutive tool failures. "
+                        f"Last error: {type(exc).__name__}: {exc}"
+                    )
+                    if guidance:
+                        tool_results.append(f"[TEACHER GUIDANCE]: {guidance}")
+                    consecutive_failures = 0  # reset after intervention attempt
 
         # Extract image paths from skill results for multimodal injection next round
         from engine.config import get_model_config as _get_agent_model_cfg
@@ -544,19 +568,7 @@ async def run_agent_llm_loop(
             )
             await _persist_message(agent.id, "tool", tool_msg)
 
-    # Hit max iterations — try teacher before forcing final answer
-    teacher_guidance = await _try_teacher_escalation(
-        agent, f"Agent hit max iterations ({max_iterations}) without completing."
-    )
-    if teacher_guidance:
-        # Give the agent one more chance with teacher guidance
-        guided_msg = f"[MENTOR INTERVENTION]\n{teacher_guidance}\n\nYou have ONE final attempt. Provide your best markdown answer now."
-        agent.messages.append({"role": "user", "content": guided_msg})
-        await _persist_message(agent.id, "user", guided_msg)
-        response_text, _ = await _send_with_retry(agent, guided_msg, parent_id, breakers, False)
-        return response_text
-
-    # No teacher or teacher failed — force final answer
+    # Hit max iterations — force final answer (no teacher; running out of steps isn't a failure)
     force_msg = "Maximum steps reached. Provide your final markdown answer NOW with whatever you have. Use proper ## headers for each section."
     agent.messages.append({"role": "user", "content": force_msg})
     await _persist_message(agent.id, "user", force_msg)
