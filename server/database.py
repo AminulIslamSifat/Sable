@@ -662,6 +662,15 @@ def delete_chat(chat_id: str) -> bool:
         cur = conn.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
         return cur.rowcount > 0
 
+def delete_all_chats() -> int:
+    """Delete ALL chats, messages, and skill_events. Returns number of chats removed."""
+    with get_db() as conn:
+        conn.execute("DELETE FROM skill_events")
+        conn.execute("DELETE FROM messages")
+        cur = conn.execute("DELETE FROM chats")
+        return cur.rowcount
+
+
 def get_chat_tail_id(chat_id: str) -> str | None:
     """Return the id of the latest message in a chat (server-side canonical tail).
 
