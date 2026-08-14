@@ -9,7 +9,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from engine.scraper import get_settings as get_scraper_settings
 from server.database import (
-    ensure_chat, list_chats, get_messages, delete_chat, search_messages,
+    ensure_chat, list_chats, get_messages, delete_chat, delete_all_chats,
+    search_messages,
     get_skill_events_for_message, list_projects, create_project, update_project,
     delete_project, get_project,
 )
@@ -230,6 +231,13 @@ def message_skill_events(chat_id: str, message_id: int) -> dict[str, Any]:
     """Lazy-load skill events for a specific message."""
     events = get_skill_events_for_message(message_id)
     return {"message_id": message_id, "skill_events": events}
+
+@router.delete("/api/chats")
+def delete_all_chats_route() -> dict[str, Any]:
+    """Bulk delete all chats (called from Settings → Delete All Chats)."""
+    count = delete_all_chats()
+    return {"deleted": True, "chats_removed": count}
+
 
 @router.delete("/api/chats/{chat_id}")
 def delete_chat_route(chat_id: str) -> dict[str, Any]:

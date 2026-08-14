@@ -460,15 +460,15 @@ class MemorySearcher:
         self._trigger_tokens = []
         self._source_query_tokens = []
 
-        # Load main memory (all categories including procedural stored here)
-        # Procedural.json is ALSO loaded separately below for legacy entries
+        # Load main memory (semantic, episodic, ephemeral only)
+        # Procedural entries are loaded exclusively from Procedural.json below
         if self._memory_path.exists():
             try:
                 data = json.loads(self._memory_path.read_text(encoding="utf-8"))
             except Exception:
                 data = {}
             if isinstance(data, dict):
-                for cat_key in ("semantic", "episodic", "ephemeral", "procedural"):
+                for cat_key in ("semantic", "episodic", "ephemeral"):
                     for e in data.get(cat_key, []):
                         if not isinstance(e, dict):
                             continue
