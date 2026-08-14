@@ -43,6 +43,7 @@ _CATEGORY_DEFS = (
 
 _SELECTIVITY_RULES = (
     "SELECTIVITY GATE (apply BEFORE adding any entry):\n"
+    "[!MOST IMPORTANT] BEFORE ADDING ANY ENTRY CHECK IF RELEVANT MEMORY HAS ANY DUPLICATE, SIMILAR OR CONTRADICTORY MEMORY CONTENT, IF THERE IS THEN MERGE (DELETE EXISTING ALL AND ADDING NEW MERGED ONE), DELETE OR UPDATE THEM."
     "1. Would a future session actually search for this? If uncertain, skip it.\n"
     "2. DEDUP CHECK (mandatory): Scan CURRENT MEMORY STORE keys. If ANY existing key\n"
     "   covers the same topic — even with different wording — do NOT add a new entry.\n"
