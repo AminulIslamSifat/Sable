@@ -5,8 +5,10 @@ from __future__ import annotations
 import gc
 import json
 import logging
+import math
 import re
 import threading
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -29,34 +31,31 @@ def _cache_path_for(model_name: str, base_dir: Path | None = None) -> Path:
     d = base_dir if base_dir else _CACHE_DIR
     return d / f"memory_cache_{slug}.npz"
 
-# Empirically calibrated (2026-07-27) against the hybrid score
-# (0.7*vector + 0.3*keyword) via calibrate_thresholds.py — each value sits
-# between that model's false-positive ceiling and true-match floor.
-# NOTE: thenlper/gte-base could NOT be calibrated — fastembed returns ragged
-# embeddings for it (numpy "inhomogeneous shape" error on load), so it's
-# currently unusable anyway; its value below is just the old guess.
-# Calibrated 2026-07-28 (v2) against hybrid score (0.7v + 0.3k) using 50
-# clean user prompts (memory-context prefix stripped) vs 85-entry Memory.json.
-# balanced = midpoint(p25, median).
+# Calibrated 2026-08-14 for IDF-weighted hybrid fusion
+# Threshold: garbage ceiling ~0.26, true-match floor ~0.40
 MODEL_THRESHOLDS: dict[str, float] = {
-    "jinaai/jina-embeddings-v2-small-en": 0.641,
-    "snowflake/snowflake-arctic-embed-xs": 0.594,
-    "BAAI/bge-small-en-v1.5": 0.538,
-    "google/gemini-embedding-001": 0.55,  # uncalibrated — needs threshold tuning
+    "jinaai/jina-embeddings-v2-small-en": 0.30,
+    "snowflake/snowflake-arctic-embed-xs": 0.30,
+    "BAAI/bge-small-en-v1.5": 0.30,
+    "google/gemini-embedding-001": 0.30,
 }
 
 DEFAULT_MODEL = "snowflake/snowflake-arctic-embed-xs"
-DEFAULT_TOP_K = 10
+DEFAULT_TOP_K = 5
 
-VECTOR_WEIGHT = 0.7
-KEYWORD_WEIGHT = 0.3
+# Hybrid fusion weights (2026-08-14 benchmark calibrated)
+VECTOR_WEIGHT = 0.25
+KEYWORD_WEIGHT = 0.05
+KEY_TOKEN_WEIGHT = 0.05
+TRIGGER_IDF_WEIGHT = 0.40
+SOURCE_QUERY_WEIGHT = 0.20
 PROTECTED_BOOST = 0.15
 EPISODIC_DECAY_RATE = 0.95  # Score multiplier per day since last access
 
 _STOPWORDS = frozenset({
     "the","a","an","is","are","was","were","be","been","being",
     "have","has","had","do","does","did","will","would","could","should",
-    "may","might","shall","can","need","to","of","in","for","on","with",
+    "may","might","shall","can","need","dare","to","of","in","for","on","with",
     "at","by","from","as","into","through","during","before","after",
     "above","below","between","out","off","over","under","again","then",
     "once","here","there","when","where","why","how","all","both","each",
@@ -65,11 +64,76 @@ _STOPWORDS = frozenset({
     "or","if","while","about","what","which","who","whom","this","that",
     "these","those","i","me","my","we","our","you","your","he","him",
     "his","she","her","it","its","they","them","their",
+    "up","down","also","now","any","get","got","make","take","see",
+    "know","want","let","say","go","come","think","give","use","find",
+    "tell","ask","work","seem","feel","try","leave","call","keep",
+    "look","looks","looking","looked",
+    "put","mean","become","show","run","move","like","thing","way",
+    "back","still","new","one","two","first","last","long","great",
+    "little","old","right","big","high","small","large","next",
+    "early","young","important","public","bad","good","well","done",
+    # Casual insults / filler — high frequency in user prompts, zero retrieval value
+    "fuck","fucking","fucked","shit","shitty","damn","dumbass","idiot","idiotic",
+    "moron","stupid","dumb","wtf","hell","crap","piss","ass","bullshit",
+    "motherfucker","motherfucking","dumbfuck","dipshit","asshole","bitch",
+    "ok","okay","hey","hi","hello","please","thanks","thank","yeah","nah",
+    "seriously","literally","actually","basically","honestly",
+    # Vague/filler words with zero retrieval signal
+    "actual","something","anything","everything","nothing","someone","anyone",
+    "everyone","nobody","somebody","anyway","random","vibing","lol","lmao",
+    "help","sure","really","maybe","ever","never","always","much","many",
+    "lot","bit","kind","sort","stuff","things","regardless","whatever",
+    "somehow","somewhere","everywhere","nowhere","huh","wtf","bruh","yo",
 })
 
 
+# Regex to find file paths in queries (tool calls pass raw paths as content)
+_PATH_RE = re.compile(r"[/~][\w./\-]+")
+# Directory names with trailing slash (e.g. "includes/", "layouts/", "backup/")
+_DIR_RE = re.compile(r"\b\w+/\s")
+# Standalone file extensions like .css .json .bak that leak from listings
+_EXT_RE = re.compile(r"\b[\w\-]+\.(?:css|json|jsonc|js|ts|py|md|txt|html|bak|toml|yaml|yml|conf|cfg|log|sh|rs|go|c|h|svg|xml)\b")
+# Generic path components with zero retrieval value
+_PATH_NOISE = frozenset({
+    "home", "usr", "local", "bin", "lib", "etc", "var", "tmp", "opt",
+    "config", "configs", "src", "lib", "include", "includes", "build",
+    "dist", "node_modules", "cache", "data", "backup", "bak", "layouts",
+    "projects", "project", "hdd", "ssd", "dotfiles",
+})
+
+
+def _strip_paths(text: str) -> str:
+    """Replace file paths with their meaningful last component(s).
+    
+    /home/sifat/Projects/odysseus → "odysseus"
+    /home/sifat/.config/waybar/style.css → "waybar"
+    """
+    def _path_replacer(m: re.Match) -> str:
+        path = m.group(0)
+        # Split path into components, strip extension from last
+        parts = [p for p in path.strip("/~").split("/") if p and p != "."]
+        if not parts:
+            return " "
+        # Remove extension from last part
+        last = parts[-1]
+        if "." in last:
+            last = last.rsplit(".", 1)[0]
+            parts[-1] = last
+        # Filter out noise components, keep meaningful ones (last 2 max)
+        meaningful = [p for p in parts if p.lower() not in _PATH_NOISE and len(p) > 2]
+        if meaningful:
+            return " " + " ".join(meaningful[-2:]) + " "
+        return " "
+
+    text = _PATH_RE.sub(_path_replacer, text)
+    text = _DIR_RE.sub(" ", text)
+    text = _EXT_RE.sub(" ", text)
+    return text
+
+
 def _tokenize(text: str) -> set[str]:
-    tokens = re.findall(r"[a-z0-9_]+", text.lower())
+    # Split on non-alphanumeric (including underscores in snake_case keys)
+    tokens = re.findall(r"[a-z0-9]+", text.lower())
     return {t for t in tokens if t not in _STOPWORDS and len(t) > 1}
 
 
@@ -207,6 +271,9 @@ class MemorySearcher:
         self._normed_vectors: np.ndarray | None = None
         self._entry_meta: list[dict[str, str]] = []
         self._entry_tokens: list[set[str]] = []
+        self._trigger_tokens: list[set[str]] = []  # triggers + tags per entry
+        self._source_query_tokens: list[set[str]] = []  # source_query per entry
+        self._idf_table: dict[str, float] = {}  # token -> IDF weight
         self._load_lock = threading.RLock()
         self._memory_path = memory_path or _MEMORY_PATH
         self._protected_path = protected_path or _PROTECTED_PATH
@@ -295,6 +362,8 @@ class MemorySearcher:
         self._entries = cached["entries"]
         self._entry_meta = cached["meta"]
         self._entry_tokens = [_tokenize(e) for e in self._entries]
+        # _trigger_tokens and _idf_table already set by _load_memory_entries
+        # which is always called before cache check in _ensure_loaded
 
     def _ensure_loaded(self) -> None:
         with self._load_lock:
@@ -351,20 +420,55 @@ class MemorySearcher:
         self._entry_meta.append(meta)
         self._entry_tokens.append(_tokenize(text))
 
+    def _extract_retrieval_tokens(self, entry: dict) -> tuple[set[str], set[str]]:
+        """Extract trigger/tag tokens and source_query tokens from a memory entry."""
+        trigger_tokens: set[str] = set()
+        for t in entry.get("triggers", []):
+            trigger_tokens.update(_tokenize(str(t)))
+        for t in entry.get("tags", []):
+            trigger_tokens.update(_tokenize(str(t)))
+        # Also include key tokens as trigger signal
+        key = str(entry.get("key", ""))
+        if key:
+            trigger_tokens.update(_tokenize(key))
+
+        sq_tokens: set[str] = set()
+        sq = entry.get("source_query", "")
+        if sq:
+            sq_tokens = _tokenize(str(sq))
+
+        return trigger_tokens, sq_tokens
+
+    def _build_idf_table(self) -> None:
+        """Build IDF weights from trigger/tag token document frequencies."""
+        n = len(self._trigger_tokens)
+        if n == 0:
+            self._idf_table = {}
+            return
+        doc_freq: Counter = Counter()
+        for tokens in self._trigger_tokens:
+            for tok in tokens:
+                doc_freq[tok] += 1
+        self._idf_table = {
+            tok: math.log(n / df) for tok, df in doc_freq.items()
+        }
+
     def _load_memory_entries(self) -> None:
         self._entries = []
         self._entry_meta = []
         self._entry_tokens = []
+        self._trigger_tokens = []
+        self._source_query_tokens = []
 
-        # Load main memory (semantic, episodic, ephemeral — NOT procedural)
-        # Procedural is loaded separately from Procedural.json
+        # Load main memory (all categories including procedural stored here)
+        # Procedural.json is ALSO loaded separately below for legacy entries
         if self._memory_path.exists():
             try:
                 data = json.loads(self._memory_path.read_text(encoding="utf-8"))
             except Exception:
                 data = {}
             if isinstance(data, dict):
-                for cat_key in ("semantic", "episodic", "ephemeral"):
+                for cat_key in ("semantic", "episodic", "ephemeral", "procedural"):
                     for e in data.get(cat_key, []):
                         if not isinstance(e, dict):
                             continue
@@ -375,10 +479,22 @@ class MemorySearcher:
                         if not v:
                             continue
                         text = f"{k}: {v}" if k else v
+                        # Include triggers/tags/source_query in embed text for richer vectors
+                        embed_parts = [text]
+                        if e.get("tags"):
+                            embed_parts.append(" ".join(str(t) for t in e["tags"]))
+                        if e.get("triggers"):
+                            embed_parts.append(" ".join(str(t) for t in e["triggers"]))
+                        if e.get("source_query"):
+                            embed_parts.append(str(e["source_query"]))
+                        embed_text = " ".join(embed_parts)
                         extra = None
                         if cat_key == "episodic" and e.get("last_accessed"):
                             extra = {"last_accessed": str(e["last_accessed"])}
-                        self._add_entry(text, k, v, cat_key, extra)
+                        self._add_entry(embed_text, k, v, cat_key, extra)
+                        trig_toks, sq_toks = self._extract_retrieval_tokens(e)
+                        self._trigger_tokens.append(trig_toks)
+                        self._source_query_tokens.append(sq_toks)
             elif isinstance(data, list):
                 for e in data:
                     if isinstance(e, dict):
@@ -391,6 +507,8 @@ class MemorySearcher:
                         text = str(e)
                         k, v = "", text
                     self._add_entry(text, k, v, "uncategorized")
+                    self._trigger_tokens.append(set())
+                    self._source_query_tokens.append(set())
 
         # Load protected memory (always active, never expires)
         if self._protected_path.exists():
@@ -408,6 +526,9 @@ class MemorySearcher:
                     continue
                 text = f"{k}: {v}" if k else v
                 self._add_entry(text, k, v, "protected")
+                trig_toks, sq_toks = self._extract_retrieval_tokens(e)
+                self._trigger_tokens.append(trig_toks)
+                self._source_query_tokens.append(sq_toks)
 
         # Load procedural memory from separate file
         if _PROCEDURAL_PATH.exists():
@@ -436,6 +557,18 @@ class MemorySearcher:
                 if isinstance(keywords, list) and keywords:
                     proc_extra["keywords"] = [str(kw) for kw in keywords]
                 self._add_entry(text, k, v, "procedural", proc_extra if proc_extra else None)
+                trig_toks, sq_toks = self._extract_retrieval_tokens(e)
+                # Also add procedural trigger/keywords to trigger tokens
+                if trigger:
+                    trig_toks.update(_tokenize(trigger))
+                if isinstance(keywords, list):
+                    for kw in keywords:
+                        trig_toks.update(_tokenize(str(kw)))
+                self._trigger_tokens.append(trig_toks)
+                self._source_query_tokens.append(sq_toks)
+
+        # Build IDF table from all trigger/tag tokens
+        self._build_idf_table()
 
     def _persist_episodic_access(self, keys: list[str], timestamp: str) -> None:
         """Write updated last_accessed timestamps back to Memory.json for episodic entries."""
@@ -469,6 +602,9 @@ class MemorySearcher:
             self._entries = []
             self._entry_meta = []
             self._entry_tokens = []
+            self._trigger_tokens = []
+            self._source_query_tokens = []
+            self._idf_table = {}
             gc.collect()
 
     def rebuild_cache(self) -> int:
@@ -483,7 +619,66 @@ class MemorySearcher:
             self._entries = []
             self._entry_meta = []
             self._entry_tokens = []
+            self._trigger_tokens = []
+            self._source_query_tokens = []
+            self._idf_table = {}
             gc.collect()
+
+    def _idf_trigger_scores(self, query_tokens: set[str]) -> np.ndarray:
+        """IDF-weighted trigger/tag matching. Returns per-entry scores."""
+        n = len(self._entries)
+        scores = np.zeros(n, dtype="float32")
+        if len(query_tokens) < 1 or not self._idf_table:
+            return scores
+        # Adaptive: short queries (<=3 tokens) allow single-token match
+        min_overlap = 1 if len(query_tokens) <= 2 else 2
+        max_possible = sum(self._idf_table.get(t, 1.0) for t in query_tokens)
+        if max_possible == 0:
+            return scores
+        for i, trig_toks in enumerate(self._trigger_tokens):
+            overlap = query_tokens & trig_toks
+            if len(overlap) >= min_overlap:
+                scores[i] = sum(self._idf_table.get(t, 1.0) for t in overlap) / max_possible
+        return scores
+
+    def _idf_source_query_scores(self, query_tokens: set[str]) -> np.ndarray:
+        """IDF-weighted source_query matching. Returns per-entry scores."""
+        n = len(self._entries)
+        scores = np.zeros(n, dtype="float32")
+        if len(query_tokens) < 1 or not self._idf_table:
+            return scores
+        max_possible = sum(self._idf_table.get(t, 1.0) for t in query_tokens)
+        if max_possible == 0:
+            return scores
+        for i, sq_toks in enumerate(self._source_query_tokens):
+            overlap = query_tokens & sq_toks
+            if overlap:
+                scores[i] = sum(self._idf_table.get(t, 1.0) for t in overlap) / max_possible
+        return scores
+
+    def _key_token_scores(self, query_tokens: set[str], query_lower: str) -> np.ndarray:
+        """Key-token overlap scoring with substring bonus.
+        Adaptive minimum: short queries allow single-token match."""
+        n = len(self._entries)
+        scores = np.zeros(n, dtype="float32")
+        if not query_tokens:
+            return scores
+        min_overlap = 1 if len(query_tokens) <= 2 else 2
+        for i, meta in enumerate(self._entry_meta):
+            key = meta.get("key", "")
+            if not key:
+                continue
+            key_toks = _tokenize(key)
+            overlap = query_tokens & key_toks
+            if len(overlap) >= min_overlap:
+                scores[i] = 25.0 * len(overlap) / max(len(key_toks), 1)
+                if key.lower() in query_lower:
+                    scores[i] += 20.0
+        # Normalize to 0-1
+        mx = scores.max()
+        if mx > 0:
+            scores /= mx
+        return scores
 
     def search(
         self,
@@ -495,57 +690,73 @@ class MemorySearcher:
         top_procedural: int | None = None,
         top_total: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Search memories with split budget: top_memory for semantic/episodic/ephemeral,
-        top_procedural for procedural entries, top_total as combined cap.
-        Procedural gets priority — its slots are filled first, then remaining budget
-        goes to other categories. Falls back to legacy top_k if new params not provided.
-        """
+        """Search memories using 5-signal hybrid fusion (no per-query normalization)."""
         self._ensure_loaded()
         with self._load_lock:
             if not self._entries or self._normed_vectors is None or self._model is None:
                 return []
+
+            query_clean = _strip_paths(query)
+            query_tokens = _tokenize(query_clean)
+            if not query_tokens:
+                return []  # No meaningful tokens — nothing to search
+            query_lower = query_clean.lower()
+            n = len(self._entries)
+
+            # Signal 1: Vector cosine (0-1)
             q_vec = self._embed_texts([query], is_query=True)[0]
             vector_scores = self._normed_vectors @ q_vec
 
-            # Hybrid blend: vector similarity + keyword coverage
-            query_tokens = _tokenize(query)
-            if len(query_tokens) >= 3:
-                keyword_scores = np.array(
-                    [_keyword_score(query_tokens, et) for et in self._entry_tokens],
-                    dtype="float32",
-                )
-            else:
-                keyword_scores = np.zeros(len(self._entry_tokens), dtype="float32")
-            scores = VECTOR_WEIGHT * vector_scores + KEYWORD_WEIGHT * keyword_scores
+            # Signal 2: IDF-weighted trigger/tag match (0-1)
+            trigger_scores = self._idf_trigger_scores(query_tokens)
 
-            # Category-specific scoring adjustments
-            now = datetime.now()
-            query_lower = query.lower()
-            query_tokens_set = set(query_lower.split())
+            # Signal 3: IDF-weighted source_query match (0-1)
+            sq_scores = self._idf_source_query_scores(query_tokens)
+
+            # Signal 4: Key-token overlap (0-1)
+            key_scores = self._key_token_scores(query_tokens, query_lower)
+
+            # Signal 5: IDF-weighted keyword overlap (0-1), adaptive minimum
+            keyword_scores = np.zeros(n, dtype="float32")
+            if query_tokens and self._idf_table:
+                q_idf_sum = sum(self._idf_table.get(t, 1.0) for t in query_tokens)
+                kw_min_overlap = 1 if len(query_tokens) <= 2 else 2
+                if q_idf_sum > 0:
+                    for i, et in enumerate(self._entry_tokens):
+                        overlap = query_tokens & et
+                        if len(overlap) >= kw_min_overlap:
+                            keyword_scores[i] = sum(self._idf_table.get(t, 1.0) for t in overlap) / q_idf_sum
+
+            # Weighted fusion - all signals already 0-1, no normalization needed
+            scores = (
+                TRIGGER_IDF_WEIGHT * trigger_scores
+                + SOURCE_QUERY_WEIGHT * sq_scores
+                + VECTOR_WEIGHT * vector_scores
+                + KEY_TOKEN_WEIGHT * key_scores
+                + KEYWORD_WEIGHT * keyword_scores
+            )
+
+            # Protected boost — only on strong textual match (trigger or keyword, not source_query)
             for i, meta in enumerate(self._entry_meta):
                 if meta["category"] == "protected":
-                    scores[i] += PROTECTED_BOOST
-                elif meta["category"] == "episodic" and "last_accessed" in meta:
-                    try:
-                        last = datetime.fromisoformat(meta["last_accessed"])
-                        days_since = max(0, (now - last).total_seconds() / 86400)
-                        scores[i] *= EPISODIC_DECAY_RATE ** days_since
-                    except (ValueError, TypeError):
-                        pass
-                elif meta["category"] == "procedural":
-                    proc_keywords = meta.get("keywords", [])
-                    if proc_keywords:
-                        matched = sum(1 for kw in proc_keywords if str(kw).lower() in query_lower)
-                        if matched > 0:
-                            scores[i] += 0.15 * (matched / len(proc_keywords))
-                    proc_trigger = meta.get("trigger", "")
-                    if proc_trigger:
-                        trigger_words = set(str(proc_trigger).lower().split())
-                        overlap = len(trigger_words & query_tokens_set)
-                        if overlap >= 2:
-                            scores[i] += 0.1
+                    has_text_signal = (trigger_scores[i] > 0 or keyword_scores[i] > 0)
+                    if has_text_signal:
+                        scores[i] += PROTECTED_BOOST
+
+            # Vector-only gate: if NO strong textual signal fired, require very high vector score
+            _VECTOR_ONLY_MIN = 0.50
+            for i in range(n):
+                has_any_text = (trigger_scores[i] > 0 or keyword_scores[i] > 0)
+                if not has_any_text and vector_scores[i] < _VECTOR_ONLY_MIN:
+                    scores[i] = 0.0
 
             cutoff = threshold if threshold is not None else self.threshold
+            # Adaptive threshold: short queries need stronger evidence
+            n_tokens = len(query_tokens)
+            if n_tokens <= 1:
+                cutoff = max(cutoff, 0.60)
+            elif n_tokens <= 2:
+                cutoff = max(cutoff, 0.40)
             ranked = np.argsort(-scores)
 
             # Split-budget selection: procedural priority within total cap
@@ -599,13 +810,15 @@ class MemorySearcher:
 
             # Update last_accessed for retrieved episodic entries
             if accessed_episodic_keys:
-                now_str = now.isoformat()
+                now_str = datetime.now().isoformat()
                 for meta in self._entry_meta:
                     if meta["category"] == "episodic" and meta["key"] in accessed_episodic_keys:
                         meta["last_accessed"] = now_str
                 self._persist_episodic_access(accessed_episodic_keys, now_str)
 
             return results
+
+
 
     def format_for_prompt(self, results: list[dict[str, Any]]) -> str:
         if not results:
