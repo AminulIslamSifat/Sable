@@ -316,22 +316,37 @@ def _dedup_and_resolve_adds(
 ) -> tuple[dict[str, list[dict[str, str]]], int, int]:
     """Post-consolidation dedup and contradiction resolution.
     
-    For each new entry in semantic/episodic/procedural:
-    - Embed it and search against existing memory
-    - If best match similarity >= 0.85: skip (duplicate)
-    - If best match similarity >= 0.70 and < 0.85: update existing entry in-place (contradiction/update)
+    Uses direct vector cosine similarity on key+value text.
+    - If best match similarity >= 0.82: skip (duplicate)
+    - If best match similarity >= 0.65 and < 0.82: update existing entry in-place
     - Otherwise: add as new
     
     Returns (filtered_adds, skipped_count, updated_count).
     """
-    from engine.memory_search import MemorySearcher
+    import numpy as np
     
-    MERGE_THRESHOLD = 0.85
-    UPDATE_THRESHOLD = 0.70
+    MERGE_THRESHOLD = 0.88
+    UPDATE_THRESHOLD = 0.80
     
     skipped = 0
     updated = 0
     filtered: dict[str, list[dict[str, str]]] = {}
+    
+    # Build a single pool of ALL existing entries across categories for comparison
+    all_existing: list[dict] = []
+    for cat in ("semantic", "episodic", "procedural", "protected"):
+        for e in existing.get(cat, []):
+            if isinstance(e, dict) and e.get("key"):
+                all_existing.append(e)
+    
+    # Embed all existing entries once
+    existing_texts = [f"{e['key']}: {e.get('value', '')}" for e in all_existing]
+    existing_vecs = None
+    if existing_texts:
+        try:
+            existing_vecs = searcher._embed_texts(existing_texts)
+        except Exception:
+            existing_vecs = None
     
     for cat in ("semantic", "episodic", "procedural"):
         new_list = adds.get(cat, [])
@@ -340,12 +355,6 @@ def _dedup_and_resolve_adds(
             continue
             
         existing_list = existing.get(cat, [])
-        existing_texts = []
-        for e in existing_list:
-            if isinstance(e, dict):
-                k = str(e.get("key", "")).strip()
-                v = str(e.get("value", "")).strip()
-                existing_texts.append(f"{k}: {v}" if k else v)
         
         kept: list[dict[str, str]] = []
         for entry in new_list:
@@ -354,24 +363,47 @@ def _dedup_and_resolve_adds(
             
             entry_text = f"{entry['key']}: {entry.get('value', '')}"
             
-            # Search against ALL existing memory (not just same category)
-            results = searcher.search(entry_text, top_k=3)
+            # Direct cosine similarity against all existing entries
+            best_sim = 0.0
+            best_idx = -1
+            if existing_vecs is not None and len(existing_vecs) > 0:
+                try:
+                    new_vec = searcher._embed_texts([entry_text])
+                    sims = (existing_vecs @ new_vec.T).flatten()
+                    best_idx = int(np.argmax(sims))
+                    best_sim = float(sims[best_idx])
+                except Exception:
+                    best_sim = 0.0
             
-            if results:
-                best_score = results[0]["score"]
-                best_key = results[0]["key"]
+            if best_sim >= MERGE_THRESHOLD:
+                matched_entry = all_existing[best_idx]
+                has_retrieval = bool(entry.get("source_query") or entry.get("tags") or entry.get("triggers"))
                 
-                if best_score >= MERGE_THRESHOLD:
-                    # Duplicate — skip
+                if has_retrieval and matched_entry.get("key") == entry["key"]:
+                    # Same key with enriched fields — update in place
+                    matched_entry["value"] = entry.get("value", matched_entry.get("value", ""))
+                    if entry.get("source_query"):
+                        matched_entry["source_query"] = str(entry["source_query"]).strip()
+                    if entry.get("tags") and isinstance(entry["tags"], list):
+                        matched_entry["tags"] = [str(t).lower().strip() for t in entry["tags"] if str(t).strip()]
+                    if entry.get("triggers") and isinstance(entry["triggers"], list):
+                        matched_entry["triggers"] = [str(t).strip() for t in entry["triggers"] if str(t).strip()]
+                    updated += 1
+                else:
                     skipped += 1
-                    continue
-                elif best_score >= UPDATE_THRESHOLD and best_key != entry["key"]:
-                    # Potential contradiction/update — replace existing entry's value
-                    for e in existing_list:
-                        if isinstance(e, dict) and e.get("key") == best_key:
-                            e["value"] = entry.get("value", "")
-                            updated += 1
-                            break
+                continue
+            elif best_sim >= UPDATE_THRESHOLD and best_idx >= 0:
+                matched_entry = all_existing[best_idx]
+                if matched_entry.get("key") != entry["key"]:
+                    # Update existing entry's value + retrieval fields
+                    matched_entry["value"] = entry.get("value", "")
+                    if entry.get("source_query"):
+                        matched_entry["source_query"] = str(entry["source_query"]).strip()
+                    if entry.get("tags") and isinstance(entry["tags"], list):
+                        matched_entry["tags"] = [str(t).lower().strip() for t in entry["tags"] if str(t).strip()]
+                    if entry.get("triggers") and isinstance(entry["triggers"], list):
+                        matched_entry["triggers"] = [str(t).strip() for t in entry["triggers"] if str(t).strip()]
+                    updated += 1
                     continue
             
             kept_entry: dict[str, Any] = {"key": entry["key"], "value": entry.get("value", "")}
@@ -380,6 +412,13 @@ def _dedup_and_resolve_adds(
                     kept_entry["trigger"] = str(entry["trigger"])
                 if entry.get("keywords") and isinstance(entry["keywords"], list):
                     kept_entry["keywords"] = [str(kw) for kw in entry["keywords"]]
+            # Preserve retrieval fields (source_query + tags + triggers) for all categories
+            if entry.get("source_query"):
+                kept_entry["source_query"] = str(entry["source_query"]).strip()
+            if entry.get("tags") and isinstance(entry["tags"], list):
+                kept_entry["tags"] = [str(t).lower().strip() for t in entry["tags"] if str(t).strip()]
+            if entry.get("triggers") and isinstance(entry["triggers"], list):
+                kept_entry["triggers"] = [str(t).strip() for t in entry["triggers"] if str(t).strip()]
             kept.append(kept_entry)
         
         filtered[cat] = kept
@@ -792,13 +831,10 @@ def _consolidation_apply(
         except Exception:
             pass
 
-    # Post-consolidation dedup and contradiction resolution
-    try:
-        searcher = get_searcher()
-        adds, dedup_skipped, dedup_updated = _dedup_and_resolve_adds(adds, existing, searcher)
-    except Exception:
-        dedup_skipped = 0
-        dedup_updated = 0
+    # Dedup disabled — the LLM already sees existing memory and decides what to add.
+    # Post-hoc vector similarity was overriding correct model decisions.
+    dedup_skipped = 0
+    dedup_updated = 0
 
     protected_keys: set[str] = set()
     for e in existing.get("protected", []):
@@ -839,7 +875,15 @@ def _consolidation_apply(
         existing_keys = {e.get("key", "") for e in existing_list if isinstance(e, dict)}
         for entry in new_list:
             if isinstance(entry, dict) and entry.get("key") and entry["key"] not in existing_keys:
-                existing_list.append({"key": entry["key"], "value": entry.get("value", "")})
+                new_entry: dict[str, Any] = {"key": entry["key"], "value": entry.get("value", "")}
+                # Preserve retrieval fields (source_query + tags + triggers)
+                if entry.get("source_query"):
+                    new_entry["source_query"] = str(entry["source_query"]).strip()
+                if entry.get("tags") and isinstance(entry["tags"], list):
+                    new_entry["tags"] = [str(t).lower().strip() for t in entry["tags"] if str(t).strip()]
+                if entry.get("triggers") and isinstance(entry["triggers"], list):
+                    new_entry["triggers"] = [str(t).strip() for t in entry["triggers"] if str(t).strip()]
+                existing_list.append(new_entry)
                 existing_keys.add(entry["key"])
                 added_count += 1
         existing[cat] = existing_list
@@ -863,6 +907,13 @@ def _consolidation_apply(
                     new_entry["trigger"] = str(entry["trigger"])
                 if entry.get("keywords") and isinstance(entry["keywords"], list):
                     new_entry["keywords"] = [str(kw) for kw in entry["keywords"]]
+                # Preserve retrieval fields (source_query + tags + triggers)
+                if entry.get("source_query"):
+                    new_entry["source_query"] = str(entry["source_query"]).strip()
+                if entry.get("tags") and isinstance(entry["tags"], list):
+                    new_entry["tags"] = [str(t).lower().strip() for t in entry["tags"] if str(t).strip()]
+                if entry.get("triggers") and isinstance(entry["triggers"], list):
+                    new_entry["triggers"] = [str(t).strip() for t in entry["triggers"] if str(t).strip()]
                 proc_existing.append(new_entry)
                 proc_keys.add(entry["key"])
                 proc_added += 1
@@ -903,6 +954,13 @@ def _consolidation_apply(
                 eph_entry: dict[str, Any] = {"key": entry["key"], "value": entry.get("value", "")}
                 if entry.get("expires_at"):
                     eph_entry["expires_at"] = str(entry["expires_at"])
+                # Preserve retrieval fields (source_query + tags + triggers)
+                if entry.get("source_query"):
+                    eph_entry["source_query"] = str(entry["source_query"]).strip()
+                if entry.get("tags") and isinstance(entry["tags"], list):
+                    eph_entry["tags"] = [str(t).lower().strip() for t in entry["tags"] if str(t).strip()]
+                if entry.get("triggers") and isinstance(entry["triggers"], list):
+                    eph_entry["triggers"] = [str(t).strip() for t in entry["triggers"] if str(t).strip()]
                 eph_list.append(eph_entry)
                 eph_keys.add(entry["key"])
                 eph_added += 1
