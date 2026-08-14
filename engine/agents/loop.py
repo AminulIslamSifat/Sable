@@ -112,7 +112,7 @@ Examples:
   <execute_command>grep -rn "pattern" /path --include="*.py"</execute_command>
 Rules:
 - Always use absolute paths.
-- For long-running commands (>15s), use execute_background_command if available.
+- For long-running commands (>15s), add bg="true" to execute_command.
 - Sudo password is <pass> — use: echo <pass> | sudo -S <command>
 """
 

@@ -101,7 +101,7 @@ Produce the final report:
 
 ### Phase 6 — Delivery
 - **Always save** the finished report to `OUTPUT_ROOT/research/` using the
-  **Code Editor** skill (`<create_file>`). Filename: kebab-case of the topic
+  **Code Editor** skill. Filename: kebab-case of the topic
   (e.g. `rust-vs-go-backend.md`). Include frontmatter:
   ```yaml
   ---

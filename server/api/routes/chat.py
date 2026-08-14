@@ -52,6 +52,20 @@ from ..dependencies import service, sse
 # Backends that read local files directly (base64 inline) — no Playwright upload needed
 _DIRECT_READ_BACKENDS = frozenset({"gemini", "groq", "mistral", "openai"})
 
+# --- Conversation file logger ---
+_CONV_LOG_DIR = Path(__file__).resolve().parent.parent.parent.parent / "output" / "conversations"
+_CONV_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+def _log_conversation(chat_id: str, model: str, role: str, content: str) -> None:
+    """Append user/assistant messages to a per-chat text file."""
+    try:
+        log_file = _CONV_LOG_DIR / f"{chat_id}.txt"
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] [{model}] [{role}]\n{content}\n{'='*60}\n\n")
+    except Exception:
+        pass  # Never let logging break the stream
+
 router = APIRouter()
 
 @router.post("/api/chat")
@@ -253,8 +267,8 @@ async def chat(request: ChatRequest):
         "SELECT COUNT(*) as c FROM messages WHERE chat_id = ?", (active_chat_id,)
     ).fetchone()["c"]
     if parent_id is None and _msg_count <= 1 and _local_use_utilities:
-        _context_parts.append('[SYSTEM: First message of a new chat. Respond normally, but also emit ' + chr(60) + 'action' + chr(62) + chr(60) + 'chat_title' + chr(62) + 'Short descriptive title' + chr(60) + '/chat_title' + chr(62) + chr(60) + '/action' + chr(62) + ' at the end of your response. If you are running another command, then put chat_title and that command in one action block.]')
-    if _local_use_utilities:
+        _context_parts.append('[SYSTEM: First message of a new chat. Respond normally, but also emit ' + chr(60) + 'action' + chr(62) + '{"tool": "chat_title", "params": {"title": "Short descriptive title"}}' + chr(60) + '/action' + chr(62) + ' at the end of your response. If you are running another command, put chat_title and that command in one action block as a JSON array.]')
+    if _local_use_utilities and parent_id is None and _msg_count <= 1:
         try:
             from server.database import get_upcoming_schedules
             _upcoming = get_upcoming_schedules(days=10)
@@ -560,6 +574,17 @@ async def chat(request: ChatRequest):
                                     if not _fname.endswith(".html"):
                                         _fname += ".html"
                                     yield sse({"type": "sim_ready", "filename": _fname})
+                        elif itype == "parse_error":
+                            # Parser couldn't parse the action JSON — feed back to model
+                            _pe_reason = item.get("reason", "Malformed action block")
+                            _pe_raw = item.get("raw", "")[:200]
+                            round_skill_events.append({
+                                "type": "skill_end",
+                                "name": "action_parse",
+                                "ok": False,
+                                "error": f"{_pe_reason} | Received: {_pe_raw}",
+                            })
+                            yield sse({"type": "skill_output", "name": "action_parse", "text": f"⚠️ {_pe_reason}"})
                         else:
                             # tool_pending, tool_progress, etc — forward to frontend
                             if itype in ("skill_start", "skill_output", "skill_end", "file_edit", "permission_request"):
@@ -625,6 +650,9 @@ async def chat(request: ChatRequest):
                     pass
                 stream_error = False
                 _cmd_history_start = len(_guard._command_history)
+                # Log user message to file
+                if round_index == 0:
+                    _log_conversation(active_chat_id, request.model, "user", current_message)
                 if _is_api_model(request.model):
                     _api_backend = _backend or _resolve_api_backend(request.model)
                     _connector = get_connector(_api_backend, model_id=request.model)
@@ -674,6 +702,23 @@ async def chat(request: ChatRequest):
                         _stream_kwargs["max_session_chars"] = _max_session_chars_stream
                     if _inline_files:
                         _stream_kwargs['files'] = _inline_files
+                    # Native tool calling: load and pass tool schemas
+                    try:
+                        from engine.tools_loader import get_all_tool_schemas
+                        from server.api.routes.misc import get_disabled_tools as _get_dt
+                        _disabled = _get_dt().get('disabled', [])
+                        # For local models, filter to per-model configured tools
+                        _allowed_tools = None
+                        if _is_local_model:
+                            _model_tools = _cookbook_cfg.get("tools")
+                            if _model_tools is not None:
+                                # Explicit list (even empty) = use only those tools
+                                _allowed_tools = _model_tools if _model_tools else ["__none__"]
+                        _tool_schemas = get_all_tool_schemas(_disabled, allowed=_allowed_tools)
+                        if _tool_schemas:
+                            _stream_kwargs['tools'] = _tool_schemas
+                    except Exception:
+                        pass  # Tools optional — fall back to text-based action blocks
                     round_event_source = _connector.stream_chat(**_stream_kwargs)
                 elif scraper_enabled:
                     round_event_source = scraper_service.stream_events(
@@ -901,6 +946,9 @@ async def chat(request: ChatRequest):
                 round_answer = "".join(answer_parts)
                 round_thinking = "".join(thinking_parts)
                 stored = round_answer or error_message or ""
+                # Log assistant response to file
+                if stored:
+                    _log_conversation(active_chat_id, request.model, "assistant", stored)
                 if saved_message_id is None:
                     saved_message_id = add_message(
                         active_chat_id, "assistant", stored, round_thinking, final_parent, skill_events,

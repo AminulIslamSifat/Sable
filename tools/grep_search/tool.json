@@ -1,0 +1,78 @@
+[
+  {
+    "name": "grep",
+    "description": "Search file contents via ripgrep.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Regex pattern to search for"
+        },
+        "path": {
+          "type": "string",
+          "description": "Directory to search (default: project root)"
+        },
+        "glob": {
+          "type": "string",
+          "description": "File glob filter (e.g. '*.py')"
+        },
+        "exclude": {
+          "type": "string",
+          "description": "Glob pattern to exclude"
+        },
+        "ignore_case": {
+          "type": "boolean",
+          "description": "Case-insensitive search"
+        },
+        "max_results": {
+          "type": "integer",
+          "description": "Max results (default 50, max 200)"
+        },
+        "full": {
+          "type": "boolean",
+          "description": "Bypass output truncation"
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    }
+  },
+  {
+    "name": "glob",
+    "description": "Find files by glob pattern, sorted by mtime.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Glob pattern"
+        },
+        "path": {
+          "type": "string",
+          "description": "Base directory to search"
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    }
+  },
+  {
+    "name": "list_dir",
+    "description": "List directory contents with sizes.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Directory path to list"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    }
+  }
+]

@@ -367,56 +367,48 @@ class BrowserManager:
                 instructions += f"- Branch: {proj['git_branch']}\n"
             instructions += "\n"
 
-        # Auto-generated skill registry (filtered by disabled skills)
-        from engine.skills import SkillEngine
-        from engine.skills.handlers import HANDLER_MAP
-        _engine = SkillEngine(
-            skills_dir=Path(__file__).resolve().parent.parent / "skills",
-            handlers=HANDLER_MAP,
-            agent_id="maria",
-        )
-        skills_prompt = _engine.get_registry_prompt()
         # Collect disabled skills from global file + project config
-        disabled: list[str] = []
+        _disabled_skills: list[str] = []
         _global_disabled_path = Path(__file__).resolve().parent.parent / "Brain" / "disabled_skills.json"
         if _global_disabled_path.exists():
             try:
                 import json as _json
                 _gd = _json.loads(_global_disabled_path.read_text(encoding="utf-8"))
                 if isinstance(_gd, list):
-                    disabled.extend(_gd)
+                    _disabled_skills.extend(_gd)
             except Exception:
                 pass
-        # If project has skills_config, merge those too
         if proj and proj.get("skills_config"):
-            disabled.extend([k for k, v in proj["skills_config"].items() if not v])
-            if disabled:
-                # Filter out disabled skill sections from registry prompt
-                # Handles both ## (default skills) and ### (non-default skills) headers
-                lines = skills_prompt.split("\n")
-                filtered = []
-                skip = False
-                for line in lines:
-                    stripped = line.strip().lower()
-                    is_header = stripped.startswith("## ") or stripped.startswith("### ")
-                    # Check if this header matches a disabled skill
-                    new_skip = False
-                    if is_header:
-                        for ds in disabled:
-                            ds_norm = ds.lower().replace("_", " ")
-                            if ds_norm in stripped:
-                                new_skip = True
-                                break
-                    if new_skip:
-                        skip = True
-                        continue
-                    # End skip on next section header or *** separator
-                    if skip and (is_header or stripped == "***"):
-                        skip = False
-                    if not skip:
-                        filtered.append(line)
-                skills_prompt = "\n".join(filtered)
+            _disabled_skills.extend([k for k, v in proj["skills_config"].items() if not v])
+
+        # Auto-generated skill registry (filtered by disabled skills at discovery)
+        from engine.skills import SkillEngine
+        from engine.skills.handlers import HANDLER_MAP
+        _engine = SkillEngine(
+            skills_dir=Path(__file__).resolve().parent.parent / "skills",
+            handlers=HANDLER_MAP,
+            agent_id="maria",
+            disabled=_disabled_skills,
+        )
+        skills_prompt = _engine.get_registry_prompt()
         instructions += skills_prompt
+
+        # Inject tool schemas (filtered by disabled tools)
+        try:
+            from engine.tools_loader import get_tools_prompt_section
+            _disabled_tools_path = Path(__file__).resolve().parent.parent / "Brain" / "disabled_tools.json"
+            _disabled_tools: list[str] = []
+            if _disabled_tools_path.exists():
+                import json as _json2
+                _dt = _json2.loads(_disabled_tools_path.read_text(encoding="utf-8"))
+                if isinstance(_dt, list):
+                    _disabled_tools = _dt
+            tools_section = get_tools_prompt_section(disabled=_disabled_tools)
+            if tools_section:
+                instructions += chr(10) + chr(10) + tools_section
+        except Exception:
+            pass
+
         # Inject connected MCP tools into system prompt
         try:
             from engine.mcp.manager import get_mcp_manager
@@ -426,17 +418,7 @@ class BrowserManager:
         except Exception:
             pass
 
-        PROJECT_ROOT = Path(__file__).resolve().parent.parent
-        OUTPUT_ROOT = PROJECT_ROOT / "output"
-        ASSETS_DIR = OUTPUT_ROOT / "assets"
-        instructions += (
-            f"\n\n***\n\n# SYSTEM DIRECTORIES\n"
-            f"PROJECT_ROOT={PROJECT_ROOT}\n"
-            f"OUTPUT_ROOT={OUTPUT_ROOT}\n"
-            f"ASSETS_DIR={ASSETS_DIR}\n"
-            f"All <OUTPUT_ROOT> tags in your instructions should be replaced with {OUTPUT_ROOT}\n"
-            f"All <PROJECT_ROOT> tags in your instructions should be replaced with {PROJECT_ROOT}\n"
-        )
+
 
         MAX_CHARS = 40960
         if len(instructions) > MAX_CHARS:

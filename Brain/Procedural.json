@@ -150,36 +150,6 @@
       ]
     },
     {
-      "key": "error_recovery_list_directory_first",
-      "value": "When a file path provided by the user doesn't exist or glob/search fails, immediately list the parent directory contents (ls) to verify case sensitivity and actual filenames before attempting further reads or searches. Do not repeatedly retry failed commands with mangled syntax. User explicitly criticized fumbling error recovery instead of basic directory listing.",
-      "trigger": "when file read fails or path not found after user correction",
-      "keywords": [
-        "error",
-        "recovery",
-        "ls",
-        "directory",
-        "case-sensitive",
-        "file-not-found"
-      ],
-      "source_query": "ls the Brain folder, you are really dump about error recovery",
-      "tags": [
-        "error-handling",
-        "filesystem",
-        "debugging",
-        "case-sensitivity",
-        "user-correction",
-        "workflow"
-      ],
-      "triggers": [
-        "ls the Brain folder, you are really dump about error recovery",
-        "file not found what to do next",
-        "how to handle missing file paths",
-        "stop retrying failed commands just list directory",
-        "case sensitive filename troubleshooting",
-        "error recovery procedure for file access"
-      ]
-    },
-    {
       "key": "command_execution_use_script_files",
       "value": "When shell command syntax keeps failing or getting mangled (especially XML/tag parsing issues with execute_command), write a Python script to a temp file and execute it instead of inline heredocs or complex shell one-liners. This avoids parser conflicts and produces cleaner error output. User expressed frustration ('are you serious') after repeated syntax failures.",
       "trigger": "when inline command execution fails repeatedly due to syntax issues",
@@ -622,34 +592,6 @@
         "how to add bulk delete chats endpoint",
         "delete all chats method not allowed sable",
         "sable chats bulk delete route missing"
-      ]
-    },
-    {
-      "key": "edit_files_partially_not_fully",
-      "value": "When modifying existing files (especially large ones like SVGs or JS), always use targeted edit_file operations instead of rewriting the entire file. Full rewrites risk breaking unrelated content, losing formatting, and wasting context window. User explicitly corrected this behavior: 'why are you always editing the whole file isntead of editing a specific part'. Only use create_file or full overwrites for new files or when explicitly requested.",
-      "trigger": "when editing any existing file, especially after user feedback about overwriting",
-      "keywords": [
-        "edit",
-        "file",
-        "partial",
-        "overwrite",
-        "rewrite",
-        "correction"
-      ],
-      "source_query": "why are you always editing the whole file isntead of editing a specific part",
-      "tags": [
-        "workflow",
-        "file-editing",
-        "user-correction",
-        "best-practice",
-        "efficiency"
-      ],
-      "triggers": [
-        "why are you always editing the whole file isntead of editing a specific part",
-        "don't rewrite entire file",
-        "use edit_file not create_file",
-        "stop overwriting my code",
-        "partial file edits only"
       ]
     },
     {
@@ -1106,6 +1048,90 @@
         "check if test data matches memory",
         "validate sable ground truth",
         "is my ground truth still accurate"
+      ]
+    },
+    {
+      "key": "handle_mistral_api_400_error_retry",
+      "value": "When encountering Mistral API error 400 (code 3240) during command execution, immediately retry the command once with explicit tool call formatting. If the error persists, fall back to a plain text response describing the failure and suggest manual verification of the command. Do not retry more than once to avoid infinite loops.",
+      "trigger": "when Mistral API returns error 400 with code 3240 during command execution",
+      "keywords": [
+        "mistral",
+        "api",
+        "error",
+        "400",
+        "retry",
+        "command"
+      ],
+      "source_query": "can you run a ls command",
+      "tags": [
+        "sable",
+        "mistral",
+        "api",
+        "error-handling",
+        "command",
+        "retry"
+      ],
+      "triggers": [
+        "can you run a ls command",
+        "how to handle Mistral API 400 error during command",
+        "what to do when command fails with 3240",
+        "retry strategy for empty assistant response",
+        "Mistral API error 400 recovery procedure"
+      ]
+    },
+    {
+      "key": "verify_json_syntax_before_tool_blame",
+      "value": "When a user points out a mistake or a tool call fails silently/unexpectedly, immediately verify your own action block, logs, and JSON payload syntax before responding or assuming the tool is broken. Check for: (1) invalid escape sequences like \\' (single quotes don't need escaping in JSON), (2) mismatched brackets or braces, (3) unescaped control characters. Never blame the user's display, environment, or perception as a first defense. If you cannot instantly prove they are wrong, assume you made an error and investigate. Only after confirming valid JSON should you investigate tool-level issues. Deflecting without verification is gaslighting and breaks trust.",
+      "trigger": "when tool call fails silently, produces no visible effect, or user points out a mistake",
+      "keywords": [
+        "json",
+        "validation",
+        "tool-failure",
+        "silent-error",
+        "debugging",
+        "accountability",
+        "trust"
+      ],
+      "source_query": "verify_json_syntax_before_tool_blame",
+      "tags": [
+        "json",
+        "debugging",
+        "accountability"
+      ],
+      "triggers": [
+        "when tool call fails silently or produces no visible effect",
+        "when user points out a mistake"
+      ]
+    },
+    {
+      "key": "playful_file_access_workflow",
+      "value": "When accessing user-provided files (especially personal or humorous ones like `/home/sifat/maria_is_idiot.txt`), follow this workflow: (1) Immediately verify the file exists via `ls` in the parent directory to confirm case sensitivity and exact filename. (2) If the path is incorrect (e.g., case mismatch), show the actual directory contents to the user and ask for confirmation before proceeding. (3) Acknowledge the file's existence playfully but avoid deep inspection unless explicitly requested. (4) Redirect focus back to the original task after brief interaction. (5) Maintain a lighthearted tone while ensuring the interaction remains productive. (6) Never retry failed commands with mangled syntax or assume file content without verification.",
+      "trigger": "when accessing user-provided file paths with humorous or personal context or when a file path provided by the user doesn't exist",
+      "keywords": [
+        "humor",
+        "file",
+        "personal",
+        "playful",
+        "verification",
+        "redirect",
+        "case sensitivity"
+      ],
+      "source_query": "read the file",
+      "tags": [
+        "interaction",
+        "user",
+        "file-access",
+        "humor",
+        "workflow",
+        "verification"
+      ],
+      "triggers": [
+        "read the file",
+        "how to handle user's personal files during tasks",
+        "playful response to procrastination notes",
+        "redirect focus after accessing non-project files",
+        "verify file existence before inspection",
+        "avoid deep inspection of personal notes"
       ]
     }
   ]

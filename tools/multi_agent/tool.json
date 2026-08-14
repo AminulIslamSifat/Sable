@@ -1,0 +1,67 @@
+[
+  {
+    "name": "spawn_agent",
+    "description": "Spawn a background agent for an independent subtask.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string",
+          "description": "Agent role: sysutil/docs/visuals/tester/analyst/coder/writer"
+        },
+        "task": {
+          "type": "string",
+          "description": "Full self-contained task description"
+        },
+        "model": {
+          "type": "string",
+          "description": "Model override (optional)"
+        },
+        "context": {
+          "type": "string",
+          "description": "Extra context for the agent"
+        },
+        "timeout": {
+          "type": "integer",
+          "description": "Timeout seconds (default 300)"
+        },
+        "collect": {
+          "type": "boolean",
+          "description": "Block and wait for result (not recommended)"
+        },
+        "todos": {
+          "type": "string",
+          "description": "Pipe-separated step list (3+ steps only)"
+        }
+      },
+      "required": [
+        "role",
+        "task"
+      ]
+    }
+  },
+  {
+    "name": "agent_status",
+    "description": "Check status of all running agents.",
+    "parameters": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "kill_agent",
+    "description": "Cancel a running agent by ID.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Agent ID to cancel"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    }
+  }
+]

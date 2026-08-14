@@ -288,9 +288,9 @@ def view_file(path: str, start: int = None, end: int = None, full: bool = False)
     if not full and not explicit_range and len(joined) > MAX_VIEW_CHARS:
         head = lines[:HEAD_TAIL_LINES]
         tail = lines[-HEAD_TAIL_LINES:]
-        head_txt = "".join(f"{i + 1:6d}\t{l}\n" for i, l in enumerate(head))
+        head_txt = "".join(f"{l}\n" for l in head)
         tail_start = total - len(tail)
-        tail_txt = "".join(f"{tail_start + i + 1:6d}\t{l}\n" for i, l in enumerate(tail))
+        tail_txt = "".join(f"{l}\n" for l in tail)
         omitted = total - HEAD_TAIL_LINES * 2
         return (
             head_txt
@@ -300,8 +300,7 @@ def view_file(path: str, start: int = None, end: int = None, full: bool = False)
             + tail_txt
         )
 
-    numbered = "".join(f"{s + i:6d}\t{l}\n" for i, l in enumerate(selected))
-    return numbered
+    return "\n".join(selected)
 
 
 # --------------------------------------------------------------------------
@@ -466,7 +465,7 @@ def _find_nearest_match(content: str, old_str: str) -> str:
     # Show the closest block with line numbers
     ws = min(n + NEAREST_MATCH_WINDOW_SLACK, len(content_lines) - best_start)
     snippet_lines = content_lines[best_start:best_start + ws]
-    numbered = "".join(f"    {best_start + i + 1:6d}\t{l}\n" for i, l in enumerate(snippet_lines))
+    numbered = "".join(f"{l}\n" for l in snippet_lines)
     return (
         f"\nClosest match (ratio {best_ratio:.2f}) at lines {best_start + 1}–{best_start + ws}:\n"
         f"{numbered}"
