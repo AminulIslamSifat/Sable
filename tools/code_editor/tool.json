@@ -1,0 +1,105 @@
+[
+  {
+    "name": "view_file",
+    "description": "View file or directory contents with line numbers.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File or directory path"
+        },
+        "start": {
+          "type": "integer",
+          "description": "Start line"
+        },
+        "end": {
+          "type": "integer",
+          "description": "End line"
+        },
+        "full": {
+          "type": "boolean",
+          "description": "Read entire file"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    }
+  },
+  {
+    "name": "edit_file",
+    "description": "Edit a file using SEARCH/REPLACE blocks.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File path"
+        },
+        "body": {
+          "type": "string",
+          "description": "SEARCH/REPLACE block(s). Format: <<<<<<< SEARCH\\nold_code\\n=======\\nnew_code\\n>>>>>>> REPLACE. Multiple blocks separated by newlines. old_str must match exactly once in the file."
+        }
+      },
+      "required": [
+        "path",
+        "body"
+      ]
+    }
+  },
+  {
+    "name": "create_file",
+    "description": "Create a new file with given content.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File path to create"
+        },
+        "overwrite": {
+          "type": "boolean",
+          "description": "Overwrite if exists"
+        },
+        "content": {
+          "type": "string",
+          "description": "Full file content to write"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ]
+    }
+  },
+  {
+    "name": "insert_file",
+    "description": "Insert lines at a specific line or after a matched string.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File path"
+        },
+        "at_line": {
+          "type": "integer",
+          "description": "Line number to insert before"
+        },
+        "after_str": {
+          "type": "string",
+          "description": "String to insert after"
+        },
+        "content": {
+          "type": "string",
+          "description": "Lines to insert"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ]
+    }
+  }
+]

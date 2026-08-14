@@ -1,5 +1,5 @@
 
-"""Command execution handlers: execute_command, execute_background_command, check_command."""
+"""Command execution handlers: execute_command (with bg=true support), check_command."""
 
 from __future__ import annotations
 

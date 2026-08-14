@@ -1,0 +1,31 @@
+[
+  {
+    "name": "mcp_call",
+    "description": "Invoke a tool on a connected MCP server.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "server": {
+          "type": "string",
+          "description": "MCP server name (omit for auto-route)"
+        },
+        "tool": {
+          "type": "string",
+          "description": "Tool name to invoke"
+        },
+        "args": {
+          "type": "object",
+          "description": "JSON object of tool arguments"
+        },
+        "timeout": {
+          "type": "integer",
+          "description": "Seconds to wait (default 90, max 300)"
+        }
+      },
+      "required": [
+        "tool",
+        "args"
+      ]
+    }
+  }
+]

@@ -49,13 +49,14 @@ class SkillEngine:
         skills_dir: Path,
         handlers: dict[str, HandlerFn],
         agent_id: str | None = None,
+        disabled: list[str] | None = None,
     ) -> None:
         self._skills_dir = skills_dir
         self._handlers = handlers
         self._agent_id = agent_id
 
         # Discovery
-        self._skills = discover_skills(skills_dir, agent_id=agent_id)
+        self._skills = discover_skills(skills_dir, agent_id=agent_id, disabled=disabled)
         self._tag_ownership = build_tag_ownership(self._skills)
 
         # Validation warnings (logged at init)
@@ -70,7 +71,7 @@ class SkillEngine:
         from engine.security.middleware import SecurityMiddleware
 
         self._pipeline = MiddlewarePipeline([
-            ValidationMiddleware(self._tag_ownership),
+            ValidationMiddleware(self._tag_ownership, set(handlers.keys())),
             SecurityMiddleware(),
             ExecutionMiddleware(handlers),
             LoggingMiddleware(),
@@ -149,14 +150,11 @@ class SkillEngine:
         lines.append("> 4. **Precedence rule.** When a matched skill conflicts with a generic tool, the skill wins.")
         lines.append(">")
         lines.append("> ### Routing Discipline")
-        lines.append("> - One skill per response. Never stack skills.")
         lines.append("> - **Mutation lock.** File writes/edits go through the Code Editor skill ONLY.")
         lines.append("> - Never put an action block inside a fenced code block.")
         lines.append(">")
         lines.append("> ### Action Wrapper (mandatory)")
-        lines.append("> Every tag must be nested inside a single `...` block at response end.")
-        lines.append("> One-liner mode: if you use action, the response is ONE short sentence + the block.")
-        lines.append("")
+        lines.append("> Every tag must be nested inside a single `action` block at response end.")
         lines.append("***")
         lines.append("")
 
@@ -242,5 +240,5 @@ class SkillEngine:
         self._skills = discover_skills(self._skills_dir, agent_id=self._agent_id)
         self._tag_ownership = build_tag_ownership(self._skills)
         # Update validation middleware's ownership reference
-        self._pipeline._middlewares[0] = ValidationMiddleware(self._tag_ownership)
+        self._pipeline._middlewares[0] = ValidationMiddleware(self._tag_ownership, set(self._handlers.keys()))
         logger.info("SkillEngine reloaded: %d skills", len(self._skills))

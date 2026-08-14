@@ -1,10 +1,10 @@
 {
-  "model": "snowflake/snowflake-arctic-embed-xs",
+  "model": "",
   "top_k": 5,
-  "enabled": true,
+  "enabled": false,
   "max_prompt_chars": 20000,
   "model_thresholds": {},
-  "top_memory": 4,
-  "top_procedural": 4,
-  "top_total": 8
+  "top_memory": 5,
+  "top_procedural": 3,
+  "top_total": 9
 }

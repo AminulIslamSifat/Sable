@@ -311,10 +311,21 @@ class ChatService:
                             continue
                         else:
                             buffer = ""
+                            _total_bytes = 0
+                            _chunk_count = 0
+                            _answer_chars = 0
+                            _finish_reason = None
+                            _last_sse_data = None
+                            logger.info(
+                                "Qwen stream started: chat_id=%s attempt=%d model=%s",
+                                chat_id, attempt, body.get("model", "?"),
+                            )
                             async for chunk in res.aiter_bytes():
                                 if not chunk:
                                     continue
 
+                                _total_bytes += len(chunk)
+                                _chunk_count += 1
                                 buffer += chunk.decode("utf-8", errors="replace")
                                 while "\n" in buffer:
                                     line, buffer = buffer.split("\n", 1)
@@ -363,8 +374,22 @@ class ChatService:
 
                                     try:
                                         data = json.loads(line[6:])
+                                        _last_sse_data = data
                                     except json.JSONDecodeError:
+                                        logger.warning(
+                                            "Qwen SSE JSON parse failed: %s",
+                                            line[:200],
+                                        )
                                         continue
+
+                                    # Capture finish_reason from choices or top-level
+                                    _fr = None
+                                    if data.get("choices"):
+                                        _fr = data["choices"][0].get("finish_reason")
+                                    if not _fr:
+                                        _fr = data.get("finish_reason")
+                                    if _fr:
+                                        _finish_reason = _fr
 
                                     created = data.get("response.created")
                                     if isinstance(created, dict):
@@ -413,10 +438,36 @@ class ChatService:
                                             yield {"type": "thinking", "text": content}
                                     elif phase == "answer" and content:
                                         got_content = True
+                                        _answer_chars += len(content)
                                         yield {"type": "answer", "text": content}
                                     elif content:
                                         got_content = True
+                                        _answer_chars += len(content)
                                         yield {"type": "answer", "text": content}
+
+                            # Stream ended — log diagnostics
+                            logger.info(
+                                "Qwen stream ended: chat_id=%s attempt=%d "
+                                "chunks=%d bytes=%d answer_chars=%d "
+                                "finish_reason=%s got_content=%s "
+                                "buffer_leftover=%d last_data_keys=%s",
+                                chat_id, attempt, _chunk_count, _total_bytes,
+                                _answer_chars, _finish_reason, got_content,
+                                len(buffer), list(_last_sse_data.keys()) if _last_sse_data else "none",
+                            )
+                            if not got_content and _chunk_count > 0:
+                                logger.warning(
+                                    "Qwen stream produced %d chunks (%d bytes) but ZERO content. "
+                                    "finish_reason=%s buffer_tail=%s",
+                                    _chunk_count, _total_bytes, _finish_reason,
+                                    buffer[-500:] if buffer else "(empty)",
+                                )
+                            if got_content and _finish_reason and _finish_reason != "stop":
+                                logger.warning(
+                                    "Qwen stream finished with reason=%s (not 'stop'). "
+                                    "Response likely truncated. answer_chars=%d",
+                                    _finish_reason, _answer_chars,
+                                )
 
             except httpx.ConnectError as exc:
                 last_error_msg = f"Connection failed: {exc}"
