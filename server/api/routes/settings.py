@@ -990,7 +990,7 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
                     ],
                 )
                 page = context.pages[0] if context.pages else await context.new_page()
-                await page.goto(url)
+                await page.goto(url, timeout=120000)
                 # Wait until user closes the browser window
                 await context.wait_for_event("close", timeout=0)
         except Exception as e:

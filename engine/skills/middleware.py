@@ -48,21 +48,28 @@ class Middleware(Protocol):
 class ValidationMiddleware:
     """Validates tag is known, skill exists, and content is non-empty where required."""
 
-    def __init__(self, tag_ownership: dict[str, SkillMeta]) -> None:
+    def __init__(self, tag_ownership: dict[str, SkillMeta], handler_keys: set[str] | None = None) -> None:
         self._ownership = tag_ownership
+        self._handler_keys = handler_keys or set()
 
     def process(self, ctx: TagContext, next_fn: Callable[[TagContext], Generator[dict[str, Any], None, None]]) -> Generator[dict[str, Any], None, None]:
         # Resolve owning skill
         skill = self._ownership.get(ctx.name) or self._ownership.get(ctx.name.replace("-", "_"))
         if skill is None:
-            ctx.error = f"No handler for tag '{ctx.name}'"
-            yield end_event(ctx.tag_id, ctx.name, False, ctx.started, error=ctx.error)
-            return
-
-        ctx.skill = skill
+            # Allow tool-only tags (e.g. code_editor tools) that have handlers
+            # but no skill ownership entry
+            normalized = ctx.name.replace("-", "_")
+            if ctx.name in self._handler_keys or normalized in self._handler_keys:
+                ctx.skill = None  # No owning skill, but handler exists
+            else:
+                ctx.error = f"No handler for tag '{ctx.name}'"
+                yield end_event(ctx.tag_id, ctx.name, False, ctx.started, error=ctx.error)
+                return
+        else:
+            ctx.skill = skill
 
         # Content-required tags
-        content_required = {"execute_command", "execute_background_command", "create_file", "create_note", "save_svg", "create_svg"}
+        content_required = {"execute_command", "create_file", "create_note", "save_svg", "create_svg"}
         if ctx.name in content_required and not ctx.content.strip():
             ctx.error = f"Tag '{ctx.name}' requires non-empty content"
             yield end_event(ctx.tag_id, ctx.name, False, ctx.started, error=ctx.error)

@@ -1,0 +1,39 @@
+[
+  {
+    "name": "execute_command",
+    "description": "Run a shell command. Use bg=true for long-running processes.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Shell command to execute"
+        },
+        "timeout": {
+          "type": "integer",
+          "description": "Timeout in seconds (default 15, max 180)"
+        },
+        "bg": {
+          "type": "boolean",
+          "description": "Set true to run in background (returns PID)"
+        }
+      },
+      "required": [
+        "command"
+      ]
+    }
+  },
+  {
+    "name": "check_command",
+    "description": "Check status of background job(s).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "description": "PID of background job to check. Omit to check all."
+        }
+      }
+    }
+  }
+]

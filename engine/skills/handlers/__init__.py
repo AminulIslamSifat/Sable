@@ -4,7 +4,6 @@
 from engine.skills.handlers.execute import (
     BG_JOBS,
     handle_check_command,
-    handle_execute_background_command,
     handle_execute_command,
 )
 from engine.skills.handlers.file_ops import (
@@ -38,7 +37,6 @@ from engine.mcp.handler import handle_mcp_call
 
 HANDLER_MAP: dict[str, object] = {
     "execute_command": handle_execute_command,
-    "execute_background_command": handle_execute_background_command,
     "get_file": handle_get_file,
     "read_file": handle_get_file,
 
@@ -70,7 +68,6 @@ __all__ = [
     "handle_create_file",
     "handle_create_note",
     "handle_edit_file",
-    "handle_execute_background_command",
     "handle_execute_command",
     "handle_get_file",
     "handle_insert_file",

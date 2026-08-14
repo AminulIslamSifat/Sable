@@ -23,6 +23,12 @@ from typing import Any
 import httpx
 
 from connectors.common.media import prepare_inline_file, to_openai_image
+from connectors.common.native_tools import (
+    openai_to_openai_tools,
+    parse_openai_function_call,
+    format_openai_tool_result,
+    native_call_to_tag_event,
+)
 from connectors.common.context_summarizer import (
     should_inject_hint, should_force_summarize, get_hint_text,
     extract_summarize_tag, strip_summarize_tag, build_summary_prompt,
@@ -293,6 +299,7 @@ class GroqClient:
         inject_instructions: bool = True,
         files: list[str] | None = None,
         max_session_chars: int | None = None,
+        tools: list[dict] | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat completion, yielding Sable-standard events."""
@@ -342,7 +349,20 @@ class GroqClient:
             "stream": True,
         }
 
-        # Try each key with rotation on failure
+        # Native tool calling
+        if tools:
+            oai_tools = openai_to_openai_tools(tools)
+            if oai_tools:
+                payload["tools"] = oai_tools
+
+        # Tool execution loop
+        _max_tool_rounds = 20
+        _tool_round = 0
+
+        while _tool_round < _max_tool_rounds:
+            _tool_round += 1
+
+            # Try each key with rotation on failure
         attempts = len(self._keys)
         for attempt in range(attempts):
             key = self._current_key
@@ -368,6 +388,9 @@ class GroqClient:
                         yield {"type": "error", "message": f"Groq API error {response.status_code}: {body.decode()[:200]}"}
                         return
 
+                    # Accumulate streaming tool call deltas
+                    _tc_buffers: dict[int, dict] = {}  # index -> {id, name, args_str}
+
                     async for line in response.aiter_lines():
                         if not line.startswith("data: "):
                             continue
@@ -379,19 +402,93 @@ class GroqClient:
                         except json.JSONDecodeError:
                             continue
                         delta = (chunk.get("choices") or [{}])[0].get("delta", {})
-                        content = delta.get("content") or ""
-                        if content:
-                            full_answer += content
-                            clean_text = strip_summarize_tag(content)
+                        finish_reason = (chunk.get("choices") or [{}])[0].get("finish_reason", "")
+
+                        # Text content
+                        tc = delta.get("content") or ""
+                        if tc:
+                            full_answer += tc
+                            clean_text = strip_summarize_tag(tc)
                             if clean_text:
                                 yield {"type": "answer", "text": clean_text}
 
-                # Success — save to history and finish
+                        # Tool call deltas (streaming)
+                        tc_deltas = delta.get("tool_calls")
+                        if tc_deltas:
+                            for tcd in tc_deltas:
+                                idx = tcd.get("index", 0)
+                                if idx not in _tc_buffers:
+                                    _tc_buffers[idx] = {"id": tcd.get("id", ""), "name": "", "args_str": ""}
+                                buf = _tc_buffers[idx]
+                                if tcd.get("id"):
+                                    buf["id"] = tcd["id"]
+                                fn = tcd.get("function", {})
+                                if fn.get("name"):
+                                    buf["name"] = fn["name"]
+                                if fn.get("arguments"):
+                                    buf["args_str"] += fn["arguments"]
+
+                    # Check if we got tool calls
+                    if _tc_buffers:
+                        # Parse accumulated tool calls
+                        fc_calls = []
+                        for idx in sorted(_tc_buffers.keys()):
+                            buf = _tc_buffers[idx]
+                            try:
+                                args = json.loads(buf["args_str"]) if buf["args_str"] else {}
+                            except json.JSONDecodeError:
+                                args = {}
+                            fc_calls.append({"name": buf["name"], "args": args, "id": buf["id"]})
+
+                        if fc_calls:
+                            # Save assistant message with tool_calls to history
+                            assistant_msg: dict[str, Any] = {"role": "assistant", "content": full_answer or None}
+                            assistant_msg["tool_calls"] = [
+                                {"id": fc["id"], "type": "function", "function": {"name": fc["name"], "arguments": json.dumps(fc["args"])}}
+                                for fc in fc_calls
+                            ]
+                            history.append(assistant_msg)
+
+                            # Execute each tool call
+                            import asyncio as _asyncio
+                            from engine.skills import get_skill_engine as _get_engine
+                            engine = _get_engine()
+
+                            for fc in fc_calls:
+                                tag_event = native_call_to_tag_event(fc)
+
+                                try:
+                                    events = await _asyncio.to_thread(
+                                        lambda: list(engine.process_tag(
+                                            tag_event["name"], tag_event["attrs"],
+                                            tag_event["content"], namespace="maria",
+                                        ))
+                                    )
+                                except Exception as exc:
+                                    events = [{"type": "skill_end", "name": tag_event["name"], "ok": False, "error": str(exc)}]
+
+                                result_text = ""
+                                ok = True
+                                for evt in events:
+                                    if evt.get("type") == "skill_output":
+                                        result_text += evt.get("text", "")
+                                    elif evt.get("type") == "skill_end":
+                                        ok = evt.get("ok", True)
+                                    yield evt
+
+                                tool_result = format_openai_tool_result(tag_event["name"], result_text, ok, fc.get("id", ""))
+                                history.append(tool_result)
+                                logger.info("Native tool %s executed (ok=%s), continuing loop", tag_event["name"], ok)
+
+                            if chat_id:
+                                self._sessions[chat_id] = history
+                            continue  # Re-enter API call with tool results
+
+                # Normal completion (no tool calls)
                 _summarize_idx = extract_summarize_tag(full_answer)
                 clean_answer = strip_summarize_tag(full_answer)
                 history.append({"role": "assistant", "content": clean_answer})
 
-                # Handle model-triggered summarization
                 if _summarize_idx is not None and chat_id:
                     prefix_len = 1 if history and history[0].get("role") == "system" else 0
                     actual_cut = max(prefix_len, min(_summarize_idx, len(history) - 1))
