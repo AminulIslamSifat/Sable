@@ -71,10 +71,16 @@ _AGENT_CONSOLIDATION_PROMPT = (
     "- Architecture discoveries, file paths, tool behaviors (semantic)\n"
     "- Skip: trivial outputs, greetings, one-off details\n\n"
     "You are a strict filter. Most agent sessions produce 0-2 memories.\n\n"
-    "CATEGORIES:\n"
-    "- semantic: Durable facts — architecture, configs, paths, tool behaviors\n"
-    "- episodic: Event-specific debugging sessions with reusable context\n"
-    "- procedural: Workflows, patterns, how-to sequences\n\n"
+    "CATEGORIES (assign each entry to exactly one):\n"
+    "- semantic: WHAT is true. Durable facts — architecture, configs, paths, tool behaviors.\n"
+    "  Default category. If unsure, choose semantic.\n"
+    "- episodic: WHAT happened. Event-specific debugging sessions with reusable context.\n"
+    "  Only if the exact sequence matters for future recall.\n"
+    "- procedural: HOW to do it. Workflows, behavioral rules, patterns that change future behavior.\n"
+    "  NOT procedural: facts about how something works (that's semantic).\n"
+    "  Requires 'trigger' and 'keywords' fields.\n\n"
+    "DEDUP: Check CURRENT MEMORY STORE keys before adding. If a similar key exists,\n"
+    "do NOT add a duplicate. Either skip or delete the old key and add an updated version.\n\n"
     'OUTPUT: Raw JSON only. No markdown fences.\n'
     'Format:\n'
     '{\n'
@@ -134,21 +140,64 @@ def _load_consolidation_settings() -> dict[str, Any]:
     return defaults
 
 
-def _load_current_memory() -> str:
-    """Load current memory as compact JSON string for context."""
-    if not _MEMORY_PATH.exists():
-        return "{}"
-    try:
-        data = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
-        # Only include keys for dedup context (not full values to save space)
-        compact = {}
-        for cat in ("semantic", "episodic", "procedural"):
-            entries = data.get(cat, [])
+def _load_current_memory(query: str = "", max_entries: int = 25) -> str:
+    """Load relevant existing memory keys as compact JSON for dedup context.
+
+    If a query is provided, uses vector similarity to return only the top-N
+    most relevant entries (avoids dumping the entire store into the prompt).
+    Falls back to all keys if the searcher is unavailable.
+    """
+    # Try relevance-filtered approach first
+    if query:
+        try:
+            from engine.memory_search import get_searcher
+            searcher = get_searcher()
+            searcher._ensure_loaded()
+
+            if searcher._normed_vectors is not None and len(searcher._normed_vectors) > 0:
+                query_vec = searcher._embed_texts([query], is_query=True)
+                sims = (query_vec @ searcher._normed_vectors.T)[0]
+
+                # Get top-N indices above a minimum threshold
+                min_sim = 0.15  # Very low bar — just filter out completely unrelated
+                top_indices = sorted(range(len(sims)), key=lambda i: -sims[i])
+                top_indices = [i for i in top_indices[:max_entries] if sims[i] >= min_sim]
+
+                if top_indices:
+                    compact: dict[str, list] = {}
+                    for idx in top_indices:
+                        meta = searcher._entry_meta[idx]
+                        cat = meta.get("category", "semantic")
+                        if cat not in compact:
+                            compact[cat] = []
+                        compact[cat].append({"key": meta["key"]})
+                    return json.dumps(compact, indent=1)
+        except Exception as exc:
+            logger.debug("[memory_trigger] Relevance-filtered memory load failed, falling back: %s", exc)
+
+    # Fallback: load all keys (small stores or searcher unavailable)
+    compact_all: dict[str, list] = {}
+
+    if _MEMORY_PATH.exists():
+        try:
+            data = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
+            for cat in ("semantic", "episodic"):
+                entries = data.get(cat, [])
+                if entries:
+                    compact_all[cat] = [{"key": e.get("key", "")} for e in entries if isinstance(e, dict)]
+        except Exception:
+            pass
+
+    if _PROCEDURAL_PATH.exists():
+        try:
+            pdata = json.loads(_PROCEDURAL_PATH.read_text(encoding="utf-8"))
+            entries = pdata.get("procedural", [])
             if entries:
-                compact[cat] = [{"key": e.get("key", "")} for e in entries if isinstance(e, dict)]
-        return json.dumps(compact, indent=1)
-    except Exception:
-        return "{}"
+                compact_all["procedural"] = [{"key": e.get("key", "")} for e in entries if isinstance(e, dict)]
+        except Exception:
+            pass
+
+    return json.dumps(compact_all, indent=1) if compact_all else "{}"
 
 
 async def _resolve_candidates_against_memory(
@@ -325,6 +374,22 @@ async def _resolve_candidates_against_memory(
                         merged_entry["keywords"] = [str(kw) for kw in mk]
                     elif entry.get("keywords"):
                         merged_entry["keywords"] = entry["keywords"]
+                # Preserve retrieval fields (source_query + tags + triggers) for all categories
+                msq = decision.get("merged_source_query")
+                if msq:
+                    merged_entry["source_query"] = str(msq).strip()
+                elif entry.get("source_query"):
+                    merged_entry["source_query"] = entry["source_query"]
+                mtags = decision.get("merged_tags")
+                if mtags and isinstance(mtags, list):
+                    merged_entry["tags"] = [str(t).lower().strip() for t in mtags if str(t).strip()]
+                elif entry.get("tags"):
+                    merged_entry["tags"] = entry["tags"]
+                mtriggers = decision.get("merged_triggers")
+                if mtriggers and isinstance(mtriggers, list):
+                    merged_entry["triggers"] = [str(t).strip() for t in mtriggers if str(t).strip()]
+                elif entry.get("triggers"):
+                    merged_entry["triggers"] = entry["triggers"]
                 resolved_entries.append(merged_entry)
             elif action == "replace":
                 existing_key = decision.get("existing_key")
@@ -599,7 +664,9 @@ async def trigger_agent_memory(agent) -> dict[str, Any] | None:
 
     # Build prompt
     conversation = _format_agent_conversation(agent)
-    current_memory = _load_current_memory()
+    # Use agent task as relevance query — only pass related existing keys, not the whole store
+    relevance_query = f"{agent.role}: {agent.task}"
+    current_memory = _load_current_memory(query=relevance_query)
 
     prompt = _AGENT_CONSOLIDATION_PROMPT
     prompt = prompt.replace("<<CURRENT_MEMORY>>", current_memory)
