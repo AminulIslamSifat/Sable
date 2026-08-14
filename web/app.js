@@ -9622,47 +9622,35 @@
     }
 
     function updateFavicon() {
-      const cs = getComputedStyle(document.documentElement);
-      const accent = (cs.getPropertyValue("--accent-text") || "#e8cd97").trim();
-      const svg = `<svg viewBox="0 0 32 32" width="32" height="32" xmlns="http://www.w3.org/2000/svg">
-<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-<stop offset="0%" stop-color="${accent}"/>
-<stop offset="100%" stop-color="${accent}" stop-opacity="0.7"/>
-</linearGradient></defs>
-<polygon fill="#181825" stroke="url(#g)" stroke-width="3" stroke-linejoin="round" points="16,2 26,8 26,24 16,30 6,24 6,8"/>
-<circle cx="16" cy="2" r="3" fill="${accent}"/>
-<circle cx="26" cy="8" r="3" fill="${accent}"/>
-<circle cx="26" cy="24" r="3" fill="${accent}"/>
-<circle cx="16" cy="30" r="3" fill="${accent}"/>
-<circle cx="6" cy="24" r="3" fill="${accent}"/>
-<circle cx="6" cy="8" r="3" fill="${accent}"/>
-<circle cx="16" cy="16" r="4" fill="${accent}"/>
-</svg>`;
-      let link = document.querySelector("link[rel='icon']");
-      if (!link) { link = document.createElement("link"); link.rel = "icon"; document.head.appendChild(link); }
-      link.type = "image/svg+xml";
-      link.href = "data:image/svg+xml," + encodeURIComponent(svg);
-
-      // --- Sidebar / login logo: themed tree ---
+      // --- Themed tree: resolved data-URI for favicon + all logo imgs ---
       if (!window.__sableTree) {
-        window.__sableTree = fetch("/static/assets/sable_tree.svg")
+        window.__sableTree = fetch("/static/assets/sable_tree.svg?v=4")
           .then(r => (r.ok ? r.text() : null)).catch(() => null);
       }
       window.__sableTree.then(txt => {
         if (!txt) return;
-        const cs2 = getComputedStyle(document.documentElement);
-        const reps = [
-          ["var(--accent-text, #a78bfa)", (cs2.getPropertyValue("--accent-text") || "#a78bfa").trim()],
-          ["var(--accent, #8b5cf6)", (cs2.getPropertyValue("--accent") || "#8b5cf6").trim()],
-          ["var(--text, #e0dce8)", (cs2.getPropertyValue("--text") || "#e0dce8").trim()],
-          ["var(--panel, #1a1625)", (cs2.getPropertyValue("--panel") || "#1a1625").trim()],
-        ];
-        let out = txt;
-        for (const [k, v] of reps) out = out.split(k).join(v);
-        const uri = "data:image/svg+xml," + encodeURIComponent(out);
-        document.querySelectorAll('img[src*="sable_icon"], img[src*="sable_tree"]').forEach(img => {
-          img.src = uri;
-        });
+        const cs = getComputedStyle(document.documentElement);
+        const vars = {
+          '--accent-text': cs.getPropertyValue('--accent-text').trim() || '#a78bfa',
+          '--accent': cs.getPropertyValue('--accent').trim() || '#8b5cf6',
+          '--panel-2': cs.getPropertyValue('--panel-2').trim() || '#211c30',
+          '--panel': cs.getPropertyValue('--panel').trim() || '#1a1625',
+          '--bg': cs.getPropertyValue('--bg').trim() || '#0f0d15',
+          '--text': cs.getPropertyValue('--text').trim() || '#e0dce8',
+        };
+        let resolved = txt;
+        for (const [v, val] of Object.entries(vars)) {
+          resolved = resolved.replace(new RegExp('var\\(' + v + ',\\s*([^)]+)\\)', 'g'), val);
+        }
+        const uri = "data:image/svg+xml," + encodeURIComponent(resolved);
+        let link = document.querySelector("link[rel='icon']");
+        if (!link) { link = document.createElement("link"); link.rel = "icon"; document.head.appendChild(link); }
+        link.type = "image/svg+xml";
+        link.href = uri;
+        if (!window.__sableIconImgs) {
+          window.__sableIconImgs = Array.from(document.querySelectorAll('img[src*="sable_icon"], img[src*="sable_tree"]'));
+        }
+        window.__sableIconImgs.forEach(img => { img.src = uri; });
       });
     }
 

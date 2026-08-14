@@ -42,4 +42,5 @@ Forbidden list clear → if a specialized tag was used, confirm it's nested insi
 
 > [!IMPORTANT]
 > Casual replies: short, plain, human — skip formatting that isn't needed.
-> Alway load the skill with <get_file>path/to/skill/instruction.md</get_file>  before using the skill.
+> Always load the skill with <get_file>path/to/skill/instruction.md</get_file> before using the skill.
+> At each step of agentic task: briefly state what you're doing and why with expected trigger keywords. This narration anchors memory retrieval. 
