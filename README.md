@@ -52,7 +52,7 @@ chmod +x start
 that's it. that's the whole thing. opens `http://127.0.0.1:61770` in your browser.
 
 > [!note] first run?
-> `./init` handles deps, Playwright browsers, and systemd service setup. Only needed once.
+> `./start` handles everything — deps, Playwright browsers, systemd service setup. Just run it.
 
 ***
 
@@ -64,7 +64,7 @@ that's it. that's the whole thing. opens `http://127.0.0.1:61770` in your browse
 | **[uv](https://docs.astral.sh/uv/)** | package manager, fast af |
 | **systemd** | optional — falls back to direct `uv run` |
 | **Go** | only if rebuilding DeepSeek PoW solver |
-| **Chromium** | Playwright installs it for you via `./init` |
+| **Chromium** | Playwright installs it for you via `./start` |
 
 ***
 
@@ -116,9 +116,7 @@ Sable/
 ├── system/        # Runtime: DB, browser profiles, configs
 ├── output/        # Generated content: notes, research, agent results
 ├── test/          # pytest suite
-├── start          # ← you are here
-├── init           # First-run setup
-└── status         # Health check
+└── start          # ← you are here (setup + launch, all-in-one)
 ```
 
 ***
@@ -127,9 +125,7 @@ Sable/
 
 | Command | Does |
 |:--|:--|
-| `./init` | Install everything, set up systemd service |
-| `./start` | Launch Sable (systemd or direct) |
-| `./status` | Check if it's alive |
+| `./start` | Setup (first run) + launch Sable. That's it. One script. |
 
 ***
 

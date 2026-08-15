@@ -59,12 +59,12 @@ STUCK_MESSAGE = (
 )
 
 FORMAT_REMINDERS: dict[str, str] = {
-    "analyst": "This is your FINAL response. Output ONLY a markdown document. For research: ## Topic, ## Findings, ## Sources, ## Summary, ## Confidence. For code review: ## File Reviewed, ## Critical Issues, ## Warnings, ## Info, ## Verdict. No JSON. No action block.",
-    "coder": "This is your FINAL response. Output ONLY a markdown document with these sections: ## Description, ## Files Modified, ## Tests, ## Notes. No JSON. No action block.",
-    "writer": "This is your FINAL response. Output ONLY a markdown document with these sections: ## Title, ## Document Path, ## Structure Overview, ## Word Count, ## Notes. No JSON. No action block.",
+    "analyst": "This is your FINAL response. Output ONLY a markdown document. For research: ## Topic, ## Findings, ## Sources, ## Summary, ## Confidence. For code review: ## File Reviewed, ## Critical Issues, ## Warnings, ## Info, ## Verdict. No JSON. No tool_call block.",
+    "coder": "This is your FINAL response. Output ONLY a markdown document with these sections: ## Description, ## Files Modified, ## Tests, ## Notes. No JSON. No tool_call block.",
+    "writer": "This is your FINAL response. Output ONLY a markdown document with these sections: ## Title, ## Document Path, ## Structure Overview, ## Word Count, ## Notes. No JSON. No tool_call block.",
 }
 
-_TAG_RE = re.compile(r"<(action)>(.*?)</\1>", re.DOTALL)
+_TAG_RE = re.compile(r"<\s*tool_call\s*>(.*?)<\s*/\s*tool_call\s*>", re.DOTALL | re.IGNORECASE)
 # Matches both <tag attrs>content</tag> and <tag attrs />
 _INNER_TAG_RE = re.compile(
     r"<(\w+)\s*((?:[^>\"']|\"[^\"]*\"|'[^']*')*?)\s*(?:/>\s*$|>(.*?)</\1\s*>|>)",
@@ -73,16 +73,16 @@ _INNER_TAG_RE = re.compile(
 
 # Warning messages injected as user messages when format violations are detected
 ACTION_WRAPPER_WARNING = (
-    "[FORMAT WARNING] You used a tool tag without wrapping it in an <act" + "ion> block. "
-    "All tool tags MUST be wrapped like this:\n"
-    "<act" + "ion>\n<your_tag>...</your_tag>\n</act" + "ion>\n"
+    "[FORMAT WARNING] You used a tool call without wrapping it in a <tool" + "_call> block. "
+    "All tool calls MUST be wrapped like this:\n"
+    "<tool" + "_call>{\"name\": \"tool_name\", \"arguments\": {...}}</tool" + "_call>\n"
     "Please retry with the correct format."
 )
 
 ORPHAN_CLOSE_TAG_WARNING = (
-    "[FORMAT WARNING] Found a closing </act" + "ion> tag without a matching opening <act" + "ion> tag. "
+    "[FORMAT WARNING] Found a closing </tool" + "_call> tag without a matching opening <tool" + "_call> tag. "
     "Make sure every tool call is properly wrapped:\n"
-    "<act" + "ion>\n<your_tag>...</your_tag>\n</act" + "ion>\n"
+    "<tool" + "_call>{\"name\": \"tool_name\", \"arguments\": {...}}</tool" + "_call>\n"
     "Please retry with the correct format."
 )
 
@@ -112,7 +112,7 @@ Examples:
   <execute_command>grep -rn "pattern" /path --include="*.py"</execute_command>
 Rules:
 - Always use absolute paths.
-- For long-running commands (>15s), use execute_background_command if available.
+- For long-running commands (>15s), add bg="true" to execute_command.
 - Sudo password is <pass> — use: echo <pass> | sudo -S <command>
 """
 
@@ -144,19 +144,21 @@ def _build_tool_guide(allowed_skills: list[str], default_skills: list[str]) -> s
 
     A = chr(60)  # <
     Z = chr(62)  # >
+    TC_O = "<" + "tool_call" + ">"
+    TC_C = "</" + "tool_call" + ">"
     lines = [
         "\n\n## Available Tools",
         "To call a tool, output exactly this structure (one per response):",
-        f"  {A}action{Z}",
-        f'  {A}tag_name attr="value"{Z}content{A}/tag_name{Z}',
-        f"  {A}/action{Z}",
+        f"  {TC_O}",
+        f'  {{"name": "tool_name", "arguments": {{"param": "value"}}}}',
+        f"  {TC_C}",
         "",
         "Rules:",
-        "- Exactly ONE action block per response. Wait for the result before continuing.",
-        "- For INTERMEDIATE responses: briefly state your next step (1 sentence max), then output the action block. Do NOT use final format headers.",
+        "- Exactly ONE tool_call block per response. Wait for the result before continuing.",
+        "- For INTERMEDIATE responses: briefly state your next step (1 sentence max), then output the tool_call block. Do NOT use final format headers.",
         "- Use absolute paths for all file operations.",
         "- After getting tool output, analyze it and decide next step.",
-        "- ONLY when ALL tool work is done, output your final markdown answer using the required sections. No action block on the final answer.",
+        "- ONLY when ALL tool work is done, output your final markdown answer using the required sections. No tool_call block on the final answer.",
         "",
     ]
 
@@ -407,7 +409,7 @@ async def run_agent_llm_loop(
                 return response_text
             # Missing required sections or malformed → one re-prompt
             base_reminder = FORMAT_REMINDERS.get(agent.role, "Provide a clean markdown document with the required sections as your final answer.")
-            reminder = f"{base_reminder}\n\nIMPORTANT: Output ONLY the markdown document. Do NOT include any JSON object, structured data block, or duplicate summary. Your entire response must be pure markdown with ## headers."
+            reminder = f"{base_reminder}\n\nIMPORTANT: Output ONLY the markdown document. Do NOT include any JSON object, structured data block, or duplicate summary. Your entire response must be pure markdown with ## headers. No tool_call blocks."
             agent.messages.append({"role": "user", "content": reminder})
             await _persist_message(agent.id, "user", reminder)
             response_text, new_parent_id = await _send_with_retry(
@@ -463,7 +465,7 @@ async def run_agent_llm_loop(
 
             try:
                 from engine.skills import get_skill_engine
-                from engine.skills.parser import parse_attrs
+                from engine.skills.parser import parse_attrs  # compat: attrs already dict in Hermes format
                 from engine.skills.events import build_tool_feedback
 
                 engine = get_skill_engine()
@@ -541,7 +543,7 @@ async def run_agent_llm_loop(
 
         # Feed results back as next message
         combined = "\n---\n".join(tool_results)
-        current_message = f"[Tool Results]\n{combined}"
+        current_message = f"<tool_response>\\n{combined}\\n</tool_response>"
 
         # Append todo context if agent has an active todo list (compact: skip completed items)
         if agent.todos and agent.todos.current:
@@ -551,14 +553,14 @@ async def run_agent_llm_loop(
 
         # Persist each tool call with clear structure for history viewing
         for tag, result in zip(tags, tool_results):
-            cmd_parts = [f"<{tag['name']}"]
-            if tag.get("attrs"):
-                cmd_parts.append(f" {tag['attrs']}")
-            if tag.get("content"):
-                cmd_parts.append(f">\n{tag['content']}\n</{tag['name']}>")
-            else:
-                cmd_parts.append(" />")
-            command_str = "".join(cmd_parts)
+            import json as _j
+            _attrs = tag.get("attrs", {})
+            if isinstance(_attrs, str):
+                try:
+                    _attrs = _j.loads(_attrs) if _attrs else {}
+                except Exception:
+                    _attrs = {}
+            command_str = f'{{"name": "{tag['name']}", "arguments": {_j.dumps(_attrs)}}}' 
 
             tool_msg = (
                 f"## Tool\n"
@@ -1231,57 +1233,75 @@ _SKIP_TAGS = frozenset(("action", "spawn_agent", "br", "hr", "json", "p", "div",
 
 
 def _check_action_wrapper_violations(text: str) -> str | None:
-    """Check for action wrapper format violations in LLM response.
+    """Check for tool_call format violations in LLM response.
 
     Returns a warning message string if violations found, None otherwise.
     Checks:
-    1. Bare skill tags not wrapped in action blocks
-    2. Orphan closing action tags without matching opener
+    1. JSON tool calls not wrapped in tool_call blocks
+    2. Orphan closing tool_call tags without matching opener
     """
     from engine.skills.parser import KNOWN_TAGS
 
-    has_action_open = "<act" + "ion>" in text
-    has_action_close = "</act" + "ion>" in text
+    has_open = "<tool" + "_call>" in text
+    has_close = "</tool" + "_call>" in text
 
     # Check for orphan closing tag
-    if has_action_close and not has_action_open:
+    if has_close and not has_open:
         return ORPHAN_CLOSE_TAG_WARNING
 
-    # Check for bare skill tags outside action blocks
-    # Strip all proper action blocks first
+    # Check for JSON tool calls outside tool_call blocks
+    # Strip all proper tool_call blocks first
     stripped = _TAG_RE.sub("", text)
 
-    # Now check if any known skill tags remain in the stripped text
-    for tag_name in KNOWN_TAGS:
-        pattern = re.compile(r"<" + re.escape(tag_name) + r"[\s/>]", re.IGNORECASE)
-        if pattern.search(stripped):
-            return ACTION_WRAPPER_WARNING
+    # Check if any known tool names appear in JSON format outside blocks
+    tool_pat = re.compile(
+        r'"name"\s*:\s*"(' + '|'.join(re.escape(t) for t in KNOWN_TAGS) + r')"',
+        re.IGNORECASE
+    )
+    if tool_pat.search(stripped):
+        return ACTION_WRAPPER_WARNING
 
     return None
 
 
 def _parse_skill_tags(text: str) -> list[dict[str, Any]]:
-    """Extract skill tags from LLM response."""
+    """Extract tool calls from LLM response (Hermes format).
+
+    Parses JSON content from <tool_call>...</tool_call> blocks.
+    Falls back to legacy XML tag extraction if no JSON tool calls found.
+    """
+    import json as _json
+    from engine.skills.parser import _parse_action_payload
+
     tags = []
 
-    def _extract(source: str) -> None:
-        for m in _INNER_TAG_RE.finditer(source):
-            name = m.group(1)
-            if name in _SKIP_TAGS:
-                continue
+    # Parse JSON tool calls from <tool_call> blocks
+    for match in _TAG_RE.finditer(text):
+        content = match.group(1).strip()
+        if not content:
+            continue
+        calls = _parse_action_payload(content)
+        for call in calls:
             tags.append({
-                "name": name,
-                "attrs": m.group(2) or "",
-                "content": m.group(3) or "",
-                "raw": m.group(0),
+                "name": call["name"],
+                "attrs": call["attrs"],
+                "content": call.get("content", ""),
+                "raw": match.group(0),
             })
 
-    # Prefer tags inside <action> blocks
-    for action_match in _TAG_RE.finditer(text):
-        _extract(action_match.group(2))
-
-    # Fallback: bare skill tags not wrapped in <action>
+    # Fallback: try legacy XML tag extraction if no JSON calls found
     if not tags:
+        def _extract(source: str) -> None:
+            for m in _INNER_TAG_RE.finditer(source):
+                name = m.group(1)
+                if name in _SKIP_TAGS:
+                    continue
+                tags.append({
+                    "name": name,
+                    "attrs": m.group(2) or "",
+                    "content": m.group(3) or "",
+                    "raw": m.group(0),
+                })
         _extract(text)
 
     return tags

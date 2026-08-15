@@ -1035,8 +1035,12 @@
 
     function renderMarkdown(raw) {
       if (!raw) return "";
-      // Strip agentic <action>...</action> blocks — metadata, not user-visible content
-      raw = String(raw).replace(/<action>[\s\S]*?<\/action>/gi, "").trim();
+      // Strip agentic wrapper blocks — metadata, not user-visible content
+      var _s = String(raw);
+      _s = _s.replace(/<action>[\s\S]*?<\/action>/gi, "");
+      _s = _s.replace(/<\s*tool_call\s*>[\s\S]*?<\s*\/\s*tool_call\s*>/gi, "");
+      _s = _s.replace(/<\/?\s*tool_call[^>]*>?/gi, "");
+      raw = _s.trim();
       const normalized = normalizeMd(raw.replace(/\r\n/g, "\n"));
       const safe = closeUnclosedFences(normalized);
 
@@ -3369,8 +3373,7 @@
             edit_file:    { icon: "✏️", label: "Editing file", detail: attrs.path || "", progress: true },
             insert_file:  { icon: "✏️", label: "Inserting into file", detail: attrs.path || "" },
             view_file:    { icon: "👁️", label: "Reading file", detail: attrs.path || (attrs.full ? "full file" : "") },
-            execute_command: { icon: "⚡", label: "Running command", detail: "" },
-            execute_background_command: { icon: "⚡", label: "Running background task", detail: "" },
+            execute_command: { icon: "⚡", label: attrs.bg === "true" ? "Running background task" : "Running command", detail: "" },
             get_file:     { icon: "📂", label: "Loading file", detail: "" },
             create_note:  { icon: "🗒️", label: "Creating note", detail: attrs.path || "" },
             save_svg:     { icon: "🎨", label: "Saving SVG", detail: attrs.path || "" },
@@ -4827,10 +4830,13 @@
         selectedModel = allowed[0]?.id || modelList[0].id;
         modelSelectEl.value = selectedModel;
         try { localStorage.setItem(MODEL_KEY, selectedModel); } catch(e) {}
-        populateThinkingModes(null);
       } else {
         modelSelectEl.value = selectedModel;
       }
+      // Always sync thinking modes for the current model
+      let _savedTm = null;
+      try { _savedTm = localStorage.getItem(THINKING_MODE_KEY); } catch(e) {}
+      populateThinkingModes(_savedTm);
 
       // Only scraping gets hard-disabled; qwen/deepseek allow within-group switching
       modelSelectEl.disabled = provider === "scraping";
@@ -5826,32 +5832,8 @@
         else if (tabName === 'account') loadAccountProfiles();
         else if (tabName === 'mcp') loadMcpServers();
         else if (tabName === 'cookbook') { if (window._cbInit) window._cbInit(); }
-        else if (tabName === 'projects') renderProjectsTab();
-
-      // Wire addProjectBtn if not already wired
-      const _addProjBtn = document.getElementById('addProjectBtn');
-      if (_addProjBtn && !_addProjBtn._wired) {
-        _addProjBtn._wired = true;
-        _addProjBtn.onclick = () => {
-          const nameInput = document.getElementById('newProjectName');
-          const name = nameInput ? nameInput.value.trim() : '';
-          if (!name) { showToast('Enter a project name', 'error'); return; }
-          fetch('/api/projects', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name })
-          }).then(r => r.json()).then(data => {
-            if (data.id) {
-              if (nameInput) nameInput.value = '';
-              showToast('Project created', 'success');
-              renderProjectsTab();
-            } else {
-              showToast(data.error || 'Failed', 'error');
-            }
-          });
-        };
-      }
-      else if (tabName === 'shortcuts') renderShortcutsTab();
+        else if (tabName === 'tools') loadTools();
+        else if (tabName === 'shortcuts') renderShortcutsTab();
       }
     }
 
@@ -6059,6 +6041,7 @@
         else if (tabName === 'account') loadAccountProfiles();
         else if (tabName === 'mcp') loadMcpServers();
         else if (tabName === 'cookbook') { if (window._cbInit) window._cbInit(); }
+        else if (tabName === 'personas') { if (window._personaInit) window._personaInit(); }
         else if (tabName === 'shortcuts') renderShortcutsTab();
       });
     });
@@ -7913,6 +7896,61 @@
       if (e.target === skillDetailOverlay) skillDetailOverlay.classList.remove("show");
     });
 
+    // --- Tools tab: load and toggle tools ---
+    let toolsLoaded = false;
+    function getDisabledTools() {
+      try { return JSON.parse(localStorage.getItem("sable_disabled_tools") || "[]"); } catch { return []; }
+    }
+    function setDisabledTools(arr) {
+      localStorage.setItem("sable_disabled_tools", JSON.stringify(arr));
+    }
+
+    async function loadTools() {
+      if (toolsLoaded) return;
+      const toggleList = document.getElementById("toolsToggleList");
+      if (!toggleList) return;
+      try {
+        const res = await fetch("/api/tools/browse");
+        const data = await res.json();
+        const tools = data.tools || [];
+        const disabled = getDisabledTools();
+        toggleList.innerHTML = "";
+        tools.forEach((tl) => {
+          const row = document.createElement("div");
+          const isDisabled = disabled.includes(tl.key);
+          row.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--bg-secondary);border-radius:8px;border:1px solid var(--border);";
+          const fnCount = (tl.tools || []).length;
+          row.innerHTML = `<div><span style="font-size:13px;font-weight:500;">${escHtml(tl.name)}</span><span class="muted" style="font-size:11px;margin-left:8px;">${fnCount} function${fnCount !== 1 ? 's' : ''}</span></div>`;
+          const toggle = document.createElement("label");
+          toggle.style.cssText = "position:relative;display:inline-block;width:36px;height:20px;cursor:pointer;";
+          toggle.innerHTML = `<input type="checkbox" ${isDisabled ? "" : "checked"} style="opacity:0;width:0;height:0;"><span style="position:absolute;inset:0;background:${isDisabled ? "var(--border)" : "var(--accent)"};border-radius:20px;transition:0.2s;"></span><span style="position:absolute;left:${isDisabled ? "2px" : "18px"};top:2px;width:16px;height:16px;background:#fff;border-radius:50%;transition:0.2s;"></span>`;
+          toggle.querySelector("input").addEventListener("change", async (e) => {
+            let d = getDisabledTools();
+            if (!e.target.checked) {
+              if (!d.includes(tl.key)) d.push(tl.key);
+            } else {
+              d = d.filter(k => k !== tl.key);
+            }
+            setDisabledTools(d);
+            try {
+              const res = await fetch("/api/settings/disabled-tools", {
+                method: "POST", headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({ disabled: d })
+              });
+              if (!res.ok) console.warn("Failed to persist disabled tools");
+            } catch(err) { console.warn("Disabled tools persist error:", err); }
+            const spans = toggle.querySelectorAll("span");
+            spans[0].style.background = e.target.checked ? "var(--accent)" : "var(--border)";
+            spans[1].style.left = e.target.checked ? "18px" : "2px";
+          });
+          row.appendChild(toggle);
+          toggleList.appendChild(row);
+        });
+        toolsLoaded = true;
+      } catch (e) { console.error("loadTools failed", e); }
+    }
+
+    document.querySelector('[data-tab="tools"]').addEventListener("click", loadTools);
     document.querySelector('[data-tab="skills"]').addEventListener("click", loadSkills);
     document.querySelector('[data-tab="account"]').addEventListener("click", loadAccountProfiles);
 

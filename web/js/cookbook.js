@@ -487,6 +487,7 @@
 
   // ─── Per-Model Instruction Settings ─────────────────────────────────────────
   let _allSkills = [];
+  let _allTools = [];
 
   async function loadAvailableSkills() {
     try {
@@ -498,14 +499,29 @@
     } catch (e) { /* fallback: hardcoded common skills */ }
     if (!_allSkills.length) {
       _allSkills = ["code_editor","grep_search","online_search","browser_control","execute_command",
-        "file_uploader","background_command","http_client","deep_research","document_skills",
+        "file_uploader","http_client","deep_research","document_skills",
         "frontend_design","graph_master","svg_creator","system_repair","testing_debugging",
         "text_humanizer","youtube_downloader","phone_control","simulacra_engine","study_suite"];
     }
   }
 
+  async function loadAvailableTools() {
+    try {
+      const resp = await fetch("/api/tools");
+      if (resp.ok) {
+        const data = await resp.json();
+        _allTools = (data.tools || data || []).map(t => typeof t === "string" ? t : t.key || t.name);
+      }
+    } catch (e) { /* fallback */ }
+    if (!_allTools.length) {
+      _allTools = ["code_editor","grep_search","background_command","ask_user",
+        "file_uploader","tracknote_manager","multi_agent","mcp"];
+    }
+  }
+
   async function loadModelSettings() {
     await loadAvailableSkills();
+    await loadAvailableTools();
     const container = document.getElementById("cbModelSettings");
     if (!container) return;
 
@@ -542,7 +558,8 @@
       } catch (e) { /* no settings yet */ }
 
       container.innerHTML = models.map(m => {
-        const cfg = allSettings[m.id] || { use_maria: true, use_output_format: true, use_memory: true, use_utilities: true, skills: [], distilled: false };
+        const _defaults = { use_maria: true, use_output_format: true, use_memory: true, use_utilities: true, skills: [], tools: [], distilled: false };
+        const cfg = { ..._defaults, ...(allSettings[m.id] || {}) };
         const isDistilled = cfg.distilled;
         const disabledAttr = isDistilled ? "disabled" : "";
         const grayClass = isDistilled ? "cb-ms-grayed" : "";
@@ -554,6 +571,15 @@
         const skillOptions = _allSkills
           .filter(sk => !(cfg.skills || []).includes(sk))
           .map(sk => `<option value="${sk}">${sk}</option>`)
+          .join("");
+
+        const toolTags = (cfg.tools || []).map(t =>
+          `<span class="cb-tool-tag">${t}<button class="cb-tool-rm" data-model="${m.id}" data-tool="${t}">×</button></span>`
+        ).join("");
+
+        const toolOptions = _allTools
+          .filter(t => !(cfg.tools || []).includes(t))
+          .map(t => `<option value="${t}">${t}</option>`)
           .join("");
 
         return `
@@ -586,6 +612,16 @@
                 <select class="cb-skill-select" data-model="${m.id}" ${disabledAttr}>
                   <option value="">+ add skill</option>
                   ${skillOptions}
+                </select>
+              </div>
+            </div>
+            <div class="cb-ms-skills">
+              <div class="cb-ms-skills-label">Tools</div>
+              <div class="cb-ms-skill-tags">${toolTags || '<span class="muted" style="font-size:11px;">none</span>'}</div>
+              <div class="cb-ms-skill-add">
+                <select class="cb-tool-select" data-model="${m.id}" ${disabledAttr}>
+                  <option value="">+ add tool</option>
+                  ${toolOptions}
                 </select>
               </div>
             </div>
@@ -638,6 +674,41 @@
           } catch (e) { showToast("Save failed: " + e.message, true); }
         };
       });
+
+      container.querySelectorAll(".cb-tool-select").forEach(sel => {
+        sel.onchange = async () => {
+          if (!sel.value) return;
+          const modelId = sel.dataset.model;
+          const card = container.querySelector(`[data-model-id="${modelId}"]`);
+          const currentTools = [...card.querySelectorAll(".cb-tool-tag")].map(t => t.textContent.replace("×", "").trim());
+          currentTools.push(sel.value);
+          try {
+            await cbFetch("/model-settings/" + modelId, { method: "PUT", body: JSON.stringify({ tools: currentTools }) });
+            loadModelSettings();
+          } catch (e) { showToast("Save failed: " + e.message, true); }
+        };
+      });
+
+      container.querySelectorAll(".cb-tool-rm").forEach(btn => {
+        btn.onclick = async () => {
+          const modelId = btn.dataset.model;
+          const tool = btn.dataset.tool;
+          const card = container.querySelector(`[data-model-id="${modelId}"]`);
+          const currentTools = [...card.querySelectorAll(".cb-tool-tag")].map(t => t.textContent.replace("×", "").trim()).filter(t => t !== tool);
+          try {
+            await cbFetch("/model-settings/" + modelId, { method: "PUT", body: JSON.stringify({ tools: currentTools }) });
+            loadModelSettings();
+          } catch (e) { showToast("Save failed: " + e.message, true); }
+        };
+      });
+
+      // Prune stale settings for models that no longer exist
+      const modelIds = new Set(models.map(m => m.id));
+      for (const settingsKey of Object.keys(allSettings)) {
+        if (!modelIds.has(settingsKey)) {
+          cbFetch("/model-settings/" + settingsKey, { method: "DELETE" }).catch(() => {});
+        }
+      }
 
     } catch (e) {
       container.innerHTML = '<p class="muted" style="font-size:12px;color:var(--error);">Failed to load model settings</p>';

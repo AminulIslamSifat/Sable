@@ -61,6 +61,9 @@ class ServeManager:
         cmd.append("--api-key")
         cmd.append("sable-local")
 
+        # Use model's built-in Jinja2 chat template (required for tool calling)
+        cmd.append("--jinja")
+
         # Extra user args
         if task.extra_args:
             cmd.extend(task.extra_args.split())

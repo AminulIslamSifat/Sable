@@ -193,11 +193,64 @@ async def filesystem_delete(request: Request) -> dict[str, Any]:
 
 @router.get("/api/filesystem/pick-folder")
 def filesystem_pick_folder() -> dict[str, Any]:
-    """Open native folder picker dialog (zenity/yad/kdialog)."""
+    """Open native OS folder picker. Uses xdg-desktop-portal → zenity/yad/kdialog → tkinter."""
     import logging
     log = logging.getLogger("sable.fs")
-    log.info("[pick-folder] Request received, DISPLAY=%s", os.environ.get("DISPLAY", "(unset)"))
+    log.info("[pick-folder] Request received, DISPLAY=%s WAYLAND=%s",
+             os.environ.get("DISPLAY", "(unset)"),
+             os.environ.get("WAYLAND_DISPLAY", "(unset)"))
 
+    # ── 1. xdg-desktop-portal via gdbus (modern Linux, works on Wayland + X11) ──
+    try:
+        import uuid, json as _json
+        token = f"sable_{uuid.uuid4().hex[:8]}"
+        sender_name = subprocess.run(
+            ["gdbus", "call", "--session",
+             "--dest", "org.freedesktop.DBus",
+             "--object-path", "/org/freedesktop/DBus",
+             "--method", "org.freedesktop.DBus.GetNameOwner",
+             "org.freedesktop.portal.Desktop"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if sender_name.returncode == 0:
+            log.info("[pick-folder] Trying xdg-desktop-portal")
+            options = f"{{'handle_token': <'{token}'>, 'directory': <true>}}"
+            call_res = subprocess.run(
+                ["gdbus", "call", "--session",
+                 "--dest", "org.freedesktop.portal.Desktop",
+                 "--object-path", "/org/freedesktop/portal/desktop",
+                 "--method", "org.freedesktop.portal.FileChooser.OpenDirectory",
+                 "", "Open Folder", options],
+                capture_output=True, text=True, timeout=120,
+            )
+            if call_res.returncode == 0 and "(/org/freedesktop/portal/desktop/request/" in call_res.stdout:
+                request_path = call_res.stdout.strip().strip("()'\"").split("'")[1] \
+                    if "'" in call_res.stdout else ""
+                if request_path:
+                    # Wait for the Response signal
+                    signal_res = subprocess.run(
+                        ["gdbus", "monitor", "--session",
+                         "--dest", "org.freedesktop.portal.Desktop",
+                         "--object-path", request_path,
+                         "--timeout", "120"],
+                        capture_output=True, text=True, timeout=125,
+                    )
+                    for line in signal_res.stdout.splitlines():
+                        if "Response" in line and "results" in line:
+                            # Extract URI from results
+                            import re
+                            uris = re.findall(r"'file://([^']+)'", line)
+                            if uris:
+                                path = uris[0].replace("%20", " ")
+                                if os.path.isdir(path):
+                                    log.info("[pick-folder] Portal selected: %s", path)
+                                    return {"path": path}
+                            log.info("[pick-folder] Portal cancelled")
+                            return {"path": None, "cancelled": True}
+    except Exception as e:
+        log.debug("[pick-folder] xdg-desktop-portal failed: %s", e)
+
+    # ── 2. Legacy CLI dialogs (zenity / yad / kdialog) ──
     for cmd in [
         ["zenity", "--file-selection", "--directory", "--title=Open Folder"],
         ["yad", "--file", "--directory", "--title=Open Folder"],
@@ -205,23 +258,15 @@ def filesystem_pick_folder() -> dict[str, Any]:
     ]:
         log.info("[pick-folder] Trying: %s", " ".join(cmd))
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            log.info(
-                "[pick-folder] rc=%d stdout=%r stderr=%r",
-                result.returncode, result.stdout.strip()[:200], result.stderr.strip()[:200],
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            log.info("[pick-folder] rc=%d stdout=%r stderr=%r",
+                     result.returncode, result.stdout.strip()[:200], result.stderr.strip()[:200])
             if result.returncode == 0:
                 path = result.stdout.strip()
                 if path and os.path.isdir(path):
                     log.info("[pick-folder] Selected: %s", path)
                     return {"path": path}
             elif result.returncode == 1:
-                # User cancelled
                 log.info("[pick-folder] User cancelled (rc=1)")
                 return {"path": None, "cancelled": True}
         except FileNotFoundError:
@@ -230,8 +275,27 @@ def filesystem_pick_folder() -> dict[str, Any]:
         except subprocess.TimeoutExpired:
             log.error("[pick-folder] %s timed out after 120s", cmd[0])
             return {"path": None, "error": "Dialog timed out"}
-    log.error("[pick-folder] No dialog tool available")
-    return {"path": None, "error": "No file dialog tool found (install zenity)"}
+
+    # ── 3. tkinter fallback (cross-platform, ships with Python) ──
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        log.info("[pick-folder] Trying tkinter folder chooser")
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        path = filedialog.askdirectory(title="Open Folder")
+        root.destroy()
+        if path:
+            log.info("[pick-folder] tkinter selected: %s", path)
+            return {"path": path}
+        log.info("[pick-folder] tkinter cancelled")
+        return {"path": None, "cancelled": True}
+    except Exception as e:
+        log.debug("[pick-folder] tkinter not available: %s", e)
+
+    log.error("[pick-folder] No dialog method available")
+    return {"path": None, "error": "No folder picker available (need xdg-desktop-portal, zenity, or python3-tk)"}
 
 
 @router.get("/api/filesystem/roots")

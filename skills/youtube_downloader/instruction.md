@@ -29,14 +29,14 @@ PROJECT_ROOT/skills/youtube_downloader/scripts/download_video.py
 
 ### Download Video
 
-```xml
-<execute_command>python3 PROJECT_ROOT/skills/youtube_downloader/scripts/download_video.py "[URL]" [flags]</execute_command>
+```bash
+python3 PROJECT_ROOT/skills/youtube_downloader/scripts/download_video.py "[URL]" [flags]
 ```
 
 ### Audio-Only Extraction (MP3)
 
-```xml
-<execute_command>python3 PROJECT_ROOT/skills/youtube_downloader/scripts/download_video.py "[URL]" -a</execute_command>
+```bash
+python3 PROJECT_ROOT/skills/youtube_downloader/scripts/download_video.py "[URL]" -a
 ```
 
 ---
@@ -106,8 +106,8 @@ Never report "download complete" without confirming the script exited successful
 
 No quality specified → default to 1080p.
 
-```xml
-<execute_command>python3 PROJECT_ROOT/skills/youtube-downloader/scripts/download_video.py "https://youtube.com/watch?v=abc123" -q 1080p</execute_command>
+```bash
+python3 PROJECT_ROOT/skills/youtube-downloader/scripts/download_video.py "https://youtube.com/watch?v=abc123" -q 1080p
 ```
 
 *(Output returns: Title: Wave Mechanics Explained, Duration: 12:34, ✅ Download complete)*
@@ -118,8 +118,8 @@ No quality specified → default to 1080p.
 
 **Request**: *"Just the audio, save to Vault"*
 
-```xml
-<execute_command>python3 PROJECT_ROOT/skills/youtube-downloader/scripts/download_video.py "https://youtube.com/watch?v=abc123" -a --vault</execute_command>
+```bash
+python3 PROJECT_ROOT/skills/youtube-downloader/scripts/download_video.py "https://youtube.com/watch?v=abc123" -a --vault
 ```
 
 "**Wave Mechanics Explained** dropped into your Vault as MP3."

@@ -71,7 +71,6 @@ All 25 skills organized by category:
 ### System & Device Skills
 | Skill | Key | Tags | Priority | Description |
 |:--|:--|:--|:--|:--|
-| Background Command | `background_command` | — | — | Long-running shell commands with process monitoring |
 | System Repair | `system_repair` | — | — | OS diagnostics and repair workflows |
 | Testing & Debugging | `testing_debugging` | — | — | Bug investigation and test failure analysis |
 | Grep Search | `grep_search` | — | — | File content search and directory listing |

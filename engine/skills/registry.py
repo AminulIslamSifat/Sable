@@ -47,12 +47,14 @@ class SkillMeta:
 def discover_skills(
     skills_dir: Path,
     agent_id: str | None = None,
+    disabled: list[str] | None = None,
 ) -> list[SkillMeta]:
     """Scan skills_dir for skill.json files, parse, filter by scope, sort by priority desc.
 
     Args:
         skills_dir: Root directory containing skill folders.
         agent_id: If provided, only return skills whose scope includes this agent or '*'.
+        disabled: List of disabled skill paths or keys to skip.
 
     Returns:
         List of SkillMeta sorted by priority (highest first).
@@ -61,9 +63,18 @@ def discover_skills(
         logger.error("Skills directory does not exist: %s", skills_dir)
         return []
 
+    # Normalize disabled entries to resolved absolute paths for comparison
+    disabled_paths: set[str] = set()
+    if disabled:
+        for d in disabled:
+            disabled_paths.add(str(Path(d).resolve()))
+
     skills: list[SkillMeta] = []
 
     for manifest_path in sorted(skills_dir.glob("*/skill.json")):
+        # Skip disabled skills
+        if str(manifest_path.parent.resolve()) in disabled_paths:
+            continue
         skill = _parse_manifest(manifest_path)
         if skill is None:
             continue
