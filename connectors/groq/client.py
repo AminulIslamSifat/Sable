@@ -122,7 +122,14 @@ def _load_instructions() -> str:
     - Always view_file before editing — never build old_str from memory
     - Wrap every tag in <tool_call>...</tool_call>
     - One short sentence + the <tool_call> block, nothing else"""
-    return base + "\n\n***\n\n" + editor
+    # Output directory — always injected
+    from engine.config import OUTPUT_ROOT as _OUT
+    output_dir = (
+        f"# Output Directory (MANDATORY)\n"
+        f"ALL generated content MUST be saved under `{_OUT}/`. NEVER save to CWD or project root.\n"
+        f"Default to `{_OUT}/notes/` for text/docs when no path specified."
+    )
+    return base + "\n\n***\n\n" + editor + "\n\n***\n\n" + output_dir
 
 
 class GroqClient:

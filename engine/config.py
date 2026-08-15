@@ -41,7 +41,8 @@ MEMORY_SEARCH_SETTINGS_PATH = _ROOT / "system/memory_search_settings.json"
 AGENT_CONFIG_PATH = _ROOT / "system/agent_config.json"
 
 # Output directories — where generated content lands
-OUTPUT_ROOT = _ROOT / "output"
+# Lives outside project root so outputs survive tree wipes/rebuilds.
+OUTPUT_ROOT = Path.home() / "sable_output"
 RESEARCH_DIR = OUTPUT_ROOT / "research"
 NOTES_DIR = OUTPUT_ROOT / "notes"
 AGENT_OUTPUT_DIR = OUTPUT_ROOT / "agent"
