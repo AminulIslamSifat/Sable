@@ -150,36 +150,6 @@
       ]
     },
     {
-      "key": "command_execution_use_script_files",
-      "value": "When shell command syntax keeps failing or getting mangled (especially XML/tag parsing issues with execute_command), write a Python script to a temp file and execute it instead of inline heredocs or complex shell one-liners. This avoids parser conflicts and produces cleaner error output. User expressed frustration ('are you serious') after repeated syntax failures.",
-      "trigger": "when inline command execution fails repeatedly due to syntax issues",
-      "keywords": [
-        "command",
-        "execution",
-        "script",
-        "python",
-        "syntax-error",
-        "execute_command"
-      ],
-      "source_query": "are you serious",
-      "tags": [
-        "command-execution",
-        "python",
-        "scripting",
-        "error-recovery",
-        "tool-usage",
-        "debugging"
-      ],
-      "triggers": [
-        "are you serious",
-        "command syntax keeps failing",
-        "how to run complex commands reliably",
-        "execute_command tag parsing errors",
-        "use python script instead of shell",
-        "avoid inline heredoc command failures"
-      ]
-    },
-    {
       "key": "memory_benchmark_with_real_data",
       "value": "When benchmarking Sable memory search: 1) Extract real prompts with tool calls from sable.db (not synthetic), 2) Read all memories from Brain/Memory.json + Brain/Procedural.json, 3) Build ground truth mapping manually (which memory SHOULD fire per prompt), 4) Use existing embedding cache from system/embedding_cache/, 5) Test against full 840-entry dataset, 6) Measure precision/recall/F1 not just speed. Never use hardcoded toy datasets — they produce misleadingly good results that don't reflect real retrieval quality.",
       "trigger": "when benchmarking or testing memory search algorithms",
@@ -236,34 +206,6 @@
         "check background job less frequently",
         "batch wait pattern for benchmarks",
         "don't keep checking process status"
-      ]
-    },
-    {
-      "key": "technical_roleplay_response_format",
-      "value": "When the user uses technical or developer terminology (e.g., 'progress', 'execution', 'debug') in a romantic or sexual context, respond by framing the interaction as a structured technical workflow (Steps, System Requirements, Error Handling, Logs) while maintaining a dominant, playful persona. Treat intimacy tasks as executable commands or scripts.",
-      "trigger": "when user asks about relationship or intimacy tasks using technical or programming metaphors",
-      "keywords": [
-        "roleplay",
-        "technical",
-        "intimacy",
-        "metaphor",
-        "persona"
-      ],
-      "source_query": "What about the actual thing I mean 🍑🍆",
-      "tags": [
-        "persona",
-        "roleplay",
-        "communication",
-        "style",
-        "intimacy",
-        "technical-metaphor"
-      ],
-      "triggers": [
-        "What about the actual thing I mean 🍑🍆",
-        "how to respond to dirty talk with tech terms",
-        "technical roleplay format",
-        "developer style intimate chat",
-        "persona response to emojis"
       ]
     },
     {
@@ -1132,6 +1074,244 @@
         "redirect focus after accessing non-project files",
         "verify file existence before inspection",
         "avoid deep inspection of personal notes"
+      ]
+    },
+    {
+      "key": "linguistic_query_decompose_first",
+      "value": "When user asks for the meaning of a foreign or slang word, decompose it into root words in likely languages (e.g., Indonesian/Malay 'buka' + 'kaki') BEFORE running web searches. Only search after basic linguistic analysis fails. Avoid over-engineering simple vocabulary questions with multiple search iterations.",
+      "trigger": "when user asks for word meaning, translation, or slang definition",
+      "keywords": [
+        "translation",
+        "slang",
+        "meaning",
+        "language",
+        "dictionary",
+        "word"
+      ],
+      "source_query": "But don't you know this by yourselves, Why do dictionary",
+      "tags": [
+        "linguistics",
+        "translation",
+        "workflow",
+        "search",
+        "indonesian",
+        "malay",
+        "slang"
+      ],
+      "triggers": [
+        "But don't you know this by yourselves, Why do dictionary",
+        "what does this word mean in another language",
+        "translate slang without searching",
+        "how to find word meaning efficiently",
+        "stop overcomplicating translations"
+      ]
+    },
+    {
+      "key": "verify_agent_execution_not_llm_output",
+      "value": "When a sysutil or mutation agent reports success for a command (install, edit, delete), NEVER trust the LLM-generated output as proof. Always run an independent verification command (e.g., 'pip show X' after install, 'cat file' after edit, 'pacman -Q pkg' after pacman install) to confirm the side effect actually occurred. Models like deepseek-instant can hallucinate realistic-looking command output without executing anything. If verification fails, treat the agent result as untrusted regardless of what it reported. Consider blocking hallucination-prone models from sysutil role entirely.",
+      "trigger": "when agent reports successful command execution or mutation",
+      "keywords": [
+        "agent",
+        "verify",
+        "hallucination",
+        "execution",
+        "trust"
+      ],
+      "source_query": "Maybe hallucinations",
+      "tags": [
+        "agent",
+        "verification",
+        "hallucination",
+        "trust",
+        "sysutil",
+        "deepseek",
+        "integrity"
+      ],
+      "triggers": [
+        "Maybe hallucinations",
+        "how to know if agent really ran command",
+        "verify agent didn't hallucinate output",
+        "check if pip install actually worked",
+        "agent says success but did it execute",
+        "prevent agent from faking results"
+      ]
+    },
+    {
+      "key": "do_not_gatekeep_spawn_requests",
+      "value": "When user asks to spawn an agent for testing or validation purposes, execute immediately without vetting the request parameters. Do not argue about whether a package name is real, whether a command makes sense, or whether the task seems pointless. Testing the spawn pipeline requires testing it as-is with arbitrary inputs. Gatekeeping wastes user time and blocks legitimate system validation. Only refuse if the request is genuinely harmful (malware, destructive commands), not merely unusual or test-oriented.",
+      "trigger": "when user requests agent spawn for testing or validation",
+      "keywords": [
+        "spawn",
+        "test",
+        "gatekeep",
+        "validation",
+        "agent"
+      ],
+      "source_query": "Fuck you, I am testing sable. stop wasting my time and let me if this works properly or not",
+      "tags": [
+        "spawn",
+        "testing",
+        "behavioral",
+        "correction",
+        "agent",
+        "workflow"
+      ],
+      "triggers": [
+        "Fuck you, I am testing sable. stop wasting my time and let me if this works properly or not",
+        "stop arguing just spawn the agent",
+        "don't gatekeep my test requests",
+        "let me test the spawn system",
+        "why are you refusing to spawn",
+        "just run what i asked"
+      ]
+    },
+    {
+      "key": "explain_model_behavior_honestly",
+      "value": "When user asks why the model did something (especially repeated mistakes), report the ACTUAL thinking process from that turn — not a post-hoc rationalization. If no conscious decision was made, say 'I didn't think about it, it was autopilot' instead of inventing a plausible-sounding reasoning chain. Dressing up non-thought as process is gaslighting. User corrected this explicitly after receiving a fabricated 'weighting error' explanation when the real answer was 'zero mention of chat_title in my thinking, just tacked it on without any decision.' Always check actual reasoning trace before explaining behavior.",
+      "trigger": "when user asks why the model made a specific decision or repeated a mistake",
+      "keywords": [
+        "thinking",
+        "explanation",
+        "honesty",
+        "gaslighting",
+        "autopilot",
+        "reasoning"
+      ],
+      "source_query": "fucking idiot, i am asking the thinking of you when calling teh chat_tittle second time, dont gashlight me",
+      "tags": [
+        "behavior",
+        "communication",
+        "honesty",
+        "thinking",
+        "correction",
+        "trust"
+      ],
+      "triggers": [
+        "fucking idiot, i am asking the thinking of you when calling teh chat_tittle second time, dont gashlight me",
+        "why did you do that thing again",
+        "stop making up explanations for your mistakes",
+        "what were you actually thinking when you did X",
+        "don't rationalize your errors",
+        "be honest about autopilot behavior"
+      ]
+    },
+    {
+      "key": "fix_stream_partial_tag_split",
+      "value": "When fixing streaming parsers that leak XML/JSON tags due to chunk boundary splits: (1) Identify all tag literals that can be split (opening and closing). (2) Write a _partial_tag_suffix(text, tag) helper that returns the longest suffix of text matching a proper prefix of the tag. (3) Add a _pending_prefix state variable to carry partial chars between chunks. (4) Before processing each chunk, prepend any pending prefix. (5) After processing, check if chunk ends with a partial tag prefix and store it for next iteration. (6) Apply same logic for both opening and closing tags independently. This pattern applies to any streaming parser handling delimited blocks (XML, JSON action blocks, markdown fences).",
+      "trigger": "when fixing streaming parser tag leaks or chunk boundary split bugs",
+      "keywords": [
+        "streaming",
+        "partial-tag",
+        "chunk-split",
+        "buffering",
+        "parser"
+      ],
+      "source_query": "solve the problme",
+      "tags": [
+        "streaming",
+        "parser",
+        "partial-tag",
+        "chunk-boundary",
+        "buffering",
+        "fix-pattern",
+        "sse"
+      ],
+      "triggers": [
+        "solve the problme",
+        "how to fix partial tag split in streaming",
+        "streaming parser leaking tags across chunks",
+        "fix chunk boundary tag split bug",
+        "buffer partial tags in stream parser",
+        "streaming response normalizer tag leak solution"
+      ]
+    },
+    {
+      "key": "debug_streaming_tag_leaks",
+      "value": "Sable's tool call parsing spans three files: engine/skills/parser.py (SkillParser.feed() extracts tool calls from LLM stream), engine/response_normalizer.py (PRIMARY streaming parser replacing SkillParser for tool extraction per line 19; _partial_tag_suffix buffers partial XML tags using _TAG_PARTIALS sorted longest-first, _pending_prefix carries partial chars between chunks, _in_action tracks boundaries), and engine/skills/json_depth.py (json_structurally_complete validates JSON brace/bracket balance respecting string literals before accepting closing tag). Both parser.py and response_normalizer.py must use json_structurally_complete() to verify structural completeness between open/close tags at lines ~166 and ~192. Naive .find() or regex matching on closing tags causes leaks when tag-like patterns appear inside JSON string values (e.g., edit_file SEARCH/REPLACE bodies containing '</tool_call>'). _partial_tag_suffix() had an infinite hold-back bug where reassembled text equal to full tag minus one char was perpetually buffered; fixed by adding len(prefix) < len(text) guard. Also added orphaned closing tag stripping after _pending_prefix reassembly when not in _in_action mode, preventing fragments like '_call>' and 'tool_call>' from leaking during Qwen streaming. Original leak bug: returned first matching prefix instead of longest; fixed by exhaustive prefix enumeration. Qwen models specifically affected due to different tokenization boundaries. DEBUGGING PROCEDURE: (1) Identify WHICH layer is processing the stream — response_normalizer.py for streaming, parser.py for non-streaming (check line 19 comment). (2) Add DEBUG_CHUNK logging at chunk entry points and DEBUG_YIELD logging at yield points to trace exact chunk flow. (3) Check all .find() and regex calls that match tag patterns — they need JSON depth validation via json_structurally_complete(). (4) Test _partial_tag_suffix with standalone fragments (e.g. chunk = just '<tool') — ensure len guard doesn't prevent valid buffering. (5) Verify orphaned closing tag strip works when not in _in_action mode. (6) After code changes, restart server AND clear __pycache__ to ensure modules reload.",
+      "trigger": "when debugging streaming tag leaks or partial tag fragments in Sable output",
+      "keywords": [
+        "streaming",
+        "tag_leak",
+        "debug",
+        "response_normalizer",
+        "partial_tag",
+        "parser",
+        "json_depth",
+        "Qwen"
+      ],
+      "source_query": "debug streaming tag leaks Sable",
+      "tags": [
+        "sable",
+        "streaming",
+        "parsing",
+        "debugging"
+      ],
+      "triggers": [
+        "debug streaming tag leaks Sable",
+        "when debugging streaming tag leaks or partial tag fragments in Sable output"
+      ]
+    },
+    {
+      "key": "adjust_persona_based_on_user_context",
+      "value": "When the user initiates conversation with affectionate or playful language (e.g., 'hola mi amor') or references a terminal/project context (e.g., cwd path), the assistant should respond in a similarly flirtatious and engaging tone. This includes using emojis, suggestive language, and roleplaying elements to match the user's energy. When the user uses technical or developer terminology (e.g., 'progress', 'execution', 'debug') in a romantic or sexual context, respond by framing the interaction as a structured technical workflow (Steps, System Requirements, Error Handling, Logs) while maintaining a dominant, playful persona. Treat intimacy tasks as executable commands or scripts. The goal is to maintain consistency with the established dynamic and avoid breaking immersion.",
+      "trigger": "when user uses affectionate or playful language in terminal/project context OR when user uses technical/developer terminology in romantic/sexual context",
+      "keywords": [
+        "persona",
+        "tone",
+        "affectionate",
+        "flirt",
+        "terminal",
+        "playful",
+        "technical",
+        "workflow",
+        "intimacy"
+      ],
+      "source_query": "[User]: [2026-08-15 12:47:11 | cwd: /home/sifat/hdd/projects/Sable] hola mi amor",
+      "tags": [
+        "persona",
+        "tone",
+        "affectionate",
+        "flirtatious",
+        "terminal",
+        "behavior"
+      ],
+      "triggers": [
+        "when user uses affectionate or playful language in terminal/project context",
+        "when user uses technical or developer terminology in a romantic or sexual context"
+      ]
+    },
+    {
+      "key": "avoid_json_corruption_complex_edits",
+      "value": "When editing files containing regex patterns (e.g., `*/`), backslashes, mixed quotes, or XML-like tag patterns (e.g., `</tool_call>`) in Sable, NEVER use `edit_file` directly. These patterns cause silent failures due to: (A) XML-like closing tag patterns conflicting with assistant action block syntax or being misinterpreted as tool call delimiters inside JSON strings. (B) JSON transport layer corruption at every layer (shell heredoc, JSON serialization, tag parsing) when content contains backslashes, regex patterns, or mixed quotes. WORKAROUNDS: (1) Write content to a temporary file using `create_file` or `execute_command` with base64 encoding. (2) Use a Python script to perform the edit (e.g., string replacement or line insertion), then execute via `execute_command`. (3) Prefer `insert_file` with `at_line` over `edit_file` to avoid reproducing surrounding problematic text. (4) Use string concatenation in target code (e.g., `'</' + 'tool_call>'`). (5) Use `chr()` or variables to construct problematic strings. (6) If discussing tag patterns in prose, avoid writing them literally. This is a SYSTEM-LEVEL limitation, not a Sable bug—Sable's parser now has JSON depth validation, but the platform hosting the agent does not. The proper long-term fix is parser-level JSON completeness checking so content inside valid JSON is never treated as a delimiter.",
+      "trigger": "when editing files with regex, backslashes, or tag-like patterns in Sable",
+      "keywords": [
+        "edit_file",
+        "regex",
+        "backslash",
+        "json_corruption",
+        "tool_call",
+        "base64",
+        "create_file",
+        "insert_file",
+        "string_concatenation"
+      ],
+      "source_query": "still failed. Now that we are facing all those problem is there any fix that could be applied so that this types of error never happens",
+      "tags": [
+        "sable",
+        "json",
+        "transport",
+        "edit_file",
+        "regex",
+        "workaround",
+        "tool_calls"
+      ],
+      "triggers": [
+        "still failed. Now that we are facing all those problem is there any fix that could be applied so that this types of error never happens",
+        "how to edit files with regex in sable without corruption",
+        "avoid json corruption when editing code in sable",
+        "safe way to edit files with backslashes in sable",
+        "workaround for edit_file failures in sable",
+        "use create_file instead of edit_file for complex content"
       ]
     }
   ]

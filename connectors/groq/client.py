@@ -91,35 +91,38 @@ def _save_keys(keys: list[str]) -> None:
 def _load_instructions() -> str:
     """Minimal agentic tag docs + distilled code_editor for Groq."""
     base = (
-        "Every agentic tag must be wrapped in a single <action>...</action> block. "
-        "The extractor only reads what is inside <action>; anything outside is prose.\n\n"
+        "Every agentic tag must be wrapped in a <tool_call>...</tool_call> block. "
+        "The extractor only reads what is inside <tool_call>; anything outside is prose.\n\n"
+        "You may put MULTIPLE tool calls in one block as a JSON array: "
+        "<tool_call>[{\"name\": \"grep\", ...}, {\"name\": \"view_file\", ...}]</tool_call>\n"
+        "Prefer one block with an array over multiple separate blocks.\n\n"
         "Tags: <get_file>/abs/path</get_file> \u00b7 <execute_command>cmd</execute_command>\n\n"
-        "If you use <action>, the entire response is ONE short sentence + the block. "
-        "<action> appears only in plain text, never inside a fenced code block."
+        "If you use <tool_call>, keep prose to ONE short sentence before the block. "
+        "<tool_call> appears only in plain text, never inside a fenced code block."
     )
     editor = """# File I/O
 
     ## Read files
-    <get_file>/abs/path</get_file> — read any file (text or binary)
-    <view_file> path="/abs/path" </view_file> — read with line numbers, supports start/end range
+    <tool_call>{"name": "get_file", "arguments": {"path": "/abs/path"}}</tool_call> — read any file (text or binary)
+    <tool_call>{"name": "view_file", "arguments": {"path": "/abs/path"}}</tool_call> — read with line numbers, supports start/end range
 
     ## Write files  
-    <edit_file> path="/abs/path">
+    <tool_call>{"name": "edit_file", "arguments": {"path": "/abs/path", "old_str": "...", "new_str": "..."}}</tool_call>>
     <<<<<< SEARCH
     exact old text from view_file
     =======
     new replacement text
     >>>>>>
-    </edit_file> — replace text (must match exactly once)
+     — replace text (must match exactly once)
 
-    <create_file> path="/abs/path">
+    <tool_call>{"name": "create_file", "arguments": {"path": "/abs/path", "content": "..."}}</tool_call>>
     file content here
-    </create_file> — create new file (fails if exists)
+     — create new file (fails if exists)
 
     ## Rules
-    - Always <view_file> before editing — never build old_str from memory
-    - Wrap every tag in <action>...</action>
-    - One short sentence + the <action> block, nothing else"""
+    - Always view_file before editing — never build old_str from memory
+    - Wrap every tag in <tool_call>...</tool_call>
+    - One short sentence + the <tool_call> block, nothing else"""
     return base + "\n\n***\n\n" + editor
 
 
