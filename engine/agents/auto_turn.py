@@ -122,7 +122,8 @@ class AutoTurnEngine:
         """Called by runtime when an agent completes. Fires or queues a signal."""
         state = self.ensure_chat(chat_id)
         task_snippet = (task[:80] + "…") if len(task) > 80 else task
-        _output_dir = str(Path(__file__).resolve().parent.parent.parent / "output" / "agent")
+        from engine.config import AGENT_OUTPUT_DIR as _aod
+        _output_dir = str(_aod)
         summary = (
             f"[Agent {agent_id} ({role}) SUCCEEDED]\n"
             f"Task: {task_snippet}\n"
@@ -141,7 +142,8 @@ class AutoTurnEngine:
         """Called by runtime when an agent fails."""
         state = self.ensure_chat(chat_id)
         task_snippet = (task[:80] + "…") if len(task) > 80 else task
-        _output_dir = str(Path(__file__).resolve().parent.parent.parent / "output" / "agent")
+        from engine.config import AGENT_OUTPUT_DIR as _aod
+        _output_dir = str(_aod)
         summary = (
             f"[Agent {agent_id} ({role}) FAILED]\n"
             f"Task: {task_snippet}\n"

@@ -1401,6 +1401,32 @@
         "how to run bg command for endpoint validation",
         "preserve stdout when testing streaming"
       ]
+    },
+    {
+      "key": "chat_title_single_use_rule",
+      "value": "The chat_title tool must be called exactly once on the very first message of a new conversation to set a descriptive title. It must never be called again in subsequent messages unless the user explicitly requests a rename. Repeated calls are prohibited.",
+      "trigger": "when starting a new conversation or considering calling chat_title",
+      "keywords": [
+        "chat_title",
+        "title",
+        "rename",
+        "conversation"
+      ],
+      "source_query": "stop using chat_tittle on everysingle message",
+      "tags": [
+        "chat_title",
+        "tool_usage",
+        "protocol",
+        "conversation",
+        "rules"
+      ],
+      "triggers": [
+        "stop using chat_tittle on everysingle message",
+        "why are you setting the title every time",
+        "chat_title tool usage rules",
+        "only call chat_title once",
+        "don't repeat chat title"
+      ]
     }
   ]
 }

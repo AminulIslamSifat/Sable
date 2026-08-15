@@ -26,7 +26,9 @@ from connectors import resolve_backend, get_connector
 
 logger = logging.getLogger("sable.research.engine")
 
-SEARCH_SCRIPT = OUTPUT_ROOT.parent / "skills" / "online_search" / "scripts" / "web_search_batch.py"
+# SEARCH_SCRIPT lives in the project tree, not under OUTPUT_ROOT
+from engine.config import _ROOT as _PROJECT_ROOT
+SEARCH_SCRIPT = _PROJECT_ROOT / "skills" / "online_search" / "scripts" / "web_search_batch.py"
 
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
 

@@ -155,8 +155,17 @@ def build_system_prompt(model_id: str) -> str | None:
             except (OSError, Exception):
                 pass
 
-    if not parts:
-        return None
+    # --- Output Directory (always injected, not toggleable) ---
+    from engine.config import OUTPUT_ROOT as _OUT
+    parts.append(
+        f"# Output Directory (MANDATORY)\n"
+        f"ALL generated content (notes, research, text files, agent logs, assets, downloads) "
+        f"MUST be saved under `{_OUT}/`. NEVER save to CWD or project root unless explicitly instructed.\n"
+        f"Subdirs: notes/, research/, agent/, assets/, sessions/, logs/.\n"
+        f"When user asks to 'save' anything without specifying a path, default to `{_OUT}/notes/` "
+        f"for text/docs, or the appropriate subdirectory otherwise."
+    )
+
     return "\n\n***\n\n".join(parts)
 
 

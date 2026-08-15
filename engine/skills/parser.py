@@ -27,8 +27,9 @@ from typing import Any, Generator
 
 logger = logging.getLogger("sable.parser")
 
-# Debug log file for parser failures
-_PARSER_LOG = Path(__file__).resolve().parent.parent.parent / "output" / "parser_debug.log"
+# Debug log file for parser failures — use central output root
+from engine.config import OUTPUT_ROOT as _OUT
+_PARSER_LOG = _OUT / "parser_debug.log"
 
 def _plog(msg: str) -> None:
     """Write parser debug info to file."""
