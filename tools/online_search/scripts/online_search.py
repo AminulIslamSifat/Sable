@@ -818,20 +818,9 @@ def _tool_web_fetch(args: dict) -> dict:
     return fetch_specific_urls(urls, max_chars=max_chars)
 
 
-def _tool_comprehensive_search(args: dict) -> dict:
-    query = args.get("query", "").strip()
-    if not query:
-        return {"error": "'query' is required"}
-    max_pages = min(int(args.get("max_pages", 5)), 10)
-    max_chars = int(args.get("max_chars", 10000))
-    time_filter = args.get("time_filter") or infer_time_filter(query)
-    return comprehensive_web_search(query, max_pages=max_pages, max_chars=max_chars, time_filter=time_filter)
-
-
 _TOOL_COMMANDS = {
     "web_search": _tool_web_search,
     "web_fetch": _tool_web_fetch,
-    "comprehensive_search": _tool_comprehensive_search,
 }
 
 

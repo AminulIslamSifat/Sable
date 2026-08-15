@@ -27,7 +27,9 @@ _SEARCH_SCRIPT = SKILLS_DIR / "online_search" / "scripts" / "web_search_batch.py
 
 def _run_search_script(query: str, extra_args: list[str] | None = None) -> dict[str, Any]:
     """Run the search script with a query and optional extra CLI args."""
-    cmd = ["python3", str(_SEARCH_SCRIPT), "--json", query]
+    cmd = ["python3", str(_SEARCH_SCRIPT), "--json"]
+    if query:
+        cmd.append(query)
     if extra_args:
         cmd.extend(extra_args)
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -39,12 +41,11 @@ def _run_search_script(query: str, extra_args: list[str] | None = None) -> dict[
 def handle_online_search(
     tag_id: str, name: str, attrs: dict[str, str], content: str
 ) -> Generator[dict[str, Any], None, None]:
-    """Dispatch web_search / web_fetch / comprehensive_search / online_search.
+    """Dispatch web_search / web_fetch / online_search.
 
     Tool schemas (tools/online_search/tool.json):
       web_search: {query, max_results?, time_filter?}
       web_fetch: {urls: [str], max_chars?}
-      comprehensive_search: {query, max_pages?, max_chars?, time_filter?}
       online_search: legacy alias for web_search
     """
     started = time.time()
@@ -63,17 +64,30 @@ def handle_online_search(
 
     if urls:
         max_chars = int(attrs.get("max_chars", "0") or 0)
-        fetch_args: list[str] = []
+        fetch_args: list[str] = ["--fetch-urls"]
+
+        url_list = urls if isinstance(urls, list) else [urls]
+        fetch_args.extend(url_list)
         if max_chars > 0:
             fetch_args.append(f"--max-chars={max_chars}")
+
+        yield _output_event(tag_id, f"Fetching {len(url_list)} URL(s):\n")
+        for u in url_list:
+            yield _output_event(tag_id, f"  → {u}\n")
+        yield _output_event(tag_id, "\n")
+
         try:
-            data = _run_search_script(urls[0], fetch_args)
+            data = _run_search_script("", fetch_args)
             items = data.get("items", [])
+            fetched_count = sum(1 for it in items if it.get("ok"))
+            yield _output_event(tag_id, f"✓ Fetched {fetched_count}/{len(items)} page(s)\n\n")
             for item in items:
                 context = item.get("context", "")
                 if context:
                     yield _output_event(tag_id, wrap_untrusted(context, source="web_fetch") + "\n")
-            yield _end_event(tag_id, name, True, started, {"urls": urls, "results": items})
+                elif not item.get("ok"):
+                    yield _output_event(tag_id, f"✗ {item.get('url', '?')}: {item.get('error', 'unknown error')}\n", "stderr")
+            yield _end_event(tag_id, name, True, started, {"urls": url_list, "results": items})
         except Exception as exc:
             yield _output_event(tag_id, f"Fetch error: {exc}\n", "stderr")
             yield _end_event(tag_id, name, False, started, error=str(exc))
@@ -85,22 +99,20 @@ def handle_online_search(
         yield _end_event(tag_id, name, False, started, error="Empty query")
         return
 
-    yield _output_event(tag_id, f"Searching: {query}\n\n")
-
     max_results = attrs.get("max_results", "")
     time_filter = attrs.get("time_filter", "")
-    fetch_pages = attrs.get("max_pages", "")
-    max_chars = attrs.get("max_chars", "")
 
-    extra_args: list[str] = []
+    extra_args: list[str] = ["--search-only"]
     if max_results:
         extra_args.append(f"--max-results={max_results}")
     if time_filter:
         extra_args.append(f"--time-filter={time_filter}")
-    if fetch_pages:
-        extra_args.append(f"--max-pages={fetch_pages}")
-    if max_chars:
-        extra_args.append(f"--max-chars={max_chars}")
+
+    # Show what we're doing before the blocking call
+    yield _output_event(tag_id, f"🔍 Search: {query}\n")
+    if time_filter:
+        yield _output_event(tag_id, f"   Time filter: {time_filter}\n")
+    yield _output_event(tag_id, "\n")
 
     try:
         data = _run_search_script(query, extra_args)
@@ -110,12 +122,23 @@ def handle_online_search(
             yield _end_event(tag_id, name, True, started, {"query": query, "results": []})
             return
 
+        ok_count = sum(1 for it in items if it.get("ok"))
+        yield _output_event(tag_id, f"✓ {ok_count} result(s)\n\n")
+
         for item in items:
-            context = item.get("context", "")
-            if context:
-                yield _output_event(tag_id, wrap_untrusted(context, source="web_search") + "\n")
-            elif not item.get("ok"):
-                yield _output_event(tag_id, f"Error: {item.get('error', 'unknown')}\n", "stderr")
+            if not item.get("ok"):
+                yield _output_event(tag_id, f"✗ {item.get('error', 'unknown')}\n", "stderr")
+                continue
+            # search-only returns results array with title/url/snippet
+            results = item.get("results", [])
+            lines: list[str] = []
+            for r in results:
+                lines.append(f"[{r['index']}] {r['title']}")
+                lines.append(f"    URL: {r['url']}")
+                if r.get("snippet"):
+                    lines.append(f"    Snippet: {r['snippet']}")
+                lines.append("")
+            yield _output_event(tag_id, wrap_untrusted("\n".join(lines), source="web_search") + "\n")
 
         yield _end_event(tag_id, name, True, started, {"query": query, "results": items})
 
