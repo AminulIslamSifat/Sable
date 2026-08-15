@@ -18,8 +18,8 @@ from engine.agents.resilience import CircuitBreaker
 
 logger = logging.getLogger("sable")
 
-# Agent output directory
-_AGENT_OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent / "output" / "agent"
+# Agent output directory — use central config so path stays in sync
+from engine.config import AGENT_OUTPUT_DIR as _AGENT_OUTPUT_DIR
 
 # Type for the SSE push callback: async fn(chat_id, event_dict)
 EventCallback = Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]]

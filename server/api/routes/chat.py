@@ -53,7 +53,8 @@ from ..dependencies import service, sse
 _DIRECT_READ_BACKENDS = frozenset({"gemini", "groq", "mistral", "openai"})
 
 # --- Conversation file logger ---
-_CONV_LOG_DIR = Path(__file__).resolve().parent.parent.parent.parent / "output" / "conversations"
+from engine.config import OUTPUT_ROOT as _OUT
+_CONV_LOG_DIR = _OUT / "conversations"
 _CONV_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 def _log_conversation(chat_id: str, model: str, role: str, content: str) -> None:

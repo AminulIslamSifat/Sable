@@ -315,110 +315,9 @@ class BrowserManager:
 
         SETTINGS_URL = "https://chat.qwen.ai/api/v2/users/user/settings/update"
 
-        # Load project config if active
-        proj = None
-        if project_id:
-            try:
-                from server.database import get_project
-                proj = get_project(project_id)
-            except Exception:
-                pass
-
-        # Build instruction payload from instruction/ files
-        instruction_dir = Path(__file__).resolve().parent.parent / "instruction"
-        instructions = ""
-
-        # Project instruction overrides Maria.md if defined
-        project_instruction = None
-        if proj and proj.get("instruction_text"):
-            project_instruction = proj["instruction_text"]
-        elif proj and proj.get("instruction_file"):
-            instr_path = Path(proj["instruction_file"])
-            if instr_path.exists():
-                project_instruction = instr_path.read_text(encoding="utf-8")
-
-        if project_instruction and proj and proj.get("persona_enabled", True):
-            # Project instruction replaces Maria.md entirely
-            instructions += project_instruction + "\n\n"
-        else:
-            # Default: load Maria.md
-            maria_path = instruction_dir / "Maria.md"
-            if maria_path.exists():
-                instructions += maria_path.read_text(encoding="utf-8") + "\n\n"
-
-        # Output format — skip if project has it disabled
-        if not proj or proj.get("output_format_enabled", True):
-            of_path = instruction_dir / "output_format.md"
-            if of_path.exists():
-                instructions += of_path.read_text(encoding="utf-8") + "\n\n"
-
-        # Inject facts to remember if project has them
-        if proj and proj.get("facts"):
-            instructions += f"\n\n# Facts to Remember (Project: {proj.get('name', 'Unknown')})\n{proj['facts']}\n\n"
-
-        # Inject git details if project has them
-        if proj and any(proj.get(k) for k in ("git_repo", "git_username", "git_branch")):
-            instructions += "\n\n# Git Repository Details\n"
-            if proj.get("git_repo"):
-                instructions += f"- Repo: {proj['git_repo']}\n"
-            if proj.get("git_username"):
-                instructions += f"- Username: {proj['git_username']}\n"
-            if proj.get("git_branch"):
-                instructions += f"- Branch: {proj['git_branch']}\n"
-            instructions += "\n"
-
-        # Collect disabled skills from global file + project config
-        _disabled_skills: list[str] = []
-        _global_disabled_path = Path(__file__).resolve().parent.parent / "Brain" / "disabled_skills.json"
-        if _global_disabled_path.exists():
-            try:
-                import json as _json
-                _gd = _json.loads(_global_disabled_path.read_text(encoding="utf-8"))
-                if isinstance(_gd, list):
-                    _disabled_skills.extend(_gd)
-            except Exception:
-                pass
-        if proj and proj.get("skills_config"):
-            _disabled_skills.extend([k for k, v in proj["skills_config"].items() if not v])
-
-        # Auto-generated skill registry (filtered by disabled skills at discovery)
-        from engine.skills import SkillEngine
-        from engine.skills.handlers import HANDLER_MAP
-        _engine = SkillEngine(
-            skills_dir=Path(__file__).resolve().parent.parent / "skills",
-            handlers=HANDLER_MAP,
-            agent_id="maria",
-            disabled=_disabled_skills,
-        )
-        skills_prompt = _engine.get_registry_prompt()
-        instructions += skills_prompt
-
-        # Inject tool schemas (filtered by disabled tools)
-        try:
-            from engine.tools_loader import get_tools_prompt_section
-            _disabled_tools_path = Path(__file__).resolve().parent.parent / "Brain" / "disabled_tools.json"
-            _disabled_tools: list[str] = []
-            if _disabled_tools_path.exists():
-                import json as _json2
-                _dt = _json2.loads(_disabled_tools_path.read_text(encoding="utf-8"))
-                if isinstance(_dt, list):
-                    _disabled_tools = _dt
-            tools_section = get_tools_prompt_section(disabled=_disabled_tools)
-            if tools_section:
-                instructions += chr(10) + chr(10) + tools_section
-        except Exception:
-            pass
-
-        # Inject connected MCP tools into system prompt
-        try:
-            from engine.mcp.manager import get_mcp_manager
-            mcp_section = get_mcp_manager().get_prompt_section()
-            if mcp_section:
-                instructions += chr(10) + chr(10) + mcp_section + chr(10) + chr(10)
-        except Exception:
-            pass
-
-
+        # Build instructions using shared builder (same as DeepSeek/all API connectors)
+        from connectors.common.instruction_builder import build_instructions
+        instructions = build_instructions(project_id=project_id)
 
         MAX_CHARS = 40960
         if len(instructions) > MAX_CHARS:
@@ -473,6 +372,8 @@ class BrowserManager:
                 d2 = r2.json()
                 if not d2.get("success"):
                     raise Exception(f"Update instruction failed: {d2}")
+                # with open("test/ins.md", "w") as file:
+                #     file.write(instructions)
                 print(f"[DEBUG] Context synced successfully! ({len(instructions)} chars)")
                 return True
         except Exception as e:

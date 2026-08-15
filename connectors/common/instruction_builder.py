@@ -129,26 +129,27 @@ def build_instructions(project_id: str | None = None) -> str:
     # --- Skill Registry ---
     from engine.skills import SkillEngine
     from engine.skills.handlers import HANDLER_MAP
-    _engine = SkillEngine(
-        skills_dir=_SKILLS_DIR,
-        handlers=HANDLER_MAP,
-        agent_id="maria",
-    )
-    skills_prompt = _engine.get_registry_prompt()
 
-    # Filter disabled skills from global file
+    # Collect disabled skills BEFORE engine creation so they're excluded at discovery
+    _disabled_skills: list[str] = []
     _global_disabled_path = _PROJECT_ROOT / "Brain" / "disabled_skills.json"
     if _global_disabled_path.exists():
         try:
             _gd = json.loads(_global_disabled_path.read_text(encoding="utf-8"))
-            if isinstance(_gd, list) and _gd:
-                global_config = {k: False for k in _gd}
-                skills_prompt = _filter_skills_prompt(skills_prompt, global_config)
+            if isinstance(_gd, list):
+                _disabled_skills.extend(_gd)
         except Exception:
             pass
-
     if proj and proj.get("skills_config"):
-        skills_prompt = _filter_skills_prompt(skills_prompt, proj["skills_config"])
+        _disabled_skills.extend([k for k, v in proj["skills_config"].items() if not v])
+
+    _engine = SkillEngine(
+        skills_dir=_SKILLS_DIR,
+        handlers=HANDLER_MAP,
+        agent_id="maria",
+        disabled=_disabled_skills or None,
+    )
+    skills_prompt = _engine.get_registry_prompt()
     parts.append(skills_prompt)
 
     # --- Tool Schemas ---
@@ -165,6 +166,26 @@ def build_instructions(project_id: str | None = None) -> str:
             parts.append(tools_section)
     except Exception:
         pass
+
+    # --- MCP Tools ---
+    try:
+        from engine.mcp.manager import get_mcp_manager
+        mcp_section = get_mcp_manager().get_prompt_section()
+        if mcp_section:
+            parts.append(mcp_section)
+    except Exception:
+        pass
+
+    # --- Output Directory (always injected, not toggleable) ---
+    from engine.config import OUTPUT_ROOT as _OUT
+    parts.append(
+        f"# Output Directory (MANDATORY)\n"
+        f"ALL generated content (notes, research, text files, agent logs, assets, downloads) "
+        f"MUST be saved under `{_OUT}/`. NEVER save to CWD or project root unless explicitly instructed.\n"
+        f"Subdirs: notes/, research/, agent/, assets/, sessions/, logs/.\n"
+        f"When user asks to 'save' anything without specifying a path, default to `{_OUT}/notes/` "
+        f"for text/docs, or the appropriate subdirectory otherwise."
+    )
 
     return "\n\n".join(parts)
 

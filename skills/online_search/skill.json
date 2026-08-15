@@ -9,7 +9,7 @@
   "tags": [
     "execute_command"
   ],
-  "default": true,
+  "default": false,
   "inline": false,
   "priority": 70,
   "scope": [
