@@ -1035,8 +1035,12 @@
 
     function renderMarkdown(raw) {
       if (!raw) return "";
-      // Strip agentic <action>...</action> blocks — metadata, not user-visible content
-      raw = String(raw).replace(/<action>[\s\S]*?<\/action>/gi, "").trim();
+      // Strip agentic wrapper blocks — metadata, not user-visible content
+      var _s = String(raw);
+      _s = _s.replace(/<action>[\s\S]*?<\/action>/gi, "");
+      _s = _s.replace(/<\s*tool_call\s*>[\s\S]*?<\s*\/\s*tool_call\s*>/gi, "");
+      _s = _s.replace(/<\/?\s*tool_call[^>]*>?/gi, "");
+      raw = _s.trim();
       const normalized = normalizeMd(raw.replace(/\r\n/g, "\n"));
       const safe = closeUnclosedFences(normalized);
 

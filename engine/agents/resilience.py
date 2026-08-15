@@ -150,7 +150,7 @@ class MainChatGuard:
     Tracks:
     - Repeated identical commands (5+ consecutive -> loop warning)
     - Consecutive tool failures (5+ -> rethink/search warning)
-    - Malformed action blocks (tags outside action wrap, orphan close tags)
+    - Malformed tool_call blocks (JSON outside tool_call wrap, orphan close tags)
     """
 
     LOOP_THRESHOLD = 5
@@ -171,15 +171,28 @@ class MainChatGuard:
     )
 
     MALFORMED_NO_OPEN = (
-        f"[FORMAT WARNING] Found a closing </action> tag without a matching "
-        f"<action> opening tag. Wrap your tool calls like this:\n"
-        f"<action>\n<your_tag>...</your_tag>\n</action>"
+        "[FORMAT WARNING] Found a closing </tool_call> tag without a matching "
+        "<tool_call> opening tag. Wrap your tool calls like this:\n"
+        '<tool_call>{"name": "tool_name", "arguments": {...}}</tool_call>'
     )
 
-    MALFORMED_TAG_OUTSIDE = (
-        f"[FORMAT WARNING] A tool tag was found outside an <action> block. "
-        f"All tool tags MUST be wrapped:\n"
-        f"<action>\n<your_tag>...</your_tag>\n</action>"
+    MALFORMED_NO_CLOSE = (
+        "[FORMAT WARNING] Found an opening <tool_call> tag without a closing </tool_call>. "
+        "Every tool_call block must be properly closed:\n"
+        '<tool_call>{"name": "tool_name", "arguments": {...}}</tool_call>'
+    )
+
+    MALFORMED_JSON_OUTSIDE = (
+        "[FORMAT WARNING] A JSON tool call was found outside a <tool_call> block. "
+        "All tool calls MUST be wrapped:\n"
+        '<tool_call>{"name": "tool_name", "arguments": {...}}</tool_call>'
+    )
+
+    MALFORMED_INVALID_JSON = (
+        "[FORMAT WARNING] The content inside your <tool_call> block is not valid JSON. "
+        "Expected format:\n"
+        '<tool_call>{"name": "tool_name", "arguments": {...}}</tool_call>\n'
+        "For multiple calls, repeat the block back to back."
     )
 
     def __init__(self):
@@ -225,50 +238,77 @@ class MainChatGuard:
         return None
 
     def check_malformed_action(self, raw_text: str) -> str | None:
-        """Check for malformed action blocks in raw LLM output.
+        """Check for malformed tool_call blocks in raw LLM output (Hermes format).
 
         Returns a warning string if issues found, else None.
-        Detects: orphan close tags, tool tags outside action blocks.
-        Only fires once per guard lifetime to avoid self-referential loops
-        (warning text contains example action tags that would re-trigger).
+        Detects: orphan close tags, unclosed open tags, JSON outside tool_call blocks,
+        invalid JSON inside tool_call blocks.
+        Only fires once per guard lifetime to avoid self-referential loops.
         """
         if self._malformed_warned:
             return None
-        import re
-        open_pat = r"<\s*action\s*>"
-        close_pat = r"<\s*/\s*action\s*>"
-        has_open = bool(re.search(open_pat, raw_text, re.I))
-        has_close = bool(re.search(close_pat, raw_text, re.I))
+        import re as _re
+        open_pat = r"<\s*tool_call\s*>"
+        close_pat = r"<\s*/\s*tool_call\s*>"
+        has_open = bool(_re.search(open_pat, raw_text, _re.I))
+        has_close = bool(_re.search(close_pat, raw_text, _re.I))
 
         # Orphan close without open
         if has_close and not has_open:
             self._malformed_warned = True
             return MainChatGuard.MALFORMED_NO_OPEN
 
-        # Check for known tool tags outside action blocks
+        # Open without close
+        if has_open and not has_close:
+            self._malformed_warned = True
+            return MainChatGuard.MALFORMED_NO_CLOSE
+
+        # Check for JSON tool calls outside action blocks
         from engine.skills.parser import KNOWN_TAGS
-        tag_pattern = "|".join(re.escape(t) for t in KNOWN_TAGS)
-        tag_re = re.compile(r"<\s*(?:" + tag_pattern + r")\b", re.I)
+        tool_json_pat = _re.compile(
+            r'"name"\s*:\s*"(' + '|'.join(_re.escape(t) for t in KNOWN_TAGS) + r')"',
+            _re.I
+        )
 
         if not has_open and not has_close:
-            # No action block at all but tool tags present
-            if tag_re.search(raw_text):
+            if tool_json_pat.search(raw_text):
                 self._malformed_warned = True
-                return MainChatGuard.MALFORMED_TAG_OUTSIDE
-        elif has_open:
-            # Strip all action block contents, check for leftover tags
-            stripped = re.sub(r"<\s*action\s*>.*?<\s*/\s*action\s*>", "", raw_text, flags=re.S | re.I)
-            if tag_re.search(stripped):
+                return MainChatGuard.MALFORMED_JSON_OUTSIDE
+        elif has_open and has_close:
+            stripped = _re.sub(r"<\s*tool_call\s*>.*?<\s*/\s*tool_call\s*>", "", raw_text, flags=_re.S | _re.I)
+            if tool_json_pat.search(stripped):
                 self._malformed_warned = True
-                return MainChatGuard.MALFORMED_TAG_OUTSIDE
+                return MainChatGuard.MALFORMED_JSON_OUTSIDE
+
+        # Check for invalid JSON inside action blocks
+        if has_open and has_close:
+            from engine.skills.parser import _parse_action_payload, _diagnose_json_failure, sanitize_transport
+            action_contents = _re.findall(r"<\s*tool_call\s*>(.*?)<\s*/\s*tool_call\s*>", raw_text, flags=_re.S | _re.I)
+            for block in action_contents:
+                block = block.strip()
+                if not block:
+                    continue
+                # Pre-validate: try sanitizing before declaring failure
+                sanitized_block = sanitize_transport(block)
+                if not _parse_action_payload(sanitized_block) and not _parse_action_payload(block):
+                    self._malformed_warned = True
+                    diagnosis = _diagnose_json_failure(block)
+                    tc_open = chr(60) + 'tool_call' + chr(62)
+                    tc_close = chr(60) + '/tool_call' + chr(62)
+                    fmt_ex = chr(123) + chr(34) + 'name' + chr(34) + ': ' + chr(34) + 'tool' + chr(34) + chr(125)
+                    return (
+                        '[FORMAT WARNING] Invalid JSON in ' + tc_open + ' block.' + chr(10)
+                        + diagnosis + chr(10) + chr(10)
+                        + 'Expected: ' + tc_open + fmt_ex + tc_close
+                    )
 
         return None
 
 
     def check_incomplete_action(self, raw_text: str, tools_executed: bool) -> str | None:
-        """Check if response contains action/tool markers but nothing was executed.
+        """Check if response contains tool_call markers but nothing was executed.
 
-        Catches truncated responses where the model started an action block
+        Catches truncated responses where the model started a tool_call block
         but the stream ended before any tool was actually dispatched.
         Returns a warning string if incomplete, else None.
         Only fires once per guard lifetime to avoid duplication.
@@ -280,26 +320,26 @@ class MainChatGuard:
         if not raw_text or not raw_text.strip():
             return None
 
-        import re
-        # Check for action block markers
+        import re as _re
         # Strip code fences and inline backticks before checking
-        _stripped = re.sub(r"`{3}.*?`{3}", "", raw_text, flags=re.S)
-        _stripped = re.sub(r"`[^`]+`", "", _stripped)
-        has_action_markers = bool(re.search(
-            r"</?\s*action\s*>", _stripped, re.I
+        _stripped = _re.sub(r"`{3}.*?`{3}", "", raw_text, flags=_re.S)
+        _stripped = _re.sub(r"`[^`]+`", "", _stripped)
+        has_action_markers = bool(_re.search(
+            r"<\s*/?\s*tool_call\s*>", _stripped, _re.I
         ))
-        # Check for known tool tags
+        # Check for JSON tool call patterns with known tool names
         from engine.skills.parser import KNOWN_TAGS
-        tag_pattern = "|".join(re.escape(t) for t in KNOWN_TAGS)
-        has_tool_tags = bool(re.search(
-            r"<\s*(?:" + tag_pattern + r")\b", _stripped, re.I
-        ))
+        tool_json_pat = _re.compile(
+            r'"name"\s*:\s*"(' + '|'.join(_re.escape(t) for t in KNOWN_TAGS) + r')"',
+            _re.I
+        )
+        has_tool_json = bool(tool_json_pat.search(_stripped))
 
-        if has_action_markers or has_tool_tags:
+        if has_action_markers or has_tool_json:
             self._incomplete_warned = True
             return (
                 "[INCOMPLETE RESPONSE WARNING] Your last response contained "
-                f"tool tags or <action> blocks but no tools were actually executed. "
+                "tool calls or <tool_call> blocks but no tools were actually executed. "
                 "The response may have been truncated. Please retry the last command "
                 "or continue from where you left off."
             )

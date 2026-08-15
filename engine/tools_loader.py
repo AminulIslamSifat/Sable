@@ -105,22 +105,30 @@ def get_all_tool_schemas(disabled: list[str] | None = None, allowed: list[str] |
 
 
 def get_tools_prompt_section(disabled: list[str] | None = None) -> str:
-    """Generate tools reference using raw OpenAI-compatible schemas.
+    """Generate tools reference in Hermes format.
 
-    Models are trained on this exact format during RLHF/alignment.
-    Raw schemas are more effective than reformatted markdown because
-    the model recognizes the structure it was trained on.
+    Tools are declared inside <tools></tools> XML tags with one JSON object
+    per line. Models trained on this format (Qwen3, etc.) recognize it natively.
     """
     disabled = disabled or []
     schemas = get_all_tool_schemas(disabled)
     if not schemas:
         return ""
 
-    lines = ["# Available Tools", ""]
-    lines.append("You have access to the following functions. Use them via action tags when needed.")
-    lines.append("")
+    TC_OPEN = "<" + "tool_call" + ">"
+    TC_CLOSE = "</" + "tool_call" + ">"
+
+    lines = ["<tools>"]
     for s in schemas:
-        fn = s["function"]
-        lines.append(json.dumps(fn, indent=2))
-        lines.append("")
+        lines.append(json.dumps(s, ensure_ascii=False))
+    lines.append("</tools>")
+    lines.append("")
+    lines.append("For each function call, return a JSON object with the function name and arguments")
+    lines.append(f"within {TC_OPEN}{TC_CLOSE} XML tags:")
+    lines.append(TC_OPEN)
+    lines.append('{"name": "<function-name>", "arguments": <args-json-object>}')
+    lines.append(TC_CLOSE)
+    lines.append("")
+    lines.append(f"For multiple parallel calls, repeat the {TC_OPEN}...{TC_CLOSE} block back to back.")
+
     return "\n".join(lines)
