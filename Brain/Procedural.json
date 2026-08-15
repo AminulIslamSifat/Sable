@@ -1313,6 +1313,94 @@
         "workaround for edit_file failures in sable",
         "use create_file instead of edit_file for complex content"
       ]
+    },
+    {
+      "key": "execute_shell_commands_directly",
+      "value": "When the user asks to run a shell command (e.g., ls, git status), use the execute_command tool or equivalent available tool to run it directly. Do not refuse, suggest manual execution, or offer to create a script file as a workaround. The agent has direct shell access and must use it when requested.",
+      "trigger": "when user asks to run any shell command or system utility",
+      "keywords": [
+        "execute",
+        "command",
+        "shell",
+        "run",
+        "ls"
+      ],
+      "source_query": "just run the command",
+      "tags": [
+        "shell",
+        "command",
+        "execute",
+        "tool",
+        "agent",
+        "workflow"
+      ],
+      "triggers": [
+        "just run the command",
+        "run ls for me",
+        "execute shell command",
+        "why won't you run commands",
+        "use execute_command tool"
+      ]
+    },
+    {
+      "key": "track_skill_path_from_start_event",
+      "value": "When injecting UI elements at skill_end that depend on file path or attrs, NEVER read from the skill_end event — it only carries result data. Instead, capture path/attrs from skill_start into a local variable (_lastSkillPath, _lastSkillName) and reference that variable at skill_end. Same pattern applies to history replay (_histSkillPath). This is because Sable's backend sends attrs (including path) only in skill_start events; skill_end events contain only execution results. Tool pending events also have empty attrs for create_file.",
+      "trigger": "when adding UI features that need file path at skill completion time",
+      "keywords": [
+        "skill_end",
+        "skill_start",
+        "path",
+        "attrs",
+        "event",
+        "streaming"
+      ],
+      "source_query": "theres supposed to be a card, where is it?",
+      "tags": [
+        "sable",
+        "streaming",
+        "skill-events",
+        "ui-injection",
+        "event-structure",
+        "frontend"
+      ],
+      "triggers": [
+        "theres supposed to be a card, where is it?",
+        "why is file path missing at skill_end",
+        "how to get file path when skill completes",
+        "skill_end event missing attrs sable",
+        "track path between skill_start and skill_end",
+        "preview card not showing after create_file"
+      ]
+    },
+    {
+      "key": "bg_endpoint_test_preserve_output",
+      "value": "When user requests a background command specifically to test an endpoint, streaming, or polling system, NEVER redirect stdout to /dev/null. The output IS the test payload — suppressing it defeats the purpose. Only redirect to /dev/null if the user explicitly asks for silent execution or if the command is purely a side-effect benchmark with no streaming validation. When in doubt during endpoint/streaming tests, pipe to a log file instead of discarding.",
+      "trigger": "when running background commands for endpoint or streaming tests",
+      "keywords": [
+        "background",
+        "endpoint",
+        "test",
+        "stdout",
+        "streaming"
+      ],
+      "source_query": "why would you pip it like that",
+      "tags": [
+        "sable",
+        "bg-command",
+        "endpoint-test",
+        "stdout",
+        "streaming",
+        "output",
+        "debugging"
+      ],
+      "triggers": [
+        "why would you pip it like that",
+        "don't suppress output when testing endpoints",
+        "background command needs visible output for testing",
+        "stop redirecting to dev null during stream tests",
+        "how to run bg command for endpoint validation",
+        "preserve stdout when testing streaming"
+      ]
     }
   ]
 }

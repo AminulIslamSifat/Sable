@@ -1,0 +1,18 @@
+[
+  {
+    "name": "chat_title",
+    "description": "MANDATORY on first message: Set a short descriptive title for this chat. You MUST call this tool exactly once on the very first message of every new conversation. Never skip it. Never use it again unless the user explicitly asks to rename the chat.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Short descriptive title (max 80 chars)"
+        }
+      },
+      "required": [
+        "title"
+      ]
+    }
+  }
+]

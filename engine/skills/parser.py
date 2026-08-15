@@ -9,7 +9,7 @@ Extracts complete tool calls from streamed LLM output. Tool calls use
 
 Hermes Tool Call Format:
   Single:  <tool_call>{"name": "grep", "arguments": {"pattern": "foo"}}</tool_call>
-  Multiple: repeat <tool_call> blocks back to back
+  Multiple: <tool_call>[{"name": "a", ...}, {"name": "b", ...}]</tool_call> (ONE wrapper, JSON array)
 """
 
 from __future__ import annotations
@@ -67,7 +67,6 @@ KNOWN_TAGS = (
     "mcp_call",
     "web_search",
     "web_fetch",
-    "comprehensive_search",
     "online_search",
     "chat_title",
 )

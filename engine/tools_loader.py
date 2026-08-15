@@ -129,6 +129,11 @@ def get_tools_prompt_section(disabled: list[str] | None = None) -> str:
     lines.append('{"name": "<function-name>", "arguments": <args-json-object>}')
     lines.append(TC_CLOSE)
     lines.append("")
-    lines.append(f"For multiple parallel calls, repeat the {TC_OPEN}...{TC_CLOSE} block back to back.")
+    lines.append("CRITICAL: You MUST use exactly ONE opening tag and ONE closing tag per response.")
+    lines.append("For multiple parallel calls, put ALL calls as a JSON array INSIDE a single wrapper:")
+    lines.append(TC_OPEN)
+    lines.append('[{"name": "tool_a", "arguments": {...}}, {"name": "tool_b", "arguments": {...}}]')
+    lines.append(TC_CLOSE)
+    lines.append("NEVER output multiple separate blocks. One wrapper only. Always.")
 
     return "\n".join(lines)

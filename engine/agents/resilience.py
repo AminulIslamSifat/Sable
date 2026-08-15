@@ -192,7 +192,7 @@ class MainChatGuard:
         "[FORMAT WARNING] The content inside your <tool_call> block is not valid JSON. "
         "Expected format:\n"
         '<tool_call>{"name": "tool_name", "arguments": {...}}</tool_call>\n'
-        "For multiple calls, repeat the block back to back."
+        "For multiple calls, use a JSON array inside ONE wrapper: <tool_call>[{...}, {...}]</tool_call>"
     )
 
     def __init__(self):
