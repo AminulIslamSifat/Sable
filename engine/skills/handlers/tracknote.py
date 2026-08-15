@@ -11,7 +11,7 @@ from typing import Any
 
 from engine.skills.handlers.common import _end_event, _output_event
 
-_SCRIPT = str(Path(__file__).resolve().parent.parent.parent.parent / "skills" / "tracknote_manager" / "tracknote.py")
+_SCRIPT = str(Path(__file__).resolve().parent.parent.parent.parent / "tools" / "tracknote_manager" / "tracknote.py")
 
 
 def _run_tracknote(section: str, command: str, cli_args: list[str]) -> tuple[bool, str]:

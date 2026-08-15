@@ -7,7 +7,6 @@
   "trigger": "Production-grade UI, web components, high-fidelity layouts.",
   "not_this_if": "A quick functional snippet is enough. Output is a diagram or simulation.",
   "tags": [
-    "create_note",
     "execute_command"
   ],
   "default": false,

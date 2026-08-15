@@ -1,0 +1,69 @@
+[
+  {
+    "name": "tracknote",
+    "description": "CRUD for notes, todos, schedules, and agent ops.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "One of: list_notes, list_schedules, list_ops, add_note, add_todo, add_schedule, toggle_item, delete"
+        },
+        "title": {
+          "type": "string",
+          "description": "Title for note/schedule"
+        },
+        "content": {
+          "type": "string",
+          "description": "Body content for note"
+        },
+        "type": {
+          "type": "string",
+          "description": "note/checklist for notes; type for schedules"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Checklist items [{text, done}]"
+        },
+        "time": {
+          "type": "string",
+          "description": "Time for schedule (HH:MM)"
+        },
+        "day_of_week": {
+          "type": "string",
+          "description": "Day(s) for schedule"
+        },
+        "start_date": {
+          "type": "string",
+          "description": "Start date for schedule"
+        },
+        "note_id": {
+          "type": "string",
+          "description": "Note ID (prefix-matchable)"
+        },
+        "index": {
+          "type": "integer",
+          "description": "Checklist item index to toggle"
+        },
+        "kind": {
+          "type": "string",
+          "description": "notes/schedules/ops for delete"
+        },
+        "id": {
+          "type": "string",
+          "description": "Entry ID to delete"
+        },
+        "all": {
+          "type": "boolean",
+          "description": "List all entries"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  }
+]

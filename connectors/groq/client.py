@@ -23,6 +23,12 @@ from typing import Any
 import httpx
 
 from connectors.common.media import prepare_inline_file, to_openai_image
+from connectors.common.native_tools import (
+    openai_to_openai_tools,
+    parse_openai_function_call,
+    format_openai_tool_result,
+    native_call_to_tag_event,
+)
 from connectors.common.context_summarizer import (
     should_inject_hint, should_force_summarize, get_hint_text,
     extract_summarize_tag, strip_summarize_tag, build_summary_prompt,
@@ -85,35 +91,38 @@ def _save_keys(keys: list[str]) -> None:
 def _load_instructions() -> str:
     """Minimal agentic tag docs + distilled code_editor for Groq."""
     base = (
-        "Every agentic tag must be wrapped in a single <action>...</action> block. "
-        "The extractor only reads what is inside <action>; anything outside is prose.\n\n"
+        "Every agentic tag must be wrapped in a <tool_call>...</tool_call> block. "
+        "The extractor only reads what is inside <tool_call>; anything outside is prose.\n\n"
+        "You may put MULTIPLE tool calls in one block as a JSON array: "
+        "<tool_call>[{\"name\": \"grep\", ...}, {\"name\": \"view_file\", ...}]</tool_call>\n"
+        "Prefer one block with an array over multiple separate blocks.\n\n"
         "Tags: <get_file>/abs/path</get_file> \u00b7 <execute_command>cmd</execute_command>\n\n"
-        "If you use <action>, the entire response is ONE short sentence + the block. "
-        "<action> appears only in plain text, never inside a fenced code block."
+        "If you use <tool_call>, keep prose to ONE short sentence before the block. "
+        "<tool_call> appears only in plain text, never inside a fenced code block."
     )
     editor = """# File I/O
 
     ## Read files
-    <get_file>/abs/path</get_file> — read any file (text or binary)
-    <view_file> path="/abs/path" </view_file> — read with line numbers, supports start/end range
+    <tool_call>{"name": "get_file", "arguments": {"path": "/abs/path"}}</tool_call> — read any file (text or binary)
+    <tool_call>{"name": "view_file", "arguments": {"path": "/abs/path"}}</tool_call> — read with line numbers, supports start/end range
 
     ## Write files  
-    <edit_file> path="/abs/path">
+    <tool_call>{"name": "edit_file", "arguments": {"path": "/abs/path", "old_str": "...", "new_str": "..."}}</tool_call>>
     <<<<<< SEARCH
     exact old text from view_file
     =======
     new replacement text
     >>>>>>
-    </edit_file> — replace text (must match exactly once)
+     — replace text (must match exactly once)
 
-    <create_file> path="/abs/path">
+    <tool_call>{"name": "create_file", "arguments": {"path": "/abs/path", "content": "..."}}</tool_call>>
     file content here
-    </create_file> — create new file (fails if exists)
+     — create new file (fails if exists)
 
     ## Rules
-    - Always <view_file> before editing — never build old_str from memory
-    - Wrap every tag in <action>...</action>
-    - One short sentence + the <action> block, nothing else"""
+    - Always view_file before editing — never build old_str from memory
+    - Wrap every tag in <tool_call>...</tool_call>
+    - One short sentence + the <tool_call> block, nothing else"""
     return base + "\n\n***\n\n" + editor
 
 
@@ -293,6 +302,7 @@ class GroqClient:
         inject_instructions: bool = True,
         files: list[str] | None = None,
         max_session_chars: int | None = None,
+        tools: list[dict] | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat completion, yielding Sable-standard events."""
@@ -342,7 +352,20 @@ class GroqClient:
             "stream": True,
         }
 
-        # Try each key with rotation on failure
+        # Native tool calling
+        if tools:
+            oai_tools = openai_to_openai_tools(tools)
+            if oai_tools:
+                payload["tools"] = oai_tools
+
+        # Tool execution loop
+        _max_tool_rounds = 20
+        _tool_round = 0
+
+        while _tool_round < _max_tool_rounds:
+            _tool_round += 1
+
+            # Try each key with rotation on failure
         attempts = len(self._keys)
         for attempt in range(attempts):
             key = self._current_key
@@ -368,6 +391,9 @@ class GroqClient:
                         yield {"type": "error", "message": f"Groq API error {response.status_code}: {body.decode()[:200]}"}
                         return
 
+                    # Accumulate streaming tool call deltas
+                    _tc_buffers: dict[int, dict] = {}  # index -> {id, name, args_str}
+
                     async for line in response.aiter_lines():
                         if not line.startswith("data: "):
                             continue
@@ -379,19 +405,93 @@ class GroqClient:
                         except json.JSONDecodeError:
                             continue
                         delta = (chunk.get("choices") or [{}])[0].get("delta", {})
-                        content = delta.get("content") or ""
-                        if content:
-                            full_answer += content
-                            clean_text = strip_summarize_tag(content)
+                        finish_reason = (chunk.get("choices") or [{}])[0].get("finish_reason", "")
+
+                        # Text content
+                        tc = delta.get("content") or ""
+                        if tc:
+                            full_answer += tc
+                            clean_text = strip_summarize_tag(tc)
                             if clean_text:
                                 yield {"type": "answer", "text": clean_text}
 
-                # Success — save to history and finish
+                        # Tool call deltas (streaming)
+                        tc_deltas = delta.get("tool_calls")
+                        if tc_deltas:
+                            for tcd in tc_deltas:
+                                idx = tcd.get("index", 0)
+                                if idx not in _tc_buffers:
+                                    _tc_buffers[idx] = {"id": tcd.get("id", ""), "name": "", "args_str": ""}
+                                buf = _tc_buffers[idx]
+                                if tcd.get("id"):
+                                    buf["id"] = tcd["id"]
+                                fn = tcd.get("function", {})
+                                if fn.get("name"):
+                                    buf["name"] = fn["name"]
+                                if fn.get("arguments"):
+                                    buf["args_str"] += fn["arguments"]
+
+                    # Check if we got tool calls
+                    if _tc_buffers:
+                        # Parse accumulated tool calls
+                        fc_calls = []
+                        for idx in sorted(_tc_buffers.keys()):
+                            buf = _tc_buffers[idx]
+                            try:
+                                args = json.loads(buf["args_str"]) if buf["args_str"] else {}
+                            except json.JSONDecodeError:
+                                args = {}
+                            fc_calls.append({"name": buf["name"], "args": args, "id": buf["id"]})
+
+                        if fc_calls:
+                            # Save assistant message with tool_calls to history
+                            assistant_msg: dict[str, Any] = {"role": "assistant", "content": full_answer or None}
+                            assistant_msg["tool_calls"] = [
+                                {"id": fc["id"], "type": "function", "function": {"name": fc["name"], "arguments": json.dumps(fc["args"])}}
+                                for fc in fc_calls
+                            ]
+                            history.append(assistant_msg)
+
+                            # Execute each tool call
+                            import asyncio as _asyncio
+                            from engine.skills import get_skill_engine as _get_engine
+                            engine = _get_engine()
+
+                            for fc in fc_calls:
+                                tag_event = native_call_to_tag_event(fc)
+
+                                try:
+                                    events = await _asyncio.to_thread(
+                                        lambda: list(engine.process_tag(
+                                            tag_event["name"], tag_event["attrs"],
+                                            tag_event["content"], namespace="maria",
+                                        ))
+                                    )
+                                except Exception as exc:
+                                    events = [{"type": "skill_end", "name": tag_event["name"], "ok": False, "error": str(exc)}]
+
+                                result_text = ""
+                                ok = True
+                                for evt in events:
+                                    if evt.get("type") == "skill_output":
+                                        result_text += evt.get("text", "")
+                                    elif evt.get("type") == "skill_end":
+                                        ok = evt.get("ok", True)
+                                    yield evt
+
+                                tool_result = format_openai_tool_result(tag_event["name"], result_text, ok, fc.get("id", ""))
+                                history.append(tool_result)
+                                logger.info("Native tool %s executed (ok=%s), continuing loop", tag_event["name"], ok)
+
+                            if chat_id:
+                                self._sessions[chat_id] = history
+                            continue  # Re-enter API call with tool results
+
+                # Normal completion (no tool calls)
                 _summarize_idx = extract_summarize_tag(full_answer)
                 clean_answer = strip_summarize_tag(full_answer)
                 history.append({"role": "assistant", "content": clean_answer})
 
-                # Handle model-triggered summarization
                 if _summarize_idx is not None and chat_id:
                     prefix_len = 1 if history and history[0].get("role") == "system" else 0
                     actual_cut = max(prefix_len, min(_summarize_idx, len(history) - 1))

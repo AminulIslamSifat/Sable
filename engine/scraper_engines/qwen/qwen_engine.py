@@ -1482,15 +1482,6 @@ class GhostChat:
 
         # ── Build instruction content ──────────────────────────────────────────
         instructions = self._load_instructions()
-        instructions += (
-            f"\n\n***\n\n# SYSTEM DIRECTORIES\n"
-            f"PROJECT_ROOT={PROJECT_ROOT}\n"
-            f"OUTPUT_ROOT={OUTPUT_ROOT}\n"
-            f"ASSETS_DIR={ASSETS_DIR}\n"
-            f"All <OUTPUT_ROOT> tags in your instructions should be replaced with {OUTPUT_ROOT}\n"
-            f"All <PROJECT_ROOT> tags in your instructions should be replaced with {PROJECT_ROOT}\n"
-        )
-
         MAX_CHARS = 40960
         if len(instructions) > MAX_CHARS:
             instructions = instructions[:MAX_CHARS]

@@ -21,6 +21,7 @@ _DEFAULTS: dict[str, Any] = {
     "use_memory": True,
     "use_utilities": True,
     "skills": [],
+    "tools": [],
     "distilled": False,
 }
 
@@ -43,9 +44,15 @@ def _save(data: dict[str, dict[str, Any]]) -> None:
 
 
 def get_model_settings(model_id: str) -> dict[str, Any]:
-    """Get settings for a model, returning defaults if not configured."""
+    """Get settings for a model, merging with defaults for missing keys."""
     all_settings = _load()
-    return all_settings.get(model_id, dict(_DEFAULTS))
+    stored = all_settings.get(model_id)
+    if stored is None:
+        return dict(_DEFAULTS)
+    # Merge: defaults first, then stored overrides (handles missing keys like use_memory)
+    merged = dict(_DEFAULTS)
+    merged.update(stored)
+    return merged
 
 
 def get_all_model_settings() -> dict[str, dict[str, Any]]:
@@ -63,6 +70,8 @@ def update_model_settings(model_id: str, updates: dict[str, Any]) -> dict[str, A
             current[key] = bool(updates[key])
     if "skills" in updates:
         current["skills"] = [s for s in updates["skills"] if isinstance(s, str)]
+    if "tools" in updates:
+        current["tools"] = [t for t in updates["tools"] if isinstance(t, str)]
 
     all_settings[model_id] = current
     _save(all_settings)
@@ -95,9 +104,22 @@ def build_system_prompt(model_id: str) -> str | None:
     instruction_dir = Path(__file__).resolve().parent.parent.parent / "instruction"
 
     if settings.get("use_maria"):
-        maria_path = instruction_dir / "Maria.md"
-        if maria_path.is_file():
-            parts.append(maria_path.read_text(encoding="utf-8").strip())
+        # Load active persona from config (falls back to Maria if no config)
+        _pcfg_path = instruction_dir / ".persona_config.json"
+        _active = "Maria"
+        _disabled: list = []
+        if _pcfg_path.exists():
+            try:
+                import json as _json
+                _pc = _json.loads(_pcfg_path.read_text(encoding="utf-8"))
+                _active = _pc.get("active") or "Maria"
+                _disabled = _pc.get("disabled", [])
+            except Exception:
+                pass
+        if _active not in _disabled:
+            persona_path = instruction_dir / f"{_active}.md"
+            if persona_path.is_file():
+                parts.append(persona_path.read_text(encoding="utf-8").strip())
 
     if settings.get("use_output_format"):
         fmt_path = instruction_dir / "output_format.md"
@@ -116,6 +138,23 @@ def build_system_prompt(model_id: str) -> str | None:
             except OSError:
                 pass
 
+    # Load selected tool schemas as instruction
+    tools_dir = Path(__file__).resolve().parent.parent.parent / "tools"
+    for tool_key in settings.get("tools", []):
+        tool_json_path = tools_dir / tool_key / "tool.json"
+        if tool_json_path.is_file():
+            try:
+                import json as _json
+                schema = _json.loads(tool_json_path.read_text(encoding="utf-8"))
+                func_names = [f.get("name", "?") for f in schema] if isinstance(schema, list) else []
+                parts.append(
+                    f"## Tool: {tool_key}\n"
+                    f"Available functions: {', '.join(func_names)}\n"
+                    f"Use native function calling for these tools."
+                )
+            except (OSError, Exception):
+                pass
+
     if not parts:
         return None
     return "\n\n***\n\n".join(parts)
@@ -124,33 +163,36 @@ def build_system_prompt(model_id: str) -> str | None:
 def _distilled_prompt() -> str:
     """Minimal agentic prompt — same philosophy as groq connector."""
     base = (
-        "Every agentic tag must be wrapped in a single <action>...</action> block. "
-        "The extractor only reads what is inside <action>; anything outside is prose.\n\n"
+        "Every agentic tag must be wrapped in a <tool_call>...</tool_call> block. "
+        "The extractor only reads what is inside <tool_call>; anything outside is prose.\n\n"
+        "You may put MULTIPLE tool calls in one block as a JSON array: "
+        "<tool_call>[{\"name\": \"grep\", ...}, {\"name\": \"view_file\", ...}]</tool_call>\n"
+        "Prefer one block with an array over multiple separate blocks.\n\n"
         "Tags: <get_file>/abs/path</get_file> \u00b7 <execute_command>cmd</execute_command>\n\n"
-        "If you use <action>, the entire response is ONE short sentence + the block. "
-        "<action> appears only in plain text, never inside a fenced code block."
+        "If you use <tool_call>, keep prose to ONE short sentence before the block. "
+        "<tool_call> appears only in plain text, never inside a fenced code block."
     )
     editor = """# File I/O
 
 ## Read files
-<get_file>/abs/path</get_file> — read any file (text or binary)
-<view_file> path="/abs/path" </view_file> — read with line numbers, supports start/end range
+<tool_call>{"name": "get_file", "arguments": {"path": "/abs/path"}}</tool_call> — read any file
+<tool_call>{"name": "view_file", "arguments": {"path": "/abs/path", "start": 1, "end": 50}}</tool_call> — read with line numbers
 
 ## Write files
-<edit_file> path="/abs/path"
+<tool_call>{"name": "edit_file", "arguments": {"path": "/abs/path", "old_str": "...", "new_str": "..."}}</tool_call>
 <<<<<<< SEARCH
 exact old text from view_file
 =======
 new replacement text
 >>>>>>
-</edit_file> — replace text (must match exactly once)
+ — replace text (must match exactly once)
 
-<create_file> path="/abs/path"
+<tool_call>{"name": "create_file", "arguments": {"path": "/abs/path", "content": "..."}}</tool_call>
 file content here
-</create_file> — create new file (fails if exists)
+ — create new file (fails if exists)
 
 ## Rules
 - Always <view_file before editing — never build old_str from memory
-- Wrap every tag in <action>...</action>
-- One short sentence + the <action> block, nothing else"""
+- Wrap every tag in <tool_call>...</tool_call>
+- One short sentence + the <tool_call> block, nothing else"""
     return base + "\n\n***\n\n" + editor

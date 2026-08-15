@@ -83,7 +83,7 @@ _PERMISSION_REQUIRED: list[tuple[re.Pattern, str, str]] = [
 ]
 
 # Tags whose content is a shell command
-_COMMAND_TAGS = frozenset({"execute_command", "execute_background_command"})
+_COMMAND_TAGS = frozenset({"execute_command"})
 
 
 # ─── Pending approvals store ──────────────────────────────────────────────────

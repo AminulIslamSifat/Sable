@@ -4,7 +4,6 @@
 from engine.skills.handlers.execute import (
     BG_JOBS,
     handle_check_command,
-    handle_execute_background_command,
     handle_execute_command,
 )
 from engine.skills.handlers.file_ops import (
@@ -19,6 +18,7 @@ from engine.skills.handlers.io import (
     handle_save_svg,
 )
 from engine.skills.handlers.web import (
+    handle_online_search,
     handle_openweb,
 )
 from engine.skills.handlers.agents import (
@@ -38,12 +38,15 @@ from engine.mcp.handler import handle_mcp_call
 
 HANDLER_MAP: dict[str, object] = {
     "execute_command": handle_execute_command,
-    "execute_background_command": handle_execute_background_command,
     "get_file": handle_get_file,
     "read_file": handle_get_file,
 
     "check_command": handle_check_command,
     "openweb": handle_openweb,
+    "web_search": handle_online_search,
+    "web_fetch": handle_online_search,
+    "comprehensive_search": handle_online_search,
+    "online_search": handle_online_search,
     "create_note": handle_create_note,
     "save_svg": handle_save_svg,
     "create_svg": handle_save_svg,
@@ -70,10 +73,10 @@ __all__ = [
     "handle_create_file",
     "handle_create_note",
     "handle_edit_file",
-    "handle_execute_background_command",
     "handle_execute_command",
     "handle_get_file",
     "handle_insert_file",
+    "handle_online_search",
     "handle_openweb",
     "handle_save_svg",
 

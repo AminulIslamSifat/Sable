@@ -1,17 +1,71 @@
-
 #!/bin/bash
-
-# Exit immediately if a command exits with a non-zero status
 set -e
 
 SERVICE="sable.service"
-
 SABLE_PORT="${SABLE_PORT:-61770}"
 SABLE_URL="http://127.0.0.1:${SABLE_PORT}"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+UV_BIN="$(command -v uv || true)"
 
-echo "🔄 Synchronizing dependencies with uv..."
+cd "$SCRIPT_DIR"
+
+# ── First-run bootstrap (skipped if already done) ──────────────────────
+
+# Playwright chromium (idempotent — skips if already installed)
+uv run playwright install chromium 2>/dev/null || true
+
+# Template files
+if [ -f "instruction/Maria.md.example" ] && [ ! -f "instruction/Maria.md" ]; then
+    cp instruction/Maria.md.example instruction/Maria.md
+    echo "📝 Created instruction/Maria.md from template"
+fi
+if [ -f "Brain/Memory.json.example" ] && [ ! -f "Brain/Memory.json" ]; then
+    cp Brain/Memory.json.example Brain/Memory.json
+    echo "🧠 Created Brain/Memory.json from template"
+fi
+
+# Browser profile symlink
+mkdir -p system
+if [ -d "system/browser-data" ] && [ ! -L "system/browser-data" ]; then
+    # Migrate legacy non-symlink dir
+    if [ ! -d "system/browser-data-acc1" ]; then
+        mv system/browser-data system/browser-data-acc1
+    else
+        rm -rf system/browser-data
+    fi
+fi
+if [ ! -e "system/browser-data" ]; then
+    ln -s browser-data-acc1 system/browser-data 2>/dev/null || true
+fi
+
+# Systemd user service (one-time install)
+if ! systemctl --user cat "$SERVICE" >/dev/null 2>&1; then
+    mkdir -p "${HOME}/.config/systemd/user"
+    cat > "${HOME}/.config/systemd/user/${SERVICE}" <<EOF
+[Unit]
+Description=Sable chat server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${SCRIPT_DIR}
+ExecStart=${UV_BIN:-/usr/bin/env uv} run python server.py
+Restart=on-failure
+RestartSec=3
+Environment=TERM=xterm-256color
+
+[Install]
+WantedBy=default.target
+EOF
+    systemctl --user daemon-reload 2>/dev/null || true
+    systemctl --user enable "$SERVICE" >/dev/null 2>&1 || true
+    echo "⚙️  Installed systemd user service: $SERVICE"
+fi
+
+# ── Start ───────────────────────────────────────────────────────────────
+
+echo "🔄 Synchronizing dependencies..."
 uv sync
 echo ""
 

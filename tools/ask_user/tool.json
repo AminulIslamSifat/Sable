@@ -1,0 +1,34 @@
+[
+  {
+    "name": "ask_user",
+    "description": "Ask the user a structured question with selectable options.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "question": {
+          "type": "string",
+          "description": "Clear question to ask the user"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "JSON array of 2-8 choices. Last must be 'Other (type manually)'"
+        },
+        "multi": {
+          "type": "boolean",
+          "description": "Allow multiple selections (default false)"
+        },
+        "default": {
+          "type": "integer",
+          "description": "Pre-selected option index (0-based)"
+        }
+      },
+      "required": [
+        "question",
+        "options"
+      ]
+    }
+  }
+]
