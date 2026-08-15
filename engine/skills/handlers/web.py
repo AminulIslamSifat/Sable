@@ -25,10 +25,60 @@ from engine.security.prompt_guard import wrap_untrusted
 _SEARCH_SCRIPT = SKILLS_DIR / "online_search" / "scripts" / "web_search_batch.py"
 
 
+def _run_search_script(query: str, extra_args: list[str] | None = None) -> dict[str, Any]:
+    """Run the search script with a query and optional extra CLI args."""
+    cmd = ["python3", str(_SEARCH_SCRIPT), "--json", query]
+    if extra_args:
+        cmd.extend(extra_args)
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip()[:500])
+    return json.loads(proc.stdout)
+
+
 def handle_online_search(
     tag_id: str, name: str, attrs: dict[str, str], content: str
 ) -> Generator[dict[str, Any], None, None]:
+    """Dispatch web_search / web_fetch / comprehensive_search / online_search.
+
+    Tool schemas (tools/online_search/tool.json):
+      web_search: {query, max_results?, time_filter?}
+      web_fetch: {urls: [str], max_chars?}
+      comprehensive_search: {query, max_pages?, max_chars?, time_filter?}
+      online_search: legacy alias for web_search
+    """
     started = time.time()
+
+    # web_fetch: attrs has urls as JSON string (parser stringifies non-str params)
+    urls_raw = attrs.get("urls", "")
+    if urls_raw:
+        try:
+            urls = json.loads(urls_raw) if isinstance(urls_raw, str) else urls_raw
+            if not isinstance(urls, list):
+                urls = [str(urls)]
+        except Exception:
+            urls = [urls_raw]
+    else:
+        urls = []
+
+    if urls:
+        max_chars = int(attrs.get("max_chars", "0") or 0)
+        fetch_args: list[str] = []
+        if max_chars > 0:
+            fetch_args.append(f"--max-chars={max_chars}")
+        try:
+            data = _run_search_script(urls[0], fetch_args)
+            items = data.get("items", [])
+            for item in items:
+                context = item.get("context", "")
+                if context:
+                    yield _output_event(tag_id, wrap_untrusted(context, source="web_fetch") + "\n")
+            yield _end_event(tag_id, name, True, started, {"urls": urls, "results": items})
+        except Exception as exc:
+            yield _output_event(tag_id, f"Fetch error: {exc}\n", "stderr")
+            yield _end_event(tag_id, name, False, started, error=str(exc))
+        return
+
     query = content.strip() or attrs.get("query", "")
     if not query:
         yield _output_event(tag_id, "No search query provided\n", "stderr")
@@ -37,19 +87,23 @@ def handle_online_search(
 
     yield _output_event(tag_id, f"Searching: {query}\n\n")
 
-    try:
-        proc = subprocess.run(
-            ["python3", str(_SEARCH_SCRIPT), "--json", query],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if proc.returncode != 0:
-            yield _output_event(tag_id, f"Search failed: {proc.stderr.strip()}\n", "stderr")
-            yield _end_event(tag_id, name, False, started, error=proc.stderr.strip()[:500])
-            return
+    max_results = attrs.get("max_results", "")
+    time_filter = attrs.get("time_filter", "")
+    fetch_pages = attrs.get("max_pages", "")
+    max_chars = attrs.get("max_chars", "")
 
-        data = json.loads(proc.stdout)
+    extra_args: list[str] = []
+    if max_results:
+        extra_args.append(f"--max-results={max_results}")
+    if time_filter:
+        extra_args.append(f"--time-filter={time_filter}")
+    if fetch_pages:
+        extra_args.append(f"--max-pages={fetch_pages}")
+    if max_chars:
+        extra_args.append(f"--max-chars={max_chars}")
+
+    try:
+        data = _run_search_script(query, extra_args)
         items = data.get("items", [])
         if not items:
             yield _output_event(tag_id, "No results found.\n")

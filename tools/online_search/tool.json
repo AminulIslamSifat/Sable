@@ -1,0 +1,71 @@
+[
+  {
+    "name": "web_search",
+    "description": "Search the web for information. Returns ranked results with titles, URLs, and snippets. Use this first to find relevant pages.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search query"
+        },
+        "max_results": {
+          "type": "integer",
+          "description": "Max results to return (default 10, max 20)"
+        },
+        "time_filter": {
+          "type": "string",
+          "enum": ["day", "week", "month"],
+          "description": "Restrict results to recent content"
+        }
+      },
+      "required": ["query"]
+    }
+  },
+  {
+    "name": "web_fetch",
+    "description": "Fetch and extract readable content from specific URLs. Use after web_search to read promising pages.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "urls": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "List of URLs to fetch"
+        },
+        "max_chars": {
+          "type": "integer",
+          "description": "Max characters per page (default 10000)"
+        }
+      },
+      "required": ["urls"]
+    }
+  },
+  {
+    "name": "comprehensive_search",
+    "description": "Search the web AND fetch top page content in one call. Use when you need both results and their content immediately.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search query"
+        },
+        "max_pages": {
+          "type": "integer",
+          "description": "Max pages to fetch (default 5, max 10)"
+        },
+        "max_chars": {
+          "type": "integer",
+          "description": "Max characters per fetched page (default 10000)"
+        },
+        "time_filter": {
+          "type": "string",
+          "enum": ["day", "week", "month"],
+          "description": "Restrict results to recent content"
+        }
+      },
+      "required": ["query"]
+    }
+  }
+]

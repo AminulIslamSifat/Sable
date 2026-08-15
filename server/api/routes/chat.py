@@ -267,7 +267,7 @@ async def chat(request: ChatRequest):
         "SELECT COUNT(*) as c FROM messages WHERE chat_id = ?", (active_chat_id,)
     ).fetchone()["c"]
     if parent_id is None and _msg_count <= 1 and _local_use_utilities:
-        _context_parts.append('[SYSTEM: First message of a new chat. Respond normally, but also emit ' + chr(60) + 'action' + chr(62) + '{"tool": "chat_title", "params": {"title": "Short descriptive title"}}' + chr(60) + '/action' + chr(62) + ' at the end of your response. If you are running another command, put chat_title and that command in one action block as a JSON array.]')
+        _context_parts.append('[SYSTEM: First message of a new chat. Respond normally, but also emit ' + chr(60) + 'tool_call' + chr(62) + '{"name": "chat_title", "arguments": {"title": "Short descriptive title"}}' + chr(60) + '/tool_call' + chr(62) + ' at the end of your response. If you are running another command, put chat_title and that command as separate tool_call blocks. You can use chat_title only once, unless user explicitly ask for it.]')
     if _local_use_utilities and parent_id is None and _msg_count <= 1:
         try:
             from server.database import get_upcoming_schedules
@@ -503,7 +503,7 @@ async def chat(request: ChatRequest):
                             chunk = str(item.get("text", ""))
                             if not chunk:
                                 continue
-                            # Detect <title> tag in plain text stream (model may emit outside action block)
+                            # Detect <title> tag in plain text stream (model may emit outside tool_call block)
                             _title_buf += chunk
                             m = _TITLE_RE.search(_title_buf)
                             if m:
@@ -511,7 +511,7 @@ async def chat(request: ChatRequest):
                                 if _t:
                                     update_chat_title(active_chat_id, _t[:80])
                                     yield sse({"type": "chat_title", "title": _t[:80]})
-                                # Mark as executed so incomplete-action guard does not fire
+                                # Mark as executed so incomplete-tool_call guard does not fire
                                 round_skill_events.append({"type": "skill_end", "name": "chat_title", "ok": True})
                                 _title_buf = _title_buf[:m.start()] + _title_buf[m.end():]
                             # Hold back partial <title at end of buffer
@@ -575,8 +575,8 @@ async def chat(request: ChatRequest):
                                         _fname += ".html"
                                     yield sse({"type": "sim_ready", "filename": _fname})
                         elif itype == "parse_error":
-                            # Parser couldn't parse the action JSON — feed back to model
-                            _pe_reason = item.get("reason", "Malformed action block")
+                            # Parser couldn't parse the tool_call JSON — feed back to model
+                            _pe_reason = item.get("reason", "Malformed tool_call block")
                             _pe_raw = item.get("raw", "")[:200]
                             round_skill_events.append({
                                 "type": "skill_end",
@@ -718,7 +718,7 @@ async def chat(request: ChatRequest):
                         if _tool_schemas:
                             _stream_kwargs['tools'] = _tool_schemas
                     except Exception:
-                        pass  # Tools optional — fall back to text-based action blocks
+                        pass  # Tools optional — fall back to text-based tool_call blocks
                     round_event_source = _connector.stream_chat(**_stream_kwargs)
                 elif scraper_enabled:
                     round_event_source = scraper_service.stream_events(
