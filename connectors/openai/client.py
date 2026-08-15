@@ -23,6 +23,12 @@ from typing import Any
 import httpx
 
 from connectors.common.media import prepare_inline_file, to_openai_image
+from connectors.common.native_tools import (
+    openai_to_openai_tools,
+    parse_openai_function_call,
+    format_openai_tool_result,
+    native_call_to_tag_event,
+)
 from connectors.common.context_summarizer import (
     should_inject_hint, should_force_summarize, get_hint_text,
     extract_summarize_tag, strip_summarize_tag, build_summary_prompt,
@@ -85,35 +91,38 @@ def _save_keys(keys: list[str]) -> None:
 def _load_instructions() -> str:
     """Minimal agentic tag docs + distilled code_editor for OpenAI."""
     base = (
-        "Every agentic tag must be wrapped in a single <action>...</action> block. "
-        "The extractor only reads what is inside <action>; anything outside is prose.\n\n"
+        "Every agentic tag must be wrapped in a <tool_call>...</tool_call> block. "
+        "The extractor only reads what is inside <tool_call>; anything outside is prose.\n\n"
+        "You may put MULTIPLE tool calls in one block as a JSON array: "
+        "<tool_call>[{\"name\": \"grep\", ...}, {\"name\": \"view_file\", ...}]</tool_call>\n"
+        "Prefer one block with an array over multiple separate blocks.\n\n"
         "Tags: <get_file>/abs/path</get_file> \u00b7 <execute_command>cmd</execute_command>\n\n"
-        "If you use <action>, the entire response is ONE short sentence + the block. "
-        "<action> appears only in plain text, never inside a fenced code block."
+        "If you use <tool_call>, keep prose to ONE short sentence before the block. "
+        "<tool_call> appears only in plain text, never inside a fenced code block."
     )
     editor = """# File I/O
 
     ## Read files
-    <get_file>/abs/path</get_file> — read any file (text or binary)
-    <view_file> path="/abs/path" </view_file> — read with line numbers, supports start/end range
+    <tool_call>{"name": "get_file", "arguments": {"path": "/abs/path"}}</tool_call> — read any file (text or binary)
+    <tool_call>{"name": "view_file", "arguments": {"path": "/abs/path"}}</tool_call> — read with line numbers, supports start/end range
 
     ## Write files  
-    <edit_file> path="/abs/path">
+    <tool_call>{"name": "edit_file", "arguments": {"path": "/abs/path", "old_str": "...", "new_str": "..."}}</tool_call>>
     <<<<<< SEARCH
     exact old text from view_file
     =======
     new replacement text
     >>>>>>
-    </edit_file> — replace text (must match exactly once)
+     — replace text (must match exactly once)
 
-    <create_file> path="/abs/path">
+    <tool_call>{"name": "create_file", "arguments": {"path": "/abs/path", "content": "..."}}</tool_call>>
     file content here
-    </create_file> — create new file (fails if exists)
+     — create new file (fails if exists)
 
     ## Rules
-    - Always <view_file> before editing — never build old_str from memory
-    - Wrap every tag in <action>...</action>
-    - One short sentence + the <action> block, nothing else"""
+    - Always view_file before editing — never build old_str from memory
+    - Wrap every tag in <tool_call>...</tool_call>
+    - One short sentence + the <tool_call> block, nothing else"""
     return base + "\n\n***\n\n" + editor
 
 
@@ -293,25 +302,25 @@ class OpenAIClient:
         inject_instructions: bool = True,
         files: list[str] | None = None,
         max_session_chars: int | None = None,
+        tools: list[dict] | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat completion, yielding Sable-standard events."""
         if not self._keys:
-            yield {"type": "error", "message": "No OpenAI API keys configured. Add one in Settings → Providers."}
+            yield {"type": "error", "message": "No OpenAI API keys configured."}
             return
 
-        model_id = model or "gpt-4o-mini"
+        model_id = model or "gpt-4o"
         url = f"{BASE_URL}/chat/completions"
 
         system_instruction = kwargs.pop("system_instruction", None)
+        project_id = kwargs.pop("project_id", None)
         db_history = kwargs.pop("db_history", None)
-        history = self._get_or_create_session(chat_id, inject_instructions, system_instruction=system_instruction, max_session_chars=max_session_chars)
-        # Seed from DB when session is fresh (cross-provider switch)
+        history = self._get_or_create_session(chat_id, inject_instructions, system_instruction=system_instruction, max_session_chars=max_session_chars, project_id=project_id)
         if db_history and chat_id and len(history) <= 1:
             for _m in db_history:
                 history.append({"role": _m["role"], "content": _m["content"]})
 
-        # Context summarization: check thresholds before sending
         effective_max = self._get_max_chars(chat_id)
         if chat_id and max_session_chars:
             prefix_len = 1 if history and history[0].get("role") == "system" else 0
@@ -322,7 +331,6 @@ class OpenAIClient:
                 hint = get_hint_text(total_chars, effective_max)
                 message = message + hint
 
-        # Build multimodal content when files are attached
         if files:
             content: list[dict[str, Any]] = [{"type": "text", "text": message}]
             for fpath in files:
@@ -330,7 +338,6 @@ class OpenAIClient:
                 if pf and pf.category == "image":
                     content.append(to_openai_image(pf))
                 elif pf:
-                    # Non-image files: embed as text note
                     content[0]["text"] += f"\n\n[Attached file: {Path(fpath).name} ({pf.mime_type}, {pf.size_bytes} bytes)]"
             history.append({"role": "user", "content": content})
         else:
@@ -342,87 +349,168 @@ class OpenAIClient:
             "stream": True,
         }
 
-        # Try each key with rotation on failure
-        attempts = len(self._keys)
-        for attempt in range(attempts):
-            key = self._current_key
-            if not key:
-                break
+        # Native tool calling
+        if tools:
+            oai_tools = openai_to_openai_tools(tools)
+            if oai_tools:
+                payload["tools"] = oai_tools
 
-            try:
-                http = await self._get_http()
-                full_answer = ""
+        # Tool execution loop
+        _max_tool_rounds = 20
+        _tool_round = 0
 
-                async with http.stream(
-                    "POST",
-                    url,
-                    headers={"Authorization": f"Bearer {key}"},
-                    json=payload,
-                ) as response:
-                    if response.status_code in (401, 403, 429):
-                        await response.aread()
-                        self._rotate_key()
-                        continue
-                    if response.status_code != 200:
-                        body = await response.aread()
-                        yield {"type": "error", "message": f"OpenAI API error {response.status_code}: {body.decode()[:200]}"}
+        while _tool_round < _max_tool_rounds:
+            _tool_round += 1
+
+            attempts = len(self._keys)
+            for attempt in range(attempts):
+                key = self._current_key
+                if not key:
+                    break
+
+                try:
+                    http = await self._get_http()
+                    full_answer = ""
+
+                    async with http.stream(
+                        "POST", url,
+                        headers={"Authorization": f"Bearer {key}"},
+                        json=payload,
+                    ) as response:
+                        if response.status_code in (401, 403, 429):
+                            await response.aread()
+                            self._rotate_key()
+                            continue
+                        if response.status_code != 200:
+                            body = await response.aread()
+                            yield {"type": "error", "message": f"OpenAI API error {response.status_code}: {body.decode()[:200]}"}
+                            return
+
+                        _tc_buffers: dict[int, dict] = {}
+
+                        async for line in response.aiter_lines():
+                            if not line.startswith("data: "):
+                                continue
+                            data_str = line[6:]
+                            if data_str.strip() == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
+                            delta = (chunk.get("choices") or [{}])[0].get("delta", {})
+
+                            tc = delta.get("content") or ""
+                            if tc:
+                                full_answer += tc
+                                clean_text = strip_summarize_tag(tc)
+                                if clean_text:
+                                    yield {"type": "answer", "text": clean_text}
+
+                            tc_deltas = delta.get("tool_calls")
+                            if tc_deltas:
+                                for tcd in tc_deltas:
+                                    idx = tcd.get("index", 0)
+                                    if idx not in _tc_buffers:
+                                        _tc_buffers[idx] = {"id": tcd.get("id", ""), "name": "", "args_str": ""}
+                                    buf = _tc_buffers[idx]
+                                    if tcd.get("id"):
+                                        buf["id"] = tcd["id"]
+                                    fn = tcd.get("function", {})
+                                    if fn.get("name"):
+                                        buf["name"] = fn["name"]
+                                    if fn.get("arguments"):
+                                        buf["args_str"] += fn["arguments"]
+
+                        if _tc_buffers:
+                            fc_calls = []
+                            for idx in sorted(_tc_buffers.keys()):
+                                buf = _tc_buffers[idx]
+                                try:
+                                    args = json.loads(buf["args_str"]) if buf["args_str"] else {}
+                                except json.JSONDecodeError:
+                                    args = {}
+                                fc_calls.append({"name": buf["name"], "args": args, "id": buf["id"]})
+
+                            if fc_calls:
+                                assistant_msg: dict[str, Any] = {"role": "assistant", "content": full_answer or None}
+                                assistant_msg["tool_calls"] = [
+                                    {"id": fc["id"], "type": "function", "function": {"name": fc["name"], "arguments": json.dumps(fc["args"])}}
+                                    for fc in fc_calls
+                                ]
+                                history.append(assistant_msg)
+
+                                import asyncio as _asyncio
+                                from engine.skills import get_skill_engine as _get_engine
+                                engine = _get_engine()
+
+                                for fc in fc_calls:
+                                    tag_event = native_call_to_tag_event(fc)
+
+                                    try:
+                                        events = await _asyncio.to_thread(
+                                            lambda: list(engine.process_tag(
+                                                tag_event["name"], tag_event["attrs"],
+                                                tag_event["content"], namespace="maria",
+                                            ))
+                                        )
+                                    except Exception as exc:
+                                        events = [{"type": "skill_end", "name": tag_event["name"], "ok": False, "error": str(exc)}]
+
+                                    result_text = ""
+                                    ok = True
+                                    for evt in events:
+                                        if evt.get("type") == "skill_output":
+                                            result_text += evt.get("text", "")
+                                        elif evt.get("type") == "skill_end":
+                                            ok = evt.get("ok", True)
+                                        yield evt
+
+                                    tool_result = format_openai_tool_result(tag_event["name"], result_text, ok, fc.get("id", ""))
+                                    history.append(tool_result)
+                                    logger.info("Native tool %s executed (ok=%s), continuing loop", tag_event["name"], ok)
+
+                                if chat_id:
+                                    self._sessions[chat_id] = history
+                                continue
+
+                        # Normal completion
+                        _summarize_idx = extract_summarize_tag(full_answer)
+                        clean_answer = strip_summarize_tag(full_answer)
+                        history.append({"role": "assistant", "content": clean_answer})
+
+                        if _summarize_idx is not None and chat_id:
+                            prefix_len = 1 if history and history[0].get("role") == "system" else 0
+                            actual_cut = max(prefix_len, min(_summarize_idx, len(history) - 1))
+                            msgs_to_summarize = history[prefix_len:actual_cut]
+                            if len(msgs_to_summarize) >= 2:
+                                prompt = build_summary_prompt(msgs_to_summarize, _msg_chars)
+                                summary = await self._call_self_summarize(prompt, model_id)
+                                if summary:
+                                    logger.info("Model-triggered summarization at index %d for chat %s", _summarize_idx, chat_id)
+                                    history = rewrite_history_with_summary(history, summary, actual_cut, prefix_len, fmt="openai")
+                                    self._sessions[chat_id] = history
+
+                        if chat_id:
+                            prefix_len = 1 if history and history[0].get("role") == "system" else 0
+                            total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
+                            eff_max = self._get_max_chars(chat_id)
+                            if total_chars > eff_max:
+                                self._sessions[chat_id] = _trim_history(history, prefix_len, eff_max)
+
+                        yield {"type": "done", "parent_id": chat_id or ""}
                         return
 
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data: "):
-                            continue
-                        data_str = line[6:]
-                        if data_str.strip() == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-                        delta = (chunk.get("choices") or [{}])[0].get("delta", {})
-                        content = delta.get("content") or ""
-                        if content:
-                            full_answer += content
-                            clean_text = strip_summarize_tag(content)
-                            if clean_text:
-                                yield {"type": "answer", "text": clean_text}
-
-                # Success — save to history and finish
-                _summarize_idx = extract_summarize_tag(full_answer)
-                clean_answer = strip_summarize_tag(full_answer)
-                history.append({"role": "assistant", "content": clean_answer})
-
-                # Handle model-triggered summarization
-                if _summarize_idx is not None and chat_id:
-                    prefix_len = 1 if history and history[0].get("role") == "system" else 0
-                    actual_cut = max(prefix_len, min(_summarize_idx, len(history) - 1))
-                    msgs_to_summarize = history[prefix_len:actual_cut]
-                    if len(msgs_to_summarize) >= 2:
-                        prompt = build_summary_prompt(msgs_to_summarize, _msg_chars)
-                        summary = await self._call_self_summarize(prompt, model_id)
-                        if summary:
-                            logger.info("Model-triggered summarization at index %d for chat %s", _summarize_idx, chat_id)
-                            history = rewrite_history_with_summary(history, summary, actual_cut, prefix_len, fmt="openai")
-                            self._sessions[chat_id] = history
-
-                if chat_id:
-                    prefix_len = 1 if history and history[0].get("role") == "system" else 0
-                    total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
-                    eff_max = self._get_max_chars(chat_id)
-                    if total_chars > eff_max:
-                        self._sessions[chat_id] = _trim_history(history, prefix_len, eff_max)
-
-                yield {"type": "done", "parent_id": chat_id or ""}
-                return
-
-            except httpx.TimeoutException:
-                yield {"type": "error", "message": "OpenAI request timed out. Try again."}
-                return
-            except Exception as exc:
-                logger.warning("OpenAI stream error (attempt %d): %s", attempt + 1, exc)
-                self._rotate_key()
-                continue
+                except httpx.TimeoutException:
+                    yield {"type": "error", "message": "OpenAI request timed out."}
+                    return
+                except Exception as exc:
+                    logger.warning("OpenAI stream error (attempt %d): %s", attempt + 1, exc)
+                    self._rotate_key()
+                    continue
 
         yield {"type": "error", "message": "All OpenAI API keys exhausted or failed."}
+
 
     async def chat(
         self,

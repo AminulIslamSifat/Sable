@@ -21,6 +21,12 @@ from pathlib import Path
 from typing import Any
 
 from connectors.common.media import prepare_inline_file, to_gemini_inline
+from connectors.common.native_tools import (
+    openai_to_gemini_tools,
+    parse_gemini_function_call,
+    format_gemini_tool_result,
+    native_call_to_tag_event,
+)
 from connectors.common.context_summarizer import (
     should_inject_hint, should_force_summarize, get_hint_text,
     extract_summarize_tag, strip_summarize_tag, build_summary_prompt,
@@ -320,6 +326,7 @@ class GeminiClient:
         inject_instructions: bool = True,
         files: list[str] | None = None,
         max_session_chars: int | None = None,
+        tools: list[dict] | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat completion, yielding Sable-standard events."""
@@ -373,7 +380,21 @@ class GeminiClient:
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
         ]
 
-        # Try each key with rotation on failure
+        # Native tool calling: convert and attach tool schemas
+        if tools:
+            gemini_tools = openai_to_gemini_tools(tools)
+            if gemini_tools:
+                body["tools"] = gemini_tools
+                body["toolConfig"] = {"functionCallingConfig": {"mode": "AUTO"}}
+
+        # Tool execution loop: re-enter on function calls
+        _max_tool_rounds = 20
+        _tool_round = 0
+
+        while _tool_round < _max_tool_rounds:
+            _tool_round += 1
+
+            # Try each key with rotation on failure
         attempts = len(self._keys)
         for attempt in range(attempts):
             key = self._current_key
@@ -385,6 +406,7 @@ class GeminiClient:
                 full_answer = ""
                 full_thinking = ""
                 got_response = False
+                all_fc_parts: list[dict] = []  # Accumulated function call parts
 
                 async with http.stream(
                     "POST",
@@ -441,26 +463,97 @@ class GeminiClient:
                         content = candidate.get("content", {})
                         parts = content.get("parts", [])
 
+                        # Collect all parts for this chunk
+                        chunk_fc_parts: list[dict] = []
                         for part in parts:
                             if part.get("thought"):
                                 text = part.get("text", "")
                                 if text:
                                     full_thinking += text
                                     yield {"type": "thinking", "text": text}
+                            elif "functionCall" in part:
+                                chunk_fc_parts.append(part)
                             elif "text" in part:
                                 text = part["text"]
                                 if text:
                                     full_answer += text
-                                    # Strip summarize_before tag from visible output
                                     clean_text = strip_summarize_tag(text)
                                     if clean_text:
                                         yield {"type": "answer", "text": clean_text}
 
-                # Success — save to history
+                        # Accumulate function call parts
+                        if chunk_fc_parts:
+                            all_fc_parts.extend(chunk_fc_parts)
+
+                # --- Post-stream: log diagnostics ---
+                logger.info(
+                    "Gemini stream ended: model=%s finish_reason=%s "
+                    "answer_chars=%d thinking_chars=%d fc_parts=%d got_response=%s",
+                    model_id, finish_reason if got_response else "no_response",
+                    len(full_answer), len(full_thinking), len(all_fc_parts), got_response,
+                )
+                if got_response and finish_reason and finish_reason not in ("STOP", ""):
+                    logger.warning(
+                        "Gemini stream finished with reason=%s (not STOP). "
+                        "Response likely truncated. answer_chars=%d",
+                        finish_reason, len(full_answer),
+                    )
+
+                # --- Post-stream: handle function calls or normal completion ---
+
+                if got_response and all_fc_parts:
+                    # Model returned function calls — execute and loop
+                    fc_calls = parse_gemini_function_call(all_fc_parts)
+                    if fc_calls:
+                        # Save model's function call message to history
+                        model_fc_parts: list[dict[str, Any]] = []
+                        if full_thinking:
+                            model_fc_parts.append({"text": full_thinking, "thought": True})
+                        model_fc_parts.extend(all_fc_parts)
+                        history.append({"role": "model", "parts": model_fc_parts})
+
+                        # Execute each function call via Sable's handler pipeline
+                        import asyncio as _asyncio
+                        from engine.skills import get_skill_engine as _get_engine
+                        engine = _get_engine()
+
+                        for fc in fc_calls:
+                            tag_event = native_call_to_tag_event(fc)
+
+                            # Run handler pipeline in thread (it's sync)
+                            try:
+                                events = await _asyncio.to_thread(
+                                    lambda: list(engine.process_tag(
+                                        tag_event["name"], tag_event["attrs"],
+                                        tag_event["content"], namespace="maria",
+                                    ))
+                                )
+                            except Exception as exc:
+                                events = [{"type": "skill_end", "name": tag_event["name"], "ok": False, "error": str(exc)}]
+
+                            # Collect result text and yield events
+                            result_text = ""
+                            ok = True
+                            for evt in events:
+                                if evt.get("type") == "skill_output":
+                                    result_text += evt.get("text", "")
+                                elif evt.get("type") == "skill_end":
+                                    ok = evt.get("ok", True)
+                                yield evt  # Forward all skill events to frontend
+
+                            # Format result for Gemini and add to history
+                            result_msg = format_gemini_tool_result(tag_event["name"], result_text, ok)
+                            history.append(result_msg)
+                            logger.info("Native tool %s executed (ok=%s), continuing loop", tag_event["name"], ok)
+
+                        # Update session and continue the while loop
+                        if chat_id:
+                            self._sessions[chat_id] = history
+                        continue  # Re-enter API call with tool results
+
+                # Normal completion (text response, no function calls)
                 if got_response and (full_answer or full_thinking):
-                    # Check for model-triggered summarization
                     _summarize_idx = extract_summarize_tag(full_answer)
-                    # Store cleaned answer (without tag) in history
                     clean_answer = strip_summarize_tag(full_answer)
                     model_parts: list[dict[str, Any]] = []
                     if full_thinking:
@@ -469,7 +562,6 @@ class GeminiClient:
                         model_parts.append({"text": clean_answer})
                     history.append({"role": "model", "parts": model_parts})
 
-                    # Handle model-triggered summarization
                     if _summarize_idx is not None and chat_id:
                         prefix_len = 2 if history and history[0].get("parts", [{}])[0].get("text", "").startswith("[System Instructions]") else 0
                         actual_cut = max(prefix_len, min(_summarize_idx, len(history) - 1))

@@ -23,6 +23,11 @@ from typing import Any
 import httpx
 
 from connectors.common.media import prepare_inline_file, to_openai_image
+from connectors.common.native_tools import (
+    openai_to_openai_tools,
+    native_call_to_tag_event,
+    format_openai_tool_result,
+)
 from connectors.common.context_summarizer import (
     should_inject_hint, should_force_summarize, get_hint_text,
     extract_summarize_tag, strip_summarize_tag, build_summary_prompt,
@@ -310,6 +315,7 @@ class MistralClient:
         inject_instructions: bool = True,
         files: list[str] | None = None,
         max_session_chars: int | None = None,
+        tools: list[dict] | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat completion, yielding Sable-standard events."""
@@ -324,12 +330,10 @@ class MistralClient:
         project_id = kwargs.pop("project_id", None)
         db_history = kwargs.pop("db_history", None)
         history = self._get_or_create_session(chat_id, inject_instructions, system_instruction=system_instruction, max_session_chars=max_session_chars, project_id=project_id)
-        # Seed from DB when session is fresh (cross-provider switch)
         if db_history and chat_id and len(history) <= 1:
             for _m in db_history:
                 history.append({"role": _m["role"], "content": _m["content"]})
 
-        # Context summarization: check thresholds before sending
         effective_max = self._get_max_chars(chat_id)
         if chat_id and max_session_chars:
             prefix_len = 1 if history and history[0].get("role") == "system" else 0
@@ -340,7 +344,6 @@ class MistralClient:
                 hint = get_hint_text(total_chars, effective_max)
                 message = message + hint
 
-        # Build multimodal content when files are attached
         if files:
             content: list[dict[str, Any]] = [{"type": "text", "text": message}]
             for fpath in files:
@@ -359,122 +362,198 @@ class MistralClient:
             "stream": True,
         }
 
-        # Map thinking_mode to Mistral reasoning_effort (only for thinking-capable models)
         if self._model_supports_thinking(model_id):
             reasoning = self._resolve_reasoning_effort(thinking_mode)
             if reasoning:
                 payload["reasoning_effort"] = reasoning
 
-        # Try each key with rotation on failure
-        attempts = len(self._keys)
-        for attempt in range(attempts):
-            key = self._current_key
-            if not key:
-                break
+        # Native tool calling
+        if tools:
+            oai_tools = openai_to_openai_tools(tools)
+            if oai_tools:
+                payload["tools"] = oai_tools
 
-            try:
-                http = await self._get_http()
-                full_answer = ""
-                full_thinking = ""
+        # Tool execution loop
+        _max_tool_rounds = 20
+        _tool_round = 0
 
-                async with http.stream(
-                    "POST",
-                    url,
-                    headers={"Authorization": f"Bearer {key}"},
-                    json=payload,
-                ) as response:
-                    if response.status_code in (401, 403, 429):
-                        await response.aread()
-                        self._rotate_key()
-                        continue
-                    if response.status_code != 200:
-                        body = await response.aread()
-                        yield {"type": "error", "message": f"Mistral API error {response.status_code}: {body.decode()[:200]}"}
-                        return
+        while _tool_round < _max_tool_rounds:
+            _tool_round += 1
 
-                    in_thinking = False
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data: "):
+            attempts = len(self._keys)
+            for attempt in range(attempts):
+                key = self._current_key
+                if not key:
+                    break
+
+                try:
+                    http = await self._get_http()
+                    full_answer = ""
+                    full_thinking = ""
+
+                    async with http.stream(
+                        "POST", url,
+                        headers={"Authorization": f"Bearer {key}"},
+                        json=payload,
+                    ) as response:
+                        if response.status_code in (401, 403, 429):
+                            await response.aread()
+                            self._rotate_key()
                             continue
-                        data_str = line[6:]
-                        if data_str.strip() == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-                        delta = (chunk.get("choices") or [{}])[0].get("delta", {})
-                        content = delta.get("content")
-                        if not content:
-                            continue
+                        if response.status_code != 200:
+                            body = await response.aread()
+                            yield {"type": "error", "message": f"Mistral API error {response.status_code}: {body.decode()[:200]}"}
+                            return
 
-                        # content can be a plain string (answer phase) or a list of chunks (thinking phase)
-                        if isinstance(content, str):
-                            if in_thinking:
-                                in_thinking = False
-                            full_answer += content
-                            clean_text = strip_summarize_tag(content)
-                            if clean_text:
-                                yield {"type": "answer", "text": clean_text}
-                        elif isinstance(content, list):
-                            for part in content:
-                                ptype = part.get("type", "")
-                                if ptype == "thinking":
-                                    in_thinking = True
-                                    # thinking field is a list of text chunks
-                                    for inner in part.get("thinking", []):
-                                        text = inner.get("text", "") if isinstance(inner, dict) else str(inner)
-                                        if text:
-                                            full_thinking += text
-                                            yield {"type": "thinking", "text": text}
-                                elif ptype == "text":
+                        in_thinking = False
+                        _tc_buffers: dict[int, dict] = {}
+
+                        async for line in response.aiter_lines():
+                            if not line.startswith("data: "):
+                                continue
+                            data_str = line[6:]
+                            if data_str.strip() == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
+                            delta = (chunk.get("choices") or [{}])[0].get("delta", {})
+
+                            tc = delta.get("content")
+                            if tc:
+                                if isinstance(tc, str):
                                     if in_thinking:
                                         in_thinking = False
-                                    text = part.get("text", "")
-                                    if text:
-                                        full_answer += text
-                                        clean_text = strip_summarize_tag(text)
-                                        if clean_text:
-                                            yield {"type": "answer", "text": clean_text}
+                                    full_answer += tc
+                                    clean_text = strip_summarize_tag(tc)
+                                    if clean_text:
+                                        yield {"type": "answer", "text": clean_text}
+                                elif isinstance(tc, list):
+                                    for part in tc:
+                                        ptype = part.get("type", "")
+                                        if ptype == "thinking":
+                                            in_thinking = True
+                                            for inner in part.get("thinking", []):
+                                                text = inner.get("text", "") if isinstance(inner, dict) else str(inner)
+                                                if text:
+                                                    full_thinking += text
+                                                    yield {"type": "thinking", "text": text}
+                                        elif ptype == "text":
+                                            if in_thinking:
+                                                in_thinking = False
+                                            text = part.get("text", "")
+                                            if text:
+                                                full_answer += text
+                                                clean_text = strip_summarize_tag(text)
+                                                if clean_text:
+                                                    yield {"type": "answer", "text": clean_text}
 
-                # Success — save to history and finish
-                _summarize_idx = extract_summarize_tag(full_answer)
-                clean_answer = strip_summarize_tag(full_answer)
-                assistant_content: Any = clean_answer
-                history.append({"role": "assistant", "content": assistant_content})
+                            tc_deltas = delta.get("tool_calls")
+                            if tc_deltas:
+                                for tcd in tc_deltas:
+                                    idx = tcd.get("index", 0)
+                                    if idx not in _tc_buffers:
+                                        _tc_buffers[idx] = {"id": tcd.get("id", ""), "name": "", "args_str": ""}
+                                    buf = _tc_buffers[idx]
+                                    if tcd.get("id"):
+                                        buf["id"] = tcd["id"]
+                                    fn = tcd.get("function", {})
+                                    if fn.get("name"):
+                                        buf["name"] = fn["name"]
+                                    if fn.get("arguments"):
+                                        buf["args_str"] += fn["arguments"]
 
-                # Handle model-triggered summarization
-                if _summarize_idx is not None and chat_id:
-                    prefix_len = 1 if history and history[0].get("role") == "system" else 0
-                    actual_cut = max(prefix_len, min(_summarize_idx, len(history) - 1))
-                    msgs_to_summarize = history[prefix_len:actual_cut]
-                    if len(msgs_to_summarize) >= 2:
-                        prompt = build_summary_prompt(msgs_to_summarize, _msg_chars)
-                        summary = await self._call_self_summarize(prompt, model_id)
-                        if summary:
-                            logger.info("Model-triggered summarization at index %d for chat %s", _summarize_idx, chat_id)
-                            history = rewrite_history_with_summary(history, summary, actual_cut, prefix_len, fmt="openai")
-                            self._sessions[chat_id] = history
+                        # Check for tool calls
+                        if _tc_buffers:
+                            fc_calls = []
+                            for idx in sorted(_tc_buffers.keys()):
+                                buf = _tc_buffers[idx]
+                                try:
+                                    args = json.loads(buf["args_str"]) if buf["args_str"] else {}
+                                except json.JSONDecodeError:
+                                    args = {}
+                                fc_calls.append({"name": buf["name"], "args": args, "id": buf["id"]})
 
-                if chat_id:
-                    prefix_len = 1 if history and history[0].get("role") == "system" else 0
-                    total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
-                    eff_max = self._get_max_chars(chat_id)
-                    if total_chars > eff_max:
-                        self._sessions[chat_id] = _trim_history(history, prefix_len, eff_max)
+                            if fc_calls:
+                                assistant_msg: dict[str, Any] = {"role": "assistant", "content": full_answer or None}
+                                assistant_msg["tool_calls"] = [
+                                    {"id": fc["id"], "type": "function", "function": {"name": fc["name"], "arguments": json.dumps(fc["args"])}}
+                                    for fc in fc_calls
+                                ]
+                                history.append(assistant_msg)
 
-                yield {"type": "done", "parent_id": chat_id or ""}
-                return
+                                import asyncio as _asyncio
+                                from engine.skills import get_skill_engine as _get_engine
+                                engine = _get_engine()
 
-            except httpx.TimeoutException:
-                yield {"type": "error", "message": "Mistral request timed out. Try again."}
-                return
-            except Exception as exc:
-                logger.warning("Mistral stream error (attempt %d): %s", attempt + 1, exc)
-                self._rotate_key()
-                continue
+                                for fc in fc_calls:
+                                    tag_event = native_call_to_tag_event(fc)
+
+                                    try:
+                                        events = await _asyncio.to_thread(
+                                            lambda: list(engine.process_tag(
+                                                tag_event["name"], tag_event["attrs"],
+                                                tag_event["content"], namespace="maria",
+                                            ))
+                                        )
+                                    except Exception as exc:
+                                        events = [{"type": "skill_end", "name": tag_event["name"], "ok": False, "error": str(exc)}]
+
+                                    result_text = ""
+                                    ok = True
+                                    for evt in events:
+                                        if evt.get("type") == "skill_output":
+                                            result_text += evt.get("text", "")
+                                        elif evt.get("type") == "skill_end":
+                                            ok = evt.get("ok", True)
+                                        yield evt
+
+                                    tool_result = format_openai_tool_result(tag_event["name"], result_text, ok, fc.get("id", ""))
+                                    history.append(tool_result)
+                                    logger.info("Native tool %s executed (ok=%s), continuing loop", tag_event["name"], ok)
+
+                                if chat_id:
+                                    self._sessions[chat_id] = history
+                                continue
+
+                        # Normal completion
+                        _summarize_idx = extract_summarize_tag(full_answer)
+                        clean_answer = strip_summarize_tag(full_answer)
+                        history.append({"role": "assistant", "content": clean_answer})
+
+                        if _summarize_idx is not None and chat_id:
+                            prefix_len = 1 if history and history[0].get("role") == "system" else 0
+                            actual_cut = max(prefix_len, min(_summarize_idx, len(history) - 1))
+                            msgs_to_summarize = history[prefix_len:actual_cut]
+                            if len(msgs_to_summarize) >= 2:
+                                prompt = build_summary_prompt(msgs_to_summarize, _msg_chars)
+                                summary = await self._call_self_summarize(prompt, model_id)
+                                if summary:
+                                    logger.info("Model-triggered summarization at index %d for chat %s", _summarize_idx, chat_id)
+                                    history = rewrite_history_with_summary(history, summary, actual_cut, prefix_len, fmt="openai")
+                                    self._sessions[chat_id] = history
+
+                        if chat_id:
+                            prefix_len = 1 if history and history[0].get("role") == "system" else 0
+                            total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
+                            eff_max = self._get_max_chars(chat_id)
+                            if total_chars > eff_max:
+                                self._sessions[chat_id] = _trim_history(history, prefix_len, eff_max)
+
+                        yield {"type": "done", "parent_id": chat_id or ""}
+                        return
+
+                except httpx.TimeoutException:
+                    yield {"type": "error", "message": "Mistral request timed out. Try again."}
+                    return
+                except Exception as exc:
+                    logger.warning("Mistral stream error (attempt %d): %s", attempt + 1, exc)
+                    self._rotate_key()
+                    continue
 
         yield {"type": "error", "message": "All Mistral API keys exhausted or failed."}
+
 
     async def chat(
         self,

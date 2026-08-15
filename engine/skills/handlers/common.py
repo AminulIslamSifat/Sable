@@ -30,7 +30,8 @@ ASSETS_DIR = OUTPUT_ROOT / "assets"
 SESSIONS_DIR = OUTPUT_ROOT / "sessions"
 UPLOAD_DIR = SABLE_ROOT / "system" / "uploads"
 BACKUP_DIR = SABLE_ROOT / ".sable_backups"
-EDITOR_TOOLS = SKILLS_DIR / "code_editor" / "scripts" / "editor_tools.py"
+TOOLS_DIR = SABLE_ROOT / "tools"
+EDITOR_TOOLS = TOOLS_DIR / "code_editor" / "scripts" / "editor_tools.py"
 
 # --- Constants ---
 SUDO_PASSWORD = os.environ.get("SABLE_SUDO_PASSWORD", "")

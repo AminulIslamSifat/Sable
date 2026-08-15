@@ -70,8 +70,8 @@ AGENT_ROLES: dict[str, RoleConfig] = {
             "Do NOT use these headers in intermediate responses. "
             "Intermediate response = one brief sentence + tool call. Nothing else."
         ),
-        allowed_skills=["execute_command", "code_editor", "background_command", "online_search"],
-        default_skills=["code_editor", "background_command"],
+        allowed_skills=["execute_command", "code_editor", "online_search"],
+        default_skills=["code_editor"],
         default_model="qwen3.7-max",
         default_timeout=300,
         max_parallel=1,
@@ -115,7 +115,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
             "Do NOT use these headers in intermediate responses. "
             "Intermediate response = one brief sentence + tool call. Nothing else."
         ),
-        allowed_skills=["execute_command", "system_repair", "phone_control", "background_command", "youtube_downloader", "grep_search", "code_editor", "online_search", "file_uploader"],
+        allowed_skills=["execute_command", "system_repair", "phone_control", "youtube_downloader", "grep_search", "code_editor", "online_search", "file_uploader"],
         default_skills=["system_repair", "youtube_downloader", "code_editor"],
         default_model="qwen3.7-max",
         default_timeout=300,
@@ -179,7 +179,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
             "Do NOT use these headers in intermediate responses. "
             "Intermediate response = one brief sentence + tool call. Nothing else."
         ),
-        allowed_skills=["execute_command", "testing_debugging", "code_editor", "grep_search", "background_command"],
+        allowed_skills=["execute_command", "testing_debugging", "code_editor", "grep_search"],
         default_skills=["testing_debugging", "code_editor"],
         default_model="qwen3.7-max",
         default_timeout=300,
@@ -211,7 +211,6 @@ AGENT_ROLES: dict[str, RoleConfig] = {
             "telegram",
             "email",
             "grep_search",
-            "background_command",
         ],
         default_skills=[
             "code_editor",
