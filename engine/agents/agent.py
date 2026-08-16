@@ -146,6 +146,8 @@ class Agent:
     _stream_history: deque[dict[str, Any]] = field(
         default_factory=lambda: deque(maxlen=_STREAM_HISTORY_SIZE), repr=False
     )
+    # User-injected messages (guidance) — checked between loop iterations
+    pending_user_messages: list[str] = field(default_factory=list, repr=False)
 
     def push_stream_event(self, event: dict[str, Any]) -> None:
         """Push a chat-format SSE event to the agent's stream queue (non-blocking)."""

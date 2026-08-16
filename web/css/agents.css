@@ -459,7 +459,7 @@
   top: 6px;
   right: 6px;
   bottom: 6px;
-  width: 380px;
+  width: 325px;
   max-width: 92vw;
   z-index: 200;
   display: flex;
@@ -522,16 +522,17 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 12px 14px;
+  gap: 6px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   position: relative;
   z-index: 10;
   background: var(--panel, #1a1a2e);
+  font-size: 0.72rem;
 }
 .agent-panel-title {
-  font-size: var(--font-size-system);
+  font-size: 0.72rem;
   letter-spacing: .08em;
   text-transform: uppercase;
   color: var(--accent-text);
@@ -539,16 +540,16 @@
 }
 .agent-panel-model {
   font-family: var(--font-mono);
-  font-size: var(--font-size-system);
+  font-size: 0.68rem;
   color: var(--muted);
-  padding: 2px 8px;
+  padding: 1px 6px;
   border-radius: 999px;
   background: rgba(124, 92, 191, 0.12);
   white-space: nowrap;
 }
 .agent-panel-status {
   flex: 1;
-  font-size: var(--font-size-system);
+  font-size: 0.68rem;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -559,7 +560,7 @@
   background: transparent;
   border: 0;
   color: var(--muted);
-  font-size: var(--font-size-system);
+  font-size: 0.72rem;
   cursor: pointer;
   padding: 2px;
   line-height: 1;
@@ -572,52 +573,93 @@
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 12px;
+  padding: 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-height: 0;
   scrollbar-width: thin;
   scrollbar-color: rgba(124, 92, 191, 0.3) transparent;
+  font-size: 0.78rem;
 }
 
 .agent-panel-footer {
-  padding: 10px 14px;
+  padding: 8px 10px;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  font-size: 0.72rem;
 }
 .ap-timer {
   font-family: var(--font-mono);
-  font-size: var(--font-size-system);
+  font-size: 0.72rem;
   color: var(--accent-text);
   font-weight: 600;
 }
 .ap-iteration {
   font-family: var(--font-mono);
-  font-size: var(--font-size-system);
+  font-size: 0.72rem;
   color: var(--muted);
-  padding: 2px 8px;
+  padding: 2px 6px;
   border-radius: 999px;
   background: rgba(124, 92, 191, 0.1);
 }
-.ap-browser-data {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-system);
-  color: var(--muted);
+
+/* Guide input */
+.ap-input-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.ap-input {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: rgba(124, 92, 191, 0.08);
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--text);
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  outline: none;
+  transition: border-color 0.15s;
 }
+.ap-input:focus {
+  border-color: var(--accent, #7c5cbf);
+}
+.ap-input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.ap-send-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(124, 92, 191, 0.12);
+  color: var(--accent, #7c5cbf);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.ap-send-btn:hover:not(:disabled) {
+  background: rgba(124, 92, 191, 0.25);
+  border-color: var(--accent);
+}
+.ap-send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .agent-panel-stop {
-  margin-left: auto;
   background: transparent;
   border: 1px solid rgba(255, 80, 80, 0.4);
   color: #ff5050;
@@ -626,6 +668,7 @@
   cursor: pointer;
   font-size: var(--font-size-system);
   transition: all 0.15s;
+  flex-shrink: 0;
 }
 .agent-panel-stop:hover {
   background: rgba(255, 80, 80, 0.12);
@@ -635,75 +678,73 @@
   display: none;
 }
 
-/* Panel messages — diff-card aesthetic */
-.ap-msg {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--panel-2);
-  padding: 10px 12px;
-  font-size: var(--font-size-system);
-  line-height: 1.5;
+/* Panel messages — reuse main chat .msg styles, compact */
+.agent-panel-body .msg {
   flex-shrink: 0;
-}
-.ap-msg-role {
-  font-size: var(--font-size-system);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--muted);
-  margin-bottom: 4px;
-  opacity: 0.7;
-}
-.ap-msg-content {
-  color: var(--text);
-  word-break: break-word;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-system);
-}
-.ap-msg-content p { margin: 0 0 6px; }
-.ap-msg-content p:last-child { margin-bottom: 0; }
-.ap-msg-content pre {
-  background: rgba(0, 0, 0, 0.25);
+  width: 100%;
+  max-width: 100%;
   padding: 8px 10px;
-  border-radius: 8px;
+  border-radius: 10px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+.agent-panel-body .msg.user {
+  align-self: flex-end;
+  width: auto;
+  max-width: 85%;
+}
+.agent-panel-body .msg.bot {
+  align-self: flex-start;
+  width: 100%;
+  max-width: 100%;
+}
+.agent-panel-body .md-content {
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+.agent-panel-body .md-content pre {
+  background: rgba(0, 0, 0, 0.25);
+  padding: 6px 8px;
+  border-radius: 6px;
   overflow-x: auto;
-  font-size: var(--font-size-system);
+  font-size: 0.72rem;
   margin: 4px 0;
 }
-.ap-msg-content code {
+.agent-panel-body .md-content code {
   background: rgba(0, 0, 0, 0.2);
-  padding: 1px 4px;
-  border-radius: 4px;
-  font-size: var(--font-size-system);
+  padding: 1px 3px;
+  border-radius: 3px;
+  font-size: 0.72rem;
   font-family: var(--font-mono);
 }
 
-.ap-assistant {
-  border-left: 2px solid var(--accent);
-}
-.ap-user {
-  border-left: 2px solid #6ea8fe;
-}
-.ap-tool {
-  border-left: 2px solid #50c878;
+/* Collapsible skill cards (<details>) */
+.ap-skill-details {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
   font-size: var(--font-size-system);
+  flex-shrink: 0;
+  overflow: hidden;
 }
-.ap-error {
-  border-left: 2px solid #ff5050;
-  color: #ff8585;
-}
-
-/* Skill cards in panel */
-.ap-skill-card {
+.ap-skill-summary {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  border-radius: 12px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  font-size: var(--font-size-system);
-  flex-wrap: wrap;
-  flex-shrink: 0;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.ap-skill-summary::-webkit-details-marker { display: none; }
+.ap-skill-summary::before {
+  content: "▸";
+  font-size: 10px;
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+.ap-skill-details[open] .ap-skill-summary::before {
+  transform: rotate(90deg);
 }
 .ap-skill-icon {
   font-size: 12px;
@@ -718,6 +759,16 @@
   color: var(--accent-text);
   text-transform: uppercase;
 }
+.ap-skill-args {
+  font-size: var(--font-size-system);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  opacity: 0.85;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .ap-skill-status {
   margin-left: auto;
   font-size: var(--font-size-system);
@@ -725,9 +776,11 @@
 }
 .ap-skill-status.ok { color: #7dffab; }
 .ap-skill-status.fail { color: #ff8585; }
+.ap-skill-body {
+  padding: 0 12px 10px;
+}
 .ap-skill-output {
-  width: 100%;
-  margin: 6px 0 0;
+  margin: 4px 0 0;
   padding: 8px 10px;
   background: rgba(0, 0, 0, 0.25);
   border-radius: 8px;
@@ -741,15 +794,30 @@
   word-break: break-all;
 }
 
+/* System notes (model fallback, errors) */
+.ap-system-note {
+  font-size: var(--font-size-system);
+  color: var(--muted);
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(124, 92, 191, 0.06);
+  border-left: 2px solid rgba(124, 92, 191, 0.3);
+  flex-shrink: 0;
+}
+.ap-error-note {
+  color: #ff8585;
+  border-left-color: rgba(255, 80, 80, 0.5);
+  background: rgba(255, 80, 80, 0.06);
+}
 
 /* Streaming state */
 .ap-streaming .ap-raw {
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 0.82rem;
+  font-size: var(--font-size-system);
   line-height: 1.5;
 }
-.ap-streaming .ap-msg-content::after {
+.agent-panel-body .msg.streaming .md-content::after {
   content: "▊";
   animation: ap-cursor 0.8s steps(2) infinite;
   color: var(--accent, #7c5cbf);
@@ -761,9 +829,6 @@
   100% { opacity: 1; }
 }
 
-
-
-/* Account Pool Chips */
 .arc-acct-pool {
   display: flex;
   flex-wrap: wrap;
