@@ -50,8 +50,7 @@ KNOWN_TAGS = (
     "check_command",
     "openweb",
     "create_note",
-    "save_svg",
-    "create_svg",
+
     "view_file",
     "edit_file",
     "create_file",

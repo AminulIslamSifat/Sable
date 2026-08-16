@@ -1,5 +1,5 @@
 
-"""File I/O handlers: get_file, create_note, save_svg."""
+"""File I/O handlers: get_file, create_note."""
 
 from __future__ import annotations
 
@@ -156,51 +156,3 @@ def handle_create_note(
     yield _output_event(tag_id, f"Created note {path} ({len(note_content)} chars)\n")
     yield _end_event(tag_id, name, True, started, {"path": str(path), "chars": len(note_content)})
 
-
-def handle_save_svg(
-    tag_id: str, name: str, attrs: dict[str, str], content: str
-) -> Generator[dict[str, Any], None, None]:
-    started = time.time()
-    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-    raw = content.strip()
-    svg_name = attrs.get("path", "") or attrs.get("filename", "")
-    svg = ""
-
-    try:
-        payload = json.loads(raw)
-        if isinstance(payload, dict) and "svg" in payload:
-            svg_name = svg_name or str(payload.get("path", ""))
-            svg = str(payload["svg"])
-    except Exception:
-        pass
-
-    if not svg:
-        svg = raw
-    if not svg_name:
-        svg_name = f"svg-{time.strftime('%Y%m%d-%H%M%S')}.svg"
-    if not svg_name.endswith(".svg"):
-        svg_name += ".svg"
-
-    if not svg.lstrip().startswith("<svg"):
-        yield _output_event(tag_id, "Content does not look like SVG\n", "stderr")
-        yield _end_event(tag_id, name, False, started, error="Invalid SVG")
-        return
-
-    try:
-        path = safe_under(ASSETS_DIR, svg_name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(svg, encoding="utf-8")
-    except Exception as exc:
-        yield _output_event(tag_id, f"{type(exc).__name__}: {exc}\n", "stderr")
-        yield _end_event(tag_id, name, False, started, error=str(exc))
-        return
-
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    upload_dest = UPLOAD_DIR / path.name
-    shutil.copy2(path, upload_dest)
-
-    yield _output_event(tag_id, f"Saved SVG {path} ({len(svg)} chars)\n")
-    yield _end_event(
-        tag_id, name, True, started,
-        {"path": str(path), "chars": len(svg), "url": f"/system/uploads/{upload_dest.name}", "mime": "image/svg+xml"},
-    )

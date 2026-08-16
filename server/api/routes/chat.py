@@ -542,23 +542,7 @@ async def chat(request: ChatRequest):
                                 round_skill_events.append({"type": "skill_start", "name": "chat_title", "id": _ct_id})
                                 round_skill_events.append({"type": "skill_end", "name": "chat_title", "ok": True, "id": _ct_id, "duration_ms": 0})
                                 continue
-                            # SVG tags: content already streamed progressively by parser;
-                            # only save to disk here — skip re-streaming
-                            if item["name"] in ("create_svg", "save_svg"):
-                                svg_body = (item.get("content", "") or "").strip()
-                                # Save silently in background
-                                svg_name = item.get("attrs", {}).get("filename") or item.get("attrs", {}).get("path") or f"svg-{__import__('time').strftime('%Y%m%d-%H%M%S')}.svg"
-                                if not svg_name.endswith(".svg"):
-                                    svg_name += ".svg"
-                                try:
-                                    from engine.skills.handlers.common import ASSETS_DIR, safe_under
-                                    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-                                    dest = safe_under(ASSETS_DIR, svg_name)
-                                    dest.parent.mkdir(parents=True, exist_ok=True)
-                                    dest.write_text(svg_body, encoding="utf-8")
-                                except Exception:
-                                    pass
-                                continue
+
                             # Track command for loop detection
                             _guard.record_command(item["name"], item.get("content", ""))
                             # Execute the tag through the middleware pipeline
