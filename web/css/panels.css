@@ -3108,5 +3108,9 @@ textarea:disabled {
   transition: color 0.15s, border-color 0.15s;
 }
 .promptgen-action-btn:hover { color: var(--text, #e0e0e0); border-color: var(--accent, #7c5cbf); }
+.promptgen-copy-success {
+  color: #4ade80 !important;
+  border-color: #4ade80 !important;
+}
 
 
