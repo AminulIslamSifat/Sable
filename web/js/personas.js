@@ -252,7 +252,7 @@
 
     // Close on outside click
     document.addEventListener("click", (e) => {
-      if (!popup.contains(e.target) && e.target !== btn) {
+      if (!popup.contains(e.target) && !btn.contains(e.target)) {
         popup.classList.remove("open");
         setTimeout(() => popup.classList.add("hidden"), 180);
       }
