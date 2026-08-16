@@ -47,3 +47,4 @@ class NotificationQueue:
 
 # Module-level singleton
 notification_queue = NotificationQueue()
+#
