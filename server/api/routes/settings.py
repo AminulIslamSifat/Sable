@@ -899,7 +899,8 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
     # the DeepSeek client falls back to its disk store / browser refresh.
     async def _post_switch_warmup(account: str) -> None:
         try:
-            await service.warmup(account=account)  # pinned: symlink can move
+            # Always launch browser to collect fresh WAF tokens (non-blocking)
+            await service.force_refresh_waf(account=account)
             from connectors.deepseek.client import get_token_for_account as get_ds_token
             ds_cached = get_ds_token(account)
             if ds_cached:

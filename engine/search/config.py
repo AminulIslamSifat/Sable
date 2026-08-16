@@ -1,6 +1,6 @@
 """Centralized search settings loader.
 
-Reads from system/settings.json with fallback to skills/online_search/scripts/settings.json.
+Reads from system/settings.json with fallback to tools/online_search/scripts/settings.json.
 Never caches secrets — keys are resolved on every call.
 """
 
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _PRIMARY_SETTINGS = _PROJECT_ROOT / "system" / "settings.json"
-_FALLBACK_SETTINGS = _PROJECT_ROOT / "skills" / "online_search" / "scripts" / "settings.json"
+_FALLBACK_SETTINGS = _PROJECT_ROOT / "tools" / "online_search" / "scripts" / "settings.json"
 
 _SAFESEARCH_LEVELS = ("strict", "moderate", "off")
 _FALLBACK_CHAIN_DEFAULT: List[str] = ["duckduckgo"]
