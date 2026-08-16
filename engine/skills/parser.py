@@ -119,7 +119,7 @@ def _parse_action_payload(raw: str) -> list[dict[str, Any]]:
 
     Returns list of {"name": str, "attrs": dict[str,str], "content": str}.
     Accepts both Hermes format {"name": ..., "arguments": ...} and legacy
-    {"tool": ..., "params": ...} for backwards compatibility.
+    Legacy {"tool": ..., "params": ...} keys are normalized to Hermes format internally.
     """
     raw = raw.strip()
     if not raw:

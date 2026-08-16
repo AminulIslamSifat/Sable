@@ -38,7 +38,7 @@ def _parse_json_action(content: str) -> dict[str, Any] | None:
 
     Supports multiple key conventions models might use:
         {"name": "execute_command", "args": {"command": "ls"}}
-        {"tool": "web_search", "params": {"query": "..."}}
+        {"name": "web_search", "arguments": {"query": "..."}}
     """
     content = content.strip()
     if not content.startswith("{"):
@@ -153,7 +153,7 @@ async def normalize_stream(
                 text = _pending_prefix + text
 
                 # After reassembly, strip orphaned closing tags that formed
-                # outside an action block (e.g. Qwen splits closing tag across
+                # outside a tool_call block (e.g. Qwen splits closing tag across
                 # chunks and we're not currently inside a tool_call block)
                 if not _in_action:
                     close_tag = "</" + "tool_call>"

@@ -372,8 +372,8 @@ class BrowserManager:
                 d2 = r2.json()
                 if not d2.get("success"):
                     raise Exception(f"Update instruction failed: {d2}")
-                # with open("test/ins.md", "w") as file:
-                #     file.write(instructions)
+                with open("test/ins.md", "w") as file:
+                    file.write(instructions)
                 print(f"[DEBUG] Context synced successfully! ({len(instructions)} chars)")
                 return True
         except Exception as e:
