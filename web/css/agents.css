@@ -514,7 +514,7 @@
 }
 
 @media (min-width: 769px) {
-  body.agent-panel-open .main { margin-right: 392px; transition: margin-right .18s ease; }
+  body.agent-panel-open .main { margin-right: 341px; transition: margin-right .18s ease; }
 }
 
 
