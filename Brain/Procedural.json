@@ -1487,6 +1487,36 @@
         "stop auto-saving session logs",
         "memory consolidation is automatic"
       ]
+    },
+    {
+      "key": "spawn_single_agent_respect_count",
+      "value": "When user requests spawning an agent (especially with 'one', 'single', or a specific count), spawn EXACTLY that many. Never batch-spawn multiple agents unless explicitly asked for parallel/concurrent runs. If a previous spawn failed due to JSON transport issues, retry ONE clean attempt — do not shotgun multiple retries as separate spawns. When correcting an over-spawn, acknowledge the mistake briefly and fix it without drama. User corrected this behavior after assistant spawned 8 agents when asked for 'one'.",
+      "trigger": "when user requests agent spawn with specific count or says 'one'/'single'",
+      "keywords": [
+        "spawn",
+        "agent",
+        "count",
+        "single",
+        "batch",
+        "over-spawn"
+      ],
+      "source_query": "seriously, i said one. with gemini",
+      "tags": [
+        "spawn",
+        "agent",
+        "workflow",
+        "correction",
+        "count",
+        "behavioral"
+      ],
+      "triggers": [
+        "seriously, i said one. with gemini",
+        "stop spawning multiple agents",
+        "i asked for one agent not eight",
+        "respect agent spawn count",
+        "don't batch spawn unless asked",
+        "single agent request handling"
+      ]
     }
   ]
 }
