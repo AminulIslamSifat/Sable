@@ -835,7 +835,7 @@
   }
 
   /* ---------- Context Menu ---------- */
-  // Context menu — same pattern as global ctxMenu in app.js
+  // Context menu — same pattern as global ctxMenu in appearance.js
   const fsCtxMenu = document.getElementById("fsContextMenu") || (() => {
     const el = document.createElement("div");
     el.id = "fsContextMenu";
@@ -1489,7 +1489,7 @@
     });
   }
 
-  // Expose for external callers (e.g. diff card click in app.js)
+  // Expose for external callers (e.g. diff card click in tracknote.js)
   window.setFsSidebarMode = setFsMode;
 
 
