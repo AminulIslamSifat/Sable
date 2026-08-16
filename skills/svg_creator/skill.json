@@ -6,10 +6,7 @@
   "description": "Data structure visualizations, node/edge diagrams, algorithm illustrations.",
   "trigger": "Data structure visualizations, node/edge diagrams, algorithm state illustrations.",
   "not_this_if": "Output requires a coordinate axis or plotted function -> use Graph Master.",
-  "tags": [
-    "save_svg",
-    "create_svg"
-  ],
+  "tags": [],
   "default": false,
   "inline": false,
   "priority": 50,
