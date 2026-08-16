@@ -1,7 +1,7 @@
 [
   {
     "name": "view_file",
-    "description": "View file or directory contents with line numbers.",
+    "description": "View file or directory contents",
     "parameters": {
       "type": "object",
       "properties": {

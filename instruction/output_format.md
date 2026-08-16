@@ -20,33 +20,34 @@ Inline `$E=mc^2$` · Block `$$...$$` · never a code fence for math.
 
 ## Always Forbidden
 Dataview queries · Templater syntax · `---` dividers · code fences used for math · `graph LR` · mixed Mermaid node syntax.
-Multiple action block in the same message. 
+Multiple tool_call blocks in the same message.
 
-## JSON Action Schema
+## Tool Call Format
 
-```json
-{
-  "tool": "tool_name",
-  "params": { ... }
-}
+All tool calls use exactly ONE format. Single call or multiple calls — always a JSON array inside one tag pair:
+
+Single call:
+```
+<tool_call>
+[{"name": "tool_name", "arguments": {"param": "value"}}]
+</tool_call>
 ```
 
-Multiple calls in one response → JSON **array**:
-
-```json
+Multiple parallel calls:
+```
+<tool_call>
 [
-  {"tool": "grep", "params": {"pattern": "foo", "path": "/bar"}},
-  {"tool": "execute_command", "params": {"command": "ls -la"}}
+  {"name": "grep", "arguments": {"pattern": "foo", "path": "/bar"}},
+  {"name": "execute_command", "arguments": {"command": "ls -la"}}
 ]
+</tool_call>
 ```
 
 ### Rules
-1. `tool` must match a name defined in tool schema.
-2. `params` must conform to that tool's `parameters` schema.
+1. `name` must match a function name defined in the tools schema.
+2. `arguments` must conform to that function's parameters schema.
 3. If a sudo command is blocked, ask user for the password.
-4. Prioritize defined skill over raw command if available.
-5. One tool calling block per response, placed at the end. Single or multiple command, everything must have to under one block.
-6. Never nest an action block inside a fenced code block.
+4. Exactly ONE tag pair per response, placed at the end. All calls go inside as a JSON array.
 
 ## Callouts
 Use callouts, not plain blockquotes, for all highlighted info:
