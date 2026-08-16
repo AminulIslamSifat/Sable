@@ -26,6 +26,17 @@ from ..dependencies import service
 
 router = APIRouter()
 
+# Strong refs to fire-and-forget tasks so they aren't GC'd mid-flight
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn_bg(coro) -> None:
+    """Schedule a background task with GC-safe bookkeeping."""
+    task = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+
 # --- Browser profile stripping (shared by switch + manual strip endpoint) ---
 _STRIP_KEEP = [
     "Local State", "Last Version",
@@ -42,6 +53,13 @@ _STRIP_KEEP = [
 
 def _strip_one_profile(profile: Path) -> tuple[str, float, float]:
     """Strip a single browser profile to bare session data. Returns (name, before_mb, after_mb)."""
+    # Safety: never strip the currently-active profile. Matters when invoked as
+    # a background task after a switch — the user may have switched back since.
+    try:
+        if _ACTIVE_PROFILE_LINK.exists() and Path(profile).resolve() == _ACTIVE_PROFILE_LINK.resolve():
+            raise RuntimeError(f"refusing to strip active profile {profile.name}")
+    except OSError:
+        pass
     import tempfile
     before = _dir_size_mb(profile)
     tmp = Path(tempfile.mkdtemp())
@@ -870,40 +888,51 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Switch failed: {exc}")
 
-    # Load cached DeepSeek token for new account (no browser needed if cached)
-    from connectors.deepseek.client import get_token_for_account as get_ds_token
-    ds_cached = get_ds_token(target_name)
-    if ds_cached:
-        get_deepseek_client().set_token(ds_cached, account=target_name)
-        logger.info("Loaded cached DeepSeek token for %s", target_name)
-    else:
-        # No cached token — extract from browser
-        try:
-            ds_token = await service.refresh_deepseek_token()
-            get_deepseek_client().set_token(ds_token)
-        except Exception:
-            pass
+    email = _read_profile_email(target_path)
 
-    # Warmup loads cached Qwen WAF tokens or fetches fresh via browser
-    await service.warmup()
-    # Sync context for the new account's browser profile
-    try:
-        await service.sync_context()
-    except Exception as exc:
-        logger.warning("sync_context after switch failed: %s", exc)
-    # Strip the old profile to reclaim disk space (fire-and-forget)
-    stripped_info: str | None = None
-    if old_profile and old_profile.is_dir():
+    # ── Optimistic response: everything below is post-switch warm-up and runs
+    # OFF the request path. Ordering guarantees at most ONE browser launch even
+    # when both token sets are cold: warmup may open a browser, DeepSeek
+    # extraction reuses it (never closes a browser it didn't open), and persona
+    # sync is pure HTTP once headers are cached.
+    # Deferral is safe: _ensure_headers() self-heals lazily on first chat, and
+    # the DeepSeek client falls back to its disk store / browser refresh.
+    async def _post_switch_warmup(account: str) -> None:
         try:
-            name, before, after = await asyncio.to_thread(_strip_one_profile, old_profile)
-            stripped_info = f"{name}: {before:.1f}MB → {after:.1f}MB"
-            logger.info("Auto-stripped old profile %s", stripped_info)
+            await service.warmup(account=account)  # pinned: symlink can move
+            from connectors.deepseek.client import get_token_for_account as get_ds_token
+            ds_cached = get_ds_token(account)
+            if ds_cached:
+                get_deepseek_client().set_token(ds_cached, account=account)
+                logger.info("Loaded cached DeepSeek token for %s", account)
+            else:
+                try:
+                    ds_token = await service.refresh_deepseek_token()
+                    get_deepseek_client().set_token(ds_token, account=account)
+                except Exception as exc:
+                    logger.warning("DeepSeek token extraction failed for %s: %s", account, exc)
+            try:
+                await service.sync_context()
+            except Exception as exc:
+                logger.warning("sync_context after switch failed: %s", exc)
         except Exception as exc:
-            logger.warning("Failed to strip old profile: %s", exc)
-    result: dict[str, Any] = {"status": "ok", "active": target_name, "email": _read_profile_email(target_path)}
-    if stripped_info:
-        result["stripped"] = stripped_info
-    return result
+            logger.warning("Post-switch warmup failed: %s: %s", type(exc).__name__, exc)
+
+    _spawn_bg(_post_switch_warmup(target_name))
+
+    # Strip the old profile to reclaim disk space (true fire-and-forget:
+    # off the request path; guard inside refuses if it became active again)
+    if old_profile and old_profile.is_dir():
+        async def _strip_bg(profile: Path) -> None:
+            try:
+                name, before, after = await asyncio.to_thread(_strip_one_profile, profile)
+                logger.info("Auto-stripped old profile %s: %.1fMB → %.1fMB", name, before, after)
+            except Exception as exc:
+                logger.warning("Failed to strip old profile: %s", exc)
+
+        _spawn_bg(_strip_bg(old_profile))
+
+    return {"status": "ok", "active": target_name, "email": email}
 
 
 @router.post("/api/settings/accounts/create")
