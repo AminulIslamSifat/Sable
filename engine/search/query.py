@@ -129,3 +129,4 @@ def _cache_duration_for_query(query: str) -> timedelta:
     if _is_news_query(query):
         return timedelta(minutes=30)
     return timedelta(hours=24)
+#

@@ -208,7 +208,7 @@ def comprehensive_web_search(
     """Perform comprehensive web search with filtering.
 
     Phase 1: returns raw search results without content fetching.
-    Content extraction stays in web_search_batch.py.
+    Content extraction stays in online_search.py.
     """
     results = searxng_search_results(query, count=max_pages * 3, time_filter=time_filter)
 

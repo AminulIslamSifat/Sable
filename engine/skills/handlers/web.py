@@ -13,7 +13,7 @@ import httpx
 
 from engine.skills.handlers.common import (
     RESULT_PREVIEW_CHARS,
-    SKILLS_DIR,
+    TOOLS_DIR,
     _end_event,
     _output_event,
     strip_html,
@@ -22,7 +22,7 @@ from engine.skills.handlers.common import (
 
 from engine.security.prompt_guard import wrap_untrusted
 
-_SEARCH_SCRIPT = SKILLS_DIR / "online_search" / "scripts" / "web_search_batch.py"
+_SEARCH_SCRIPT = TOOLS_DIR / "online_search" / "scripts" / "online_search.py"
 
 
 def _run_search_script(query: str, extra_args: list[str] | None = None) -> dict[str, Any]:
@@ -32,7 +32,7 @@ def _run_search_script(query: str, extra_args: list[str] | None = None) -> dict[
         cmd.append(query)
     if extra_args:
         cmd.extend(extra_args)
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip()[:500])
     return json.loads(proc.stdout)

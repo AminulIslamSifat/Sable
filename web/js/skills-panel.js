@@ -161,7 +161,7 @@
 
     document.querySelector('[data-tab="tools"]').addEventListener("click", loadTools);
     document.querySelector('[data-tab="skills"]').addEventListener("click", loadSkills);
-    document.querySelector('[data-tab="account"]').addEventListener("click", loadAccountProfiles);
+    document.querySelector('[data-tab="account"]')?.addEventListener("click", () => { if (typeof loadAccountProfiles === 'function') loadAccountProfiles(); });
 
     // --- Providers tab: Unified API key manager ---
     const _keyProviderMeta = {
@@ -646,18 +646,39 @@
         });
       }
 
+      function _positionDropdown() {
+        const dd = _searchEls.fallbackDropdown();
+        const opt = _searchEls.fallbackOptions();
+        if (!dd || !opt) return;
+        const rect = dd.getBoundingClientRect();
+        opt.style.position = "fixed";
+        opt.style.top = rect.bottom + 4 + "px";
+        opt.style.left = rect.left + "px";
+        opt.style.width = rect.width + "px";
+      }
+
       function init(allProviders) {
         providers = allProviders;
         const sel = _searchEls.fallbackSelected();
         const opt = _searchEls.fallbackOptions();
         if (sel) sel.addEventListener("click", () => {
           renderOptions();
-          if (opt) opt.style.display = opt.style.display === "none" ? "block" : "none";
+          if (opt) {
+            const isOpen = opt.style.display !== "none";
+            if (isOpen) {
+              opt.style.display = "none";
+            } else {
+              _positionDropdown();
+              opt.style.display = "block";
+            }
+          }
         });
         document.addEventListener("click", (e) => {
           const dd = _searchEls.fallbackDropdown();
           if (dd && !dd.contains(e.target) && opt) opt.style.display = "none";
         });
+        window.addEventListener("scroll", () => { if (opt && opt.style.display !== "none") _positionDropdown(); }, true);
+        window.addEventListener("resize", () => { if (opt && opt.style.display !== "none") _positionDropdown(); });
         renderOptions();
         renderChips();
       }
