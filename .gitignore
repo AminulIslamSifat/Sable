@@ -53,7 +53,6 @@ system/.deepseek_tokens.json
 system/.custom_models.json
 system/.hidden_models.json
 .sable_backups
-web/app.js.bak
 
 # OS junk
 .DS_Store
