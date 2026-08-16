@@ -39,6 +39,9 @@ class ChatService:
             user_data_dir = str(BROWSER_DATA_DIR)
         self._browser = BrowserManager(user_data_dir=user_data_dir)
         self._headers: dict[str, str] | None = None
+        # Which account self._headers belong to (guards against fast double-switch
+        # races where a stale in-memory header set outlives the active symlink).
+        self._headers_account: str | None = None
         self._lock = asyncio.Lock()
         # Derive account name from user_data_dir for token lookup
         # e.g. ".../system/browser-data-acc3" → "browser-data-acc3"
@@ -59,23 +62,25 @@ class ChatService:
         async with self._lock:
             await self._browser.close()
             self._headers = None
+            self._headers_account = None
 
     async def restart_browser(self, headless: bool | None = None) -> None:
         async with self._lock:
             await self._browser.restart(headless=headless)
             self._headers = None
+            self._headers_account = None
 
     @property
     def browser_headless(self) -> bool:
         return self._browser.headless
 
     async def _ensure_headers(self) -> dict[str, str]:
-        # Fast path: headers already cached in memory
-        if self._headers:
-            return self._headers
-        # Medium path: check per-account token cache before launching browser
         from engine.config import _resolve_active_account
         account = self._account_override or _resolve_active_account()
+        # Fast path: headers for THIS account already in memory
+        if self._headers and self._headers_account == account:
+            return self._headers
+        # Medium path: check per-account token cache before launching browser
         cached = get_qwen_tokens_for_account(account)
         if cached and cached.get("cookies"):
             from engine.session import build_headers
@@ -84,14 +89,16 @@ class ChatService:
                 bx_ua=cached.get("bx_ua"),
                 bx_umidtoken=cached.get("bx_umidtoken"),
             )
+            self._headers_account = account
             logger.info("Loaded cached Qwen WAF tokens for %s", account)
             return self._headers
         # Slow path: launch browser to fetch fresh headers
         async with self._lock:
-            if not self._headers:
+            if not self._headers or self._headers_account != account:
                 await self._browser.start()
                 try:
                     self._headers = await self._browser.get_fresh_headers()
+                    self._headers_account = account
                     # Save to per-account cache
                     save_qwen_tokens_for_account(
                         cookies=self._headers.get("Cookie", ""),
@@ -111,6 +118,7 @@ class ChatService:
                 # Save refreshed tokens to per-account cache
                 from engine.config import _resolve_active_account
                 account = self._account_override or _resolve_active_account()
+                self._headers_account = account
                 save_qwen_tokens_for_account(
                     cookies=self._headers.get("Cookie", ""),
                     bx_ua=self._headers.get("bx-ua", ""),
@@ -121,15 +129,40 @@ class ChatService:
                 await self._browser.close()
             return self._headers
 
-    async def warmup(self) -> None:
+    async def warmup(self, account: str | None = None) -> None:
+        """Pre-load WAF headers. Never launches a browser when the target
+        account's tokens are cached on disk.
+
+        Pass account= to pin the target — background callers MUST, since the
+        active-profile symlink can move between scheduling and execution.
+        """
+        from engine.config import _resolve_active_account
+        account = account or self._account_override or _resolve_active_account()
+        # Fast path: headers for this account already in memory
+        if self._headers and self._headers_account == account:
+            return
+        # Medium path: per-account token cache on disk — no browser launch needed.
+        # Mirrors _ensure_headers(); if cached tokens turn out stale,
+        # _refresh_headers() self-heals on first chat.
+        cached = get_qwen_tokens_for_account(account)
+        if cached and cached.get("cookies"):
+            from engine.session import build_headers
+            self._headers = build_headers(
+                cookies=cached["cookies"],
+                bx_ua=cached.get("bx_ua"),
+                bx_umidtoken=cached.get("bx_umidtoken"),
+            )
+            self._headers_account = account
+            logger.info("Warmup: loaded cached Qwen WAF tokens for %s (no browser launch)", account)
+            return
+        # Slow path: launch browser to fetch fresh headers
         async with self._lock:
             try:
                 await self._browser.start()
-                if not self._headers:
+                if not self._headers or self._headers_account != account:
                     self._headers = await self._browser.get_fresh_headers()
+                    self._headers_account = account
                     # Persist WAF tokens to per-account cache
-                    from engine.config import _resolve_active_account
-                    account = self._account_override or _resolve_active_account()
                     save_qwen_tokens_for_account(
                         cookies=self._headers.get("Cookie", ""),
                         bx_ua=self._headers.get("bx-ua", ""),
@@ -139,16 +172,22 @@ class ChatService:
             except Exception as exc:
                 logger.warning("Warmup failed: %s: %s", type(exc).__name__, exc)
                 self._headers = None
-            # Browser stays open — refresh_deepseek_token() will reuse and close it
+                self._headers_account = None
+            # Browser stays open — warm session for the first message; the next
+            # switch's service.close() tears it down.
 
     async def refresh_deepseek_token(self) -> str:
-        """Extract a fresh DeepSeek token. Re-launches browser if closed."""
+        """Extract a fresh DeepSeek token. Reuses an already-running browser
+        (e.g. one a cold warmup left open); closes it only if this call
+        launched it."""
         async with self._lock:
+            opened_here = not self._browser.is_running
             await self._browser.start()
             try:
                 return await self._browser.extract_deepseek_token()
             finally:
-                await self._browser.close()
+                if opened_here:
+                    await self._browser.close()
 
     async def create_chat(self, model: str | None = None) -> str | None:
         headers = await self._ensure_headers()

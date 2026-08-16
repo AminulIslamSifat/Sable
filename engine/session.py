@@ -48,6 +48,11 @@ class BrowserManager:
     def browser_headless(self) -> bool:
         return self.headless
 
+    @property
+    def is_running(self) -> bool:
+        """True if the persistent browser context is currently up."""
+        return self.playwright is not None
+
     def _check_profile_lock(self) -> bool:
         """Check if the profile is locked by another Chromium instance."""
         lock_file = Path(self.user_data_dir) / "SingletonLock"
