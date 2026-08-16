@@ -716,23 +716,79 @@
   }
 
   // ─── Init ───────────────────────────────────────────────────────────────────
+  // ─── Loading Skeletons ──────────────────────────────────────────────────────
+  function showSkeleton(elId, lines = 3) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    let html = '<div class="cb-skeleton-wrap">';
+    for (let i = 0; i < lines; i++) {
+      html += `<div class="cb-skeleton-line" style="width:${60 + Math.random() * 40}%;animation-delay:${i * 0.15}s"></div>`;
+    }
+    html += '</div>';
+    el.innerHTML = html;
+  }
+
+  function showGridSkeleton(elId, cards = 4) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    let html = '';
+    for (let i = 0; i < cards; i++) {
+      html += `
+        <div class="cb-preset-card cb-skeleton-card">
+          <div class="cb-skeleton-line" style="width:70%;height:16px;margin-bottom:8px;animation-delay:${i * 0.1}s"></div>
+          <div class="cb-skeleton-line" style="width:90%;height:10px;margin-bottom:6px;animation-delay:${i * 0.1 + 0.05}s"></div>
+          <div class="cb-skeleton-line" style="width:50%;height:10px;animation-delay:${i * 0.1 + 0.1}s"></div>
+        </div>`;
+    }
+    el.innerHTML = html;
+  }
+
   function initCookbook() {
+    // Show loading skeletons immediately
+    showSkeleton("cbHardwareInfo", 2);
+    showGridSkeleton("cbPresetsGrid", 4);
+
+    // Fast stuff first — no awaits blocking each other
     loadCookbookSettings();
     initCustomDownload();
     initModelSearch();
     initSaveSettings();
+
+    // Status + model settings (independent of recommendations)
+    refreshCookbook();
     loadModelSettings();
 
-    // Load hardware-aware recommendations
-    cbFetch("/recommendations")
-      .then((data) => {
-        renderHardware(data.hardware);
-        renderRecommendations(data.recommendations);
-      })
-      .catch(() => {});
+    // Recommendations: poll until dynamic HF models arrive (skeleton stays visible)
+    let recAttempts = 0;
+    const REC_MAX_ATTEMPTS = 20; // 20 × 3s = 60s max
+    const REC_POLL_MS = 3000;
 
-    // Initial status load
-    refreshCookbook();
+    function fetchRecommendations() {
+      cbFetch("/recommendations")
+        .then((data) => {
+          renderHardware(data.hardware);
+          if (data.has_dynamic) {
+            // Real HF models loaded — render and stop polling
+            renderRecommendations(data.recommendations);
+          } else if (recAttempts < REC_MAX_ATTEMPTS) {
+            // Only static catalog so far — keep skeleton, poll again
+            recAttempts++;
+            setTimeout(fetchRecommendations, REC_POLL_MS);
+          } else {
+            // Timeout — show whatever we have with a note
+            renderRecommendations(data.recommendations);
+            showToast("Model catalog still loading. Refresh to retry.", true);
+          }
+        })
+        .catch(() => {
+          const hwEl = document.getElementById("cbHardwareInfo");
+          if (hwEl) hwEl.innerHTML = '<p class="muted" style="font-size:12px;font-style:italic;">Failed to load hardware info</p>';
+          const recEl = document.getElementById("cbPresetsGrid");
+          if (recEl) recEl.innerHTML = '<p class="muted" style="font-size:12px;font-style:italic;">Failed to load recommendations</p>';
+        });
+    }
+
+    fetchRecommendations();
   }
 
   // ─── Tab Hook ───────────────────────────────────────────────────────────────

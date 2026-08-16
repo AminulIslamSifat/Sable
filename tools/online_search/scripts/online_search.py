@@ -795,63 +795,6 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-# ─── Tool Handler (stdin JSON dispatch) ───────────────────────────────────────
-
-def _tool_web_search(args: dict) -> dict:
-    query = args.get("query", "").strip()
-    if not query:
-        return {"error": "'query' is required"}
-    max_results = min(int(args.get("max_results", 10)), 20)
-    time_filter = args.get("time_filter") or infer_time_filter(query)
-    return search_only(query, max_results=max_results, time_filter=time_filter)
-
-
-def _tool_web_fetch(args: dict) -> dict:
-    urls = args.get("urls", [])
-    if not urls:
-        return {"error": "'urls' is required (non-empty list)"}
-    if isinstance(urls, str):
-        urls = [u.strip() for u in urls.split(",") if u.strip()]
-    if not urls:
-        return {"error": "'urls' resolved to empty list"}
-    max_chars = int(args.get("max_chars", 10000))
-    return fetch_specific_urls(urls, max_chars=max_chars)
-
-
-_TOOL_COMMANDS = {
-    "web_search": _tool_web_search,
-    "web_fetch": _tool_web_fetch,
-}
-
-
-def tool_main() -> int:
-    """Entry point for tool dispatch via stdin JSON."""
-    raw = sys.stdin.read().strip()
-    if not raw:
-        print(json.dumps({"error": "No input"}))
-        return 1
-    try:
-        req = json.loads(raw)
-    except json.JSONDecodeError as e:
-        print(json.dumps({"error": f"Invalid JSON: {e}"}))
-        return 1
-
-    command = req.get("command", "")
-    if command not in _TOOL_COMMANDS:
-        print(json.dumps({"error": f"Unknown command: {command}. Valid: {list(_TOOL_COMMANDS.keys())}"}))
-        return 1
-
-    try:
-        result = _TOOL_COMMANDS[command](req.get("args", {}))
-        print(json.dumps(result, ensure_ascii=False))
-    except Exception as e:
-        print(json.dumps({"error": f"{command} failed: {e}"}))
-        return 1
-    return 0
-
-
 if __name__ == "__main__":
-    # If stdin is piped JSON (tool mode), dispatch; otherwise run CLI
-    if not sys.stdin.isatty():
-        raise SystemExit(tool_main())
     raise SystemExit(main())
+#

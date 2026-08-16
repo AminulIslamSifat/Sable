@@ -260,3 +260,4 @@ def handle_check_command(
             f"{job_pid} [{info['status']}] {info.get('command', '')} -> {info.get('log', '')}\n",
         )
     yield _end_event(tag_id, name, True, started, {"jobs": jobs})
+#
