@@ -298,7 +298,7 @@ class MCPManager:
             "",
             "Connected MCP servers provide additional tools. Call them with:",
             '<mcp_call server="SERVER_NAME" tool="TOOL_NAME">{json_args}</mcp_call>',
-            "Wrap in an action block like any other skill tag.",
+            "Wrap in a tool_call block like any other tool.",
             "",
         ]
 

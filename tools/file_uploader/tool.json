@@ -1,7 +1,7 @@
 [
   {
     "name": "get_file",
-    "description": "Load a non-text file into LLM context for reading.",
+    "description": "upload a non-text file, read text based file into LLM context",
     "parameters": {
       "type": "object",
       "properties": {

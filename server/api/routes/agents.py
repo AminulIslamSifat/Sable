@@ -429,6 +429,34 @@ async def kill_agent(agent_id: str):
     return {"error": "Agent not found", "agent_id": agent_id}
 
 
+@router.post("/api/agents/{agent_id}/message")
+async def send_agent_message(agent_id: str, request: Request):
+    """Inject a user message into a running agent's conversation (guidance)."""
+    from engine.agents import get_runtime
+    from server.database import add_agent_message
+
+    body = await request.json()
+    text = body.get("message", "").strip()
+    if not text:
+        return {"error": "message is required"}
+
+    rt = get_runtime()
+    agent = rt.get_agent(agent_id)
+    if not agent:
+        return {"error": "Agent not found", "agent_id": agent_id}
+    if agent.status.value not in ("spawned", "running"):
+        return {"error": "Agent is not running", "agent_id": agent_id}
+
+    # Queue the message — the loop picks it up between iterations
+    agent.pending_user_messages.append(text)
+    # Persist to DB for history replay
+    add_agent_message(agent_id, "user", text)
+    # Push to SSE stream so the panel shows it immediately
+    agent.push_stream_event({"type": "user_message", "text": text})
+
+    return {"status": "queued", "agent_id": agent_id}
+
+
 @router.post("/api/agents/spawn")
 async def spawn_agent(request: Request):
     """Manually spawn an agent from the chat UI (@ mention)."""

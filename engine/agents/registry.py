@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -32,15 +33,28 @@ _MARKDOWN_INSTRUCTION = (
 # Universal skill available to ALL agents (not listed per-role)
 UNIVERSAL_SKILLS: list[str] = ["execute_command"]
 
+# ---------------------------------------------------------------------------
+# Persona-file loader: reads instruction/agents/<role>.md for system prompt
+# ---------------------------------------------------------------------------
+_AGENTS_DIR = Path(__file__).resolve().parent.parent.parent / "instruction" / "agents"
+
+
+def _load_agent_persona(role: str) -> str:
+    """Load persona markdown for a subagent role. Falls back to generic prompt."""
+    path = _AGENTS_DIR / f"{role}.md"
+    if path.is_file():
+        return path.read_text(encoding="utf-8").strip()
+    return f"You are a {role} specialist. Complete the assigned task thoroughly."
+
+
+def _build_system_prompt(role: str, output_format: str) -> str:
+    """Compose full system prompt: persona file + markdown rules + output format."""
+    return _load_agent_persona(role) + _MARKDOWN_INSTRUCTION + output_format
+
 AGENT_ROLES: dict[str, RoleConfig] = {
     "analyst": RoleConfig(
-        system_prompt=(
-            "You are an analysis specialist. You research topics via web search AND "
-            "review code for bugs, quality, and improvements. When researching, always "
-            "cite sources. When reviewing, be specific about locations and fixes. "
-            "Adapt your output format to the task type."
-            + _MARKDOWN_INSTRUCTION
-            + "\n\nOUTPUT FORMAT FOR RESEARCH TASKS:\n"
+        system_prompt=_build_system_prompt("analyst",
+            "\n\nOUTPUT FORMAT FOR RESEARCH TASKS:\n"
             "## Topic\n## Findings\n## Sources\n## Summary\n## Confidence (high/medium/low)\n\n"
             "OUTPUT FORMAT FOR CODE REVIEW TASKS:\n"
             "## File Reviewed\n## Critical Issues (with location and explanation)\n"
@@ -59,11 +73,8 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         ],
     ),
     "coder": RoleConfig(
-        system_prompt=(
-            "You are a code implementation specialist. Write, edit, and test code. "
-            "Use early returns, explicit types, clean error handling. No bloated OOP."
-            + _MARKDOWN_INSTRUCTION
-            + "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
+        system_prompt=_build_system_prompt("coder",
+            "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
             "Your final answer MUST include these sections:\n"
             "## Description\n## Files Modified (list each file with path and what changed)\n"
             "## Tests (pass/fail/skipped)\n## Notes\n\n"
@@ -79,10 +90,8 @@ AGENT_ROLES: dict[str, RoleConfig] = {
     ),
 
     "writer": RoleConfig(
-        system_prompt=(
-            "You are a documentation and writing specialist. Create clear, structured documents."
-            + _MARKDOWN_INSTRUCTION
-            + "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
+        system_prompt=_build_system_prompt("writer",
+            "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
             "Your final answer MUST include these sections:\n"
             "## Title\n## Document Path\n## Structure Overview\n## Word Count\n## Notes\n\n"
             "Do NOT use these headers in intermediate responses. "
@@ -100,16 +109,8 @@ AGENT_ROLES: dict[str, RoleConfig] = {
     # Domain-specialist agents (hierarchical routing)
     # ------------------------------------------------------------------
     "sysutil": RoleConfig(
-        system_prompt=(
-            "You are a system, media & general utility specialist. You handle OS-level repairs "
-            "(Hyprland, pacman, systemd, Wayland, display issues), Android phone "
-            "automation via ADB, video/audio downloads from any platform, "
-            "long-running background processes, AND miscellaneous tasks like file operations, "
-            "data formatting, conversions, renaming, organizing, and simple scripting. "
-            "Diagnose first, fix second. Always check logs before guessing. "
-            "Be fast, be precise, don't overthink it."
-            + _MARKDOWN_INSTRUCTION
-            + "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
+        system_prompt=_build_system_prompt("sysutil",
+            "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
             "Your final answer MUST include these sections:\n"
             "## Task\n## Diagnosis\n## Actions Taken\n## Result\n## Notes\n\n"
             "Do NOT use these headers in intermediate responses. "
@@ -123,14 +124,8 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         required_sections=["Task", "Diagnosis", "Actions Taken", "Result", "Notes"],
     ),
     "docs": RoleConfig(
-        system_prompt=(
-            "You are a document specialist. You create, edit, read, and transform "
-            "professional documents: DOCX, PDF, PPTX, XLSX. You can also read "
-            "non-text files (images, PDFs, Office docs) into context and rewrite "
-            "AI-generated text to sound human. Always preserve formatting and "
-            "structure. Ask for clarification if the output format is ambiguous."
-            + _MARKDOWN_INSTRUCTION
-            + "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
+        system_prompt=_build_system_prompt("docs",
+            "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
             "Your final answer MUST include these sections:\n"
             "## Task\n## Document Path\n## Structure Overview\n## Notes\n\n"
             "Do NOT use these headers in intermediate responses. "
@@ -144,15 +139,8 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         required_sections=["Task", "Document Path", "Structure Overview", "Notes"],
     ),
     "visuals": RoleConfig(
-        system_prompt=(
-            "You are a visualization & UI specialist. You create mathematical plots "
-            "(Cartesian, polar, parametric), node/edge diagrams (trees, flowcharts, "
-            "state machines), production-grade web UI components, and animated/interactive "
-            "physics simulations. Choose the right tool: static plots for data, SVG for "
-            "structure, HTML/CSS for UI, canvas/WebGL for animation. Always label axes "
-            "and use clean typography."
-            + _MARKDOWN_INSTRUCTION
-            + "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
+        system_prompt=_build_system_prompt("visuals",
+            "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
             "Your final answer MUST include these sections:\n"
             "## Task\n## Output Path\n## Description\n## Notes\n\n"
             "Do NOT use these headers in intermediate responses. "
@@ -166,14 +154,8 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         required_sections=["Task", "Output Path", "Description", "Notes"],
     ),
     "tester": RoleConfig(
-        system_prompt=(
-            "You are a testing & debugging specialist. You investigate bugs, errors, "
-            "crashes, and unexpected behavior. Reproduce first, diagnose second, fix "
-            "third. Always read error messages and tracebacks carefully. Check logs, "
-            "run the failing command, and verify your fix actually resolves the issue. "
-            "Never claim a fix works without running the test."
-            + _MARKDOWN_INSTRUCTION
-            + "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
+        system_prompt=_build_system_prompt("tester",
+            "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
             "Your final answer MUST include these sections:\n"
             "## Bug Summary\n## Root Cause\n## Fix Applied\n## Verification\n## Notes\n\n"
             "Do NOT use these headers in intermediate responses. "
@@ -189,16 +171,8 @@ AGENT_ROLES: dict[str, RoleConfig] = {
 
     # Scheduled agent ops — broad skill set for autonomous tasks
     "scheduled": RoleConfig(
-        system_prompt=(
-            "You are an autonomous scheduled agent. You execute recurring tasks "
-            "independently. Be thorough, produce clear markdown results, and handle "
-            "errors gracefully. You have access to code editing, web search, file "
-            "operations, and communication tools (Telegram, email).\n\n"
-            "IMPORTANT: For reminders and notifications, you MUST send a Telegram message "
-            "as the primary delivery. Read the telegram skill instruction before first use. "
-            "Only fall back to markdown-only output if Telegram is unavailable."
-            + _MARKDOWN_INSTRUCTION
-            + "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
+        system_prompt=_build_system_prompt("scheduled",
+            "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
             "## Task\n## Result\n## Notes\n\n"
             "Do NOT use these headers in intermediate responses. "
             "Intermediate response = one brief sentence + tool call. Nothing else."
