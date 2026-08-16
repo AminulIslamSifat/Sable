@@ -171,87 +171,6 @@ _QUANT_MEMORY_PER_B = {
     "F16": 2.0,
 }
 
-# ─── HF API Download Size Cache ──────────────────────────────────────────────
-import fnmatch as _fnmatch
-import re as _re
-import json as _json
-
-_SIZE_CACHE_FILE = Path(__file__).parent / ".size_cache.json"
-_size_cache: dict[str, float] = {}  # key: "repo_id|include" -> size_gb
-_SPLIT_RE = _re.compile(r'^(.+)-(\d{5})-of-(\d{5})\.gguf$')
-
-
-def _load_size_cache():
-    global _size_cache
-    if not _size_cache and _SIZE_CACHE_FILE.exists():
-        try:
-            _size_cache = _json.loads(_SIZE_CACHE_FILE.read_text())
-        except (OSError, _json.JSONDecodeError):
-            _size_cache = {}
-
-
-def _save_size_cache():
-    try:
-        _SIZE_CACHE_FILE.write_text(_json.dumps(_size_cache))
-    except OSError:
-        pass
-
-
-def _dedup_gguf(matched: list[tuple[str, int]]) -> list[tuple[str, int]]:
-    """Remove duplicate split+single GGUF files, prefer single."""
-    split_groups: dict[str, list[tuple[str, int]]] = {}
-    singles: list[tuple[str, int, str | None]] = []
-    for name, size in matched:
-        m = _SPLIT_RE.match(name)
-        if m:
-            split_groups.setdefault(m.group(1), []).append((name, size))
-        elif name.endswith('.gguf'):
-            singles.append((name, size, name[:-5]))
-        else:
-            singles.append((name, size, None))
-    single_bases = {s[2] for s in singles if s[2]}
-    result = [(n, s) for n, s, _ in singles]
-    for base, parts in split_groups.items():
-        if base not in single_bases:
-            result.extend(parts)
-    return result
-
-
-def fetch_download_size(repo_id: str, include: str) -> float | None:
-    """Get actual download size in GB from HF API. Cached on disk.
-    Returns None if API call fails (caller should fall back to formula)."""
-    _load_size_cache()
-    cache_key = f"{repo_id}|{include}"
-    if cache_key in _size_cache:
-        return _size_cache[cache_key]
-
-    try:
-        import urllib.request
-        url = f"https://huggingface.co/api/models/{repo_id}/tree/main"
-        req = urllib.request.Request(url, headers={"User-Agent": "Sable/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            files = _json.loads(resp.read())
-        matched = []
-        for f in files:
-            if not isinstance(f, dict):
-                continue
-            name = f.get("path", "")
-            size = f.get("size")
-            if size is None or not name.endswith(".gguf"):
-                continue
-            if include and not _fnmatch.fnmatch(name.lower(), include.lower()):
-                continue
-            matched.append((name, size))
-        deduped = _dedup_gguf(matched)
-        total_bytes = sum(s for _, s in deduped)
-        size_gb = round(total_bytes / (1024 ** 3), 2)
-        _size_cache[cache_key] = size_gb
-        _save_size_cache()
-        return size_gb
-    except Exception as e:
-        logger.debug("HF size fetch failed for %s: %s", repo_id, e)
-        return None
-
 
 def estimate_memory_gb(params_b: float, quant: str, ctx_size: int = 4096) -> float:
     """Estimate memory needed for a model at given quant and context."""
@@ -275,11 +194,8 @@ def score_model_for_hardware(
     mem_needed = estimate_memory_gb(params_b, quant, ctx_size)
     available = hw.usable_memory_gb
 
-    # Get real download size from HF API (cached), fall back to formula
-    include_pattern = f"*{quant.lower()}*"
-    download_size_gb = fetch_download_size(repo_id, include_pattern) if repo_id else None
-    if download_size_gb is None:
-        download_size_gb = params_b * _QUANT_MEMORY_PER_B.get(quant, 0.60)
+    # Estimate download size from formula (no network calls)
+    download_size_gb = params_b * _QUANT_MEMORY_PER_B.get(quant, 0.60)
 
     # Check disk space
     if download_size_gb > hw.disk_free_gb:
