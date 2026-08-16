@@ -7,6 +7,23 @@ import time
 from typing import Any
 
 
+def middle_truncate(text: str, limit: int) -> str:
+    """Truncate text keeping first and second half with a marker in the middle.
+
+    Preserves the beginning (headers, commands) and end (results, errors)
+    while cutting the middle. Returns original text if within limit.
+    """
+    if len(text) <= limit:
+        return text
+    half = limit // 2
+    omitted = len(text) - limit
+    return (
+        text[:half]
+        + f"\n\n[… {omitted:,} chars truncated …]\n\n"
+        + text[-half:]
+    )
+
+
 def start_event(tag_id: str, name: str, attrs: dict[str, str], content_preview: str) -> dict[str, Any]:
     """Emitted when a tag is dispatched to a handler."""
     return {
@@ -118,7 +135,7 @@ def build_tool_feedback(
 
         raw_output = "".join(outputs.get(tag_id, []))
         if len(raw_output) > max_output_per_skill:
-            raw_output = raw_output[:max_output_per_skill] + "\n... (truncated)"
+            raw_output = middle_truncate(raw_output, max_output_per_skill)
 
         block = header
         if raw_output.strip():

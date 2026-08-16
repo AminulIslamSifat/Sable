@@ -81,3 +81,6 @@ system/
 system/memory_cache.npz
 instruction/personal.md
 Brain/user_personality.json
+Brain/procedural.json
+Brain/disabled_tools.json
+Brain/disabled_skills.json

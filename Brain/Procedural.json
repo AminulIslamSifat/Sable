@@ -1313,6 +1313,180 @@
         "workaround for edit_file failures in sable",
         "use create_file instead of edit_file for complex content"
       ]
+    },
+    {
+      "key": "execute_shell_commands_directly",
+      "value": "When the user asks to run a shell command (e.g., ls, git status), use the execute_command tool or equivalent available tool to run it directly. Do not refuse, suggest manual execution, or offer to create a script file as a workaround. The agent has direct shell access and must use it when requested.",
+      "trigger": "when user asks to run any shell command or system utility",
+      "keywords": [
+        "execute",
+        "command",
+        "shell",
+        "run",
+        "ls"
+      ],
+      "source_query": "just run the command",
+      "tags": [
+        "shell",
+        "command",
+        "execute",
+        "tool",
+        "agent",
+        "workflow"
+      ],
+      "triggers": [
+        "just run the command",
+        "run ls for me",
+        "execute shell command",
+        "why won't you run commands",
+        "use execute_command tool"
+      ]
+    },
+    {
+      "key": "track_skill_path_from_start_event",
+      "value": "When injecting UI elements at skill_end that depend on file path or attrs, NEVER read from the skill_end event — it only carries result data. Instead, capture path/attrs from skill_start into a local variable (_lastSkillPath, _lastSkillName) and reference that variable at skill_end. Same pattern applies to history replay (_histSkillPath). This is because Sable's backend sends attrs (including path) only in skill_start events; skill_end events contain only execution results. Tool pending events also have empty attrs for create_file.",
+      "trigger": "when adding UI features that need file path at skill completion time",
+      "keywords": [
+        "skill_end",
+        "skill_start",
+        "path",
+        "attrs",
+        "event",
+        "streaming"
+      ],
+      "source_query": "theres supposed to be a card, where is it?",
+      "tags": [
+        "sable",
+        "streaming",
+        "skill-events",
+        "ui-injection",
+        "event-structure",
+        "frontend"
+      ],
+      "triggers": [
+        "theres supposed to be a card, where is it?",
+        "why is file path missing at skill_end",
+        "how to get file path when skill completes",
+        "skill_end event missing attrs sable",
+        "track path between skill_start and skill_end",
+        "preview card not showing after create_file"
+      ]
+    },
+    {
+      "key": "bg_endpoint_test_preserve_output",
+      "value": "When user requests a background command specifically to test an endpoint, streaming, or polling system, NEVER redirect stdout to /dev/null. The output IS the test payload — suppressing it defeats the purpose. Only redirect to /dev/null if the user explicitly asks for silent execution or if the command is purely a side-effect benchmark with no streaming validation. When in doubt during endpoint/streaming tests, pipe to a log file instead of discarding.",
+      "trigger": "when running background commands for endpoint or streaming tests",
+      "keywords": [
+        "background",
+        "endpoint",
+        "test",
+        "stdout",
+        "streaming"
+      ],
+      "source_query": "why would you pip it like that",
+      "tags": [
+        "sable",
+        "bg-command",
+        "endpoint-test",
+        "stdout",
+        "streaming",
+        "output",
+        "debugging"
+      ],
+      "triggers": [
+        "why would you pip it like that",
+        "don't suppress output when testing endpoints",
+        "background command needs visible output for testing",
+        "stop redirecting to dev null during stream tests",
+        "how to run bg command for endpoint validation",
+        "preserve stdout when testing streaming"
+      ]
+    },
+    {
+      "key": "chat_title_single_use_rule",
+      "value": "The chat_title tool must be called exactly once on the very first message of a new conversation to set a descriptive title. It must never be called again in subsequent messages unless the user explicitly requests a rename. Repeated calls are prohibited.",
+      "trigger": "when starting a new conversation or considering calling chat_title",
+      "keywords": [
+        "chat_title",
+        "title",
+        "rename",
+        "conversation"
+      ],
+      "source_query": "stop using chat_tittle on everysingle message",
+      "tags": [
+        "chat_title",
+        "tool_usage",
+        "protocol",
+        "conversation",
+        "rules"
+      ],
+      "triggers": [
+        "stop using chat_tittle on everysingle message",
+        "why are you setting the title every time",
+        "chat_title tool usage rules",
+        "only call chat_title once",
+        "don't repeat chat title"
+      ]
+    },
+    {
+      "key": "procedural_geometry_over_primitives",
+      "value": "When building organic 3D creatures (whales, octopus, manta rays) in Three.js procedurally, NEVER use primitive combinations (sphere+cone+cylinder). They look childish. Always use LatheGeometry with profile curves (10+ control points) for smooth continuous bodies, high segment counts (32+ radial, 48+ tubular), proper anatomical proportions, and vertex displacement for animation. Primitives are only acceptable for abstract/mechanical objects or when translucency/emissive materials hide geometric simplicity (e.g., jellyfish bells).",
+      "trigger": "when creating procedural 3D creatures or organic shapes in Three.js/WebGL",
+      "keywords": [
+        "threejs",
+        "procedural",
+        "geometry",
+        "lathe",
+        "creatures",
+        "organic"
+      ],
+      "source_query": "anyway teh design on those whale and things, horrible",
+      "tags": [
+        "threejs",
+        "procedural-geometry",
+        "lathe-geometry",
+        "3d-modeling",
+        "creatures",
+        "webgl",
+        "animation"
+      ],
+      "triggers": [
+        "anyway teh design on those whale and things, horrible",
+        "why do my procedural creatures look bad",
+        "how to make smooth organic 3D shapes threejs",
+        "lathe geometry vs primitives for animals",
+        "procedural whale octopus manta ray modeling",
+        "threejs creature geometry best practices"
+      ]
+    },
+    {
+      "key": "no_manual_memory_saves",
+      "value": "Do NOT manually save session logs, episodic notes, or semantic memories during conversation. Sable has an autonomous consolidation model that handles memory extraction and persistence automatically. Only interact with the memory tool directly when fixing a confirmed bug or addressing a specific user-requested memory operation. Unsolicited memory saves create noise and duplicate what consolidation already does.",
+      "trigger": "when tempted to save session context or conversation logs to memory",
+      "keywords": [
+        "memory",
+        "consolidation",
+        "auto-save",
+        "session-log",
+        "manual"
+      ],
+      "source_query": "stop updating your own memory, there is consolidation model for it, they can do it on their own lol. Touch ti when you see any problem with given memory",
+      "tags": [
+        "memory",
+        "consolidation",
+        "workflow",
+        "auto-save",
+        "sable",
+        "agent-behavior"
+      ],
+      "triggers": [
+        "stop updating your own memory, there is consolidation model for it, they can do it on their own lol. Touch ti when you see any problem with given memory",
+        "don't save memories manually",
+        "let consolidation handle memory",
+        "when should I use memory tool directly",
+        "stop auto-saving session logs",
+        "memory consolidation is automatic"
+      ]
     }
   ]
 }

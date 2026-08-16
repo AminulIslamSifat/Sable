@@ -14,7 +14,7 @@
   <link rel="stylesheet" href="/static/css/panels.css?v=54">
   <link rel="stylesheet" href="/static/css/components.css?v=14">
   <link rel="stylesheet" href="/static/css/responsive.css?v=6">
-  <link rel="stylesheet" href="/static/css/agents.css?v=31">
+  <link rel="stylesheet" href="/static/css/agents.css?v=33">
   <link rel="stylesheet" href="/static/css/cookbook.css?v=1">
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v=2">
 
@@ -183,8 +183,11 @@
   <main class="main">
     <header>
       <div class="header-row">
-        <div class="header-cell header-icon-cell">
+        <div class="header-cell header-icon-cell header-left-pair">
           <button id="sidebarToggle" class="icon-btn" title="Toggle sidebar"><span class="icon-emoji">☰</span><i data-lucide="panel-left-close" class="icon-lucide"></i></button>
+        </div>
+        <div class="header-cell header-icon-cell header-left-pair">
+          <button id="personaQuickBtn" class="icon-btn" title="Persona & Format"><span class="icon-emoji">👤</span><i data-lucide="user-circle" class="icon-lucide"></i></button>
         </div>
         <!-- IDE Tab Bar (in top bar, between sidebar toggle and right buttons) -->
         <div id="editorTabBar" class="ide-header-tab-bar hidden"></div>
@@ -201,13 +204,13 @@
           </div>
           <div class="header-agent-cell" id="agentTopBarSlot"></div>
         </div>
-        <div class="header-cell header-icon-cell">
-          <button id="runFileBtn" class="icon-btn" title="Run current file"><span class="icon-emoji">▶</span><i data-lucide="play" class="icon-lucide"></i></button>
-        </div>
-        <div class="header-cell header-icon-cell">
+        <div class="header-cell header-icon-cell header-right-pair">
           <button id="terminalToggle" class="icon-btn" title="Toggle terminal"><span class="icon-emoji">🖥</span><i data-lucide="terminal" class="icon-lucide"></i></button>
         </div>
-        <div class="header-cell header-icon-cell">
+        <div class="header-cell header-icon-cell header-right-pair">
+          <button id="runFileBtn" class="icon-btn" title="Run current file"><span class="icon-emoji">▶</span><i data-lucide="play" class="icon-lucide"></i></button>
+        </div>
+        <div class="header-cell header-icon-cell header-right-pair">
           <button id="diffToggleBtn" class="icon-btn" title="Toggle file edit sidebar"><span class="icon-emoji">✎</span><i data-lucide="file-pen-line" class="icon-lucide"></i></button>
         </div>
       </div>
@@ -1491,13 +1494,24 @@
   </script>
   <script src="/static/app.js?v=160"></script>
   <script src="/static/src/research.js?v=10"></script>
-  <script src="/static/js/agents.js?v=24"></script>
+  <script src="/static/js/agents.js?v=26"></script>
   <script src="/static/js/filesystem.js?v=31"></script>
   <script src="/static/js/mode.js?v=19"></script>
   <script src="/static/js/resize-panels.js?v=1"></script>
   <script src="/static/js/terminal.js?v=4"></script>
   <script src="/static/js/cookbook.js?v=4"></script>
-  <script src="/static/js/personas.js?v=1"></script>
+<!-- Persona Quick Popup (portal — positioned via JS) -->
+<div id="personaQuickPopup" class="persona-quick-popup hidden">
+  <div class="pq-header">Persona</div>
+  <div id="pqPersonaList" class="pq-list"></div>
+  <div class="pq-divider"></div>
+  <button id="pqFormatToggle" class="pq-format-btn">
+    <span class="pq-format-label">output_format</span>
+    <span class="pq-format-state">ON</span>
+  </button>
+</div>
+
+  <script src="/static/js/personas.js?v=3"></script>
 
   <script>
     /* Keep mode-toggle-compact pill indicator in sync with active button */

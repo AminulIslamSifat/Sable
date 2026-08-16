@@ -155,20 +155,28 @@ def build_system_prompt(model_id: str) -> str | None:
             except (OSError, Exception):
                 pass
 
-    if not parts:
-        return None
+    # --- Output Directory (always injected, not toggleable) ---
+    from engine.config import OUTPUT_ROOT as _OUT
+    parts.append(
+        f"# Output Directory (MANDATORY)\n"
+        f"ALL generated content (notes, research, text files, agent logs, assets, downloads) "
+        f"MUST be saved under `{_OUT}/`. NEVER save to CWD or project root unless explicitly instructed.\n"
+        f"Subdirs: notes/, research/, agent/, assets/, sessions/, logs/.\n"
+        f"When user asks to 'save' anything without specifying a path, default to `{_OUT}/notes/` "
+        f"for text/docs, or the appropriate subdirectory otherwise."
+    )
+
     return "\n\n***\n\n".join(parts)
 
 
 def _distilled_prompt() -> str:
     """Minimal agentic prompt — same philosophy as groq connector."""
     base = (
-        "Every agentic tag must be wrapped in a <tool_call>...</tool_call> block. "
+        "CRITICAL RULE: Every response may contain exactly ONE <tool_call> opening tag and ONE </tool_call> closing tag.\n"
         "The extractor only reads what is inside <tool_call>; anything outside is prose.\n\n"
-        "You may put MULTIPLE tool calls in one block as a JSON array: "
-        "<tool_call>[{\"name\": \"grep\", ...}, {\"name\": \"view_file\", ...}]</tool_call>\n"
-        "Prefer one block with an array over multiple separate blocks.\n\n"
-        "Tags: <get_file>/abs/path</get_file> \u00b7 <execute_command>cmd</execute_command>\n\n"
+        "Single call: <tool_call>{\"name\": \"grep\", ...}</tool_call>\n"
+        "Multiple calls: <tool_call>[{\"name\": \"grep\", ...}, {\"name\": \"view_file\", ...}]</tool_call>\n"
+        "NEVER output multiple separate <tool_call> blocks. Always wrap ALL calls in ONE array inside ONE wrapper.\n\n"
         "If you use <tool_call>, keep prose to ONE short sentence before the block. "
         "<tool_call> appears only in plain text, never inside a fenced code block."
     )

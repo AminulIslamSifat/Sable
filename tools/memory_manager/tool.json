@@ -1,0 +1,60 @@
+[
+  {
+    "name": "memory",
+    "description": "CRUD + merge + search for Brain memory entries (semantic, episodic, ephemeral, procedural, protected).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "One of: list, get, add, update, delete, merge, search"
+        },
+        "category": {
+          "type": "string",
+          "description": "Memory category: semantic, episodic, ephemeral, procedural, protected"
+        },
+        "key": {
+          "type": "string",
+          "description": "Entry key (required for get/update/delete; used as primary identifier)"
+        },
+        "value": {
+          "type": "string",
+          "description": "Entry value/content (for add/update)"
+        },
+        "tags": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Tags for the entry (for add/update)"
+        },
+        "triggers": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Trigger phrases (for add/update)"
+        },
+        "keywords": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Keywords for procedural entries"
+        },
+        "trigger": {
+          "type": "string",
+          "description": "Trigger string for procedural entries"
+        },
+        "query": {
+          "type": "string",
+          "description": "Search query (for search action)"
+        },
+        "target_key": {
+          "type": "string",
+          "description": "Target key for merge (merge source key INTO target key)"
+        },
+        "source_keys": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Source keys to merge from (merge these into target_key)"
+        }
+      },
+      "required": ["action"]
+    }
+  }
+]

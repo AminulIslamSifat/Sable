@@ -1057,6 +1057,13 @@
     window.dispatchEvent(new Event('cwd-changed'));
     loadSidebarTree();
     openRoot(path);
+    // Ensure right panel is visible when picking a folder
+    if (!document.body.classList.contains("diff-open")) {
+      document.body.classList.add("diff-open");
+      document.body.classList.remove("tracknote-open");
+      if (typeof AgentPanel !== "undefined") AgentPanel.close();
+    }
+    if (typeof setFsSidebarMode === "function") setFsSidebarMode("files");
   }
 
   async function loadSidebarTree() {

@@ -224,11 +224,20 @@ function addAgentBatchCard(agents) {
 // --------------------------------------------------------------------------
 // Agent Panel (slide-in chat view)
 // --------------------------------------------------------------------------
+function stripToolJson(text) {
+  let t = (text || "").replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "");
+  t = t.replace(/\{\s*"name"\s*:\s*"[\w-]+"\s*,\s*"arguments"\s*:\s*\{[\s\S]*?\}\s*\}/g, "");
+  return t.replace(/\n{3,}/g, "\n\n").trim();
+}
+
 const AgentPanel = {
   el: null,
   bodyEl: null,
   currentAgentId: null,
   abortController: null,
+  _userScrolled: false,
+  _scrollRafPending: false,
+  _isRunning: false,
 
   init() {
     if (this.el) return;
@@ -245,22 +254,81 @@ const AgentPanel = {
       `<div class="agent-panel-footer">` +
         `<span class="ap-timer">0:00</span>` +
         `<span class="ap-iteration">loop 0</span>` +
-        `<span class="ap-browser-data">None</span>` +
+        `<div class="ap-input-wrap">` +
+          `<input class="ap-input" type="text" placeholder="Guide the agent…" />` +
+          `<button class="ap-send-btn">${lucideIcon("➤")}</button>` +
+        `</div>` +
         `<button class="agent-panel-stop hidden">■ stop</button>` +
       `</div>`;
     document.body.appendChild(this.el);
     this.bodyEl = this.el.querySelector(".agent-panel-body");
     this.timerEl = this.el.querySelector(".ap-timer");
     this.iterEl = this.el.querySelector(".ap-iteration");
+    this.inputEl = this.el.querySelector(".ap-input");
+    this.sendBtnEl = this.el.querySelector(".ap-send-btn");
     this.el.querySelector(".agent-panel-close").onclick = () => this.close();
     this.el.querySelector(".agent-panel-stop").onclick = () => this.stopAgent();
+    this.sendBtnEl.onclick = () => this._sendGuide();
+    this.inputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); this._sendGuide(); }
+    });
+    // Smart scroll tracking
+    this.bodyEl.addEventListener("scroll", () => {
+      const gap = this.bodyEl.scrollHeight - this.bodyEl.scrollTop - this.bodyEl.clientHeight;
+      this._userScrolled = gap > 60;
+    }, { passive: true });
     activateLucideIcons(this.el);
+  },
+
+  async _sendGuide() {
+    const text = this.inputEl.value.trim();
+    if (!text || !this.currentAgentId || !this._isRunning) return;
+    this.inputEl.value = "";
+    // Show user message immediately in panel
+    this._appendUserMsg(text);
+    this._scrollBottom(true);
+    try {
+      await fetch(`/api/agents/${this.currentAgentId}/message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text }),
+      });
+    } catch { /* silent fail */ }
+  },
+
+  _appendUserMsg(text) {
+    const div = document.createElement("div");
+    div.className = "msg user ap-user-msg";
+    const textEl = document.createElement("div");
+    textEl.className = "user-text";
+    textEl.textContent = text;
+    div.appendChild(textEl);
+    this.bodyEl.appendChild(div);
+  },
+
+  _scrollBottom(force) {
+    if (!this.bodyEl) return;
+    if (!force && this._userScrolled) return;
+    if (this._scrollRafPending) return;
+    this._scrollRafPending = true;
+    requestAnimationFrame(() => {
+      this._scrollRafPending = false;
+      if (!this.bodyEl) return;
+      if (!force) {
+        const gap = this.bodyEl.scrollHeight - this.bodyEl.scrollTop - this.bodyEl.clientHeight;
+        if (gap > 80) { this._userScrolled = true; return; }
+      }
+      this.bodyEl.scrollTop = this.bodyEl.scrollHeight;
+    });
   },
 
   async open(agentId, role, task) {
     this.init();
     this.close(); // dismiss any existing stream
     this.currentAgentId = agentId;
+    this._userScrolled = false;
+    this._scrollRafPending = false;
+    this._isRunning = true;
 
     // Header
     this.el.querySelector(".agent-panel-title").textContent = `${role || "agent"}`;
@@ -273,6 +341,9 @@ const AgentPanel = {
     this.bodyEl.innerHTML = "";
     this._clearTodos();
     if (this.iterEl) this.iterEl.textContent = "loop 0";
+    // Enable/disable input based on running state
+    this.inputEl.disabled = false;
+    this.sendBtnEl.disabled = false;
 
     // First: load existing messages + status + timing from DB
     let agentFinished = false;
@@ -290,16 +361,9 @@ const AgentPanel = {
         agentFinished = true;
         this._setDone(data.status === "failed" ? "failed" : "completed");
       }
-      // Populate model + browser_data from API
+      // Populate model from API
       if (data.model) {
         this.el.querySelector(".agent-panel-model").textContent = data.model;
-      }
-      const bdEl = this.el.querySelector(".ap-browser-data");
-      if (bdEl) {
-        const raw = data.browser_data_dir || "";
-        // Extract just the last path segment (e.g. "browser-data-acc3")
-        const label = raw ? raw.split("/").pop() : "None";
-        bdEl.textContent = label;
       }
       // Render initial todos from API response (must be inside try — data is block-scoped)
       if (data.todos && data.todos.length) {
@@ -314,6 +378,9 @@ const AgentPanel = {
     const stopBtn = this.el.querySelector(".agent-panel-stop");
     if (agentFinished) {
       stopBtn.classList.add("hidden");
+      this._isRunning = false;
+      this.inputEl.disabled = true;
+      this.sendBtnEl.disabled = true;
     } else {
       stopBtn.classList.remove("hidden");
       stopBtn.disabled = false;
@@ -329,19 +396,22 @@ const AgentPanel = {
     for (const msg of messages) {
       const role = msg.role || "user";
       if (role === "system") continue; // skip system prompt in panel view
-      const div = document.createElement("div");
-      div.className = `ap-msg ap-${role}`;
-      let html;
-      if (typeof marked !== "undefined" && (role === "assistant" || role === "tool")) {
-        const raw = marked.parse(msg.content || "");
-        html = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw, { FORBID_TAGS: ["action", "grep", "glob", "list_dir", "execute_command", "get_file", "view_file", "edit_file", "create_file", "insert_file", "spawn_agent", "ask_user", "mcp_call", "chat_title"] }) : raw;
-      } else {
-        html = `<p>${escHtml(msg.content || "")}</p>`;
+      if (role === "user") {
+        this._appendUserMsg(msg.content || "");
+      } else if (role === "assistant" || role === "tool") {
+        const clean = stripToolJson(msg.content || "");
+        if (!clean) continue; // pure tool-call message — nothing to show
+        const div = document.createElement("div");
+        div.className = "msg bot";
+        const content = document.createElement("div");
+        content.className = "md-content";
+        const raw = typeof marked !== "undefined" ? marked.parse(clean) : escHtml(clean);
+        content.innerHTML = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw, { FORBID_TAGS: ["action", "grep", "glob", "list_dir", "execute_command", "get_file", "view_file", "edit_file", "create_file", "insert_file", "spawn_agent", "ask_user", "mcp_call", "chat_title"] }) : raw;
+        div.appendChild(content);
+        this.bodyEl.appendChild(div);
       }
-      div.innerHTML = `<div class="ap-msg-role">${escHtml(role)}</div><div class="ap-msg-content">${html}</div>`;
-      this.bodyEl.appendChild(div);
     }
-    this._scrollBottom();
+    this._scrollBottom(true);
   },
 
   _connectStream(agentId) {
@@ -365,6 +435,13 @@ const AgentPanel = {
     const decoder = new TextDecoder();
     let buffer = "";
     let currentAnswerEl = null;
+    let currentSkillCard = null;
+
+    const FORBID_TAGS = ["action", "grep", "glob", "list_dir", "execute_command", "get_file", "view_file", "edit_file", "create_file", "insert_file", "spawn_agent", "ask_user", "mcp_call", "chat_title"];
+    const renderMd = (text) => {
+      const raw = typeof marked !== "undefined" ? marked.parse(text || "") : escHtml(text || "");
+      return typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw, { FORBID_TAGS }) : raw;
+    };
 
     while (true) {
       const { done, value } = await reader.read();
@@ -384,8 +461,8 @@ const AgentPanel = {
           // Live token streaming — append to current answer element
           if (!currentAnswerEl) {
             currentAnswerEl = document.createElement("div");
-            currentAnswerEl.className = "ap-msg ap-assistant ap-streaming";
-            currentAnswerEl.innerHTML = `<div class="ap-msg-role">assistant</div><div class="ap-msg-content"><span class="ap-raw"></span></div>`;
+            currentAnswerEl.className = "msg bot streaming ap-streaming";
+            currentAnswerEl.innerHTML = `<div class="md-content"><span class="ap-raw"></span></div>`;
             this.bodyEl.appendChild(currentAnswerEl);
           }
           const rawSpan = currentAnswerEl.querySelector(".ap-raw");
@@ -393,68 +470,107 @@ const AgentPanel = {
           this._scrollBottom();
         } else if (evt.type === "answer") {
           // Final answer — replace raw streaming with rendered markdown
-          if (currentAnswerEl) {
-            currentAnswerEl.classList.remove("ap-streaming");
-            const raw = typeof marked !== "undefined" ? marked.parse(evt.text || "") : escHtml(evt.text || "");
-            const html = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw, { FORBID_TAGS: ["action", "grep", "glob", "list_dir", "execute_command", "get_file", "view_file", "edit_file", "create_file", "insert_file", "spawn_agent", "ask_user", "mcp_call", "chat_title"] }) : raw;
-            currentAnswerEl.querySelector(".ap-msg-content").innerHTML = html;
-          } else {
+          const cleanText = stripToolJson(evt.text);
+          if (!cleanText && currentAnswerEl) {
+            currentAnswerEl.remove(); // pure tool-call turn — drop the raw blob
+          } else if (cleanText && currentAnswerEl) {
+            currentAnswerEl.classList.remove("streaming", "ap-streaming");
+            currentAnswerEl.querySelector(".md-content").innerHTML = renderMd(cleanText);
+          } else if (cleanText) {
             // No chunks received (e.g. history replay) — create fresh
-            currentAnswerEl = document.createElement("div");
-            currentAnswerEl.className = "ap-msg ap-assistant";
-            const raw = typeof marked !== "undefined" ? marked.parse(evt.text || "") : escHtml(evt.text || "");
-            const html = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw, { FORBID_TAGS: ["action", "grep", "glob", "list_dir", "execute_command", "get_file", "view_file", "edit_file", "create_file", "insert_file", "spawn_agent", "ask_user", "mcp_call", "chat_title"] }) : raw;
-            currentAnswerEl.innerHTML = `<div class="ap-msg-role">assistant</div><div class="ap-msg-content">${html}</div>`;
-            this.bodyEl.appendChild(currentAnswerEl);
+            const div = document.createElement("div");
+            div.className = "msg bot";
+            div.innerHTML = `<div class="md-content">${renderMd(cleanText)}</div>`;
+            this.bodyEl.appendChild(div);
           }
           currentAnswerEl = null;
           this._scrollBottom();
+        } else if (evt.type === "user_message") {
+          // User guidance message (from the input)
+          this._appendUserMsg(evt.text || "");
+          this._scrollBottom(true);
         } else if (evt.type === "skill_start") {
-          const card = document.createElement("div");
-          card.className = "ap-skill-card";
-          card.dataset.skill = evt.name || "";
-          card.innerHTML = `<span class="ap-skill-icon">⚙</span><span class="ap-skill-name">${escHtml(evt.name || "tool")}</span><span class="ap-skill-status">running…</span>`;
-          this.bodyEl.appendChild(card);
+          currentSkillCard = document.createElement("details");
+          currentSkillCard.className = "ap-skill-details";
+          currentSkillCard.dataset.skill = evt.name || "";
+          
+          // Extract command/input preview from attrs
+          let argsPreview = "";
+          if (evt.attrs) {
+            const previewFields = ["command", "path", "pattern", "query", "url", "task"];
+            for (const field of previewFields) {
+              if (evt.attrs[field]) {
+                argsPreview = String(evt.attrs[field]).slice(0, 80);
+                if (argsPreview.length === 80) argsPreview += "…";
+                break;
+              }
+            }
+          }
+          
+          currentSkillCard.innerHTML =
+            `<summary class="ap-skill-summary">` +
+              `<span class="ap-skill-icon">⚙</span>` +
+              `<span class="ap-skill-name">${escHtml(evt.name || "tool")}</span>` +
+              (argsPreview ? `<span class="ap-skill-args">${escHtml(argsPreview)}</span>` : "") +
+              `<span class="ap-skill-status">running…</span>` +
+            `</summary>` +
+            `<div class="ap-skill-body"></div>`;
+          this.bodyEl.appendChild(currentSkillCard);
           this._scrollBottom();
         } else if (evt.type === "skill_output") {
-          // Append output to last skill card
-          const cards = this.bodyEl.querySelectorAll(".ap-skill-card");
-          const last = cards[cards.length - 1];
-          if (last) {
-            const out = document.createElement("pre");
-            out.className = "ap-skill-output";
-            out.textContent = (evt.text || "").slice(0, 2000);
-            last.appendChild(out);
+          const body = currentSkillCard ? currentSkillCard.querySelector(".ap-skill-body") : null;
+          if (body) {
+            // Merge into existing <pre> block instead of creating new ones
+            let out = body.querySelector(".ap-skill-output");
+            if (!out) {
+              out = document.createElement("pre");
+              out.className = "ap-skill-output";
+              body.appendChild(out);
+            }
+            const newText = (evt.text || "").slice(0, 3000);
+            out.textContent += newText;
             this._scrollBottom();
           }
         } else if (evt.type === "skill_end") {
-          const cards = this.bodyEl.querySelectorAll(".ap-skill-card");
-          const last = cards[cards.length - 1];
-          if (last) {
-            const status = last.querySelector(".ap-skill-status");
+          if (currentSkillCard) {
+            const status = currentSkillCard.querySelector(".ap-skill-status");
             if (status) {
-              status.textContent = evt.ok ? "✓ done" : "✗ error";
+              const secs = evt.duration_ms != null ? ` ${(evt.duration_ms / 1000).toFixed(1)}s` : "";
+              status.textContent = (evt.ok ? "✓" : "✗") + secs;
               status.className = `ap-skill-status ${evt.ok ? "ok" : "fail"}`;
             }
+            // Surface result/error inside the card body (visible on expand)
+            const body = currentSkillCard.querySelector(".ap-skill-body");
+            if (body) {
+              if (evt.error) {
+                const errPre = document.createElement("pre");
+                errPre.className = "ap-skill-output";
+                errPre.textContent = String(evt.error).slice(0, 3000);
+                body.appendChild(errPre);
+              } else if (!body.children.length && evt.result && Object.keys(evt.result).length) {
+                const resPre = document.createElement("pre");
+                resPre.className = "ap-skill-output";
+                resPre.textContent = JSON.stringify(evt.result, null, 2).slice(0, 3000);
+                body.appendChild(resPre);
+              }
+            }
+            currentSkillCard.removeAttribute("open");
+            currentSkillCard = null;
           }
         } else if (evt.type === "todo_progress") {
           if (evt.todos) this._renderTodos(evt.todos);
         } else if (evt.type === "model_fallback") {
-          // Update header model badge live
           const modelEl = this.el.querySelector(".agent-panel-model");
           if (modelEl) modelEl.textContent = evt.to || "";
-          // Show fallback notice in conversation
           const notice = document.createElement("div");
-          notice.className = "ap-msg ap-system";
-          notice.innerHTML = `<div class="ap-msg-role">system</div><div class="ap-msg-content"><em>⚡ Model fallback: ${escHtml(evt.from || "?")} → ${escHtml(evt.to || "?")}</em><br><small>${escHtml((evt.reason || "").slice(0, 150))}</small></div>`;
+          notice.className = "ap-system-note";
+          notice.innerHTML = `⚡ Model fallback: ${escHtml(evt.from || "?")} → ${escHtml(evt.to || "?")}`;
           this.bodyEl.appendChild(notice);
           this._scrollBottom();
         } else if (evt.type === "browser_fallback") {
-          const bdEl = this.el.querySelector(".ap-browser-data");
-          if (bdEl) bdEl.textContent = evt.to || "None";
           const notice = document.createElement("div");
-          notice.className = "ap-msg ap-system";
-          notice.innerHTML = `<div class="ap-msg-role">system</div><div class="ap-msg-content"><em>🔄 Browser fallback: ${escHtml(evt.from || "default")} → ${escHtml(evt.to || "?")}</em><br><small>${escHtml((evt.reason || "").slice(0, 150))}</small></div>`;
+          notice.className = "ap-system-note";
+          notice.innerHTML = `🔄 Browser fallback: ${escHtml(evt.from || "default")} → ${escHtml(evt.to || "?")}`;
           this.bodyEl.appendChild(notice);
           this._scrollBottom();
         } else if (evt.type === "iteration") {
@@ -464,8 +580,8 @@ const AgentPanel = {
           break;
         } else if (evt.type === "error") {
           const errDiv = document.createElement("div");
-          errDiv.className = "ap-msg ap-error";
-          errDiv.textContent = evt.message || "Agent failed";
+          errDiv.className = "ap-system-note ap-error-note";
+          errDiv.textContent = "✗ " + (evt.message || "Agent failed");
           this.bodyEl.appendChild(errDiv);
           this._setDone("failed");
           break;
@@ -478,6 +594,9 @@ const AgentPanel = {
     const stopBtn = this.el.querySelector(".agent-panel-stop");
     if (stopBtn) { stopBtn.classList.add("hidden"); stopBtn.disabled = false; stopBtn.textContent = "■ stop"; }
     this._stopTimer();
+    this._isRunning = false;
+    if (this.inputEl) this.inputEl.disabled = true;
+    if (this.sendBtnEl) this.sendBtnEl.disabled = true;
     const statusEl = this.el.querySelector(".agent-panel-status");
     if (statusEl) statusEl.textContent = status === "completed" ? "✓ completed" : "✗ failed";
     this.el.classList.add(status === "completed" ? "panel-done" : "panel-failed");
@@ -527,10 +646,6 @@ const AgentPanel = {
   _clearTodos() {
     const widget = this.el.querySelector(".ap-todo-widget");
     if (widget) widget.remove();
-  },
-
-  _scrollBottom() {
-    if (this.bodyEl) this.bodyEl.scrollTop = this.bodyEl.scrollHeight;
   },
 
   close() {

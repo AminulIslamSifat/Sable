@@ -24,9 +24,8 @@ _end_event = end_event
 SABLE_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 SKILLS_DIR = SABLE_ROOT / "skills"
 INSTRUCTION_DIR = SABLE_ROOT / "instruction"
-OUTPUT_ROOT = SABLE_ROOT / "output"
-NOTES_DIR = OUTPUT_ROOT / "notes"
-ASSETS_DIR = OUTPUT_ROOT / "assets"
+# Use central config so output path stays in sync across the project
+from engine.config import OUTPUT_ROOT, NOTES_DIR, ASSETS_DIR
 SESSIONS_DIR = OUTPUT_ROOT / "sessions"
 UPLOAD_DIR = SABLE_ROOT / "system" / "uploads"
 BACKUP_DIR = SABLE_ROOT / ".sable_backups"

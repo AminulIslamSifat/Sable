@@ -5,7 +5,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Request
+
+from ..dependencies import service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["personas"])
 
@@ -75,6 +81,10 @@ async def set_active_persona(request: Request):
             raise HTTPException(404, f"Persona \'{name}\' not found")
     cfg["active"] = name
     _save_config(cfg)
+    try:
+        await service.sync_context()
+    except Exception as exc:
+        logger.warning("sync_context after persona switch failed: %s", exc)
     return {"status": "ok", "active": name}
 
 
@@ -101,6 +111,10 @@ async def toggle_output_format(request: Request):
     cfg = _load_config()
     cfg["output_format_enabled"] = bool(enabled)
     _save_config(cfg)
+    try:
+        await service.sync_context()
+    except Exception as exc:
+        logger.warning("sync_context after output_format toggle failed: %s", exc)
     return {"status": "ok", "output_format_enabled": enabled}
 
 
