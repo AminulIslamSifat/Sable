@@ -59,14 +59,30 @@ class ServeManager:
         return "https://github.com/ggerganov/llama.cpp#build"
 
     def _find_binary(self) -> str:
-        """Locate llama-server binary."""
-        # Try common binary names across distros
+        """Locate llama-server binary. Caches result in settings."""
+        state = get_state()
+
+        # Use stored path if it still exists
+        if state.settings.llama_server_bin:
+            p = Path(state.settings.llama_server_bin)
+            if p.exists() or shutil.which(state.settings.llama_server_bin):
+                return state.settings.llama_server_bin
+            # Stored path no longer valid, clear it
+            state.settings.llama_server_bin = ""
+            state.save()
+
+        # Auto-detect: try common binary names
         for name in ("llama-server", "llama-cpp-server", "llama-server-mainline"):
             path = shutil.which(name)
             if path:
+                state.settings.llama_server_bin = path
+                state.save()
+                logger.info("Detected llama-server: %s", path)
                 return path
+
         raise ServeError(
-            f"llama-server not found. Install with:\n  {self._install_hint()}"
+            f"llama-server not found. Install with:\n  {self._install_hint()}\n"
+            f"Or set the path in Cookbook Settings."
         )
 
     def _build_command(self, task: ServeTask) -> list[str]:
