@@ -100,95 +100,120 @@ class BrowserDaemon:
     """
 
     async def start_browser(self):
-        """Launch real system Chrome via subprocess, connect over CDP (stealth)."""
+        """Launch Playwright's bundled browser directly (no subprocess, no CDP)."""
         from playwright.async_api import async_playwright
 
-        # Resolve Chrome binary — prefer explicit path, then system search
-        chrome_path = self.executable_path or _find_system_chrome()
-        if not chrome_path:
-            raise RuntimeError(
-                "No system Chrome/Chromium found. Install google-chrome or "
-                "pass --executable=/path/to/chrome"
-            )
-
-        # Pick a free port for CDP
-        import socket as _sock
-        with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", 0))
-            cdp_port = s.getsockname()[1]
-        Path(CDP_PORT_FILE).write_text(str(cdp_port))
-
-        # Clean stale lock files from previous hard kills
-        if self.user_data_dir:
-            for lock_name in ("SingletonLock", "SingletonSocket",
-                              "SingletonCookie", "DevToolsActivePort"):
-                lock_path = Path(self.user_data_dir) / lock_name
-                if lock_path.exists():
-                    lock_path.unlink(missing_ok=True)
-
-        # Build Chrome launch args (stealth-first, matching deepseek engine)
-        cmd = [
-            chrome_path,
-            f"--remote-debugging-port={cdp_port}",
-            f"--user-data-dir={self.user_data_dir}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--no-sandbox",
-            "--disable-blink-features=AutomationControlled",
-            "--disable-infobars",
-            "--disable-dev-shm-usage",
-            "--disk-cache-size=2097152",
-            "--disable-gpu-shader-cache",
-            "--disable-component-update",
-        ]
-        if self.headless:
-            cmd.append("--headless=new")
-        # Wayland/X11 display
-        if os.environ.get("WAYLAND_DISPLAY"):
-            cmd.append("--ozone-platform=wayland")
-        elif os.environ.get("DISPLAY"):
-            pass  # X11 is default
-
-        # Launch Chrome as a real process — no Playwright fingerprints
-        self._chrome_proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-
-        # Wait for CDP endpoint to become available
-        cdp_url = f"http://127.0.0.1:{cdp_port}"
-        for _ in range(40):  # up to 8s
-            try:
-                with _sock.create_connection(("127.0.0.1", cdp_port), timeout=0.2):
-                    break
-            except OSError:
-                await asyncio.sleep(0.2)
-        else:
-            self._chrome_proc.kill()
-            raise RuntimeError("Chrome launched but CDP port never opened")
-
-        # Connect Playwright over CDP — invisible automation layer
         self.pw = await async_playwright().start()
-        self.browser = await self.pw.chromium.connect_over_cdp(cdp_url)
 
-        # Grab default context (Chrome's own, with real fingerprint)
-        self.context = self.browser.contexts[0] if self.browser.contexts \
-            else await self.browser.new_context()
-        self.page = self.context.pages[0] if self.context.pages \
-            else await self.context.new_page()
+        # Use Playwright's native browser launch — clean, fast, no sandbox hammering
+        launch_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--disable-dev-shm-usage",
+        ]
+        if not self.headless and os.environ.get("WAYLAND_DISPLAY"):
+            launch_args.append("--ozone-platform=wayland")
 
-        # Inject stealth patches before any page JS runs
-        await self.context.add_init_script(self._STEALTH_JS)
+        launch_opts = {
+            "headless": self.headless,
+            "args": launch_args,
+        }
+        if self.executable_path:
+            launch_opts["executable_path"] = self.executable_path
+
+        # Select browser engine
+        if self.browser_type == "firefox":
+            self.browser = await self.pw.firefox.launch(**launch_opts)
+        elif self.browser_type == "webkit":
+            self.browser = await self.pw.webkit.launch(**launch_opts)
+        else:
+            self.browser = await self.pw.chromium.launch(chromium_sandbox=True, **launch_opts)
+
+        # Persistent context if user_data_dir specified, else fresh context
+        if self.user_data_dir:
+            self.context = await self.pw.chromium.launch_persistent_context(
+                self.user_data_dir,
+                headless=self.headless,
+                args=launch_args,
+                executable_path=self.executable_path,
+                chromium_sandbox=True,
+            )
+            self.browser = None  # persistent context owns the browser
+            pages = self.context.pages
+            self.page = pages[0] if pages else await self.context.new_page()
+        else:
+            self.context = await self.browser.new_context(
+                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+            )
+            self.page = await self.context.new_page()
 
         self._attach_listeners(self.page)
-        Path(SCREENSHOT_DIR).mkdir(exist_ok=True)
+        self._attach_context_listeners()
+        # Setup CDP on initial page for cross-origin iframe capture
+        try:
+            cdp = await self.context.new_cdp_session(self.page)
+            await cdp.send("Network.enable")
+            cdp.on("Network.requestWillBeSent", lambda params: self._on_cdp_request(params))
+            cdp.on("Network.responseReceived", lambda params: self._on_cdp_response(params))
+        except Exception as e:
+            print(f"CDP setup warning: {e}")
 
     def _attach_listeners(self, page):
-        """Attach network + console listeners to a page."""
+        """Attach network + console listeners to a page and all its frames."""
         page.on("request", self._on_request)
         page.on("response", self._on_response)
         page.on("console", self._on_console)
+        # Also attach to all existing frames (cross-origin iframes)
+        for frame in page.frames:
+            if frame != page.main_frame:
+                try:
+                    frame.page.on("request", self._on_request)
+                    frame.page.on("response", self._on_response)
+                except Exception:
+                    pass
+
+    def _attach_context_listeners(self):
+        """Attach listeners to context so new pages are auto-captured."""
+        def _on_new_page(page):
+            self._attach_listeners(page)
+            # Also use CDP session for cross-origin iframe network capture
+            try:
+                import asyncio
+                async def _setup_cdp():
+                    try:
+                        cdp = await page.context.new_cdp_session(page)
+                        await cdp.send("Network.enable")
+                        cdp.on("Network.requestWillBeSent", lambda params: self._on_cdp_request(params))
+                        cdp.on("Network.responseReceived", lambda params: self._on_cdp_response(params))
+                    except Exception:
+                        pass
+                asyncio.ensure_future(_setup_cdp())
+            except Exception:
+                pass
+        self.context.on("page", _on_new_page)
+
+    def _on_cdp_request(self, params):
+        if self._capturing_network:
+            req = params.get("request", {})
+            self._network_log.append({
+                "type": "request",
+                "method": req.get("method", ""),
+                "url": req.get("url", "")[:300],
+                "resource_type": params.get("type", ""),
+                "headers": req.get("headers", {}),
+                "post_data": (req.get("postData") or "")[:5000],
+                "ts": time.time(),
+            })
+
+    def _on_cdp_response(self, params):
+        if self._capturing_network:
+            resp = params.get("response", {})
+            self._network_log.append({
+                "type": "response",
+                "status": resp.get("status", 0),
+                "url": resp.get("url", "")[:300],
+                "headers": resp.get("headers", {}),
+                "ts": time.time(),
+            })
 
     def _on_request(self, request):
         if self._capturing_network:
@@ -198,7 +223,7 @@ class BrowserDaemon:
                 "url": request.url[:300],
                 "resource_type": request.resource_type,
                 "headers": dict(request.headers) if request.headers else {},
-                "post_data": (request.post_data or "")[:500],
+                "post_data": (request.post_data or "")[:5000],
                 "ts": time.time(),
             })
 
@@ -234,15 +259,7 @@ class BrowserDaemon:
                 await self.pw.stop()
             except Exception:
                 pass
-        # Kill the Chrome subprocess we spawned
-        proc = getattr(self, "_chrome_proc", None)
-        if proc and proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-        # Clean up CDP port file
+        # Clean up CDP port file if it exists from old runs
         if os.path.exists(CDP_PORT_FILE):
             os.unlink(CDP_PORT_FILE, missing_ok=True)
 
@@ -432,6 +449,27 @@ class BrowserDaemon:
         except (TypeError, ValueError):
             result = str(result)
         return {"result": result}
+
+    async def cmd_eval_frame(self, url_pattern: str, js: str) -> dict:
+        """Execute JS in an iframe matching url_pattern. Supports b64: and file: prefixes."""
+        if js.startswith("b64:"):
+            js = base64.b64decode(js[4:]).decode("utf-8")
+        elif js.startswith("file:"):
+            fpath = Path(js[5:])
+            if not fpath.exists():
+                return {"error": f"JS file not found: {fpath}"}
+            js = fpath.read_text(encoding="utf-8")
+        # Find matching frame
+        for frame in self.page.frames:
+            if url_pattern in (frame.url or ""):
+                result = await frame.evaluate(js)
+                try:
+                    json.dumps(result)
+                except (TypeError, ValueError):
+                    result = str(result)
+                return {"result": result, "frame_url": frame.url}
+        urls = [f.url for f in self.page.frames]
+        return {"error": f"No frame matching '{url_pattern}'. Available: {urls}"}
 
     async def cmd_wait(self, selector: str, timeout: int = 15000,
                        state: str = "visible") -> dict:
@@ -776,14 +814,46 @@ def main():
         if daemon_alive():
             print("Daemon already running.")
             sys.exit(0)
+
+        # Launch daemon as background subprocess (reliable, no fork issues)
+        import subprocess as _sp
+        log_path = "/tmp/browser_daemon.log"
+        cmd = [sys.executable, __file__, "_run_daemon",
+               "--headless" if headless else "--headed",
+               f"--browser={browser_type}"]
+        if executable_path:
+            cmd.append(f"--executable={executable_path}")
+        if user_data_dir:
+            cmd.append(f"--user-data-dir={user_data_dir}")
+        with open(log_path, "a") as log_f:
+            proc = _sp.Popen(cmd, stdout=log_f, stderr=log_f,
+                             start_new_session=True)
+        Path(PID_FILE).write_text(str(proc.pid))
+        print(f"Browser daemon started (pid={proc.pid}, headless={headless})")
+        print(f"Socket: {SOCKET_PATH}")
+        return
+
+        # Grandchild: redirect stdio and run daemon
+        sys.stdin = open(os.devnull, "r")
+        log_path = "/tmp/browser_daemon.log"
+        log_fd = open(log_path, "a")
+        sys.stdout = log_fd
+        sys.stderr = log_fd
+
+        Path(PID_FILE).write_text(str(os.getpid()))
+
         daemon = BrowserDaemon(headless=headless, browser_type=browser_type,
                                executable_path=executable_path,
                                user_data_dir=user_data_dir)
         try:
             asyncio.run(daemon.run())
-        except KeyboardInterrupt:
-            pass
-        return
+        except Exception as e:
+            print(f"Daemon crashed: {e}", file=log_fd)
+        finally:
+            for f in [SOCKET_PATH, PID_FILE]:
+                if os.path.exists(f):
+                    os.unlink(f)
+        os._exit(0)
 
     if action == "stop":
         if not daemon_alive():
@@ -804,6 +874,45 @@ def main():
             sys.exit(1)
         resp = send_command({"cmd": "status"})
         print(json.dumps(resp, indent=2))
+        return
+
+    # ─── Internal: run daemon in foreground (called by start via subprocess) ──
+    if action == "_run_daemon":
+        headless = "--headed" not in sys.argv
+        browser_type = "chromium"
+        executable_path = None
+        user_data_dir = None
+        for i, arg in enumerate(sys.argv):
+            if arg == "--browser" and i + 1 < len(sys.argv):
+                browser_type = sys.argv[i + 1]
+            elif arg.startswith("--browser="):
+                browser_type = arg.split("=", 1)[1]
+            elif arg == "--executable" and i + 1 < len(sys.argv):
+                executable_path = sys.argv[i + 1]
+            elif arg.startswith("--executable="):
+                executable_path = arg.split("=", 1)[1]
+            elif arg == "--user-data-dir" and i + 1 < len(sys.argv):
+                user_data_dir = sys.argv[i + 1]
+            elif arg.startswith("--user-data-dir="):
+                user_data_dir = arg.split("=", 1)[1]
+        if not user_data_dir:
+            try:
+                from engine.config import BROWSER_AUTOMATION_DATA_DIR
+                user_data_dir = str(BROWSER_AUTOMATION_DATA_DIR)
+            except ImportError:
+                _project_root = Path(__file__).resolve().parents[4]
+                user_data_dir = str(_project_root / "system" / "automation-browser-data")
+        daemon = BrowserDaemon(headless=headless, browser_type=browser_type,
+                               executable_path=executable_path,
+                               user_data_dir=user_data_dir)
+        try:
+            asyncio.run(daemon.run())
+        except Exception as e:
+            print(f"Daemon crashed: {e}")
+        finally:
+            for f in [SOCKET_PATH, PID_FILE]:
+                if os.path.exists(f):
+                    os.unlink(f)
         return
 
     # ─── Command passthrough ──────────────────────────────────────────────

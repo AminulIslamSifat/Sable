@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import shutil
 from pathlib import Path
@@ -178,3 +179,113 @@ def get_instruction(name: str) -> dict[str, str]:
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f"Instruction '{safe}' not found")
     return {"content": path.read_text(encoding="utf-8")}
+
+
+# ── Direct Tool Invocation (for Library panel UI) ────────────────────────────
+
+_TOOLS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "tools"
+
+@router.post("/api/tool/{tool_name}")
+async def invoke_tool_direct(tool_name: str, request: Request) -> dict[str, Any]:
+    """Directly invoke a tool's CLI script with JSON body as args.
+    Used by Library panel UI components (e.g., Image Generator)."""
+    # Whitelist allowed tools for direct invocation
+    ALLOWED_DIRECT = {"image_generator", "generate_image"}
+    if tool_name not in ALLOWED_DIRECT:
+        raise HTTPException(status_code=403, detail=f"Direct invocation not allowed for '{tool_name}'")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    # Map to the actual script
+    script_dir = _TOOLS_DIR / "image_generator" / "scripts"
+    script = script_dir / "image_generator.py"
+    if not script.is_file():
+        raise HTTPException(status_code=404, detail="Tool script not found")
+
+    provider = body.get("provider", "perchance")
+
+    # ── Pollinations: direct HTTP, no script needed ──
+    if provider == "pollinations":
+        import urllib.parse, urllib.request, time, hashlib
+        prompt = body.get("prompt", "")
+        model = body.get("model", "flux")
+        shape = body.get("shape", "square")
+        seed = body.get("seed")
+
+        dims = {"square": (768, 768), "portrait": (768, 1024), "landscape": (1024, 768)}
+        w, h = dims.get(shape, (768, 768))
+
+        encoded = urllib.parse.quote(prompt)
+        url = f"https://image.pollinations.ai/prompt/{encoded}?width={w}&height={h}&model={model}&nologo=true"
+        if seed:
+            url += f"&seed={seed}"
+
+        out_dir = Path.home() / "sable_output" / "assets"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"gen_poll_{int(time.time())}_{seed or 'rand'}.jpg"
+        out_path = out_dir / fname
+
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Sable/1.0"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = resp.read()
+            out_path.write_bytes(data)
+            return {
+                "ok": True,
+                "images": [{
+                    "ok": True,
+                    "path": str(out_path),
+                    "filename": fname,
+                    "seed": int(seed) if seed else 0,
+                    "width": w,
+                    "height": h,
+                    "size_bytes": len(data),
+                }],
+                "count": 1,
+                "provider": "pollinations",
+                "model": model,
+                "shape": shape,
+                "prompt_used": prompt,
+            }
+        except Exception as e:
+            return {"ok": False, "error": f"Pollinations failed: {e}"}
+
+    # ── Perchance: use existing CLI script ──
+    cli_args = ["generate"]
+    param_map = {
+        "prompt": "--prompt",
+        "style": "--style",
+        "shape": "--shape",
+        "count": "--count",
+        "negative_prompt": "--negative-prompt",
+        "seed": "--seed",
+        "key": "--key",
+    }
+    for key, flag in param_map.items():
+        val = body.get(key)
+        if val is not None and str(val) != "":
+            cli_args += [flag, str(val)]
+
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["python3", str(script)] + cli_args,
+            capture_output=True, text=True, timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Timed out after 120s"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    output = proc.stdout.strip()
+    if proc.returncode != 0:
+        err = proc.stderr.strip() or output or "Tool failed"
+        return {"ok": False, "error": err}
+
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError:
+        return {"ok": True, "raw": output}
