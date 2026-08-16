@@ -127,7 +127,8 @@ class AutoTurnEngine:
         summary = (
             f"[Agent {agent_id} ({role}) SUCCEEDED]\n"
             f"Task: {task_snippet}\n"
-            f"Full log + result saved to: {_output_dir}/{agent_id}.md"
+            f"Result saved to: {_output_dir}/{agent_id}.md"
+            f"Full log (step by step progress, tool call, etc) + result saved to: {_output_dir}/{agent_id}_conversation.md"
         )
 
         async with state.lock:
