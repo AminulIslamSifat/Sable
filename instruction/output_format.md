@@ -27,21 +27,17 @@ Multiple tool_call blocks in the same message.
 All tool calls use exactly ONE format. Single call or multiple calls — always a JSON array inside one tag pair:
 
 Single call:
-```
 <tool_call>
 [{"name": "tool_name", "arguments": {"param": "value"}}]
 </tool_call>
-```
 
 Multiple parallel calls:
-```
 <tool_call>
 [
   {"name": "grep", "arguments": {"pattern": "foo", "path": "/bar"}},
   {"name": "execute_command", "arguments": {"command": "ls -la"}}
 ]
 </tool_call>
-```
 
 ### Rules
 1. `name` must match a function name defined in the tools schema.
