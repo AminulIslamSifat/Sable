@@ -317,23 +317,26 @@
         startBtn.textContent = "Generating…";
         outputWrap.style.display = "none";
 
-        const systemPrompt = `You are a prompt generator. Your ONLY job is to read the user's task description and output ONE clean, ready-to-use prompt.
+        // Load prompt generator instruction from file (live, not hardcoded)
+        let pgInstruction = "";
+        try {
+          const instrRes = await fetch("/api/instruction/prompt_generator.md");
+          if (instrRes.ok) {
+            const instrData = await instrRes.json();
+            pgInstruction = instrData.content || "";
+          }
+        } catch {}
+        if (!pgInstruction) {
+          pgInstruction = "You are an expert prompt engineer. Generate a detailed, optimized prompt for the user's task. Output only the final prompt.";
+        }
 
-Rules:
-- Output NOTHING except the final prompt itself.
-- No explanations, no preamble, no markdown fences, no labels.
-- Do NOT repeat or rephrase the user's instructions back at them.
-- Do NOT add meta-commentary like "Here is your prompt" or "As requested".
-- The output must be directly usable as-is when pasted into an LLM or image generator.
-- If the user asks for an image prompt, write a vivid descriptive image generation prompt.
-- If the user asks for a coding prompt, write a precise technical prompt with constraints.
-- Adapt tone, structure, and detail level to match the task domain.
+        const systemPrompt = `${pgInstruction}
 
-Configuration context (for awareness only, do not mention in output):
+Configuration context (for awareness only, never mention in output):
 - Models: ${models.join(", ") || "default"}
 - Browser Data: ${browserAccounts.join(", ") || "default"}
 
-Now generate the prompt for this task:
+Generate the specification prompt for this task:
 ${task}`;
 
         try {
@@ -396,9 +399,26 @@ ${task}`;
       copyBtn.addEventListener("click", () => {
         const text = outputEl.textContent;
         if (!text) return;
+        const originalHTML = copyBtn.innerHTML;
         navigator.clipboard.writeText(text).then(
-          () => showToast("📋 Copied to clipboard", "success"),
-          () => showToast("❌ Copy failed", "error")
+          () => {
+            copyBtn.innerHTML = '<i data-lucide="check" style="width:13px;height:13px;display:inline;vertical-align:-2px;margin-right:4px;"></i> Copied';
+            copyBtn.classList.add("promptgen-copy-success");
+            if (window.lucide) lucide.createIcons({ nodes: [copyBtn] });
+            setTimeout(() => {
+              copyBtn.innerHTML = originalHTML;
+              copyBtn.classList.remove("promptgen-copy-success");
+              if (window.lucide) lucide.createIcons({ nodes: [copyBtn] });
+            }, 2000);
+          },
+          () => {
+            copyBtn.innerHTML = '<i data-lucide="x" style="width:13px;height:13px;display:inline;vertical-align:-2px;margin-right:4px;"></i> Failed';
+            if (window.lucide) lucide.createIcons({ nodes: [copyBtn] });
+            setTimeout(() => {
+              copyBtn.innerHTML = originalHTML;
+              if (window.lucide) lucide.createIcons({ nodes: [copyBtn] });
+            }, 2000);
+          }
         );
       });
 
@@ -413,6 +433,46 @@ ${task}`;
           chatInput.dispatchEvent(new Event("input", { bubbles: true }));
         }
       });
+
+      // ── Saved Prompts (inline, like Research tab) ──
+      const savedWrap = document.createElement("div");
+      savedWrap.className = "research-library";
+      savedWrap.innerHTML = `
+        <div class="research-lib-head"><i data-lucide="file-text" style="width:14px;height:14px;display:inline;vertical-align:middle;margin-right:4px;"></i> Saved Prompts</div>
+        <div id="pgSavedList" class="library-loading">Loading…</div>
+      `;
+      container.appendChild(savedWrap);
+      if (window.lucide) lucide.createIcons({ nodes: savedWrap.querySelectorAll("[data-lucide]") });
+
+      // Load saved prompts
+      try {
+        const res = await fetch("/api/library/prompts");
+        const items = await res.json();
+        const list = savedWrap.querySelector("#pgSavedList");
+        if (!items.length) {
+          list.innerHTML = '<div class="library-empty">No saved prompts yet. Generate one above.</div>';
+        } else {
+          list.innerHTML = "";
+          const grid = document.createElement("div");
+          grid.className = "library-card-grid";
+          items.forEach((item) => {
+            const card = document.createElement("div");
+            card.className = "library-card";
+            card.innerHTML = `
+              <div class="library-card-title">${escHtml(item.title)}</div>
+              <div class="library-card-date">${item.date || ""}</div>
+              <div class="library-card-preview">${escHtml(item.preview || "")}</div>
+            `;
+            card.addEventListener("click", () => openLibraryReader("prompts", item.filename, item.title));
+            grid.appendChild(card);
+          });
+          list.appendChild(grid);
+          if (window.lucide) lucide.createIcons({ nodes: grid.querySelectorAll("[data-lucide]") });
+        }
+      } catch {
+        const list = savedWrap.querySelector("#pgSavedList");
+        if (list) list.innerHTML = '<div class="library-empty">Failed to load saved prompts.</div>';
+      }
     }
 
 
