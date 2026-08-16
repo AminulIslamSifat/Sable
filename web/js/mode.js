@@ -92,8 +92,8 @@
           body.classList.add('ide-sidebar-open');
         }
       }
-      // In agent mode, let the existing handler in app.js do its thing
-    }, true); // capture phase so we can intercept before app.js handler
+      // In agent mode, let the existing handler in chat.js do its thing
+    }, true); // capture phase so we can intercept before chat.js handler
   }
 
   // ─── Compact Chat Auto-resize ───
@@ -139,7 +139,7 @@
     const mainFileInput = document.getElementById('fileInput');
     if (compactAttach && compactFileInput) {
       compactAttach.addEventListener('click', () => {
-        // Use main file input if available (has the change handler wired in app.js)
+        // Use main file input if available (has the change handler wired in chat.js)
         if (mainFileInput) {
           mainFileInput.click();
         } else {
@@ -221,7 +221,7 @@
     const text = chatCompactInput.value.trim();
     if (!text) return;
 
-    // Delegate to the main input + send mechanism in app.js
+    // Delegate to the main input + send mechanism in sse.js
     const mainInput = document.getElementById('input');
     if (mainInput && mainSend) {
       mainInput.value = text;
@@ -486,7 +486,7 @@
 
   // ─── Copy Button Fix for IDE Compact Chat ───
   // cloneNode(true) strips event listeners from mirrored copy buttons.
-  // Delegated click handler re-enables them without touching bundled app.js.
+  // Delegated click handler re-enables them without touching bundled chat.js.
 
   function setupCompactCopyDelegation() {
     const compactMsgs = document.getElementById('chatCompactMessages');
@@ -520,7 +520,7 @@
   // ─── Toolbar Button Forwarding for IDE Compact Chat ───
   // cloneNode(true) strips listeners from mirrored .msg-toolbar / .retry-command-bar
   // buttons (Copy, Regenerate, Resend, Resend tool results). Instead of duplicating
-  // app.js logic, forward each click to the matching live button in the source message.
+  // sse.js logic, forward each click to the matching live button in the source message.
   function setupCompactToolbarDelegation() {
     const compactMsgs = document.getElementById('chatCompactMessages');
     if (!compactMsgs) return;

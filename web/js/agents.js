@@ -1,11 +1,11 @@
 
 /* ===== Sable Multi-Agent UI =====
  * Top bar cards, inline JSON result cards, history modal, EventSource.
- * Loaded after app.js — attaches to global scope.
+ * Loaded after core modules — attaches to global scope.
  */
 
 // --------------------------------------------------------------------------
-// Helpers (app.js IIFE doesn't expose these globally)
+// Helpers (sse.js IIFE doesn't expose these globally)
 // --------------------------------------------------------------------------
 function escHtml(str) {
   return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -743,7 +743,7 @@ function handleAgentEvent(ev) {
       break;
     case "auto_turn_trigger":
       // Agent completed — fire a normal chat turn via the standard /api/chat pipeline.
-      // sendAutoTurnMessage (app.js) handles the user bubble, bot streaming, skill
+      // sendAutoTurnMessage (sse.js) handles the user bubble, bot streaming, skill
       // cards, stop button, markdown, and history replay — identical to a typed message.
       if (typeof sendAutoTurnMessage === "function" && ev.data?.message) {
         sendAutoTurnMessage(ev.data.message);
@@ -761,7 +761,7 @@ function handleAgentEvent(ev) {
 }
 
 // --------------------------------------------------------------------------
-// Integration hooks (called from app.js)
+// Integration hooks (called from sse.js)
 // --------------------------------------------------------------------------
 
 // Called when a chat is selected/opened
@@ -1300,7 +1300,7 @@ document.addEventListener("DOMContentLoaded", () => {
 // --------------------------------------------------------------------------
 (function() {
   // Uses the module-level _agentTodosRaw Map populated by handleAgentEvent.
-  // app.js appends #<8char_id> to .skill-name via textContent mutation on skill_end,
+  // sse.js appends #<8char_id> to .skill-name via textContent mutation on skill_end,
   // so we need both a MutationObserver AND a periodic sweep to handle timing races.
 
   function tryInjectTodos(card) {
