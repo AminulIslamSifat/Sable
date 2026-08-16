@@ -4,7 +4,7 @@
     const libraryClose = document.getElementById("libraryClose");
     const libraryTabs = document.getElementById("libraryTabs");
     const libraryBody = document.getElementById("libraryBody");
-    let _libLoaded = { agents: false, research: false, notes: false, gallery: false, skills: false, promptgen: false };
+    let _libLoaded = { agents: false, research: false, notes: false, gallery: false, skills: false, promptgen: false, imagegen: false };
 
     function openLibrary() {
       libraryOverlay.classList.remove("hidden");
@@ -63,6 +63,8 @@
           await renderMemoryPanel(container);
         } else if (section === "research") {
           renderResearchPanel(container);
+        } else if (section === "imagegen") {
+          renderImageGenPanel(container);
         } else if (section === "promptgen") {
           renderPromptGenPanel(container);
         } else {
@@ -214,6 +216,178 @@
         opt.textContent = o.label;
         if (o.value === preselect) opt.selected = true;
         selectEl.appendChild(opt);
+      });
+    }
+
+
+    /* ── Image Generator Panel ── */
+    const _IG_STYLES = {
+      "no_style": "(No style — raw prompt)",
+      "anime": "Anime", "painted_anime": "Painted Anime", "ghibli": "Studio Ghibli",
+      "your_name": "Your Name", "wlop": "WLOP", "atey_ghailan": "Atey Ghailan",
+      "kantoku": "Kantoku", "redjuice": "Redjuice",
+      "oil_painting": "Oil Painting", "watercolor": "Watercolor", "acrylic": "Acrylic",
+      "impressionist": "Impressionist", "ukiyo_e": "Ukiyo-e", "art_nouveau": "Art Nouveau",
+      "renaissance": "Renaissance",
+      "digital_art": "Digital Art", "concept_art": "Concept Art", "pixel_art": "Pixel Art",
+      "comic_book": "Comic Book", "manga": "Manga", "cartoon": "Cartoon",
+      "photorealistic": "Photorealistic", "cinematic": "Cinematic", "portrait": "Portrait",
+      "cyberpunk": "Cyberpunk", "steampunk": "Steampunk", "vaporwave": "Vaporwave",
+      "fantasy": "Fantasy", "sci_fi": "Sci-Fi", "horror": "Horror", "surreal": "Surreal",
+      "pop_art": "Pop Art", "low_poly": "Low Poly", "isometric": "Isometric",
+      "mtg_card": "MTG Card", "50s_enamel": "50s Enamel",
+    };
+
+    const _IG_MODELS = {
+      "flux": "Flux",
+      "flux-realism": "Flux Realism",
+      "flux-anime": "Flux Anime",
+      "turbo": "SDXL Turbo",
+      "sana": "Sana",
+    };
+
+    function renderImageGenPanel(container) {
+      container.innerHTML = "";
+      container.classList.add("promptgen-panel");
+
+      const wrap = document.createElement("div");
+      wrap.className = "promptgen-launch";
+      wrap.innerHTML = `
+        <div class="promptgen-launch-head">
+          <div class="promptgen-launch-title">🎨 AI Image Generator</div>
+          <div class="promptgen-launch-sub">Free · No login · Multiple providers</div>
+        </div>
+        <textarea id="igPrompt" class="promptgen-query" rows="3" placeholder="Describe what you want to generate…"></textarea>
+        <div class="promptgen-controls">
+          <select id="igProvider" class="promptgen-select" style="width:auto;min-width:130px;">
+            <option value="pollinations">Pollinations</option>
+            <option value="perchance">Perchance</option>
+          </select>
+          <select id="igModel" class="promptgen-select" style="width:auto;min-width:140px;">
+            ${Object.entries(_IG_MODELS).map(([k,v]) => `<option value="${k}">${v}</option>`).join("")}
+          </select>
+          <select id="igStyle" class="promptgen-select" style="width:auto;min-width:140px;display:none;">
+            ${Object.entries(_IG_STYLES).map(([k,v]) => `<option value="${k}">${v}</option>`).join("")}
+          </select>
+          <select id="igShape" class="promptgen-select" style="width:auto;min-width:120px;">
+            <option value="square">Square (1:1)</option>
+            <option value="portrait">Portrait (2:3)</option>
+            <option value="landscape">Landscape (3:2)</option>
+          </select>
+          <select id="igCount" class="promptgen-select" style="width:auto;min-width:90px;">
+            <option value="1">1 image</option>
+            <option value="2">2 images</option>
+            <option value="3">3 images</option>
+            <option value="4">4 images</option>
+          </select>
+          <div class="promptgen-spacer"></div>
+          <button id="igGenBtn" class="promptgen-start-btn">🖼️ Generate</button>
+        </div>
+        <input id="igNegPrompt" class="promptgen-query" style="margin-top:8px;min-height:auto;padding:8px 12px;font-size:12px;" placeholder="Negative prompt (optional): things to avoid…">
+        <div id="igOutputWrap" class="promptgen-output-wrap" style="display:none;">
+          <div id="igGallery" class="library-gallery-grid" style="margin-bottom:10px;"></div>
+          <pre id="igMeta" class="promptgen-output" style="max-height:120px;font-size:11px;"></pre>
+        </div>
+      `;
+      container.appendChild(wrap);
+
+      const genBtn = wrap.querySelector("#igGenBtn");
+      const promptEl = wrap.querySelector("#igPrompt");
+      const outputWrap = wrap.querySelector("#igOutputWrap");
+      const gallery = wrap.querySelector("#igGallery");
+      const metaEl = wrap.querySelector("#igMeta");
+      const providerSel = wrap.querySelector("#igProvider");
+      const modelSel = wrap.querySelector("#igModel");
+      const styleSel = wrap.querySelector("#igStyle");
+
+      // Toggle model/style visibility based on provider
+      function updateProviderUI() {
+        const prov = providerSel.value;
+        if (prov === "pollinations") {
+          modelSel.style.display = "";
+          styleSel.style.display = "none";
+        } else {
+          modelSel.style.display = "none";
+          styleSel.style.display = "";
+        }
+      }
+      providerSel.addEventListener("change", updateProviderUI);
+      updateProviderUI();
+
+      promptEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); genBtn.click(); }
+      });
+
+      genBtn.addEventListener("click", async () => {
+        const prompt = promptEl.value.trim();
+        if (!prompt) { showToast("⚠️ Enter a prompt first", "error"); return; }
+
+        const provider = providerSel.value;
+        const shape = wrap.querySelector("#igShape").value;
+        const count = wrap.querySelector("#igCount").value;
+        const neg = wrap.querySelector("#igNegPrompt").value.trim();
+
+        genBtn.disabled = true;
+        genBtn.textContent = "⏳ Generating…";
+        outputWrap.style.display = "none";
+        gallery.innerHTML = "";
+        metaEl.textContent = "";
+
+        try {
+          const attrs = { prompt, shape, count, provider };
+          if (provider === "pollinations") {
+            attrs.model = modelSel.value;
+          } else {
+            attrs.style = styleSel.value;
+          }
+          if (neg) attrs.negative_prompt = neg;
+
+          const res = await fetch("/api/tool/generate_image", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(attrs),
+          });
+
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          const result = await res.json();
+
+          if (result.ok && result.images && result.images.length > 0) {
+            // Responsive grid: 1=full, 2=half, 3-4=two per row
+            const n = result.images.length;
+            const cols = n === 1 ? 1 : n === 2 ? 2 : 2;
+            gallery.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+            gallery.innerHTML = ""; // clear previous
+
+            for (const img of result.images) {
+              const imgUrl = "/assets/" + img.filename;
+              const cell = document.createElement("div");
+              cell.className = "library-gallery-item";
+              cell.innerHTML = `<img src="${imgUrl}" alt="Generated image" loading="lazy">`;
+              cell.title = `Seed: ${img.seed} | ${img.width}x${img.height}`;
+              cell.addEventListener("click", () => window.open(imgUrl, "_blank"));
+              gallery.appendChild(cell);
+            }
+
+            const first = result.images[0];
+            const totalSize = result.images.reduce((s, i) => s + (i.size_bytes || 0), 0);
+            const detailLabel = provider === "pollinations" ? `Model: ${modelSel.value}` : `Style: ${styleSel.value}`;
+            metaEl.textContent = `✅ ${result.count} image(s) | ${detailLabel} | Shape: ${shape} | Seed: ${first.seed} | ${first.width}x${first.height} | ${(totalSize / 1024).toFixed(0)}KB total`;
+            if (result.errors) metaEl.textContent += `\n⚠️ Partial: ${result.errors.join("; ")}`;
+            outputWrap.style.display = "block";
+            showToast(`✅ ${result.count} image(s) generated!`, "success");
+          } else {
+            metaEl.textContent = "❌ " + (result.error || "Unknown error");
+            outputWrap.style.display = "block";
+            showToast("❌ Generation failed", "error");
+          }
+        } catch (e) {
+          metaEl.textContent = "❌ " + e.message;
+          outputWrap.style.display = "block";
+          showToast("❌ " + e.message, "error");
+        } finally {
+          genBtn.disabled = false;
+          genBtn.textContent = "🖼️ Generate";
+        }
       });
     }
 

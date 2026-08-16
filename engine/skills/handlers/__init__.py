@@ -34,6 +34,7 @@ from engine.skills.handlers.grep_search import (
 from engine.skills.handlers.simulacra import handle_run_simulacra
 from engine.skills.handlers.tracknote import handle_tracknote
 from engine.skills.handlers.memory_manager import handle_memory
+from engine.skills.handlers.image_generator import handle_generate_image
 from engine.mcp.handler import handle_mcp_call
 
 HANDLER_MAP: dict[str, object] = {
@@ -62,6 +63,7 @@ HANDLER_MAP: dict[str, object] = {
     "run_simulacra": handle_run_simulacra,
     "tracknote": handle_tracknote,
     "memory": handle_memory,
+    "generate_image": handle_generate_image,
     "mcp_call": handle_mcp_call,
 }
 
@@ -90,5 +92,6 @@ __all__ = [
     "handle_run_simulacra",
     "handle_tracknote",
     "handle_memory",
+    "handle_generate_image",
     "handle_mcp_call",
 ]
