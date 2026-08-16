@@ -53,8 +53,8 @@
               const data = await res.json().catch(() => ({}));
               if (res.ok) {
                 showToast(`✅ Switched to ${data.email || profile}`, "success");
-                await loadAccountProfiles();
-                await loadModels();
+                // Parallel — the two fetches are independent (Tier-3 UX fix)
+                await Promise.all([loadAccountProfiles(), loadModels()]);
               } else {
                 showToast("Switch failed: " + (data.detail || "unknown"), "error");
                 btn.disabled = false;
