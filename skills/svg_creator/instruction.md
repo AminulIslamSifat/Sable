@@ -4,18 +4,24 @@ Use this skill to generate high-fidelity SVG diagrams for data structures (binar
 
 ***
 
-## Output Format
+## Output Method
 
-Use the `<create_svg>` tag with a `filename` attribute. The **body** of the tag is the raw SVG markup. The SVG content streams directly into the chat as a rendered inline visual — no skill card, no embedding step needed.
+Generate the complete SVG markup and save it using the `create_file` tool:
 
-### Tag Attributes:
-- `filename`: String (**required**). Descriptive name ending in `.svg` (e.g., `"avl_tree_insert.svg"`, `"wave_superposition.svg"`).
+- **Path**: `/home/sifat/sable_output/assets/{filename}`
+- **Filename**: Descriptive name ending in `.svg` (e.g., `avl_tree_insert.svg`, `wave_superposition.svg`)
 
-### Engine Behavior
-1. SVG content streams live into the chat UI (rendered inline).
-2. File is saved silently to `<ASSETS_DIR>/{filename}`.
+After saving, embed the SVG in your response using a markdown image link:
 
-The SVG content must be **complete, valid, self-contained XML** — no external dependencies, no linked stylesheets, no `<image>` hrefs.
+```markdown
+![Description](/home/sifat/sable_output/assets/filename.svg)
+```
+
+### Critical Rules for Output
+1. The SVG content must be **complete, valid, self-contained XML** — no external dependencies, no linked stylesheets, no `<image>` hrefs.
+2. Always use `create_file` with the full absolute path.
+3. Never use raw `<create_svg>` or `<save_svg>` tags — those are deprecated.
+4. After saving, always embed the result so the user sees it inline.
 
 ***
 
@@ -23,8 +29,11 @@ The SVG content must be **complete, valid, self-contained XML** — no external 
 
 **Goal**: Visualize a binary search tree with nodes [42, 21, 63].
 
+Call `create_file` with:
+- **path**: `/home/sifat/sable_output/assets/bst_example.svg`
+- **content**:
+
 ```xml
-<create_svg filename="bst_example.svg">
 <svg viewBox="0 0 300 220" width="300" height="220" xmlns="http://www.w3.org/2000/svg">
 <defs>
   <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
@@ -53,7 +62,11 @@ The SVG content must be **complete, valid, self-contained XML** — no external 
 <circle cx="220" cy="140" r="24" class="node"/>
 <text x="220" y="140" class="node-label">63</text>
 </svg>
-</create_svg>
+```
+
+Then in your response:
+```markdown
+![BST Example](/home/sifat/sable_output/assets/bst_example.svg)
 ```
 
 ***
@@ -221,7 +234,7 @@ Always compute SVG canvas size **after** calculating all node positions — add 
 If the SVG fails to render or save:
 1. **Parse error** (malformed XML) → validate tag nesting, check unclosed elements, fix and retry.
 2. **File write error** (path/permission) → report the exact error to the user. Do not retry blindly.
-3. **Empty output** → ensure the SVG tag is the direct body of `<create_svg>` with no wrapper.
+3. **Empty output** → ensure the SVG is complete with proper opening and closing tags.
 
 ***
 
@@ -234,3 +247,5 @@ If the SVG fails to render or save:
 5. **Calculate positions mathematically**: Use the Layout Math Guide formulas. Hardcoded positions for large structures produce misaligned, unscalable diagrams.
 6. **Semantic color usage**: Use accent colors to convey state — active, inserted, deleted, visited. A diagram where every node looks the same teaches nothing.
 7. **Descriptive Filenames**: Name files by content and state (e.g., `avl_rotation_left.svg`, `bfs_step3_visited.svg`) — not generic names like `diagram_1.svg`.
+8. **Save to output directory**: Always use `/home/sifat/sable_output/assets/` as the target directory via `create_file`.
+9. **Embed after saving**: Always include a markdown image link in your response after successfully saving the SVG.

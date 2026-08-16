@@ -1,9 +1,0 @@
-{
-  "search_provider": "searxng",
-  "search_url": "http://localhost:8080",
-  "search_fallback_chain": [
-    "duckduckgo"
-  ],
-  "search_result_count": 5,
-  "search_safesearch": "off"
-}
