@@ -14,6 +14,7 @@ from engine.config import (
     AGENT_OUTPUT_DIR,
     RESEARCH_DIR,
     NOTES_DIR,
+    PROMPTS_DIR,
     SKILLS_JSON_PATH,
 )
 from server.config import UPLOAD_DIR
@@ -91,6 +92,11 @@ def library_notes() -> list[dict[str, Any]]:
     return _scan_md_dir(NOTES_DIR)
 
 
+@router.get("/api/library/prompts")
+def library_prompts() -> list[dict[str, Any]]:
+    return _scan_md_dir(PROMPTS_DIR)
+
+
 @router.get("/api/library/gallery")
 def library_gallery() -> list[dict[str, Any]]:
     if not UPLOAD_DIR.exists():
@@ -127,6 +133,7 @@ def library_read_file(section: str, filename: str) -> dict[str, Any]:
         "agents": AGENT_OUTPUT_DIR,
         "research": RESEARCH_DIR,
         "notes": NOTES_DIR,
+        "prompts": PROMPTS_DIR,
     }
     if section == "gallery":
         # Gallery items served via static mount already
