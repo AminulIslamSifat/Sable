@@ -380,6 +380,7 @@ async def get_cookbook_settings() -> dict[str, Any]:
         "default_gpu_layers": state.settings.default_gpu_layers,
         "auto_register": state.settings.auto_register,
         "has_hf_token": bool(state.settings.hf_token),
+        "llama_server_bin": state.settings.llama_server_bin,
     }
 
 
@@ -403,6 +404,8 @@ async def update_cookbook_settings(request: Request) -> dict[str, Any]:
         state.settings.auto_register = bool(body["auto_register"])
     if "hf_token" in body:
         state.settings.hf_token = body["hf_token"]
+    if "llama_server_bin" in body:
+        state.settings.llama_server_bin = body["llama_server_bin"]
 
     state.save()
     return {"status": "ok"}
@@ -419,7 +422,6 @@ async def search_models(q: str = "", limit: int = 20) -> dict[str, Any]:
     query = q.strip()
     try:
         from huggingface_hub import HfApi
-        from concurrent.futures import ThreadPoolExecutor, as_completed
         state = get_state()
         api = HfApi(token=state.settings.hf_token or None)
 
@@ -430,43 +432,19 @@ async def search_models(q: str = "", limit: int = 20) -> dict[str, Any]:
             limit=min(limit, 50),
         ))
 
-        def _get_repo_sizes(repo_id: str) -> tuple[int, int]:
-            """Return (gguf_count, total_bytes) for a repo."""
-            try:
-                tree = list(api.list_repo_tree(repo_id, repo_type="model", recursive=False))
-                count = 0
-                total = 0
-                for f in tree:
-                    rfn = getattr(f, "rfilename", "") or getattr(f, "path", "")
-                    if rfn.endswith(".gguf"):
-                        count += 1
-                        total += getattr(f, "size", 0) or 0
-                return count, total
-            except Exception:
-                return 0, 0
-
-        # Fetch sizes in parallel (max 8 concurrent to avoid rate limiting)
         results = []
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            futures = {pool.submit(_get_repo_sizes, m.id): m for m in models}
-            for fut in as_completed(futures):
-                m = futures[fut]
-                gguf_count, total_size = fut.result()
-                tags = getattr(m, "tags", []) or []
-                downloads = getattr(m, "downloads", 0) or 0
-                likes = getattr(m, "likes", 0) or 0
+        for m in models:
+            tags = getattr(m, "tags", []) or []
+            downloads = getattr(m, "downloads", 0) or 0
+            likes = getattr(m, "likes", 0) or 0
 
-                results.append({
-                    "repo_id": m.id,
-                    "downloads": downloads,
-                    "likes": likes,
-                    "gguf_count": gguf_count,
-                    "total_size": total_size,
-                    "tags": [t for t in tags if t in ("gguf", "text-generation", "conversational", "base_model", "quantized")][:6],
-                })
+            results.append({
+                "repo_id": m.id,
+                "downloads": downloads,
+                "likes": likes,
+                "tags": [t for t in tags if t in ("gguf", "text-generation", "conversational", "base_model", "quantized")][:6],
+            })
 
-        # Sort by downloads descending (as_completed doesn't preserve order)
-        results.sort(key=lambda r: r["downloads"], reverse=True)
         return {"results": results[:limit], "query": query}
     except Exception as e:
         logger.error("HF search failed: %s", e)
