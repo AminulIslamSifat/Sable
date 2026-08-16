@@ -54,6 +54,7 @@ class ServeTask:
 class CookbookSettings:
     hf_token: str = ""
     models_dir: str = ""
+    llama_server_bin: str = ""  # auto-detected or user-set path to llama-server
     default_port: int = 8080
     default_ctx: int = 4096
     default_threads: int = 0

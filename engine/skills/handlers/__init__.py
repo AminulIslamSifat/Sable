@@ -15,7 +15,6 @@ from engine.skills.handlers.file_ops import (
 from engine.skills.handlers.io import (
     handle_create_note,
     handle_get_file,
-    handle_save_svg,
 )
 from engine.skills.handlers.web import (
     handle_online_search,
@@ -48,8 +47,7 @@ HANDLER_MAP: dict[str, object] = {
     "web_fetch": handle_online_search,
     "online_search": handle_online_search,
     "create_note": handle_create_note,
-    "save_svg": handle_save_svg,
-    "create_svg": handle_save_svg,
+
     "view_file": handle_view_file,
     "edit_file": handle_edit_file,
     "create_file": handle_create_file,
@@ -79,7 +77,7 @@ __all__ = [
     "handle_insert_file",
     "handle_online_search",
     "handle_openweb",
-    "handle_save_svg",
+
 
     "handle_view_file",
     "handle_spawn_agent",

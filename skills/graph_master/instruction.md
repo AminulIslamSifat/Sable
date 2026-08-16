@@ -1,64 +1,84 @@
 # Graph Master: High-Fidelity Technical Plotting
 
-Use this skill to generate precise mathematical plots, physics visualizations, and data graphs using Matplotlib via the `plotter.py` script. Ideal for SHM, wave mechanics, calculus curves, probability distributions, and any data that needs a coordinate system.
+Use this skill to generate precise mathematical plots, physics visualizations, and data graphs using Matplotlib. Ideal for SHM, wave mechanics, calculus curves, probability distributions, and any data that needs a coordinate system.
 
 ***
 
-## Output Format
+## Output Method
 
-Use the `<plot_graph>` tag with a `filename` attribute. Inside the tag, provide a JSON configuration object.
+Write a **self-contained Python script** and execute it via the `execute_command` tool. The script must:
 
-### Tag Attributes:
-- `filename`: String (**required**). Output filename ending in `.png` or `.jpg` (e.g., `"shm_displacement.png"`, `"damped_wave.png"`).
+1. Import matplotlib and numpy.
+2. Apply the mandatory style spec (see below).
+3. Plot all curves.
+4. Save to `/home/sifat/sable_output/assets/{filename}`.
+5. Print a JSON status on completion.
 
-### JSON Parameters:
-- `title`: String. Plot title displayed at the top.
-- `xlabel`: String. X-axis label.
-- `ylabel`: String. Y-axis label.
-- `plots`: Array of plot objects. Each object defines one curve:
-  - `equation`: String (**required**). A Python-evaluable expression using `x` as the variable. Supports: `sin`, `cos`, `tan`, `exp`, `log`, `sqrt`, `pi`, `e`, and any custom params. Do **not** use `np.` prefix — the namespace already has NumPy ufuncs injected as bare names.
-  - `label`: String. Legend label for this curve.
-  - `range`: Array `[min, max]`. X-axis range. See **Range Selection Guide** below for defaults.
-  - `params`: Object. Key-value pairs for custom symbols in the equation (e.g., `{"A": 1, "omega": 2}`).
-- `options`: Object *(optional)*. Advanced layout flags — see **Complexity Tiers** below.
+After successful execution, embed the plot in your response:
 
-### The Engine Logic
-The `plotter.py` script will:
-1. Parse the JSON configuration.
-2. For each plot, evaluate the equation over its range using **1000 evenly-spaced points** via `numpy.linspace` (ensures smooth curves — never jagged).
-3. The `eval` namespace contains **exactly**: `sin, cos, tan, arcsin, arccos, arctan, exp, log, log10, sqrt, pi, e, abs` — all as NumPy ufuncs. Plus any keys from `params`. Nothing else. Write equations accordingly.
-4. Plot all curves on a single Matplotlib figure with grid, legend, and labels.
-5. Apply the **mandatory style spec** (see below).
-6. Save the image to `<ASSETS_DIR>/{filename}`.
+```markdown
+![Description](/home/sifat/sable_output/assets/filename.png)
+```
+
+### Critical Rules for Output
+1. Always use `execute_command` to run the script — never use `<plot_graph>` tags (deprecated).
+2. Save output to `/home/sifat/sable_output/assets/` with a descriptive `.png` filename.
+3. The script must be fully self-contained — no external config files or imports from the Sable project.
+4. Always print `{"status": "SUCCESS", "path": "..."}` on success or `{"status": "FAILED", "message": "..."}` on error.
+5. After saving, always embed the result so the user sees it inline.
 
 ***
 
 ## Usage Example
 
-**Goal**: Plot displacement and velocity curves for SHM: $x = A\sin(\omega t + \phi)$.
+**Goal**: Plot displacement and velocity curves for SHM.
 
-```xml
-<plot_graph filename="shm_x_v.png">
-{
-  "title": "SHM: Displacement vs Velocity",
-  "xlabel": "Time (s)",
-  "ylabel": "Amplitude",
-  "plots": [
-    {
-      "equation": "A * sin(omega * x + phi)",
-      "label": "x(t) — Displacement",
-      "range": [0, 10],
-      "params": {"A": 1, "omega": 2, "phi": 0}
-    },
-    {
-      "equation": "A * omega * cos(omega * x + phi)",
-      "label": "v(t) — Velocity",
-      "range": [0, 10],
-      "params": {"A": 1, "omega": 2, "phi": 0}
-    }
-  ]
-}
-</plot_graph>
+Call `execute_command` with:
+
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+import json, os
+
+# === Style Spec (MANDATORY) ===
+plt.style.use('dark_background')
+fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
+fig.patch.set_facecolor('#1e1e2e')
+ax.set_facecolor('#181825')
+ax.grid(color='#313244', linestyle='--', linewidth=0.6, alpha=0.7)
+ax.tick_params(colors='#a6adc8', labelsize=10)
+for spine in ax.spines.values():
+    spine.set_edgecolor('#313244')
+CURVE_COLORS = ['#cba6f7', '#89b4fa', '#a6e3a1', '#fab387', '#f38ba8', '#94e2d5']
+
+# === Plot Data ===
+x = np.linspace(0, 10, 1000)
+A, omega, phi = 1, 2, 0
+
+y1 = A * np.sin(omega * x + phi)
+y2 = A * omega * np.cos(omega * x + phi)
+
+ax.plot(x, y1, label='x(t) — Displacement', color=CURVE_COLORS[0])
+ax.plot(x, y2, label='v(t) — Velocity', color=CURVE_COLORS[1])
+
+ax.set_title('SHM: Displacement vs Velocity', color='#cdd6f4', fontsize=14, fontweight='bold')
+ax.set_xlabel('Time (s)', color='#cdd6f4')
+ax.set_ylabel('Amplitude', color='#cdd6f4')
+ax.legend(facecolor='#313244', edgecolor='#45475a', labelcolor='#cdd6f4', fontsize=9)
+
+# === Save ===
+out_dir = '/home/sifat/sable_output/assets'
+os.makedirs(out_dir, exist_ok=True)
+out_path = os.path.join(out_dir, 'shm_x_v.png')
+plt.tight_layout()
+plt.savefig(out_path)
+plt.close()
+print(json.dumps({"status": "SUCCESS", "path": out_path}))
+```
+
+Then in your response:
+```markdown
+![SHM Plot](/home/sifat/sable_output/assets/shm_x_v.png)
 ```
 
 ***
@@ -68,10 +88,9 @@ The `plotter.py` script will:
 Every plot **must** use this visual standard. Default Matplotlib grey is never acceptable.
 
 ```python
-# Applied automatically by plotter.py — reference this when debugging or extending
+# Apply this EXACTLY at the start of every script
 plt.style.use('dark_background')
-fig.set_size_inches(12, 6)
-fig.set_dpi(150)
+fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
 fig.patch.set_facecolor('#1e1e2e')        # Catppuccin Mocha base
 ax.set_facecolor('#181825')               # Slightly darker plot area
 
@@ -88,7 +107,7 @@ ax.title.set_fontweight('bold')
 for spine in ax.spines.values():
     spine.set_edgecolor('#313244')
 
-# Curve color cycle (Catppuccin Mocha accents — applied in order)
+# Curve color cycle (Catppuccin Mocha accents — apply in order)
 CURVE_COLORS = ['#cba6f7', '#89b4fa', '#a6e3a1', '#fab387', '#f38ba8', '#94e2d5']
 
 # Legend
@@ -119,63 +138,43 @@ Never blindly default to `[0, 10]`. Choose the range that makes the physics or m
 
 ## 📊 Complexity Tiers
 
-Match implementation effort to the concept. Use the `options` field to unlock advanced layouts.
+Match implementation effort to the concept.
 
 | Tier | Concepts | Layout |
 |---|---|---|
-| **Simple** | Single curve, basic trig, polynomials | Single axes, no options needed |
+| **Simple** | Single curve, basic trig, polynomials | Single axes, straightforward script |
 | **Medium** | Multi-curve overlay, phase comparisons, superposition | Single axes, 2–4 curves, shared x-range |
-| **Complex** | Dual-axis (e.g., displacement + energy), subplots, annotated critical points | Use `options` flags below |
+| **Complex** | Dual-axis, subplots, annotated critical points | Use `twinx()`, `subplots()`, `annotate()` |
 
-### `options` flags (Complex tier):
+### Complex tier techniques:
 
-```json
-"options": {
-  "twin_axis": true,          // Dual y-axes for curves with different units
-  "subplots": 2,              // Split into N vertically stacked subplots
-  "annotations": [            // Mark critical points with labels
-    {"x": 3.14, "label": "π"},
-    {"x": 0, "label": "Origin"}
-  ],
-  "log_scale_y": false,       // Logarithmic y-axis
-  "log_scale_x": false,       // Logarithmic x-axis
-  "fill_under": true          // Shade area under curve (useful for distributions)
-}
-```
-
-Use `twin_axis` when two curves have fundamentally different y-units (e.g., displacement in meters and energy in joules). Never force them onto the same axis — it destroys readability.
+- **Dual y-axes**: Use `ax2 = ax.twinx()` when two curves have fundamentally different y-units (e.g., displacement in meters and energy in joules). Apply the same style spec to `ax2`.
+- **Subplots**: Use `fig, axes = plt.subplots(n, 1, ...)` for vertically stacked comparisons. Apply style to each subplot.
+- **Annotations**: Use `ax.annotate(label, xy=(x, y), ...)` to mark critical points (maxima, zeros, inflection points).
+- **Fill under curve**: Use `ax.fill_between(x, y, alpha=0.15, color=color)` for probability distributions or area-under-curve emphasis.
+- **Log scales**: Use `ax.set_yscale('log')` or `ax.set_xscale('log')` for exponential/power-law data.
 
 ***
 
-## Embedding in Final Response (MANDATORY)
+## Error Handling
 
-After the engine confirms `SUCCESS`, you **MUST** embed the plot in your response using an Obsidian wikilink:
-
-```markdown
-Here's the SHM displacement vs velocity plot:
-
-![Name](relative/file/path.png)
-```
-
-> The `![Name](relative/file/path.png)` syntax renders the image inline in Obsidian. Never use raw HTML `<img>` tags — always use markdown embeds.
-
-### If the engine returns `FAILED`:
-1. Read the error details returned by the engine.
-2. If it's a JSON syntax error → fix and retry immediately.
-3. If it's an equation eval error → check for unsupported symbols (remember: no `np.` prefix, no SymPy notation) and fix.
-4. If the error is engine-internal (file system, path) → report to user with the exact error message. Do not retry blindly.
+If the script fails:
+1. **Import error** → ensure matplotlib and numpy are available. Report to user.
+2. **Eval/math error** → check equation syntax, domain issues (log(0), division by zero). Fix and retry.
+3. **File write error** → check path exists, permissions. Report exact error.
+4. **Style not applied** → verify the mandatory style block is present at the top of the script.
 
 ***
 
 ## Critical Rules
 
-1. **Wait for confirmation**: Do NOT embed the wikilink in the same message as the `<plot_graph>` tag. Wait for the engine to confirm the file was saved.
-2. **Valid JSON**: The body must be valid JSON. No trailing commas, no comments.
-3. **Use `x` as variable**: The plotter uses `x` as the independent variable in all equations. Map time `t` → `x`, position `r` → `x`, etc.
-4. **No `np.` prefix**: The eval namespace has NumPy ufuncs injected as bare names. Write `sin(x)`, not `np.sin(x)`. Writing `np.anything` will throw a NameError.
-5. **Physical Accuracy**: Label axes with correct units (e.g., `"Time (s)"`, `"Displacement (m)"`). Use physically correct equations — never approximate silently.
-6. **Smart range selection**: Use the Range Selection Guide. Never default lazily to `[0, 10]` for all concepts.
-7. **Resolution is fixed at 1000 points**: The engine always samples 1000 points. You do not need to specify this. Do not attempt to override it.
-8. **Multi-curve**: Overlay multiple plots by adding entries to the `plots` array. For curves with different units, use `"twin_axis": true` in `options`.
-9. **Descriptive Filenames**: Name by content (e.g., `wave_superposition.png`, `gaussian_distribution.png`) — not generic names like `plot1.png`.
-10. **Always embed**: After success, include `![Name](relative/file/path.png)` in your final answer so the user sees the graph immediately.
+1. **Self-contained script**: No imports from Sable project, no external config files. Only `matplotlib`, `numpy`, `json`, `os`.
+2. **Always apply style spec**: Copy the mandatory style block verbatim into every script. Never skip it.
+3. **Use numpy for math**: Use `np.sin`, `np.cos`, `np.exp`, etc. — not Python's `math` module (doesn't work with arrays).
+4. **1000 sample points**: Always use `np.linspace(start, end, 1000)` for smooth curves.
+5. **Physical accuracy**: Label axes with correct units (e.g., `"Time (s)"`, `"Displacement (m)"`). Use physically correct equations.
+6. **Smart range selection**: Use the Range Selection Guide. Never default lazily to `[0, 10]`.
+7. **Descriptive filenames**: Name by content (e.g., `wave_superposition.png`, `gaussian_distribution.png`) — not generic names like `plot1.png`.
+8. **Save to output directory**: Always use `/home/sifat/sable_output/assets/` as the target directory.
+9. **Embed after saving**: Always include a markdown image link in your response after successful execution.
+10. **Print JSON status**: Script must print `{"status": "SUCCESS", "path": "..."}` or `{"status": "FAILED", "message": "..."}` as the last line.
