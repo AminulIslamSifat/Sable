@@ -110,11 +110,14 @@
       position: absolute;
       top: 7px;
       right: 10px;
+      left: 10px;
       z-index: 6;
       display: flex;
       flex-direction: row-reverse;
       align-items: center;
       gap: 6px;
+      max-width: calc(100% - 20px);
+      overflow: hidden;
     }
     .chat-search-input {
       width: 0;
@@ -141,9 +144,12 @@
     }
     .chat-search-input.visible {
       width: 168px;
+      max-width: 100%;
       opacity: 1;
       padding: 7px 12px;
       pointer-events: auto;
+      flex-shrink: 1;
+      min-width: 0;
     }
     .chat-search-input::placeholder { color: var(--muted-2); }
     .chat-search-input:focus {

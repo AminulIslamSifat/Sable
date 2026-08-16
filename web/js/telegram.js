@@ -706,6 +706,7 @@
             <div class="settings-header">
               <h2>${escHtml(title)}</h2>
               <div style="display:flex;gap:4px;">
+                <button class="icon-btn" id="libraryReaderCopy" title="Copy content"><i data-lucide="copy" class="icon-lucide"></i></button>
                 <button class="icon-btn" id="libraryReaderDock" title="Dock to sidebar"><i data-lucide="panel-right" class="icon-lucide"></i></button>
                 <button class="icon-btn" id="libraryReaderClose"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
               </div>
@@ -714,6 +715,33 @@
           </div>
         `;
         document.body.appendChild(overlay);
+        overlay.querySelector("#libraryReaderCopy").addEventListener("click", function() {
+          const text = data.content || "";
+          const btn = this;
+          const originalHTML = btn.innerHTML;
+          navigator.clipboard.writeText(text).then(
+            () => {
+              btn.innerHTML = '<i data-lucide="check" class="icon-lucide"></i>';
+              btn.style.color = "#4ade80";
+              if (window.lucide) lucide.createIcons({ nodes: [btn] });
+              setTimeout(() => {
+                btn.innerHTML = originalHTML;
+                btn.style.color = "";
+                if (window.lucide) lucide.createIcons({ nodes: [btn] });
+              }, 2000);
+            },
+            () => {
+              btn.innerHTML = '<i data-lucide="x" class="icon-lucide"></i>';
+              btn.style.color = "#f87171";
+              if (window.lucide) lucide.createIcons({ nodes: [btn] });
+              setTimeout(() => {
+                btn.innerHTML = originalHTML;
+                btn.style.color = "";
+                if (window.lucide) lucide.createIcons({ nodes: [btn] });
+              }, 2000);
+            }
+          );
+        });
         overlay.querySelector("#libraryReaderClose").addEventListener("click", () => overlay.remove());
         overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
         overlay.querySelector("#libraryReaderDock").addEventListener("click", () => {

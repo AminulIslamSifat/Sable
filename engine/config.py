@@ -45,6 +45,7 @@ AGENT_CONFIG_PATH = _ROOT / "system/agent_config.json"
 OUTPUT_ROOT = Path.home() / "sable_output"
 RESEARCH_DIR = OUTPUT_ROOT / "research"
 NOTES_DIR = OUTPUT_ROOT / "notes"
+PROMPTS_DIR = OUTPUT_ROOT / "prompts"
 AGENT_OUTPUT_DIR = OUTPUT_ROOT / "agent"
 ASSETS_DIR = OUTPUT_ROOT / "assets"
 
