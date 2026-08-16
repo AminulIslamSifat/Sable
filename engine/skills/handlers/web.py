@@ -78,14 +78,14 @@ def handle_online_search(
 
         try:
             data = _run_search_script("", fetch_args)
-            items = data.get("items", [])
-            fetched_count = sum(1 for it in items if it.get("ok"))
+            items = data.get("pages", [])
+            fetched_count = sum(1 for it in items if it.get("success"))
             yield _output_event(tag_id, f"✓ Fetched {fetched_count}/{len(items)} page(s)\n\n")
             for item in items:
-                context = item.get("context", "")
+                context = item.get("content", "")
                 if context:
                     yield _output_event(tag_id, wrap_untrusted(context, source="web_fetch") + "\n")
-                elif not item.get("ok"):
+                elif not item.get("success"):
                     yield _output_event(tag_id, f"✗ {item.get('url', '?')}: {item.get('error', 'unknown error')}\n", "stderr")
             yield _end_event(tag_id, name, True, started, {"urls": url_list, "results": items})
         except Exception as exc:

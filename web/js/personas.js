@@ -224,5 +224,119 @@
     }, 3500);
   }
 
+  // ─── Quick Popup (header button) ────────────────────────────────────────
+  async function initQuickPopup() {
+    const btn = document.getElementById("personaQuickBtn");
+    const popup = document.getElementById("personaQuickPopup");
+    const list = document.getElementById("pqPersonaList");
+    const fmtToggle = document.getElementById("pqFormatToggle");
+    if (!btn || !popup || !list) return;
+
+    // Toggle popup
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const isOpen = popup.classList.contains("open");
+      if (isOpen) {
+        popup.classList.remove("open");
+        setTimeout(() => popup.classList.add("hidden"), 180);
+      } else {
+        // Position popup below the button
+        const rect = btn.getBoundingClientRect();
+        popup.style.top = (rect.bottom + 6) + "px";
+        popup.style.left = rect.left + "px";
+        popup.classList.remove("hidden");
+        requestAnimationFrame(() => popup.classList.add("open"));
+        refreshQuickPopup();
+      }
+    });
+
+    // Close on outside click
+    document.addEventListener("click", (e) => {
+      if (!popup.contains(e.target) && e.target !== btn) {
+        popup.classList.remove("open");
+        setTimeout(() => popup.classList.add("hidden"), 180);
+      }
+    });
+
+    // Prevent popup clicks from closing
+    popup.addEventListener("click", (e) => e.stopPropagation());
+
+    // Format toggle button
+    if (fmtToggle) {
+      fmtToggle.addEventListener("click", async () => {
+        const isOn = fmtToggle.classList.contains("on");
+        const newState = !isOn;
+        fmtToggle.classList.add("pq-loading");
+        try {
+          await saveFormatToggle(newState);
+          updateFmtBtn(newState);
+        } catch (e) {
+          showToast(e.message || "Failed to save toggle", true);
+        } finally {
+          fmtToggle.classList.remove("pq-loading");
+        }
+      });
+    }
+
+    function updateFmtBtn(enabled) {
+      if (!fmtToggle) return;
+      fmtToggle.classList.toggle("on", enabled);
+      const stateEl = fmtToggle.querySelector(".pq-format-state");
+      if (stateEl) stateEl.textContent = enabled ? "ON" : "OFF";
+    }
+
+    async function refreshQuickPopup() {
+      try {
+        list.classList.remove("pq-loading");
+        const data = await pFetch("");
+        const personas = data.personas || [];
+        const config = data.config || {};
+
+        const hasActive = personas.some((p) => p.active);
+
+        // Default option + persona list
+        const defaultItem = `<div class="pq-item${!hasActive ? ' active' : ''}" data-name="__default__">Default</div>`;
+        const personaItems = personas.map((p) => {
+          const activeClass = p.active ? " active" : "";
+          return `<div class="pq-item${activeClass}" data-name="${esc(p.name)}">${esc(p.name)}</div>`;
+        }).join("");
+        list.innerHTML = defaultItem + personaItems;
+
+        // Bind clicks
+        list.querySelectorAll(".pq-item").forEach((item) => {
+          item.addEventListener("click", async () => {
+            const name = item.dataset.name;
+            const isDefault = name === "__default__";
+            const isActive = item.classList.contains("active");
+            if (isActive) return; // Already active, no-op
+
+            // Show loading state
+            list.classList.add("pq-loading");
+            const prevHTML = list.innerHTML;
+
+            try {
+              const newName = isDefault ? null : name;
+              await pFetch("/active", { method: "PUT", body: JSON.stringify({ name: newName }) });
+              await refreshQuickPopup();
+              showToast(isDefault ? "Default persona" : "Switched to " + name);
+            } catch (e) {
+              list.classList.remove("pq-loading");
+              showToast(e.message, true);
+            }
+          });
+        });
+
+        // Sync format toggle button
+        updateFmtBtn(config.output_format_enabled !== false);
+      } catch (e) {
+        list.innerHTML = '<div class="pq-item" style="color:var(--danger);">Failed to load</div>';
+      }
+    }
+  }
+
+  // Quick popup initializes immediately on script load (header button)
+  // Settings tab personas grid still uses _personaInit
+  initQuickPopup();
+
   window._personaInit = initPersonas;
 })();

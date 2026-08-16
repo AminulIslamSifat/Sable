@@ -1427,6 +1427,66 @@
         "only call chat_title once",
         "don't repeat chat title"
       ]
+    },
+    {
+      "key": "procedural_geometry_over_primitives",
+      "value": "When building organic 3D creatures (whales, octopus, manta rays) in Three.js procedurally, NEVER use primitive combinations (sphere+cone+cylinder). They look childish. Always use LatheGeometry with profile curves (10+ control points) for smooth continuous bodies, high segment counts (32+ radial, 48+ tubular), proper anatomical proportions, and vertex displacement for animation. Primitives are only acceptable for abstract/mechanical objects or when translucency/emissive materials hide geometric simplicity (e.g., jellyfish bells).",
+      "trigger": "when creating procedural 3D creatures or organic shapes in Three.js/WebGL",
+      "keywords": [
+        "threejs",
+        "procedural",
+        "geometry",
+        "lathe",
+        "creatures",
+        "organic"
+      ],
+      "source_query": "anyway teh design on those whale and things, horrible",
+      "tags": [
+        "threejs",
+        "procedural-geometry",
+        "lathe-geometry",
+        "3d-modeling",
+        "creatures",
+        "webgl",
+        "animation"
+      ],
+      "triggers": [
+        "anyway teh design on those whale and things, horrible",
+        "why do my procedural creatures look bad",
+        "how to make smooth organic 3D shapes threejs",
+        "lathe geometry vs primitives for animals",
+        "procedural whale octopus manta ray modeling",
+        "threejs creature geometry best practices"
+      ]
+    },
+    {
+      "key": "no_manual_memory_saves",
+      "value": "Do NOT manually save session logs, episodic notes, or semantic memories during conversation. Sable has an autonomous consolidation model that handles memory extraction and persistence automatically. Only interact with the memory tool directly when fixing a confirmed bug or addressing a specific user-requested memory operation. Unsolicited memory saves create noise and duplicate what consolidation already does.",
+      "trigger": "when tempted to save session context or conversation logs to memory",
+      "keywords": [
+        "memory",
+        "consolidation",
+        "auto-save",
+        "session-log",
+        "manual"
+      ],
+      "source_query": "stop updating your own memory, there is consolidation model for it, they can do it on their own lol. Touch ti when you see any problem with given memory",
+      "tags": [
+        "memory",
+        "consolidation",
+        "workflow",
+        "auto-save",
+        "sable",
+        "agent-behavior"
+      ],
+      "triggers": [
+        "stop updating your own memory, there is consolidation model for it, they can do it on their own lol. Touch ti when you see any problem with given memory",
+        "don't save memories manually",
+        "let consolidation handle memory",
+        "when should I use memory tool directly",
+        "stop auto-saving session logs",
+        "memory consolidation is automatic"
+      ]
     }
   ]
 }

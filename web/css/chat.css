@@ -54,7 +54,7 @@
     }
 
     /* Right-side icon cells cluster together at the end */
-    .header-row > .header-icon-cell:nth-last-child(2) { margin-left: auto; }
+    .header-row > .header-right-pair:first-of-type { margin-left: auto !important; }
     /* The Model pill's glass fills its box edge-to-edge while the round buttons
        have dark margin inside their 40px cells, so the pill->terminal seam looks
        tighter than newchat->pill at equal gaps. Nudge the terminal right to match. */
