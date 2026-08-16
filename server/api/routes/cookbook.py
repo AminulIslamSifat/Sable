@@ -380,6 +380,7 @@ async def get_cookbook_settings() -> dict[str, Any]:
         "default_gpu_layers": state.settings.default_gpu_layers,
         "auto_register": state.settings.auto_register,
         "has_hf_token": bool(state.settings.hf_token),
+        "llama_server_bin": state.settings.llama_server_bin,
     }
 
 
@@ -403,6 +404,8 @@ async def update_cookbook_settings(request: Request) -> dict[str, Any]:
         state.settings.auto_register = bool(body["auto_register"])
     if "hf_token" in body:
         state.settings.hf_token = body["hf_token"]
+    if "llama_server_bin" in body:
+        state.settings.llama_server_bin = body["llama_server_bin"]
 
     state.save()
     return {"status": "ok"}
