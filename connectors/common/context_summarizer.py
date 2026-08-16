@@ -159,3 +159,4 @@ def compute_force_cut_index(history: list[dict[str, Any]], prefix_len: int) -> i
     half = non_prefix_count // 2
     return prefix_len + max(half, 1)
 
+#

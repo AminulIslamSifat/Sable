@@ -221,10 +221,15 @@ async def server_health(task_id: str) -> dict[str, Any]:
 @router.get("/api/cookbook/recommendations")
 async def list_recommendations(ctx_size: int = 4096) -> dict[str, Any]:
     """Get models ranked by hardware compatibility."""
+    import asyncio
     from engine.cookbook.presets import get_ranked_recommendations, get_hardware_summary
+    from engine.cookbook.hardware import _dynamic_cache
+    # Run in thread — HF API calls + scoring are CPU/IO bound, not async
+    recs = await asyncio.to_thread(get_ranked_recommendations, ctx_size=ctx_size)
     return {
         "hardware": get_hardware_summary(),
-        "recommendations": get_ranked_recommendations(ctx_size=ctx_size),
+        "recommendations": recs,
+        "has_dynamic": _dynamic_cache is not None and len(_dynamic_cache) > 0,
     }
 
 

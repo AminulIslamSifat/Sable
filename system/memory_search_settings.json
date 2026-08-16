@@ -3,7 +3,9 @@
   "top_k": 5,
   "enabled": true,
   "max_prompt_chars": 20000,
-  "model_thresholds": {},
+  "model_thresholds": {
+    "jinaai/jina-embeddings-v2-small-en": 0.4
+  },
   "top_memory": 5,
   "top_procedural": 3,
   "top_total": 9
