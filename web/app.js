@@ -717,14 +717,18 @@
           } else if (/^svg$/i.test(lang)) {
             const rawSvg = codeLines.join("\n");
             const clean = window.DOMPurify ? DOMPurify.sanitize(rawSvg, { USE_PROFILES: { svg: true, svgFilters: true } }) : rawSvg;
-            out.push(`<div class="svg-wrap">${clean}</div>`);
+            const _svgPopBtn = `<button class="svg-popout-btn" title="Open in new tab"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><line x1="21" y1="3" x2="14" y2="10"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></button>`;
+            out.push(`<div class="svg-wrap">${_svgPopBtn}${clean}</div>`);
           } else if (/^(markdown|md|obsidian)$/i.test(lang) && mdUnwrapDepth < 2) {
             mdUnwrapDepth++;
             const inner = parseBlocks(codeLines);
             mdUnwrapDepth--;
             out.push(`<div class="md-content md-unwrap">${inner}</div>`);
           } else {
-            out.push(`<div class="code-block"><button class="code-copy-btn" title="Copy code"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button><pre><code${lang ? ` class="language-${escAttr(lang)}"` : ""}>${escHtml(codeLines.join("\n"))}</code></pre></div>`);
+            const _previewLangs = /^(html|htm|svg|threejs|three\.js|p5js|p5)$/i;
+            const _canPreview = _previewLangs.test(lang);
+            const _runBtn = _canPreview ? `<button class="code-run-btn" title="Run preview" data-lang="${escAttr(lang)}"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>` : "";
+            out.push(`<div class="code-block">${_runBtn}<button class="code-copy-btn" title="Copy code"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button><pre><code${lang ? ` class="language-${escAttr(lang)}"` : ""}>${escHtml(codeLines.join("\n"))}</code></pre></div>`);
           }
           continue;
         }
@@ -843,7 +847,10 @@
               }
               const langAttr = lang ? ` class="language-${escAttr(lang)}"` : "";
               const body = escaped ? text : escHtml(text);
-              return `<div class="code-block"><button class="code-copy-btn" title="Copy code"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button><pre><code${langAttr}>${body}</code></pre></div>`;
+              const _mdPreviewLangs = /^(html|htm|svg|threejs|three\.js|p5js|p5)$/i;
+              const _mdCanPreview = _mdPreviewLangs.test(lang);
+              const _mdRunBtn = _mdCanPreview ? `<button class="code-run-btn" title="Run preview" data-lang="${escAttr(lang)}"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>` : "";
+              return `<div class="code-block">${_mdRunBtn}<button class="code-copy-btn" title="Copy code"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button><pre><code${langAttr}>${body}</code></pre></div>`;
             }
           };
           marked.use({ gfm: true, breaks: true, renderer: mdRenderer });
@@ -1654,6 +1661,34 @@
       right.style.gap = "8px";
       right.appendChild(statusEl);
       right.appendChild(toggleBtn);
+
+      // Preview button for previewable file types
+      const _pvAttrs = evt.data && (evt.data.attrs || evt.data) || {};
+      const _pvPath = _pvAttrs.path || _pvAttrs.filename || "";
+      const _pvExt = _pvPath.split(".").pop().toLowerCase();
+      if (/^(html|htm|svg|threejs)$/i.test(_pvExt) && /^(create_file|edit_file|save_svg|create_svg)$/.test(name)) {
+        const pvBtn = document.createElement("button");
+        pvBtn.className = "skill-toggle-btn skill-preview-btn";
+        pvBtn.textContent = "Preview";
+        pvBtn.onclick = (e) => {
+          e.stopPropagation();
+          fetch('/api/filesystem/read?path=' + encodeURIComponent(_pvPath))
+            .then(r => r.json())
+            .then(data => {
+              if (data.error) { showToast(data.error, 'error'); return; }
+              let html;
+              if (/^svg$/i.test(_pvExt)) {
+                html = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{display:flex;justify-content:center;align-items:center;min-height:100vh;background:#1a1a2e}svg{max-width:95vw;max-height:95vh}</style></head><body>' + data.content + '</body></html>';
+              } else {
+                html = data.content;
+              }
+              const blob = new Blob([html], { type: 'text/html' });
+              window.open(URL.createObjectURL(blob), '_blank');
+            })
+            .catch(() => showToast('Failed to read file for preview', 'error'));
+        };
+        right.appendChild(pvBtn);
+      }
 
       header.appendChild(left);
       header.appendChild(right);
@@ -2585,6 +2620,7 @@
     function _renderSkillEvents(events) {
       const cards = {};
       let group = null;
+      let _histSkillPath = "";
       for (const evt of events) {
         if (evt.type === "round_thinking") {
           group = null;
@@ -2623,6 +2659,11 @@
           group.appendChild(card);
           activateLucideIcons(card);
           cards[evt.id] = card;
+          // Track path for history preview card
+          if (evt.name === "create_file" || evt.name === "edit_file" || evt.name === "save_svg" || evt.name === "create_svg") {
+            const _d = evt.data && (evt.data.attrs || evt.data);
+            _histSkillPath = (_d && (_d.path || _d.filename)) || "";
+          }
         } else if (evt.type === "skill_output") {
           if (evt.name === "ask_user") {
             try {
@@ -2638,6 +2679,7 @@
           if (evt.name === "ask_user") continue;
           const card = cards[evt.id];
           if (card) finishSkillCard(card, evt);
+
           // Reset group so the next skill_start creates a fresh stack
           // (matches streaming behavior where each command gets its own group)
           group = null;
@@ -3364,10 +3406,14 @@
             `<span class="fes-arrow">▶</span>`;
           scrollBottom();
         },
+        _currentToolTag: null,
+        _currentToolPath: null,
         showToolPending(evt) {
           hidePending();
           const tag = evt.tag || "tool";
           const attrs = evt.attrs || {};
+          this._currentToolTag = tag;
+          this._currentToolPath = attrs.path || attrs.filename || "";
           const meta = {
             create_file:  { icon: "📝", label: "Creating file", detail: attrs.path || "", progress: true },
             edit_file:    { icon: "✏️", label: "Editing file", detail: attrs.path || "", progress: true },
@@ -3419,6 +3465,7 @@
           const status = card.querySelector(".tac-status");
           if (status) { status.innerHTML = `<span class="tac-check">${lucideIcon("✓")}</span>`; activateLucideIcons(status); }
           card.classList.add("tac-done");
+
           // Fade out only if no next tool reuses it (cancelled in showToolPending)
           _tacExitTimer = setTimeout(() => {
             card.classList.add("tac-exit");
@@ -3594,6 +3641,9 @@
       let gotAnswer = false;
       let gotDone = false;
       let gotError = false;
+      let gotTitle = false;
+      let _lastSkillPath = "";
+      let _lastSkillName = "";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -3702,6 +3752,12 @@
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
             ui.showToolDone();
             ui.addSkillStart(evt);
+            // Track path for preview card injection at skill_end
+            if (evt.name === "create_file" || evt.name === "edit_file" || evt.name === "save_svg" || evt.name === "create_svg") {
+              const _d = evt.data && (evt.data.attrs || evt.data);
+              _lastSkillPath = (_d && (_d.path || _d.filename)) || "";
+              _lastSkillName = evt.name;
+            }
           } else if (evt.type === "skill_output") {
             if (evt.name === "ask_user") {
               try { ui.addAskUser(JSON.parse(evt.text)); } catch(e) { ui.appendSkillOutput(evt); }
@@ -3711,6 +3767,7 @@
           } else if (evt.type === "skill_end") {
             if (evt.name === "ask_user") continue;
             ui.finishSkill(evt);
+
           } else if (evt.type === "permission_request") {
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
             renderApprovalCard(evt, activePane);
@@ -3741,6 +3798,7 @@
               scrollBottom();
             }
           } else if (evt.type === "chat_title") {
+            gotTitle = true;
             const newTitle = (evt.title || "").trim();
             if (newTitle && activeChatId === streamChatId) {
               // Update sidebar — targeted DOM update instead of full rebuild
@@ -3764,7 +3822,7 @@
         }
         if (gotError) break;
       }
-      return { gotAnswer, gotDone, gotError };
+      return { gotAnswer, gotDone, gotError, gotTitle };
     }
 
     async function retryLastCommand(skillEvents, bar, btn) {
@@ -5464,12 +5522,13 @@
           return;
         }
 
-        const { gotAnswer, gotDone, gotError } = await consumeChatStream(res, ui, userMsgDiv, streamChatId);
+        const { gotAnswer, gotDone, gotError, gotTitle } = await consumeChatStream(res, ui, userMsgDiv, streamChatId);
 
         // Detect empty response: stream ended with no answer tokens,
         // or stream "done" but answer content is whitespace-only.
-        const emptyResponse = (!gotAnswer && !gotError && !gotDone)
-          || (gotDone && !gotAnswer && !gotError);
+        // Don't error if we got a chat_title — the auto-loop will continue.
+        const emptyResponse = (!gotAnswer && !gotError && !gotDone && !gotTitle)
+          || (gotDone && !gotAnswer && !gotError && !gotTitle);
         if (emptyResponse) {
           const msg = gotDone ? "Response finished with no content" : "Stream ended without a response";
           showToast(msg, "error");
@@ -10066,6 +10125,46 @@
 
   document.addEventListener('click', (e) => {
     if (!e.target.closest('.ctx-menu')) closeCtx();
+  });
+
+  // SVG popout button (delegated)
+  document.addEventListener('click', (e) => {
+    const popBtn = e.target.closest('.svg-popout-btn');
+    if (!popBtn) return;
+    const wrap = popBtn.closest('.svg-wrap');
+    const svgEl = wrap?.querySelector('svg:not(.svg-popout-btn svg)');
+    if (!svgEl) return;
+    const svgMarkup = svgEl.outerHTML;
+    const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{display:flex;justify-content:center;align-items:center;min-height:100vh;background:#1a1a2e}svg{max-width:95vw;max-height:95vh}</style></head><body>' + svgMarkup + '</body></html>';
+    const blob = new Blob([html], { type: 'text/html' });
+    window.open(URL.createObjectURL(blob), '_blank');
+  });
+
+  // Code block run/preview button (delegated)
+  document.addEventListener('click', (e) => {
+    const runBtn = e.target.closest('.code-run-btn');
+    if (!runBtn) return;
+    const block = runBtn.closest('.code-block');
+    const codeEl = block?.querySelector('pre code');
+    if (!codeEl) return;
+    const lang = (runBtn.dataset.lang || '').toLowerCase();
+    const raw = codeEl.textContent;
+
+    let html;
+    if (/^(threejs|three\.js)$/i.test(lang)) {
+      // Auto-wrap raw three.js in a working HTML shell
+      html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{overflow:hidden;background:#000}</style></head><body><script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@latest/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@latest/examples/jsm/"}}</script><script type="module">\n${raw}\n</script></body></html>`;
+    } else if (/^(p5js|p5)$/i.test(lang)) {
+      html = `<!DOCTYPE html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/p5@latest/lib/p5.min.js"></script><style>*{margin:0;padding:0}body{display:flex;justify-content:center;align-items:center;min-height:100vh;background:#1a1a2e}</style></head><body><script>\n${raw}\n</script></body></html>`;
+    } else if (/^svg$/i.test(lang)) {
+      html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{display:flex;justify-content:center;align-items:center;min-height:100vh;background:#1a1a2e}svg{max-width:95vw;max-height:95vh}</style></head><body>${raw}</body></html>`;
+    } else {
+      // html/htm — use as-is
+      html = raw;
+    }
+
+    const blob = new Blob([html], { type: 'text/html' });
+    window.open(URL.createObjectURL(blob), '_blank');
   });
 
   // Code block copy button (delegated)

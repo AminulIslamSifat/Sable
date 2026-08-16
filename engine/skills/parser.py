@@ -9,7 +9,7 @@ Extracts complete tool calls from streamed LLM output. Tool calls use
 
 Hermes Tool Call Format:
   Single:  <tool_call>{"name": "grep", "arguments": {"pattern": "foo"}}</tool_call>
-  Multiple: repeat <tool_call> blocks back to back
+  Multiple: <tool_call>[{"name": "a", ...}, {"name": "b", ...}]</tool_call> (ONE wrapper, JSON array)
 """
 
 from __future__ import annotations
@@ -27,8 +27,9 @@ from typing import Any, Generator
 
 logger = logging.getLogger("sable.parser")
 
-# Debug log file for parser failures
-_PARSER_LOG = Path(__file__).resolve().parent.parent.parent / "output" / "parser_debug.log"
+# Debug log file for parser failures — use central output root
+from engine.config import OUTPUT_ROOT as _OUT
+_PARSER_LOG = _OUT / "parser_debug.log"
 
 def _plog(msg: str) -> None:
     """Write parser debug info to file."""
@@ -67,7 +68,6 @@ KNOWN_TAGS = (
     "mcp_call",
     "web_search",
     "web_fetch",
-    "comprehensive_search",
     "online_search",
     "chat_title",
 )
@@ -119,7 +119,7 @@ def _parse_action_payload(raw: str) -> list[dict[str, Any]]:
 
     Returns list of {"name": str, "attrs": dict[str,str], "content": str}.
     Accepts both Hermes format {"name": ..., "arguments": ...} and legacy
-    {"tool": ..., "params": ...} for backwards compatibility.
+    Legacy {"tool": ..., "params": ...} keys are normalized to Hermes format internally.
     """
     raw = raw.strip()
     if not raw:

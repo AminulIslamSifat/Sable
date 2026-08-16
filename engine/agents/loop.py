@@ -289,6 +289,16 @@ async def run_agent_llm_loop(
 
     for iteration in range(max_iterations):
         agent.push_stream_event({"type": "iteration", "iteration": iteration + 1})
+
+        # Check for user-injected guidance messages
+        if agent.pending_user_messages:
+            guidance = "\n\n".join(agent.pending_user_messages)
+            agent.pending_user_messages.clear()
+            guidance_msg = f"[USER GUIDANCE]\n{guidance}"
+            agent.messages.append({"role": "user", "content": guidance_msg})
+            await _persist_message(agent.id, "user", guidance_msg)
+            current_message = guidance_msg
+
         # Call LLM (inject pending skill images if model supports vision)
         _files_for_round: list[str] | None = _pending_agent_images or None
         _pending_agent_images = []
@@ -302,8 +312,13 @@ async def run_agent_llm_loop(
         agent.messages.append({"role": "assistant", "content": response_text})
         await _persist_message(agent.id, "assistant", response_text)
 
-        # Stream the response text to the panel
-        agent.push_stream_event({"type": "answer", "text": response_text})
+        # Stream the response text to the panel (strip tool_call blocks + bare JSON calls)
+        _panel_text = re.sub(r"<tool_call>.*?</tool_call>", "", response_text, flags=re.DOTALL)
+        _panel_text = re.sub(
+            r'\{\s*"name"\s*:\s*"[\w-]+"\s*,\s*"arguments"\s*:\s*\{.*?\}\s*\}',
+            "", _panel_text, flags=re.DOTALL,
+        ).strip()
+        agent.push_stream_event({"type": "answer", "text": _panel_text})
 
         # --- Todo progression: parse <todo_done> and <todo_sub> tags ---
         if agent.todos and agent.todos.current:
@@ -381,7 +396,7 @@ async def run_agent_llm_loop(
         # Parse skill tags
         tags = _parse_skill_tags(response_text)
 
-        # Strip action blocks from display text so raw tags never reach the frontend.
+        # Strip tool_call blocks from display text so raw tags never reach the frontend.
         # Tags are already parsed above; the raw markup is just leftover garbage.
         response_text = _TAG_RE.sub("", response_text)
         response_text = re.sub(r'\n{3,}', '\n\n', response_text).strip()
@@ -480,9 +495,10 @@ async def run_agent_llm_loop(
                     lambda: list(engine.process_tag(tag_name, attrs_dict, content, namespace=agent.id))
                 )
 
-                # Forward skill events to panel stream
+                # Forward skill events to panel stream (skip duplicate skill_start —
+                # the explicit one above already created the live "running" card)
                 for evt in events:
-                    if isinstance(evt, dict):
+                    if isinstance(evt, dict) and evt.get("type") != "skill_start":
                         agent.push_stream_event(evt)
 
                 # Collect image paths from skill results
@@ -499,8 +515,7 @@ async def run_agent_llm_loop(
                     feedback = feedback[:max_chars] + f"\n\n[OUTPUT TRUNCATED: {len(feedback)} chars → {max_chars} limit]"
                 tool_results.append(feedback or "[no output]")
 
-                # Stream skill_end to panel
-                agent.push_stream_event({"type": "skill_end", "name": tag_name, "ok": True})
+                # skill_end already forwarded from handler events (carries result)
 
                 if tag_name not in agent.skills_used:
                     agent.skills_used.append(tag_name)

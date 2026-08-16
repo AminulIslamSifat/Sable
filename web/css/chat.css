@@ -54,7 +54,7 @@
     }
 
     /* Right-side icon cells cluster together at the end */
-    .header-row > .header-icon-cell:nth-last-child(2) { margin-left: auto; }
+    .header-row > .header-right-pair:first-of-type { margin-left: auto !important; }
     /* The Model pill's glass fills its box edge-to-edge while the round buttons
        have dark margin inside their 40px cells, so the pill->terminal seam looks
        tighter than newchat->pill at equal gaps. Nudge the terminal right to match. */
@@ -547,6 +547,11 @@
       color: var(--accent-text);
       border-color: var(--accent);
     }
+    .skill-preview-btn:hover {
+      background: rgba(74, 222, 128, 0.12);
+      color: #4ade80;
+      border-color: #4ade80;
+    }
 
     .skill-header {
       display: flex;
@@ -749,6 +754,30 @@
       color: #4ade80;
       opacity: 1;
     }
+    .code-run-btn {
+      position: absolute;
+      top: 8px;
+      right: 42px;
+      background: var(--panel-hover, rgba(255,255,255,0.06));
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px;
+      cursor: pointer;
+      color: var(--text-dim);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity 0.15s, color 0.15s, background 0.15s;
+      z-index: 2;
+    }
+    .code-block:hover .code-run-btn {
+      opacity: 1;
+    }
+    .code-run-btn:hover {
+      color: #4ade80;
+      background: rgba(74, 222, 128, 0.1);
+    }
 
     .md-content .table-wrap {
       margin: 14px 0;
@@ -923,6 +952,7 @@
 
     /* inline svg blocks */
     .md-content .svg-wrap {
+      position: relative;
       margin: 14px 0;
       display: flex;
       justify-content: center;
@@ -932,6 +962,30 @@
       padding: 16px;
       overflow: auto;
       max-height: 80vh;
+    }
+    .svg-popout-btn {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      background: var(--panel-hover, rgba(255,255,255,0.06));
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px;
+      cursor: pointer;
+      color: var(--text-dim);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity 0.15s, color 0.15s, background 0.15s;
+      z-index: 2;
+    }
+    .svg-wrap:hover .svg-popout-btn {
+      opacity: 1;
+    }
+    .svg-popout-btn:hover {
+      color: #4ade80;
+      background: rgba(74, 222, 128, 0.1);
     }
     .md-content .svg-wrap svg {
       display: block;

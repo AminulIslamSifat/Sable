@@ -53,7 +53,8 @@ from ..dependencies import service, sse
 _DIRECT_READ_BACKENDS = frozenset({"gemini", "groq", "mistral", "openai"})
 
 # --- Conversation file logger ---
-_CONV_LOG_DIR = Path(__file__).resolve().parent.parent.parent.parent / "output" / "conversations"
+from engine.config import OUTPUT_ROOT as _OUT
+_CONV_LOG_DIR = _OUT / "conversations"
 _CONV_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 def _log_conversation(chat_id: str, model: str, role: str, content: str) -> None:
@@ -266,9 +267,9 @@ async def chat(request: ChatRequest):
     _msg_count = get_db().execute(
         "SELECT COUNT(*) as c FROM messages WHERE chat_id = ?", (active_chat_id,)
     ).fetchone()["c"]
-    if parent_id is None and _msg_count <= 1 and _local_use_utilities:
-        _context_parts.append('[SYSTEM: First message of a new chat. Respond normally, but also emit ' + chr(60) + 'tool_call' + chr(62) + '{"name": "chat_title", "arguments": {"title": "Short descriptive title"}}' + chr(60) + '/tool_call' + chr(62) + ' at the end of your response. If you are running another command, put chat_title and that command as separate tool_call blocks. You can use chat_title only once, unless user explicitly ask for it.]')
+
     if _local_use_utilities and parent_id is None and _msg_count <= 1:
+        _context_parts.append('[SYSTEM: You MUST call the chat_title tool now to set a title for this new conversation. This is mandatory.]')
         try:
             from server.database import get_upcoming_schedules
             _upcoming = get_upcoming_schedules(days=10)
@@ -511,8 +512,10 @@ async def chat(request: ChatRequest):
                                 if _t:
                                     update_chat_title(active_chat_id, _t[:80])
                                     yield sse({"type": "chat_title", "title": _t[:80]})
-                                # Mark as executed so incomplete-tool_call guard does not fire
-                                round_skill_events.append({"type": "skill_end", "name": "chat_title", "ok": True})
+                                # Emit proper skill events with ID so build_tool_feedback picks it up
+                                _ct_id2 = str(uuid.uuid4())
+                                round_skill_events.append({"type": "skill_start", "name": "chat_title", "id": _ct_id2})
+                                round_skill_events.append({"type": "skill_end", "name": "chat_title", "ok": True, "id": _ct_id2, "duration_ms": 0})
                                 _title_buf = _title_buf[:m.start()] + _title_buf[m.end():]
                             # Hold back partial <title at end of buffer
                             lt = _title_buf.rfind("<")
@@ -529,12 +532,15 @@ async def chat(request: ChatRequest):
                         elif itype == "tag_found":
                             # Meta tags: intercept before skill dispatch
                             if item["name"] == "chat_title":
+                                _ct_id = str(uuid.uuid4())
                                 _title_text = str(item.get("content", "")).strip()
                                 if _title_text:
                                     update_chat_title(active_chat_id, _title_text[:80])
                                     yield sse({"type": "chat_title", "title": _title_text[:80]})
-                                # Mark as executed so incomplete-action guard doesn't fire
-                                round_skill_events.append({"type": "skill_end", "name": "chat_title", "ok": True})
+                                # Emit proper skill events with ID so build_tool_feedback
+                                # generates feedback → auto-loop continues → model sends real text
+                                round_skill_events.append({"type": "skill_start", "name": "chat_title", "id": _ct_id})
+                                round_skill_events.append({"type": "skill_end", "name": "chat_title", "ok": True, "id": _ct_id, "duration_ms": 0})
                                 continue
                             # SVG tags: content already streamed progressively by parser;
                             # only save to disk here — skip re-streaming
@@ -1049,9 +1055,10 @@ async def chat(request: ChatRequest):
                             _pending_skill_images.append(_res["path"])
                 # Truncate oversized tool output to protect context window
                 from engine.agents.loop import _get_max_tool_output_chars
+                from engine.skills.events import middle_truncate
                 _tool_cap = _get_max_tool_output_chars()
                 if feedback and len(feedback) > _tool_cap:
-                    feedback = feedback[:_tool_cap] + f"\n\n[OUTPUT TRUNCATED: {len(feedback)} chars → {_tool_cap} limit]"
+                    feedback = middle_truncate(feedback, _tool_cap)
                 # If no tool feedback but guard warnings exist, use warnings as feedback
                 # so the model sees them and self-corrects (auto-continue, no break)
                 if not feedback and _guard_warnings:
