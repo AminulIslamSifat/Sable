@@ -31,14 +31,43 @@ class ServeManager:
     def __init__(self) -> None:
         self._processes: dict[str, subprocess.Popen] = {}
 
+    @staticmethod
+    def _install_hint() -> str:
+        """Return platform-specific install instructions for llama-server."""
+        import platform
+        system = platform.system()
+        if system == "Linux":
+            # Try to detect distro
+            try:
+                os_release = Path("/etc/os-release").read_text().lower()
+                if "arch" in os_release or "manjaro" in os_release or "endeavour" in os_release:
+                    return "sudo pacman -S llama-cpp"
+                if "ubuntu" in os_release or "debian" in os_release or "mint" in os_release:
+                    return (
+                        "pip install llama-cpp-python\n"
+                        "  or build from source: https://github.com/ggerganov/llama.cpp#build"
+                    )
+                if "fedora" in os_release:
+                    return "sudo dnf install llama-cpp\n  or: pip install llama-cpp-python"
+            except OSError:
+                pass
+            return "pip install llama-cpp-python\n  or: https://github.com/ggerganov/llama.cpp#build"
+        if system == "Darwin":
+            return "brew install llama.cpp"
+        if system == "Windows":
+            return "pip install llama-cpp-python"
+        return "https://github.com/ggerganov/llama.cpp#build"
+
     def _find_binary(self) -> str:
         """Locate llama-server binary."""
-        path = shutil.which(_LLAMA_SERVER_BIN)
-        if not path:
-            raise ServeError(
-                "llama-server not found. Install with: sudo pacman -S llama-cpp"
-            )
-        return path
+        # Try common binary names across distros
+        for name in ("llama-server", "llama-cpp-server", "llama-server-mainline"):
+            path = shutil.which(name)
+            if path:
+                return path
+        raise ServeError(
+            f"llama-server not found. Install with:\n  {self._install_hint()}"
+        )
 
     def _build_command(self, task: ServeTask) -> list[str]:
         """Build the llama-server command line."""
