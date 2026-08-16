@@ -1,0 +1,37 @@
+[
+  {
+    "name": "generate_image",
+    "description": "Generate an AI image using Perchance (free, no login). Supports 36+ art styles, multiple shapes, and batch generation.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "Image description / subject"
+        },
+        "style": {
+          "type": "string",
+          "description": "Art style preset key (e.g., ghibli, cyberpunk, oil_painting, anime, photorealistic). Use 'list' to see all. Default: no_style"
+        },
+        "shape": {
+          "type": "string",
+          "enum": ["square", "portrait", "landscape"],
+          "description": "Image aspect ratio. Default: square"
+        },
+        "count": {
+          "type": "integer",
+          "description": "Number of images to generate (1-4). Default: 1"
+        },
+        "negative_prompt": {
+          "type": "string",
+          "description": "What to avoid in the image. Default: low-quality, deformed, blurry, bad art"
+        },
+        "seed": {
+          "type": "integer",
+          "description": "Seed for reproducibility (-1 for random)"
+        }
+      },
+      "required": ["prompt"]
+    }
+  }
+]
