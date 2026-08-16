@@ -18,5 +18,3 @@
 //   js/memory-panel.js      — Brain/Memory panel, consolidation settings
 //   js/skills-panel.js      — Skills management, tools, context pass
 //   js/appearance.js        — Accounts, fonts, themes, MCP, mode, browser, context menu
-//
-// Backup: app.js.bak (original 10,360-line monolith)
