@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -164,4 +165,16 @@ def revert_file(payload: RevertRequest) -> dict[str, str]:
 def index() -> str:
     if INDEX_FILE.exists():
         return INDEX_FILE.read_text(encoding="utf-8")
-    return "<h1>Sable API is running</h1><p>POST /api/chat</p>"
+
+
+_INSTRUCTION_EXTRA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "instruction" / "extra"
+
+@router.get("/api/instruction/{name}")
+def get_instruction(name: str) -> dict[str, str]:
+    """Serve instruction files from instruction/extra/ directory."""
+    # Sanitize: strip path traversal characters
+    safe = re.sub(r'[^a-zA-Z0-9._-]', '', name)
+    path = _INSTRUCTION_EXTRA_DIR / safe
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=f"Instruction '{safe}' not found")
+    return {"content": path.read_text(encoding="utf-8")}

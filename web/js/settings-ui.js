@@ -73,6 +73,7 @@
       'open-library': { keys: 'Alt+L', label: 'Open Library', action: () => openLibrary() },
       'open-memory': { keys: 'Alt+Shift+M', label: 'Open Memory', action: () => openSettingsTab('brain') },
       'open-notes': { keys: 'Alt+Shift+N', label: 'Open Notes', action: () => openLibraryTab('lib-notes') },
+      'open-prompts': { keys: 'Alt+Shift+P', label: 'Open Prompts', action: () => openLibraryTab('lib-prompts') },
       'open-tasks': { keys: 'Alt+Shift+T', label: 'Open Tasks', action: () => openTrackNotePanel('todo') },
       'search-conversations': { keys: 'Alt+F', label: 'Search Conversations', action: () => { const btn = document.getElementById('chatSearchBtn'); if (btn) btn.click(); } },
       'toggle-sidebar': { keys: 'Alt+B', label: 'Toggle Sidebar', action: () => { const isMobile = window.matchMedia('(max-width: 860px)').matches; isMobile ? document.body.classList.toggle('sidebar-open') : document.body.classList.toggle('sidebar-collapsed'); } },
