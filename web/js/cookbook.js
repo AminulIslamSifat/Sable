@@ -736,7 +736,7 @@
   }
 
   // ─── Tab Hook ───────────────────────────────────────────────────────────────
-  // Expose init globally so app.js tab handler can call it
+  // Expose init globally so library.js tab handler can call it
   window._cbInit = initCookbook;
 
   // ─── Utilities ──────────────────────────────────────────────────────────────

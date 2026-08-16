@@ -1,4 +1,4 @@
-/* ---------- Deep Research Panel (extracted from app.js) ---------- */
+/* ---------- Deep Research Panel (extracted from telegram.js) ---------- */
 /* Depends on: escHtml, showToast, getToken, modelList, openLibraryReader, renderMarkdownSimple */
 
     // sessionId -> { eventSource, card, query } — supports concurrent runs.

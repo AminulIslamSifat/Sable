@@ -1492,7 +1492,23 @@
       } catch(e) {}
     })();
   </script>
-  <script src="/static/app.js?v=160"></script>
+  <!-- app.js split into domain modules (load order matters) -->
+  <script src="/static/js/core.js?v=1"></script>
+  <script src="/static/js/tts.js?v=1"></script>
+  <script src="/static/js/markdown.js?v=1"></script>
+  <script src="/static/js/chat.js?v=1"></script>
+  <script src="/static/js/tracknote.js?v=1"></script>
+  <script src="/static/js/sse.js?v=1"></script>
+  <script src="/static/js/sidebar.js?v=1"></script>
+  <script src="/static/js/statusbar.js?v=1"></script>
+  <script src="/static/js/settings-projects.js?v=1"></script>
+  <script src="/static/js/settings-init.js?v=1"></script>
+  <script src="/static/js/settings-ui.js?v=1"></script>
+  <script src="/static/js/library.js?v=1"></script>
+  <script src="/static/js/telegram.js?v=1"></script>
+  <script src="/static/js/memory-panel.js?v=1"></script>
+  <script src="/static/js/skills-panel.js?v=1"></script>
+  <script src="/static/js/appearance.js?v=1"></script>
   <script src="/static/src/research.js?v=10"></script>
   <script src="/static/js/agents.js?v=26"></script>
   <script src="/static/js/filesystem.js?v=31"></script>
@@ -1522,7 +1538,7 @@
       function syncPill() {
         btns.forEach((b, i) => { if (b.classList.contains('active')) wrap.style.setProperty('--i', i); });
       }
-      // Observe class changes (app.js toggles .active)
+      // Observe class changes (appearance.js toggles .active)
       const obs = new MutationObserver(syncPill);
       btns.forEach(b => obs.observe(b, { attributes: true, attributeFilter: ['class'] }));
       syncPill();
