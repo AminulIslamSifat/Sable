@@ -217,13 +217,22 @@ def _dedup_gguf(matched: list[tuple[str, int]]) -> list[tuple[str, int]]:
     return result
 
 
-def fetch_download_size(repo_id: str, include: str) -> float | None:
+def fetch_download_size(repo_id: str, include: str, *, cache_only: bool = False) -> float | None:
     """Get actual download size in GB from HF API. Cached on disk.
-    Returns None if API call fails (caller should fall back to formula)."""
+
+    Args:
+        cache_only: If True, only check cache — never hit the network.
+                    Use this in hot paths like scoring loops.
+
+    Returns None if not available (caller should fall back to formula).
+    """
     _load_size_cache()
     cache_key = f"{repo_id}|{include}"
     if cache_key in _size_cache:
         return _size_cache[cache_key]
+
+    if cache_only:
+        return None
 
     try:
         import urllib.request
@@ -275,9 +284,9 @@ def score_model_for_hardware(
     mem_needed = estimate_memory_gb(params_b, quant, ctx_size)
     available = hw.usable_memory_gb
 
-    # Get real download size from HF API (cached), fall back to formula
+    # Use cached download size only (never blocks on network), fall back to formula
     include_pattern = f"*{quant.lower()}*"
-    download_size_gb = fetch_download_size(repo_id, include_pattern) if repo_id else None
+    download_size_gb = fetch_download_size(repo_id, include_pattern, cache_only=True) if repo_id else None
     if download_size_gb is None:
         download_size_gb = params_b * _QUANT_MEMORY_PER_B.get(quant, 0.60)
 
@@ -588,15 +597,80 @@ def _fetch_hf_models(limit: int = 40) -> list[dict]:
     return results
 
 
+_catalog_disk_cache = Path.home() / ".cache" / "sable" / "cookbook_hf_catalog.json"
+_catalog_refresh_thread = None
+
+
+def _load_catalog_disk_cache() -> list[dict] | None:
+    """Load HF catalog from disk cache."""
+    try:
+        if _catalog_disk_cache.exists():
+            import json
+            data = json.loads(_catalog_disk_cache.read_text())
+            if isinstance(data, list) and len(data) > 0:
+                return data
+    except Exception:
+        pass
+    return None
+
+
+def _save_catalog_disk_cache(models: list[dict]) -> None:
+    """Save HF catalog to disk cache."""
+    try:
+        import json
+        _catalog_disk_cache.parent.mkdir(parents=True, exist_ok=True)
+        _catalog_disk_cache.write_text(json.dumps(models))
+    except Exception as e:
+        logger.debug("Failed to save catalog cache: %s", e)
+
+
+def _bg_refresh_catalog() -> None:
+    """Refresh HF catalog in background thread."""
+    global _catalog_refresh_thread, _dynamic_cache, _dynamic_cache_time
+    if _catalog_refresh_thread and _catalog_refresh_thread.is_alive():
+        return
+
+    import threading
+    import time
+
+    def _do():
+        try:
+            fresh = _fetch_hf_models(limit=40)
+            if fresh:
+                _dynamic_cache = fresh
+                _dynamic_cache_time = time.time()
+                _save_catalog_disk_cache(fresh)
+                logger.info("Background catalog refresh: %d models", len(fresh))
+        except Exception as e:
+            logger.debug("Background catalog refresh failed: %s", e)
+
+    _catalog_refresh_thread = threading.Thread(target=_do, daemon=True)
+    _catalog_refresh_thread.start()
+
+
 def get_model_catalog() -> list[dict]:
-    """Get full catalog: static + dynamic from HF (cached 1 hour)."""
+    """Get full catalog: static + dynamic from HF.
+
+    Uses disk cache for instant response. Refreshes in background if stale.
+    """
     global _dynamic_cache, _dynamic_cache_time
     import time
 
     now = time.time()
-    if _dynamic_cache is None or (now - _dynamic_cache_time) > 3600:
-        _dynamic_cache = _fetch_hf_models(limit=40)
-        _dynamic_cache_time = now
+    needs_refresh = _dynamic_cache is None or (now - _dynamic_cache_time) > 3600
+
+    # On cold start, load from disk cache instantly
+    if _dynamic_cache is None:
+        disk = _load_catalog_disk_cache()
+        if disk:
+            _dynamic_cache = disk
+            _dynamic_cache_time = now  # Treat as fresh enough for now
+            needs_refresh = True  # But still refresh in background
+            logger.info("Loaded %d cached HF models from disk", len(disk))
+
+    # Fire background refresh if stale (never blocks)
+    if needs_refresh:
+        _bg_refresh_catalog()
 
     seen = {m["repo_id"] for m in MODEL_CATALOG}
     merged = list(MODEL_CATALOG)
@@ -607,14 +681,62 @@ def get_model_catalog() -> list[dict]:
     return merged
 
 
+_prefetch_thread = None
+
+
+def _bg_prefetch_download_sizes(catalog: list[dict]) -> None:
+    """Fire-and-forget background pre-fetch of download sizes.
+
+    Runs in a daemon thread so it never blocks the recommendations response.
+    Populates disk cache for the NEXT request.
+    """
+    global _prefetch_thread
+    if _prefetch_thread and _prefetch_thread.is_alive():
+        return  # Already running
+
+    import concurrent.futures
+    import threading
+
+    _load_size_cache()
+    tasks = []
+    for model in catalog:
+        for quant in model["quants"]:
+            cache_key = f"{model['repo_id']}|*{quant.lower()}*"
+            if cache_key not in _size_cache:
+                tasks.append((model["repo_id"], f"*{quant.lower()}*"))
+
+    if not tasks:
+        return
+
+    def _do_fetch():
+        logger.info("Background pre-fetching %d download sizes from HF...", len(tasks))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            pool.map(lambda args: _safe_fetch(*args), tasks)
+        logger.info("Background download size pre-fetch complete")
+
+    def _safe_fetch(repo_id, include):
+        try:
+            fetch_download_size(repo_id, include)
+        except Exception:
+            pass
+
+    _prefetch_thread = threading.Thread(target=_do_fetch, daemon=True)
+    _prefetch_thread.start()
+
+
 def get_recommendations(hw: HardwareInfo, ctx_size: int = 4096) -> list[dict]:
     """Rank all catalog models by hardware compatibility.
 
     Returns ALL models (static + dynamic from HF) sorted by score.
-    Incompatible models are included with fits=False for red display.
+    Uses cached download sizes only — uncached entries fall back to formula.
+    Background pre-fetch runs for next request.
     """
-    results = []
     catalog = get_model_catalog()
+
+    # Fire background pre-fetch for NEXT load (never blocks this response)
+    _bg_prefetch_download_sizes(catalog)
+
+    results = []
     for model in catalog:
         # Try all quants, pick the best one (even if it doesn't fit)
         best = None

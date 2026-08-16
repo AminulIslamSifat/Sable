@@ -28,7 +28,7 @@ logger = logging.getLogger("sable.research.engine")
 
 # SEARCH_SCRIPT lives in the project tree, not under OUTPUT_ROOT
 from engine.config import _ROOT as _PROJECT_ROOT
-SEARCH_SCRIPT = _PROJECT_ROOT / "skills" / "online_search" / "scripts" / "web_search_batch.py"
+SEARCH_SCRIPT = _PROJECT_ROOT / "tools" / "online_search" / "scripts" / "online_search.py"
 
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -796,3 +796,4 @@ class DeepResearcher:
         await self._trace("research_cancelled", elapsed_s=round(elapsed, 2))
         await self._emit({"type": "error", "phase": "error", "status": "cancelled"})
         return ""
+#

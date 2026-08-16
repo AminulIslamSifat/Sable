@@ -176,6 +176,43 @@ class ChatService:
             # Browser stays open — warm session for the first message; the next
             # switch's service.close() tears it down.
 
+    async def force_refresh_waf(self, account: str | None = None) -> None:
+        """Always launch browser to collect fresh WAF tokens, ignoring cache.
+
+        Designed for post-switch background warmup — never blocks the main
+        request path. Updates in-memory headers AND persists to disk cache.
+        """
+        from engine.config import _resolve_active_account
+        account = account or self._account_override or _resolve_active_account()
+        async with self._lock:
+            try:
+                await self._browser.start()
+                self._headers = await self._browser.get_fresh_headers()
+                self._headers_account = account
+                save_qwen_tokens_for_account(
+                    cookies=self._headers.get("Cookie", ""),
+                    bx_ua=self._headers.get("bx-ua", ""),
+                    bx_umidtoken=self._headers.get("bx-umidtoken", ""),
+                    account=account,
+                )
+                logger.info("Force-refreshed WAF tokens for %s via browser", account)
+            except Exception as exc:
+                logger.warning("Force WAF refresh failed for %s: %s: %s", account, type(exc).__name__, exc)
+                # Fall back to cached tokens so we're not left empty-handed
+                cached = get_qwen_tokens_for_account(account)
+                if cached and cached.get("cookies"):
+                    from engine.session import build_headers
+                    self._headers = build_headers(
+                        cookies=cached["cookies"],
+                        bx_ua=cached.get("bx_ua"),
+                        bx_umidtoken=cached.get("bx_umidtoken"),
+                    )
+                    self._headers_account = account
+                    logger.info("Fell back to cached WAF tokens for %s", account)
+                else:
+                    self._headers = None
+                    self._headers_account = None
+
     async def refresh_deepseek_token(self) -> str:
         """Extract a fresh DeepSeek token. Reuses an already-running browser
         (e.g. one a cold warmup left open); closes it only if this call
