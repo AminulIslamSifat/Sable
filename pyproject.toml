@@ -34,6 +34,7 @@ dependencies = [
     "websockets>=14.0",
     "beautifulsoup4>=4.12.0",
     "tenacity>=8.2.0",
+    "huggingface-hub>=0.25.0",
 ]
 
 [tool.uv]
