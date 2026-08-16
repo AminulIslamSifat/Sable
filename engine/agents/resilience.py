@@ -263,7 +263,7 @@ class MainChatGuard:
             self._malformed_warned = True
             return MainChatGuard.MALFORMED_NO_CLOSE
 
-        # Check for JSON tool calls outside action blocks
+        # Check for JSON tool calls outside tool_call blocks
         from engine.skills.parser import KNOWN_TAGS
         tool_json_pat = _re.compile(
             r'"name"\s*:\s*"(' + '|'.join(_re.escape(t) for t in KNOWN_TAGS) + r')"',
@@ -280,7 +280,7 @@ class MainChatGuard:
                 self._malformed_warned = True
                 return MainChatGuard.MALFORMED_JSON_OUTSIDE
 
-        # Check for invalid JSON inside action blocks
+        # Check for invalid JSON inside tool_call blocks
         if has_open and has_close:
             from engine.skills.parser import _parse_action_payload, _diagnose_json_failure, sanitize_transport
             action_contents = _re.findall(r"<\s*tool_call\s*>(.*?)<\s*/\s*tool_call\s*>", raw_text, flags=_re.S | _re.I)

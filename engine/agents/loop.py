@@ -381,7 +381,7 @@ async def run_agent_llm_loop(
         # Parse skill tags
         tags = _parse_skill_tags(response_text)
 
-        # Strip action blocks from display text so raw tags never reach the frontend.
+        # Strip tool_call blocks from display text so raw tags never reach the frontend.
         # Tags are already parsed above; the raw markup is just leftover garbage.
         response_text = _TAG_RE.sub("", response_text)
         response_text = re.sub(r'\n{3,}', '\n\n', response_text).strip()
