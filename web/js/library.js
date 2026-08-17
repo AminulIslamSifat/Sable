@@ -367,31 +367,9 @@
             }
           } catch { usageEl.textContent = "⚠️ Could not fetch credit info"; }
         } else if (prov === "perchance") {
-          // Perchance blocks iframes — show launch card to open in new tab
           modelSel.style.display = "none";
-          styleSel.style.display = "none";
+          styleSel.style.display = "";
           usageEl.style.display = "none";
-          wrap.querySelector("#igShape").style.display = "none";
-          wrap.querySelector("#igCount").style.display = "none";
-          wrap.querySelector("#igNegPrompt").style.display = "none";
-          genBtn.style.display = "none";
-          promptEl.style.display = "none";
-          outputWrap.style.display = "block";
-          gallery.style.gridTemplateColumns = "1fr";
-          const promptText = promptEl.value.trim();
-          const launchUrl = promptText
-            ? "https://perchance.org/ai-text-to-image-generator#" + encodeURIComponent(promptText)
-            : "https://perchance.org/ai-text-to-image-generator";
-          gallery.innerHTML = `
-            <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 20px;text-align:center;background:var(--surface);border-radius:12px;border:1px solid var(--border);">
-              <div style="font-size:48px;margin-bottom:16px;">🎨</div>
-              <div style="font-size:18px;font-weight:600;margin-bottom:8px;color:var(--text);">Perchance AI Image Generator</div>
-              <div style="font-size:13px;color:var(--text);opacity:0.7;margin-bottom:20px;">Perchance blocks embedded iframes for security.<br>Click below to open it in a new tab.</div>
-              <a href="${launchUrl}" target="_blank" rel="noopener" class="promptgen-start-btn" style="text-decoration:none;display:inline-flex;align-items:center;gap:8px;">🚀 Open Perchance</a>
-              ${promptText ? '<div style="margin-top:12px;font-size:11px;color:var(--text);opacity:0.5;">Your prompt will be pre-filled via URL</div>' : ''}
-            </div>`;
-          metaEl.textContent = "";
-          return;
         }
         // Restore controls when switching away from perchance
         genBtn.style.display = "";
