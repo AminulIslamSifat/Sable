@@ -12,6 +12,7 @@ Can also be imported as a module:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import random
@@ -29,7 +30,7 @@ except ImportError:
 
 BASE = "https://image-generation.perchance.org/api"
 AD_ACCESS_CODE = "a4c88828629d9d1e2c98fa76fd2b5eccb69ee18af472e567febff4b943e9bbd6"
-KEY_CACHE_FILE = Path("/home/sifat/sable_output/assets/.perchance_key")
+KEY_CACHE_FILE = Path(__file__).resolve().parent.parent.parent.parent / "system" / ".perchance_key"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
@@ -54,16 +55,221 @@ def _verify_key(key: str) -> bool:
 
 
 def save_key(key: str) -> None:
-    """Save a key to cache file."""
+    """Save a key to cache file (JSON format)."""
     KEY_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    KEY_CACHE_FILE.write_text(key.strip())
+    data = {"userKey": key.strip(), "adAccessCode": ""}
+    KEY_CACHE_FILE.write_text(json.dumps(data, indent=2))
+
+
+def _load_cached_key() -> str | None:
+    """Load key from cache file (supports JSON or raw hex)."""
+    if not KEY_CACHE_FILE.exists():
+        return None
+    try:
+        raw = KEY_CACHE_FILE.read_text().strip()
+        if not raw:
+            return None
+        # Try JSON format first
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return data.get("userKey")
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # Fallback: raw hex string
+        if len(raw) == 64:
+            return raw
+    except Exception:
+        pass
+    return None
+
+
+def _refresh_key_via_browser() -> str | None:
+    """Launch stealth Chrome browser to capture a fresh Perchance userKey."""
+    import shutil
+    import subprocess
+    import signal
+
+    # Find available Chrome-based browser
+    browser_bin = None
+    for name in ["helium-browser", "google-chrome", "google-chrome-stable", "chromium"]:
+        path = shutil.which(name)
+        if path:
+            browser_bin = path
+            break
+    if not browser_bin:
+        for p in ["/opt/helium-browser-bin/chrome", "/usr/bin/google-chrome"]:
+            if os.path.isfile(p) and os.access(p, os.X_OK):
+                browser_bin = p
+                break
+    if not browser_bin:
+        print("[perchance] No Chrome browser found for key refresh", file=sys.stderr)
+        return None
+
+    # Find free port
+    import socket
+    cdp_port = 9222
+    for port in range(9222, 9230):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(("127.0.0.1", port)) != 0:
+                cdp_port = port
+                break
+
+    user_data_dir = f"/tmp/perchance_key_refresh_{os.getpid()}"
+    proc = subprocess.Popen([
+        browser_bin,
+        f"--remote-debugging-port={cdp_port}",
+        "--disable-blink-features=AutomationControlled",
+        "--no-first-run", "--no-default-browser-check", "--no-sandbox",
+        "--ozone-platform=wayland",
+        f"--user-data-dir={user_data_dir}",
+        "about:blank",
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    captured_key = None
+    try:
+        captured_key = asyncio.run(_async_capture_key(cdp_port, user_data_dir))
+    except Exception as e:
+        print(f"[perchance] Browser key capture failed: {e}", file=sys.stderr)
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        import shutil as _shutil
+        _shutil.rmtree(user_data_dir, ignore_errors=True)
+
+    if captured_key:
+        save_key(captured_key)
+        print(f"[perchance] Key refreshed via browser: {captured_key[:16]}...", file=sys.stderr)
+    return captured_key
+
+
+async def _async_capture_key(cdp_port: int, user_data_dir: str) -> str | None:
+    """Async helper: navigate Perchance, trigger gen, capture userKey via CDP.
+    
+    Strategy: Navigate first to spawn the iframe, then attach CDP Network monitoring
+    directly to the image-generation.perchance.org target BEFORE triggering generation.
+    Cross-origin iframes are separate CDP targets — parent session can't see their requests.
+    """
+    from playwright.async_api import async_playwright
+    from urllib.parse import urlparse, parse_qs
+    import websockets
+
+    await asyncio.sleep(3)
+    captured = None
+
+    async with async_playwright() as p:
+        browser = await p.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
+        context = browser.contexts[0]
+        page = await context.new_page()
+
+        # Step 1: Navigate to main page
+        await page.goto("https://perchance.org/ai-text-to-image-generator", wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(6)
+
+        # Step 2: Find textarea frame and trigger generation
+        target_frame = None
+        for frame in page.frames:
+            try:
+                ta = await frame.query_selector('textarea[data-name="description"]')
+                if ta:
+                    target_frame = frame
+                    break
+            except Exception:
+                continue
+        if not target_frame:
+            print("[perchance] No textarea frame found", file=sys.stderr)
+            await page.close()
+            return None
+
+        # Trigger generation — this spawns image-generation.perchance.org iframes
+        await target_frame.fill('textarea[data-name="description"]', "test", force=True)
+        await asyncio.sleep(0.3)
+        await target_frame.press('textarea[data-name="description"]', "Enter")
+        print("[perchance] Generation triggered, waiting for image-gen iframe...", file=sys.stderr)
+        await asyncio.sleep(3)
+
+        # Step 3: Find image-generation.perchance.org iframe (spawns AFTER generation trigger)
+        gen_ws = None
+        for attempt in range(5):
+            targets = httpx.get(f"http://127.0.0.1:{cdp_port}/json").json()
+            for t in targets:
+                url = t.get("url", "")
+                ttype = t.get("type", "")
+                if ttype == "iframe" and "image-generation.perchance.org" in url:
+                    gen_ws = t.get("webSocketDebuggerUrl")
+                    print(f"[perchance] Found image-gen iframe (attempt {attempt+1}): {url[:80]}", file=sys.stderr)
+                    break
+            if gen_ws:
+                break
+            await asyncio.sleep(1)
+
+        if not gen_ws:
+            print("[perchance] No image-generation iframe found after 5 attempts", file=sys.stderr)
+            targets = httpx.get(f"http://127.0.0.1:{cdp_port}/json").json()
+            for t in targets:
+                print(f"  [{t.get('type','?')}] {t.get('url','')[:100]}", file=sys.stderr)
+            await page.close()
+            return None
+
+        # Step 4: Attach to image-gen iframe and capture userKey from network
+        async with websockets.connect(gen_ws, max_size=2**20) as ws:
+            await ws.send(json.dumps({"id": 1, "method": "Network.enable"}))
+            await ws.recv()
+            print("[perchance] Network monitoring active on image-gen iframe", file=sys.stderr)
+
+            # The generate request may have already fired — check remaining events
+            # Also the key might be in a subsequent request if multiple generations happen
+            deadline = asyncio.get_event_loop().time() + 20
+            while asyncio.get_event_loop().time() < deadline:
+                try:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=3.0)
+                    data = json.loads(msg)
+                    method = data.get("method", "")
+                    if method == "Network.requestWillBeSent":
+                        req = data.get("params", {}).get("request", {})
+                        req_url = req.get("url", "")
+                        # Check URL params
+                        if "userKey" in req_url:
+                            qs = parse_qs(urlparse(req_url).query)
+                            if "userKey" in qs:
+                                key = qs["userKey"][0]
+                                if len(key) == 64:
+                                    captured = key
+                                    print(f"[perchance] Captured userKey from URL: {key[:16]}...", file=sys.stderr)
+                                    break
+                        # Check POST body
+                        post_data = req.get("postData", "")
+                        if post_data and "userKey" in post_data:
+                            try:
+                                body = json.loads(post_data)
+                                key = body.get("userKey", "")
+                                if len(key) == 64:
+                                    captured = key
+                                    print(f"[perchance] Captured userKey from POST: {key[:16]}...", file=sys.stderr)
+                                    break
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+                except asyncio.TimeoutError:
+                    continue
+                except Exception as e:
+                    print(f"[perchance] WS error: {e}", file=sys.stderr)
+                    break
+
+        if not captured:
+            print("[perchance] Timed out — no userKey found in network traffic", file=sys.stderr)
+
+        await page.close()
+    return captured
 
 
 def get_valid_key(override_key: str | None = None) -> str:
     """Get a valid Perchance userKey.
     
-    Priority: override_key > PERCHANCE_KEY env > cached file
-    Verifies before returning. Raises RuntimeError if no valid key found.
+    Priority: override_key > PERCHANCE_KEY env > cached file > browser refresh
+    Raises RuntimeError if no valid key found after all attempts.
     """
     candidates = []
     if override_key:
@@ -71,23 +277,26 @@ def get_valid_key(override_key: str | None = None) -> str:
     env_key = os.environ.get("PERCHANCE_KEY", "")
     if env_key:
         candidates.append(("env", env_key.strip()))
-    if KEY_CACHE_FILE.exists():
-        cached = KEY_CACHE_FILE.read_text().strip()
-        if cached and len(cached) == 64:
-            candidates.append(("cache", cached))
+    cached = _load_cached_key()
+    if cached:
+        candidates.append(("cache", cached))
 
     for source, key in candidates:
         if len(key) != 64:
             continue
         if _verify_key(key):
-            # Cache it for next time
             save_key(key)
             return key
 
+    # All candidates failed — try browser refresh
+    print("[perchance] All cached keys invalid, attempting browser refresh...", file=sys.stderr)
+    new_key = _refresh_key_via_browser()
+    if new_key and len(new_key) == 64:
+        return new_key
+
     raise RuntimeError(
-        "No valid Perchance userKey found. Set one via:\n"
-        "  --key YOUR_KEY flag, PERCHANCE_KEY env var, or paste in UI\n"
-        "  Get key from browser DevTools → Network → /api/generate → userKey param"
+        "No valid Perchance userKey found and browser refresh failed.\n"
+        "Set one via: --key YOUR_KEY, PERCHANCE_KEY env var, or ensure a Chrome browser is available."
     )
 
 SHAPES = {
