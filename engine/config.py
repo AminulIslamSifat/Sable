@@ -355,13 +355,22 @@ def get_thinking_mode_config(model_id: str | None = None, thinking_mode_id: str 
     Falls back to that model's first (default) thinking mode if
     thinking_mode_id is missing or not supported by the model — e.g. the
     client requests "auto" on qwen3.7-max, which doesn't have that mode.
+
+    Always returns a dict with safe defaults for all expected keys
+    (auto_thinking, thinking_mode, thinking_enabled) so incomplete
+    custom model configs never cause KeyError downstream.
     """
-    modes = get_model_config(model_id)["thinking_modes"]
+    _defaults = {"thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"}
+    modes = get_model_config(model_id).get("thinking_modes", [{**_defaults, "id": "fast", "label": "Fast"}])
+    selected = None
     if thinking_mode_id:
         for mode in modes:
             if mode["id"] == thinking_mode_id:
-                return mode
-    return modes[0]
+                selected = mode
+                break
+    if selected is None:
+        selected = modes[0] if modes else {"id": "fast", "label": "Fast"}
+    return {**_defaults, **selected}
 
 # --------------------------------------------------------------------------
 # Session tokens — loaded from .session_tokens.json (gitignored) so they
