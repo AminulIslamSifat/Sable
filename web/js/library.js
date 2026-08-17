@@ -246,6 +246,18 @@
       "sana": "Sana",
     };
 
+    // Puter image models — populated from /api/settings/puter/models on first use
+    let _IG_PUTER_MODELS = null;
+    async function _loadPuterModels() {
+      if (_IG_PUTER_MODELS) return _IG_PUTER_MODELS;
+      try {
+        const res = await fetch("/api/settings/puter/models");
+        const data = await res.json();
+        _IG_PUTER_MODELS = (data.models || []).reduce((acc, m) => { acc[m.id] = m.label; return acc; }, {});
+      } catch { _IG_PUTER_MODELS = { "openai/gpt-image-1-mini": "GPT Image 1 Mini" }; }
+      return _IG_PUTER_MODELS;
+    }
+
     function renderImageGenPanel(container) {
       container.innerHTML = "";
       container.classList.add("promptgen-panel");
@@ -260,8 +272,10 @@
         <textarea id="igPrompt" class="promptgen-query" rows="3" placeholder="Describe what you want to generate…"></textarea>
         <div class="promptgen-controls">
           <select id="igProvider" class="promptgen-select" style="width:auto;min-width:130px;">
+            <option value="cloudflare">Cloudflare AI (free ~260/day)</option>
             <option value="pollinations">Pollinations</option>
             <option value="perchance">Perchance</option>
+            <option value="puter">Puter (free)</option>
           </select>
           <select id="igModel" class="promptgen-select" style="width:auto;min-width:140px;">
             ${Object.entries(_IG_MODELS).map(([k,v]) => `<option value="${k}">${v}</option>`).join("")}
@@ -283,6 +297,7 @@
           <div class="promptgen-spacer"></div>
           <button id="igGenBtn" class="promptgen-start-btn">🖼️ Generate</button>
         </div>
+        <div id="igPuterUsage" style="display:none;margin-top:6px;font-size:11px;color:var(--text);opacity:0.7;"></div>
         <input id="igNegPrompt" class="promptgen-query" style="margin-top:8px;min-height:auto;padding:8px 12px;font-size:12px;" placeholder="Negative prompt (optional): things to avoid…">
         <div id="igOutputWrap" class="promptgen-output-wrap" style="display:none;">
           <div id="igGallery" class="library-gallery-grid" style="margin-bottom:10px;"></div>
@@ -299,17 +314,91 @@
       const providerSel = wrap.querySelector("#igProvider");
       const modelSel = wrap.querySelector("#igModel");
       const styleSel = wrap.querySelector("#igStyle");
+      const usageEl = wrap.querySelector("#igPuterUsage");
+
+      // Cloudflare models catalog
+      const _CF_MODELS = {
+        "@cf/black-forest-labs/flux-1-schnell": "FLUX.1 Schnell ⚡",
+        "@cf/black-forest-labs/flux-2-dev": "FLUX.2 Dev",
+        "@cf/black-forest-labs/flux-2-klein-4b": "FLUX.2 Klein 4B",
+        "@cf/black-forest-labs/flux-2-klein-9b": "FLUX.2 Klein 9B",
+        "@cf/lykon/dreamshaper-8-lcm": "DreamShaper 8 LCM",
+        "@cf/stabilityai/stable-diffusion-xl-base-1.0": "SDXL Base 1.0",
+      };
 
       // Toggle model/style visibility based on provider
-      function updateProviderUI() {
+      async function updateProviderUI() {
         const prov = providerSel.value;
-        if (prov === "pollinations") {
+        if (prov === "cloudflare") {
           modelSel.style.display = "";
           styleSel.style.display = "none";
-        } else {
+          usageEl.style.display = "block";
+          usageEl.textContent = "Loading budget…";
+          modelSel.innerHTML = Object.entries(_CF_MODELS).map(([k,v]) => `<option value="${k}">${v}</option>`).join("");
+          try {
+            const sRes = await fetch("/api/settings/cloudflare/status");
+            const sData = await sRes.json();
+            if (sData.available) {
+              const b = sData.budget || {};
+              usageEl.textContent = `☁️ ~${b.estimated_images_per_day || "?"} images/day free · resets UTC midnight`;
+            } else {
+              usageEl.textContent = "⚠️ Add Cloudflare credentials in Settings → Providers first";
+            }
+          } catch { usageEl.textContent = "⚠️ Could not fetch Cloudflare status"; }
+        } else if (prov === "pollinations") {
+          modelSel.style.display = "";
+          styleSel.style.display = "none";
+          usageEl.style.display = "none";
+          modelSel.innerHTML = Object.entries(_IG_MODELS).map(([k,v]) => `<option value="${k}">${v}</option>`).join("");
+        } else if (prov === "puter") {
+          modelSel.style.display = "";
+          styleSel.style.display = "none";
+          usageEl.style.display = "block";
+          usageEl.textContent = "Loading credits…";
+          const models = await _loadPuterModels();
+          modelSel.innerHTML = Object.entries(models).map(([k,v]) => `<option value="${k}">${v}</option>`).join("");
+          try {
+            const uRes = await fetch("/api/settings/puter/usage");
+            const uData = await uRes.json();
+            if (uData.ok) {
+              usageEl.textContent = `💳 ${uData.remaining ?? '?'} / ${uData.allowance ?? '?'} credits remaining`;
+            } else {
+              usageEl.textContent = "⚠️ Add a Puter token in Settings → Providers first";
+            }
+          } catch { usageEl.textContent = "⚠️ Could not fetch credit info"; }
+        } else if (prov === "perchance") {
+          // Perchance blocks iframes — show launch card to open in new tab
           modelSel.style.display = "none";
-          styleSel.style.display = "";
+          styleSel.style.display = "none";
+          usageEl.style.display = "none";
+          wrap.querySelector("#igShape").style.display = "none";
+          wrap.querySelector("#igCount").style.display = "none";
+          wrap.querySelector("#igNegPrompt").style.display = "none";
+          genBtn.style.display = "none";
+          promptEl.style.display = "none";
+          outputWrap.style.display = "block";
+          gallery.style.gridTemplateColumns = "1fr";
+          const promptText = promptEl.value.trim();
+          const launchUrl = promptText
+            ? "https://perchance.org/ai-text-to-image-generator#" + encodeURIComponent(promptText)
+            : "https://perchance.org/ai-text-to-image-generator";
+          gallery.innerHTML = `
+            <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 20px;text-align:center;background:var(--surface);border-radius:12px;border:1px solid var(--border);">
+              <div style="font-size:48px;margin-bottom:16px;">🎨</div>
+              <div style="font-size:18px;font-weight:600;margin-bottom:8px;color:var(--text);">Perchance AI Image Generator</div>
+              <div style="font-size:13px;color:var(--text);opacity:0.7;margin-bottom:20px;">Perchance blocks embedded iframes for security.<br>Click below to open it in a new tab.</div>
+              <a href="${launchUrl}" target="_blank" rel="noopener" class="promptgen-start-btn" style="text-decoration:none;display:inline-flex;align-items:center;gap:8px;">🚀 Open Perchance</a>
+              ${promptText ? '<div style="margin-top:12px;font-size:11px;color:var(--text);opacity:0.5;">Your prompt will be pre-filled via URL</div>' : ''}
+            </div>`;
+          metaEl.textContent = "";
+          return;
         }
+        // Restore controls when switching away from perchance
+        genBtn.style.display = "";
+        promptEl.style.display = "";
+        wrap.querySelector("#igShape").style.display = "";
+        wrap.querySelector("#igCount").style.display = "";
+        wrap.querySelector("#igNegPrompt").style.display = "";
       }
       providerSel.addEventListener("change", updateProviderUI);
       updateProviderUI();
@@ -333,9 +422,11 @@
         gallery.innerHTML = "";
         metaEl.textContent = "";
 
+
+
         try {
           const attrs = { prompt, shape, count, provider };
-          if (provider === "pollinations") {
+          if (provider === "cloudflare" || provider === "pollinations" || provider === "puter") {
             attrs.model = modelSel.value;
           } else {
             attrs.style = styleSel.value;
@@ -370,7 +461,7 @@
 
             const first = result.images[0];
             const totalSize = result.images.reduce((s, i) => s + (i.size_bytes || 0), 0);
-            const detailLabel = provider === "pollinations" ? `Model: ${modelSel.value}` : `Style: ${styleSel.value}`;
+            const detailLabel = (provider === "cloudflare" || provider === "pollinations" || provider === "puter") ? `Model: ${modelSel.options[modelSel.selectedIndex]?.text || modelSel.value}` : `Style: ${styleSel.value}`;
             metaEl.textContent = `✅ ${result.count} image(s) | ${detailLabel} | Shape: ${shape} | Seed: ${first.seed} | ${first.width}x${first.height} | ${(totalSize / 1024).toFixed(0)}KB total`;
             if (result.errors) metaEl.textContent += `\n⚠️ Partial: ${result.errors.join("; ")}`;
             outputWrap.style.display = "block";

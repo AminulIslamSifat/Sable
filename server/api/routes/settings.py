@@ -294,6 +294,108 @@ async def remove_openai_api_key(index: int) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Puter API key management (free image generation)
+# ---------------------------------------------------------------------------
+
+@router.post("/api/settings/puter/api-key")
+async def add_puter_api_key(request: Request) -> dict[str, Any]:
+    """Add a Puter API token to the pool."""
+    from connectors.puter.client import get_client as get_puter_client
+    body = await request.json()
+    key = body.get("api_key", "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="Missing 'api_key' field")
+    client = get_puter_client()
+    if key in client._keys:
+        raise HTTPException(status_code=409, detail="Key already exists")
+    client.add_key(key)
+    return {"status": "ok", "keys": client.list_keys(), "available": client.is_available}
+
+
+@router.get("/api/settings/puter/keys")
+async def list_puter_keys() -> dict[str, Any]:
+    """List all configured Puter API tokens (masked)."""
+    from connectors.puter.client import get_client as get_puter_client
+    client = get_puter_client()
+    return {"keys": client.list_keys(), "available": client.is_available}
+
+
+@router.delete("/api/settings/puter/api-key/{index}")
+async def remove_puter_api_key(index: int) -> dict[str, Any]:
+    """Remove a Puter API token by index."""
+    from connectors.puter.client import get_client as get_puter_client
+    client = get_puter_client()
+    if not client.remove_key(index):
+        raise HTTPException(status_code=404, detail="Key not found at that index")
+    return {"status": "ok", "keys": client.list_keys(), "available": client.is_available}
+
+
+@router.get("/api/settings/puter/usage")
+async def get_puter_usage() -> dict[str, Any]:
+    """Fetch current Puter monthly allowance + usage for the active key."""
+    from connectors.puter.client import get_client as get_puter_client
+    return get_puter_client().get_usage()
+
+
+@router.get("/api/settings/puter/models")
+async def list_puter_image_models() -> dict[str, Any]:
+    """Return the catalog of Puter image-generation models."""
+    from connectors.puter.client import PUTER_IMAGE_MODELS
+    return {"models": [{"id": k, "label": v} for k, v in PUTER_IMAGE_MODELS.items()]}
+
+
+# ---------------------------------------------------------------------------
+# Cloudflare Workers AI credentials & info
+# ---------------------------------------------------------------------------
+
+@router.post("/api/settings/cloudflare/credentials")
+async def save_cloudflare_creds(request: Request) -> dict[str, Any]:
+    """Save Cloudflare AI API token. Account ID is auto-fetched from the API."""
+    body = await request.json()
+    api_token = (body.get("api_token") or "").strip()
+    if not api_token:
+        raise HTTPException(400, "API token is required")
+    from connectors.cloudflare.client import save_credentials, CloudflareAIClient
+    # Validate token by fetching account ID
+    client = CloudflareAIClient(api_token=api_token)
+    if not client._ensure_account_id():
+        raise HTTPException(400, "Invalid token or could not fetch account ID")
+    save_credentials(api_token, client._account_id)
+    return {"ok": True, "message": "Cloudflare credentials saved", "account_id": client._account_id}
+
+
+@router.get("/api/settings/cloudflare/status")
+async def cloudflare_status() -> dict[str, Any]:
+    """Check if Cloudflare AI is configured and estimate daily budget."""
+    from connectors.cloudflare.client import get_client, CLOUDFLARE_IMAGE_MODELS
+    client = get_client()
+    if not client.is_available:
+        return {"available": False, "models": []}
+    budget = client.estimate_daily_budget()
+    models = [
+        {"id": k, "label": v["label"], "description": v["description"]}
+        for k, v in CLOUDFLARE_IMAGE_MODELS.items()
+    ]
+    return {
+        "available": True,
+        "budget": budget,
+        "models": models,
+    }
+
+
+@router.delete("/api/settings/cloudflare/credentials")
+async def delete_cloudflare_creds() -> dict[str, Any]:
+    """Remove saved Cloudflare credentials."""
+    creds_file = Path(_SYSTEM_DIR) / ".cloudflare_ai_creds.json"
+    if creds_file.exists():
+        creds_file.unlink()
+    # Reset singleton
+    import connectors.cloudflare.client as cf_mod
+    cf_mod._client = None
+    return {"ok": True, "message": "Cloudflare credentials removed"}
+
+
+# ---------------------------------------------------------------------------
 # Provider model listing (fetch available models from a provider's API)
 # ---------------------------------------------------------------------------
 
@@ -419,11 +521,60 @@ async def list_provider_models(provider: str) -> dict[str, Any]:
 
 
 @router.post("/api/settings/providers/custom/models")
+async def _fetch_cloudflare_models(base_url: str, api_key: str) -> dict[str, Any]:
+    """Fetch text-generation models from Cloudflare Workers AI via /ai/models/search."""
+    import re as _re
+    import httpx as _httpx
+    # Extract account ID from base URL
+    match = _re.search(r"/accounts/([a-f0-9]+)", base_url)
+    if not match:
+        return {"models": [], "available": False, "error": "Could not extract Cloudflare account ID from URL"}
+    account_id = match.group(1)
+    search_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/models/search?per_page=300"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        async with _httpx.AsyncClient(timeout=15.0) as http:
+            r = await http.get(search_url, headers=headers)
+            r.raise_for_status()
+            data = r.json()
+            raw = data.get("result", []) or []
+            models = []
+            for m in raw:
+                task_name = (m.get("task") or {}).get("name", "")
+                if task_name != "Text Generation":
+                    continue
+                mid = m.get("name", "")
+                if not mid:
+                    continue
+                desc = m.get("description", "")[:60]
+                props = {p.get("property_id"): p.get("value") for p in m.get("properties", [])}
+                badges = []
+                if "reasoning" in props:
+                    badges.append("🧠")
+                if "function_calling" in props:
+                    badges.append("🔧")
+                label = mid.split("/")[-1].replace("-", " ").title()
+                if badges:
+                    label += " " + "".join(badges)
+                models.append({"id": mid, "label": label})
+            models.sort(key=lambda m: m["id"])
+            return {"models": models, "available": True}
+    except _httpx.HTTPStatusError as exc:
+        code = exc.response.status_code
+        if code in (401, 403):
+            return {"models": [], "available": False, "error": "Auth rejected — check the API token"}
+        return {"models": [], "available": False, "error": f"Cloudflare returned {code}"}
+    except Exception as exc:
+        logger.warning("Cloudflare model fetch failed: %s", exc)
+        return {"models": [], "available": False, "error": f"Could not reach Cloudflare: {exc}"}
+
+
 async def fetch_custom_endpoint_models(request: Request) -> dict[str, Any]:
     """Fetch the model list from an arbitrary OpenAI-compatible endpoint.
 
     Body: {"base_url": "https://.../v1", "api_key": "optional"}
     Hits {base_url}/models and normalizes the response.
+    For Cloudflare endpoints, uses /ai/models/search instead.
     """
     import httpx as _httpx
     body = await request.json()
@@ -431,6 +582,10 @@ async def fetch_custom_endpoint_models(request: Request) -> dict[str, Any]:
     api_key = (body.get("api_key") or "").strip()
     if not base_url:
         raise HTTPException(status_code=400, detail="Missing base_url")
+
+    # Cloudflare Workers AI doesn't support /v1/models — use their search API
+    if "api.cloudflare.com" in base_url and "/accounts/" in base_url:
+        return await _fetch_cloudflare_models(base_url, api_key)
 
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
@@ -491,10 +646,18 @@ def _mask_endpoint_key(key: str) -> str:
 
 
 async def _fetch_openai_models(base_url: str, api_key: str = "") -> dict[str, Any]:
-    """Fetch + normalize models from any OpenAI-compatible /models endpoint."""
-    import httpx as _httpx
+    """Fetch + normalize models from any OpenAI-compatible /models endpoint.
+
+    For Cloudflare endpoints, delegates to _fetch_cloudflare_models.
+    """
     base_url = base_url.strip().rstrip("/")
     api_key = api_key.strip()
+
+    # Cloudflare Workers AI doesn't support /v1/models — use their search API
+    if "api.cloudflare.com" in base_url and "/accounts/" in base_url:
+        return await _fetch_cloudflare_models(base_url, api_key)
+
+    import httpx as _httpx
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
         async with _httpx.AsyncClient(timeout=15.0) as http:
