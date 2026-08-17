@@ -20,7 +20,7 @@
         },
         "style": {
           "type": "string",
-          "description": "Art style preset (e.g., ghibli, cyberpunk, oil_painting, anime, photorealistic, digital_art, pixel_art, watercolor, cinematic, fantasy, sci_fi). Prepended as prompt prefix for non-Perchance providers. Default: no_style"
+          "description": "Art style preset. Best 11: painted_anime, cyberpunk, oil_painting, ghibli, cinematic, fantasy, photorealistic, pixel_art, watercolor, horror, surreal. Also accepts free-text (e.g. 'in the style of Moebius'). Prepended as prompt prefix. Default: no_style"
         },
         "shape": {
           "type": "string",
