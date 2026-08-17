@@ -232,29 +232,43 @@
     const fmtToggle = document.getElementById("pqFormatToggle");
     if (!btn || !popup || !list) return;
 
-    // Toggle popup
+    // Track pending hide timeout to prevent race conditions
+    let _pqHideTimer = null;
+
+    function openPopup() {
+      // Cancel any pending hide from a recent close
+      if (_pqHideTimer) { clearTimeout(_pqHideTimer); _pqHideTimer = null; }
+      const rect = btn.getBoundingClientRect();
+      popup.style.top = (rect.bottom + 6) + "px";
+      popup.style.left = rect.left + "px";
+      popup.classList.remove("hidden");
+      requestAnimationFrame(() => popup.classList.add("open"));
+      refreshQuickPopup();
+    }
+
+    function closePopup() {
+      if (!popup.classList.contains("open")) return;
+      popup.classList.remove("open");
+      _pqHideTimer = setTimeout(() => {
+        popup.classList.add("hidden");
+        _pqHideTimer = null;
+      }, 180);
+    }
+
+    // Toggle popup on button click
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      const isOpen = popup.classList.contains("open");
-      if (isOpen) {
-        popup.classList.remove("open");
-        setTimeout(() => popup.classList.add("hidden"), 180);
+      if (popup.classList.contains("open")) {
+        closePopup();
       } else {
-        // Position popup below the button
-        const rect = btn.getBoundingClientRect();
-        popup.style.top = (rect.bottom + 6) + "px";
-        popup.style.left = rect.left + "px";
-        popup.classList.remove("hidden");
-        requestAnimationFrame(() => popup.classList.add("open"));
-        refreshQuickPopup();
+        openPopup();
       }
     });
 
-    // Close on outside click
+    // Close on outside click (check against the parent pill wrapper too)
     document.addEventListener("click", (e) => {
-      if (!popup.contains(e.target) && !btn.contains(e.target)) {
-        popup.classList.remove("open");
-        setTimeout(() => popup.classList.add("hidden"), 180);
+      if (!popup.contains(e.target) && !btn.contains(e.target) && !btn.parentElement.contains(e.target)) {
+        closePopup();
       }
     });
 

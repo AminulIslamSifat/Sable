@@ -1,7 +1,7 @@
 [
   {
     "name": "generate_image",
-    "description": "Generate an AI image using Perchance (free, no login). Supports 36+ art styles, multiple shapes, and batch generation.",
+    "description": "Generate AI images via Cloudflare (FLUX, free daily), Puter (GPT Image/Gemini/Imagen, 1000 monthly credits), Pollinations (unlimited, flaky), or Perchance (SDXL, free). Auto-fallback if provider not specified.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -9,9 +9,18 @@
           "type": "string",
           "description": "Image description / subject"
         },
+        "provider": {
+          "type": "string",
+          "enum": ["auto", "cloudflare", "puter", "pollinations", "perchance"],
+          "description": "Which provider to use. 'auto' tries Cloudflare → Pollinations → Perchance. Default: auto"
+        },
+        "model": {
+          "type": "string",
+          "description": "Model ID. Cloudflare: @cf/black-forest-labs/flux-1-schnell (default), @cf/black-forest-labs/flux-2-dev, @cf/black-forest-labs/flux-2-klein-4b, @cf/black-forest-labs/flux-2-klein-9b, @cf/lykon/dreamshaper-8-lcm, @cf/stabilityai/stable-diffusion-xl-base-1.0. Puter: openai/gpt-image-1-mini (default), openai/gpt-image-2, openai/gpt-image-1.5, openai/gpt-image-1. Pollinations: flux, turbo. Ignored for Perchance."
+        },
         "style": {
           "type": "string",
-          "description": "Art style preset key (e.g., ghibli, cyberpunk, oil_painting, anime, photorealistic). Use 'list' to see all. Default: no_style"
+          "description": "Art style preset (e.g., ghibli, cyberpunk, oil_painting, anime, photorealistic, digital_art, pixel_art, watercolor, cinematic, fantasy, sci_fi). Prepended as prompt prefix for non-Perchance providers. Default: no_style"
         },
         "shape": {
           "type": "string",
@@ -20,15 +29,15 @@
         },
         "count": {
           "type": "integer",
-          "description": "Number of images to generate (1-4). Default: 1"
+          "description": "Number of images to generate (1-4). Only Perchance supports true batch; other providers generate one at a time. Default: 1"
         },
         "negative_prompt": {
           "type": "string",
-          "description": "What to avoid in the image. Default: low-quality, deformed, blurry, bad art"
+          "description": "What to avoid in the image. Supported by Cloudflare and Perchance. Default: low-quality, deformed, blurry, bad art"
         },
         "seed": {
           "type": "integer",
-          "description": "Seed for reproducibility (-1 for random)"
+          "description": "Seed for reproducibility (-1 for random). Supported by all providers."
         }
       },
       "required": ["prompt"]
