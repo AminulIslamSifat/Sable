@@ -912,7 +912,7 @@ async def _call_llm(
 
     if backend == "deepseek":
         return await _call_deepseek(agent, message)
-    if backend in ("gemini", "groq", "mistral"):
+    if backend in ("gemini", "groq", "mistral", "openai", "cloudflare"):
         return await _call_api_backend(agent, message, backend, system_instruction=agent.system_prompt, files=files)
     if backend == "local":
         return await _call_local(agent, message)

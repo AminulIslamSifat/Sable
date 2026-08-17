@@ -32,6 +32,8 @@ router = APIRouter()
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
+
+
 @router.get("/api/config/ui")
 def ui_config() -> dict[str, Any]:
     return {
@@ -206,6 +208,37 @@ async def invoke_tool_direct(tool_name: str, request: Request) -> dict[str, Any]
         raise HTTPException(status_code=404, detail="Tool script not found")
 
     provider = body.get("provider", "perchance")
+
+    # ── Cloudflare Workers AI: free FLUX image generation (~260/day) ──
+    if provider == "cloudflare":
+        from connectors.cloudflare.client import get_client as get_cf_client
+        prompt = body.get("prompt", "")
+        if not prompt:
+            return {"ok": False, "error": "prompt is required"}
+        result = get_cf_client().generate_image(
+            prompt=prompt,
+            model=body.get("model", "@cf/black-forest-labs/flux-1-schnell"),
+            shape=body.get("shape", "square"),
+            negative_prompt=body.get("negative_prompt", ""),
+            steps=body.get("steps"),
+            seed=int(body.get("seed", -1)),
+        )
+        return result
+
+    # ── Puter: free driver-API image generation (multi-key) ──
+    if provider == "puter":
+        from connectors.puter.client import get_client as get_puter_client
+        prompt = body.get("prompt", "")
+        if not prompt:
+            return {"ok": False, "error": "prompt is required"}
+        result = get_puter_client().generate_image(
+            prompt=prompt,
+            model=body.get("model", "openai/gpt-image-1-mini"),
+            shape=body.get("shape", "square"),
+            negative_prompt=body.get("negative_prompt", ""),
+            count=int(body.get("count", 1)),
+        )
+        return result
 
     # ── Pollinations: direct HTTP, no script needed ──
     if provider == "pollinations":
