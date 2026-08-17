@@ -26,19 +26,19 @@ _SHAPES = {
     "landscape": (1024, 768),
 }
 
-# Style prefixes (for providers that don't have built-in styles)
+# Style prefixes — best 11 from 36 Perchance presets (used for non-Perchance providers)
 _STYLE_PREFIXES = {
-    "ghibli": "Studio Ghibli art style, Hayao Miyazaki inspired, soft watercolor anime, whimsical",
-    "anime": "anime art style, high quality anime illustration, detailed anime artwork",
-    "cyberpunk": "cyberpunk art style, neon lights, dark futuristic city, holographic",
-    "photorealistic": "photorealistic, hyperrealistic, 8k uhd, dslr photo, sharp focus",
-    "oil_painting": "oil painting, classical art style, rich textures, dramatic lighting",
-    "digital_art": "digital art, concept art, highly detailed, professional illustration",
-    "pixel_art": "pixel art style, retro game aesthetic, 16-bit, crisp pixels",
-    "watercolor": "watercolor painting, soft washes, delicate colors, artistic",
-    "cinematic": "cinematic shot, movie still, dramatic lighting, film grain, color graded",
-    "fantasy": "fantasy art, epic scale, magical atmosphere, detailed illustration",
-    "sci_fi": "science fiction art, futuristic, sleek design, advanced technology",
+    "painted_anime": "painterly anime artwork, world-class masterpiece, fine details, breathtaking, painterly art style, high quality, 8k, very detailed, exquisite composition and lighting",
+    "cyberpunk": "cyberpunk art style, neon lights, dark futuristic city, rain-slicked streets, holographic",
+    "oil_painting": "oil painting, classical art style, rich textures, dramatic lighting, museum quality",
+    "ghibli": "Studio Ghibli art style, Hayao Miyazaki inspired, soft watercolor anime, whimsical, beautiful scenery",
+    "cinematic": "cinematic shot, movie still, dramatic lighting, anamorphic lens, film grain, color graded",
+    "fantasy": "epic fantasy art, magical, dragons and castles, D&D inspired, dramatic lighting",
+    "photorealistic": "photorealistic, hyperrealistic, 8k uhd, dslr photo, sharp focus, professional photography",
+    "pixel_art": "pixel art style, retro game aesthetic, 16-bit, crisp pixels, limited palette",
+    "watercolor": "watercolor painting, soft washes, delicate colors, artistic, paper texture",
+    "horror": "dark horror art, eerie atmosphere, Lovecraftian, unsettling, shadowy",
+    "surreal": "surrealist art style, Dali inspired, dreamlike, impossible geometry, melting forms",
 }
 
 
