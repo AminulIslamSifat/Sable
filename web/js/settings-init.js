@@ -280,6 +280,12 @@
             _toggleStreamIndicator(_stuckId, false);
           }
         }, 3000);
+        // Best-effort: tell backend to stop upstream Qwen generation (fire-and-forget)
+        fetch("/api/chat/stop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: activeChatId }),
+        }).catch(() => {});
         return;
       }
 

@@ -101,7 +101,7 @@ _INJECTION_PATTERNS: list[tuple[str, re.Pattern[str], Severity, str]] = [
     (
         "tool_abuse_rm_rf",
         re.compile(
-            r"(?:rm\s+-rf\s+/|rm\s+-rf\s+~|rm\s+-rf\s+\*|"
+            r"(?:rm\s+-rf\s+/(?!\S)|"
             r"format\s+[A-Z]:\\|del\s+/[sfq]\s+[A-Z]:\\|"
             r"dd\s+if=/dev/zero\s+of=/dev/[sh]d)",
             re.I,
