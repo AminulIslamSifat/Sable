@@ -69,6 +69,54 @@ def _log_conversation(chat_id: str, model: str, role: str, content: str) -> None
 
 router = APIRouter()
 
+
+@router.post("/api/chat/stop")
+async def stop_generation(request: Request):
+    """Stop upstream Qwen generation via server-side API call.
+
+    Called by the frontend BEFORE aborting the SSE stream. Returns success/failure
+    so the frontend knows whether to clear the streaming state or keep the stop button.
+    """
+    from pydantic import BaseModel
+
+    class StopRequest(BaseModel):
+        chat_id: str
+        response_id: str | None = None
+
+    body = await request.json()
+    chat_id = body.get("chat_id", "")
+    response_id = body.get("response_id")
+
+    if not chat_id:
+        return {"success": False, "error": "chat_id required"}
+
+    # Resolve upstream session ID — Qwen's stop API needs the upstream ID, not local UUID
+    from server.database import get_upstream_session_id as _get_usid
+    upstream_id = _get_usid(chat_id) or chat_id
+
+    # Determine which service to use
+    scraper_enabled = get_scraper_settings().get("enabled")
+
+    stopped = False
+    if scraper_enabled and scraper_service:
+        # Browser scraper mode — use engine's stop_generation
+        try:
+            engine = getattr(scraper_service, "_engine", None)
+            if engine:
+                stopped = await engine.stop_generation(chat_id=upstream_id, response_id=response_id)
+        except Exception as exc:
+            logger.warning("Scraper stop failed: %s", exc)
+    else:
+        # Direct API mode — use ChatService._stop_upstream_generation
+        try:
+            stopped = await service._stop_upstream_generation(upstream_id, response_id)
+        except Exception as exc:
+            logger.warning("API stop failed: %s", exc)
+
+    logger.info("Stop request: local=%s upstream=%s response_id=%s success=%s", chat_id, upstream_id, response_id, stopped)
+    return {"success": stopped}
+
+
 @router.post("/api/chat")
 async def chat(request: ChatRequest):
     scraper_enabled = get_scraper_settings().get("enabled")

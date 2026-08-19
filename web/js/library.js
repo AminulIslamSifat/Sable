@@ -47,6 +47,8 @@
       if (section === "email" && _emailState.loaded) return;
       // Telegram: skip reload if already cached
       if (section === "telegram" && _tgState.loaded) return;
+      // ImageGen: skip reload if panel DOM still intact (just hidden)
+      if (section === "imagegen" && _igState.initialized && container.querySelector("#igGenBtn")) return;
       container.innerHTML = '<div class="library-loading">Loading…</div>';
       try {
         if (section === "gallery") {
@@ -246,6 +248,15 @@
       "sana": "Sana",
     };
 
+    // ── Persistent Image Gen State (survives panel close/reopen) ──
+    let _igState = {
+      generating: false,   // true while fetch is in-flight
+      promise: null,       // the in-flight fetch promise
+      result: null,        // last successful result object
+      error: null,         // last error message
+      params: null,        // { prompt, provider, model, style, shape, count, negative_prompt }
+    };
+
     // Puter image models — populated from /api/settings/puter/models on first use
     let _IG_PUTER_MODELS = null;
     async function _loadPuterModels() {
@@ -256,6 +267,105 @@
         _IG_PUTER_MODELS = (data.models || []).reduce((acc, m) => { acc[m.id] = m.label; return acc; }, {});
       } catch { _IG_PUTER_MODELS = { "openai/gpt-image-1-mini": "GPT Image 1 Mini" }; }
       return _IG_PUTER_MODELS;
+    }
+
+    // ── Image Gen: render results/state into current DOM refs ──
+    function _igRenderResult(gallery, metaEl, outputWrap, result, params) {
+      if (!result || !result.images || result.images.length === 0) return;
+      const n = result.images.length;
+      const cols = n === 1 ? 1 : n === 2 ? 2 : 2;
+      gallery.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+      gallery.innerHTML = "";
+      for (const img of result.images) {
+        const imgUrl = "/assets/" + img.filename;
+        const cell = document.createElement("div");
+        cell.className = "library-gallery-item";
+        cell.innerHTML = `<img src="${imgUrl}" alt="Generated image" loading="lazy">`;
+        cell.title = `Seed: ${img.seed} | ${img.width}x${img.height}`;
+        cell.addEventListener("click", () => window.open(imgUrl, "_blank"));
+        gallery.appendChild(cell);
+      }
+      const first = result.images[0];
+      const totalSize = result.images.reduce((s, i) => s + (i.size_bytes || 0), 0);
+      const detailLabel = (params.provider === "cloudflare" || params.provider === "pollinations" || params.provider === "puter")
+        ? `Model: ${params.model}` : `Style: ${params.style}`;
+      metaEl.textContent = `✅ ${result.count} image(s) | ${detailLabel} | Shape: ${params.shape} | Seed: ${first.seed} | ${first.width}x${first.height} | ${(totalSize / 1024).toFixed(0)}KB total`;
+      if (result.errors) metaEl.textContent += `\n⚠️ Partial: ${result.errors.join("; ")}`;
+      outputWrap.style.display = "block";
+    }
+
+    function _igRenderError(metaEl, outputWrap, msg) {
+      metaEl.textContent = "❌ " + msg;
+      outputWrap.style.display = "block";
+    }
+
+    // ── Get current live DOM refs for image gen panel (if visible) ──
+    function _igGetLiveRefs() {
+      const btn = document.getElementById("igGenBtn");
+      if (!btn || !btn.isConnected) return null;
+      const wrap = btn.closest(".promptgen-launch");
+      if (!wrap) return null;
+      return {
+        genBtn: btn,
+        promptEl: wrap.querySelector("#igPrompt"),
+        outputWrap: wrap.querySelector("#igOutputWrap"),
+        gallery: wrap.querySelector("#igGallery"),
+        metaEl: wrap.querySelector("#igMeta"),
+      };
+    }
+
+    // ── Start generation (detached from DOM lifecycle) ──
+    async function _igStartGeneration(attrs, uiRefs) {
+      _igState.generating = true;
+      _igState.params = attrs;
+      _igState.result = null;
+      _igState.error = null;
+
+      // Update UI to generating state if refs exist
+      if (uiRefs) {
+        uiRefs.genBtn.disabled = true;
+        uiRefs.genBtn.textContent = "⏳ Generating…";
+        uiRefs.outputWrap.style.display = "none";
+        uiRefs.gallery.innerHTML = "";
+        uiRefs.metaEl.textContent = "";
+      }
+
+      try {
+        const res = await fetch("/api/tool/generate_image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(attrs),
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const result = await res.json();
+
+        // Always grab FRESH DOM refs on completion (panel may have been recreated)
+        const live = _igGetLiveRefs();
+
+        if (result.ok && result.images && result.images.length > 0) {
+          _igState.result = result;
+          showToast(`✅ ${result.count} image(s) generated!`, "success");
+          if (live) _igRenderResult(live.gallery, live.metaEl, live.outputWrap, result, attrs);
+        } else {
+          const errMsg = result.error || "Unknown error";
+          _igState.error = errMsg;
+          showToast("❌ Generation failed", "error");
+          if (live) _igRenderError(live.metaEl, live.outputWrap, errMsg);
+        }
+      } catch (e) {
+        _igState.error = e.message;
+        showToast("❌ " + e.message, "error");
+        const live = _igGetLiveRefs();
+        if (live) _igRenderError(live.metaEl, live.outputWrap, e.message);
+      } finally {
+        _igState.generating = false;
+        _igState.promise = null;
+        const live = _igGetLiveRefs();
+        if (live) {
+          live.genBtn.disabled = false;
+          live.genBtn.textContent = "🖼️ Generate";
+        }
+      }
     }
 
     function renderImageGenPanel(container) {
@@ -385,79 +495,50 @@
         if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); genBtn.click(); }
       });
 
+      // Current UI refs object for the detached generator
+      const uiRefs = { genBtn, promptEl, outputWrap, gallery, metaEl, providerSel, modelSel, styleSel, wrap };
+
       genBtn.addEventListener("click", async () => {
         const prompt = promptEl.value.trim();
         if (!prompt) { showToast("⚠️ Enter a prompt first", "error"); return; }
+        if (_igState.generating) return; // prevent double-click
 
         const provider = providerSel.value;
         const shape = wrap.querySelector("#igShape").value;
         const count = wrap.querySelector("#igCount").value;
         const neg = wrap.querySelector("#igNegPrompt").value.trim();
 
+        const attrs = { prompt, shape, count, provider };
+        if (provider === "cloudflare" || provider === "pollinations" || provider === "puter") {
+          attrs.model = modelSel.value;
+        } else {
+          attrs.style = styleSel.value;
+        }
+        if (neg) attrs.negative_prompt = neg;
+
+        _igStartGeneration(attrs, uiRefs);
+      });
+
+      // ── Restore state from previous session ──
+      _igState.initialized = true;
+      if (_igState.generating) {
+        // Generation in-flight: show spinner, reattach to promise
         genBtn.disabled = true;
         genBtn.textContent = "⏳ Generating…";
         outputWrap.style.display = "none";
-        gallery.innerHTML = "";
-        metaEl.textContent = "";
-
-
-
-        try {
-          const attrs = { prompt, shape, count, provider };
-          if (provider === "cloudflare" || provider === "pollinations" || provider === "puter") {
-            attrs.model = modelSel.value;
-          } else {
-            attrs.style = styleSel.value;
-          }
-          if (neg) attrs.negative_prompt = neg;
-
-          const res = await fetch("/api/tool/generate_image", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(attrs),
-          });
-
-          if (!res.ok) throw new Error("HTTP " + res.status);
-          const result = await res.json();
-
-          if (result.ok && result.images && result.images.length > 0) {
-            // Responsive grid: 1=full, 2=half, 3-4=two per row
-            const n = result.images.length;
-            const cols = n === 1 ? 1 : n === 2 ? 2 : 2;
-            gallery.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-            gallery.innerHTML = ""; // clear previous
-
-            for (const img of result.images) {
-              const imgUrl = "/assets/" + img.filename;
-              const cell = document.createElement("div");
-              cell.className = "library-gallery-item";
-              cell.innerHTML = `<img src="${imgUrl}" alt="Generated image" loading="lazy">`;
-              cell.title = `Seed: ${img.seed} | ${img.width}x${img.height}`;
-              cell.addEventListener("click", () => window.open(imgUrl, "_blank"));
-              gallery.appendChild(cell);
-            }
-
-            const first = result.images[0];
-            const totalSize = result.images.reduce((s, i) => s + (i.size_bytes || 0), 0);
-            const detailLabel = (provider === "cloudflare" || provider === "pollinations" || provider === "puter") ? `Model: ${modelSel.options[modelSel.selectedIndex]?.text || modelSel.value}` : `Style: ${styleSel.value}`;
-            metaEl.textContent = `✅ ${result.count} image(s) | ${detailLabel} | Shape: ${shape} | Seed: ${first.seed} | ${first.width}x${first.height} | ${(totalSize / 1024).toFixed(0)}KB total`;
-            if (result.errors) metaEl.textContent += `\n⚠️ Partial: ${result.errors.join("; ")}`;
-            outputWrap.style.display = "block";
-            showToast(`✅ ${result.count} image(s) generated!`, "success");
-          } else {
-            metaEl.textContent = "❌ " + (result.error || "Unknown error");
-            outputWrap.style.display = "block";
-            showToast("❌ Generation failed", "error");
-          }
-        } catch (e) {
-          metaEl.textContent = "❌ " + e.message;
-          outputWrap.style.display = "block";
-          showToast("❌ " + e.message, "error");
-        } finally {
-          genBtn.disabled = false;
-          genBtn.textContent = "🖼️ Generate";
+        // Restore prompt/params if available
+        if (_igState.params) {
+          promptEl.value = _igState.params.prompt || "";
         }
-      });
+      } else if (_igState.result) {
+        // Previous result: restore gallery
+        _igRenderResult(gallery, metaEl, outputWrap, _igState.result, _igState.params || {});
+        if (_igState.params?.prompt) promptEl.value = _igState.params.prompt;
+      } else if (_igState.error) {
+        // Previous error: restore error message
+        _igRenderError(metaEl, outputWrap, _igState.error);
+        if (_igState.params?.prompt) promptEl.value = _igState.params.prompt;
+      }
     }
 
     async function renderPromptGenPanel(container) {

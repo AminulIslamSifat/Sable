@@ -56,8 +56,8 @@ class CookbookSettings:
     models_dir: str = ""
     llama_server_bin: str = ""  # auto-detected or user-set path to llama-server
     default_port: int = 8080
-    default_ctx: int = 4096
-    default_threads: int = 0
+    default_ctx: int = 65000
+    default_threads: int = -1  # -1 = auto-detect physical cores
     default_gpu_layers: int = 0
     auto_register: bool = True  # auto-add served models to .custom_models.json
 

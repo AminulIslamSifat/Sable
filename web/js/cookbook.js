@@ -427,8 +427,10 @@
       const portInput = document.getElementById("cbDefaultPort");
       const ctxInput = document.getElementById("cbDefaultCtx");
       const autoReg = document.getElementById("cbAutoRegister");
+      const threadsInput = document.getElementById("cbDefaultThreads");
       if (tokenInput && s.has_hf_token) tokenInput.placeholder = "•••••••• (set)";
       if (portInput) portInput.value = s.default_port;
+      if (threadsInput) threadsInput.value = s.default_threads ?? 0;
       if (ctxInput) ctxInput.value = s.default_ctx;
       if (autoReg) autoReg.checked = s.auto_register;
     } catch (e) { /* ignore */ }
@@ -437,6 +439,7 @@
   async function _saveCookbookSettings() {
     const body = {
       default_port: parseInt(document.getElementById("cbDefaultPort").value) || 8080,
+      default_threads: parseInt(document.getElementById("cbDefaultThreads").value) || 0,
       default_ctx: parseInt(document.getElementById("cbDefaultCtx").value) || 4096,
       auto_register: document.getElementById("cbAutoRegister").checked,
     };

@@ -258,7 +258,8 @@
       el.className = 'compact-pending pending-indicator';
       el.innerHTML = '<span class="processing-text">processing\u2026</span>';
       compactMsgs.appendChild(el);
-      compactMsgs.scrollTop = compactMsgs.scrollHeight;
+      const gap0 = compactMsgs.scrollHeight - compactMsgs.scrollTop - compactMsgs.clientHeight;
+      if (gap0 < 80) compactMsgs.scrollTop = compactMsgs.scrollHeight;
     } else if (!srcPending && compactPending) {
       compactPending.remove();
     }
@@ -292,7 +293,8 @@
       if (lastClone.className !== srcClass) {
         lastClone.className = srcClass;
       }
-      compactMsgs.scrollTop = compactMsgs.scrollHeight;
+      const gap1 = compactMsgs.scrollHeight - compactMsgs.scrollTop - compactMsgs.clientHeight;
+      if (gap1 < 80) compactMsgs.scrollTop = compactMsgs.scrollHeight;
       syncPendingState(compactMsgs, source);
       return;
     }
@@ -307,7 +309,8 @@
       cloneToSource.set(clone, msg);
       compactMsgs.appendChild(clone);
     });
-    compactMsgs.scrollTop = compactMsgs.scrollHeight;
+    const gap2 = compactMsgs.scrollHeight - compactMsgs.scrollTop - compactMsgs.clientHeight;
+    if (gap2 < 80) compactMsgs.scrollTop = compactMsgs.scrollHeight;
     syncPendingState(compactMsgs, source);
   }
 

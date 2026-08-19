@@ -13,6 +13,7 @@ import httpx
 
 from engine.config import (
     URL,
+    STOP_URL,
     get_qwen_tokens_for_account,
     save_qwen_tokens_for_account,
     mark_account_exhausted,
@@ -263,6 +264,30 @@ class ChatService:
         if self._headers:
             return await self._browser.sync_context(headers=self._headers, project_id=project_id)
         return await self._browser.sync_context(project_id=project_id)
+
+    async def _stop_upstream_generation(self, chat_id: str, response_id: str | None = None) -> bool:
+        """Call Qwen's stop API to halt server-side token generation.
+
+        Mirrors what chat.qwen.ai does when you press the stop button:
+        POST /api/v2/chat/completions/stop with {chat_id, response_id}.
+        Returns True if the server acknowledged the stop.
+        """
+        try:
+            headers = await self._ensure_headers()
+            payload = {"chat_id": chat_id}
+            if response_id:
+                payload["response_id"] = response_id
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.post(STOP_URL, json=payload, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("success"):
+                        logger.info("Upstream generation stopped: chat_id=%s response_id=%s", chat_id, response_id)
+                        return True
+                logger.warning("Stop API returned %s: %s", resp.status_code, resp.text[:200])
+        except Exception as exc:
+            logger.warning("Failed to call stop API: %s", exc)
+        return False
 
     async def stream_events(
         self,
@@ -545,6 +570,10 @@ class ChatService:
                                     _finish_reason, _answer_chars,
                                 )
 
+            except asyncio.CancelledError:
+                # Client disconnected (stop button pressed) — tell Qwen to stop generating
+                await self._stop_upstream_generation(chat_id, chosen_response_id)
+                raise
             except httpx.ConnectError as exc:
                 last_error_msg = f"Connection failed: {exc}"
                 continue
