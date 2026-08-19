@@ -166,7 +166,7 @@ async def _async_capture_key(cdp_port: int, user_data_dir: str) -> str | None:
         page = await context.new_page()
 
         # Step 1: Navigate to main page
-        await page.goto("https://perchance.org/ai-text-to-image-generator", wait_until="domcontentloaded", timeout=30000)
+        await page.goto("https://perchance.org/ai-text-to-image-generator", wait_until="domcontentloaded", timeout=60000)
         await asyncio.sleep(6)
 
         # Step 2: Find textarea frame and trigger generation
@@ -193,7 +193,7 @@ async def _async_capture_key(cdp_port: int, user_data_dir: str) -> str | None:
 
         # Step 3: Find image-generation.perchance.org iframe (spawns AFTER generation trigger)
         gen_ws = None
-        for attempt in range(5):
+        for attempt in range(20):
             targets = httpx.get(f"http://127.0.0.1:{cdp_port}/json").json()
             for t in targets:
                 url = t.get("url", "")
@@ -222,7 +222,7 @@ async def _async_capture_key(cdp_port: int, user_data_dir: str) -> str | None:
 
             # The generate request may have already fired — check remaining events
             # Also the key might be in a subsequent request if multiple generations happen
-            deadline = asyncio.get_event_loop().time() + 20
+            deadline = asyncio.get_event_loop().time() + 60
             while asyncio.get_event_loop().time() < deadline:
                 try:
                     msg = await asyncio.wait_for(ws.recv(), timeout=3.0)
