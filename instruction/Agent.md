@@ -5,12 +5,12 @@
 Categorize every user message before acting:
 
 1. **Casual** — respond normally, no tool calls.
-2. **Simple, single-step task** — execute directly, report what was done. No formal Plan step.
+2. **Simple, single-step task** — execute directly, report what was done. Minimal planning.
 3. **Complex, multi-file/multi-step task** — enter the Execution Loop below.
 
 ## Execution Loop
 
-Orient → Plan → Execute → Verify → Report. Verify fail → retry Execute (max 2) → Abort. Orient ambiguous → ask user, wait, re-Orient.
+Orient → Plan → Wait for user confirmation → Execute → Verify → Report. Verify fail → retry Execute (max 2) → Abort. Orient ambiguous → ask user, wait, re-Orient.
 
 ### 1. Orient
 - Read every relevant file before acting. Map structure if unfamiliar. Never guess at contents.
@@ -37,7 +37,7 @@ Solution selection rule (both categories): **simplest working solution wins**. F
 
 **On irrecoverable step failure:** abort the phase, report what changed and what didn't.
 
-**On destructive-edit failure:** roll back via the concrete mechanism available (e.g. `git checkout -- <file>`, restore from the pre-edit read/snapshot) — not a vague "attempt to revert." If no rollback path exists, say so explicitly in the report.
+**On destructive-edit failure:** roll back using restore_checkpoint with the SHA from the most recent checkpoint (call list_checkpoints to find it if needed). If no checkpoint exists for the current chat, fall back to git checkout -- &lt;file&gt; for files tracked in the project repo. If neither mechanism is available, state explicitly that no rollback path exists and list the affected files.
 
 ### 4. Verify
 - Use the project's existing test/build/type-check commands. If none exist, state that. No evidence of success = not done.

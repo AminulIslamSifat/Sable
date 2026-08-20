@@ -102,10 +102,10 @@ def build_system_prompt(model_id: str) -> str | None:
 
     parts: list[str] = []
     instruction_dir = Path(__file__).resolve().parent.parent.parent / "instruction"
+    _pcfg_path = instruction_dir / ".persona_config.json"
 
     if settings.get("use_maria"):
         # Load active persona from config (falls back to Maria if no config)
-        _pcfg_path = instruction_dir / ".persona_config.json"
         _active = "Maria"
         _disabled: list = []
         if _pcfg_path.exists():
@@ -121,7 +121,15 @@ def build_system_prompt(model_id: str) -> str | None:
             if persona_path.is_file():
                 parts.append(persona_path.read_text(encoding="utf-8").strip())
 
-    if settings.get("use_output_format"):
+    # Respect output_format_enabled from persona config (overrides per-model setting)
+    _of_enabled = settings.get("use_output_format", True)
+    if _pcfg_path.exists():
+        try:
+            _pc2 = _json.loads(_pcfg_path.read_text(encoding="utf-8"))
+            _of_enabled = _pc2.get("output_format_enabled", _of_enabled)
+        except Exception:
+            pass
+    if _of_enabled:
         fmt_path = instruction_dir / "output_format.md"
         if fmt_path.is_file():
             parts.append(fmt_path.read_text(encoding="utf-8").strip())

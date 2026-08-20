@@ -453,11 +453,17 @@ def get_checkpoints_for_chat(chat_id: str) -> list[dict]:
 
 
 def get_checkpoint_by_sha(sha: str) -> dict | None:
-    """Get a checkpoint by commit SHA."""
+    """Get a checkpoint by commit SHA. Supports prefix matching (e.g. 12-char short SHA)."""
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM checkpoints WHERE commit_sha = ?", (sha,)
-        ).fetchone()
+        if len(sha) < 40:
+            row = conn.execute(
+                "SELECT * FROM checkpoints WHERE commit_sha LIKE ? LIMIT 1",
+                (f"{sha}%",),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM checkpoints WHERE commit_sha = ?", (sha,)
+            ).fetchone()
         return dict(row) if row else None
 
 
@@ -469,3 +475,31 @@ def get_latest_checkpoint_for_message(chat_id: str, message_id: int) -> dict | N
             (chat_id, message_id),
         ).fetchone()
         return dict(row) if row else None
+
+
+def list_checkpoints_with_preview(chat_id: str | None = None, limit: int = 20) -> list[dict]:
+    """List checkpoints joined with message preview text.
+
+    Returns [{sha, timestamp, chat_id, tool_name, message_id, message_preview}].
+    If chat_id is None, returns across all chats (most recent first).
+    """
+    sql = """
+        SELECT c.commit_sha AS sha,
+               c.created_at AS timestamp,
+               c.chat_id,
+               c.tool_name,
+               c.message_id,
+               SUBSTR(m.content, 1, 100) AS message_preview
+        FROM checkpoints c
+        LEFT JOIN messages m ON m.id = c.message_id AND m.chat_id = c.chat_id
+    """
+    params: tuple = ()
+    if chat_id:
+        sql += " WHERE c.chat_id = ?"
+        params = (chat_id,)
+    sql += " ORDER BY c.id DESC LIMIT ?"
+    params = (*params, limit)
+    with get_db() as conn:
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
