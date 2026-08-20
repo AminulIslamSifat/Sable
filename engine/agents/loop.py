@@ -103,18 +103,18 @@ REPEAT_LOOP_WARNING = (
 
 # Universal execute_command docs — always injected for every agent
 _EXECUTE_COMMAND_DOC = """\
-## execute_command (universal)
+### execute_command
 Run a shell command. Returns stdout+stderr. 15s timeout.
-Usage:
-  <execute_command>your command here</execute_command>
-Examples:
-  <execute_command>ls -la /home</execute_command>
-  <execute_command>python3 script.py --flag</execute_command>
-  <execute_command>grep -rn "pattern" /path --include="*.py"</execute_command>
+
+Tool call:
+```json
+{"name": "execute_command", "arguments": {"command": "ls -la /home"}}
+```
+
 Rules:
 - Always use absolute paths.
-- For long-running commands (>15s), add bg="true" to execute_command.
-- Sudo password is <pass> — use: echo <pass> | sudo -S <command>
+- For long-running commands (>15s), set `"bg": true` in arguments.
+- Sudo password is `<pass>` — use: `echo <pass> | sudo -S <command>`
 """
 
 _SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills"
@@ -134,17 +134,43 @@ def _load_skill_instruction(skill_key: str) -> str | None:
         return None
 
 
-def _build_tool_guide(allowed_skills: list[str], default_skills: list[str]) -> str:
-    """Build tool usage guide from skill keys.
+def _resolve_tool_groups(allowed_tools: list[str]) -> list[str]:
+    """Resolve tool group keys to flat list of function names.
 
-    - default_skills: full instruction.md auto-injected into prompt
-    - allowed_skills (minus defaults): compact listing (name + instruction path)
-    - execute_command: always universal, hardcoded docs
+    Only explicitly listed group keys are included (respecting disabled_tools.json).
     """
-    from engine.agents.registry import get_universal_skills
+    from engine.tools_loader import browse_tools
+    from server.api.routes.misc import get_disabled_tools
 
-    A = chr(60)  # <
-    Z = chr(62)  # >
+    disabled = set(get_disabled_tools().get("disabled", []))
+    all_groups = browse_tools()
+
+    # Filter to requested groups that aren't disabled
+    allowed_set = set(allowed_tools)
+    groups = [g for g in all_groups if g["key"] in allowed_set and g["key"] not in disabled]
+
+    # Flatten to function names
+    funcs = []
+    for g in groups:
+        for fn in g.get("tools", []):
+            name = fn.get("name", fn) if isinstance(fn, dict) else fn
+            if name not in funcs:
+                funcs.append(name)
+    return funcs
+
+
+def _build_tool_guide(allowed_tools: list[str], allowed_skills: list[str]) -> str:
+    """Build tool usage guide from tool group keys and skill keys.
+
+    - allowed_tools: tool group keys (empty = all enabled groups)
+    - allowed_skills: loaded from /skills/{key}/instruction.md (skipped if missing)
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # Resolve group keys → function names
+    tool_funcs = _resolve_tool_groups(allowed_tools)
+
     TC_O = "<" + "tool_call" + ">"
     TC_C = "</" + "tool_call" + ">"
     lines = [
@@ -163,37 +189,45 @@ def _build_tool_guide(allowed_skills: list[str], default_skills: list[str]) -> s
         "",
     ]
 
-    # Universal: execute_command always available
-    lines.append(_EXECUTE_COMMAND_DOC)
+    # Load full tool schemas (same as main chat) filtered by resolved group keys
+    from engine.tools_loader import get_all_tool_schemas
+    from server.api.routes.misc import get_disabled_tools
+    disabled = get_disabled_tools().get("disabled", [])
+    schemas = get_all_tool_schemas(disabled=disabled, allowed=allowed_tools)
 
-    # Default skills: full instruction.md injected
-    defaults = set(default_skills)
-    for skill_key in default_skills:
-        if skill_key == "execute_command":
-            continue
-        instr = _load_skill_instruction(skill_key)
-        if instr:
-            lines.append(f"\n## {skill_key} (default)\n{instr}\n")
+    if schemas:
+        lines.append("\n<tools>")
+        for s in schemas:
+            lines.append(json.dumps(s, ensure_ascii=False))
+        lines.append("</tools>")
+        lines.append("")
 
-    # Allowed but not default: compact listing with trigger/description
-    extra = [s for s in allowed_skills if s not in defaults and s != "execute_command"]
-    if extra:
+    # Skill documentation: load instruction.md only if file exists
+    valid_skills = []
+    for skill_key in allowed_skills:
+        instr_path = _SKILLS_DIR / skill_key / "instruction.md"
+        if instr_path.is_file():
+            valid_skills.append(skill_key)
+        else:
+            logger.warning("Skipping missing agent skill in prompt: %s", skill_key)
+
+    if valid_skills:
         from engine.skills.registry import discover_skills
         skill_meta = {s.key: s for s in discover_skills(_SKILLS_DIR)}
 
-        lines.append("\n## Additional Allowed Skills")
-        lines.append("Available on demand — read their instruction.md via execute_command before use.\n")
-        for skill_key in extra:
+        lines.append("\n## Available Skills")
+        lines.append("Read their instruction.md via view_file before first use.\n")
+        for skill_key in valid_skills:
             meta = skill_meta.get(skill_key)
+            instr_path = _SKILLS_DIR / skill_key / "instruction.md"
             if meta:
                 lines.append(f"### {meta.name}")
                 lines.append(f"* **Trigger:** {meta.trigger}")
                 if meta.not_this_if:
                     lines.append(f"* **Not this if:** {meta.not_this_if}")
-                lines.append(f"* **Instruction:** `{_SKILLS_DIR / skill_key / 'instruction.md'}`")
             else:
                 lines.append(f"### {skill_key}")
-                lines.append(f"* **Instruction:** `{_SKILLS_DIR / skill_key / 'instruction.md'}`")
+            lines.append(f"* **Instruction:** `{instr_path}`")
             lines.append("")
 
     return "\n".join(lines)
@@ -233,9 +267,12 @@ async def run_agent_llm_loop(
             key = _get_backend_key(agent.model)
             raise RuntimeError(f"Circuit breaker open for {key} — provider unavailable")
 
+    # Store allowed tool groups on agent for native tool passing to API backends
+    agent.allowed_tool_groups = list(role_cfg.allowed_tools)
+
     # Build first message: system prompt + tool guide + task
     system_prompt = role_cfg.system_prompt
-    system_prompt += _build_tool_guide(role_cfg.allowed_skills, role_cfg.default_skills)
+    system_prompt += _build_tool_guide(role_cfg.allowed_tools, role_cfg.allowed_skills)
     if agent.instruction:
         system_prompt += f"\n\nSpecial instruction from orchestrator: {agent.instruction}"
 
@@ -911,14 +948,20 @@ async def _call_api_backend(agent: Agent, message: str, backend: str, *, system_
     """Gemini / Groq / Mistral: stateless API call with internal key rotation.
 
     These backends don't need browser tokens — they rotate API keys internally.
-    No account assignment needed.
+    No account assignment needed. Native tool schemas are passed via the tools parameter.
     """
     from connectors import get_connector
     from engine.config import get_model_config
+    from engine.tools_loader import get_all_tool_schemas
+    from server.api.routes.misc import get_disabled_tools
 
     connector = get_connector(backend, model_id=agent.model)
     cfg = get_model_config(agent.model)
     api_model_type = cfg.get("api_model_type")
+
+    # Load native tool schemas for this agent's allowed tool groups
+    disabled = get_disabled_tools().get("disabled", [])
+    native_tools = get_all_tool_schemas(disabled=disabled, allowed=agent.allowed_tool_groups) or None
 
     accumulated = ""
     async for event in connector.stream_chat(
@@ -928,6 +971,7 @@ async def _call_api_backend(agent: Agent, message: str, backend: str, *, system_
         inject_instructions=False,
         system_instruction=system_instruction,
         files=files,
+        tools=native_tools,
     ):
         etype = event.get("type")
         if etype == "answer":
@@ -1019,11 +1063,19 @@ async def _call_local(agent: Agent, message: str) -> tuple[str, str | None]:
     # Full history — stateless API requires it
     messages = list(agent.messages)
 
+    # Load native tool schemas for this agent's allowed tool groups
+    from engine.tools_loader import get_all_tool_schemas
+    from server.api.routes.misc import get_disabled_tools
+    disabled = get_disabled_tools().get("disabled", [])
+    native_tools = get_all_tool_schemas(disabled=disabled, allowed=agent.allowed_tool_groups)
+
     payload = {
         "model": api_model,
         "messages": messages,
         "stream": True,
     }
+    if native_tools:
+        payload["tools"] = native_tools
 
     # Debug: dump full payload to log file for local model inspection
     try:
@@ -1043,36 +1095,143 @@ async def _call_local(agent: Agent, message: str) -> tuple[str, str | None]:
     except Exception:
         pass  # never let logging break inference
 
-    accumulated = ""
-    async with httpx.AsyncClient(timeout=300.0) as client:
-        async with client.stream(
-            "POST",
-            f"{endpoint}/chat/completions",
-            json=payload,
-            headers={"Authorization": "Bearer sable-local"},
-        ) as resp:
-            if resp.status_code != 200:
-                body = await resp.aread()
-                raise RuntimeError(f"Local model HTTP {resp.status_code}: {body.decode()[:300]}")
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data = line[6:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                    delta = chunk["choices"][0].get("delta", {})
-                    token = delta.get("content", "")
-                    if token:
-                        accumulated += token
-                        agent.push_stream_event({"type": "chunk", "text": token})
-                except (json.JSONDecodeError, KeyError, IndexError):
-                    pass
+    # Tool execution loop — mirrors main chat's LocalConnector
+    _max_tool_rounds = 20
+    _tool_round = 0
+    final_accumulated = ""
 
-    if not accumulated.strip():
+    while _tool_round < _max_tool_rounds:
+        _tool_round += 1
+        accumulated = ""
+        _tc_buffers: dict[int, dict] = {}
+
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            async with client.stream(
+                "POST",
+                f"{endpoint}/chat/completions",
+                json=payload,
+                headers={"Authorization": "Bearer sable-local"},
+            ) as resp:
+                if resp.status_code != 200:
+                    body = await resp.aread()
+                    raise RuntimeError(f"Local model HTTP {resp.status_code}: {body.decode()[:300]}")
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk["choices"][0].get("delta", {})
+
+                        # Text content
+                        token = delta.get("content", "")
+                        if token:
+                            accumulated += token
+                            agent.push_stream_event({"type": "chunk", "text": token})
+
+                        # Native tool call deltas
+                        tc_deltas = delta.get("tool_calls")
+                        if tc_deltas:
+                            for tcd in tc_deltas:
+                                idx = tcd.get("index", 0)
+                                if idx not in _tc_buffers:
+                                    _tc_buffers[idx] = {"id": tcd.get("id", ""), "name": "", "args_str": ""}
+                                buf = _tc_buffers[idx]
+                                if tcd.get("id"):
+                                    buf["id"] = tcd["id"]
+                                fn = tcd.get("function", {})
+                                if fn.get("name"):
+                                    buf["name"] = fn["name"]
+                                if fn.get("arguments"):
+                                    buf["args_str"] += fn["arguments"]
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        pass
+
+        # If no native tool calls, we're done
+        if not _tc_buffers:
+            final_accumulated = accumulated
+            break
+
+        # Convert native tool calls to <tool_call> tags for the agent loop's parser
+        for idx in sorted(_tc_buffers.keys()):
+            buf = _tc_buffers[idx]
+            try:
+                args = json.loads(buf["args_str"]) if buf["args_str"] else {}
+            except json.JSONDecodeError:
+                args = {}
+
+            # Build <tool_call> tag matching Hermes format
+            args_json = json.dumps(args, ensure_ascii=False)
+            tag_block = f'<tool_call>{{"name": "{buf["name"]}", "arguments": {args_json}}}</tool_call>'
+            accumulated += "\n" + tag_block
+
+        # Save assistant message with tool_calls to messages for proper history
+        assistant_msg: dict[str, Any] = {"role": "assistant", "content": accumulated or None}
+        assistant_msg["tool_calls"] = [
+            {
+                "id": _tc_buffers[idx]["id"],
+                "type": "function",
+                "function": {
+                    "name": _tc_buffers[idx]["name"],
+                    "arguments": _tc_buffers[idx]["args_str"] or "{}",
+                },
+            }
+            for idx in sorted(_tc_buffers.keys())
+        ]
+        messages.append(assistant_msg)
+
+        # Execute each tool call and append results to messages
+        from engine.skills import get_skill_engine
+        from connectors.common.native_tools import native_call_to_tag_event, format_openai_tool_result
+        engine = get_skill_engine()
+
+        for idx in sorted(_tc_buffers.keys()):
+            buf = _tc_buffers[idx]
+            try:
+                args = json.loads(buf["args_str"]) if buf["args_str"] else {}
+            except json.JSONDecodeError:
+                args = {}
+
+            fc = {"name": buf["name"], "args": args, "id": buf["id"]}
+            tag_event = native_call_to_tag_event(fc)
+
+            agent.push_stream_event({"type": "skill_start", "name": buf["name"], "attrs": str(args)})
+
+            try:
+                events = await asyncio.to_thread(
+                    lambda: list(engine.process_tag(
+                        tag_event["name"], tag_event["attrs"],
+                        tag_event["content"], namespace=agent.id,
+                    ))
+                )
+            except Exception as exc:
+                events = [{"type": "skill_end", "name": buf["name"], "ok": False, "error": str(exc)}]
+
+            result_text = ""
+            ok = True
+            for evt in events:
+                if isinstance(evt, dict):
+                    if evt.get("type") == "skill_output":
+                        result_text += evt.get("text", "")
+                    elif evt.get("type") == "skill_end":
+                        ok = evt.get("ok", True)
+                    if evt.get("type") != "skill_start":
+                        agent.push_stream_event(evt)
+
+            tool_result = format_openai_tool_result(buf["name"], result_text, ok, buf["id"])
+            messages.append(tool_result)
+            logger.info("Agent %s: native tool %s executed (ok=%s), continuing loop", agent.id, buf["name"], ok)
+
+        # Update payload with updated messages for next round
+        payload["messages"] = messages
+        # Don't accumulate across rounds — only the final text-only response matters
+        final_accumulated = accumulated
+
+    if not final_accumulated.strip():
         raise RuntimeError("Local model returned empty response")
-    return accumulated, None
+    return final_accumulated, None
 
 
 async def _call_qwen(

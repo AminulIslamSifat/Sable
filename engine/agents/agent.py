@@ -126,6 +126,7 @@ class Agent:
     collect: bool = False
     cancelled: bool = False  # Set by kill() — checked between tool calls
     system_prompt: str | None = None  # Built skill registry + output format for API backends
+    allowed_tool_groups: list[str] = field(default_factory=list)  # Tool group keys for native tool passing
     todos: AgentTodoList | None = None  # Structured task plan (None = simple task, no tracking)
     teacher_interventions: int = 0  # How many times the teacher has intervened
     model_chain: list[str] = field(default_factory=list)  # Fallback models from role config

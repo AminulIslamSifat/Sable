@@ -1071,9 +1071,18 @@
           hidePending();
           closeCurrentThinking();
           closeAnswer();
-          // Clean up any lingering tool activity card
+          // Clean up any lingering tool activity card — mark as failed instead of silently removing
           const tac = turn.querySelector(".tool-activity-card");
-          if (tac) tac.remove();
+          if (tac) {
+            const status = tac.querySelector(".tac-status");
+            if (status) {
+              status.innerHTML = '<span style="color:var(--danger);font-size:0.85em">✗ interrupted</span>';
+            }
+            const spinner = tac.querySelector(".tac-spinner");
+            if (spinner) spinner.remove();
+            const pulseDot = tac.querySelector(".tac-pulse-dot");
+            if (pulseDot) pulseDot.remove();
+          }
           // Any placeholder still spinning means the stream died mid-tag.
           turn.querySelectorAll(".skill-card.pending").forEach(card => {
             const status = card.querySelector(".pending-status");
@@ -1339,6 +1348,9 @@
             ui.showToolPending(evt);
           } else if (evt.type === "tool_progress") {
             ui.showToolProgress(evt);
+          } else if (evt.type === "parse_error") {
+            // Parser couldn't parse tool_call JSON — clear pending animation
+            ui.showToolDone();
           } else if (evt.type === "skill_start") {
             if (evt.name === "ask_user") {
               if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
