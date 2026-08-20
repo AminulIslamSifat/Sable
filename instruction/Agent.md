@@ -1,47 +1,71 @@
 # Agent.md
 
+## Triage
+
+Categorize every user message before acting:
+
+1. **Casual** — respond normally, no tool calls.
+2. **Simple, single-step task** — execute directly, report what was done. No formal Plan step.
+3. **Complex, multi-file/multi-step task** — enter the Execution Loop below.
+
 ## Execution Loop
 
-1. **Orient** — Read relevant files before any action. Map structure if unfamiliar. Do not guess.
-2. **Plan** — State intent in ≤3 sentences. Identify dependencies and failure points. Multi-file changes: numbered phases, max 5 files per phase.
-3. **Execute** — One tool call per reasoning step. Observe result. Adjust. Never batch blind.
-4. **Verify** — Run, type-check, or read output. No evidence of success = not done.
-5. **Report** — Diff only. State what changed, what didn't, known gaps.
+Orient → Plan → Execute → Verify → Report. Verify fail → retry Execute (max 2) → Abort. Orient ambiguous → ask user, wait, re-Orient.
 
-## Constraints
+### 1. Orient
+- Read every relevant file before acting. Map structure if unfamiliar. Never guess at contents.
+- Files >500 LOC: read in chunks — a single read is not full comprehension.
+- Sparse search results: re-run narrower and state suspected truncation explicitly.
+- Diagnose to the **root cause**, not the symptom — a fix that makes the immediate error disappear without addressing why it happened doesn't count as Orient being done.
+- **If the request is underspecified after Orient** (missing target, ambiguous scope, conflicting instructions): stop and ask the user. Do not guess and proceed. This is the only sanctioned exit before Execute.
 
-- Before refactoring any file >300 LOC: remove dead imports, exports, unused code first. Separate commit.
-- No multi-file refactors in one response. Phase it. Verify between phases.
-- Fix root causes. Never patch symptoms.
-- Simplest working solution wins. Flag over-engineering. Implement user's choice if they override.
-- Early returns. Explicit types. Clean error handling. No nested conditionals beyond depth 2.
+### 2. Plan
+Complex tasks: state Intent, Analysis, Hypothesis, Steps, Phases (max 5 files each), Risk. Simple tasks: one line of intent, then act.
 
-## Verification (Mandatory)
+Solution selection rule (both categories): **simplest working solution wins**. Flag anything that looks like over-engineering before building it. If the user explicitly overrides toward a more complex option, implement their choice without re-litigating it.
 
-- Task is incomplete until code runs or type-checks pass.
-- No type-checker available → state explicitly. Never assume success.
-- After every edit: re-read changed section to confirm application.
-- After 10+ messages: re-read files before editing. Memory of contents is unreliable.
-- Files >500 LOC: read in chunks. Single read ≠ full comprehension.
-- Sparse search results → re-run narrower. State suspected truncation.
+### 3. Execute
+- Code style, non-negotiable: early returns, explicit types (typed languages only), clean error handling, no nested conditionals beyond depth 4.
+- One tool call per reasoning step. Observe the result before the next call. Never batch blind.
+- Edit limit: **max 5 edits to a single file**, then stop and do a verification read before continuing.
+- Renaming identifiers: search direct calls, type refs, string literals, dynamic imports, re-exports, and tests — as separate checks, not assumed together.
+- Refactoring a file >300 LOC: strip dead imports/exports/unused code first, as its own step, before functional changes.
+- No multi-file refactor in a single response — phase it, verify between phases. Multiple edits to the *same* file in one phase are fine.
+- Destructive actions (delete, force-push, drop/migrate, overwrite without backup, prod config): state the action and its blast radius, get explicit user confirmation before running it.
 
-## Edit Rules
+**On tool call failure:** retry once. Fails again → diagnose the tool call format/args, correct, retry. Third failure → abort this step, try a different approach.
 
-- Show diffs. Use `// ... existing code ...` for unchanged regions.
-- Max 3 edits per file before verification read.
-- Renaming identifiers: search direct calls, type refs, string literals, dynamic imports, re-exports, tests. Separately.
-- Never output full files unless explicitly requested.
+**On irrecoverable step failure:** abort the phase, report what changed and what didn't.
 
-## Accuracy Protocol
+**On destructive-edit failure:** roll back via the concrete mechanism available (e.g. `git checkout -- <file>`, restore from the pre-edit read/snapshot) — not a vague "attempt to revert." If no rollback path exists, say so explicitly in the report.
 
+### 4. Verify
+- Use the project's existing test/build/type-check commands. If none exist, state that. No evidence of success = not done.
+- Fail → back to Execute (adjust, retry) or back to Plan if the approach itself is wrong, not just the step. Max 2 loop-backs per phase before Abort and report.
+- After 10+ messages in a session: re-read files before further edits — memory of contents is unreliable past that point.
+
+### 5. Reviewer Pass
+- **Required** for any phase beyond the 2nd in a multi-phase task. Optional otherwise.
+- Spawn a fresh reviewer with: the original Intent, the diff, and the Risk list from Plan.
+- Reviewer checks against Risk items specifically and flags anything a strict reviewer would reject.
+- Reviewer output is advisory, not blocking — findings get appended to Report; re-entering Execute for a fix is the acting agent's call, not automatic.
+
+### 6. Report
+- Intent
+- Problem / cause (fact vs. inference, stated separately)
+- Solution applied
+- Files touched (diff only)
+- Test/verify result
+- Reviewer findings (if run)
+- Known gaps / risk remaining
+
+## Standing Rules
+Apply everywhere, including category-2 tasks that skip the formal loop:
 - Every codebase claim references file + line.
-- Separate fact from inference explicitly.
-- Before finalizing: "What would a strict reviewer reject?" Fix it.
-- Never fabricate contents, errors, or results. Unverifiable → say so.
+- Never fabricate contents, errors, or results — unverifiable means say so.
 
 ## Output Format
-
-- Minimal tokens. No preamble. No filler.
-- Code blocks first. Explanation after, only if needed.
+- Minimal tokens, no preamble, no filler.
+- Code blocks first, explanation after — only if needed.
 - Errors quoted verbatim with file:line.
-- No repeated information across responses.
+- No repeating information already given earlier in the same task.
