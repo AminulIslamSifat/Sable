@@ -174,8 +174,10 @@ class ChatService:
                 logger.warning("Warmup failed: %s: %s", type(exc).__name__, exc)
                 self._headers = None
                 self._headers_account = None
-            # Browser stays open — warm session for the first message; the next
-            # switch's service.close() tears it down.
+            finally:
+                # Close browser immediately — tokens are cached to disk;
+                # all subsequent ops use HTTP APIs, no live Chromium needed.
+                await self._browser.close()
 
     async def force_refresh_waf(self, account: str | None = None) -> None:
         """Always launch browser to collect fresh WAF tokens, ignoring cache.
@@ -213,6 +215,8 @@ class ChatService:
                 else:
                     self._headers = None
                     self._headers_account = None
+            finally:
+                await self._browser.close()
 
     async def refresh_deepseek_token(self) -> str:
         """Extract a fresh DeepSeek token. Reuses an already-running browser

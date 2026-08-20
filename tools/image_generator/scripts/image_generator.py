@@ -116,6 +116,22 @@ def _refresh_key_via_browser() -> str | None:
                 break
 
     user_data_dir = f"/tmp/perchance_key_refresh_{os.getpid()}"
+
+    # Inherit display env so Wayland/X11 works in subprocess
+    browser_env = os.environ.copy()
+    if not browser_env.get("WAYLAND_DISPLAY"):
+        # Auto-detect the active Wayland socket
+        import glob as _glob
+        uid = os.getuid()
+        sockets = sorted(_glob.glob(f"/run/user/{uid}/wayland-[0-9]*"))
+        # Filter out .lock and non-socket files
+        sockets = [s for s in sockets if os.path.basename(s) != f"wayland-{os.path.basename(s)}.lock"
+                   and not s.endswith(".lock") and not s.endswith(".sock")]
+        if sockets:
+            browser_env["WAYLAND_DISPLAY"] = os.path.basename(sockets[0])
+        else:
+            browser_env["WAYLAND_DISPLAY"] = "wayland-0"
+
     proc = subprocess.Popen([
         browser_bin,
         f"--remote-debugging-port={cdp_port}",
@@ -124,7 +140,23 @@ def _refresh_key_via_browser() -> str | None:
         "--ozone-platform=wayland",
         f"--user-data-dir={user_data_dir}",
         "about:blank",
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=browser_env)
+
+    # Wait for CDP endpoint to become available before connecting
+    import urllib.request
+    cdp_ready = False
+    for _ in range(30):  # up to ~6 seconds
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json/version", timeout=1)
+            cdp_ready = True
+            break
+        except Exception:
+            time.sleep(0.2)
+    if not cdp_ready:
+        stderr_out = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
+        print(f"[perchance] Browser failed to start CDP. stderr: {stderr_out[:500]}", file=sys.stderr)
+        proc.kill()
+        return None
 
     captured_key = None
     try:
@@ -381,7 +413,7 @@ def _generate_single(full_prompt: str, neg: str, resolution: str, seed: int, use
     )
 
     try:
-        resp = httpx.post(url, content=json.dumps(body), headers=HEADERS, timeout=120)
+        resp = httpx.post(url, content=json.dumps(body), headers=HEADERS, timeout=360)
     except Exception as e:
         return {"ok": False, "error": f"Request failed: {e}"}
 
@@ -409,7 +441,7 @@ def _generate_single(full_prompt: str, neg: str, resolution: str, seed: int, use
             f"&__cacheBust={cache_bust}"
         )
         try:
-            resp = httpx.post(url, content=json.dumps(body), headers=HEADERS, timeout=120)
+            resp = httpx.post(url, content=json.dumps(body), headers=HEADERS, timeout=360)
             data = resp.json()
         except Exception as e:
             return {"ok": False, "error": f"Retry failed: {e}"}
@@ -423,7 +455,7 @@ def _generate_single(full_prompt: str, neg: str, resolution: str, seed: int, use
 
     full_url = f"https://image-generation.perchance.org{download_path}"
     try:
-        img_resp = httpx.get(full_url, headers=HEADERS, timeout=30, follow_redirects=True)
+        img_resp = httpx.get(full_url, headers=HEADERS, timeout=90, follow_redirects=True)
     except Exception as e:
         return {"ok": False, "error": f"Download failed: {e}"}
 
