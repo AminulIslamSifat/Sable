@@ -3064,6 +3064,35 @@ textarea:disabled {
   cursor: pointer;
 }
 .promptgen-select:focus { outline: none; border-color: var(--accent, #7c5cbf); }
+.promptgen-input {
+  background: var(--panel-2, rgba(255,255,255,0.04));
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  border-radius: 6px;
+  color: var(--text, #e0e0e0);
+  font-size: var(--font-size-system);
+  padding: 6px 8px;
+}
+.promptgen-input:focus { outline: none; border-color: var(--accent, #7c5cbf); }
+.df-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted, #999);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--panel-2, rgba(255,255,255,0.03));
+  border: 1px solid var(--border, rgba(255,255,255,0.06));
+  transition: border-color 0.15s, background 0.15s;
+}
+.df-checkbox-label:hover { border-color: var(--accent, #7c5cbf); background: rgba(124,92,191,0.08); }
+.df-checkbox-label input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent, #7c5cbf);
+  cursor: pointer;
+}
 .promptgen-output-wrap {
   margin-top: 14px;
   padding: 12px;
