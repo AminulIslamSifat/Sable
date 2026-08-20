@@ -927,6 +927,12 @@ const AgentSettings = {
   _skillMeta: {},         // skill key → {name, trigger} metadata
   _availableModels: [],   // all models from /api/models (for dropdown)
 
+  _markDirty() {
+    if (window._universalSave?.markDirty) {
+      window._universalSave.markDirty("agents");
+    }
+  },
+
   async load() {
     try {
       const res = await fetch("/api/agents/config", {
@@ -1087,14 +1093,14 @@ const AgentSettings = {
         const chip = document.createElement("span");
         chip.className = "arc-acct-chip";
         chip.innerHTML = `${escHtml(val)}<button class="arc-chip-x" title="Remove">×</button>`;
-        chip.querySelector(".arc-chip-x").onclick = (e) => { e.stopPropagation(); chip.remove(); };
+        chip.querySelector(".arc-chip-x").onclick = (e) => { e.stopPropagation(); chip.remove(); this._markDirty(); };
         return chip;
       };
 
       // Helper: wire select + add button for a pool
       const wirePoolAdd = (poolEl, selectEl, addBtn, maxChips) => {
         poolEl.querySelectorAll(".arc-chip-x").forEach((btn) => {
-          btn.onclick = (e) => { e.stopPropagation(); btn.parentElement.remove(); };
+          btn.onclick = (e) => { e.stopPropagation(); btn.parentElement.remove(); this._markDirty(); };
         });
         const doAdd = () => {
           const val = selectEl.value;
@@ -1105,6 +1111,7 @@ const AgentSettings = {
           if (existing.includes(val)) return;
           poolEl.appendChild(makeChip(val));
           selectEl.selectedIndex = 0;
+          this._markDirty();
         };
         addBtn.onclick = doAdd;
         selectEl.addEventListener("change", doAdd);
@@ -1180,6 +1187,7 @@ const AgentSettings = {
         const idx = arr.indexOf(toolKey);
         if (idx > -1) arr.splice(idx, 1);
         chip.remove();
+        this._markDirty();
       };
       wrap.appendChild(chip);
     }
@@ -1206,6 +1214,7 @@ const AgentSettings = {
         const idx = arr.indexOf(skill);
         if (idx > -1) arr.splice(idx, 1);
         chip.remove();
+        this._markDirty();
       };
       wrap.appendChild(chip);
     }
@@ -1252,6 +1261,7 @@ const AgentSettings = {
         } else {
           this._renderSkillChips(container, arr, roleKey);
         }
+        this._markDirty();
       };
     });
     container.appendChild(picker);
@@ -1267,7 +1277,7 @@ const AgentSettings = {
       const role = card.dataset.role;
       const modelSel = card.querySelector(".arc-model");
       roles[role] = {
-        system_prompt: card.querySelector(".arc-prompt").value,
+        output_format: this._roles[role]?.output_format || "",
         allowed_tools: this._roles[role]?.allowed_tools || [],
         allowed_skills: this._roles[role]?.allowed_skills || [],
         default_model: modelSel.value.trim(),
