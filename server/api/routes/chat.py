@@ -616,13 +616,21 @@ async def chat(request: ChatRequest):
                             # Parser couldn't parse the tool_call JSON — feed back to model
                             _pe_reason = item.get("reason", "Malformed tool_call block")
                             _pe_raw = item.get("raw", "")[:200]
-                            round_skill_events.append({
+                            _pe_id = str(uuid.uuid4())[:12]
+                            # Emit skill_start so frontend transitions out of pending animation
+                            _pe_start = {"type": "skill_start", "id": _pe_id, "name": "action_parse"}
+                            round_skill_events.append(_pe_start)
+                            yield sse(_pe_start)
+                            _pe_end = {
                                 "type": "skill_end",
+                                "id": _pe_id,
                                 "name": "action_parse",
                                 "ok": False,
                                 "error": f"{_pe_reason} | Received: {_pe_raw}",
-                            })
-                            yield sse({"type": "skill_output", "name": "action_parse", "text": f"⚠️ {_pe_reason}"})
+                            }
+                            round_skill_events.append(_pe_end)
+                            yield sse({"type": "skill_output", "name": "action_parse", "text": f"⚠️ {_pe_reason}", "id": _pe_id})
+                            yield sse(_pe_end)
                         else:
                             # tool_pending, tool_progress, etc — forward to frontend
                             if itype in ("skill_start", "skill_output", "skill_end", "file_edit", "permission_request"):
