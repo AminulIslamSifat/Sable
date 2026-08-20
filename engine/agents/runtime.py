@@ -417,7 +417,7 @@ class AgentRuntime:
     def _save_agent_output(agent: Agent) -> None:
         """Save agent output to two files:
         - <id>.md: final result or error only
-        - <id>_conversation.md: full conversation (no system prompt)
+        - <id>_conversation.md: full raw conversation (including system prompt)
         """
         try:
             _AGENT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -454,8 +454,6 @@ class AgentRuntime:
             ]
             for msg in agent.messages:
                 role = msg.get("role", "unknown")
-                if role == "system":
-                    continue
                 content = msg.get("content", "")
                 conv_lines.append(f"### [{role}]")
                 conv_lines.append("")

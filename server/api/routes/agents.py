@@ -204,12 +204,11 @@ def _save_agent_config(config: dict[str, Any]) -> None:
 @router.get("/api/agents/config")
 async def get_agent_config():
     """Get current agent configuration including per-role details."""
-    from engine.agents.registry import export_roles, get_universal_skills
+    from engine.agents.registry import export_roles
     from engine.config import get_all_models
 
     config = _load_agent_config()
     config["roles"] = export_roles()
-    config["universal_skills"] = get_universal_skills()
     # Include account assignments (may not exist in older configs)
     config.setdefault("account_assignments", {})
     # Include all available models for the dropdown
@@ -218,6 +217,32 @@ async def get_agent_config():
         for m in get_all_models()
     ]
     return config
+
+
+@router.get("/api/agents/available-tools")
+async def get_available_tools():
+    """Return list of tool group keys (same as Settings > Tools panel)."""
+    from engine.tools_loader import browse_tools
+    groups = browse_tools()
+    tools = [
+        {"key": g["key"], "name": g["name"], "functions": len(g["tools"])}
+        for g in groups
+    ]
+    return {"tools": tools}
+
+
+@router.get("/api/agents/available-skills")
+async def get_available_skills():
+    """Return list of all discovered skill keys with metadata."""
+    from pathlib import Path
+    from engine.skills.registry import discover_skills
+    skills_dir = Path(__file__).resolve().parent.parent.parent.parent / "skills"
+    discovered = discover_skills(skills_dir)
+    skills = [
+        {"key": s.key, "name": s.name, "trigger": s.trigger}
+        for s in discovered
+    ]
+    return {"skills": skills}
 
 
 @router.put("/api/agents/config")

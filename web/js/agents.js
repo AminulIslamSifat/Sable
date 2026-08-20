@@ -922,8 +922,9 @@ document.addEventListener("DOMContentLoaded", () => {
 const AgentSettings = {
   loaded: false,
   _roles: {},             // current role data from API
-  _universalSkills: [],   // universal skills (applied to all agents)
-  _allSkills: [],         // all available skill keys (for the add-skill picker)
+  _allTools: [],          // all available tool groups [{key, name, functions}] (from API)
+  _allSkills: [],         // all available skill keys (from API)
+  _skillMeta: {},         // skill key → {name, trigger} metadata
   _availableModels: [],   // all models from /api/models (for dropdown)
 
   async load() {
@@ -943,7 +944,6 @@ const AgentSettings = {
       document.getElementById("agentMaxTotal").value = cfg.limits?.max_total_tool_calls ?? 50;
 
       this._roles = cfg.roles || {};
-      this._universalSkills = cfg.universal_skills || ["execute_command"];
       this._availableModels = cfg.available_models || [];
 
       // Teacher config
@@ -965,12 +965,27 @@ const AgentSettings = {
         teacherModelSel.value = teacher.model;
       }
       document.getElementById("teacherBrowserData").value = teacher.browser_data_dir || "";
-      // Build allSkills from role skills + universal + known registry keys
-      const skillSet = new Set(this._universalSkills);
-      for (const r of Object.values(this._roles)) {
-        (r.allowed_skills || []).forEach((s) => skillSet.add(s));
+
+      // Fetch available tools and skills from API
+      try {
+        const [toolsRes, skillsRes] = await Promise.all([
+          fetch("/api/agents/available-tools"),
+          fetch("/api/agents/available-skills"),
+        ]);
+        const toolsData = toolsRes.ok ? await toolsRes.json() : { tools: [] };
+        const skillsData = skillsRes.ok ? await skillsRes.json() : { skills: [] };
+        this._allTools = (toolsData.tools || []).sort((a, b) => a.name.localeCompare(b.name));
+        this._allSkills = (skillsData.skills || []).map((s) => s.key).sort();
+        this._skillMeta = {};
+        for (const s of (skillsData.skills || [])) {
+          this._skillMeta[s.key] = s;
+        }
+      } catch {
+        this._allTools = [{ key: "code_editor", name: "Code Editor", functions: 4 }];
+        this._allSkills = [];
+        this._skillMeta = {};
       }
-      this._allSkills = [...skillSet].sort();
+
       // Populate datalists for dropdowns
       await this._loadAccountDatalist();
       this._renderRoles();
@@ -1033,11 +1048,11 @@ const AgentSettings = {
             `<code class="arc-output-fmt">${escHtml(data.output_format || "—")}</code>` +
           `</div>` +
           `<div class="arc-field">` +
-            `<label>Default Skills <span class="arc-hint">(auto-loaded with instruction)</span></label>` +
-            `<div class="arc-skills-list arc-default-skills"></div>` +
+            `<label>Allowed Tools <span class="arc-hint">(handler functions available via tool_call)</span></label>` +
+            `<div class="arc-skills-list arc-allowed-tools"></div>` +
           `</div>` +
           `<div class="arc-field">` +
-            `<label>Allowed Skills <span class="arc-hint">(accessible on demand)</span></label>` +
+            `<label>Allowed Skills <span class="arc-hint">(read instruction.md before use)</span></label>` +
             `<div class="arc-skills-list arc-allowed-skills"></div>` +
           `</div>` +
           `<div class="arc-field arc-inline-fields">` +
@@ -1063,9 +1078,9 @@ const AgentSettings = {
           `</div>` +
         `</div>`;
 
-      // Render skill chips (two tiers)
-      this._renderSkillChips(card.querySelector(".arc-default-skills"), data.default_skills || [], role + ":default");
-      this._renderSkillChips(card.querySelector(".arc-allowed-skills"), data.allowed_skills || [], role + ":allowed");
+      // Render tool and skill chips
+      this._renderToolChips(card.querySelector(".arc-allowed-tools"), data.allowed_tools || [], role + ":tools");
+      this._renderSkillChips(card.querySelector(".arc-allowed-skills"), data.allowed_skills || [], role + ":skills");
 
       // Helper: create removable chip
       const makeChip = (val) => {
@@ -1129,18 +1144,56 @@ const AgentSettings = {
     }
   },
 
-  _getSkillArray(key) {
-    // key format: "role:type" e.g. "coder:default" or "coder:allowed"
-    const [role, type] = key.includes(":") ? key.split(":") : [key, "allowed"];
+  _getToolArray(key) {
+    // key format: "role:tools" e.g. "coder:tools"
+    const role = key.split(":")[0];
     if (!this._roles[role]) return [];
-    if (type === "default") return this._roles[role].default_skills || [];
-    return this._roles[role].allowed_skills || [];
+    if (!this._roles[role].allowed_tools) this._roles[role].allowed_tools = [];
+    return this._roles[role].allowed_tools;
   },
 
-  _renderSkillChips(container, skills, role) {
-    container.innerHTML = "";
+  _getSkillArray(key) {
+    // key format: "role:skills" e.g. "coder:skills"
+    const role = key.split(":")[0];
+    if (!this._roles[role]) return [];
+    if (!this._roles[role].allowed_skills) this._roles[role].allowed_skills = [];
+    return this._roles[role].allowed_skills;
+  },
 
-    // Chips wrapper (flex-row, wraps naturally)
+  _toolGroupName(key) {
+    const g = (this._allTools || []).find((t) => t.key === key);
+    return g ? g.name : key;
+  },
+
+  _renderToolChips(container, tools, roleKey) {
+    container.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.className = "arc-chips-wrap";
+    for (const toolKey of tools) {
+      const chip = document.createElement("span");
+      chip.className = "arc-skill-chip";
+      chip.dataset.toolKey = toolKey;
+      chip.innerHTML = `${escHtml(this._toolGroupName(toolKey))}<button class="arc-chip-x" title="Remove">×</button>`;
+      chip.querySelector(".arc-chip-x").onclick = (e) => {
+        e.stopPropagation();
+        const arr = this._getToolArray(roleKey);
+        const idx = arr.indexOf(toolKey);
+        if (idx > -1) arr.splice(idx, 1);
+        chip.remove();
+      };
+      wrap.appendChild(chip);
+    }
+    container.appendChild(wrap);
+
+    const addBtn = document.createElement("button");
+    addBtn.className = "arc-skill-add";
+    addBtn.textContent = "+ add tool";
+    addBtn.onclick = () => this._showItemPicker(container, roleKey, "tools");
+    container.appendChild(addBtn);
+  },
+
+  _renderSkillChips(container, skills, roleKey) {
+    container.innerHTML = "";
     const wrap = document.createElement("div");
     wrap.className = "arc-chips-wrap";
     for (const skill of skills) {
@@ -1149,7 +1202,7 @@ const AgentSettings = {
       chip.innerHTML = `${escHtml(skill)}<button class="arc-chip-x" title="Remove">×</button>`;
       chip.querySelector(".arc-chip-x").onclick = (e) => {
         e.stopPropagation();
-        const arr = this._getSkillArray(role);
+        const arr = this._getSkillArray(roleKey);
         const idx = arr.indexOf(skill);
         if (idx > -1) arr.splice(idx, 1);
         chip.remove();
@@ -1158,35 +1211,50 @@ const AgentSettings = {
     }
     container.appendChild(wrap);
 
-    // Add button (block-level, always on its own line)
     const addBtn = document.createElement("button");
     addBtn.className = "arc-skill-add";
-    addBtn.textContent = "+ add";
-    addBtn.onclick = () => this._showSkillPicker(container, role);
+    addBtn.textContent = "+ add skill";
+    addBtn.onclick = () => this._showItemPicker(container, roleKey, "skills");
     container.appendChild(addBtn);
   },
 
-  _showSkillPicker(container, role) {
+  _showItemPicker(container, roleKey, type) {
     // Remove existing picker
     const existing = container.querySelector(".arc-skill-picker");
     if (existing) { existing.remove(); return; }
 
-    const current = this._getSkillArray(role);
-    const available = this._allSkills.filter((s) => !current.includes(s)).sort();
+    const isTools = type === "tools";
+    const current = isTools ? this._getToolArray(roleKey) : this._getSkillArray(roleKey);
+
+    let available;
+    if (isTools) {
+      // _allTools is [{key, name, functions}], filter by key
+      available = (this._allTools || []).filter((g) => !current.includes(g.key));
+    } else {
+      available = (this._allSkills || []).filter((s) => !current.includes(s)).sort();
+    }
     if (!available.length) return;
 
     const picker = document.createElement("div");
     picker.className = "arc-skill-picker";
-    picker.innerHTML = available.map((s) => `<button class="arc-pick-item" data-skill="${escAttr(s)}">${escHtml(s)}</button>`).join("");
+    if (isTools) {
+      picker.innerHTML = available.map((g) => `<button class="arc-pick-item" data-item="${escAttr(g.key)}">${escHtml(g.name)} <small>(${g.functions})</small></button>`).join("");
+    } else {
+      picker.innerHTML = available.map((s) => `<button class="arc-pick-item" data-item="${escAttr(s)}">${escHtml(s)}</button>`).join("");
+    }
     picker.querySelectorAll(".arc-pick-item").forEach((btn) => {
       btn.onclick = () => {
-        const skill = btn.dataset.skill;
-        this._getSkillArray(role).push(skill);
-        if (!this._allSkills.includes(skill)) this._allSkills.push(skill);
-        this._renderSkillChips(container, this._getSkillArray(role), role);
+        const item = btn.dataset.item;
+        const arr = isTools ? this._getToolArray(roleKey) : this._getSkillArray(roleKey);
+        arr.push(item);
+        if (isTools) {
+          this._renderToolChips(container, arr, roleKey);
+        } else {
+          this._renderSkillChips(container, arr, roleKey);
+        }
       };
     });
-    container.appendChild(picker);  // appends after addBtn, full-width block
+    container.appendChild(picker);
   },
 
   async save() {
@@ -1200,8 +1268,8 @@ const AgentSettings = {
       const modelSel = card.querySelector(".arc-model");
       roles[role] = {
         system_prompt: card.querySelector(".arc-prompt").value,
+        allowed_tools: this._roles[role]?.allowed_tools || [],
         allowed_skills: this._roles[role]?.allowed_skills || [],
-        default_skills: this._roles[role]?.default_skills || [],
         default_model: modelSel.value.trim(),
         default_timeout: parseInt(card.querySelector(".arc-timeout").value) || 90,
         max_parallel: parseInt(card.querySelector(".arc-parallel").value) || 1,
