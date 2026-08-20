@@ -21,6 +21,7 @@ async def upload(file: UploadFile = File(...)) -> dict[str, Any]:
     suffix = Path(file.filename).suffix or ".bin"
     stored_name = f"{uuid.uuid4().hex}{suffix}"
     target = UPLOAD_DIR / stored_name
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     raw = await file.read()
     if len(raw) > _MAX_UPLOAD_SIZE:
         raise HTTPException(
