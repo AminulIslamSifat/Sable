@@ -1075,6 +1075,8 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
                     get_deepseek_client().set_token(ds_token, account=account)
                 except Exception as exc:
                     logger.warning("DeepSeek token extraction failed for %s: %s", account, exc)
+            from connectors.common.instruction_builder import invalidate_cache
+            invalidate_cache()
             try:
                 await service.sync_context()
             except Exception as exc:

@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # ─── Hard-blocked commands (instant reject, no negotiation) ───────────────────
 _BLOCKED_COMMANDS = re.compile(
-    r"(?:rm\s+-rf\s+/|rm\s+-rf\s+~|mkfs\.|dd\s+if=/dev/(?:zero|random)\s+of=/dev/|"
+    r"(?:rm\s+-rf\s+/(?:\s|$|\*)|rm\s+-rf\s+~(?:\s|$)|mkfs\.|dd\s+if=/dev/(?:zero|random)\s+of=/dev/|"
     r">\s*/dev/sd|reboot|shutdown\s|halt\s|poweroff)",
     re.I,
 )

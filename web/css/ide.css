@@ -661,4 +661,40 @@ body[data-mode="ide"] .editor-container .fs-viewer-header {
 .editor-container .fs-monaco-wrap {
   flex: 1;
   min-height: 0;
+
+/* ══════════════════════════════════════════
+   VS CODE EMBED MODE
+   Triggered via postMessage from VS Code extension.
+   Compact chat fills entire viewport. Everything else hidden.
+   ══════════════════════════════════════════ */
+body.vscode-embed .chat-compact,
+body.vscode-embed .chat-compact.hidden {
+  display: flex !important;
+  width: 100vw !important;
+  min-width: unset !important;
+  max-width: unset !important;
+  height: 100dvh !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+  border: none !important;
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  z-index: 99999 !important;
+}
+/* Hide EVERYTHING except the chat */
+body.vscode-embed .sidebar,
+body.vscode-embed .main,
+body.vscode-embed header,
+body.vscode-embed .diff-sidebar,
+body.vscode-embed #editorPane,
+body.vscode-embed .sidebar-overlay,
+body.vscode-embed .ide-resize-handle,
+body.vscode-embed .compact-header-actions,
+body.vscode-embed .ide-tab-bar,
+body.vscode-embed #diffSidebar,
+body.vscode-embed .monaco-editor,
+body.vscode-embed .fs-monaco-wrap {
+  display: none !important;
 }
