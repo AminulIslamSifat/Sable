@@ -12,6 +12,7 @@ import json
 import logging
 import random
 import re
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -237,6 +238,27 @@ async def run_agent_llm_loop(
     system_prompt += _build_tool_guide(role_cfg.allowed_skills, role_cfg.default_skills)
     if agent.instruction:
         system_prompt += f"\n\nSpecial instruction from orchestrator: {agent.instruction}"
+
+    # Inject TODO instructions + tools into system prompt (only for agents with a plan)
+    if agent.todos and agent.todos.todos:
+        plan_lines = "\n".join(f"{t.id}. {t.content}" for t in agent.todos.todos)
+        system_prompt += (
+            "\n\n## Task Plan\n"
+            "You have a structured execution plan. Work through it in order.\n\n"
+            f"Steps:\n{plan_lines}\n\n"
+            "### Progress Tracking Tools\n"
+            "You have two tools for managing your task plan:\n\n"
+            "**todo_complete** — Call when you finish the current task.\n"
+            '  {"name": "todo_complete", "arguments": {"summary": "what you accomplished"}}\n\n'
+            "**todo_skip** — Call to skip the current task if it's unnecessary or blocked.\n"
+            '  {"name": "todo_skip", "arguments": {"reason": "why you are skipping"}}\n\n'
+            "Rules:\n"
+            "- A single task may require multiple tool calls. Only call todo_complete when the task is fully done.\n"
+            "- After calling todo_complete or todo_skip, continue working on the next task immediately.\n"
+            "- Provide your final markdown answer only after ALL tasks are complete or skipped.\n"
+            "- Your current task and progress are shown after each tool result."
+        )
+
     agent.system_prompt = system_prompt
 
     first_message = system_prompt
@@ -245,9 +267,8 @@ async def run_agent_llm_loop(
     else:
         first_message += f"\n\nTask: {agent.task}"
 
-    # Inject todo plan into first message if present
+    # Emit initial todo state so panel sees it immediately
     if agent.todos and agent.todos.todos:
-        # Emit initial todo state so panel sees it immediately (even before first <todo_done>)
         agent.push_stream_event({
             "type": "todo_progress",
             "progress": agent.todos.progress,
@@ -257,17 +278,6 @@ async def run_agent_llm_loop(
                 for t in agent.todos.todos
             ],
         })
-        plan_lines = "\n".join(f"{t.id}. {t.content}" for t in agent.todos.todos)
-        first_message += (
-            f"\n\nYour execution plan:\n{plan_lines}\n\n"
-            f"Work through these steps in order. Start with step 1.\n\n"
-            f"CRITICAL TODO RULES:\n"
-            f"1. You MUST work through EVERY task in order. Do NOT skip or stop early.\n"
-            f"2. When you finish a task, you MUST output <todo_done summary=\"...\"/> BEFORE doing anything else.\n"
-            f"3. After marking a task done, IMMEDIATELY start the next task. Do NOT pause or provide a final answer.\n"
-            f"4. Only provide your final markdown answer AFTER all tasks are marked complete.\n"
-            f"5. If you are unsure whether a task is done, err on the side of doing more work, not less."
-        )
 
     # Track conversation for DB/history (not sent to API)
     agent.messages = [
@@ -320,62 +330,6 @@ async def run_agent_llm_loop(
         ).strip()
         agent.push_stream_event({"type": "answer", "text": _panel_text})
 
-        # --- Todo progression: parse <todo_done> and <todo_sub> tags ---
-        if agent.todos and agent.todos.current:
-            # Parse <todo_sub content="..." /> tags
-            for sub_match in re.finditer(
-                r'<todo_sub\s+content="([^"]*)"', response_text
-            ):
-                sub_desc = sub_match.group(1).strip()
-                if sub_desc and sub_desc not in agent.todos.current.subtasks:
-                    agent.todos.current.subtasks.append(sub_desc)
-
-            # Parse <todo_done summary="..." /> tag
-            done_match = re.search(r'<todo_done\s+summary="([^"]*)"', response_text)
-            if done_match:
-                agent.todos.current.result = done_match.group(1).strip()
-                nxt = agent.todos.advance()
-                agent.push_stream_event({
-                    "type": "todo_progress",
-                    "progress": agent.todos.progress,
-                    "current": nxt.content if nxt else None,
-                    "todos": [
-                        {
-                            "id": t.id,
-                            "content": t.content,
-                            "status": t.status,
-                            "subtasks": t.subtasks,
-                            "result": t.result,
-                        }
-                        for t in agent.todos.todos
-                    ],
-                })
-                if agent.todos.all_done:
-                    # All todos complete — next response should be the final answer
-                    current_message = (
-                        "All tasks in your plan are complete. "
-                        "Provide your final markdown answer now."
-                    )
-                    agent.messages.append({"role": "user", "content": current_message})
-                    await _persist_message(agent.id, "user", current_message)
-                    continue
-                else:
-                    # More todos remain — explicitly acknowledge completion and direct to next task
-                    completed_content = agent.todos.todos[agent.todos.current_index - 1].content if agent.todos.current_index > 0 else "previous task"
-                    next_task = nxt.content if nxt else "next task"
-                    todo_ack = (
-                        f"[TODO PROGRESS] Task \"{completed_content}\" marked complete. ✅\n"
-                        f"Now work on: \"{next_task}\"\n"
-                        f"Continue executing. Do NOT stop or provide a final answer until ALL tasks are done."
-                    )
-                    agent.messages.append({"role": "user", "content": todo_ack})
-                    await _persist_message(agent.id, "user", todo_ack)
-
-            # Strip todo tags from response so they don't leak into skill parsing or message history
-            response_text = re.sub(r'<todo_done\s+summary="[^"]*"\s*/?>', '', response_text)
-            response_text = re.sub(r'<todo_sub\s+content="[^"]*"\s*/?>', '', response_text)
-            response_text = re.sub(r'\n{3,}', '\n\n', response_text).strip()
-
         # Check for action wrapper format violations BEFORE parsing tags
         format_warning = _check_action_wrapper_violations(response_text)
         if format_warning:
@@ -402,23 +356,6 @@ async def run_agent_llm_loop(
         response_text = re.sub(r'\n{3,}', '\n\n', response_text).strip()
 
         if not tags:
-            # No tool calls → check if this is a premature stop (thin response while todos remain)
-            has_active_todos = agent.todos and not agent.todos.all_done
-            is_thin_response = len(response_text.strip()) < 200
-
-            if has_active_todos and is_thin_response:
-                # Agent stopped mid-plan with a short non-action response — nudge to continue
-                continue_msg = (
-                    "[CONTINUE REQUIRED] You stopped before completing all tasks.\n"
-                    f"You still have {len(agent.todos.todos) - agent.todos.current_index} task(s) remaining.\n"
-                    f"Current task: \"{agent.todos.current.content}\"\n"
-                    "Do NOT provide a final answer yet. Continue working on the current task using tools.\n"
-                    "Only stop when ALL tasks are marked done."
-                )
-                agent.messages.append({"role": "user", "content": continue_msg})
-                await _persist_message(agent.id, "user", continue_msg)
-                continue  # Loop back — give the agent another turn
-
             # No tool calls → validate as final markdown answer
             if _validate_markdown_output(response_text, role_cfg.required_sections):
                 return response_text
@@ -434,17 +371,6 @@ async def run_agent_llm_loop(
                 parent_id = new_parent_id
             agent.messages.append({"role": "assistant", "content": response_text})
             await _persist_message(agent.id, "assistant", response_text)
-
-            # Second chance: if still thin with active todos, nudge again instead of accepting
-            if has_active_todos and len(response_text.strip()) < 200:
-                continue_msg2 = (
-                    "[STILL INCOMPLETE] Your response does not contain a valid final answer or tool calls.\n"
-                    f"Remaining tasks: {len(agent.todos.todos) - agent.todos.current_index}\n"
-                    "Continue working. Use tools to complete the current task."
-                )
-                agent.messages.append({"role": "user", "content": continue_msg2})
-                await _persist_message(agent.id, "user", continue_msg2)
-                continue
 
             return response_text  # Accept even if still malformed (degraded)
 
@@ -490,10 +416,17 @@ async def run_agent_llm_loop(
                 # Stream skill_start to panel
                 agent.push_stream_event({"type": "skill_start", "name": tag_name, "attrs": tag.get("attrs", "")})
 
-                # process_tag is a sync generator — run in thread so task.cancel() can interrupt
-                events = await asyncio.to_thread(
-                    lambda: list(engine.process_tag(tag_name, attrs_dict, content, namespace=agent.id))
-                )
+                # Todo tools are dispatched directly with agent context (not via skill engine)
+                if tag_name in ("todo_complete", "todo_skip"):
+                    from engine.skills.handlers.agents import handle_todo_complete, handle_todo_skip
+                    _todo_handler = handle_todo_complete if tag_name == "todo_complete" else handle_todo_skip
+                    _todo_tag_id = uuid.uuid4().hex[:12]
+                    events = list(_todo_handler(_todo_tag_id, tag_name, attrs_dict, content, agent=agent))
+                else:
+                    # process_tag is a sync generator — run in thread so task.cancel() can interrupt
+                    events = await asyncio.to_thread(
+                        lambda: list(engine.process_tag(tag_name, attrs_dict, content, namespace=agent.id))
+                    )
 
                 # Forward skill events to panel stream (skip duplicate skill_start —
                 # the explicit one above already created the live "running" card)
@@ -560,9 +493,11 @@ async def run_agent_llm_loop(
         combined = "\n---\n".join(tool_results)
         current_message = f"<tool_response>\\n{combined}\\n</tool_response>"
 
-        # Append todo context if agent has an active todo list (compact: skip completed items)
-        if agent.todos and agent.todos.current:
-            current_message += f"\n\n{agent.todos.format_progress(compact=True)}"
+        # Append minimal TODO state (no rules — just facts)
+        if agent.todos:
+            state_line = agent.todos.format_state()
+            if state_line:
+                current_message += f"\n\n{state_line}"
 
         agent.messages.append({"role": "user", "content": current_message})
 

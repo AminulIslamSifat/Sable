@@ -462,6 +462,22 @@ class AgentRuntime:
                 conv_lines.append(content)
                 conv_lines.append("")
 
+            # Append skip reasons if any
+            if agent.todos and agent.todos.skip_reasons:
+                conv_lines.append("---")
+                conv_lines.append("")
+                conv_lines.append("## Skipped Tasks")
+                conv_lines.append("")
+                for todo_id, reason in agent.todos.skip_reasons:
+                    # Find the original content for this todo_id
+                    skipped_content = "unknown"
+                    for t in agent.todos.todos:
+                        if t.id == todo_id:
+                            skipped_content = t.content
+                            break
+                    conv_lines.append(f"- **Task #{todo_id}** \"{skipped_content}\": {reason}")
+                conv_lines.append("")
+
             conv_path = _AGENT_OUTPUT_DIR / f"{agent.id}_conversation.md"
             conv_path.write_text("\n".join(conv_lines), encoding="utf-8")
 

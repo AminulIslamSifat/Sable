@@ -59,6 +59,8 @@ KNOWN_TAGS = (
     "spawn_agent",
     "agent_status",
     "kill_agent",
+    "todo_complete",
+    "todo_skip",
     "ask_user",
     "grep",
     "glob",
