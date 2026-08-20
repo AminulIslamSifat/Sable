@@ -142,6 +142,8 @@ async def set_disabled_tools(request: Request) -> dict[str, str]:
 
 @router.post("/api/sync-context")
 async def sync_context_route() -> dict[str, Any]:
+    from connectors.common.instruction_builder import invalidate_cache
+    invalidate_cache()
     success = await service.sync_context()
     if success:
         return {"status": "ok", "message": "Context synced successfully"}

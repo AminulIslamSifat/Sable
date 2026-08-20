@@ -169,6 +169,7 @@ class OpenAICompatClient:
         self._http: httpx.AsyncClient | None = None
         self._instruction_cache: str | None = None
         self._cached_project_id: str | None = "__none__"
+        self._cached_version: int = -1
 
     # ------------------------------------------------------------------
     # Key management
@@ -238,9 +239,12 @@ class OpenAICompatClient:
     def _load_instructions(self, project_id: str | None = None) -> str:
         mode = self.INSTRUCTION_MODE
         if mode == "project":
-            if project_id != self._cached_project_id:
+            from connectors.common.instruction_builder import get_instruction_version
+            current_version = get_instruction_version()
+            if project_id != self._cached_project_id or current_version != self._cached_version:
                 self._instruction_cache = None
                 self._cached_project_id = project_id
+                self._cached_version = current_version
             if self._instruction_cache is not None:
                 return self._instruction_cache
             from connectors.common.instruction_builder import build_instructions

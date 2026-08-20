@@ -81,6 +81,9 @@ async def set_active_persona(request: Request):
             raise HTTPException(404, f"Persona \'{name}\' not found")
     cfg["active"] = name
     _save_config(cfg)
+    # Bust instruction caches for all non-Qwen connectors
+    from connectors.common.instruction_builder import invalidate_cache
+    invalidate_cache()
     try:
         await service.sync_context()
     except Exception as exc:
@@ -101,6 +104,8 @@ async def update_output_format(request: Request):
     body = await request.json()
     fpath = _INSTRUCTION_DIR / "output_format.md"
     fpath.write_text(body.get("content", ""), encoding="utf-8")
+    from connectors.common.instruction_builder import invalidate_cache
+    invalidate_cache()
     return {"status": "ok"}
 
 
@@ -111,6 +116,8 @@ async def toggle_output_format(request: Request):
     cfg = _load_config()
     cfg["output_format_enabled"] = bool(enabled)
     _save_config(cfg)
+    from connectors.common.instruction_builder import invalidate_cache
+    invalidate_cache()
     try:
         await service.sync_context()
     except Exception as exc:
@@ -140,6 +147,8 @@ async def create_persona(request: Request):
     if fpath.exists():
         raise HTTPException(409, f"Persona \'{safe_name}\' already exists")
     fpath.write_text(content, encoding="utf-8")
+    from connectors.common.instruction_builder import invalidate_cache
+    invalidate_cache()
     return {"status": "ok", "name": safe_name}
 
 
@@ -151,6 +160,8 @@ async def update_persona(name: str, request: Request):
     body = await request.json()
     content = body.get("content", "")
     fpath.write_text(content, encoding="utf-8")
+    from connectors.common.instruction_builder import invalidate_cache
+    invalidate_cache()
     return {"status": "ok"}
 
 
@@ -164,4 +175,6 @@ async def delete_persona(name: str):
     if cfg.get("active") == name:
         cfg["active"] = None
     _save_config(cfg)
+    from connectors.common.instruction_builder import invalidate_cache
+    invalidate_cache()
     return {"status": "ok"}
