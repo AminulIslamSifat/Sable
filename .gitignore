@@ -1,3 +1,10 @@
+# ═══════════════════════════════════════════
+# Common — shared between Sable & Sable-lite
+# ═══════════════════════════════════════════
+
+# Backup files
+*.bak
+
 # Database
 *.db
 *.db-shm
@@ -17,25 +24,6 @@ build/
 
 # Editor backups
 .editor_tools_backups/
-\"
-
-
-# Browser data (contains cookies, sessions, cache) — all under system/
-# The active-account symlink is local runtime state — never commit it.
-# (The trailing-slash rule below only matches directories, NOT the symlink,
-#  which is exactly why the symlink leaked into git before.)
-system/browser-data
-system/browser-data*/
-system/browser-scraper-data/
-system/automation-browser-data/
-system/automation-browser-data.bak/
-system/browser-scraper-data.bak/
-scraper_output/
-
-
-# Uploads (user-uploaded files)
-uploads/
-system/uploads
 
 # Secrets & credentials
 .env
@@ -43,16 +31,8 @@ system/uploads
 !.env.example
 *.key
 *.pem
-system/.session_tokens.json
-system/.auth_token
-system/.gemini_api_key
-system/.gemini_api_keys.json
-system/.groq_api_keys.json
-system/.cerebras_api_keys.json
-system/.deepseek_tokens.json
-system/.custom_models.json
-system/.hidden_models.json
 .sable_backups
+.safe_backups/skills/_cache/
 
 # OS junk
 .DS_Store
@@ -63,23 +43,64 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
-output/
 
 # Logs
 *.log
 
-
-
-instruction/Maria.md
+# Output & test
+output/
 test/
+mockups/
+scraper_output/
+
+# Uploads
+uploads/
+
+# System caches & model artifacts (NOT browser data or tokens)
+system/cache/
+system/memory_cache*.npz
+system/cookbook_logs/
+system/cookbook_model_settings.json
+system/uploads/
+system/models/
+system/fastembed_cache/
+
+
+# ═══════════════════════════════════════════
+# Sable-only — remove these in Sable-lite
+# ═══════════════════════════════════════════
+
+# Browser data (cookies, sessions, automation state)
+system/
+system/browser-data
+system/browser-data*/
+system/browser-scraper-data/
+system/automation-browser-data/
+system/automation-browser-data.bak/
+system/browser-scraper-data.bak/
+
+# Session tokens & API keys
+system/.session_tokens.json
+system/.auth_token
+system/.gemini_api_key
+system/.gemini_api_keys.json
+system/.groq_api_keys.json
+system/.cerebras_api_keys.json
+system/.deepseek_tokens.json
+system/.custom_models.json
+system/.hidden_models.json
+system/.advanced_sdxl_key
+system/.telegram_config.json
+system/.qwen_exhaustion.json
+.auth_token
+
+# Maria / personal config
+instruction/Maria.md
+instruction/personal.md
+
+# Brain memory files
 Brain/Memory.json
 Brain/Protected.json
-.auth_token
-mockups/
-.safe_backups/skills/_cache/
-system/
-system/memory_cache.npz
-instruction/personal.md
 Brain/user_personality.json
 Brain/Procedural.json
 Brain/disabled_tools.json
