@@ -185,6 +185,65 @@ def get_instruction(name: str) -> dict[str, str]:
     return {"content": path.read_text(encoding="utf-8")}
 
 
+# ── DreamForge: Full-featured AI Image Generator ─────────────────────────────
+# NOTE: These MUST be above the catch-all /api/tool/{tool_name} route below,
+# otherwise FastAPI matches the parameterized route first.
+
+@router.post("/api/tool/dreamforge_generate")
+async def dreamforge_generate(request: Request) -> dict[str, Any]:
+    """Generate images via DreamForge (Perchance backend with full options)."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    from tools.image_generator.scripts.dreamforge import generate, DreamForgeOptions
+
+    opts = DreamForgeOptions.from_dict(body)
+    if not opts.prompt.strip():
+        return {"ok": False, "error": "prompt is required", "images": [], "count": 0}
+
+    # Run in thread to avoid blocking the event loop
+    import asyncio
+    result = await asyncio.to_thread(generate, opts)
+    return result
+
+
+@router.get("/api/tool/dreamforge_options")
+async def dreamforge_options() -> dict[str, Any]:
+    """Return all available DreamForge options for the frontend."""
+    from tools.image_generator.scripts.dreamforge import get_all_options
+    return get_all_options()
+
+
+# ── Advanced SDXL: Perchance SDXL Generator with composition/model controls ──
+
+@router.post("/api/tool/advanced_sdxl_generate")
+async def advanced_sdxl_generate(request: Request) -> dict[str, Any]:
+    """Generate images via Advanced SDXL (Perchance backend with model/composition options)."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    from tools.image_generator.scripts.advanced_sdxl import generate, AdvancedSdxlOptions
+
+    opts = AdvancedSdxlOptions.from_dict(body)
+    if not opts.prompt.strip():
+        return {"ok": False, "error": "prompt is required", "images": [], "count": 0}
+
+    import asyncio
+    result = await asyncio.to_thread(generate, opts)
+    return result
+
+
+@router.get("/api/tool/advanced_sdxl_options")
+async def advanced_sdxl_options() -> dict[str, Any]:
+    """Return all available Advanced SDXL options for the frontend."""
+    from tools.image_generator.scripts.advanced_sdxl import get_all_options
+    return get_all_options()
+
+
 # ── Direct Tool Invocation (for Library panel UI) ────────────────────────────
 
 _TOOLS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "tools"
@@ -324,3 +383,6 @@ async def invoke_tool_direct(tool_name: str, request: Request) -> dict[str, Any]
         return json.loads(output)
     except json.JSONDecodeError:
         return {"ok": True, "raw": output}
+
+
+
