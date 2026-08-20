@@ -10,6 +10,8 @@ from engine.skills.handlers.file_ops import (
     handle_create_file,
     handle_edit_file,
     handle_insert_file,
+    handle_list_checkpoints,
+    handle_restore_checkpoint,
     handle_view_file,
 )
 from engine.skills.handlers.io import (
@@ -24,6 +26,8 @@ from engine.skills.handlers.agents import (
     handle_agent_status,
     handle_kill_agent,
     handle_spawn_agent,
+    handle_todo_complete,
+    handle_todo_skip,
 )
 from engine.skills.handlers.ask_user import handle_ask_user
 from engine.skills.handlers.grep_search import (
@@ -53,9 +57,13 @@ HANDLER_MAP: dict[str, object] = {
     "edit_file": handle_edit_file,
     "create_file": handle_create_file,
     "insert_file": handle_insert_file,
+    "list_checkpoints": handle_list_checkpoints,
+    "restore_checkpoint": handle_restore_checkpoint,
     "spawn_agent": handle_spawn_agent,
     "agent_status": handle_agent_status,
     "kill_agent": handle_kill_agent,
+    "todo_complete": handle_todo_complete,
+    "todo_skip": handle_todo_skip,
     "ask_user": handle_ask_user,
     "grep": handle_grep,
     "glob": handle_glob,
@@ -85,6 +93,8 @@ __all__ = [
     "handle_spawn_agent",
     "handle_agent_status",
     "handle_kill_agent",
+    "handle_todo_complete",
+    "handle_todo_skip",
     "handle_ask_user",
     "handle_grep",
     "handle_glob",

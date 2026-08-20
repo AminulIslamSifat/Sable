@@ -80,6 +80,11 @@ async def set_active_persona(request: Request):
         if not fpath.exists():
             raise HTTPException(404, f"Persona \'{name}\' not found")
     cfg["active"] = name
+    # Auto-toggle output_format: off for Agent, on for everything else
+    if name == "Agent":
+        cfg["output_format_enabled"] = False
+    else:
+        cfg["output_format_enabled"] = True
     _save_config(cfg)
     # Bust instruction caches for all non-Qwen connectors
     from connectors.common.instruction_builder import invalidate_cache

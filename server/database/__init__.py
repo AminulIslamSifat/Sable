@@ -40,6 +40,7 @@ from .chats import (
     get_checkpoints_for_chat,
     get_checkpoint_by_sha,
     get_latest_checkpoint_for_message,
+    list_checkpoints_with_preview,
 )
 from .agents import (
     recover_stale_agents,
@@ -83,6 +84,7 @@ __all__ = [
     "list_projects", "create_project", "get_project", "update_project",
     "delete_project", "save_checkpoint", "get_checkpoints_for_chat",
     "get_checkpoint_by_sha", "get_latest_checkpoint_for_message",
+    "list_checkpoints_with_preview",
     # agents
     "recover_stale_agents", "insert_agent_run", "update_agent_status",
     "add_agent_message", "get_agent_runs", "get_agent_messages",
