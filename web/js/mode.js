@@ -65,6 +65,24 @@
     if (window.lucide) window.lucide.createIcons();
   }
 
+  // ─── VS Code Embed Detection ───
+  // When loaded inside VS Code sidebar, add vscode-embed class for CSS overrides.
+  // Forces agent mode + closes diff viewer so only chat is visible.
+  let _isVscodeEmbed = false;
+
+  window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'vscode-embed') {
+      if (!_isVscodeEmbed) {
+        _isVscodeEmbed = true;
+        document.body.classList.add('vscode-embed');
+        // Force IDE mode — VS Code sidebar uses compact chat at full width
+        setLayoutMode('ide');
+      }
+      // Always ack so extension stops retrying
+      try { window.parent.postMessage({ type: 'vscode-embed-ack' }, '*'); } catch(err) {}
+    }
+  });
+
   function getLayoutMode() {
     return localStorage.getItem(STORAGE_KEY) || 'agent';
   }

@@ -584,12 +584,12 @@
     }
 
     function updateFavicon() {
-      // --- Themed tree: resolved data-URI for favicon + all logo imgs ---
-      if (!window.__sableTree) {
-        window.__sableTree = fetch("/static/assets/sable_tree.svg?v=4")
+      // --- Themed icon: resolved data-URI for favicon + all logo imgs ---
+      if (!window.__sableIcon) {
+        window.__sableIcon = fetch("/static/assets/sable_icon.svg?v=5")
           .then(r => (r.ok ? r.text() : null)).catch(() => null);
       }
-      window.__sableTree.then(txt => {
+      window.__sableIcon.then(txt => {
         if (!txt) return;
         const cs = getComputedStyle(document.documentElement);
         const vars = {
@@ -610,7 +610,7 @@
         link.type = "image/svg+xml";
         link.href = uri;
         if (!window.__sableIconImgs) {
-          window.__sableIconImgs = Array.from(document.querySelectorAll('img[src*="sable_icon"], img[src*="sable_tree"]'));
+          window.__sableIconImgs = Array.from(document.querySelectorAll('img[src*="sable_icon"]'));
         }
         window.__sableIconImgs.forEach(img => { img.src = uri; });
       });
