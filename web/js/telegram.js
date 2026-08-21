@@ -649,40 +649,45 @@
     }
 
     // ── Telegram Settings Toggle ──
-    function initTelegramToggle() {
+    let _tgToggleInitialized = false;
+    async function initTelegramToggle() {
       const toggle = document.getElementById('telegramToggle');
       const tab = document.getElementById('libTelegramTab');
       if (!toggle || !tab) return;
-      // Load saved state
-      const saved = localStorage.getItem('sable_telegram_enabled');
-      if (saved === 'true') {
-        toggle.checked = true;
-        tab.style.display = '';
-      } else {
-        toggle.checked = false;
-        tab.style.display = 'none';
-      }
+
+      // Sync from backend first, fall back to localStorage
+      let enabled = localStorage.getItem('sable_telegram_enabled') === 'true';
+      try {
+        const statusRes = await fetch('/api/telegram/status');
+        const status = await statusRes.json();
+        if (status.configured !== undefined) {
+          enabled = status.enabled;
+          localStorage.setItem('sable_telegram_enabled', String(enabled));
+        }
+      } catch {}
+
+      toggle.checked = enabled;
+      tab.style.display = enabled ? '' : 'none';
+
+      // Only attach listener once to prevent duplicate handlers
+      if (_tgToggleInitialized) return;
+      _tgToggleInitialized = true;
+
       toggle.addEventListener('change', async () => {
-        const enabled = toggle.checked;
-        localStorage.setItem('sable_telegram_enabled', String(enabled));
-        tab.style.display = enabled ? '' : 'none';
-        // Update backend config
+        const isEnabled = toggle.checked;
+        localStorage.setItem('sable_telegram_enabled', String(isEnabled));
+        tab.style.display = isEnabled ? '' : 'none';
+        // Always persist to backend — don't gate on status.configured
         try {
-          const statusRes = await fetch('/api/telegram/status');
-          const status = await statusRes.json();
-          if (status.configured) {
-            // Only send enabled flag — backend merges with existing config
-            await fetch('/api/telegram/config', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ api_id: 0, api_hash: '', enabled }),
-            });
-          }
+          await fetch('/api/telegram/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_id: 0, api_hash: '', enabled: isEnabled }),
+          });
         } catch {}
         // Reset cached state so it reloads fresh
         _tgState.loaded = false;
-        if (!enabled) {
-          // Disconnect if disabling
+        if (!isEnabled) {
           try { await fetch('/api/telegram/disconnect', { method: 'POST' }); } catch {}
         }
       });
