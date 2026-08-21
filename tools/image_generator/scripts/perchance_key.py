@@ -223,14 +223,33 @@ def refresh_key_via_browser(tag: str = "perchance") -> str | None:
 
 
 async def _async_capture_key(cdp_port: int, tag: str = "perchance") -> str | None:
-    """Connect to CDP, navigate to Perchance generator, capture userKey from
-    network traffic."""
+    """Connect to Chrome via CDP, navigate to Perchance, capture userKey.
+
+    Uses Playwright's native page.on('request') for network capture (sees
+    ALL frames including nested iframes) and frame.evaluate() for DOM
+    interaction.  No raw CDP websockets — avoids message ID sync issues.
+    """
     from playwright.async_api import async_playwright
     from urllib.parse import urlparse, parse_qs
-    import websockets
 
     await asyncio.sleep(3)
     captured: str | None = None
+    captured_event = asyncio.Event()
+
+    def _on_request(request):
+        nonlocal captured
+        if captured:
+            return
+        url = request.url
+        if "userKey" not in url:
+            return
+        qs = parse_qs(urlparse(url).query)
+        if "userKey" in qs:
+            key = qs["userKey"][0]
+            if len(key) == 64:
+                captured = key
+                captured_event.set()
+                print(f"[{tag}][capture] ✓ CAPTURED userKey: {key[:16]}...", file=sys.stderr)
 
     async with async_playwright() as p:
         browser = await p.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
@@ -241,7 +260,9 @@ async def _async_capture_key(cdp_port: int, tag: str = "perchance") -> str | Non
         context = browser.contexts[0]
         page = await context.new_page()
 
-        # Navigate to the generator page (solves Turnstile)
+        # Listen for requests BEFORE navigation (catches everything)
+        page.on("request", _on_request)
+
         print(f"[{tag}][capture] Navigating to generator page...", file=sys.stderr)
         try:
             await page.goto(
@@ -254,89 +275,76 @@ async def _async_capture_key(cdp_port: int, tag: str = "perchance") -> str | Non
 
         await asyncio.sleep(5)
 
-        # Find the image-generation iframe
-        gen_ws = None
-        for attempt in range(20):
-            try:
-                targets = httpx.get(f"http://127.0.0.1:{cdp_port}/json").json()
-            except Exception:
-                await asyncio.sleep(1)
-                continue
-            for t in targets:
-                if t.get("type") == "iframe" and "image-generation.perchance.org" in t.get("url", ""):
-                    gen_ws = t.get("webSocketDebuggerUrl")
-                    break
-            if gen_ws:
-                break
-            await asyncio.sleep(1)
+        # Key may already be captured during page load
+        if captured:
+            print(f"[{tag}][capture] Key captured during page load", file=sys.stderr)
+            await page.close()
+            return captured
 
-        if not gen_ws:
-            print(f"[{tag}][capture] ERROR: No image-generation iframe found", file=sys.stderr)
+        # Find the generator iframe via Playwright frames
+        gen_frame = None
+        for frame in page.frames:
+            furl = frame.url
+            if "perchance.org" in furl and "ai-text-to-image" in furl and frame != page.main_frame:
+                gen_frame = frame
+                print(f"[{tag}][capture] Found generator frame: {furl[:80]}", file=sys.stderr)
+                break
+
+        if not gen_frame:
+            print(f"[{tag}][capture] ERROR: No generator iframe found", file=sys.stderr)
             await page.close()
             return None
 
-        # Attach to iframe, clear localStorage, reload, capture key
+        # Clear localStorage and reload to force fresh key
         try:
-            async with websockets.connect(gen_ws, max_size=2**20) as ws:
-                await ws.send(json.dumps({"id": 1, "method": "Network.enable"}))
-                await ws.recv()
-                await ws.send(json.dumps({"id": 2, "method": "Runtime.enable"}))
-                await ws.recv()
-
-                # Clear localStorage → force fresh key
-                await ws.send(json.dumps({
-                    "id": 3, "method": "Runtime.evaluate",
-                    "params": {"expression": "localStorage.clear(); 'cleared'"},
-                }))
-                await ws.recv()
-
-                # Reload iframe
-                await ws.send(json.dumps({"id": 4, "method": "Page.reload"}))
-                await ws.recv()
-
-                await asyncio.sleep(5)
-
-                deadline = asyncio.get_event_loop().time() + 60
-                msg_count = 0
-                while asyncio.get_event_loop().time() < deadline:
-                    try:
-                        msg = await asyncio.wait_for(ws.recv(), timeout=3.0)
-                        msg_count += 1
-                        data = json.loads(msg)
-                        method = data.get("method", "")
-
-                        if method == "Network.requestWillBeSent":
-                            req = data.get("params", {}).get("request", {})
-                            req_url = req.get("url", "")
-
-                            if "userKey" in req_url:
-                                qs = parse_qs(urlparse(req_url).query)
-                                if "userKey" in qs:
-                                    key = qs["userKey"][0]
-                                    if len(key) == 64:
-                                        captured = key
-                                        print(f"[{tag}][capture] ✓ CAPTURED userKey: {key[:16]}...", file=sys.stderr)
-                                        break
-
-                            post_data = req.get("postData", "")
-                            if post_data and "userKey" in post_data:
-                                try:
-                                    body = json.loads(post_data)
-                                    key = body.get("userKey", "")
-                                    if len(key) == 64:
-                                        captured = key
-                                        print(f"[{tag}][capture] ✓ CAPTURED userKey from POST: {key[:16]}...", file=sys.stderr)
-                                        break
-                                except (json.JSONDecodeError, TypeError):
-                                    pass
-
-                    except asyncio.TimeoutError:
-                        continue
-                    except Exception:
-                        break
-
+            await gen_frame.evaluate("localStorage.clear()")
+            print(f"[{tag}][capture] Cleared localStorage", file=sys.stderr)
+            await gen_frame.evaluate("location.reload()")
+            await asyncio.sleep(5)
         except Exception as e:
-            print(f"[{tag}][capture] ERROR: {e}", file=sys.stderr)
+            print(f"[{tag}][capture] Clear/reload failed: {e}", file=sys.stderr)
+
+        if captured:
+            print(f"[{tag}][capture] Key captured after reload", file=sys.stderr)
+            await page.close()
+            return captured
+
+        # Type "test" and click generate
+        print(f"[{tag}][capture] Typing 'test' and clicking generate...", file=sys.stderr)
+        trigger_result = await gen_frame.evaluate("""
+            (() => {
+                var ta = null;
+                var tas = document.querySelectorAll('textarea.paragraph-input');
+                for (var i = 0; i < tas.length; i++) {
+                    if (tas[i].offsetParent !== null) { ta = tas[i]; break; }
+                }
+                if (!ta) ta = document.querySelector('textarea');
+                if (!ta) return JSON.stringify({error: 'no-textarea'});
+
+                ta.focus();
+                document.execCommand('selectAll', false, null);
+                document.execCommand('insertText', false, 'test');
+
+                var btns = document.querySelectorAll('button, input[type=submit], [onclick]');
+                var clicked = false;
+                for (var j = 0; j < btns.length; j++) {
+                    var b = btns[j];
+                    if (/generat/i.test(b.textContent || b.value || '')) {
+                        b.click();
+                        clicked = true;
+                        break;
+                    }
+                }
+                return JSON.stringify({typed: ta.value.substring(0,20), clicked: clicked});
+            })()
+        """)
+        print(f"[{tag}][capture] Trigger result: {trigger_result}", file=sys.stderr)
+
+        # Wait for key capture
+        try:
+            await asyncio.wait_for(captured_event.wait(), timeout=60)
+        except asyncio.TimeoutError:
+            print(f"[{tag}][capture] Timed out waiting for userKey", file=sys.stderr)
 
         await page.close()
 
