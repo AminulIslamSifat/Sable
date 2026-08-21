@@ -1749,6 +1749,15 @@ const STTSettings = {
         html += '<p class="muted" style="font-size:11px;margin-top:8px;">\u2705 Model ready \u2014 offline transcription available</p>';
       }
       statusEl.innerHTML = html;
+      const dlBtn = document.getElementById('sttDownloadBtn');
+      const dlProgress = document.getElementById('sttDownloadProgress');
+      if (dlBtn) {
+        dlBtn.style.display = data.installed ? 'none' : '';
+        dlBtn.disabled = false;
+        dlBtn.innerHTML = '<i data-lucide="download" class="icon-lucide"></i> Download Model (~462 MB)';
+        activateLucideIcons(dlBtn);
+      }
+      if (dlProgress) dlProgress.style.display = 'none';
       if (delBtn) delBtn.hidden = !data.installed;
     } catch (e) {
       statusEl.innerHTML = '<p style="color:#e74c3c;font-size:12px;">Failed to check status: ' + e.message + '</p>';
@@ -1805,6 +1814,62 @@ const STTSettings = {
     } catch (e) { /* ignore */ }
     if (delBtn) delBtn.disabled = false;
     this.loadStatus();
+  },
+
+  async download() {
+    const dlBtn = document.getElementById('sttDownloadBtn');
+    const dlProgress = document.getElementById('sttDownloadProgress');
+    if (dlBtn) { dlBtn.disabled = true; dlBtn.textContent = 'Downloading...'; }
+    if (dlProgress) { dlProgress.style.display = ''; dlProgress.textContent = 'Starting...'; }
+
+    try {
+      const res = await fetch('/api/settings/stt/download', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${localStorage.getItem('sable_token') || ''}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const msg = JSON.parse(line);
+            if (msg.status === 'progress') {
+              const pct = ((msg.downloaded / msg.total) * 100).toFixed(1);
+              const mbDone = (msg.downloaded / 1048576).toFixed(1);
+              const mbTotal = (msg.total / 1048576).toFixed(0);
+              if (dlProgress) dlProgress.textContent = `${msg.file}: ${pct}% (${mbDone}/${mbTotal} MB)`;
+            } else if (msg.status === 'start') {
+              if (dlProgress) dlProgress.textContent = `Downloading ${msg.file}...`;
+            } else if (msg.status === 'done') {
+              if (dlProgress) dlProgress.textContent = `${msg.file} ✓`;
+            } else if (msg.status === 'skip') {
+              // already installed
+            } else if (msg.status === 'error') {
+              if (dlProgress) dlProgress.textContent = `Error: ${msg.error}`;
+            } else if (msg.status === 'cancelled') {
+              if (dlProgress) dlProgress.textContent = 'Cancelled';
+            } else if (msg.status === 'complete') {
+              if (dlProgress) dlProgress.textContent = '✅ Complete!';
+            }
+          } catch (_) { /* skip malformed lines */ }
+        }
+      }
+    } catch (e) {
+      if (dlProgress) dlProgress.textContent = 'Failed: ' + e.message;
+    } finally {
+      setTimeout(() => this.loadStatus(), 1000);
+    }
   },
 
   async transcribe(file) {
@@ -2018,6 +2083,9 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
   });
+
+  const sttDlBtn = document.getElementById('sttDownloadBtn');
+  if (sttDlBtn) sttDlBtn.addEventListener('click', () => STTSettings.download());
 
   const sttDelBtn = document.getElementById('sttDeleteBtn');
   if (sttDelBtn) sttDelBtn.addEventListener('click', () => STTSettings.remove());
