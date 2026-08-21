@@ -734,7 +734,59 @@
   font-size: 11px;
   user-select: none;
 }
-.status-left, .status-right { flex: 0 0 auto; }
+.status-left, .status-right { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+
+/* STT Mic Button */
+.stt-mic-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.stt-mic-btn:hover {
+  background: rgba(255,255,255,0.08);
+  color: var(--text);
+}
+.stt-mic-btn .icon-lucide { width: 13px; height: 13px; }
+.stt-mic-pulse {
+  position: absolute;
+  inset: -2px;
+  border-radius: 6px;
+  opacity: 0;
+  pointer-events: none;
+}
+.stt-mic-btn.recording {
+  color: #ef4444;
+  background: rgba(239,68,68,0.12);
+}
+.stt-mic-btn.recording .stt-mic-pulse {
+  animation: stt-pulse 1.5s ease-in-out infinite;
+}
+@keyframes stt-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(239,68,68,0.4); opacity: 1; }
+  70% { box-shadow: 0 0 0 6px rgba(239,68,68,0); opacity: 0; }
+  100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); opacity: 0; }
+}
+.stt-mic-btn.transcribing {
+  color: var(--accent-text);
+  background: rgba(var(--accent-rgb,100,180,255),0.1);
+}
+.stt-mic-btn.transcribing .icon-lucide {
+  animation: stt-spin 1s linear infinite;
+}
+@keyframes stt-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
 .status-center {
   flex: 1 1 auto;
   text-align: center;

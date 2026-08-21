@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from engine.scraper import (
     get_settings as get_scraper_settings,
@@ -1649,7 +1649,9 @@ async def delete_tts_models() -> dict[str, Any]:
 # ── TTS Preferences ──────────────────────────────────────────────────
 _TTS_PREFS_PATH = BASE_DIR / "system/tts_prefs.json"
 _TTS_PREFS_DEFAULTS: dict[str, Any] = {
+    "provider": "kokoro",  # "kokoro" | "edge"
     "voice": "af_bella",
+    "edge_voice": "en-US-AvaMultilingualNeural",
     "speed": 1.0,
 }
 
@@ -1680,8 +1682,14 @@ async def get_tts_prefs() -> dict[str, Any]:
 async def set_tts_prefs(request: Request) -> dict[str, Any]:
     body = await request.json()
     prefs = _load_tts_prefs()
+    if "provider" in body:
+        p = str(body["provider"]).strip().lower()
+        if p in ("kokoro", "edge"):
+            prefs["provider"] = p
     if "voice" in body:
         prefs["voice"] = str(body["voice"]).strip()
+    if "edge_voice" in body:
+        prefs["edge_voice"] = str(body["edge_voice"]).strip()
     if "speed" in body:
         try:
             prefs["speed"] = round(float(body["speed"]), 2)
@@ -1712,15 +1720,13 @@ def _get_kokoro():
 
 @router.post("/api/tts/synthesize")
 async def tts_synthesize(request: Request) -> Response:
-    """Synthesize text to speech. Returns WAV audio."""
+    """Synthesize text to speech. Returns WAV (kokoro) or MP3 (edge)."""
     import io
-    import soundfile as sf
 
     body = await request.json()
     text = (body.get("text") or "").strip()
-    # Fall back to saved prefs if voice/speed not provided
     prefs = _load_tts_prefs()
-    voice = body.get("voice") or prefs.get("voice", "af_bella")
+    provider = body.get("provider") or prefs.get("provider", "kokoro")
     speed = body.get("speed") if body.get("speed") is not None else prefs.get("speed", 1.0)
 
     if not text:
@@ -1728,11 +1734,17 @@ async def tts_synthesize(request: Request) -> Response:
     if len(text) > 5000:
         raise HTTPException(status_code=400, detail="Text too long (max 5000 chars)")
 
+    if provider == "edge":
+        return await _synthesize_edge(text, body, prefs, speed)
+
+    # Kokoro (default)
+    import soundfile as sf
+    voice = body.get("voice") or prefs.get("voice", "af_bella")
     try:
         kokoro = _get_kokoro()
         samples, sr = kokoro.create(text, voice=voice, speed=speed)
     except Exception as e:
-        logger.error(f"TTS synthesis failed: {e}")
+        logger.error(f"Kokoro TTS synthesis failed: {e}")
         raise HTTPException(status_code=500, detail=f"Synthesis failed: {e}")
 
     buf = io.BytesIO()
@@ -1741,9 +1753,68 @@ async def tts_synthesize(request: Request) -> Response:
     return Response(content=buf.read(), media_type="audio/wav")
 
 
+async def _synthesize_edge(
+    text: str,
+    body: dict[str, Any],
+    prefs: dict[str, Any],
+    speed: float,
+) -> Response:
+    """Synthesize via Edge TTS. Returns MP3 audio."""
+    import io
+    import edge_tts
+
+    voice = body.get("voice") or body.get("edge_voice") or prefs.get("edge_voice", "en-US-AvaMultilingualNeural")
+    # Edge TTS rate format: "+20%", "-10%", etc. Convert from multiplier.
+    rate_pct = int((speed - 1.0) * 100)
+    rate_str = f"+{rate_pct}%" if rate_pct >= 0 else f"{rate_pct}%"
+
+    try:
+        communicate = edge_tts.Communicate(text, voice, rate=rate_str)
+        buf = io.BytesIO()
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                buf.write(chunk["data"])
+        buf.seek(0)
+        return Response(content=buf.read(), media_type="audio/mpeg")
+    except Exception as e:
+        logger.error(f"Edge TTS synthesis failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Edge TTS failed: {e}")
+
+
+_edge_voices_cache: list[dict[str, str]] | None = None
+
+
+async def _get_edge_voices() -> list[dict[str, str]]:
+    """Fetch Edge TTS voices (cached after first call)."""
+    global _edge_voices_cache
+    if _edge_voices_cache is not None:
+        return _edge_voices_cache
+    import edge_tts
+    raw = await edge_tts.list_voices()
+    # Return simplified list: {ShortName, Locale, Gender}
+    _edge_voices_cache = [
+        {
+            "id": v["ShortName"],
+            "locale": v.get("Locale", ""),
+            "gender": v.get("Gender", ""),
+        }
+        for v in raw
+    ]
+    return _edge_voices_cache
+
+
 @router.get("/api/tts/voices")
-async def tts_voices() -> dict[str, Any]:
-    """List available TTS voices."""
+async def tts_voices(provider: str = "kokoro") -> dict[str, Any]:
+    """List available TTS voices for the given provider."""
+    if provider == "edge":
+        try:
+            voices = await _get_edge_voices()
+            return {"voices": voices, "provider": "edge"}
+        except Exception as e:
+            logger.error(f"Edge TTS voice listing failed: {e}")
+            return {"voices": [], "provider": "edge", "error": str(e)}
+
+    # Kokoro (default)
     try:
         kokoro = _get_kokoro()
         if hasattr(kokoro, "voices"):
@@ -1752,9 +1823,9 @@ async def tts_voices() -> dict[str, Any]:
             voices = sorted(kokoro.get_voices())
         else:
             voices = []
-        return {"voices": voices}
+        return {"voices": voices, "provider": "kokoro"}
     except HTTPException:
-        return {"voices": [], "error": "TTS models not installed"}
+        return {"voices": [], "provider": "kokoro", "error": "TTS models not installed"}
 # ── /TTS Synthesis ───────────────────────────────────────────────────
 
 
@@ -1985,6 +2056,200 @@ async def get_general_settings() -> dict[str, Any]:
     return {
         "max_tool_output_chars": settings.get("max_tool_output_chars", 100_000),
     }
+
+
+# ── STT (Speech-to-Text) ───────────────────────────────────────────────
+_STT_DIR = _SYSTEM_DIR / "models" / "stt"
+_STT_FILES = {
+    "model.bin": {"size": 484_000_000, "label": "Whisper small.en Model (CTranslate2)"},
+    "config.json": {"size": 2_000, "label": "Model Config"},
+    "tokenizer.json": {"size": 2_000_000, "label": "Tokenizer"},
+    "vocabulary.txt": {"size": 400_000, "label": "Vocabulary"},
+}
+_STT_PREFS_PATH = _SYSTEM_DIR / "stt_prefs.json"
+_STT_PREFS_DEFAULTS: dict[str, Any] = {
+    "model": "small.en",
+    "device": "cpu",
+    "compute_type": "int8",
+    "language": "en",
+    "beam_size": 5,
+}
+_whisper_model = None
+
+
+def _stt_status() -> dict[str, Any]:
+    files = {}
+    for name, meta in _STT_FILES.items():
+        path = _STT_DIR / name
+        if path.exists():
+            actual = path.stat().st_size
+            files[name] = {
+                "label": meta["label"],
+                "installed": actual >= meta["size"] * 0.90,
+                "size": actual,
+                "expected": meta["size"],
+            }
+        else:
+            files[name] = {
+                "label": meta["label"],
+                "installed": False,
+                "size": 0,
+                "expected": meta["size"],
+            }
+    all_installed = all(f["installed"] for f in files.values())
+    return {"installed": all_installed, "dir": str(_STT_DIR), "files": files}
+
+
+def _load_stt_prefs() -> dict[str, Any]:
+    prefs = dict(_STT_PREFS_DEFAULTS)
+    if _STT_PREFS_PATH.exists():
+        try:
+            with open(_STT_PREFS_PATH, "r", encoding="utf-8") as f:
+                stored = json.load(f)
+            if isinstance(stored, dict):
+                prefs.update(stored)
+        except Exception:
+            pass
+    return prefs
+
+
+def _save_stt_prefs(prefs: dict[str, Any]) -> None:
+    _STT_PREFS_PATH.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
+
+
+def _get_whisper_model():
+    """Lazy-load faster-whisper model (singleton)."""
+    global _whisper_model
+    if _whisper_model is not None:
+        return _whisper_model
+    from faster_whisper import WhisperModel
+    prefs = _load_stt_prefs()
+    model_path = str(_STT_DIR)
+    if not (_STT_DIR / "model.bin").exists():
+        raise HTTPException(status_code=400, detail="STT model not installed")
+    _whisper_model = WhisperModel(
+        model_path,
+        device=prefs.get("device", "cpu"),
+        compute_type=prefs.get("compute_type", "int8"),
+    )
+    return _whisper_model
+
+
+@router.get("/api/settings/stt")
+async def get_stt_status() -> dict[str, Any]:
+    return _stt_status()
+
+
+@router.get("/api/settings/stt/prefs")
+async def get_stt_prefs() -> dict[str, Any]:
+    return _load_stt_prefs()
+
+
+@router.post("/api/settings/stt/prefs")
+async def set_stt_prefs(request: Request) -> dict[str, Any]:
+    body = await request.json()
+    prefs = _load_stt_prefs()
+    if "language" in body:
+        prefs["language"] = str(body["language"]).strip()
+    if "beam_size" in body:
+        try:
+            prefs["beam_size"] = int(body["beam_size"])
+        except (ValueError, TypeError):
+            pass
+    if "compute_type" in body:
+        prefs["compute_type"] = str(body["compute_type"]).strip()
+    _save_stt_prefs(prefs)
+    # Reset singleton so next transcription uses new prefs
+    global _whisper_model
+    _whisper_model = None
+    return {"status": "ok", **prefs}
+
+
+@router.delete("/api/settings/stt")
+async def delete_stt_models() -> dict[str, Any]:
+    removed = []
+    for name in _STT_FILES:
+        path = _STT_DIR / name
+        if path.exists():
+            path.unlink()
+            removed.append(name)
+    global _whisper_model
+    _whisper_model = None
+    return {"status": "ok", "removed": removed}
+
+
+@router.post("/api/stt/transcribe")
+async def stt_transcribe(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Transcribe an audio file using faster-whisper. Returns text + segments."""
+    import tempfile
+    import os
+
+    status = _stt_status()
+    if not status["installed"]:
+        raise HTTPException(status_code=400, detail="STT model not installed")
+
+    # Read uploaded audio to temp file
+    suffix = Path(file.filename or "audio.wav").suffix or ".wav"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        content = await file.read()
+        if len(content) > 100 * 1024 * 1024:  # 100MB limit
+            os.unlink(tmp.name)
+            raise HTTPException(status_code=413, detail="Audio file too large (max 100MB)")
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    wav_path = None
+    try:
+        # Convert non-WAV formats (webm, mp4, ogg, etc.) to WAV via ffmpeg
+        if suffix.lower() not in (".wav",):
+            import subprocess
+            wav_fd, wav_path = tempfile.mkstemp(suffix=".wav")
+            os.close(wav_fd)
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y", "-i", tmp_path,
+                "-ar", "16000", "-ac", "1", "-f", "wav", wav_path,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+            if proc.returncode != 0:
+                raise HTTPException(status_code=400, detail=f"Audio conversion failed (unsupported format: {suffix})")
+            transcribe_path = wav_path
+        else:
+            transcribe_path = tmp_path
+
+        model = _get_whisper_model()
+        prefs = _load_stt_prefs()
+        segments_iter, info = model.transcribe(
+            transcribe_path,
+            language=prefs.get("language", "en"),
+            beam_size=prefs.get("beam_size", 5),
+        )
+        segments = []
+        full_text_parts = []
+        for seg in segments_iter:
+            segments.append({
+                "start": round(seg.start, 2),
+                "end": round(seg.end, 2),
+                "text": seg.text.strip(),
+            })
+            full_text_parts.append(seg.text.strip())
+
+        return {
+            "text": " ".join(full_text_parts),
+            "segments": segments,
+            "duration": round(info.duration, 2),
+            "language": info.language,
+            "language_probability": round(info.language_probability, 3),
+        }
+    except Exception as e:
+        logger.error(f"STT transcription failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {e}")
+    finally:
+        os.unlink(tmp_path)
+        if wav_path and os.path.exists(wav_path):
+            os.unlink(wav_path)
+# ── /STT ──────────────────────────────────────────────────────────────
 
 
 @router.post("/api/settings/general")
