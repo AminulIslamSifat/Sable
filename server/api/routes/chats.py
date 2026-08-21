@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from engine.scraper import get_settings as get_scraper_settings
 from server.database import (
-    ensure_chat, list_chats, get_messages, delete_chat, delete_all_chats,
+    ensure_chat, list_chats, get_messages, add_message, delete_chat, delete_all_chats,
     search_messages,
     get_skill_events_for_message, list_projects, create_project, update_project,
     delete_project, get_project,
@@ -392,3 +392,150 @@ async def context_pass(req: ContextPassRequest) -> dict[str, Any]:
     except Exception as exc:
         logger.exception("[context-pass] summarization failed")
         return {"error": f"Summarization failed: {type(exc).__name__}: {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# Fork endpoint — create a new chat branched from any user message
+# ---------------------------------------------------------------------------
+
+@router.post("/api/chat/fork")
+async def fork_chat(payload: dict[str, str]) -> dict[str, Any]:
+    """Fork a chat from a specific message.
+
+    Creates a new chat containing all messages up to and including the specified
+    message_id. For Qwen chats, creates a fresh upstream session and injects
+    conversation history as the first message (parent_id=None).
+
+    Body:
+        chat_id: Source chat ID
+        message_id: Message ID to fork from (inclusive)
+
+    Returns:
+        {chat_id: <new_chat_id>, message_count: <int>}
+    """
+    source_chat_id = payload.get("chat_id", "")
+    message_id_str = payload.get("message_id", "")
+
+    if not source_chat_id or not message_id_str:
+        raise HTTPException(status_code=400, detail="chat_id and message_id required")
+
+    try:
+        message_id = int(message_id_str)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="message_id must be an integer")
+
+    # Check if source chat uses Qwen provider
+    from server.database import get_chat_provider, get_db as _get_db
+    source_provider = get_chat_provider(source_chat_id)
+    is_qwen = source_provider == "qwen"
+
+    # Get the fork message first (to return its content for the input box)
+    with _get_db() as conn:
+        fork_msg_row = conn.execute(
+            "SELECT id, role, content FROM messages WHERE chat_id = ? AND id = ?",
+            (source_chat_id, message_id),
+        ).fetchone()
+
+    if not fork_msg_row:
+        raise HTTPException(status_code=404, detail=f"Message {message_id} not found in chat {source_chat_id}")
+
+    fork_message_content = fork_msg_row["content"] or ""
+
+    # Get all messages BEFORE the fork message (exclusive)
+    with _get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, role, content, thinking, memory_used, parent_id, created_at "
+            "FROM messages WHERE chat_id = ? AND id < ? ORDER BY id ASC",
+            (source_chat_id, message_id),
+        ).fetchall()
+
+    # For Qwen: create fresh upstream session before creating local chat
+    _new_upstream_id = None
+    if is_qwen:
+        try:
+            _headers = await service._ensure_headers()
+            from engine.session import create_new_chat as _create_qwen_chat
+            _new_upstream_id = await _create_qwen_chat(_headers)
+            if not _new_upstream_id:
+                _headers = await service._refresh_headers()
+                _new_upstream_id = await _create_qwen_chat(_headers)
+        except Exception as e:
+            logger.warning("[fork] Failed to create Qwen upstream session: %s", e)
+            # Continue without upstream session — user can still see history
+
+    # Create new chat
+    new_chat_id = uuid.uuid4().hex
+    ensure_chat(
+        new_chat_id,
+        title=f"Fork from {source_chat_id[:8]}",
+        provider=source_provider,
+        upstream_session_id=_new_upstream_id,
+    )
+
+    # Build history block for Qwen (injected as first user message)
+    _history_lines = []
+    if is_qwen:
+        # Fetch full messages with skill events for tool call history
+        _prev_msgs = get_messages(source_chat_id, include_skill_events=True)
+        # Only include messages before the fork point (exclusive)
+        _prev_msgs = [m for m in _prev_msgs if m["id"] < message_id]
+        for _pm in _prev_msgs:
+            if _pm["role"] not in ("user", "assistant"):
+                continue
+            if _pm["content"]:
+                _history_lines.append(f"[{_pm['role']}]: {_pm['content']}")
+            for _sev in (_pm.get("skill_events") or []):
+                _sev_type = _sev.get("type", "")
+                if _sev_type == "skill_start":
+                    _tc_name = _sev.get("name", "unknown")
+                    _tc_attrs = _sev.get("data", {}).get("attrs", {})
+                    _history_lines.append(f"[tool_call]: {_tc_name}({_tc_attrs})")
+                elif _sev_type == "skill_end":
+                    _tr_name = _sev.get("name", "unknown")
+                    _tr_ok = _sev.get("ok", True)
+                    _tr_error = _sev.get("error")
+                    _tr_result = str(_sev.get("result", ""))[:2000]
+                    if _tr_error:
+                        _history_lines.append(f"[tool_result]: {_tr_name} (ok={_tr_ok}): ERROR: {_tr_error}")
+                    else:
+                        _history_lines.append(f"[tool_result]: {_tr_name} (ok={_tr_ok}): {_tr_result}")
+
+    # Copy messages into new chat
+    msg_count = 0
+    for row in rows:
+        mem = None
+        if row["memory_used"]:
+            try:
+                mem = json.loads(row["memory_used"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        add_message(
+            new_chat_id,
+            row["role"],
+            row["content"] or "",
+            row["thinking"],
+            None,  # Don't copy parent_id (new chat has its own lineage)
+            None,  # Don't copy skill_events
+            mem,
+        )
+        msg_count += 1
+
+    # For Qwen: store history injection data so the chat endpoint can prepend
+    # it to the first message sent in the forked chat (fresh upstream session).
+    if is_qwen and _history_lines:
+        from server.database import get_db as _db
+        _history_block = "[PREVIOUS CONVERSATION]\n" + "\n".join(_history_lines) + "\n[END PREVIOUS CONVERSATION]\n\n"
+        with _db() as conn:
+            conn.execute(
+                "UPDATE chats SET fork_history = ? WHERE id = ?",
+                (_history_block, new_chat_id),
+            )
+        logger.info("[fork] Stored %d history lines for Qwen fork %s", len(_history_lines), new_chat_id)
+
+    logger.info("[fork] Created %s from %s at message %d (%d messages copied, qwen=%s)",
+                new_chat_id, source_chat_id, message_id, msg_count, is_qwen)
+    return {
+        "chat_id": new_chat_id,
+        "message_count": msg_count,
+        "fork_message": fork_message_content,
+    }

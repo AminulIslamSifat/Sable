@@ -30,6 +30,21 @@ logger = logging.getLogger("sable.deepseek_api")
 BASE_URL = "https://chat.deepseek.com"
 SOLVER_PATH = Path(__file__).resolve().parent / "pow_solver" / "pow_solver"
 
+# Raw request/response logging
+_RAW_LOG_PATH = Path("/home/sifat/sable_output/logs/deepseek_raw.txt")
+
+
+def _log_raw(direction: str, payload: str) -> None:
+    """Append a timestamped raw payload to the log file."""
+    try:
+        _RAW_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(_RAW_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"\n{'='*80}\n[{ts}] {direction}\n{'='*80}\n{payload}\n")
+    except Exception:
+        pass
+
 # Per-account token store: {"browser-data-acc1": ["jwt1", "jwt2", ...], ...}
 # Tokens never expire, so we accumulate them in a list per account.
 # Capped at MAX_TOKENS_PER_ACCOUNT to prevent unbounded file growth.
@@ -627,6 +642,7 @@ class DeepSeekClient:
             "action": None,
             "preempt": False,
         }
+        _log_raw("USER_MESSAGE [summarize]", prompt)
         try:
             http = await self._get_http()
             full_answer = ""
@@ -638,6 +654,7 @@ class DeepSeekClient:
                 async for event in self._iter_completion_events(resp):
                     if event.get("type") == "answer":
                         full_answer += event.get("text", "")
+            _log_raw("RESPONSE [summarize] (raw)", full_answer)
             result = strip_summarize_tag(full_answer).strip()
             return result if result else None
         except Exception as e:
@@ -728,7 +745,11 @@ class DeepSeekClient:
                         etype = "thinking" if new_type == "THINK" else "answer"
                         yield {"type": etype, "text": content}
                 continue
-            if p == "response/fragments/-1/content" and o == "APPEND":
+            if p == "response/fragments/-1/content":
+                # Handle both o="APPEND" and o=None — DeepSeek sometimes sends
+                # content continuation events without the APPEND operation tag.
+                # Without this, fragments like 'tool' in '<tool_call>' get dropped,
+                # producing broken tags like '<tool_call>'.
                 text = v if isinstance(v, str) else ""
                 if text:
                     etype = "thinking" if current_frag_type == "THINK" else "answer"
@@ -794,15 +815,6 @@ class DeepSeekClient:
         # Serialize history + current message into prompt
         prompt = self._serialize_history(history, message)
 
-
-
-        # DEBUG: dump full prompt to file before sending
-        try:
-            with open("/home/sifat/hdd/projects/Sable/test/prompt_deepseek.txt", "w") as _f:
-                _f.write(prompt)
-        except Exception:
-            pass
-
         # Try each token with round-robin rotation + failover
         attempts = max(1, len(self._rotate_tokens) or 1)
         last_err = "unknown"
@@ -825,6 +837,8 @@ class DeepSeekClient:
                 "action": None,
                 "preempt": False,
             }
+
+            _log_raw("USER_MESSAGE (prompt sent)", prompt)
 
             try:
                 http = await self._get_http()
@@ -854,6 +868,8 @@ class DeepSeekClient:
                         elif etype == "thinking":
                             full_thinking += event.get("text", "")
                         yield event
+
+                _log_raw("RESPONSE (raw)", (full_thinking + "\n---\n" + full_answer) if full_thinking else full_answer)
 
                 # Success — save user message + assistant response to history
                 _summarize_idx = extract_summarize_tag(full_answer)

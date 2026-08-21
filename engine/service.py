@@ -437,10 +437,23 @@ class ChatService:
                                     line = line.strip()
 
                                     if not line.startswith("data: "):
-                                        # Check for non-SSE JSON error responses (e.g. rate limit)
+                                        # Check for non-SSE JSON error responses (e.g. rate limit, WAF block)
                                         if line:
                                             try:
                                                 err_data = json.loads(line)
+                                                # WAF/captcha block: ret contains FAIL_SYS_USER_VALIDATE or RGV587_ERROR
+                                                ret_list = err_data.get("ret")
+                                                if isinstance(ret_list, list):
+                                                    ret_str = " ".join(str(r) for r in ret_list)
+                                                    if "FAIL_SYS_USER_VALIDATE" in ret_str or "RGV587_ERROR" in ret_str:
+                                                        self._mark_exhausted()
+                                                        logger.warning("WAF/captcha block detected: %s", ret_str[:200])
+                                                        yield {
+                                                            "type": "waf_blocked",
+                                                            "message": "Account blocked by WAF/captcha",
+                                                            "ret": ret_list,
+                                                        }
+                                                        return
                                                 if err_data.get("success") is False:
                                                     inner = err_data.get("data", {})
                                                     code = inner.get("code", "")
@@ -596,11 +609,24 @@ class ChatService:
                 last_error_msg = f"HTTP {status_code} — auth rejected"
 
             if not got_content and not needs_refresh:
-                # Check if buffer has leftover non-SSE JSON (e.g. rate-limit on HTTP 200)
+                # Check if buffer has leftover non-SSE JSON (e.g. rate-limit, WAF block on HTTP 200)
                 leftover = buffer.strip() if buffer else ""
                 if leftover:
                     try:
                         err_data = json.loads(leftover)
+                        # WAF/captcha block detection in leftover buffer
+                        ret_list = err_data.get("ret")
+                        if isinstance(ret_list, list):
+                            ret_str = " ".join(str(r) for r in ret_list)
+                            if "FAIL_SYS_USER_VALIDATE" in ret_str or "RGV587_ERROR" in ret_str:
+                                self._mark_exhausted()
+                                logger.warning("WAF/captcha block detected in leftover: %s", ret_str[:200])
+                                yield {
+                                    "type": "waf_blocked",
+                                    "message": "Account blocked by WAF/captcha",
+                                    "ret": ret_list,
+                                }
+                                return
                         if err_data.get("success") is False:
                             inner = err_data.get("data", {})
                             code = inner.get("code", "")

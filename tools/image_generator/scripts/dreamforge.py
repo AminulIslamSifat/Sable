@@ -235,79 +235,35 @@ def build_negative_prompt(opts: DreamForgeOptions) -> str:
     return f"{style_neg}, {DEFAULT_NEGATIVE}"
 
 
-# ─── Key Management ──────────────────────────────────────────────────────────
+# ─── Key Management (delegated to perchance_key module) ─────────────────────
 
-def _load_cached_key() -> str | None:
-    if not KEY_CACHE_FILE.exists():
-        return None
-    try:
-        raw = KEY_CACHE_FILE.read_text().strip()
-        if not raw:
-            return None
-        try:
-            data = json.loads(raw)
-            if isinstance(data, dict):
-                return data.get("userKey")
-        except (json.JSONDecodeError, TypeError):
-            pass
-        if len(raw) == 64:
-            return raw
-    except Exception:
-        pass
-    return None
+import sys as _sys
+if str(Path(__file__).resolve().parent) not in _sys.path:
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from perchance_key import (
+    get_valid_key as _shared_get_valid_key,
+    save_key as _shared_save_key,
+    load_cached_key as _load_cached_key,
+    verify_key as _verify_key,
+)
 
 
 def _save_key(key: str) -> None:
-    KEY_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    KEY_CACHE_FILE.write_text(json.dumps({"userKey": key.strip(), "ts": time.time()}, indent=2))
-
-
-def _verify_key(key: str) -> bool:
-    try:
-        url = f"{BASE_URL}/checkVerificationStatus?userKey={key}&__cacheBust={random.random()}"
-        resp = httpx.get(url, headers=HEADERS, timeout=10)
-        return resp.json().get("status") == "verified"
-    except Exception:
-        return False
-
-
-def _refresh_key_via_api() -> str | None:
-    """Get a fresh userKey via verifyUser API. No browser needed."""
-    print("[dreamforge][key] Refreshing via verifyUser API...", file=sys.stderr)
-    try:
-        url = f"{BASE_URL}/verifyUser?thread=0&__cacheBust={random.random()}"
-        resp = httpx.get(url, headers=HEADERS, timeout=15)
-        data = resp.json()
-        key = data.get("userKey", "")
-        status = data.get("status", "")
-        if key and len(key) == 64:
-            _save_key(key)
-            print(f"[dreamforge][key] Got fresh key: {key[:16]}...", file=sys.stderr)
-            return key
-        print(f"[dreamforge][key] verifyUser returned status={status}, key_len={len(key)}", file=sys.stderr)
-    except Exception as e:
-        print(f"[dreamforge][key] verifyUser failed: {e}", file=sys.stderr)
-    return None
+    _shared_save_key(key, KEY_CACHE_FILE)
 
 
 def get_valid_key() -> str | None:
-    """Get a valid userKey — try cache first, then refresh."""
-    cached = _load_cached_key()
-    if cached and _verify_key(cached):
-        print(f"[dreamforge][key] Using cached key: {cached[:16]}...", file=sys.stderr)
-        return cached
-
-    # Cache invalid or missing — refresh
-    fresh = _refresh_key_via_api()
-    if fresh:
-        return fresh
-
-    # Last resort: use cached key anyway (might work if checkVerificationStatus is wrong)
-    if cached:
-        print(f"[dreamforge][key] Using unverified cached key as fallback: {cached[:16]}...", file=sys.stderr)
-        return cached
-
-    return None
+    """Get a valid userKey via shared module (browser-based refresh)."""
+    try:
+        return _shared_get_valid_key(
+            KEY_CACHE_FILE,
+            env_var="PERCHANCE_KEY",
+            tag="dreamforge",
+        )
+    except RuntimeError as e:
+        print(f"[dreamforge][key] Failed: {e}", file=sys.stderr)
+        return None
 
 
 # ─── Core Generation ─────────────────────────────────────────────────────────
@@ -416,8 +372,11 @@ def generate(opts: DreamForgeOptions) -> dict[str, Any]:
         # Check for key failure → auto-refresh and retry
         status = result.get("status", "")
         if status in ("invalid_key", "failed_verification"):
-            print(f"[dreamforge] Key invalid on attempt {i+1}, refreshing...", file=sys.stderr)
-            new_key = _refresh_key_via_api()
+            print(f"[dreamforge] Key invalid on attempt {i+1}, refreshing via browser...", file=sys.stderr)
+            from perchance_key import refresh_key_via_browser
+            new_key = refresh_key_via_browser(tag="dreamforge")
+            if new_key:
+                _save_key(new_key)
             if new_key:
                 user_key = new_key
                 try:

@@ -662,6 +662,54 @@
           });
           toolbar.appendChild(ttsBtn);
 
+          // Fork button — starts disabled until SSE delivers the DB message ID
+          const forkBtn = document.createElement("button");
+          forkBtn.innerHTML = '<i data-lucide="git-branch"></i>';
+          forkBtn.title = "Fork from here";
+          forkBtn.disabled = true;
+          forkBtn.classList.add("fork-pending");
+          forkBtn.addEventListener("click", async () => {
+            forkBtn.disabled = true;
+            forkBtn.innerHTML = '<i data-lucide="loader-circle" class="spin"></i>';
+            activateLucideIcons(forkBtn);
+            try {
+              const msgDiv = forkBtn.closest(".msg");
+              const dbMsgId = msgDiv?.dataset?.msgId;
+              if (!dbMsgId) return; // shouldn't happen — button only enabled when ID is set
+              const res = await fetch("/api/chat/fork", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: activeChatId, message_id: dbMsgId }),
+              });
+              const data = await res.json();
+              if (!res.ok || data.error) {
+                showToast(data.error || data.detail || "Fork failed", "error");
+                return;
+              }
+              showToast(`Forked ${data.message_count} messages`, "success");
+              if (typeof window._sableLoadChats === "function") await window._sableLoadChats();
+              if (typeof window._sableSelectChat === "function") await window._sableSelectChat(data.chat_id);
+              // Put the fork message content into the input box
+              if (data.fork_message) {
+                const mainInput = document.getElementById("input");
+                const compactInput = document.getElementById("chatCompactInput");
+                const target = (mainInput && mainInput.offsetParent !== null) ? mainInput : compactInput;
+                if (target) {
+                  target.value = data.fork_message;
+                  target.focus();
+                  target.dispatchEvent(new Event("input", { bubbles: true }));
+                }
+              }
+            } catch (err) {
+              showToast("Fork failed: " + err.message, "error");
+            } finally {
+              forkBtn.disabled = false;
+              forkBtn.innerHTML = '<i data-lucide="git-branch"></i>';
+              activateLucideIcons(forkBtn);
+            }
+          });
+          toolbar.appendChild(forkBtn);
+
           div.appendChild(toolbar);
           activateLucideIcons(toolbar);
         }
