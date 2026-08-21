@@ -9,8 +9,7 @@
     function openLibrary() {
       libraryOverlay.classList.remove("hidden");
       // Show/hide Telegram tab based on toggle state
-      const tgTab = document.getElementById('libTelegramTab');
-      if (tgTab) tgTab.style.display = localStorage.getItem('sable_telegram_enabled') === 'true' ? '' : 'none';
+
       // Load active tab if not yet loaded
       const activeTab = libraryTabs.querySelector(".settings-tab.active");
       if (activeTab) loadLibraryTab(activeTab.dataset.tab);

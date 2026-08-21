@@ -27,8 +27,7 @@
 
     function openLibraryTab(tabName) {
       libraryOverlay.classList.remove('hidden');
-      const tgTab = document.getElementById('libTelegramTab');
-      if (tgTab) tgTab.style.display = localStorage.getItem('sable_telegram_enabled') === 'true' ? '' : 'none';
+
       libraryTabs.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
       libraryBody.querySelectorAll('.settings-tab-content').forEach(c => c.classList.remove('active'));
       const tab = libraryTabs.querySelector(`[data-tab="${tabName}"]`);
@@ -49,7 +48,7 @@
         tab.classList.add('active');
         const target = document.getElementById('tab-' + tabName);
         if (target) target.classList.add('active');
-        if (tabName === 'general') { loadBrowserSettings(); initTelegramToggle(); }
+        if (tabName === 'general') { loadBrowserSettings(); }
         else if (tabName === 'account') loadAccountProfiles();
         else if (tabName === 'mcp') loadMcpServers();
         else if (tabName === 'cookbook') { if (window._cbInit) window._cbInit(); }
@@ -259,7 +258,7 @@
         const target = document.getElementById("tab-" + tab.dataset.tab);
         if (target) target.classList.add("active");
         const tabName = tab.dataset.tab;
-        if (tabName === 'general') { loadBrowserSettings(); initTelegramToggle(); }
+        if (tabName === 'general') { loadBrowserSettings(); }
         else if (tabName === 'account') loadAccountProfiles();
         else if (tabName === 'mcp') loadMcpServers();
         else if (tabName === 'cookbook') { if (window._cbInit) window._cbInit(); }
