@@ -37,6 +37,15 @@
       const skipMainContent = message.role !== "user" && hasRoundText;
       const msgDiv = skipMainContent ? null : addMessage(message.role === "user" ? "user" : "bot", displayContent);
       if (message.role === "user" && msgDiv) {
+        // Enable fork button for history-loaded messages (addMessage creates it disabled)
+        if (message.id) {
+          msgDiv.dataset.msgId = String(message.id);
+          const pendingFork = msgDiv.querySelector(".fork-pending");
+          if (pendingFork) {
+            pendingFork.disabled = false;
+            pendingFork.classList.remove("fork-pending");
+          }
+        }
         if (realTs) {
           const tsEl = msgDiv.querySelector(".msg-timestamp");
           if (tsEl) tsEl.textContent = `[${realTs}]`;
@@ -133,6 +142,55 @@
           cpBtn.dataset.msgId = message.id;
           cpBtn.addEventListener("click", () => showCheckpointModal(activeChatId, message.id, cpBtn));
           toolbar.appendChild(cpBtn);
+        }
+        // Fork button (git-branch icon)
+        if (!toolbar.querySelector('[title="Fork from here"]') && message.id) {
+          const forkBtn = document.createElement("button");
+          forkBtn.innerHTML = '<i data-lucide="git-branch"></i>';
+          forkBtn.title = "Fork from here";
+          forkBtn.addEventListener("click", async () => {
+            forkBtn.disabled = true;
+            forkBtn.innerHTML = '<i data-lucide="loader-circle" class="spin"></i>';
+            activateLucideIcons(forkBtn);
+            try {
+              const res = await fetch("/api/chat/fork", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: activeChatId, message_id: String(message.id) }),
+              });
+              const data = await res.json();
+              if (!res.ok || data.error) {
+                showToast(data.error || data.detail || "Fork failed", "error");
+                return;
+              }
+              showToast(`Forked ${data.message_count} messages`, "success");
+              // Navigate to new chat
+              if (typeof window._sableLoadChats === "function") {
+                await window._sableLoadChats();
+              }
+              if (typeof window._sableSelectChat === "function") {
+                await window._sableSelectChat(data.chat_id);
+              }
+              // Put the fork message content into the input box
+              if (data.fork_message) {
+                const mainInput = document.getElementById("input");
+                const compactInput = document.getElementById("chatCompactInput");
+                const target = (mainInput && mainInput.offsetParent !== null) ? mainInput : compactInput;
+                if (target) {
+                  target.value = data.fork_message;
+                  target.focus();
+                  target.dispatchEvent(new Event("input", { bubbles: true }));
+                }
+              }
+            } catch (err) {
+              showToast("Fork failed: " + err.message, "error");
+            } finally {
+              forkBtn.disabled = false;
+              forkBtn.innerHTML = '<i data-lucide="git-branch"></i>';
+              activateLucideIcons(forkBtn);
+            }
+          });
+          toolbar.appendChild(forkBtn);
         }
         activateLucideIcons(toolbar);
       }
@@ -1071,7 +1129,9 @@
           hidePending();
           closeCurrentThinking();
           closeAnswer();
-          // Clean up any lingering tool activity card — mark as failed instead of silently removing
+          // Cancel any pending exit timer from a tool that finished just before stop
+          if (_tacExitTimer) { clearTimeout(_tacExitTimer); _tacExitTimer = null; }
+          // Clean up any lingering tool activity card — mark as interrupted then fade out
           const tac = turn.querySelector(".tool-activity-card");
           if (tac) {
             const status = tac.querySelector(".tac-status");
@@ -1082,6 +1142,14 @@
             if (spinner) spinner.remove();
             const pulseDot = tac.querySelector(".tac-pulse-dot");
             if (pulseDot) pulseDot.remove();
+            // Stop progress bar animation
+            const progressFill = tac.querySelector(".tac-progress-fill");
+            if (progressFill) progressFill.style.animation = "none";
+            // Trigger exit animation so the card doesn't stay frozen in place
+            requestAnimationFrame(() => {
+              tac.classList.add("tac-exit");
+              setTimeout(() => tac.remove(), 350);
+            });
           }
           // Any placeholder still spinning means the stream died mid-tag.
           turn.querySelectorAll(".skill-card.pending").forEach(card => {
@@ -1300,8 +1368,15 @@
           } else if (evt.type === "status") {
             if (evt.message === "feeding_skill_results") ui.nextSkillRound();
           } else if (evt.type === "user_message_id") {
-            // Attach checkpoint restore button to the live user message
+            // Store DB message ID on the div and enable the fork button
             if (userMsgDiv && evt.id) {
+              userMsgDiv.dataset.msgId = String(evt.id);
+              // Enable any pending fork button now that we have the DB ID
+              const pendingFork = userMsgDiv.querySelector(".fork-pending");
+              if (pendingFork) {
+                pendingFork.disabled = false;
+                pendingFork.classList.remove("fork-pending");
+              }
               let toolbar = userMsgDiv.querySelector(".msg-toolbar");
               if (toolbar && !toolbar.querySelector('[title="Restore checkpoint"]')) {
                 const cpBtn = document.createElement("button");

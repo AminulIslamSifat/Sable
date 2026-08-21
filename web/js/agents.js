@@ -225,9 +225,9 @@ function addAgentBatchCard(agents) {
 // Agent Panel (slide-in chat view)
 // --------------------------------------------------------------------------
 function stripToolJson(text) {
-  let t = (text || "").replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "");
-  t = t.replace(/\{\s*"name"\s*:\s*"[\w-]+"\s*,\s*"arguments"\s*:\s*\{[\s\S]*?\}\s*\}/g, "");
-  return t.replace(/\n{3,}/g, "\n\n").trim();
+  // Backend parser already strips <tool_call> tags from the answer stream.
+  // This function now only collapses excessive blank lines.
+  return (text || "").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 const AgentPanel = {
@@ -799,6 +799,7 @@ const AGENT_ROLES = [
   { id: "analyst", icon: "🔍", label: "Analyst", desc: "Research + code review" },
   { id: "coder", icon: "💻", label: "Coder", desc: "Write/edit code" },
   { id: "writer", icon: "✍️", label: "Writer", desc: "Docs & content" },
+  { id: "scheduled", icon: "⏰", label: "Scheduled", desc: "Autonomous scheduled tasks" },
 ];
 
 let _mentionPopup = null;
@@ -895,6 +896,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // Use capture phase so Enter/Tab are intercepted BEFORE the main send handler
   el.addEventListener("keydown", (e) => {
     if (!_mentionPopup || _mentionPopup.style.display === "none") return;
     if (e.key === "ArrowDown") {
@@ -908,12 +910,13 @@ document.addEventListener("DOMContentLoaded", () => {
     } else if (e.key === "Enter" || e.key === "Tab") {
       if (_mentionFiltered.length > 0) {
         e.preventDefault();
+        e.stopPropagation();
         _selectMention(_mentionFiltered[_mentionIdx].id);
       }
     } else if (e.key === "Escape") {
       hideMentionPopup();
     }
-  });
+  }, true);
 });
 
 // --------------------------------------------------------------------------

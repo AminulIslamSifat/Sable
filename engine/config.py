@@ -605,3 +605,30 @@ def get_all_exhaustion_status() -> dict[str, bool]:
         result[account] = is_account_exhausted(account)
     return result
 
+
+def get_next_available_account(exclude: set[str] | None = None) -> str | None:
+    """Find the next non-exhausted Qwen account by scanning browser-data-accN dirs.
+
+    Args:
+        exclude: Set of account names to skip (e.g. already-tried accounts).
+
+    Returns:
+        Account name (e.g. 'browser-data-acc3') or None if all exhausted.
+    """
+    import re as _re
+    exclude = exclude or set()
+    candidates: list[tuple[int, str]] = []
+    try:
+        for entry in _SYSTEM.iterdir():
+            m = _re.match(r"browser-data-acc(\d+)$", entry.name)
+            if entry.is_dir() and m:
+                name = entry.name
+                if name not in exclude and not is_account_exhausted(name):
+                    candidates.append((int(m.group(1)), name))
+    except OSError:
+        return None
+    if not candidates:
+        return None
+    candidates.sort(key=lambda t: t[0])
+    return candidates[0][1]
+

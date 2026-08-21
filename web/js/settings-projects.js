@@ -592,8 +592,12 @@
       // Connect agent SSE for this chat
       if (typeof onChatOpened === "function") onChatOpened(chatId);
 
-      inputEl.focus();
+        inputEl.focus();
     }
+
+    // Expose for cross-module navigation (e.g. fork button)
+    window._sableSelectChat = selectChat;
+    window._sableLoadChats = loadChats;
 
     async function deleteChat(chatId) {
       if (!await sableConfirm("Delete this chat?", { danger: true })) return;

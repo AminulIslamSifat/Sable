@@ -707,6 +707,72 @@ def _try_browser_fallback(agent: Agent) -> str | None:
     return pool[idx]
 
 
+async def _clear_qwen_account_settings(headers: dict[str, str], agent_id: str) -> None:
+    """Disable Qwen built-in tools and clear personalization for an agent account.
+
+    Mirrors the account-prep done by BrowserManager.sync_context(), but writes an
+    empty instruction so Qwen's cached personalization cannot conflict with the
+    agent system prompt. This must run for the initial assigned browser profile
+    and again whenever Qwen browser fallback switches to another profile.
+    """
+    import uuid as _uuid
+    import httpx as _httpx
+
+    settings_url = "https://chat.qwen.ai/api/v2/users/user/settings/update"
+    hdrs = dict(headers)
+    hdrs.update({
+        "Content-Type": "application/json",
+        "Version": "0.2.80",
+        "source": "web",
+        "Origin": "https://chat.qwen.ai",
+        "Referer": "https://chat.qwen.ai/settings/personalization",
+        "X-Request-Id": str(_uuid.uuid4()),
+    })
+
+    async with _httpx.AsyncClient(timeout=15) as client:
+        # Step 1: disable default Qwen tools that conflict with Sable/agent tools.
+        tools_payload = {
+            "tools_enabled": {
+                "web_extractor": False,
+                "web_search_image": False,
+                "web_search": False,
+                "image_gen_tool": False,
+                "code_interpreter": False,
+                "history_retriever": False,
+                "image_edit_tool": False,
+                "bio": False,
+                "image_zoom_in_tool": False,
+            }
+        }
+        r1 = await client.post(settings_url, json=tools_payload, headers=hdrs)
+        try:
+            d1 = r1.json()
+        except Exception:
+            d1 = {}
+        if r1.status_code >= 400 or (d1 and not d1.get("success", False)):
+            raise RuntimeError(f"disable tools failed: HTTP {r1.status_code} {str(d1)[:200]}")
+
+        # Step 2: clear personalization instruction for agent-only prompt control.
+        hdrs["X-Request-Id"] = str(_uuid.uuid4())
+        instr_payload = {
+            "personalization": {
+                "name": "",
+                "description": "",
+                "style": "Default",
+                "instruction": "",
+            }
+        }
+        r2 = await client.post(settings_url, json=instr_payload, headers=hdrs)
+        try:
+            d2 = r2.json()
+        except Exception:
+            d2 = {}
+        if r2.status_code >= 400 or (d2 and not d2.get("success", False)):
+            raise RuntimeError(f"clear instruction failed: HTTP {r2.status_code} {str(d2)[:200]}")
+
+    logger.info("Agent %s: Qwen account settings cleared (tools disabled + empty instruction)", agent_id)
+
+
 def _get_backend_key(model: str) -> str:
     """Map model name to its circuit breaker key."""
     from engine.config import get_model_config
@@ -781,6 +847,13 @@ async def _send_with_retry(
             })
             agent.browser_data_dir = browser_profile
             agent.qwen_session_id = None
+
+            # Clear stale settings on the fallback account (tools + instruction)
+            try:
+                fb_headers = await _get_agent_qwen_headers(agent)
+                await _clear_qwen_account_settings(fb_headers, agent.id)
+            except Exception as exc:
+                logger.warning("Agent %s: clear settings on fallback account %s failed: %s", agent.id, browser_profile, exc)
             try:
                 from server.database import set_upstream_session_id as _set_usid
                 _set_usid(agent.chat_id, None)
@@ -1251,29 +1324,13 @@ async def _call_qwen(
     from server.database import get_upstream_session_id as _get_usid, set_upstream_session_id as _set_usid
     chat_id = _get_usid(agent.chat_id) or agent.qwen_session_id
     if is_first_turn or not chat_id:
-        # Clear stale system instruction so it doesn't conflict with agent prompt
-        # Only if agent has its own browser profile — never touch Maria's active session
+        # Disable Qwen built-in tools and clear personalization for the assigned account.
+        # Only if agent has its own browser profile — never touch Maria's active session.
         if agent.browser_data_dir:
             try:
-                import uuid as _uuid
-                import httpx as _httpx
-                _hdrs = dict(headers)
-                _hdrs.update({
-                    "Content-Type": "application/json",
-                    "Version": "0.2.80",
-                    "source": "web",
-                    "Origin": "https://chat.qwen.ai",
-                    "Referer": "https://chat.qwen.ai/settings/personalization",
-                    "X-Request-Id": str(_uuid.uuid4()),
-                })
-                async with _httpx.AsyncClient(timeout=15) as _client:
-                    await _client.post(
-                        "https://chat.qwen.ai/api/v2/users/user/settings/update",
-                        json={"personalization": {"name": "", "description": "", "style": "Default", "instruction": ""}},
-                        headers=_hdrs,
-                    )
+                await _clear_qwen_account_settings(headers, agent.id)
             except Exception as exc:
-                logger.warning("Agent %s: clear instruction failed: %s", agent.id, exc)
+                logger.warning("Agent %s: clear account settings failed: %s", agent.id, exc)
         chat_id = await create_new_chat(headers, model=agent.model)
         if not chat_id:
             # Retry with fresh headers (re-fetch from browser if needed)

@@ -12,12 +12,10 @@ Can also be imported as a module:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import os
 import random
 import sys
-import time
 from pathlib import Path
 
 try:
@@ -26,7 +24,18 @@ except ImportError:
     print("Error: httpx not installed. Run: pip install httpx", file=sys.stderr)
     sys.exit(1)
 
-# ─── Constants ───────────────────────────────────────────────────────────────
+import sys as _sys
+if str(Path(__file__).resolve().parent) not in _sys.path:
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from perchance_key import (
+    get_valid_key as _shared_get_valid_key,
+    save_key as _shared_save_key,
+    load_cached_key,
+    verify_key as _shared_verify_key,
+)
+
+# ─── Constants ─────────────────────────────────────────────────────────────────────────────────────......
 
 BASE = "https://image-generation.perchance.org/api"
 AD_ACCESS_CODE = "a4c88828629d9d1e2c98fa76fd2b5eccb69ee18af472e567febff4b943e9bbd6"
@@ -41,464 +50,35 @@ HEADERS = {
 OUTPUT_DIR = Path("/home/sifat/sable_output/assets")
 
 
-# ─── Key Management ──────────────────────────────────────────────────────────
+# ─── Key Management (delegated to perchance_key module) ───────────────────────────────────────────────────────────────────────────────────......
 
 def _verify_key(key: str) -> bool:
     """Check if a Perchance userKey is still valid."""
-    try:
-        url = f"{BASE}/checkVerificationStatus?userKey={key}&__cacheBust={random.random()}"
-        resp = httpx.get(url, headers=HEADERS, timeout=10)
-        data = resp.json()
-        return data.get("status") == "verified"
-    except Exception:
-        return False
+    return _shared_verify_key(key)
 
 
 def save_key(key: str) -> None:
-    """Save a key to cache file (JSON format)."""
-    KEY_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    data = {"userKey": key.strip(), "adAccessCode": ""}
-    KEY_CACHE_FILE.write_text(json.dumps(data, indent=2))
+    """Save a key to cache file."""
+    _shared_save_key(key, KEY_CACHE_FILE)
 
 
 def _load_cached_key() -> str | None:
-    """Load key from cache file (supports JSON or raw hex)."""
-    if not KEY_CACHE_FILE.exists():
-        return None
-    try:
-        raw = KEY_CACHE_FILE.read_text().strip()
-        if not raw:
-            return None
-        # Try JSON format first
-        try:
-            data = json.loads(raw)
-            if isinstance(data, dict):
-                return data.get("userKey")
-        except (json.JSONDecodeError, TypeError):
-            pass
-        # Fallback: raw hex string
-        if len(raw) == 64:
-            return raw
-    except Exception:
-        pass
-    return None
-
-
-def _refresh_key_via_api() -> str | None:
-    """Get a fresh Perchance userKey via the verifyUser API endpoint.
-    
-    No browser needed — verifyUser returns a valid key directly.
-    Falls back to browser if API fails.
-    """
-    print("[perchance][key] Attempting API key refresh via verifyUser...", file=sys.stderr)
-    try:
-        url = f"{BASE}/verifyUser?thread=0&__cacheBust={random.random()}"
-        resp = httpx.get(url, headers=HEADERS, timeout=15)
-        data = resp.json()
-        key = data.get("userKey", "")
-        status = data.get("status", "")
-        print(f"[perchance][key] verifyUser response: status={status}, key={key[:16]}..." if key else f"[perchance][key] verifyUser response: status={status}, no key", file=sys.stderr)
-        if key and len(key) == 64:
-            save_key(key)
-            print(f"[perchance][key] Got fresh key via API: {key[:16]}...", file=sys.stderr)
-            return key
-        print(f"[perchance][key] verifyUser returned invalid key (len={len(key)})", file=sys.stderr)
-    except Exception as e:
-        print(f"[perchance][key] verifyUser API failed: {e}", file=sys.stderr)
-    return None
-
-
-def _refresh_key_via_browser() -> str | None:
-    """Launch stealth Chrome browser to capture a fresh Perchance userKey (fallback)."""
-    import shutil
-    import subprocess
-    import signal
-
-    print("[perchance][browser] === Starting browser key refresh (fallback) ===", file=sys.stderr)
-
-    # Find available Chrome-based browser
-    browser_bin = None
-    for name in ["helium-browser", "google-chrome", "google-chrome-stable", "chromium"]:
-        path = shutil.which(name)
-        if path:
-            browser_bin = path
-            print(f"[perchance][browser] Found browser: {name} -> {path}", file=sys.stderr)
-            break
-    if not browser_bin:
-        for p in ["/opt/helium-browser-bin/chrome", "/usr/bin/google-chrome"]:
-            if os.path.isfile(p) and os.access(p, os.X_OK):
-                browser_bin = p
-                print(f"[perchance][browser] Found browser at hardcoded path: {p}", file=sys.stderr)
-                break
-    if not browser_bin:
-        print("[perchance][browser] ERROR: No Chrome browser found for key refresh", file=sys.stderr)
-        return None
-
-    # Find free port
-    import socket
-    cdp_port = 9222
-    for port in range(9222, 9230):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            if s.connect_ex(("127.0.0.1", port)) != 0:
-                cdp_port = port
-                break
-    print(f"[perchance][browser] Selected CDP port: {cdp_port}", file=sys.stderr)
-
-    user_data_dir = f"/tmp/perchance_key_refresh_{os.getpid()}"
-    print(f"[perchance][browser] User data dir: {user_data_dir}", file=sys.stderr)
-
-    # Inherit display env so Wayland/X11 works in subprocess
-    browser_env = os.environ.copy()
-    if not browser_env.get("WAYLAND_DISPLAY"):
-        # Auto-detect the active Wayland socket
-        import glob as _glob
-        uid = os.getuid()
-        sockets = sorted(_glob.glob(f"/run/user/{uid}/wayland-[0-9]*"))
-        # Filter out .lock and non-socket files
-        sockets = [s for s in sockets if os.path.basename(s) != f"wayland-{os.path.basename(s)}.lock"
-                   and not s.endswith(".lock") and not s.endswith(".sock")]
-        if sockets:
-            browser_env["WAYLAND_DISPLAY"] = os.path.basename(sockets[0])
-            print(f"[perchance][browser] Auto-detected WAYLAND_DISPLAY: {browser_env['WAYLAND_DISPLAY']}", file=sys.stderr)
-        else:
-            browser_env["WAYLAND_DISPLAY"] = "wayland-0"
-            print("[perchance][browser] No Wayland socket found, defaulting to wayland-0", file=sys.stderr)
-    else:
-        print(f"[perchance][browser] Using existing WAYLAND_DISPLAY: {browser_env['WAYLAND_DISPLAY']}", file=sys.stderr)
-
-    cmd = [
-        browser_bin,
-        f"--remote-debugging-port={cdp_port}",
-        "--disable-blink-features=AutomationControlled",
-        "--no-first-run", "--no-default-browser-check", "--no-sandbox",
-        "--ozone-platform=wayland",
-        f"--user-data-dir={user_data_dir}",
-        "about:blank",
-    ]
-    print(f"[perchance][browser] Launching: {' '.join(cmd)}", file=sys.stderr)
-
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=browser_env
-    )
-    print(f"[perchance][browser] Browser process started (PID: {proc.pid})", file=sys.stderr)
-
-    # Wait for CDP endpoint to become available before connecting
-    import urllib.request
-    cdp_ready = False
-    for attempt in range(30):  # up to ~6 seconds
-        try:
-            resp = urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json/version", timeout=1)
-            version_info = json.loads(resp.read())
-            cdp_ready = True
-            print(f"[perchance][browser] CDP ready after {attempt+1} attempts. Browser: {version_info.get('Browser', 'unknown')}", file=sys.stderr)
-            break
-        except Exception as e:
-            if attempt % 5 == 4:
-                print(f"[perchance][browser] CDP not ready after {attempt+1} attempts: {e}", file=sys.stderr)
-            # Check if browser process died
-            poll = proc.poll()
-            if poll is not None:
-                stderr_out = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
-                print(f"[perchance][browser] ERROR: Browser process exited with code {poll} before CDP ready!", file=sys.stderr)
-                print(f"[perchance][browser] stderr: {stderr_out[:1000]}", file=sys.stderr)
-                return None
-            time.sleep(0.2)
-
-    if not cdp_ready:
-        stderr_out = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
-        print(f"[perchance][browser] ERROR: Browser failed to start CDP after 30 attempts.", file=sys.stderr)
-        print(f"[perchance][browser] stderr: {stderr_out[:1000]}", file=sys.stderr)
-        proc.kill()
-        return None
-
-    captured_key = None
-    try:
-        print("[perchance][browser] Entering async key capture...", file=sys.stderr)
-        captured_key = asyncio.run(_async_capture_key(cdp_port, user_data_dir))
-        print(f"[perchance][browser] Async key capture returned: {'SUCCESS (' + captured_key[:16] + '...)' if captured_key else 'FAILED (None)'}", file=sys.stderr)
-    except Exception as e:
-        import traceback
-        print(f"[perchance][browser] ERROR: Browser key capture exception: {e}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
-    finally:
-        print(f"[perchance][browser] Cleaning up browser (PID: {proc.pid})...", file=sys.stderr)
-        proc.send_signal(signal.SIGTERM)
-        try:
-            proc.wait(timeout=5)
-            print(f"[perchance][browser] Browser terminated gracefully", file=sys.stderr)
-        except subprocess.TimeoutExpired:
-            print(f"[perchance][browser] Browser did not exit in 5s, force killing", file=sys.stderr)
-            proc.kill()
-        import shutil as _shutil
-        _shutil.rmtree(user_data_dir, ignore_errors=True)
-        print(f"[perchance][browser] Cleanup complete", file=sys.stderr)
-
-    if captured_key:
-        save_key(captured_key)
-        print(f"[perchance][browser] Key refreshed and saved: {captured_key[:16]}...", file=sys.stderr)
-    else:
-        print("[perchance][browser] WARNING: No key captured, browser session ended without success", file=sys.stderr)
-    return captured_key
-
-
-async def _async_capture_key(cdp_port: int, user_data_dir: str) -> str | None:
-    """Async helper: navigate Perchance, trigger gen, capture userKey via CDP.
-    
-    Strategy: Navigate first to spawn the iframe, then attach CDP Network monitoring
-    directly to the image-generation.perchance.org target BEFORE triggering generation.
-    Cross-origin iframes are separate CDP targets — parent session can't see their requests.
-    """
-    from playwright.async_api import async_playwright
-    from urllib.parse import urlparse, parse_qs
-    import websockets
-
-    print("[perchance][capture] Starting async key capture...", file=sys.stderr)
-    await asyncio.sleep(3)
-    captured = None
-
-    async with async_playwright() as p:
-        print(f"[perchance][capture] Connecting to CDP at port {cdp_port}...", file=sys.stderr)
-        try:
-            browser = await p.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
-        except Exception as e:
-            print(f"[perchance][capture] ERROR: Failed to connect to CDP: {e}", file=sys.stderr)
-            return None
-        print(f"[perchance][capture] Connected. Contexts: {len(browser.contexts)}", file=sys.stderr)
-
-        if not browser.contexts:
-            print("[perchance][capture] ERROR: No browser contexts found", file=sys.stderr)
-            return None
-
-        context = browser.contexts[0]
-        page = await context.new_page()
-        print(f"[perchance][capture] New page created", file=sys.stderr)
-
-        # Step 1: Navigate to main page
-        print("[perchance][capture] Navigating to perchance.org/ai-text-to-image-generator...", file=sys.stderr)
-        try:
-            await page.goto("https://perchance.org/ai-text-to-image-generator", wait_until="domcontentloaded", timeout=60000)
-            print(f"[perchance][capture] Page loaded. Title: {await page.title()}", file=sys.stderr)
-        except Exception as e:
-            print(f"[perchance][capture] ERROR: Navigation failed: {e}", file=sys.stderr)
-            await page.close()
-            return None
-
-        print("[perchance][capture] Waiting 6s for page to fully render...", file=sys.stderr)
-        await asyncio.sleep(6)
-
-        # Step 2: Find textarea frame and trigger generation
-        print(f"[perchance][capture] Searching for textarea frame among {len(page.frames)} frames...", file=sys.stderr)
-        target_frame = None
-        for i, frame in enumerate(page.frames):
-            try:
-                frame_url = frame.url
-                print(f"[perchance][capture]   Frame {i}: {frame_url[:100]}", file=sys.stderr)
-                ta = await frame.query_selector('textarea[data-name="description"]')
-                if ta:
-                    target_frame = frame
-                    print(f"[perchance][capture]   ✓ Found textarea in frame {i}", file=sys.stderr)
-                    break
-            except Exception as e:
-                print(f"[perchance][capture]   Frame {i} query failed: {e}", file=sys.stderr)
-                continue
-
-        if not target_frame:
-            print("[perchance][capture] ERROR: No textarea frame found in any frame", file=sys.stderr)
-            await page.close()
-            return None
-
-        # Trigger generation — this spawns image-generation.perchance.org iframes
-        print("[perchance][capture] Filling textarea and triggering generation...", file=sys.stderr)
-        await target_frame.fill('textarea[data-name="description"]', "test", force=True)
-        await asyncio.sleep(0.3)
-        await target_frame.press('textarea[data-name="description"]', "Enter")
-        print("[perchance][capture] Generation triggered, waiting 3s for image-gen iframe...", file=sys.stderr)
-        await asyncio.sleep(3)
-
-        # Step 3: Find image-generation.perchance.org iframe (spawns AFTER generation trigger)
-        print("[perchance][capture] Scanning CDP targets for image-generation iframe...", file=sys.stderr)
-        gen_ws = None
-        for attempt in range(20):
-            try:
-                targets = httpx.get(f"http://127.0.0.1:{cdp_port}/json").json()
-            except Exception as e:
-                print(f"[perchance][capture] WARNING: Failed to fetch CDP targets (attempt {attempt+1}): {e}", file=sys.stderr)
-                await asyncio.sleep(1)
-                continue
-
-            print(f"[perchance][capture] Attempt {attempt+1}/20: {len(targets)} CDP targets", file=sys.stderr)
-            for t in targets:
-                url = t.get("url", "")
-                ttype = t.get("type", "")
-                if ttype == "iframe" and "image-generation.perchance.org" in url:
-                    gen_ws = t.get("webSocketDebuggerUrl")
-                    print(f"[perchance][capture] ✓ Found image-gen iframe: {url[:100]}", file=sys.stderr)
-                    break
-            if gen_ws:
-                break
-            await asyncio.sleep(1)
-
-        if not gen_ws:
-            print("[perchance][capture] ERROR: No image-generation iframe found after 20 attempts", file=sys.stderr)
-            print("[perchance][capture] All CDP targets:", file=sys.stderr)
-            try:
-                targets = httpx.get(f"http://127.0.0.1:{cdp_port}/json").json()
-                for t in targets:
-                    print(f"  [{t.get('type','?')}] {t.get('url','')[:120]}", file=sys.stderr)
-            except Exception as e:
-                print(f"[perchance][capture] Could not list targets: {e}", file=sys.stderr)
-            await page.close()
-            return None
-
-        # Step 4: Attach to image-gen iframe, clear stale key, reload, capture fresh key
-        print(f"[perchance][capture] Connecting websocket to image-gen iframe...", file=sys.stderr)
-        try:
-            async with websockets.connect(gen_ws, max_size=2**20) as ws:
-                print("[perchance][capture] Websocket connected, enabling Network + Runtime...", file=sys.stderr)
-                await ws.send(json.dumps({"id": 1, "method": "Network.enable"}))
-                await ws.recv()
-                await ws.send(json.dumps({"id": 2, "method": "Runtime.enable"}))
-                await ws.recv()
-
-                # Clear localStorage to force fresh key generation
-                print("[perchance][capture] Clearing iframe localStorage to force new key...", file=sys.stderr)
-                await ws.send(json.dumps({
-                    "id": 3,
-                    "method": "Runtime.evaluate",
-                    "params": {"expression": "localStorage.clear(); 'cleared'"}
-                }))
-                clear_resp = json.loads(await ws.recv())
-                print(f"[perchance][capture] localStorage.clear() result: {clear_resp.get('result', {}).get('result', {}).get('value', 'unknown')}", file=sys.stderr)
-
-                # Reload the iframe so it generates a fresh key
-                print("[perchance][capture] Reloading iframe to get fresh key...", file=sys.stderr)
-                await ws.send(json.dumps({"id": 4, "method": "Page.reload"}))
-                reload_resp = json.loads(await ws.recv())
-                print(f"[perchance][capture] Page.reload result: {reload_resp}", file=sys.stderr)
-
-                # Wait for reload to complete and new requests to fire
-                await asyncio.sleep(5)
-                print("[perchance][capture] Waiting for fresh key in network traffic...", file=sys.stderr)
-
-                deadline = asyncio.get_event_loop().time() + 60
-                msg_count = 0
-                network_requests = 0
-                while asyncio.get_event_loop().time() < deadline:
-                    try:
-                        msg = await asyncio.wait_for(ws.recv(), timeout=3.0)
-                        msg_count += 1
-                        data = json.loads(msg)
-                        method = data.get("method", "")
-
-                        if method == "Network.requestWillBeSent":
-                            network_requests += 1
-                            req = data.get("params", {}).get("request", {})
-                            req_url = req.get("url", "")
-
-                            # Log interesting requests
-                            if "perchance" in req_url or "userKey" in req_url:
-                                print(f"[perchance][capture] Network request #{network_requests}: {req_url[:150]}", file=sys.stderr)
-
-                            # Check URL params
-                            if "userKey" in req_url:
-                                qs = parse_qs(urlparse(req_url).query)
-                                if "userKey" in qs:
-                                    key = qs["userKey"][0]
-                                    if len(key) == 64:
-                                        captured = key
-                                        print(f"[perchance][capture] ✓✓✓ CAPTURED userKey from URL: {key[:16]}...", file=sys.stderr)
-                                        break
-                                    else:
-                                        print(f"[perchance][capture] userKey wrong length ({len(key)}): {key[:16]}...", file=sys.stderr)
-
-                            # Check POST body
-                            post_data = req.get("postData", "")
-                            if post_data and "userKey" in post_data:
-                                try:
-                                    body = json.loads(post_data)
-                                    key = body.get("userKey", "")
-                                    if len(key) == 64:
-                                        captured = key
-                                        print(f"[perchance][capture] ✓✓✓ CAPTURED userKey from POST: {key[:16]}...", file=sys.stderr)
-                                        break
-                                    else:
-                                        print(f"[perchance][capture] POST userKey wrong length ({len(key)})", file=sys.stderr)
-                                except (json.JSONDecodeError, TypeError) as e:
-                                    print(f"[perchance][capture] POST body parse error: {e}", file=sys.stderr)
-
-                        elif method and "Network" in method:
-                            # Log other Network events at lower frequency
-                            if msg_count % 20 == 0:
-                                print(f"[perchance][capture] Network event: {method} (msg #{msg_count})", file=sys.stderr)
-
-                    except asyncio.TimeoutError:
-                        elapsed = asyncio.get_event_loop().time() - (deadline - 60)
-                        print(f"[perchance][capture] Waiting... {elapsed:.0f}s elapsed, {msg_count} msgs, {network_requests} network requests", file=sys.stderr)
-                        continue
-                    except Exception as e:
-                        print(f"[perchance][capture] ERROR: WS recv error: {e}", file=sys.stderr)
-                        break
-
-                print(f"[perchance][capture] Loop ended. Total msgs: {msg_count}, network requests: {network_requests}, captured: {bool(captured)}", file=sys.stderr)
-        except Exception as e:
-            print(f"[perchance][capture] ERROR: Websocket connection failed: {e}", file=sys.stderr)
-            import traceback
-            traceback.print_exc(file=sys.stderr)
-
-        if not captured:
-            print("[perchance][capture] FAILED: No userKey found in network traffic after 60s", file=sys.stderr)
-
-        print("[perchance][capture] Closing page...", file=sys.stderr)
-        await page.close()
-        print("[perchance][capture] Page closed, disconnecting browser...", file=sys.stderr)
-
-    print(f"[perchance][capture] Async capture finished. Result: {'SUCCESS' if captured else 'FAILED'}", file=sys.stderr)
-    return captured
+    """Load key from cache file."""
+    return load_cached_key(KEY_CACHE_FILE)
 
 
 def get_valid_key(override_key: str | None = None) -> str:
-    """Get a valid Perchance userKey.
-    
-    Priority: override_key > PERCHANCE_KEY env > cached file > browser refresh
-    Raises RuntimeError if no valid key found after all attempts.
+    """Get a valid Perchance userKey via the shared perchance_key module.
+
+    Priority: override_key > PERCHANCE_KEY env > cached file > browser refresh.
+    Raw httpx calls to verifyUser are intentionally not used because Perchance
+    requires a browser-solved Cloudflare Turnstile token.
     """
-    candidates = []
-    if override_key:
-        candidates.append(("override", override_key.strip()))
-    env_key = os.environ.get("PERCHANCE_KEY", "")
-    if env_key:
-        candidates.append(("env", env_key.strip()))
-    cached = _load_cached_key()
-    if cached:
-        candidates.append(("cache", cached))
-
-    print(f"[perchance][key] Checking {len(candidates)} candidate(s): {[s for s,_ in candidates]}", file=sys.stderr)
-    for source, key in candidates:
-        if len(key) != 64:
-            print(f"[perchance][key] Skipping {source} key: wrong length ({len(key)})", file=sys.stderr)
-            continue
-        print(f"[perchance][key] Verifying {source} key: {key[:16]}...", file=sys.stderr)
-        valid = _verify_key(key)
-        print(f"[perchance][key] {source} key verification: {'VALID ✅' if valid else 'INVALID ❌'}", file=sys.stderr)
-        if valid:
-            save_key(key)
-            return key
-
-    # All candidates failed — try API refresh first (fast, no browser)
-    print("[perchance][key] All cached keys invalid, attempting API refresh...", file=sys.stderr)
-    new_key = _refresh_key_via_api()
-    if new_key and len(new_key) == 64:
-        return new_key
-
-    # API failed — fall back to browser
-    print("[perchance][key] API refresh failed, falling back to browser...", file=sys.stderr)
-    new_key = _refresh_key_via_browser()
-    if new_key and len(new_key) == 64:
-        return new_key
-
-    raise RuntimeError(
-        "No valid Perchance userKey found and browser refresh failed.\n"
-        "Set one via: --key YOUR_KEY, PERCHANCE_KEY env var, or ensure a Chrome browser is available."
+    return _shared_get_valid_key(
+        KEY_CACHE_FILE,
+        override_key=override_key,
+        env_var="PERCHANCE_KEY",
+        tag="perchance",
     )
 
 SHAPES = {

@@ -524,6 +524,9 @@
 
     inputEl.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
+        // If the @mention popup is open, let agents.js handle Enter (selection)
+        const mp = document.querySelector(".agent-mention-popup");
+        if (mp && mp.style.display !== "none") return;
         if (isStreaming()) return; // let Enter insert newline while model responds
         // On touch devices Enter inserts a newline; the send button sends.
         if (window.matchMedia("(pointer: coarse)").matches) return;
