@@ -32,6 +32,13 @@ logger = logging.getLogger(__name__)
 # Regex to find complete <tool_call>...</tool_call> tags in text
 _ACTION_RE = re.compile(r"<\s*tool_call\s*>(.*?)<\s*/\s*tool_call\s*>", re.DOTALL | re.IGNORECASE)
 
+# Fallback: catch bare JSON tool calls when models drop the <tool_call> wrapper.
+# Matches standalone JSON objects with a "name" key at the top level.
+_BARE_TOOL_RE = re.compile(
+    r'(?<!\w)(\{\s*"(?:name|tool|tag)"\s*:.*?\})(?!\w)',
+    re.DOTALL,
+)
+
 
 def _parse_json_action(content: str) -> dict[str, Any] | None:
     """Parse JSON content from a <tool_call> tag into canonical function_call.

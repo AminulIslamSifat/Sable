@@ -156,62 +156,35 @@ class AdvancedSdxlOptions:
         return cls(**filtered)
 
 
-# ─── Key Management ──────────────────────────────────────────────────────────
+# ─── Key Management (delegated to perchance_key module) ─────────────────────
 
-def _verify_key(key: str) -> bool:
-    try:
-        url = f"{BASE_URL}/checkVerificationStatus?userKey={key}&__cacheBust={random.random()}"
-        resp = httpx.get(url, headers=HEADERS, timeout=10)
-        data = resp.json()
-        return data.get("status") == "verified"
-    except Exception:
-        return False
+import sys as _sys
+if str(Path(__file__).resolve().parent) not in _sys.path:
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-
-def _refresh_key_via_api() -> str | None:
-    try:
-        url = f"{BASE_URL}/verifyUser?__cacheBust={random.random()}"
-        resp = httpx.post(url, headers=HEADERS, json={"thread": 0}, timeout=15)
-        data = resp.json()
-        key = data.get("userKey", "")
-        if len(key) == 64:
-            _save_key(key)
-            return key
-    except Exception as e:
-        print(f"[advanced-sdxl] Key refresh failed: {e}", file=sys.stderr)
-    return None
+from perchance_key import (
+    get_valid_key as _shared_get_valid_key,
+    save_key as _shared_save_key,
+    load_cached_key as _load_cached_key,
+    verify_key as _verify_key,
+)
 
 
 def _save_key(key: str) -> None:
-    KEY_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    KEY_CACHE_FILE.write_text(json.dumps({"userKey": key.strip()}))
-
-
-def _load_cached_key() -> str | None:
-    if not KEY_CACHE_FILE.exists():
-        return None
-    try:
-        raw = KEY_CACHE_FILE.read_text().strip()
-        if not raw:
-            return None
-        try:
-            data = json.loads(raw)
-            if isinstance(data, dict):
-                return data.get("userKey")
-        except (json.JSONDecodeError, TypeError):
-            pass
-        if len(raw) == 64:
-            return raw
-    except Exception:
-        pass
-    return None
+    _shared_save_key(key, KEY_CACHE_FILE)
 
 
 def get_valid_key() -> str | None:
-    cached = _load_cached_key()
-    if cached and _verify_key(cached):
-        return cached
-    return _refresh_key_via_api()
+    """Get a valid userKey via shared module (browser-based refresh)."""
+    try:
+        return _shared_get_valid_key(
+            KEY_CACHE_FILE,
+            env_var="PERCHANCE_KEY",
+            tag="advanced-sdxl",
+        )
+    except RuntimeError as e:
+        print(f"[advanced-sdxl][key] Failed: {e}", file=sys.stderr)
+        return None
 
 
 # ─── Prompt Building ─────────────────────────────────────────────────────────
@@ -343,8 +316,11 @@ def generate(opts: AdvancedSdxlOptions) -> dict[str, Any]:
 
         # Key failure → refresh and retry once
         if status in ("invalid_key", "failed_verification"):
-            print(f"[advanced-sdxl] Key invalid on attempt {i+1}, refreshing...", file=sys.stderr)
-            new_key = _refresh_key_via_api()
+            print(f"[advanced-sdxl] Key invalid on attempt {i+1}, refreshing via browser...", file=sys.stderr)
+            from perchance_key import refresh_key_via_browser
+            new_key = refresh_key_via_browser(tag="advanced-sdxl")
+            if new_key:
+                _save_key(new_key)
             if new_key:
                 user_key = new_key
                 try:

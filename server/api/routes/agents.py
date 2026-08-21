@@ -496,7 +496,8 @@ async def spawn_agent(request: Request):
     if not role or not task or not chat_id:
         return {"error": "role, task, and chat_id are required"}
 
-    valid_roles = ("analyst", "coder", "writer", "sysutil", "docs", "visuals", "tester")
+    from engine.agents.registry import AGENT_ROLES
+    valid_roles = tuple(AGENT_ROLES.keys())
     if role not in valid_roles:
         return {"error": f"Invalid role '{role}'. Must be one of: {', '.join(valid_roles)}"}
 
