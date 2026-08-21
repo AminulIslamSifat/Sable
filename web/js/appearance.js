@@ -157,7 +157,7 @@
       const activeTab = document.querySelector('.settings-tab.active');
       if (activeTab) {
         const tabName = activeTab.dataset.tab;
-        if (tabName === 'general') { loadBrowserSettings(); initTelegramToggle(); }
+        if (tabName === 'general') { loadBrowserSettings(); }
         else if (tabName === 'account') loadAccountProfiles();
       }
     };

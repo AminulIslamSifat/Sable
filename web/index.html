@@ -643,14 +643,7 @@
             </div>
             <p id="dataExportStatus" class="muted" style="font-size:11px;margin-top:6px;min-height:14px;">Exports system/, output/, instruction/, Brain/, .sable_backups/ to ~/.sable/backup/</p>
           </div>
-          <!-- Telegram Toggle -->
-          <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
-            <div style="display:flex;align-items:center;justify-content:space-between;">
-              <label for="telegramToggle" style="font-size:13px;color:var(--text-dim);font-weight:600;"><span class="icon-emoji">✈️</span><i data-lucide="send" class="icon-lucide"></i> Telegram Mini Client</label>
-              <input type="checkbox" id="telegramToggle" style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;">
-            </div>
-            <p class="muted" style="font-size:11px;margin-top:4px;">Enable a read-only Telegram chat browser in Library. Requires Telethon + API credentials.</p>
-          </div>
+
 
           <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;flex-direction:column;align-items:center;gap:10px;">
             <button id="stopServiceBtn" style="background:transparent;color:var(--danger);border:1.5px solid var(--danger);border-radius:8px;padding:9px 28px;font-size:12px;font-weight:600;cursor:pointer;">⏻ Stop Service</button>
@@ -1427,7 +1420,7 @@
         <button class="settings-tab" data-tab="lib-imagegen">Image Gen</button>
         <button class="settings-tab" data-tab="lib-promptgen">Prompt Gen</button>
         <button class="settings-tab" data-tab="lib-email">Email</button>
-        <button class="settings-tab" data-tab="lib-telegram" id="libTelegramTab" style="display:none;">Telegram</button>
+        <button class="settings-tab" data-tab="lib-telegram" id="libTelegramTab">Telegram</button>
       </div>
       </div>
       <div class="settings-main">
@@ -1516,12 +1509,12 @@
   <script src="/static/js/statusbar.js?v=1"></script>
   <script src="/static/js/settings-projects.js?v=1"></script>
   <script src="/static/js/settings-init.js?v=1"></script>
-  <script src="/static/js/settings-ui.js?v=1"></script>
+  <script src="/static/js/settings-ui.js?v=2"></script>
   <script src="/static/js/library.js?v=2"></script>
-  <script src="/static/js/telegram.js?v=1"></script>
+  <script src="/static/js/telegram.js?v=3"></script>
   <script src="/static/js/memory-panel.js?v=1"></script>
   <script src="/static/js/skills-panel.js?v=11"></script>
-  <script src="/static/js/appearance.js?v=1"></script>
+  <script src="/static/js/appearance.js?v=2"></script>
   <script src="/static/src/research.js?v=10"></script>
   <script src="/static/js/agents.js?v=26"></script>
   <script src="/static/js/filesystem.js?v=31"></script>
