@@ -2060,11 +2060,28 @@ async def get_general_settings() -> dict[str, Any]:
 
 # ── STT (Speech-to-Text) ───────────────────────────────────────────────
 _STT_DIR = _SYSTEM_DIR / "models" / "stt"
+_STT_HF_REPO = "Systran/faster-whisper-small.en"
 _STT_FILES = {
-    "model.bin": {"size": 484_000_000, "label": "Whisper small.en Model (CTranslate2)"},
-    "config.json": {"size": 2_000, "label": "Model Config"},
-    "tokenizer.json": {"size": 2_000_000, "label": "Tokenizer"},
-    "vocabulary.txt": {"size": 400_000, "label": "Vocabulary"},
+    "model.bin": {
+        "url": f"https://huggingface.co/{_STT_HF_REPO}/resolve/main/model.bin",
+        "size": 483_545_366,
+        "label": "Whisper small.en Model (CTranslate2)",
+    },
+    "config.json": {
+        "url": f"https://huggingface.co/{_STT_HF_REPO}/resolve/main/config.json",
+        "size": 2_657,
+        "label": "Model Config",
+    },
+    "tokenizer.json": {
+        "url": f"https://huggingface.co/{_STT_HF_REPO}/resolve/main/tokenizer.json",
+        "size": 2_128_466,
+        "label": "Tokenizer",
+    },
+    "vocabulary.txt": {
+        "url": f"https://huggingface.co/{_STT_HF_REPO}/resolve/main/vocabulary.txt",
+        "size": 422_309,
+        "label": "Vocabulary",
+    },
 }
 _STT_PREFS_PATH = _SYSTEM_DIR / "stt_prefs.json"
 _STT_PREFS_DEFAULTS: dict[str, Any] = {
@@ -2163,6 +2180,51 @@ async def set_stt_prefs(request: Request) -> dict[str, Any]:
     global _whisper_model
     _whisper_model = None
     return {"status": "ok", **prefs}
+
+
+@router.post("/api/settings/stt/download")
+async def download_stt_models(request: Request) -> StreamingResponse:
+    """Download STT model files from HuggingFace with streaming progress."""
+    import urllib.request
+
+    _STT_DIR.mkdir(parents=True, exist_ok=True)
+
+    async def _stream() -> AsyncGenerator[str, None]:
+        for name, meta in _STT_FILES.items():
+            path = _STT_DIR / name
+            if path.exists() and path.stat().st_size >= meta["size"] * 0.90:
+                yield json.dumps({"file": name, "status": "skip", "reason": "already installed"}) + "\n"
+                continue
+
+            yield json.dumps({"file": name, "status": "start", "total": meta["size"]}) + "\n"
+            try:
+                tmp = path.with_suffix(".part")
+                req = urllib.request.Request(meta["url"], headers={"User-Agent": "Sable/1.0"})
+                with urllib.request.urlopen(req, timeout=600) as resp:
+                    downloaded = 0
+                    with open(tmp, "wb") as f:
+                        while True:
+                            if await request.is_disconnected():
+                                tmp.unlink(missing_ok=True)
+                                yield json.dumps({"file": name, "status": "cancelled"}) + "\n"
+                                return
+                            chunk = resp.read(1024 * 256)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            yield json.dumps({"file": name, "status": "progress", "downloaded": downloaded, "total": meta["size"]}) + "\n"
+                            await asyncio.sleep(0)
+                tmp.rename(path)
+                yield json.dumps({"file": name, "status": "done", "size": downloaded}) + "\n"
+            except Exception as e:
+                if tmp.exists():
+                    tmp.unlink()
+                yield json.dumps({"file": name, "status": "error", "error": str(e)}) + "\n"
+
+        yield json.dumps({"status": "complete"}) + "\n"
+
+    return StreamingResponse(_stream(), media_type="application/x-ndjson")
 
 
 @router.delete("/api/settings/stt")
