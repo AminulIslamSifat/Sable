@@ -24,7 +24,7 @@ PERSISTENT_ROOT = (
 # --------------------------------------------------------------------------
 HOST = os.getenv("SABLE_HOST", "0.0.0.0")
 _DEFAULT_PORT = "61771" if "/home/sifat/hdd/" in str(_ROOT) else "61770"
-PORT = int(os.getenv("SABLE_PORT", _DEFAULT_PORT))
+PORT = int(os.getenv("PORT", os.getenv("SABLE_PORT", _DEFAULT_PORT)))
 
 # --------------------------------------------------------------------------
 # Runtime data paths — single source of truth used by server.py and any
