@@ -35,6 +35,7 @@ _MARKDOWN_RULES = (
 # Persona-file loader: reads instruction/agents/<role>.md for system prompt
 # ---------------------------------------------------------------------------
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent / "instruction" / "agents"
+_PERSONAL_PATH = Path(__file__).resolve().parent.parent.parent / "instruction" / "personal.md"
 
 
 def _load_agent_persona(role: str) -> str:
@@ -45,14 +46,28 @@ def _load_agent_persona(role: str) -> str:
     return f"You are a {role} specialist. Complete the assigned task thoroughly."
 
 
+def _load_personal_context() -> str:
+    """Load personal.md user context. Returns empty string if missing or blank."""
+    if _PERSONAL_PATH.is_file():
+        content = _PERSONAL_PATH.read_text(encoding="utf-8").strip()
+        if content:
+            return content
+    return ""
+
+
 def _build_system_prompt(role: str, output_format: str = "") -> str:
-    """Compose full system prompt: persona file + markdown rules + output format.
+    """Compose full system prompt: persona + personal context + markdown rules + output format.
 
     Persona is always loaded from instruction/agents/{role}.md.
+    Personal context from instruction/personal.md is injected for all agents.
     Output format comes from config (not hardcoded).
     """
     persona = _load_agent_persona(role)
-    parts = [persona, _MARKDOWN_RULES]
+    parts = [persona]
+    personal = _load_personal_context()
+    if personal:
+        parts.append(personal)
+    parts.append(_MARKDOWN_RULES)
     if output_format:
         parts.append(f"\n\n{output_format}")
     return "\n".join(parts)
