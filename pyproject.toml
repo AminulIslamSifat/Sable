@@ -16,6 +16,7 @@ dependencies = [
     "oss2>=2.19.1",
     "mcp>=1.0.0",
     "kokoro-onnx>=0.5.0",
+    "faster-whisper>=1.2.0",
     "soundfile>=0.14.0",
     "misaki>=0.8.0",
     "telethon>=1.36.0",
@@ -35,6 +36,7 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
     "tenacity>=8.2.0",
     "huggingface-hub>=0.25.0",
+    "edge-tts>=7.2.8",
 ]
 
 [tool.uv]
