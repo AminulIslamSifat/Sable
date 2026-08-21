@@ -498,7 +498,30 @@ async def run_agent_llm_loop(
 
                 if tag_name not in agent.skills_used:
                     agent.skills_used.append(tag_name)
-                consecutive_failures = 0  # reset on success
+
+                # Check if any skill_end event reported failure (ok=False)
+                _tool_failed = any(
+                    isinstance(_e, dict) and _e.get("type") == "skill_end" and not _e.get("ok", True)
+                    for _e in events
+                )
+                if _tool_failed:
+                    consecutive_failures += 1
+                    _last_err = next(
+                        (_e.get("error", "unknown") for _e in events
+                         if isinstance(_e, dict) and _e.get("type") == "skill_end" and not _e.get("ok", True)),
+                        "unknown",
+                    )
+                    if consecutive_failures >= failure_threshold:
+                        guidance = await _try_teacher_escalation(
+                            agent,
+                            f"Agent hit {consecutive_failures} consecutive tool failures. "
+                            f"Last error: {_last_err}"
+                        )
+                        if guidance:
+                            tool_results.append(f"[TEACHER GUIDANCE]: {guidance}")
+                        consecutive_failures = 0  # reset after intervention attempt
+                else:
+                    consecutive_failures = 0  # reset on success
 
             except asyncio.CancelledError:
                 agent.push_stream_event({"type": "skill_end", "name": tag_name, "ok": False, "error": "Killed"})
