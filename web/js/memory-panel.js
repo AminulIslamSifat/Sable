@@ -564,6 +564,14 @@
 
     // Register Brain tab with universal save
     _universalSave.register("brain", async () => {
+      // Save personal context
+      if (personalArea) {
+        await fetch("/api/settings/personal", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: personalArea.value }),
+        });
+      }
       // Save memory search settings
       const modelThresholds = {};
       msThresholdEditor.querySelectorAll("input[data-model]").forEach((inp) => {

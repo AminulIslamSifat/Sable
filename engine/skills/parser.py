@@ -209,9 +209,13 @@ def _build_calls(data: Any) -> list[dict[str, Any]]:
         tool_name = str(item.get("name") or item.get("tool", "")).strip().lower()
         if not tool_name:
             continue
-        params = item.get("arguments") or item.get("params", {})
+        params = item.get("arguments") or item.get("params")
         if not isinstance(params, dict):
-            params = {}
+            # Fallback: treat top-level keys (besides name/tool) as implicit params.
+            # Models sometimes flatten {"name": "x", "command": "..."} instead of
+            # nesting under "arguments". This prevents silent data loss.
+            _RESERVED_KEYS = {"name", "tool"}
+            params = {k: v for k, v in item.items() if k not in _RESERVED_KEYS}
 
         attrs = _stringify_params(params)
 

@@ -159,7 +159,10 @@ def _resolve_tool_groups(allowed_tools: list[str]) -> list[str]:
     return funcs
 
 
-def _build_tool_guide(allowed_tools: list[str], allowed_skills: list[str]) -> str:
+_NATIVE_TOOL_BACKENDS = frozenset({"gemini", "mistral", "groq", "openai", "local", "cloudflare"})
+
+
+def _build_tool_guide(allowed_tools: list[str], allowed_skills: list[str], *, native_tools: bool = False) -> str:
     """Build tool usage guide from tool group keys and skill keys.
 
     - allowed_tools: tool group keys (empty = all enabled groups)
@@ -168,39 +171,40 @@ def _build_tool_guide(allowed_tools: list[str], allowed_skills: list[str]) -> st
     import logging
     logger = logging.getLogger(__name__)
 
-    # Resolve group keys → function names
-    tool_funcs = _resolve_tool_groups(allowed_tools)
+    lines: list[str] = []
 
-    TC_O = "<" + "tool_call" + ">"
-    TC_C = "</" + "tool_call" + ">"
-    lines = [
-        "\n\n## Available Tools",
-        "To call a tool, output exactly this structure (one per response):",
-        f"  {TC_O}",
-        f'  {{"name": "tool_name", "arguments": {{"param": "value"}}}}',
-        f"  {TC_C}",
-        "",
-        "Rules:",
-        "- Exactly ONE tool_call block per response. Wait for the result before continuing.",
-        "- For INTERMEDIATE responses: briefly state your next step (1 sentence max), then output the tool_call block. Do NOT use final format headers.",
-        "- Use absolute paths for all file operations.",
-        "- After getting tool output, analyze it and decide next step.",
-        "- ONLY when ALL tool work is done, output your final markdown answer using the required sections. No tool_call block on the final answer.",
-        "",
-    ]
+    if not native_tools:
+        # Text-based Hermes instructions + JSON schema dump (non-native backends only)
+        tool_funcs = _resolve_tool_groups(allowed_tools)
+        TC_O = "<" + "tool_call" + ">"
+        TC_C = "</" + "tool_call" + ">"
+        example = '[{"name": "tool_name", "arguments": {"param": "value"}}]'
+        lines.extend([
+            "\n## Available Tools",
+            "To call a tool, output exactly this structure (one per response):",
+            f"  {TC_O}",
+            f"  {example}",
+            f"  {TC_C}",
+            "",
+            "Rules:",
+            "- Exactly ONE tool_call block per response. Wait for the result before continuing.",
+            "- For INTERMEDIATE responses: briefly state your next step (1 sentence max), then output the tool_call block. Do NOT use final format headers.",
+            "- Use absolute paths for all file operations.",
+            "- After getting tool output, analyze it and decide next step.",
+            "- ONLY when ALL tool work is done, output your final markdown answer using the required sections. No tool_call block on the final answer.",
+            "",
+        ])
 
-    # Load full tool schemas (same as main chat) filtered by resolved group keys
-    from engine.tools_loader import get_all_tool_schemas
-    from server.api.routes.misc import get_disabled_tools
-    disabled = get_disabled_tools().get("disabled", [])
-    schemas = get_all_tool_schemas(disabled=disabled, allowed=allowed_tools)
-
-    if schemas:
-        lines.append("\n<tools>")
-        for s in schemas:
-            lines.append(json.dumps(s, ensure_ascii=False))
-        lines.append("</tools>")
-        lines.append("")
+        from engine.tools_loader import get_all_tool_schemas
+        from server.api.routes.misc import get_disabled_tools
+        disabled = get_disabled_tools().get("disabled", [])
+        schemas = get_all_tool_schemas(disabled=disabled, allowed=allowed_tools)
+        if schemas:
+            lines.append("\n<tools>")
+            for s in schemas:
+                lines.append(json.dumps(s, ensure_ascii=False))
+            lines.append("</tools>")
+            lines.append("")
 
     # Skill documentation: load instruction.md only if file exists
     valid_skills = []
@@ -271,8 +275,13 @@ async def run_agent_llm_loop(
     agent.allowed_tool_groups = list(role_cfg.allowed_tools)
 
     # Build first message: system prompt + tool guide + task
+    # Skip text-based tool instructions for backends with native tool calling support
+    from engine.config import get_model_config as _get_agent_model_cfg
+    _agent_backend = _get_agent_model_cfg(agent.model).get("api_backend", "")
+    _use_native_tools = _agent_backend in _NATIVE_TOOL_BACKENDS
+
     system_prompt = role_cfg.system_prompt
-    system_prompt += _build_tool_guide(role_cfg.allowed_tools, role_cfg.allowed_skills)
+    system_prompt += _build_tool_guide(role_cfg.allowed_tools, role_cfg.allowed_skills, native_tools=_use_native_tools)
     if agent.instruction:
         system_prompt += f"\n\nSpecial instruction from orchestrator: {agent.instruction}"
 
@@ -1037,6 +1046,10 @@ async def _call_api_backend(agent: Agent, message: str, backend: str, *, system_
     native_tools = get_all_tool_schemas(disabled=disabled, allowed=agent.allowed_tool_groups) or None
 
     accumulated = ""
+    # Track native tool calls for agent.messages + conversation file
+    _native_tool_calls: list[dict[str, Any]] = []  # [{name, attrs, result, ok}]
+    _current_tool: dict[str, Any] | None = None
+
     async for event in connector.stream_chat(
         message,
         model=api_model_type,
@@ -1054,8 +1067,48 @@ async def _call_api_backend(agent: Agent, message: str, backend: str, *, system_
                 agent.push_stream_event({"type": "chunk", "text": chunk_text})
         elif etype == "error":
             raise RuntimeError(f"{backend}: {event.get('message', 'unknown error')}")
+        elif etype == "skill_start":
+            # Native tool execution started — forward to panel and start tracking
+            agent.push_stream_event(event)
+            _current_tool = {
+                "name": event.get("name", ""),
+                "attrs": event.get("attrs", ""),
+                "result_parts": [],
+            }
+        elif etype == "skill_output":
+            # Forward output to panel and collect for conversation
+            agent.push_stream_event(event)
+            if _current_tool is not None:
+                _current_tool["result_parts"].append(event.get("text", ""))
+        elif etype == "skill_end":
+            # Forward end event and finalize tool tracking
+            agent.push_stream_event(event)
+            if _current_tool is not None:
+                _current_tool["ok"] = event.get("ok", True)
+                _current_tool["result"] = "".join(_current_tool["result_parts"])
+                _native_tool_calls.append(_current_tool)
+                _current_tool = None
 
-    if not accumulated.strip():
+    # Append native tool calls/results to agent.messages for conversation file
+    import json as _j
+    for tc in _native_tool_calls:
+        attrs = tc["attrs"]
+        if isinstance(attrs, str):
+            try:
+                attrs = _j.loads(attrs) if attrs else {}
+            except Exception:
+                attrs = {}
+        command_str = _j.dumps({"name": tc["name"], "arguments": attrs}, ensure_ascii=False)
+        tool_msg = (
+            f"## Tool\n"
+            f"**Name:** `{tc['name']}`\n"
+            f"**Command:**\n```\n{command_str}\n```\n"
+            f"**Output:**\n```\n{tc['result'][:2000]}\n```"
+        )
+        agent.messages.append({"role": "tool", "content": tool_msg})
+        await _persist_message(agent.id, "tool", tool_msg)
+
+    if not accumulated.strip() and not _native_tool_calls:
         raise RuntimeError(f"{backend} returned empty response")
     return accumulated, None
 
@@ -1295,6 +1348,18 @@ async def _call_local(agent: Agent, message: str) -> tuple[str, str | None]:
 
             tool_result = format_openai_tool_result(buf["name"], result_text, ok, buf["id"])
             messages.append(tool_result)
+
+            # Also update agent.messages + persist for conversation file / side panel
+            _attrs_str = json.dumps(args, ensure_ascii=False)
+            _tool_msg = (
+                f"## Tool\n"
+                f"**Name:** `{buf['name']}`\n"
+                f"**Command:**\n```\n{_attrs_str}\n```\n"
+                f"**Output:**\n```\n{result_text[:2000]}\n```"
+            )
+            agent.messages.append({"role": "tool", "content": _tool_msg})
+            await _persist_message(agent.id, "tool", _tool_msg)
+
             logger.info("Agent %s: native tool %s executed (ok=%s), continuing loop", agent.id, buf["name"], ok)
 
         # Update payload with updated messages for next round
