@@ -12,12 +12,14 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
+from engine.config import ASSETS_DIR
 from engine.skills.handlers.common import _end_event, _output_event
 
 logger = logging.getLogger(__name__)
 
 _SCRIPT = str(Path(__file__).resolve().parent.parent.parent.parent / "tools" / "image_generator" / "scripts" / "image_generator.py")
-_OUTPUT_DIR = Path("/home/sifat/sable_output/assets")
+# Must match the directory mounted by server/api/application.py at /assets.
+_OUTPUT_DIR = ASSETS_DIR
 
 # Shape → (width, height) mappings
 _SHAPES = {
@@ -99,6 +101,7 @@ def _try_pollinations(prompt: str, model: str, shape: str, seed: int) -> dict | 
         return {
             "ok": True,
             "provider": "pollinations",
+            "source_url": url,
             "images": [{
                 "ok": True,
                 "path": str(out_path),
@@ -107,6 +110,7 @@ def _try_pollinations(prompt: str, model: str, shape: str, seed: int) -> dict | 
                 "width": w,
                 "height": h,
                 "size_bytes": len(data),
+                "source_url": url,
             }],
             "count": 1,
             "model": model,
@@ -361,6 +365,7 @@ def handle_generate_image(
             fn = img.get("filename", "")
             images_meta.append({
                 "url": f"/assets/{fn}" if fn else "",
+                "source_url": img.get("source_url", ""),
                 "mime": "image/jpeg",
                 "filename": fn,
                 "path": img.get("path", img.get("file", "")),
@@ -372,6 +377,7 @@ def handle_generate_image(
         # Primary image (first) for backward compat
         result_meta["kind"] = "image"
         result_meta["url"] = f"/assets/{filename}" if filename else ""
+        result_meta["source_url"] = result.get("source_url", "") if result else ""
         result_meta["mime"] = "image/jpeg"
         result_meta["filename"] = filename
         result_meta["path"] = img_path
