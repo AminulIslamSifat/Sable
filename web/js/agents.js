@@ -1440,12 +1440,64 @@ document.addEventListener("DOMContentLoaded", () => {
 const TTSSettings = {
   loaded: false,
   _saveTimer: null,
+  _currentProvider: 'kokoro',
+  _currentPrefs: null,
 
-  async loadStatus() {
+  async init() {
+    await this.loadPrefs();
+    this._updateProviderUI();
+    if (this._currentProvider === 'kokoro') {
+      await this.loadKokoroStatus();
+    } else {
+      this._showEdgeSection();
+    }
+    this.loaded = true;
+  },
+
+  _updateProviderUI() {
+    const kokoroBtn = document.getElementById('ttsProviderKokoro');
+    const edgeBtn = document.getElementById('ttsProviderEdge');
+    const kokoroSection = document.getElementById('ttsKokoroSection');
+    const edgeSection = document.getElementById('ttsEdgeSection');
+    const prefsSection = document.getElementById('ttsPrefsSection');
+
+    if (kokoroBtn) kokoroBtn.style.opacity = this._currentProvider === 'kokoro' ? '1' : '0.5';
+    if (edgeBtn) edgeBtn.style.opacity = this._currentProvider === 'edge' ? '1' : '0.5';
+    if (kokoroSection) kokoroSection.hidden = this._currentProvider !== 'kokoro';
+    if (edgeSection) edgeSection.hidden = this._currentProvider !== 'edge';
+    // Prefs always visible once a provider is selected
+    if (prefsSection) prefsSection.hidden = false;
+  },
+
+  async setProvider(provider) {
+    this._currentProvider = provider;
+    this._updateProviderUI();
+    // Save provider preference
+    try {
+      await fetch('/api/settings/tts/prefs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider }),
+      });
+    } catch (e) { /* ignore */ }
+    // Reload voices for the new provider
+    await this.loadVoices();
+    // If switching to kokoro, refresh model status
+    if (provider === 'kokoro') {
+      await this.loadKokoroStatus();
+    }
+  },
+
+  _showEdgeSection() {
+    const statusEl = document.getElementById('ttsStatus');
+    if (statusEl) statusEl.innerHTML = '';
+    this.loadVoices();
+  },
+
+  async loadKokoroStatus() {
     const statusEl = document.getElementById('ttsStatus');
     const dlBtn = document.getElementById('ttsDownloadBtn');
     const delBtn = document.getElementById('ttsDeleteBtn');
-    const prefsSection = document.getElementById('ttsPrefsSection');
     try {
       const res = await fetch('/api/settings/tts', { headers: { Authorization: `Bearer ${localStorage.getItem('sable_token') || ''}` } });
       const data = await res.json();
@@ -1467,13 +1519,12 @@ const TTSSettings = {
       dlBtn.textContent = '\u2b07 Download Models';
       dlBtn.disabled = false;
       delBtn.hidden = !data.installed;
-      // Show prefs section only when models are installed
-      if (prefsSection) prefsSection.hidden = !data.installed;
       if (data.installed) {
-        this.loadPrefs();
         this.loadVoices();
+      } else {
+        const select = document.getElementById('ttsVoiceSelect');
+        if (select) select.innerHTML = '<option value="">Download Kokoro models first</option>';
       }
-      this.loaded = true;
     } catch (e) {
       statusEl.innerHTML = '<p style="color:#e74c3c;font-size:12px;">Failed to check status: ' + e.message + '</p>';
     }
@@ -1489,7 +1540,7 @@ const TTSSettings = {
         speedRange.value = prefs.speed;
         if (speedLabel) speedLabel.textContent = parseFloat(prefs.speed).toFixed(1) + '\u00d7';
       }
-      // Voice will be set after loadVoices populates the dropdown
+      this._currentProvider = prefs.provider || 'kokoro';
       this._currentPrefs = prefs;
     } catch (e) { /* ignore */ }
   },
@@ -1497,8 +1548,9 @@ const TTSSettings = {
   async loadVoices() {
     const select = document.getElementById('ttsVoiceSelect');
     if (!select) return;
+    const provider = this._currentProvider;
     try {
-      const res = await fetch('/api/tts/voices');
+      const res = await fetch(`/api/tts/voices?provider=${encodeURIComponent(provider)}`);
       const data = await res.json();
       const voices = data.voices || [];
       select.innerHTML = '';
@@ -1506,15 +1558,29 @@ const TTSSettings = {
         select.innerHTML = '<option value="">No voices available</option>';
         return;
       }
-      voices.forEach(v => {
-        const opt = document.createElement('option');
-        opt.value = v;
-        opt.textContent = v.replace(/_/g, ' ');
-        select.appendChild(opt);
-      });
-      // Restore saved voice
-      if (this._currentPrefs && this._currentPrefs.voice) {
-        select.value = this._currentPrefs.voice;
+      if (provider === 'edge') {
+        // Edge voices are objects with id, locale, gender
+        voices.forEach(v => {
+          const opt = document.createElement('option');
+          opt.value = v.id;
+          opt.textContent = `${v.id} (${v.locale}${v.gender ? ', ' + v.gender : ''})`;
+          select.appendChild(opt);
+        });
+        // Restore saved edge_voice
+        if (this._currentPrefs && this._currentPrefs.edge_voice) {
+          select.value = this._currentPrefs.edge_voice;
+        }
+      } else {
+        // Kokoro voices are plain strings
+        voices.forEach(v => {
+          const opt = document.createElement('option');
+          opt.value = v;
+          opt.textContent = v.replace(/_/g, ' ');
+          select.appendChild(opt);
+        });
+        if (this._currentPrefs && this._currentPrefs.voice) {
+          select.value = this._currentPrefs.voice;
+        }
       }
     } catch (e) {
       select.innerHTML = '<option value="">Failed to load voices</option>';
@@ -1526,8 +1592,14 @@ const TTSSettings = {
     this._saveTimer = setTimeout(async () => {
       const voiceSelect = document.getElementById('ttsVoiceSelect');
       const speedRange = document.getElementById('ttsSpeedRange');
-      const body = {};
-      if (voiceSelect) body.voice = voiceSelect.value;
+      const body = { provider: this._currentProvider };
+      if (voiceSelect) {
+        if (this._currentProvider === 'edge') {
+          body.edge_voice = voiceSelect.value;
+        } else {
+          body.voice = voiceSelect.value;
+        }
+      }
       if (speedRange) body.speed = parseFloat(speedRange.value);
       try {
         await fetch('/api/settings/tts/prefs', {
@@ -1591,7 +1663,7 @@ const TTSSettings = {
 
     dlBtn.disabled = false;
     dlBtn.textContent = '\u2b07 Download Models';
-    this.loadStatus();
+    this.loadKokoroStatus();
   },
 
   async remove() {
@@ -1602,7 +1674,7 @@ const TTSSettings = {
       await fetch('/api/settings/tts', { method: 'DELETE', headers: { Authorization: `Bearer ${localStorage.getItem('sable_token') || ''}` } });
     } catch (e) { /* ignore */ }
     delBtn.disabled = false;
-    this.loadStatus();
+    this.loadKokoroStatus();
   },
 };
 
@@ -1611,10 +1683,16 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.settings-tab').forEach((tab) => {
     if (tab.dataset.tab === 'tts') {
       tab.addEventListener('click', () => {
-        if (!TTSSettings.loaded) TTSSettings.loadStatus();
+        if (!TTSSettings.loaded) TTSSettings.init();
       });
     }
   });
+
+  // Provider buttons
+  const kokoroBtn = document.getElementById('ttsProviderKokoro');
+  if (kokoroBtn) kokoroBtn.addEventListener('click', () => TTSSettings.setProvider('kokoro'));
+  const edgeBtn = document.getElementById('ttsProviderEdge');
+  if (edgeBtn) edgeBtn.addEventListener('click', () => TTSSettings.setProvider('edge'));
 
   const dlBtn = document.getElementById('ttsDownloadBtn');
   if (dlBtn) dlBtn.addEventListener('click', () => TTSSettings.download());
@@ -1635,3 +1713,512 @@ document.addEventListener('DOMContentLoaded', () => {
     speedRange.addEventListener('change', () => TTSSettings.savePrefs());
   }
 });
+
+// ── STT Settings ─────────────────────────────────────────────────────
+const STTSettings = {
+  loaded: false,
+  _saveTimer: null,
+  _currentPrefs: null,
+
+  async init() {
+    await this.loadPrefs();
+    await this.loadStatus();
+    this.loaded = true;
+  },
+
+  async loadStatus() {
+    const statusEl = document.getElementById('sttStatus');
+    const delBtn = document.getElementById('sttDeleteBtn');
+    try {
+      const res = await fetch('/api/settings/stt', { headers: { Authorization: `Bearer ${localStorage.getItem('sable_token') || ''}` } });
+      const data = await res.json();
+      let html = '<div style="display:flex;flex-direction:column;gap:8px;">';
+      for (const [name, info] of Object.entries(data.files)) {
+        const icon = info.installed ? '\u2705' : '\u2b1c';
+        const sizeMB = (info.size / 1048576).toFixed(1);
+        const expectedMB = (info.expected / 1048576).toFixed(0);
+        html += '<div style="display:flex;align-items:center;gap:8px;font-size:13px;">';
+        html += '<span>' + icon + '</span>';
+        html += '<span style="font-weight:500;">' + info.label + '</span>';
+        html += '<span class="muted" style="font-size:11px;margin-left:auto;">';
+        html += info.installed ? sizeMB + ' MB' : 'Not installed (' + expectedMB + ' MB)';
+        html += '</span></div>';
+      }
+      html += '</div>';
+      if (data.installed) {
+        html += '<p class="muted" style="font-size:11px;margin-top:8px;">\u2705 Model ready \u2014 offline transcription available</p>';
+      }
+      statusEl.innerHTML = html;
+      if (delBtn) delBtn.hidden = !data.installed;
+    } catch (e) {
+      statusEl.innerHTML = '<p style="color:#e74c3c;font-size:12px;">Failed to check status: ' + e.message + '</p>';
+    }
+  },
+
+  async loadPrefs() {
+    try {
+      const res = await fetch('/api/settings/stt/prefs');
+      const prefs = await res.json();
+      this._currentPrefs = prefs;
+
+      const langSelect = document.getElementById('sttLangSelect');
+      if (langSelect && prefs.language) langSelect.value = prefs.language;
+
+      const beamRange = document.getElementById('sttBeamRange');
+      const beamLabel = document.getElementById('sttBeamLabel');
+      if (beamRange && prefs.beam_size != null) {
+        beamRange.value = prefs.beam_size;
+        if (beamLabel) beamLabel.textContent = prefs.beam_size;
+      }
+
+      const computeSelect = document.getElementById('sttComputeSelect');
+      if (computeSelect && prefs.compute_type) computeSelect.value = prefs.compute_type;
+    } catch (e) { /* ignore */ }
+  },
+
+  savePrefs() {
+    clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(async () => {
+      const body = {};
+      const langSelect = document.getElementById('sttLangSelect');
+      const beamRange = document.getElementById('sttBeamRange');
+      const computeSelect = document.getElementById('sttComputeSelect');
+      if (langSelect) body.language = langSelect.value;
+      if (beamRange) body.beam_size = parseInt(beamRange.value);
+      if (computeSelect) body.compute_type = computeSelect.value;
+      try {
+        await fetch('/api/settings/stt/prefs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      } catch (e) { /* ignore */ }
+    }, 300);
+  },
+
+  async remove() {
+    if (!confirm('Remove STT model files? (~464 MB)')) return;
+    const delBtn = document.getElementById('sttDeleteBtn');
+    if (delBtn) delBtn.disabled = true;
+    try {
+      await fetch('/api/settings/stt', { method: 'DELETE', headers: { Authorization: `Bearer ${localStorage.getItem('sable_token') || ''}` } });
+    } catch (e) { /* ignore */ }
+    if (delBtn) delBtn.disabled = false;
+    this.loadStatus();
+  },
+
+  async transcribe(file) {
+    const btn = document.getElementById('sttTranscribeBtn');
+    const resultDiv = document.getElementById('sttResult');
+    const metaEl = document.getElementById('sttResultMeta');
+    const textEl = document.getElementById('sttResultText');
+
+    if (btn) { btn.disabled = true; btn.textContent = 'Transcribing...'; }
+    if (resultDiv) resultDiv.hidden = true;
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await fetch('/api/stt/transcribe', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${localStorage.getItem('sable_token') || ''}` },
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (metaEl) {
+        metaEl.textContent = `Duration: ${data.duration}s | Language: ${data.language} (${(data.language_probability * 100).toFixed(0)}%) | Segments: ${data.segments.length}`;
+      }
+      if (textEl) textEl.textContent = data.text;
+      if (resultDiv) resultDiv.hidden = false;
+    } catch (e) {
+      if (textEl) textEl.textContent = 'Error: ' + e.message;
+      if (metaEl) metaEl.textContent = '';
+      if (resultDiv) resultDiv.hidden = false;
+    } finally {
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="mic" class="icon-lucide"></i> Transcribe'; activateLucideIcons(btn); }
+    }
+  },
+};
+
+// ── Live Mic Recorder ───────────────────────────────────────────────
+const STTMicRecorder = {
+  _mediaRecorder: null,
+  _chunks: [],
+  _stream: null,
+  _analyser: null,
+  _animFrame: null,
+  _recording: false,
+  _startTime: 0,
+  _timerInterval: null,
+
+  async toggle() {
+    if (this._recording) {
+      this.stop();
+    } else {
+      await this.start();
+    }
+  },
+
+  async start() {
+    const btn = document.getElementById('sttMicBtn');
+    const statusEl = document.getElementById('sttMicStatus');
+    const visualizer = document.getElementById('sttVisualizer');
+    const resultDiv = document.getElementById('sttLiveResult');
+
+    try {
+      this._stream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    } catch (e) {
+      if (statusEl) statusEl.textContent = '❌ Mic access denied: ' + e.message;
+      return;
+    }
+
+    // Pick best supported MIME type
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : 'audio/mp4';
+
+    this._chunks = [];
+    this._mediaRecorder = new MediaRecorder(this._stream, { mimeType });
+    this._mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) this._chunks.push(e.data); };
+    this._mediaRecorder.onstop = () => this._onRecordingStopped(mimeType);
+    this._mediaRecorder.start(250); // collect chunks every 250ms
+
+    this._recording = true;
+    this._startTime = Date.now();
+
+    // UI updates
+    if (btn) { btn.innerHTML = '<i data-lucide="square" class="icon-lucide"></i> Stop'; btn.classList.add('stt-recording'); activateLucideIcons(btn); }
+    if (statusEl) statusEl.textContent = '🔴 Recording... 0.0s';
+    if (resultDiv) resultDiv.hidden = true;
+    if (visualizer) visualizer.hidden = false;
+
+    // Timer
+    this._timerInterval = setInterval(() => {
+      const elapsed = ((Date.now() - this._startTime) / 1000).toFixed(1);
+      if (statusEl) statusEl.textContent = `🔴 Recording... ${elapsed}s`;
+    }, 100);
+
+    // Visualizer
+    this._startVisualizer();
+  },
+
+  stop() {
+    if (!this._recording) return;
+    this._recording = false;
+    if (this._mediaRecorder && this._mediaRecorder.state !== 'inactive') {
+      this._mediaRecorder.stop();
+    }
+    if (this._stream) {
+      this._stream.getTracks().forEach(t => t.stop());
+      this._stream = null;
+    }
+    clearInterval(this._timerInterval);
+    cancelAnimationFrame(this._animFrame);
+
+    const btn = document.getElementById('sttMicBtn');
+    const statusEl = document.getElementById('sttMicStatus');
+    const visualizer = document.getElementById('sttVisualizer');
+    if (btn) { btn.innerHTML = '<i data-lucide="mic" class="icon-lucide"></i> Record'; btn.classList.remove('stt-recording'); activateLucideIcons(btn); }
+    if (statusEl) statusEl.textContent = 'Processing...';
+    if (visualizer) visualizer.hidden = true;
+  },
+
+  _startVisualizer() {
+    const canvas = document.getElementById('sttVisualizer');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    this._analyser = this._stream.getAudioContext?.()?.createAnalyser?.();
+    // Fallback: create AudioContext manually
+    if (!this._analyser) {
+      const actx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = actx.createMediaStreamSource(this._stream);
+      this._analyser = actx.createAnalyser();
+      this._analyser.fftSize = 256;
+      source.connect(this._analyser);
+    }
+    const bufLen = this._analyser.frequencyBinCount;
+    const dataArr = new Uint8Array(bufLen);
+
+    const draw = () => {
+      if (!this._recording) return;
+      this._animFrame = requestAnimationFrame(draw);
+      this._analyser.getByteFrequencyData(dataArr);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const barW = canvas.width / bufLen * 2.5;
+      let x = 0;
+      for (let i = 0; i < bufLen; i++) {
+        const h = (dataArr[i] / 255) * canvas.height;
+        ctx.fillStyle = `rgba(var(--accent-rgb,100,180,255),${0.3 + dataArr[i] / 255 * 0.7})`;
+        ctx.fillRect(x, canvas.height - h, barW - 1, h);
+        x += barW;
+      }
+    };
+    draw();
+  },
+
+  async _onRecordingStopped(mimeType) {
+    const statusEl = document.getElementById('sttMicStatus');
+    const blob = new Blob(this._chunks, { type: mimeType });
+    const ext = mimeType.includes('webm') ? '.webm' : '.mp4';
+    const file = new File([blob], `recording${ext}`, { type: mimeType });
+
+    if (statusEl) statusEl.textContent = 'Transcribing...';
+    await STTSettings.transcribeLive(file);
+    if (statusEl) statusEl.textContent = '';
+  },
+};
+
+// Add transcribeLive to STTSettings (uses live result area)
+STTSettings.transcribeLive = async function(file) {
+  const resultDiv = document.getElementById('sttLiveResult');
+  const metaEl = document.getElementById('sttLiveMeta');
+  const textEl = document.getElementById('sttLiveText');
+
+  if (resultDiv) resultDiv.hidden = true;
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const res = await fetch('/api/stt/transcribe', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${localStorage.getItem('sable_token') || ''}` },
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    if (metaEl) {
+      metaEl.textContent = `Duration: ${data.duration}s | Language: ${data.language} (${(data.language_probability * 100).toFixed(0)}%) | Segments: ${data.segments.length}`;
+    }
+    if (textEl) textEl.textContent = data.text;
+    if (resultDiv) resultDiv.hidden = false;
+  } catch (e) {
+    if (textEl) textEl.textContent = 'Error: ' + e.message;
+    if (metaEl) metaEl.textContent = '';
+    if (resultDiv) resultDiv.hidden = false;
+  }
+};
+
+// Wire up STT tab
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.settings-tab').forEach((tab) => {
+    if (tab.dataset.tab === 'stt') {
+      tab.addEventListener('click', () => {
+        if (!STTSettings.loaded) STTSettings.init();
+      });
+    }
+  });
+
+  const sttDelBtn = document.getElementById('sttDeleteBtn');
+  if (sttDelBtn) sttDelBtn.addEventListener('click', () => STTSettings.remove());
+
+  // Live mic button
+  const sttMicBtn = document.getElementById('sttMicBtn');
+  if (sttMicBtn) sttMicBtn.addEventListener('click', () => STTMicRecorder.toggle());
+
+  // File upload
+  const sttFileInput = document.getElementById('sttFileInput');
+  const sttTranscribeBtn = document.getElementById('sttTranscribeBtn');
+  if (sttFileInput) {
+    sttFileInput.addEventListener('change', () => {
+      if (sttTranscribeBtn) sttTranscribeBtn.disabled = !sttFileInput.files.length;
+    });
+  }
+  if (sttTranscribeBtn) {
+    sttTranscribeBtn.addEventListener('click', () => {
+      const file = sttFileInput?.files?.[0];
+      if (file) STTSettings.transcribe(file);
+    });
+  }
+
+  // Prefs auto-save
+  const sttLangSelect = document.getElementById('sttLangSelect');
+  if (sttLangSelect) sttLangSelect.addEventListener('change', () => STTSettings.savePrefs());
+
+  const sttBeamRange = document.getElementById('sttBeamRange');
+  const sttBeamLabel = document.getElementById('sttBeamLabel');
+  if (sttBeamRange) {
+    sttBeamRange.addEventListener('input', () => {
+      if (sttBeamLabel) sttBeamLabel.textContent = sttBeamRange.value;
+    });
+    sttBeamRange.addEventListener('change', () => STTSettings.savePrefs());
+  }
+
+  const sttComputeSelect = document.getElementById('sttComputeSelect');
+  if (sttComputeSelect) sttComputeSelect.addEventListener('change', () => STTSettings.savePrefs());
+});
+
+// ── Global Voice Input (status bar mic + Ctrl+Space) ────────────────
+const GlobalVoiceInput = {
+  _mediaRecorder: null,
+  _chunks: [],
+  _stream: null,
+  _recording: false,
+  _heldDown: false, // true when triggered by holding Ctrl+Space
+  _btn: null,
+
+  init() {
+    this._btn = document.getElementById('sttMicGlobalBtn');
+    if (!this._btn) return;
+
+    // Click toggle
+    this._btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (this._recording) this.stop();
+      else this.start(false);
+    });
+
+    // Global hotkey: hold Ctrl+Space to record, release to stop
+    let spaceHeld = false;
+    document.addEventListener('keydown', (e) => {
+      // Ignore if focused on input/textarea/select
+      const tag = e.target?.tagName;
+      const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+
+      if ((e.ctrlKey || e.metaKey) && e.code === 'Space') {
+        e.preventDefault();
+        if (!spaceHeld && !this._recording) {
+          spaceHeld = true;
+          this._heldDown = true;
+          this.start(true);
+        }
+      }
+    });
+
+    document.addEventListener('keyup', (e) => {
+      if ((e.ctrlKey || e.metaKey || e.code === 'Space') && spaceHeld) {
+        if (e.code === 'Space' || !e.ctrlKey) {
+          spaceHeld = false;
+          if (this._recording && this._heldDown) {
+            this.stop();
+          }
+        }
+      }
+    });
+
+    // Safety: stop recording if window loses focus
+    window.addEventListener('blur', () => {
+      if (this._recording) this.stop();
+    });
+  },
+
+  async start(heldMode) {
+    if (this._recording) return;
+
+    try {
+      this._stream = await navigator.mediaDevices.getUserMedia({
+        audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
+      });
+    } catch (e) {
+      console.error('[STT] Mic access denied:', e);
+      return;
+    }
+
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : 'audio/mp4';
+
+    this._chunks = [];
+    this._heldDown = heldMode;
+    this._mediaRecorder = new MediaRecorder(this._stream, { mimeType });
+    this._mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) this._chunks.push(e.data); };
+    this._mediaRecorder.onstop = () => this._onStopped(mimeType);
+    this._mediaRecorder.start(250);
+    this._recording = true;
+
+    if (this._btn) {
+      this._btn.classList.add('recording');
+      this._btn.title = heldMode ? 'Release Ctrl+Space to stop' : 'Recording... click to stop';
+    }
+  },
+
+  stop() {
+    if (!this._recording) return;
+    this._recording = false;
+
+    if (this._mediaRecorder && this._mediaRecorder.state !== 'inactive') {
+      this._mediaRecorder.stop();
+    }
+    if (this._stream) {
+      this._stream.getTracks().forEach(t => t.stop());
+      this._stream = null;
+    }
+
+    if (this._btn) {
+      this._btn.classList.remove('recording');
+      this._btn.classList.add('transcribing');
+      this._btn.title = 'Transcribing...';
+    }
+  },
+
+  async _onStopped(mimeType) {
+    const blob = new Blob(this._chunks, { type: mimeType });
+    const ext = mimeType.includes('webm') ? '.webm' : '.mp4';
+    const file = new File([blob], `voice${ext}`, { type: mimeType });
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const res = await fetch('/api/stt/transcribe', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${localStorage.getItem('sable_token') || ''}` },
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const text = data.text?.trim();
+      if (text) {
+        this._insertText(text);
+      }
+    } catch (e) {
+      console.error('[STT] Transcription failed:', e);
+    } finally {
+      this._heldDown = false;
+      if (this._btn) {
+        this._btn.classList.remove('transcribing');
+        this._btn.title = 'Voice input (hold Ctrl+Space)';
+      }
+    }
+  },
+
+  _insertText(text) {
+    // Insert into main chat input or compact input (whichever is visible)
+    const input = document.getElementById('input') || document.getElementById('chatCompactInput');
+    if (!input) return;
+
+    const existing = input.value.trim();
+    input.value = existing ? `${existing} ${text}` : text;
+
+    // Auto-resize textarea
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+
+    // Focus and move cursor to end
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+
+    // Dispatch input event so any listeners pick up the change
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  },
+};
+
+// Initialize global voice input on DOM ready
+document.addEventListener('DOMContentLoaded', () => GlobalVoiceInput.init());
