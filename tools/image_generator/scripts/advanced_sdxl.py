@@ -170,8 +170,8 @@ def _verify_key(key: str) -> bool:
 
 def _refresh_key_via_api() -> str | None:
     try:
-        url = f"{BASE_URL}/verifyUser?thread=0&__cacheBust={random.random()}"
-        resp = httpx.get(url, headers=HEADERS, timeout=15)
+        url = f"{BASE_URL}/verifyUser?__cacheBust={random.random()}"
+        resp = httpx.post(url, headers=HEADERS, json={"thread": 0}, timeout=15)
         data = resp.json()
         key = data.get("userKey", "")
         if len(key) == 64:
