@@ -146,7 +146,14 @@ class AgentRuntime:
             browser_dir = assignment.browser_data_dir
             if not browser_dir:
                 in_use = {a.browser_data_dir for a in self._agents.values() if a.browser_data_dir and a.status == AgentStatus.RUNNING}
-                browser_dir = get_next_account(assignment.role, in_use)
+                assigned_account = get_next_account(assignment.role, in_use)
+                if assigned_account:
+                    from engine.config import _SYSTEM as _AGENT_SYSTEM_DIR
+                    acct_profile = _AGENT_SYSTEM_DIR / assigned_account
+                    if acct_profile.is_dir():
+                        browser_dir = str(acct_profile)
+                    else:
+                        browser_dir = assigned_account  # fallback to raw name if dir missing
 
             agent = Agent(
                 role=assignment.role,

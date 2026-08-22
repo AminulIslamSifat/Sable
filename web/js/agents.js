@@ -792,6 +792,7 @@ function onChatClosed() {
 // @ Mention — spawn agents from chat input
 // --------------------------------------------------------------------------
 const AGENT_ROLES = [
+  { id: "maria", icon: "💋", label: "Maria", desc: "Full Maria — all tools & skills" },
   { id: "sysutil", icon: "🔧", label: "Utility", desc: "System repair, ADB, downloads" },
   { id: "docs", icon: "📄", label: "Docs", desc: "PDF, DOCX, XLSX, humanize" },
   { id: "visuals", icon: "🎨", label: "Visuals", desc: "Plots, diagrams, UI, simulations" },
