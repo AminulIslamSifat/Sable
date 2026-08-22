@@ -214,19 +214,25 @@ def apply_account_assignments(assignments: dict[str, list[str]]) -> None:
 def get_next_account(role: str, in_use: set[str] | None = None) -> str | None:
     """Get the next available browser account for a role.
 
-    Skips accounts already in `in_use` set. Falls back to round-robin if all are busy.
+    Always respects round-robin ordering. Skips accounts in `in_use` set.
+    If all accounts are busy, returns the round-robin pick anyway (caller decides).
     Returns None if no chain is configured.
     """
     chain = _account_fallback_chains.get(role)
     if not chain:
         return None
-    if in_use:
-        for acc in chain:
-            if acc not in in_use:
-                return acc
     idx = _account_counters.get(role, 0)
-    account = chain[idx % len(chain)]
-    _account_counters[role] = idx + 1
+    n = len(chain)
+    # Walk from current counter position, wrapping around, skipping in-use
+    for offset in range(n):
+        candidate = chain[(idx + offset) % n]
+        if not in_use or candidate not in in_use:
+            # Advance counter past this pick so next call continues rotation
+            _account_counters[role] = (idx + offset + 1) % n
+            return candidate
+    # All accounts in use — still advance counter and return round-robin pick
+    account = chain[idx % n]
+    _account_counters[role] = (idx + 1) % n
     return account
 
 

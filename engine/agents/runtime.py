@@ -185,6 +185,16 @@ class AgentRuntime:
             browser_data_dir=agent.browser_data_dir,
         )
 
+        # Clear Qwen account settings (disable built-in tools + empty instruction)
+        # on EVERY spawn for Qwen agents with a browser profile.
+        if agent.browser_data_dir and "qwen" in agent.model:
+            try:
+                from engine.agents.loop import _clear_qwen_account_settings, _get_agent_qwen_headers
+                spawn_headers = await _get_agent_qwen_headers(agent)
+                await _clear_qwen_account_settings(spawn_headers, agent.id)
+            except Exception as exc:
+                logger.warning("Agent %s: clear settings on spawn failed: %s", agent.id, exc)
+
         # Emit spawn event
         await self._emit(chat_id, AgentEvent(
             type="agent_spawned",
