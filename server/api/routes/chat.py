@@ -1166,6 +1166,13 @@ async def chat(request: ChatRequest):
                                 yield sse(event)
                                 continue
 
+                            # Sync system instructions to new account before first message
+                            try:
+                                await service.sync_context()
+                                logger.info("[auto-switch] sync_context completed for %s", _next_acc)
+                            except Exception as _sync_exc:
+                                logger.warning("[auto-switch] sync_context failed for %s: %s", _next_acc, _sync_exc)
+
                             # Build context for new account (with summarization if >500k)
                             try:
                                 _switch_ctx = await _build_switch_context(active_chat_id, request.model)
