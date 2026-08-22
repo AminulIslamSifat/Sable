@@ -1136,6 +1136,15 @@ async def _call_api_backend(agent: Agent, message: str, backend: str, *, system_
     return accumulated, None
 
 
+def _cookies_have_identity(cookies: str) -> bool:
+    """Check if cookie string contains user-identity cookies required for Qwen history.
+
+    Qwen requires `aui` or `cnaui` cookies to associate chats with an account.
+    Without these, requests pass WAF but are treated as anonymous (no history saved).
+    """
+    return "aui=" in cookies or "cnaui=" in cookies
+
+
 async def _get_agent_qwen_headers(agent: Agent) -> dict[str, str]:
     """Resolve Qwen WAF headers for an agent based on its assigned browser account.
 
@@ -1143,6 +1152,7 @@ async def _get_agent_qwen_headers(agent: Agent) -> dict[str, str]:
     Uses cached per-account tokens when available. If no cached token exists
     for the assigned account, launches a headless browser with that profile
     to extract fresh tokens, then closes it.
+    Rejects anonymous tokens (missing aui/cnaui) — they pass WAF but don't save history.
     """
     from pathlib import Path as _Path
 
@@ -1160,11 +1170,26 @@ async def _get_agent_qwen_headers(agent: Agent) -> dict[str, str]:
 
         cached = get_qwen_tokens_for_account(account)
         if cached and cached.get("cookies"):
-            return build_headers(
-                cookies=cached["cookies"],
-                bx_ua=cached.get("bx_ua"),
-                bx_umidtoken=cached.get("bx_umidtoken"),
+            cookies = cached["cookies"]
+            has_identity = _cookies_have_identity(cookies)
+            logger.info(
+                "[WAF-TOKEN] agent=%s account=%s cookies_len=%d has_identity=%s bx_ua=%s",
+                agent.id, account, len(cookies), has_identity,
+                "yes" if cached.get("bx_ua") else "no",
             )
+            if not has_identity:
+                logger.warning(
+                    "[WAF-TOKEN] agent=%s account=%s: cookies lack aui/cnaui (anonymous). "
+                    "Launching browser to get authenticated tokens.",
+                    agent.id, account,
+                )
+                # Fall through to browser launch below
+            else:
+                return build_headers(
+                    cookies=cookies,
+                    bx_ua=cached.get("bx_ua"),
+                    bx_umidtoken=cached.get("bx_umidtoken"),
+                )
 
         # No cached token — launch browser with this account's profile to get one
         profile_dir = _SYSTEM / account
@@ -1406,6 +1431,16 @@ async def _call_qwen(
 
     # Get headers for this agent's assigned account
     headers = await _get_agent_qwen_headers(agent)
+
+    # Diagnostic: print which WAF token is actually being used for this call
+    from pathlib import Path as _P
+    _acct = _P(agent.browser_data_dir).name if agent.browser_data_dir else "default"
+    _ck = headers.get("Cookie", "")
+    logger.info(
+        "[WAF-CALL] agent=%s account=%s model=%s is_first=%s cookies_len=%d has_aui=%s",
+        agent.id, _acct, agent.model, is_first_turn, len(_ck),
+        "aui=" in _ck or "cnaui=" in _ck,
+    )
 
     # Create or reuse upstream Qwen session
     # Prefer DB-stored upstream_session_id; fall back to in-memory cache

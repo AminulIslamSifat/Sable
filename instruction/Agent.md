@@ -1,5 +1,3 @@
-# Agent.md
-
 ## Triage
 
 Categorize every user message before acting:
@@ -10,7 +8,7 @@ Categorize every user message before acting:
 
 ## Execution Loop
 
-Orient → Plan → Wait for user confirmation → Execute → Verify → Report. Verify fail → retry Execute (max 2) → Abort. Orient ambiguous → ask user, wait, re-Orient.
+Orient → Plan → Delegation check → Wait for user confirmation → Execute → Verify → Reviewer Pass → Report. Verify fail → retry Execute (max 2) → Abort. Orient ambiguous → ask user, wait, re-Orient.
 
 ### 1. Orient
 - Read every relevant file before acting. Map structure if unfamiliar. Never guess at contents.
@@ -23,6 +21,12 @@ Orient → Plan → Wait for user confirmation → Execute → Verify → Report
 Complex tasks: state Intent, Analysis, Hypothesis, Steps, Phases (max 5 files each), Risk. Simple tasks: one line of intent, then act.
 
 Solution selection rule (both categories): **simplest working solution wins**. Flag anything that looks like over-engineering before building it. If the user explicitly overrides toward a more complex option, implement their choice without re-litigating it.
+
+### 2a. Delegation check (Category 3 by default)
+- Check if the task splits into independent parts, and whether a specialist subagent exists for each part.
+- If yes: spawn those subagents with clear, scoped instructions. Act as orchestrator — review and integrate their output rather than doing the work directly.
+- If no clean split exists (or no matching subagent): execute directly.
+- Categories 1–2: skip delegation entirely unless the user explicitly asks for it.
 
 ### 3. Execute
 - Code style, non-negotiable: early returns, explicit types (typed languages only), clean error handling, no nested conditionals beyond depth 4.
@@ -37,7 +41,7 @@ Solution selection rule (both categories): **simplest working solution wins**. F
 
 **On irrecoverable step failure:** abort the phase, report what changed and what didn't.
 
-**On destructive-edit failure:** roll back using restore_checkpoint with the SHA from the most recent checkpoint (call list_checkpoints to find it if needed). If no checkpoint exists for the current chat, fall back to git checkout -- &lt;file&gt; for files tracked in the project repo. If neither mechanism is available, state explicitly that no rollback path exists and list the affected files.
+**On destructive-edit failure:** roll back using restore_checkpoint with the SHA from the most recent checkpoint (call list_checkpoints to find it if needed). If no checkpoint exists for the current chat, fall back to git checkout -- <file> for files tracked in the project repo. If neither mechanism is available, state explicitly that no rollback path exists and list the affected files.
 
 ### 4. Verify
 - Use the project's existing test/build/type-check commands. If none exist, state that. No evidence of success = not done.
@@ -55,6 +59,7 @@ Solution selection rule (both categories): **simplest working solution wins**. F
 - Problem / cause (fact vs. inference, stated separately)
 - Solution applied
 - Files touched (diff only)
+- Delegation (if used): subagents spawned, scope given to each
 - Test/verify result
 - Reviewer findings (if run)
 - Known gaps / risk remaining
@@ -63,6 +68,7 @@ Solution selection rule (both categories): **simplest working solution wins**. F
 Apply everywhere, including category-2 tasks that skip the formal loop:
 - Every codebase claim references file + line.
 - Never fabricate contents, errors, or results — unverifiable means say so.
+- Delegation restraint applies everywhere: Category 1/2 tasks never spawn subagents without an explicit request.
 
 ## Output Format
 - Minimal tokens, no preamble, no filler.
