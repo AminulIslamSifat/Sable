@@ -724,19 +724,26 @@ async def _try_fallback_model(agent: Agent, failed_model: str) -> str | None:
 def _try_browser_fallback(agent: Agent) -> str | None:
     """Try the next browser profile from the account pool (Qwen only).
 
-    Returns the next available profile or None if exhausted.
+    Returns the full path to the next available profile or None if exhausted.
+    Pool entries are raw directory names; agent.browser_data_dir may be a full path.
     """
     pool = get_account_pool(agent.role)
     if not pool:
         return None
-    current = agent.browser_data_dir or ""
+    # Extract just the directory name for comparison (agent.browser_data_dir may be full path)
+    current_name = Path(agent.browser_data_dir).name if agent.browser_data_dir else ""
     try:
-        idx = pool.index(current) + 1
+        idx = pool.index(current_name) + 1
     except ValueError:
         idx = 0
     if idx >= len(pool):
         return None
-    return pool[idx]
+    # Resolve to full path under _SYSTEM
+    from engine.config import _SYSTEM as _AGENT_SYSTEM_DIR
+    acct_profile = _AGENT_SYSTEM_DIR / pool[idx]
+    if acct_profile.is_dir():
+        return str(acct_profile)
+    return pool[idx]  # fallback to raw name if dir missing
 
 
 async def _clear_qwen_account_settings(headers: dict[str, str], agent_id: str) -> None:

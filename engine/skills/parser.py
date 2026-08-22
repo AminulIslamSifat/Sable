@@ -108,6 +108,20 @@ def _stringify_params(params: dict[str, Any]) -> dict[str, str]:
 _INVALID_ESCAPE_RE = re.compile(r"\\(?!['\"\\\/bfnrtu])")
 
 
+# Matches fenced code blocks: ```lang\n...\n``` or ```\n...\n```
+# Used to exclude code examples from bare JSON tool call detection.
+_CODE_FENCE_RE = re.compile(r"```[^\n]*\n.*?```", re.DOTALL)
+
+
+def _strip_code_fences(text: str) -> str:
+    """Remove markdown fenced code blocks from text.
+
+    Prevents bare JSON detection from triggering on code examples
+    that contain tool call syntax inside triple-backtick fences.
+    """
+    return _CODE_FENCE_RE.sub("", text)
+
+
 def _sanitize_json_escapes(raw: str) -> str:
     """Remove invalid backslash escapes that models sometimes produce."""
     # Replace \' with just ' (most common offender)
@@ -307,9 +321,16 @@ class SkillParser:
                 # partial extraction already consumed the tool call.
                 # Handle both complete closing tags and partial suffixes
                 # like "_call>" or "call>" that are remnants of </tool_call>
+                # Skip if an opening tag is also present — the close tag belongs
+                # to it and will be handled by the normal close-boundary logic.
                 _orphan_close = self._ACTION_CLOSE.search(self.buf)
-                if _orphan_close is not None:
-                    self.buf = self.buf[:_orphan_close.start()] + self.buf[_orphan_close.end():]
+                if _orphan_close is not None and not self._ACTION_OPEN.search(self.buf):
+                    # Silently strip orphan close tags — they're leftover fragments, not prose
+                    _before_close = self.buf[:_orphan_close.start()]
+                    _after_close = self.buf[_orphan_close.end():]
+                    if _before_close:
+                        yield {"type": "text", "text": _before_close}
+                    self.buf = _after_close
                     if not self.buf:
                         break
                 # Check for orphaned suffix fragments (no < prefix)
@@ -334,7 +355,13 @@ class SkillParser:
                 if not self._in_action and self._ACTION_OPEN.search(self.buf) is None:
                     _bare_done = False   # parsed or errored → continue while loop
                     _bare_hold = False   # incomplete JSON → break while loop (wait for more)
+                    # Build set of character indices inside code fences to skip
+                    _fenced_indices: set[int] = set()
+                    for _fence_match in _CODE_FENCE_RE.finditer(self.buf):
+                        _fenced_indices.update(range(_fence_match.start(), _fence_match.end()))
                     for _scan_i, _scan_ch in enumerate(self.buf):
+                        if _scan_i in _fenced_indices:
+                            continue  # Skip characters inside code fences
                         if _scan_ch in ('{', '['):
                             _candidate = self.buf[_scan_i:]
                             _json_end_idx = _find_json_end(_candidate)
@@ -431,30 +458,39 @@ class SkillParser:
 
                 # JSON validation gate: only enter action mode if content looks like JSON
                 stripped_ahead = self.buf.lstrip()
-                if stripped_ahead and stripped_ahead[0] not in ('{', '['):
-                    # Not JSON — discard the opening tag but PRESERVE the text content
-                    _plog(f"NON_JSON_TOOL_CALL: starts with {repr(stripped_ahead[:30])}, preserving text")
-                    # Check if there's a closing tag — if so, extract text between them
-                    _close_in_ahead = self._ACTION_CLOSE.search(stripped_ahead)
+                if not stripped_ahead:
+                    # Tag found but no content yet — hold and wait for next chunk
+                    # Don't enter action mode blindly; re-prepend the tag so it's
+                    # re-evaluated when more data arrives.
+                    self.buf = m.group(0) + self.buf
+                    break
+                if stripped_ahead[0] not in ('{', '['):
+                    # Not JSON — preserve the ENTIRE sequence (tags + content) as visible text
+                    # Use self.buf (not stripped_ahead) to preserve whitespace between tag and content
+                    _open_tag = m.group(0)
+                    _ahead = self.buf  # original buffer with whitespace intact
+                    _plog(f"NON_JSON_TOOL_CALL: starts with {repr(stripped_ahead[:30])}, emitting as text")
+                    # Check if there's a closing tag — if so, emit full block as text
+                    _close_in_ahead = self._ACTION_CLOSE.search(_ahead)
                     if _close_in_ahead is not None:
-                        # Emit the text between open and close tags as normal prose
-                        _inner_text = stripped_ahead[:_close_in_ahead.start()]
-                        if _inner_text.strip():
-                            yield {"type": "text", "text": _inner_text}
-                        self.buf = stripped_ahead[_close_in_ahead.end():]
+                        # Emit open tag + inner text + close tag as visible prose
+                        _full_block = _open_tag + _ahead[:_close_in_ahead.end()]
+                        yield {"type": "text", "text": _full_block}
+                        self.buf = _ahead[_close_in_ahead.end():]
                     else:
-                        # No closing tag yet — treat everything as text, hold partial
+                        # No closing tag yet — emit open tag as text, hold rest
+                        yield {"type": "text", "text": _open_tag}
                         # Look for next < that might be a tag start
-                        next_lt = stripped_ahead.find("<")
+                        next_lt = _ahead.find("<")
                         if next_lt >= 0:
-                            _before_lt = stripped_ahead[:next_lt]
-                            if _before_lt.strip():
+                            _before_lt = _ahead[:next_lt]
+                            if _before_lt:
                                 yield {"type": "text", "text": _before_lt}
-                            self.buf = stripped_ahead[next_lt:]
+                            self.buf = _ahead[next_lt:]
                         else:
                             # No more tags — emit all remaining text
-                            if stripped_ahead.strip():
-                                yield {"type": "text", "text": stripped_ahead}
+                            if _ahead:
+                                yield {"type": "text", "text": _ahead}
                             self.buf = ""
                     continue
                 self._in_action = True

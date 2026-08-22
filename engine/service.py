@@ -446,7 +446,6 @@ class ChatService:
                                                 if isinstance(ret_list, list):
                                                     ret_str = " ".join(str(r) for r in ret_list)
                                                     if "FAIL_SYS_USER_VALIDATE" in ret_str or "RGV587_ERROR" in ret_str:
-                                                        self._mark_exhausted()
                                                         logger.warning("WAF/captcha block detected: %s", ret_str[:200])
                                                         yield {
                                                             "type": "waf_blocked",
@@ -619,7 +618,6 @@ class ChatService:
                         if isinstance(ret_list, list):
                             ret_str = " ".join(str(r) for r in ret_list)
                             if "FAIL_SYS_USER_VALIDATE" in ret_str or "RGV587_ERROR" in ret_str:
-                                self._mark_exhausted()
                                 logger.warning("WAF/captcha block detected in leftover: %s", ret_str[:200])
                                 yield {
                                     "type": "waf_blocked",
