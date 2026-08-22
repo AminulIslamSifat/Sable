@@ -538,6 +538,27 @@ class SkillParser:
         # Try to parse complete JSON
         calls = _parse_action_payload(raw_stripped)
         if calls:
+            # Emit a final progress snapshot for file-writing tools so the card
+            # shows content preview even when the entire call arrives in one chunk.
+            for call in calls:
+                cname = call["name"]
+                if cname in ("create_file", "edit_file", "insert_file"):
+                    preview_lines: list[str] = []
+                    cpath = call["attrs"].get("path", "")
+                    if cpath:
+                        preview_lines.append(cpath)
+                    ccontent = call.get("content", "") or call["attrs"].get("body", "")
+                    if ccontent:
+                        all_lines = [ln for ln in ccontent.splitlines() if ln.strip()]
+                        for ln in all_lines[-3:]:
+                            preview_lines.append(ln[:150])
+                    if preview_lines:
+                        yield {
+                            "type": "tool_progress",
+                            "tag": cname,
+                            "bytes": len(raw_stripped.encode("utf-8")),
+                            "preview_lines": preview_lines,
+                        }
             self._pending_tag = None
             self._last_progress = (0, 0)
             for call in calls:
@@ -579,21 +600,44 @@ class SkillParser:
                     self._last_progress = (0, 0)
                     yield {"type": "tool_pending", "tag": tag_name, "attrs": {}}
 
-            # Emit progress for large content
-            p_lines = raw_stripped.count("\n") + (1 if raw_stripped else 0)
+            # Emit progress with live content preview
             p_bytes = len(raw_stripped.encode("utf-8"))
             last_lines, last_bytes = self._last_progress
-            if p_lines != last_lines or p_bytes - last_bytes >= 96:
-                self._last_progress = (p_lines, p_bytes)
+            if p_bytes - last_bytes >= 32 or last_bytes == 0:
+                self._last_progress = (0, p_bytes)
+                preview_lines: list[str] = []
+                tag = self._pending_tag or "unknown"
+                # Extract path/filename for file tools
+                path_m = re.search(r'"(?:path|filename)"\s*:\s*"([^"]*)', raw_stripped)
+                if path_m:
+                    preview_lines.append(path_m.group(1))
+                # For edit/create/insert, show last few lines of content being written
+                content_m = re.search(r'"(?:content|body|lines)"\s*:\s*"(.*?)$', raw_stripped, re.DOTALL)
+                if content_m:
+                    raw_tail = content_m.group(1)[-500:]
+                    try:
+                        snippet = raw_tail.encode("utf-8").decode("unicode_escape")
+                    except Exception:
+                        snippet = raw_tail
+                    all_lines = [ln for ln in snippet.splitlines() if ln.strip()]
+                    # Show last 3 non-empty lines
+                    for ln in all_lines[-3:]:
+                        preview_lines.append(ln[:150])
+                if not preview_lines:
+                    size = f"{p_bytes} B" if p_bytes < 1024 else f"{p_bytes/1024:.1f} KB"
+                    preview_lines.append(f"streaming\u2026 {size}")
                 yield {
                     "type": "tool_progress",
-                    "tag": self._pending_tag or "unknown",
-                    "lines": p_lines,
+                    "tag": tag,
                     "bytes": p_bytes,
+                    "preview_lines": preview_lines,
                 }
 
     def flush(self) -> Generator[dict[str, Any], None, None]:
         """Flush remaining buffer. Extracts any complete tool_call blocks."""
+        # Reset progress state so stale events don't emit after stream ends
+        self._pending_tag = None
+        self._last_progress = (0, 0)
         if self.buf:
             if self._in_action:
                 _plog(f"FLUSH_IN_ACTION: buf_len={len(self.buf)} | first_100={repr(self.buf[:100])}")

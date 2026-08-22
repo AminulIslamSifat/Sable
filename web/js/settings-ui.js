@@ -350,8 +350,11 @@
     })();
     window._universalSave = _universalSave;
 
-    // Horizontal scroll on mouse wheel for settings tab bars
+    // Horizontal scroll on mouse wheel for HORIZONTAL tab bars only.
+    // Skip .settings-tabs which is a vertical sidebar (flex-direction: column).
     document.querySelectorAll(".settings-tabs").forEach((bar) => {
+      const style = getComputedStyle(bar);
+      if (style.flexDirection === 'column') return; // vertical layout — let native scroll work
       bar.addEventListener("wheel", (e) => {
         if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
           e.preventDefault();
