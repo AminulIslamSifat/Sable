@@ -169,6 +169,18 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         max_parallel=2,
         required_sections=["Task", "Result", "Notes"],
     ),
+
+    # Maria — full persona from instruction/agents/maria.md, all tools & skills
+    "maria": RoleConfig(
+        system_prompt=_build_system_prompt("maria"),
+        allowed_tools=list(_ALL_TOOL_GROUPS),
+        allowed_skills=[],
+        output_format="",
+        default_model="qwen3.8-max",
+        default_timeout=600,
+        max_parallel=1,
+        required_sections=[],
+    ),
 }
 
 
