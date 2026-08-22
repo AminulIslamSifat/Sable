@@ -1070,7 +1070,7 @@
           const meta = {
             create_file:  { icon: "📝", label: "Creating file", detail: attrs.path || "", progress: true },
             edit_file:    { icon: "✏️", label: "Editing file", detail: attrs.path || "", progress: true },
-            insert_file:  { icon: "✏️", label: "Inserting into file", detail: attrs.path || "" },
+            insert_file:  { icon: "✏️", label: "Inserting into file", detail: attrs.path || "", progress: true },
             view_file:    { icon: "👁️", label: "Reading file", detail: attrs.path || (attrs.full ? "full file" : "") },
             execute_command: { icon: "⚡", label: attrs.bg === "true" ? "Running background task" : "Running command", detail: "" },
             get_file:     { icon: "📂", label: "Loading file", detail: "" },
@@ -1089,13 +1089,12 @@
           }
           card.className = "tool-activity-card";
           const detailHtml = info.progress
-            ? `<div class="tac-detail tac-detail-split"><span class="tac-path">${info.detail || ""}</span><span class="tac-count">writing…</span></div>`
+            ? `<div class="tac-detail tac-detail-split"><span class="tac-path">${info.detail || ""}</span></div><div class="tac-preview"></div>`
             : (info.detail ? `<div class="tac-detail">${info.detail}</div>` : "");
           card.innerHTML =
             `<div class="tac-icon">${lucideIcon(info.icon)}</div>` +
             `<div class="tac-info"><div class="tac-title">${info.label}</div>` +
             detailHtml +
-            (info.progress ? `<div class="tac-progress-track"><div class="tac-progress-fill"></div></div>` : "") +
             `</div><div class="tac-status">${info.progress ? `<div class="tac-pulse-dot"></div>` : `<div class="tac-spinner"></div>`}</div>`;
           // Always keep it as the last element
           turn.appendChild(card);
@@ -1105,12 +1104,13 @@
         showToolProgress(evt) {
           const card = turn.querySelector(".tool-activity-card");
           if (!card) return;
-          const count = card.querySelector(".tac-count");
-          if (!count) return;
-          const bytes = evt.bytes || 0;
-          const size = bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
-          count.textContent = `${evt.lines || 0} lines · ${size}`;
-
+          const previewEl = card.querySelector(".tac-preview");
+          if (!previewEl) return;
+          const lines = evt.preview_lines || (evt.preview ? [evt.preview] : []);
+          if (!lines.length) return;
+          previewEl.innerHTML = lines.map(l => `<div class="tac-preview-line">${escHtml(l)}</div>`).join("");
+          // Auto-scroll to bottom of preview
+          previewEl.scrollTop = previewEl.scrollHeight;
         },
         showToolDone() {
           const card = turn.querySelector(".tool-activity-card");
@@ -1142,9 +1142,6 @@
             if (spinner) spinner.remove();
             const pulseDot = tac.querySelector(".tac-pulse-dot");
             if (pulseDot) pulseDot.remove();
-            // Stop progress bar animation
-            const progressFill = tac.querySelector(".tac-progress-fill");
-            if (progressFill) progressFill.style.animation = "none";
             // Trigger exit animation so the card doesn't stay frozen in place
             requestAnimationFrame(() => {
               tac.classList.add("tac-exit");
