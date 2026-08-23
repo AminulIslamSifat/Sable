@@ -1,4 +1,8 @@
-    /* ---------- main ---------- */
+    /* ---------- header hidden ---------- */
+    header.hidden { display: none !important; }
+    #chat.hidden { display: none !important; }
+
+/* ---------- main ---------- */
 
     .main {
       flex: 1;

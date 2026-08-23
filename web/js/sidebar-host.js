@@ -88,7 +88,7 @@
     if (currentHosted === panelId) { unhostFromSidebar(); return; }
     if (currentHosted) unhostFromSidebar();
 
-    const panel = $(panelId === 'terminal' ? 'terminalPanel' : panelId);
+    const panel = panelId === 'terminal' ? $('terminalPanel') : (getPanelEl(panelId) || $(panelId));
     if (!panel) return;
 
     // Ensure sidebar is visible (un-collapse if needed)
@@ -120,10 +120,15 @@
     const slot = ensureSlot();
     if (!slot) return;
 
-    const panel = $(currentHosted === 'terminal' ? 'terminalPanel' : currentHosted);
+    const panel = currentHosted === 'terminal' ? $('terminalPanel') : (getPanelEl(currentHosted) || $(currentHosted));
     if (panel) {
       panel.classList.remove('sidebar-hosted');
-      if (currentHosted === 'terminal') returnTerminalToOriginal(panel);
+      if (currentHosted === 'terminal') {
+        returnTerminalToOriginal(panel);
+      } else {
+        // Non-terminal panels: hide when unhosted so they don't linger in sidebar slot
+        panel.classList.add('hidden');
+      }
       panel.dispatchEvent(new CustomEvent('sidebar-unhosted'));
     }
 
@@ -469,7 +474,7 @@
 
   /* ── Move panel to target position (live, while open) ── */
   function movePanel(panelId, position) {
-    const panel = $(panelId === 'terminal' ? 'terminalPanel' : panelId);
+    const panel = panelId === 'terminal' ? $('terminalPanel') : (getPanelEl(panelId) || $(panelId));
     if (!panel) return;
 
     savePosition(panelId, position);
@@ -517,13 +522,22 @@
   window.addEventListener('rail-switch', (e) => {
     const target = e.detail?.target;
 
-    if (!target || target === 'chat') {
+    if (!target) {
       // Null target = user toggled off the active rail button
       // Close terminal regardless of current position (not just sidebar)
       if (terminalOpen) {
         closeTerminal();
       }
       // Sync rail button to match actual state (mode.js may have toggled it)
+      requestAnimationFrame(() => setRailActive('terminal', terminalOpen));
+      return;
+    }
+
+    if (target === 'chat') {
+      // Chat button clicked → show sidebar with chat history
+      document.body.classList.remove('sidebar-collapsed');
+      ensureChatVisible();
+      if (terminalOpen) closeTerminal();
       requestAnimationFrame(() => setRailActive('terminal', terminalOpen));
       return;
     }
@@ -646,8 +660,16 @@
   // Extend rail-switch to handle registered panels
   window.addEventListener('rail-switch', (e) => {
     const target = e.detail?.target;
-    if (!target || target === 'chat') return;
     if (target === 'terminal') return; // handled above
+    if (target === 'knowledge') return; // handled by knowledge.js directly
+
+    // Null/chat target = deselect → close any open hosted panel
+    if (!target || target === 'chat') {
+      if (currentHosted && currentHosted !== 'terminal') {
+        closePanel(currentHosted);
+      }
+      return;
+    }
 
     if (panelRegistry.has(target)) {
       // Toggle

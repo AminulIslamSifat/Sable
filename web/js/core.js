@@ -95,9 +95,10 @@
           _authBounced = false;
           showPhase(null);
           if (_loginResolve) { _loginResolve(); _loginResolve = null; }
-          // Reload tracknote data if panel is open (failed requests won't retry on their own)
-          if (document.body.classList.contains("tracknote-open")) {
-            loadSchedules(); loadNotes(); loadAgentOps();
+          // Reload todo/tasks data if either panel is open in sidebar
+          const _hosted = window.sidebarHost?.getCurrent?.();
+          if ((_hosted === 'todo' || _hosted === 'tasks') && typeof loadAllPanels === "function") {
+            loadAllPanels();
           }
         } else {
           loginError.textContent = "Invalid token. Try again.";

@@ -160,6 +160,7 @@
       const current = _personas.find((p) => p.name === name);
       const newName = current && current.active ? null : name;
       await pFetch("/active", { method: "PUT", body: JSON.stringify({ name: newName }) });
+      document.dispatchEvent(new CustomEvent("persona-changed"));
       loadPersonas();
     } catch (e) { showToast(e.message, true); }
   }
@@ -332,6 +333,7 @@
               const newName = isDefault ? null : name;
               await pFetch("/active", { method: "PUT", body: JSON.stringify({ name: newName }) });
               await refreshQuickPopup();
+              document.dispatchEvent(new CustomEvent("persona-changed"));
               showToast(isDefault ? "Default persona" : "Switched to " + name);
             } catch (e) {
               list.classList.remove("pq-loading");

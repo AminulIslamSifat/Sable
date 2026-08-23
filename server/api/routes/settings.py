@@ -992,9 +992,10 @@ async def list_accounts() -> dict[str, Any]:
         except Exception:
             pass
 
-        # Load exhaustion status
-        from engine.config import get_all_exhaustion_status
+        # Load exhaustion & captcha block status
+        from engine.config import get_all_exhaustion_status, get_all_captcha_block_status
         exhaustion = get_all_exhaustion_status()
+        captcha_blocks = get_all_captcha_block_status()
 
         accounts: list[dict[str, Any]] = []
         for entry in _SYSTEM_DIR.iterdir():
@@ -1008,6 +1009,7 @@ async def list_accounts() -> dict[str, Any]:
                     "has_waf": entry.name in waf_tokens,
                     "has_ds": entry.name in ds_tokens,
                     "exhausted": exhaustion.get(entry.name, False),
+                    "captcha_blocked": captcha_blocks.get(entry.name, False),
                 })
         accounts.sort(key=lambda a: a["num"])
         return accounts
