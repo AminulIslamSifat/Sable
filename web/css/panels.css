@@ -3196,4 +3196,104 @@ textarea:disabled {
   border-color: #4ade80 !important;
 }
 
+/* ---------- Update indicator (red dot on settings button) ---------- */
+.sidebar-footer-btn { position: relative; }
+.update-dot {
+  position: absolute;
+  top: 6px;
+  right: 12px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.6);
+  animation: updatePulse 2s ease-in-out infinite;
+}
+@keyframes updatePulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.3); opacity: 0.7; }
+}
+
+/* ---------- Updates tab ---------- */
+.update-status {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--panel) 30%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin-bottom: 16px;
+}
+.update-version-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.update-label {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.update-version {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: var(--font-mono, monospace);
+}
+.update-changelog {
+  margin-bottom: 16px;
+}
+.update-changelog h4 {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.update-changelog-body {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 12px;
+  background: color-mix(in srgb, var(--panel) 20%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.update-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+.update-progress {
+  margin-bottom: 14px;
+}
+.update-progress-bar {
+  height: 4px;
+  border-radius: 4px;
+  background: var(--border);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+.update-progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 4px;
+  background: var(--accent, #8b5cf6);
+  transition: width 0.4s ease;
+}
+.update-progress-text {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin: 0;
+}
+/* Red glow on Updates tab when update available */
+.settings-tab.has-update {
+  color: #ef4444 !important;
+  text-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+  box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.3), 0 0 8px rgba(239, 68, 68, 0.15);
+}
 

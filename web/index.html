@@ -489,6 +489,7 @@
         <button class="settings-tab" data-tab="logs">Live Logs</button>
 
         <button class="settings-tab" data-tab="shortcuts"><span class="icon-emoji">⌨️</span> Shortcuts</button>
+        <button class="settings-tab" data-tab="updates"><span class="icon-emoji">🔄</span> Updates</button>
       </div>
       </div>
       <div class="settings-main">
@@ -1492,6 +1493,32 @@
           <div class="mem-input-row mem-save-row" style="margin-top:20px;padding-top:14px;border-top:1px solid var(--border);">
             <button id="shortcutsResetBtn" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">↩️</span> Reset to Defaults</button>
           </div>
+        </div>
+        <div id="tab-updates" class="settings-tab-content">
+          <h3 class="mem-title">🔄 Software Updates</h3>
+          <div id="updateStatus" class="update-status">
+            <div class="update-version-row">
+              <span class="update-label">Current Version</span>
+              <span id="updateLocalVersion" class="update-version">…</span>
+            </div>
+            <div class="update-version-row">
+              <span class="update-label">Latest Version</span>
+              <span id="updateRemoteVersion" class="update-version">…</span>
+            </div>
+          </div>
+          <div id="updateChangelog" class="update-changelog hidden">
+            <h4>What's New</h4>
+            <div id="updateChangelogBody" class="update-changelog-body"></div>
+          </div>
+          <div id="updateProgress" class="update-progress hidden">
+            <div class="update-progress-bar"><div id="updateProgressBar" class="update-progress-fill"></div></div>
+            <p id="updateProgressText" class="update-progress-text">Preparing…</p>
+          </div>
+          <div class="update-actions">
+            <button id="updateCheckBtn" class="btn-primary" style="font-size:12px;padding:8px 18px;">Check for Updates</button>
+            <button id="updateApplyBtn" class="btn-primary hidden" style="font-size:12px;padding:8px 18px;background:var(--accent);">⬆ Update Now</button>
+          </div>
+          <p id="updateMessage" class="muted" style="font-size:11px;margin-top:10px;"></p>
         </div>
       </div>
       </div>
