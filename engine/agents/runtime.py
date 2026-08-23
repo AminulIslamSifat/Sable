@@ -146,7 +146,14 @@ class AgentRuntime:
             browser_dir = assignment.browser_data_dir
             if not browser_dir:
                 in_use = {a.browser_data_dir for a in self._agents.values() if a.browser_data_dir and a.status == AgentStatus.RUNNING}
-                browser_dir = get_next_account(assignment.role, in_use)
+                assigned_account = get_next_account(assignment.role, in_use)
+                if assigned_account:
+                    from engine.config import _SYSTEM as _AGENT_SYSTEM_DIR
+                    acct_profile = _AGENT_SYSTEM_DIR / assigned_account
+                    if acct_profile.is_dir():
+                        browser_dir = str(acct_profile)
+                    else:
+                        browser_dir = assigned_account  # fallback to raw name if dir missing
 
             agent = Agent(
                 role=assignment.role,
@@ -184,6 +191,16 @@ class AgentRuntime:
             model=agent.model,
             browser_data_dir=agent.browser_data_dir,
         )
+
+        # Clear Qwen account settings (disable built-in tools + empty instruction)
+        # on EVERY spawn for Qwen agents with a browser profile.
+        if agent.browser_data_dir and "qwen" in agent.model:
+            try:
+                from engine.agents.loop import _clear_qwen_account_settings, _get_agent_qwen_headers
+                spawn_headers = await _get_agent_qwen_headers(agent)
+                await _clear_qwen_account_settings(spawn_headers, agent.id)
+            except Exception as exc:
+                logger.warning("Agent %s: clear settings on spawn failed: %s", agent.id, exc)
 
         # Emit spawn event
         await self._emit(chat_id, AgentEvent(
@@ -417,7 +434,7 @@ class AgentRuntime:
     def _save_agent_output(agent: Agent) -> None:
         """Save agent output to two files:
         - <id>.md: final result or error only
-        - <id>_conversation.md: full conversation (no system prompt)
+        - <id>_conversation.md: full raw conversation (including system prompt)
         """
         try:
             _AGENT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -454,12 +471,26 @@ class AgentRuntime:
             ]
             for msg in agent.messages:
                 role = msg.get("role", "unknown")
-                if role == "system":
-                    continue
                 content = msg.get("content", "")
                 conv_lines.append(f"### [{role}]")
                 conv_lines.append("")
                 conv_lines.append(content)
+                conv_lines.append("")
+
+            # Append skip reasons if any
+            if agent.todos and agent.todos.skip_reasons:
+                conv_lines.append("---")
+                conv_lines.append("")
+                conv_lines.append("## Skipped Tasks")
+                conv_lines.append("")
+                for todo_id, reason in agent.todos.skip_reasons:
+                    # Find the original content for this todo_id
+                    skipped_content = "unknown"
+                    for t in agent.todos.todos:
+                        if t.id == todo_id:
+                            skipped_content = t.content
+                            break
+                    conv_lines.append(f"- **Task #{todo_id}** \"{skipped_content}\": {reason}")
                 conv_lines.append("")
 
             conv_path = _AGENT_OUTPUT_DIR / f"{agent.id}_conversation.md"

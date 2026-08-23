@@ -12,6 +12,7 @@ from fastapi import APIRouter
 
 from engine.config import (
     AGENT_OUTPUT_DIR,
+    ASSETS_DIR,
     RESEARCH_DIR,
     NOTES_DIR,
     PROMPTS_DIR,
@@ -99,18 +100,34 @@ def library_prompts() -> list[dict[str, Any]]:
 
 @router.get("/api/library/gallery")
 def library_gallery() -> list[dict[str, Any]]:
-    if not UPLOAD_DIR.exists():
-        return []
     items: list[dict[str, Any]] = []
-    for f in UPLOAD_DIR.iterdir():
-        if f.suffix.lower() in _IMAGE_EXTS and f.is_file():
-            items.append({
-                "filename": f.name,
-                "url": f"/system/uploads/{f.name}",
-                "type": f.suffix.lstrip("."),
-                "size": f.stat().st_size,
-                "date": f.stat().st_mtime,
-            })
+    seen: set[str] = set()
+
+    # Scan uploads directory
+    if UPLOAD_DIR.exists():
+        for f in UPLOAD_DIR.iterdir():
+            if f.suffix.lower() in _IMAGE_EXTS and f.is_file():
+                items.append({
+                    "filename": f.name,
+                    "url": f"/system/uploads/{f.name}",
+                    "type": f.suffix.lstrip("."),
+                    "size": f.stat().st_size,
+                    "date": f.stat().st_mtime,
+                })
+                seen.add(f.name)
+
+    # Scan generated assets directory (image gen output)
+    if ASSETS_DIR.exists():
+        for f in ASSETS_DIR.iterdir():
+            if f.suffix.lower() in _IMAGE_EXTS and f.is_file() and f.name not in seen:
+                items.append({
+                    "filename": f.name,
+                    "url": f"/assets/{f.name}",
+                    "type": f.suffix.lstrip("."),
+                    "size": f.stat().st_size,
+                    "date": f.stat().st_mtime,
+                })
+
     items.sort(key=lambda x: x["date"], reverse=True)
     return items
 

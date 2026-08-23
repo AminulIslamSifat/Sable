@@ -17,6 +17,20 @@ _INSTRUCTION_DIR = Path(__file__).resolve().parent.parent.parent / "instruction"
 _SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills"
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
+# Cache-busting version counter — incremented on persona/instruction changes
+# so all connectors (Gemini, DeepSeek, Mistral/OpenAI-compat) detect stale caches.
+_instruction_version: int = 0
+
+
+def invalidate_cache() -> None:
+    """Bump the instruction version to force all connectors to rebuild."""
+    global _instruction_version
+    _instruction_version += 1
+
+
+def get_instruction_version() -> int:
+    return _instruction_version
+
 
 def _get_project(project_id: str | None) -> dict[str, Any] | None:
     """Load project config from DB. Returns None if no project or lookup fails."""

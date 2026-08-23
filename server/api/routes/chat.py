@@ -69,6 +69,189 @@ def _log_conversation(chat_id: str, model: str, role: str, content: str) -> None
 
 router = APIRouter()
 
+
+@router.post("/api/chat/stop")
+async def stop_generation(request: Request):
+    """Stop upstream Qwen generation via server-side API call.
+
+    Called by the frontend BEFORE aborting the SSE stream. Returns success/failure
+    so the frontend knows whether to clear the streaming state or keep the stop button.
+    """
+    from pydantic import BaseModel
+
+    class StopRequest(BaseModel):
+        chat_id: str
+        response_id: str | None = None
+
+    body = await request.json()
+    chat_id = body.get("chat_id", "")
+    response_id = body.get("response_id")
+
+    if not chat_id:
+        return {"success": False, "error": "chat_id required"}
+
+    # Resolve upstream session ID — Qwen's stop API needs the upstream ID, not local UUID
+    from server.database import get_upstream_session_id as _get_usid
+    upstream_id = _get_usid(chat_id) or chat_id
+
+    # Determine which service to use
+    scraper_enabled = get_scraper_settings().get("enabled")
+
+    stopped = False
+    if scraper_enabled and scraper_service:
+        # Browser scraper mode — use engine's stop_generation
+        try:
+            engine = getattr(scraper_service, "_engine", None)
+            if engine:
+                stopped = await engine.stop_generation(chat_id=upstream_id, response_id=response_id)
+        except Exception as exc:
+            logger.warning("Scraper stop failed: %s", exc)
+    else:
+        # Direct API mode — use ChatService._stop_upstream_generation
+        try:
+            stopped = await service._stop_upstream_generation(upstream_id, response_id)
+        except Exception as exc:
+            logger.warning("API stop failed: %s", exc)
+
+    logger.info("Stop request: local=%s upstream=%s response_id=%s success=%s", chat_id, upstream_id, response_id, stopped)
+    return {"success": stopped}
+
+
+# ---------------------------------------------------------------------------
+# Auto-switch context builder (summarization for account switching)
+# ---------------------------------------------------------------------------
+
+async def _build_switch_context(chat_id: str, model: str) -> str:
+    """Build a formatted context string for passing to a new account after switch.
+
+    Rules:
+    - Total context <= 500k chars → return as-is (no summarization needed).
+    - Last user message within last 100k chars → keep last 100k intact, summarize above.
+    - Last user message NOT within 100k → search up to 250k; if found, keep from that point, summarize above.
+    - Last user message beyond 250k → summarize everything, pass only last user message in [Ongoing conversation].
+
+    Returns formatted string with [Context Summary] + [Ongoing conversation] sections.
+    """
+    messages = get_messages(chat_id)
+    if not messages:
+        return ""
+
+    # Build full transcript
+    lines: list[str] = []
+    for m in messages:
+        role = m.get("role", "unknown")
+        content = (m.get("content") or "").strip()
+        if not content:
+            continue
+        lines.append(f"[{role}]: {content}")
+
+    full_text = "\n".join(lines)
+    total_len = len(full_text)
+
+    # Under threshold — no summarization needed
+    if total_len <= 500_000:
+        return full_text
+
+    # Find last user message position (searching from end)
+    last_user_idx = None
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            last_user_idx = i
+            break
+
+    if last_user_idx is None:
+        # No user message found — summarize everything
+        summary = await _run_summarizer(full_text[:60000], model)
+        return f"[Context Summary]\n{summary}\n\n[Ongoing conversation]\n(No user messages found)"
+
+    # Calculate char offset of last user message from the END of transcript
+    # Rebuild from last user message to end
+    tail_lines: list[str] = []
+    for m in messages[last_user_idx:]:
+        role = m.get("role", "unknown")
+        content = (m.get("content") or "").strip()
+        if content:
+            tail_lines.append(f"[{role}]: {content}")
+    tail_text = "\n".join(tail_lines)
+    tail_len = len(tail_text)
+
+    if tail_len <= 100_000:
+        # Last user message within 100k — keep last 100k intact, summarize above
+        # Find the cutoff point: go back from end to find where 100k starts
+        cutoff_chars = total_len - 100_000
+        head_text = full_text[:cutoff_chars]
+        tail_text = full_text[cutoff_chars:]
+        summary = await _run_summarizer(head_text[:60000], model)
+        return f"[Context Summary]\n{summary}\n\n[Ongoing conversation]\n{tail_text}"
+
+    elif tail_len <= 250_000:
+        # Last user message within 250k but not 100k — keep from last user msg, summarize above
+        head_lines: list[str] = []
+        for m in messages[:last_user_idx]:
+            role = m.get("role", "unknown")
+            content = (m.get("content") or "").strip()
+            if content:
+                head_lines.append(f"[{role}]: {content}")
+        head_text = "\n".join(head_lines)
+        summary = await _run_summarizer(head_text[:60000], model)
+        return f"[Context Summary]\n{summary}\n\n[Ongoing conversation]\n{tail_text}"
+
+    else:
+        # Last user message beyond 250k — summarize everything, pass only last user message
+        summary = await _run_summarizer(full_text[:60000], model)
+        last_user_content = (messages[last_user_idx].get("content") or "").strip()
+        return f"[Context Summary]\n{summary}\n\n[Ongoing conversation]\n[user]: {last_user_content}"
+
+
+async def _run_summarizer(transcript: str, model: str) -> str:
+    """Run the context summarizer model on a transcript chunk."""
+    from server.api.routes.chats import _load_ctx_pass_settings
+    settings = _load_ctx_pass_settings()
+    sum_model = settings.get("summarizer_model") or model
+    browser_acc = settings.get("browser_data_acc", "").strip()
+
+    prompt = (
+        "You are a context handoff summarizer. Below is a conversation transcript from "
+        "a session that is being switched to a different account. Produce a focused "
+        "operational briefing so the new session can continue with zero loss of state. "
+        "No filler, no meta-commentary.\n\n"
+        "HARD RULES:\n"
+        "- Never invent details not in the transcript. Write [unclear] if ambiguous.\n"
+        "- Preserve all code, paths, commands, errors VERBATIM in code blocks.\n"
+        "- Target ~800 words of prose (verbatim blocks exempt).\n\n"
+        f"---\n{transcript}"
+    )
+
+    try:
+        api_backend = _resolve_api_backend(sum_model)
+        if api_backend:
+            connector = get_connector(api_backend)
+            result = await connector.chat(message=prompt, model=sum_model, thinking_mode="fast")
+        elif browser_acc:
+            from engine.service import ChatService
+            from engine.config import _SYSTEM
+            acc_dir = _SYSTEM / browser_acc
+            if acc_dir.exists():
+                temp_service = ChatService(user_data_dir=str(acc_dir))
+                try:
+                    result = await temp_service.chat(message=prompt, model=sum_model, thinking_mode="fast")
+                finally:
+                    await temp_service.close()
+            else:
+                result = await service.chat(message=prompt, model=sum_model, thinking_mode="fast")
+        else:
+            result = await service.chat(message=prompt, model=sum_model, thinking_mode="fast")
+
+        answer = result.get("answer", "").strip()
+        if answer:
+            return answer
+        logger.warning("[auto-switch] Summarizer returned empty: %s", result.get("error", ""))
+        return "[Summary unavailable — summarizer returned empty response]"
+    except Exception as exc:
+        logger.exception("[auto-switch] Summarizer failed")
+        return f"[Summary unavailable — {type(exc).__name__}: {exc}]"
+
+
 @router.post("/api/chat")
 async def chat(request: ChatRequest):
     scraper_enabled = get_scraper_settings().get("enabled")
@@ -465,6 +648,23 @@ async def chat(request: ChatRequest):
         error_message: str | None = None
         current_message = api_message
         current_parent = parent_id
+        # Fork history injection: for Qwen forks, prepend conversation history
+        # to the first message so the fresh upstream session has context.
+        if _upstream_session_id and parent_id is None:
+            try:
+                with get_db() as _fh_conn:
+                    _fh_row = _fh_conn.execute(
+                        "SELECT fork_history FROM chats WHERE id = ?", (active_chat_id,)
+                    ).fetchone()
+                    if _fh_row and _fh_row["fork_history"]:
+                        current_message = _fh_row["fork_history"] + current_message
+                        _fh_conn.execute(
+                            "UPDATE chats SET fork_history = NULL WHERE id = ?",
+                            (active_chat_id,),
+                        )
+                        logger.info("[fork-history] Injected fork history into first message for %s", active_chat_id)
+            except Exception as _fh_err:
+                logger.warning("[fork-history] Failed to inject fork history: %s", _fh_err)
         round_index = 0
         saved_message_id: int | None = None
         _pending_skill_images: list[str] = []  # image paths from get_file to inject next round
@@ -568,13 +768,21 @@ async def chat(request: ChatRequest):
                             # Parser couldn't parse the tool_call JSON — feed back to model
                             _pe_reason = item.get("reason", "Malformed tool_call block")
                             _pe_raw = item.get("raw", "")[:200]
-                            round_skill_events.append({
+                            _pe_id = str(uuid.uuid4())[:12]
+                            # Emit skill_start so frontend transitions out of pending animation
+                            _pe_start = {"type": "skill_start", "id": _pe_id, "name": "action_parse"}
+                            round_skill_events.append(_pe_start)
+                            yield sse(_pe_start)
+                            _pe_end = {
                                 "type": "skill_end",
+                                "id": _pe_id,
                                 "name": "action_parse",
                                 "ok": False,
                                 "error": f"{_pe_reason} | Received: {_pe_raw}",
-                            })
-                            yield sse({"type": "skill_output", "name": "action_parse", "text": f"⚠️ {_pe_reason}"})
+                            }
+                            round_skill_events.append(_pe_end)
+                            yield sse({"type": "skill_output", "name": "action_parse", "text": f"⚠️ {_pe_reason}", "id": _pe_id})
+                            yield sse(_pe_end)
                         else:
                             # tool_pending, tool_progress, etc — forward to frontend
                             if itype in ("skill_start", "skill_output", "skill_end", "file_edit", "permission_request"):
@@ -912,14 +1120,146 @@ async def chat(request: ChatRequest):
                             yield _sse_line
                         error_message = str(event.get("message", "Unknown error"))
                         stream_error = True
-                    elif event_type == "rate_limited":
+                    elif event_type in ("rate_limited", "waf_blocked"):
                         pending_thinking.clear()
                         async for _sse_line in _drain_sync_gen(emit_flush()):
                             yield _sse_line
-                        hours = event.get("hours", "?")
-                        details = event.get("message", "Daily usage limit reached.")
-                        error_message = f"⏳ Rate Limited — {details} (retry in {hours}h)"
-                        stream_error = True
+                        # --- Auto-switch to next available account ---
+                        _switch_reason = "rate_limit" if event_type == "rate_limited" else "waf_block"
+                        logger.info("[auto-switch] Triggered by %s for chat %s", _switch_reason, active_chat_id)
+                        yield sse({"type": "status", "message": "switching_account", "reason": _switch_reason})
+
+                        from engine.config import get_next_available_account, _resolve_active_account as _get_active
+                        _current_acc = _get_active()
+                        _tried_accounts: set[str] = {_current_acc}
+                        _next_acc = get_next_available_account(exclude=_tried_accounts)
+
+                        if not _next_acc:
+                            # No accounts left — fall back to original error behavior
+                            if event_type == "rate_limited":
+                                hours = event.get("hours", "?")
+                                details = event.get("message", "Daily usage limit reached.")
+                                error_message = f"⏳ Rate Limited — {details} (retry in {hours}h)"
+                            else:
+                                error_message = "🚫 WAF/captcha block — no available accounts to switch to"
+                            stream_error = True
+                            yield sse(event)
+                        else:
+                            # Perform account switch
+                            logger.info("[auto-switch] Switching from %s → %s", _current_acc, _next_acc)
+                            try:
+                                from pathlib import Path as _Path
+                                from engine.config import _SYSTEM as _SYS
+                                _link = _SYS / "browser-data"
+                                _target = _SYS / _next_acc
+                                await service.close()
+                                if _link.is_symlink():
+                                    _link.unlink()
+                                elif _link.is_dir() and not _link.is_symlink():
+                                    pass  # legacy non-symlink, skip unlink
+                                _link.symlink_to(_target)
+                                logger.info("[auto-switch] Symlink updated to %s", _next_acc)
+                            except Exception as _sw_exc:
+                                logger.error("[auto-switch] Symlink switch failed: %s", _sw_exc)
+                                error_message = f"Account switch failed: {_sw_exc}"
+                                stream_error = True
+                                yield sse(event)
+                                continue
+
+                            # Sync system instructions to new account before first message
+                            try:
+                                await service.sync_context()
+                                logger.info("[auto-switch] sync_context completed for %s", _next_acc)
+                            except Exception as _sync_exc:
+                                logger.warning("[auto-switch] sync_context failed for %s: %s", _next_acc, _sync_exc)
+
+                            # Build context for new account (with summarization if >500k)
+                            try:
+                                _switch_ctx = await _build_switch_context(active_chat_id, request.model)
+                            except Exception as _ctx_exc:
+                                logger.warning("[auto-switch] Context build failed: %s", _ctx_exc)
+                                _switch_ctx = current_message  # fallback to raw message
+
+                            # Create new upstream session on switched account
+                            try:
+                                _new_upstream = await retry_async(
+                                    lambda: service.create_chat(model=request.model),
+                                    label="auto_switch_create_chat",
+                                )
+                                if _new_upstream:
+                                    _upstream_session_id = _new_upstream
+                                    from server.database import set_upstream_session_id
+                                    set_upstream_session_id(active_chat_id, _new_upstream)
+                                    logger.info("[auto-switch] New upstream session: %s", _new_upstream)
+                                else:
+                                    raise RuntimeError("create_chat returned None")
+                            except Exception as _sess_exc:
+                                logger.error("[auto-switch] New session creation failed: %s", _sess_exc)
+                                error_message = f"Account switched to {_next_acc} but session creation failed: {_sess_exc}"
+                                stream_error = True
+                                yield sse(event)
+                                continue
+
+                            # Warm up WAF tokens for new account (non-blocking best-effort)
+                            try:
+                                await service.force_refresh_waf(account=_next_acc)
+                            except Exception as _waf_exc:
+                                logger.warning("[auto-switch] WAF warmup failed for %s: %s", _next_acc, _waf_exc)
+
+                            yield sse({"type": "status", "message": "account_switched", "account": _next_acc})
+
+                            # Re-stream with context + new session
+                            _switch_msg = _switch_ctx if _switch_ctx else current_message
+                            round_event_source = service.stream_events(
+                                message=_switch_msg,
+                                chat_id=_upstream_session_id,
+                                parent_id=None,
+                                files=files_for_round,
+                                model=request.model,
+                                thinking_mode=request.thinking_mode,
+                            )
+                            async for _sw_event in round_event_source:
+                                _sw_type = _sw_event.get("type")
+                                if _sw_type == "meta":
+                                    continue
+                                if _sw_type == "answer":
+                                    pending_thinking.clear()
+                                    _raw_chunk = str(_sw_event.get("text", ""))
+                                    _raw_answer_parts.append(_raw_chunk)
+                                    _round_raw_parts.append(_raw_chunk)
+                                    async for _sse_line in _drain_sync_gen(emit_parsed(_raw_chunk)):
+                                        yield _sse_line
+                                    continue
+                                if _sw_type == "thinking":
+                                    _chunk = str(_sw_event.get("text", ""))
+                                    thinking_parts.append(_chunk)
+                                    round_thinking_parts.append(_chunk)
+                                    pending_thinking.append(_chunk)
+                                    yield sse({"type": "thinking", "text": _chunk})
+                                    continue
+                                if _sw_type == "done":
+                                    pending_thinking.clear()
+                                    async for _sse_line in _drain_sync_gen(emit_flush()):
+                                        yield _sse_line
+                                    final_parent = _sw_event.get("parent_id") or final_parent
+                                    current_parent = final_parent
+                                elif _sw_type == "error":
+                                    pending_thinking.clear()
+                                    async for _sse_line in _drain_sync_gen(emit_flush()):
+                                        yield _sse_line
+                                    error_message = str(_sw_event.get("message", "Unknown error after switch"))
+                                    stream_error = True
+                                elif _sw_type in ("rate_limited", "waf_blocked"):
+                                    # New account also exhausted — mark and try next
+                                    _tried_accounts.add(_next_acc)
+                                    logger.warning("[auto-switch] New account %s also blocked, marking exhausted", _next_acc)
+                                    pending_thinking.clear()
+                                    async for _sse_line in _drain_sync_gen(emit_flush()):
+                                        yield _sse_line
+                                    error_message = f"Account {_next_acc} also exhausted. All tried accounts failed."
+                                    stream_error = True
+                                yield sse(_sw_event)
+                            break  # Exit outer event loop after switch re-stream
                     yield sse(event)
                 round_thinking_text = "".join(round_thinking_parts)
                 if round_thinking_text:

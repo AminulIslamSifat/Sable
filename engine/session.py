@@ -10,6 +10,23 @@ from pathlib import Path
 import httpx
 from engine.config import COOKIES, BX_UA, BX_UMIDTOKEN, NEW_CHAT_URL, get_model_config
 
+# Persistent Playwright launch counter — survives restarts.
+_LAUNCH_COUNTER_PATH = Path(__file__).resolve().parent.parent / "system" / ".playwright_launches"
+
+
+def _increment_playwright_counter() -> int:
+    """Atomically increment and return the Playwright launch counter."""
+    try:
+        count = int(_LAUNCH_COUNTER_PATH.read_text().strip()) if _LAUNCH_COUNTER_PATH.exists() else 0
+    except (ValueError, OSError):
+        count = 0
+    count += 1
+    try:
+        _LAUNCH_COUNTER_PATH.write_text(str(count))
+    except OSError:
+        pass
+    return count
+
 
 def build_headers(cookies: str | None = None, bx_ua: str | None = None, bx_umidtoken: str | None = None) -> dict[str, str]:
     """Construct HTTP headers with given or fallback cookies and security tokens."""
@@ -70,7 +87,8 @@ class BrowserManager:
         """Lazy-starts the browser context and page if not already running."""
         if not self.playwright:
             self._check_profile_lock()
-            print(f"[DEBUG] Launching persistent browser context (headless={self.headless})...")
+            launch_num = _increment_playwright_counter()
+            print(f"[DEBUG] Launching persistent browser context #{launch_num} (headless={self.headless})...")
             from playwright.async_api import async_playwright
             self.playwright = await async_playwright().start()
             self.context = await self.playwright.chromium.launch_persistent_context(
@@ -377,8 +395,11 @@ class BrowserManager:
                 d2 = r2.json()
                 if not d2.get("success"):
                     raise Exception(f"Update instruction failed: {d2}")
-                with open("test/ins.md", "w") as file:
-                    file.write(instructions)
+                try:
+                    with open("test/ins.md", "w") as file:
+                        file.write(instructions)
+                except:
+                    print("writing to ins.md failed")
                 print(f"[DEBUG] Context synced successfully! ({len(instructions)} chars)")
                 return True
         except Exception as e:

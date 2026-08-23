@@ -13,6 +13,7 @@ import httpx
 
 from engine.config import (
     URL,
+    STOP_URL,
     get_qwen_tokens_for_account,
     save_qwen_tokens_for_account,
     mark_account_exhausted,
@@ -173,8 +174,10 @@ class ChatService:
                 logger.warning("Warmup failed: %s: %s", type(exc).__name__, exc)
                 self._headers = None
                 self._headers_account = None
-            # Browser stays open — warm session for the first message; the next
-            # switch's service.close() tears it down.
+            finally:
+                # Close browser immediately — tokens are cached to disk;
+                # all subsequent ops use HTTP APIs, no live Chromium needed.
+                await self._browser.close()
 
     async def force_refresh_waf(self, account: str | None = None) -> None:
         """Always launch browser to collect fresh WAF tokens, ignoring cache.
@@ -212,6 +215,8 @@ class ChatService:
                 else:
                     self._headers = None
                     self._headers_account = None
+            finally:
+                await self._browser.close()
 
     async def refresh_deepseek_token(self) -> str:
         """Extract a fresh DeepSeek token. Reuses an already-running browser
@@ -263,6 +268,30 @@ class ChatService:
         if self._headers:
             return await self._browser.sync_context(headers=self._headers, project_id=project_id)
         return await self._browser.sync_context(project_id=project_id)
+
+    async def _stop_upstream_generation(self, chat_id: str, response_id: str | None = None) -> bool:
+        """Call Qwen's stop API to halt server-side token generation.
+
+        Mirrors what chat.qwen.ai does when you press the stop button:
+        POST /api/v2/chat/completions/stop with {chat_id, response_id}.
+        Returns True if the server acknowledged the stop.
+        """
+        try:
+            headers = await self._ensure_headers()
+            payload = {"chat_id": chat_id}
+            if response_id:
+                payload["response_id"] = response_id
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.post(STOP_URL, json=payload, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("success"):
+                        logger.info("Upstream generation stopped: chat_id=%s response_id=%s", chat_id, response_id)
+                        return True
+                logger.warning("Stop API returned %s: %s", resp.status_code, resp.text[:200])
+        except Exception as exc:
+            logger.warning("Failed to call stop API: %s", exc)
+        return False
 
     async def stream_events(
         self,
@@ -408,10 +437,22 @@ class ChatService:
                                     line = line.strip()
 
                                     if not line.startswith("data: "):
-                                        # Check for non-SSE JSON error responses (e.g. rate limit)
+                                        # Check for non-SSE JSON error responses (e.g. rate limit, WAF block)
                                         if line:
                                             try:
                                                 err_data = json.loads(line)
+                                                # WAF/captcha block: ret contains FAIL_SYS_USER_VALIDATE or RGV587_ERROR
+                                                ret_list = err_data.get("ret")
+                                                if isinstance(ret_list, list):
+                                                    ret_str = " ".join(str(r) for r in ret_list)
+                                                    if "FAIL_SYS_USER_VALIDATE" in ret_str or "RGV587_ERROR" in ret_str:
+                                                        logger.warning("WAF/captcha block detected: %s", ret_str[:200])
+                                                        yield {
+                                                            "type": "waf_blocked",
+                                                            "message": "Account blocked by WAF/captcha",
+                                                            "ret": ret_list,
+                                                        }
+                                                        return
                                                 if err_data.get("success") is False:
                                                     inner = err_data.get("data", {})
                                                     code = inner.get("code", "")
@@ -545,6 +586,10 @@ class ChatService:
                                     _finish_reason, _answer_chars,
                                 )
 
+            except asyncio.CancelledError:
+                # Client disconnected (stop button pressed) — tell Qwen to stop generating
+                await self._stop_upstream_generation(chat_id, chosen_response_id)
+                raise
             except httpx.ConnectError as exc:
                 last_error_msg = f"Connection failed: {exc}"
                 continue
@@ -563,11 +608,23 @@ class ChatService:
                 last_error_msg = f"HTTP {status_code} — auth rejected"
 
             if not got_content and not needs_refresh:
-                # Check if buffer has leftover non-SSE JSON (e.g. rate-limit on HTTP 200)
+                # Check if buffer has leftover non-SSE JSON (e.g. rate-limit, WAF block on HTTP 200)
                 leftover = buffer.strip() if buffer else ""
                 if leftover:
                     try:
                         err_data = json.loads(leftover)
+                        # WAF/captcha block detection in leftover buffer
+                        ret_list = err_data.get("ret")
+                        if isinstance(ret_list, list):
+                            ret_str = " ".join(str(r) for r in ret_list)
+                            if "FAIL_SYS_USER_VALIDATE" in ret_str or "RGV587_ERROR" in ret_str:
+                                logger.warning("WAF/captcha block detected in leftover: %s", ret_str[:200])
+                                yield {
+                                    "type": "waf_blocked",
+                                    "message": "Account blocked by WAF/captcha",
+                                    "ret": ret_list,
+                                }
+                                return
                         if err_data.get("success") is False:
                             inner = err_data.get("data", {})
                             code = inner.get("code", "")

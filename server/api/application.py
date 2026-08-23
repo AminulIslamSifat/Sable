@@ -47,6 +47,7 @@ from .routes.setup import router as setup_router
 from .routes.cookbook import router as cookbook_router
 from .routes.checkpoints import router as checkpoints_router
 from .routes.personas import router as personas_router
+from .routes.update import router as update_router
 
 def _raise_nofile_limit() -> None:
     """Raise open file limit for agentic workloads (browsers, agents, streams)."""
@@ -196,8 +197,8 @@ if WEB_DIR.exists():
 if UPLOAD_DIR.exists():
     app.mount("/system/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
-if ASSETS_DIR.exists():
-    app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
+ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 
 # ---------- Auth Middleware ----------
 @app.middleware("http")
@@ -239,6 +240,7 @@ app.include_router(setup_router)
 app.include_router(cookbook_router)
 app.include_router(checkpoints_router)
 app.include_router(personas_router)
+app.include_router(update_router)
 
 # Wire agent runtime event callback → SSE push
 from .routes.agents import _async_push_agent_event, push_agent_event

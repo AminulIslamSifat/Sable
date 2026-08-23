@@ -101,5 +101,39 @@
         "content"
       ]
     }
+  },
+  {
+    "name": "list_checkpoints",
+    "description": "List available checkpoints with SHA, timestamp, message preview, and tool name. Use this to find a rollback target when you need to undo changes.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "chat_id": {
+          "type": "string",
+          "description": "Filter by chat ID (omit for current chat)"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Max results to return (default 20)"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "restore_checkpoint",
+    "description": "Restore workspace files to a previous checkpoint state. Returns a diff summary of what changed. Use after list_checkpoints to pick a SHA.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "sha": {
+          "type": "string",
+          "description": "Commit SHA from list_checkpoints output"
+        }
+      },
+      "required": [
+        "sha"
+      ]
+    }
   }
 ]

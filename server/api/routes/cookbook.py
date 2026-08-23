@@ -66,6 +66,8 @@ async def cookbook_status() -> dict[str, Any]:
         "settings": {
             "models_dir": str(state.models_dir),
             "default_port": state.settings.default_port,
+            "default_ctx": state.settings.default_ctx,
+            "default_threads": state.settings.default_threads,
             "auto_register": state.settings.auto_register,
             "has_hf_token": bool(state.settings.hf_token),
         },

@@ -57,7 +57,10 @@
       async _fetchChunk(text) {
         const res = await fetch("/api/tts/synthesize", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${localStorage.getItem('sable_token') || ''}`,
+          },
           body: JSON.stringify({ text }),
           signal: this.abortCtrl.signal,
         });
@@ -122,23 +125,41 @@
           this._playNext();
 
           // Pipeline: pre-fetch remaining chunks in parallel (max 2 concurrent)
+          // Use indexed slots to guarantee playback order regardless of fetch completion order
           const remaining = chunks.slice(2);
+          const slots = new Array(remaining.length).fill(null); // ordered result slots
+          let nextSlotToEnqueue = 0;
           let idx = 0;
+
+          const flushReadySlots = () => {
+            while (nextSlotToEnqueue < slots.length && slots[nextSlotToEnqueue] !== null) {
+              const entry = slots[nextSlotToEnqueue];
+              nextSlotToEnqueue++;
+              if (entry.audio) {
+                this.queue.push(entry.audio);
+                if (!this.playing) this._playNext();
+              }
+              // entry.audio === null means that chunk failed; skip it
+            }
+          };
+
           const prefetch = async () => {
             while (idx < remaining.length && !this.stopped) {
               const i = idx++;
               try {
                 const audio = await this._fetchChunk(remaining[i]);
                 if (!this.stopped) {
-                  this.queue.push(audio);
-                  if (!this.playing) this._playNext();
+                  slots[i] = { audio };
+                  flushReadySlots();
                 } else {
                   URL.revokeObjectURL(audio.src);
                 }
               } catch (err) {
-                if (err.name === "AbortError") return; // clean cancellation
+                if (err.name === "AbortError") return;
                 if (!this.stopped) {
                   console.warn(`TTS chunk ${i} failed:`, err.message);
+                  slots[i] = { audio: null }; // mark as failed so flush can skip past it
+                  flushReadySlots();
                 }
               }
             }
