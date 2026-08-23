@@ -33,6 +33,7 @@ class AgentTodoList:
     """Ordered task list attached to an agent. System-managed progression."""
     todos: list[TodoItem] = field(default_factory=list)
     current_index: int = 0
+    skip_reasons: list[tuple[int, str]] = field(default_factory=list)  # (todo_id, reason)
 
     @property
     def current(self) -> TodoItem | None:
@@ -86,27 +87,17 @@ class AgentTodoList:
             nxt.status = "in_progress"
         return nxt
 
-    def format_progress(self, compact: bool = False) -> str:
-        """Render the todo list for injection into agent context.
-
-        compact=True: only show current + remaining (saves context window).
-        """
-        icons = {"completed": "✅", "in_progress": "🔧", "pending": "❌", "skipped": "⏭️"}
-        lines = ["TODO LIST:", f"progress {self.progress}", ""]
-        for item in self.todos:
-            if compact and item.status == "completed":
-                continue  # Skip completed items in compact mode
-            icon = icons.get(item.status, "❌")
-            prefix = "CURRENT: " if item.status == "in_progress" else ""
-            lines.append(f"{icon} {prefix}{item.content}")
-            for sub in item.subtasks:
-                lines.append(f"   • {sub}")
-        lines.append("")
-        lines.append("⚠️ YOU MUST complete the CURRENT task above before stopping.")
-        lines.append("When finished with it, output: <todo_done summary=\"what you accomplished\" />")
-        lines.append("Then IMMEDIATELY start the next task. Do NOT pause or give a final answer.")
-        lines.append("To add sub-steps: <todo_sub content=\"description of sub-step\" />")
-        return "\n".join(lines)
+    def format_state(self) -> str:
+        """Minimal state block for per-iteration injection. No rules — just facts."""
+        if not self.todos:
+            return ""
+        done = sum(1 for t in self.todos if t.status in ("completed", "skipped"))
+        total = len(self.todos)
+        current = self.current
+        if self.all_done:
+            return f"[TODO] All {total} tasks complete ({done}/{total}). Provide your final answer."
+        line = f"[TODO] Progress: {done}/{total} | Current: {current.content}" if current else f"[TODO] Progress: {done}/{total}"
+        return line
 
 
 @dataclass
@@ -135,6 +126,7 @@ class Agent:
     collect: bool = False
     cancelled: bool = False  # Set by kill() — checked between tool calls
     system_prompt: str | None = None  # Built skill registry + output format for API backends
+    allowed_tool_groups: list[str] = field(default_factory=list)  # Tool group keys for native tool passing
     todos: AgentTodoList | None = None  # Structured task plan (None = simple task, no tracking)
     teacher_interventions: int = 0  # How many times the teacher has intervened
     model_chain: list[str] = field(default_factory=list)  # Fallback models from role config

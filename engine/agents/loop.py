@@ -12,6 +12,7 @@ import json
 import logging
 import random
 import re
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -102,18 +103,18 @@ REPEAT_LOOP_WARNING = (
 
 # Universal execute_command docs — always injected for every agent
 _EXECUTE_COMMAND_DOC = """\
-## execute_command (universal)
+### execute_command
 Run a shell command. Returns stdout+stderr. 15s timeout.
-Usage:
-  <execute_command>your command here</execute_command>
-Examples:
-  <execute_command>ls -la /home</execute_command>
-  <execute_command>python3 script.py --flag</execute_command>
-  <execute_command>grep -rn "pattern" /path --include="*.py"</execute_command>
+
+Tool call:
+```json
+{"name": "execute_command", "arguments": {"command": "ls -la /home"}}
+```
+
 Rules:
 - Always use absolute paths.
-- For long-running commands (>15s), add bg="true" to execute_command.
-- Sudo password is <pass> — use: echo <pass> | sudo -S <command>
+- For long-running commands (>15s), set `"bg": true` in arguments.
+- Sudo password is `<pass>` — use: `echo <pass> | sudo -S <command>`
 """
 
 _SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills"
@@ -133,66 +134,104 @@ def _load_skill_instruction(skill_key: str) -> str | None:
         return None
 
 
-def _build_tool_guide(allowed_skills: list[str], default_skills: list[str]) -> str:
-    """Build tool usage guide from skill keys.
+def _resolve_tool_groups(allowed_tools: list[str]) -> list[str]:
+    """Resolve tool group keys to flat list of function names.
 
-    - default_skills: full instruction.md auto-injected into prompt
-    - allowed_skills (minus defaults): compact listing (name + instruction path)
-    - execute_command: always universal, hardcoded docs
+    Only explicitly listed group keys are included (respecting disabled_tools.json).
     """
-    from engine.agents.registry import get_universal_skills
+    from engine.tools_loader import browse_tools
+    from server.api.routes.misc import get_disabled_tools
 
-    A = chr(60)  # <
-    Z = chr(62)  # >
-    TC_O = "<" + "tool_call" + ">"
-    TC_C = "</" + "tool_call" + ">"
-    lines = [
-        "\n\n## Available Tools",
-        "To call a tool, output exactly this structure (one per response):",
-        f"  {TC_O}",
-        f'  {{"name": "tool_name", "arguments": {{"param": "value"}}}}',
-        f"  {TC_C}",
-        "",
-        "Rules:",
-        "- Exactly ONE tool_call block per response. Wait for the result before continuing.",
-        "- For INTERMEDIATE responses: briefly state your next step (1 sentence max), then output the tool_call block. Do NOT use final format headers.",
-        "- Use absolute paths for all file operations.",
-        "- After getting tool output, analyze it and decide next step.",
-        "- ONLY when ALL tool work is done, output your final markdown answer using the required sections. No tool_call block on the final answer.",
-        "",
-    ]
+    disabled = set(get_disabled_tools().get("disabled", []))
+    all_groups = browse_tools()
 
-    # Universal: execute_command always available
-    lines.append(_EXECUTE_COMMAND_DOC)
+    # Filter to requested groups that aren't disabled
+    allowed_set = set(allowed_tools)
+    groups = [g for g in all_groups if g["key"] in allowed_set and g["key"] not in disabled]
 
-    # Default skills: full instruction.md injected
-    defaults = set(default_skills)
-    for skill_key in default_skills:
-        if skill_key == "execute_command":
-            continue
-        instr = _load_skill_instruction(skill_key)
-        if instr:
-            lines.append(f"\n## {skill_key} (default)\n{instr}\n")
+    # Flatten to function names
+    funcs = []
+    for g in groups:
+        for fn in g.get("tools", []):
+            name = fn.get("name", fn) if isinstance(fn, dict) else fn
+            if name not in funcs:
+                funcs.append(name)
+    return funcs
 
-    # Allowed but not default: compact listing with trigger/description
-    extra = [s for s in allowed_skills if s not in defaults and s != "execute_command"]
-    if extra:
+
+_NATIVE_TOOL_BACKENDS = frozenset({"gemini", "mistral", "groq", "openai", "local", "cloudflare"})
+
+
+def _build_tool_guide(allowed_tools: list[str], allowed_skills: list[str], *, native_tools: bool = False) -> str:
+    """Build tool usage guide from tool group keys and skill keys.
+
+    - allowed_tools: tool group keys (empty = all enabled groups)
+    - allowed_skills: loaded from /skills/{key}/instruction.md (skipped if missing)
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    lines: list[str] = []
+
+    if not native_tools:
+        # Text-based Hermes instructions + JSON schema dump (non-native backends only)
+        tool_funcs = _resolve_tool_groups(allowed_tools)
+        TC_O = "<" + "tool_call" + ">"
+        TC_C = "</" + "tool_call" + ">"
+        example = '[{"name": "tool_name", "arguments": {"param": "value"}}]'
+        lines.extend([
+            "\n## Available Tools",
+            "To call a tool, output exactly this structure (one per response):",
+            f"  {TC_O}",
+            f"  {example}",
+            f"  {TC_C}",
+            "",
+            "Rules:",
+            "- Exactly ONE tool_call block per response. Wait for the result before continuing.",
+            "- For INTERMEDIATE responses: briefly state your next step (1 sentence max), then output the tool_call block. Do NOT use final format headers.",
+            "- Use absolute paths for all file operations.",
+            "- After getting tool output, analyze it and decide next step.",
+            "- ONLY when ALL tool work is done, output your final markdown answer using the required sections. No tool_call block on the final answer.",
+            "",
+        ])
+
+        from engine.tools_loader import get_all_tool_schemas
+        from server.api.routes.misc import get_disabled_tools
+        disabled = get_disabled_tools().get("disabled", [])
+        schemas = get_all_tool_schemas(disabled=disabled, allowed=allowed_tools)
+        if schemas:
+            lines.append("\n<tools>")
+            for s in schemas:
+                lines.append(json.dumps(s, ensure_ascii=False))
+            lines.append("</tools>")
+            lines.append("")
+
+    # Skill documentation: load instruction.md only if file exists
+    valid_skills = []
+    for skill_key in allowed_skills:
+        instr_path = _SKILLS_DIR / skill_key / "instruction.md"
+        if instr_path.is_file():
+            valid_skills.append(skill_key)
+        else:
+            logger.warning("Skipping missing agent skill in prompt: %s", skill_key)
+
+    if valid_skills:
         from engine.skills.registry import discover_skills
         skill_meta = {s.key: s for s in discover_skills(_SKILLS_DIR)}
 
-        lines.append("\n## Additional Allowed Skills")
-        lines.append("Available on demand — read their instruction.md via execute_command before use.\n")
-        for skill_key in extra:
+        lines.append("\n## Available Skills")
+        lines.append("Read their instruction.md via view_file before first use.\n")
+        for skill_key in valid_skills:
             meta = skill_meta.get(skill_key)
+            instr_path = _SKILLS_DIR / skill_key / "instruction.md"
             if meta:
                 lines.append(f"### {meta.name}")
                 lines.append(f"* **Trigger:** {meta.trigger}")
                 if meta.not_this_if:
                     lines.append(f"* **Not this if:** {meta.not_this_if}")
-                lines.append(f"* **Instruction:** `{_SKILLS_DIR / skill_key / 'instruction.md'}`")
             else:
                 lines.append(f"### {skill_key}")
-                lines.append(f"* **Instruction:** `{_SKILLS_DIR / skill_key / 'instruction.md'}`")
+            lines.append(f"* **Instruction:** `{instr_path}`")
             lines.append("")
 
     return "\n".join(lines)
@@ -232,11 +271,40 @@ async def run_agent_llm_loop(
             key = _get_backend_key(agent.model)
             raise RuntimeError(f"Circuit breaker open for {key} — provider unavailable")
 
+    # Store allowed tool groups on agent for native tool passing to API backends
+    agent.allowed_tool_groups = list(role_cfg.allowed_tools)
+
     # Build first message: system prompt + tool guide + task
+    # Skip text-based tool instructions for backends with native tool calling support
+    from engine.config import get_model_config as _get_agent_model_cfg
+    _agent_backend = _get_agent_model_cfg(agent.model).get("api_backend", "")
+    _use_native_tools = _agent_backend in _NATIVE_TOOL_BACKENDS
+
     system_prompt = role_cfg.system_prompt
-    system_prompt += _build_tool_guide(role_cfg.allowed_skills, role_cfg.default_skills)
+    system_prompt += _build_tool_guide(role_cfg.allowed_tools, role_cfg.allowed_skills, native_tools=_use_native_tools)
     if agent.instruction:
         system_prompt += f"\n\nSpecial instruction from orchestrator: {agent.instruction}"
+
+    # Inject TODO instructions + tools into system prompt (only for agents with a plan)
+    if agent.todos and agent.todos.todos:
+        plan_lines = "\n".join(f"{t.id}. {t.content}" for t in agent.todos.todos)
+        system_prompt += (
+            "\n\n## Task Plan\n"
+            "You have a structured execution plan. Work through it in order.\n\n"
+            f"Steps:\n{plan_lines}\n\n"
+            "### Progress Tracking Tools\n"
+            "You have two tools for managing your task plan:\n\n"
+            "**todo_complete** — Call when you finish the current task.\n"
+            '  {"name": "todo_complete", "arguments": {"summary": "what you accomplished"}}\n\n'
+            "**todo_skip** — Call to skip the current task if it's unnecessary or blocked.\n"
+            '  {"name": "todo_skip", "arguments": {"reason": "why you are skipping"}}\n\n'
+            "Rules:\n"
+            "- A single task may require multiple tool calls. Only call todo_complete when the task is fully done.\n"
+            "- After calling todo_complete or todo_skip, continue working on the next task immediately.\n"
+            "- Provide your final markdown answer only after ALL tasks are complete or skipped.\n"
+            "- Your current task and progress are shown after each tool result."
+        )
+
     agent.system_prompt = system_prompt
 
     first_message = system_prompt
@@ -245,9 +313,8 @@ async def run_agent_llm_loop(
     else:
         first_message += f"\n\nTask: {agent.task}"
 
-    # Inject todo plan into first message if present
+    # Emit initial todo state so panel sees it immediately
     if agent.todos and agent.todos.todos:
-        # Emit initial todo state so panel sees it immediately (even before first <todo_done>)
         agent.push_stream_event({
             "type": "todo_progress",
             "progress": agent.todos.progress,
@@ -257,17 +324,6 @@ async def run_agent_llm_loop(
                 for t in agent.todos.todos
             ],
         })
-        plan_lines = "\n".join(f"{t.id}. {t.content}" for t in agent.todos.todos)
-        first_message += (
-            f"\n\nYour execution plan:\n{plan_lines}\n\n"
-            f"Work through these steps in order. Start with step 1.\n\n"
-            f"CRITICAL TODO RULES:\n"
-            f"1. You MUST work through EVERY task in order. Do NOT skip or stop early.\n"
-            f"2. When you finish a task, you MUST output <todo_done summary=\"...\"/> BEFORE doing anything else.\n"
-            f"3. After marking a task done, IMMEDIATELY start the next task. Do NOT pause or provide a final answer.\n"
-            f"4. Only provide your final markdown answer AFTER all tasks are marked complete.\n"
-            f"5. If you are unsure whether a task is done, err on the side of doing more work, not less."
-        )
 
     # Track conversation for DB/history (not sent to API)
     agent.messages = [
@@ -320,62 +376,6 @@ async def run_agent_llm_loop(
         ).strip()
         agent.push_stream_event({"type": "answer", "text": _panel_text})
 
-        # --- Todo progression: parse <todo_done> and <todo_sub> tags ---
-        if agent.todos and agent.todos.current:
-            # Parse <todo_sub content="..." /> tags
-            for sub_match in re.finditer(
-                r'<todo_sub\s+content="([^"]*)"', response_text
-            ):
-                sub_desc = sub_match.group(1).strip()
-                if sub_desc and sub_desc not in agent.todos.current.subtasks:
-                    agent.todos.current.subtasks.append(sub_desc)
-
-            # Parse <todo_done summary="..." /> tag
-            done_match = re.search(r'<todo_done\s+summary="([^"]*)"', response_text)
-            if done_match:
-                agent.todos.current.result = done_match.group(1).strip()
-                nxt = agent.todos.advance()
-                agent.push_stream_event({
-                    "type": "todo_progress",
-                    "progress": agent.todos.progress,
-                    "current": nxt.content if nxt else None,
-                    "todos": [
-                        {
-                            "id": t.id,
-                            "content": t.content,
-                            "status": t.status,
-                            "subtasks": t.subtasks,
-                            "result": t.result,
-                        }
-                        for t in agent.todos.todos
-                    ],
-                })
-                if agent.todos.all_done:
-                    # All todos complete — next response should be the final answer
-                    current_message = (
-                        "All tasks in your plan are complete. "
-                        "Provide your final markdown answer now."
-                    )
-                    agent.messages.append({"role": "user", "content": current_message})
-                    await _persist_message(agent.id, "user", current_message)
-                    continue
-                else:
-                    # More todos remain — explicitly acknowledge completion and direct to next task
-                    completed_content = agent.todos.todos[agent.todos.current_index - 1].content if agent.todos.current_index > 0 else "previous task"
-                    next_task = nxt.content if nxt else "next task"
-                    todo_ack = (
-                        f"[TODO PROGRESS] Task \"{completed_content}\" marked complete. ✅\n"
-                        f"Now work on: \"{next_task}\"\n"
-                        f"Continue executing. Do NOT stop or provide a final answer until ALL tasks are done."
-                    )
-                    agent.messages.append({"role": "user", "content": todo_ack})
-                    await _persist_message(agent.id, "user", todo_ack)
-
-            # Strip todo tags from response so they don't leak into skill parsing or message history
-            response_text = re.sub(r'<todo_done\s+summary="[^"]*"\s*/?>', '', response_text)
-            response_text = re.sub(r'<todo_sub\s+content="[^"]*"\s*/?>', '', response_text)
-            response_text = re.sub(r'\n{3,}', '\n\n', response_text).strip()
-
         # Check for action wrapper format violations BEFORE parsing tags
         format_warning = _check_action_wrapper_violations(response_text)
         if format_warning:
@@ -402,23 +402,6 @@ async def run_agent_llm_loop(
         response_text = re.sub(r'\n{3,}', '\n\n', response_text).strip()
 
         if not tags:
-            # No tool calls → check if this is a premature stop (thin response while todos remain)
-            has_active_todos = agent.todos and not agent.todos.all_done
-            is_thin_response = len(response_text.strip()) < 200
-
-            if has_active_todos and is_thin_response:
-                # Agent stopped mid-plan with a short non-action response — nudge to continue
-                continue_msg = (
-                    "[CONTINUE REQUIRED] You stopped before completing all tasks.\n"
-                    f"You still have {len(agent.todos.todos) - agent.todos.current_index} task(s) remaining.\n"
-                    f"Current task: \"{agent.todos.current.content}\"\n"
-                    "Do NOT provide a final answer yet. Continue working on the current task using tools.\n"
-                    "Only stop when ALL tasks are marked done."
-                )
-                agent.messages.append({"role": "user", "content": continue_msg})
-                await _persist_message(agent.id, "user", continue_msg)
-                continue  # Loop back — give the agent another turn
-
             # No tool calls → validate as final markdown answer
             if _validate_markdown_output(response_text, role_cfg.required_sections):
                 return response_text
@@ -434,17 +417,6 @@ async def run_agent_llm_loop(
                 parent_id = new_parent_id
             agent.messages.append({"role": "assistant", "content": response_text})
             await _persist_message(agent.id, "assistant", response_text)
-
-            # Second chance: if still thin with active todos, nudge again instead of accepting
-            if has_active_todos and len(response_text.strip()) < 200:
-                continue_msg2 = (
-                    "[STILL INCOMPLETE] Your response does not contain a valid final answer or tool calls.\n"
-                    f"Remaining tasks: {len(agent.todos.todos) - agent.todos.current_index}\n"
-                    "Continue working. Use tools to complete the current task."
-                )
-                agent.messages.append({"role": "user", "content": continue_msg2})
-                await _persist_message(agent.id, "user", continue_msg2)
-                continue
 
             return response_text  # Accept even if still malformed (degraded)
 
@@ -490,10 +462,17 @@ async def run_agent_llm_loop(
                 # Stream skill_start to panel
                 agent.push_stream_event({"type": "skill_start", "name": tag_name, "attrs": tag.get("attrs", "")})
 
-                # process_tag is a sync generator — run in thread so task.cancel() can interrupt
-                events = await asyncio.to_thread(
-                    lambda: list(engine.process_tag(tag_name, attrs_dict, content, namespace=agent.id))
-                )
+                # Todo tools are dispatched directly with agent context (not via skill engine)
+                if tag_name in ("todo_complete", "todo_skip"):
+                    from engine.skills.handlers.agents import handle_todo_complete, handle_todo_skip
+                    _todo_handler = handle_todo_complete if tag_name == "todo_complete" else handle_todo_skip
+                    _todo_tag_id = uuid.uuid4().hex[:12]
+                    events = list(_todo_handler(_todo_tag_id, tag_name, attrs_dict, content, agent=agent))
+                else:
+                    # process_tag is a sync generator — run in thread so task.cancel() can interrupt
+                    events = await asyncio.to_thread(
+                        lambda: list(engine.process_tag(tag_name, attrs_dict, content, namespace=agent.id))
+                    )
 
                 # Forward skill events to panel stream (skip duplicate skill_start —
                 # the explicit one above already created the live "running" card)
@@ -519,7 +498,30 @@ async def run_agent_llm_loop(
 
                 if tag_name not in agent.skills_used:
                     agent.skills_used.append(tag_name)
-                consecutive_failures = 0  # reset on success
+
+                # Check if any skill_end event reported failure (ok=False)
+                _tool_failed = any(
+                    isinstance(_e, dict) and _e.get("type") == "skill_end" and not _e.get("ok", True)
+                    for _e in events
+                )
+                if _tool_failed:
+                    consecutive_failures += 1
+                    _last_err = next(
+                        (_e.get("error", "unknown") for _e in events
+                         if isinstance(_e, dict) and _e.get("type") == "skill_end" and not _e.get("ok", True)),
+                        "unknown",
+                    )
+                    if consecutive_failures >= failure_threshold:
+                        guidance = await _try_teacher_escalation(
+                            agent,
+                            f"Agent hit {consecutive_failures} consecutive tool failures. "
+                            f"Last error: {_last_err}"
+                        )
+                        if guidance:
+                            tool_results.append(f"[TEACHER GUIDANCE]: {guidance}")
+                        consecutive_failures = 0  # reset after intervention attempt
+                else:
+                    consecutive_failures = 0  # reset on success
 
             except asyncio.CancelledError:
                 agent.push_stream_event({"type": "skill_end", "name": tag_name, "ok": False, "error": "Killed"})
@@ -560,9 +562,11 @@ async def run_agent_llm_loop(
         combined = "\n---\n".join(tool_results)
         current_message = f"<tool_response>\\n{combined}\\n</tool_response>"
 
-        # Append todo context if agent has an active todo list (compact: skip completed items)
-        if agent.todos and agent.todos.current:
-            current_message += f"\n\n{agent.todos.format_progress(compact=True)}"
+        # Append minimal TODO state (no rules — just facts)
+        if agent.todos:
+            state_line = agent.todos.format_state()
+            if state_line:
+                current_message += f"\n\n{state_line}"
 
         agent.messages.append({"role": "user", "content": current_message})
 
@@ -720,19 +724,92 @@ async def _try_fallback_model(agent: Agent, failed_model: str) -> str | None:
 def _try_browser_fallback(agent: Agent) -> str | None:
     """Try the next browser profile from the account pool (Qwen only).
 
-    Returns the next available profile or None if exhausted.
+    Returns the full path to the next available profile or None if exhausted.
+    Pool entries are raw directory names; agent.browser_data_dir may be a full path.
     """
     pool = get_account_pool(agent.role)
     if not pool:
         return None
-    current = agent.browser_data_dir or ""
+    # Extract just the directory name for comparison (agent.browser_data_dir may be full path)
+    current_name = Path(agent.browser_data_dir).name if agent.browser_data_dir else ""
     try:
-        idx = pool.index(current) + 1
+        idx = pool.index(current_name) + 1
     except ValueError:
         idx = 0
     if idx >= len(pool):
         return None
-    return pool[idx]
+    # Resolve to full path under _SYSTEM
+    from engine.config import _SYSTEM as _AGENT_SYSTEM_DIR
+    acct_profile = _AGENT_SYSTEM_DIR / pool[idx]
+    if acct_profile.is_dir():
+        return str(acct_profile)
+    return pool[idx]  # fallback to raw name if dir missing
+
+
+async def _clear_qwen_account_settings(headers: dict[str, str], agent_id: str) -> None:
+    """Disable Qwen built-in tools and clear personalization for an agent account.
+
+    Mirrors the account-prep done by BrowserManager.sync_context(), but writes an
+    empty instruction so Qwen's cached personalization cannot conflict with the
+    agent system prompt. This must run for the initial assigned browser profile
+    and again whenever Qwen browser fallback switches to another profile.
+    """
+    import uuid as _uuid
+    import httpx as _httpx
+
+    settings_url = "https://chat.qwen.ai/api/v2/users/user/settings/update"
+    hdrs = dict(headers)
+    hdrs.update({
+        "Content-Type": "application/json",
+        "Version": "0.2.80",
+        "source": "web",
+        "Origin": "https://chat.qwen.ai",
+        "Referer": "https://chat.qwen.ai/settings/personalization",
+        "X-Request-Id": str(_uuid.uuid4()),
+    })
+
+    async with _httpx.AsyncClient(timeout=15) as client:
+        # Step 1: disable default Qwen tools that conflict with Sable/agent tools.
+        tools_payload = {
+            "tools_enabled": {
+                "web_extractor": False,
+                "web_search_image": False,
+                "web_search": False,
+                "image_gen_tool": False,
+                "code_interpreter": False,
+                "history_retriever": False,
+                "image_edit_tool": False,
+                "bio": False,
+                "image_zoom_in_tool": False,
+            }
+        }
+        r1 = await client.post(settings_url, json=tools_payload, headers=hdrs)
+        try:
+            d1 = r1.json()
+        except Exception:
+            d1 = {}
+        if r1.status_code >= 400 or (d1 and not d1.get("success", False)):
+            raise RuntimeError(f"disable tools failed: HTTP {r1.status_code} {str(d1)[:200]}")
+
+        # Step 2: clear personalization instruction for agent-only prompt control.
+        hdrs["X-Request-Id"] = str(_uuid.uuid4())
+        instr_payload = {
+            "personalization": {
+                "name": "",
+                "description": "",
+                "style": "Default",
+                "instruction": "",
+            }
+        }
+        r2 = await client.post(settings_url, json=instr_payload, headers=hdrs)
+        try:
+            d2 = r2.json()
+        except Exception:
+            d2 = {}
+        if r2.status_code >= 400 or (d2 and not d2.get("success", False)):
+            raise RuntimeError(f"clear instruction failed: HTTP {r2.status_code} {str(d2)[:200]}")
+
+    logger.info("Agent %s: Qwen account settings cleared (tools disabled + empty instruction)", agent_id)
 
 
 def _get_backend_key(model: str) -> str:
@@ -809,6 +886,13 @@ async def _send_with_retry(
             })
             agent.browser_data_dir = browser_profile
             agent.qwen_session_id = None
+
+            # Clear stale settings on the fallback account (tools + instruction)
+            try:
+                fb_headers = await _get_agent_qwen_headers(agent)
+                await _clear_qwen_account_settings(fb_headers, agent.id)
+            except Exception as exc:
+                logger.warning("Agent %s: clear settings on fallback account %s failed: %s", agent.id, browser_profile, exc)
             try:
                 from server.database import set_upstream_session_id as _set_usid
                 _set_usid(agent.chat_id, None)
@@ -912,7 +996,7 @@ async def _call_llm(
 
     if backend == "deepseek":
         return await _call_deepseek(agent, message)
-    if backend in ("gemini", "groq", "mistral"):
+    if backend in ("gemini", "groq", "mistral", "openai", "cloudflare"):
         return await _call_api_backend(agent, message, backend, system_instruction=agent.system_prompt, files=files)
     if backend == "local":
         return await _call_local(agent, message)
@@ -976,16 +1060,26 @@ async def _call_api_backend(agent: Agent, message: str, backend: str, *, system_
     """Gemini / Groq / Mistral: stateless API call with internal key rotation.
 
     These backends don't need browser tokens — they rotate API keys internally.
-    No account assignment needed.
+    No account assignment needed. Native tool schemas are passed via the tools parameter.
     """
     from connectors import get_connector
     from engine.config import get_model_config
+    from engine.tools_loader import get_all_tool_schemas
+    from server.api.routes.misc import get_disabled_tools
 
     connector = get_connector(backend, model_id=agent.model)
     cfg = get_model_config(agent.model)
     api_model_type = cfg.get("api_model_type")
 
+    # Load native tool schemas for this agent's allowed tool groups
+    disabled = get_disabled_tools().get("disabled", [])
+    native_tools = get_all_tool_schemas(disabled=disabled, allowed=agent.allowed_tool_groups) or None
+
     accumulated = ""
+    # Track native tool calls for agent.messages + conversation file
+    _native_tool_calls: list[dict[str, Any]] = []  # [{name, attrs, result, ok}]
+    _current_tool: dict[str, Any] | None = None
+
     async for event in connector.stream_chat(
         message,
         model=api_model_type,
@@ -993,6 +1087,7 @@ async def _call_api_backend(agent: Agent, message: str, backend: str, *, system_
         inject_instructions=False,
         system_instruction=system_instruction,
         files=files,
+        tools=native_tools,
     ):
         etype = event.get("type")
         if etype == "answer":
@@ -1002,10 +1097,59 @@ async def _call_api_backend(agent: Agent, message: str, backend: str, *, system_
                 agent.push_stream_event({"type": "chunk", "text": chunk_text})
         elif etype == "error":
             raise RuntimeError(f"{backend}: {event.get('message', 'unknown error')}")
+        elif etype == "skill_start":
+            # Native tool execution started — forward to panel and start tracking
+            agent.push_stream_event(event)
+            _current_tool = {
+                "name": event.get("name", ""),
+                "attrs": event.get("attrs", ""),
+                "result_parts": [],
+            }
+        elif etype == "skill_output":
+            # Forward output to panel and collect for conversation
+            agent.push_stream_event(event)
+            if _current_tool is not None:
+                _current_tool["result_parts"].append(event.get("text", ""))
+        elif etype == "skill_end":
+            # Forward end event and finalize tool tracking
+            agent.push_stream_event(event)
+            if _current_tool is not None:
+                _current_tool["ok"] = event.get("ok", True)
+                _current_tool["result"] = "".join(_current_tool["result_parts"])
+                _native_tool_calls.append(_current_tool)
+                _current_tool = None
 
-    if not accumulated.strip():
+    # Append native tool calls/results to agent.messages for conversation file
+    import json as _j
+    for tc in _native_tool_calls:
+        attrs = tc["attrs"]
+        if isinstance(attrs, str):
+            try:
+                attrs = _j.loads(attrs) if attrs else {}
+            except Exception:
+                attrs = {}
+        command_str = _j.dumps({"name": tc["name"], "arguments": attrs}, ensure_ascii=False)
+        tool_msg = (
+            f"## Tool\n"
+            f"**Name:** `{tc['name']}`\n"
+            f"**Command:**\n```\n{command_str}\n```\n"
+            f"**Output:**\n```\n{tc['result'][:2000]}\n```"
+        )
+        agent.messages.append({"role": "tool", "content": tool_msg})
+        await _persist_message(agent.id, "tool", tool_msg)
+
+    if not accumulated.strip() and not _native_tool_calls:
         raise RuntimeError(f"{backend} returned empty response")
     return accumulated, None
+
+
+def _cookies_have_identity(cookies: str) -> bool:
+    """Check if cookie string contains user-identity cookies required for Qwen history.
+
+    Qwen requires `aui` or `cnaui` cookies to associate chats with an account.
+    Without these, requests pass WAF but are treated as anonymous (no history saved).
+    """
+    return "aui=" in cookies or "cnaui=" in cookies
 
 
 async def _get_agent_qwen_headers(agent: Agent) -> dict[str, str]:
@@ -1015,6 +1159,7 @@ async def _get_agent_qwen_headers(agent: Agent) -> dict[str, str]:
     Uses cached per-account tokens when available. If no cached token exists
     for the assigned account, launches a headless browser with that profile
     to extract fresh tokens, then closes it.
+    Rejects anonymous tokens (missing aui/cnaui) — they pass WAF but don't save history.
     """
     from pathlib import Path as _Path
 
@@ -1032,11 +1177,26 @@ async def _get_agent_qwen_headers(agent: Agent) -> dict[str, str]:
 
         cached = get_qwen_tokens_for_account(account)
         if cached and cached.get("cookies"):
-            return build_headers(
-                cookies=cached["cookies"],
-                bx_ua=cached.get("bx_ua"),
-                bx_umidtoken=cached.get("bx_umidtoken"),
+            cookies = cached["cookies"]
+            has_identity = _cookies_have_identity(cookies)
+            logger.info(
+                "[WAF-TOKEN] agent=%s account=%s cookies_len=%d has_identity=%s bx_ua=%s",
+                agent.id, account, len(cookies), has_identity,
+                "yes" if cached.get("bx_ua") else "no",
             )
+            if not has_identity:
+                logger.warning(
+                    "[WAF-TOKEN] agent=%s account=%s: cookies lack aui/cnaui (anonymous). "
+                    "Launching browser to get authenticated tokens.",
+                    agent.id, account,
+                )
+                # Fall through to browser launch below
+            else:
+                return build_headers(
+                    cookies=cookies,
+                    bx_ua=cached.get("bx_ua"),
+                    bx_umidtoken=cached.get("bx_umidtoken"),
+                )
 
         # No cached token — launch browser with this account's profile to get one
         profile_dir = _SYSTEM / account
@@ -1084,11 +1244,19 @@ async def _call_local(agent: Agent, message: str) -> tuple[str, str | None]:
     # Full history — stateless API requires it
     messages = list(agent.messages)
 
+    # Load native tool schemas for this agent's allowed tool groups
+    from engine.tools_loader import get_all_tool_schemas
+    from server.api.routes.misc import get_disabled_tools
+    disabled = get_disabled_tools().get("disabled", [])
+    native_tools = get_all_tool_schemas(disabled=disabled, allowed=agent.allowed_tool_groups)
+
     payload = {
         "model": api_model,
         "messages": messages,
         "stream": True,
     }
+    if native_tools:
+        payload["tools"] = native_tools
 
     # Debug: dump full payload to log file for local model inspection
     try:
@@ -1108,36 +1276,155 @@ async def _call_local(agent: Agent, message: str) -> tuple[str, str | None]:
     except Exception:
         pass  # never let logging break inference
 
-    accumulated = ""
-    async with httpx.AsyncClient(timeout=300.0) as client:
-        async with client.stream(
-            "POST",
-            f"{endpoint}/chat/completions",
-            json=payload,
-            headers={"Authorization": "Bearer sable-local"},
-        ) as resp:
-            if resp.status_code != 200:
-                body = await resp.aread()
-                raise RuntimeError(f"Local model HTTP {resp.status_code}: {body.decode()[:300]}")
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data = line[6:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                    delta = chunk["choices"][0].get("delta", {})
-                    token = delta.get("content", "")
-                    if token:
-                        accumulated += token
-                        agent.push_stream_event({"type": "chunk", "text": token})
-                except (json.JSONDecodeError, KeyError, IndexError):
-                    pass
+    # Tool execution loop — mirrors main chat's LocalConnector
+    _max_tool_rounds = 20
+    _tool_round = 0
+    final_accumulated = ""
 
-    if not accumulated.strip():
+    while _tool_round < _max_tool_rounds:
+        _tool_round += 1
+        accumulated = ""
+        _tc_buffers: dict[int, dict] = {}
+
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            async with client.stream(
+                "POST",
+                f"{endpoint}/chat/completions",
+                json=payload,
+                headers={"Authorization": "Bearer sable-local"},
+            ) as resp:
+                if resp.status_code != 200:
+                    body = await resp.aread()
+                    raise RuntimeError(f"Local model HTTP {resp.status_code}: {body.decode()[:300]}")
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk["choices"][0].get("delta", {})
+
+                        # Text content
+                        token = delta.get("content", "")
+                        if token:
+                            accumulated += token
+                            agent.push_stream_event({"type": "chunk", "text": token})
+
+                        # Native tool call deltas
+                        tc_deltas = delta.get("tool_calls")
+                        if tc_deltas:
+                            for tcd in tc_deltas:
+                                idx = tcd.get("index", 0)
+                                if idx not in _tc_buffers:
+                                    _tc_buffers[idx] = {"id": tcd.get("id", ""), "name": "", "args_str": ""}
+                                buf = _tc_buffers[idx]
+                                if tcd.get("id"):
+                                    buf["id"] = tcd["id"]
+                                fn = tcd.get("function", {})
+                                if fn.get("name"):
+                                    buf["name"] = fn["name"]
+                                if fn.get("arguments"):
+                                    buf["args_str"] += fn["arguments"]
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        pass
+
+        # If no native tool calls, we're done
+        if not _tc_buffers:
+            final_accumulated = accumulated
+            break
+
+        # Convert native tool calls to <tool_call> tags for the agent loop's parser
+        for idx in sorted(_tc_buffers.keys()):
+            buf = _tc_buffers[idx]
+            try:
+                args = json.loads(buf["args_str"]) if buf["args_str"] else {}
+            except json.JSONDecodeError:
+                args = {}
+
+            # Build <tool_call> tag matching Hermes format
+            args_json = json.dumps(args, ensure_ascii=False)
+            tag_block = f'<tool_call>{{"name": "{buf["name"]}", "arguments": {args_json}}}</tool_call>'
+            accumulated += "\n" + tag_block
+
+        # Save assistant message with tool_calls to messages for proper history
+        assistant_msg: dict[str, Any] = {"role": "assistant", "content": accumulated or None}
+        assistant_msg["tool_calls"] = [
+            {
+                "id": _tc_buffers[idx]["id"],
+                "type": "function",
+                "function": {
+                    "name": _tc_buffers[idx]["name"],
+                    "arguments": _tc_buffers[idx]["args_str"] or "{}",
+                },
+            }
+            for idx in sorted(_tc_buffers.keys())
+        ]
+        messages.append(assistant_msg)
+
+        # Execute each tool call and append results to messages
+        from engine.skills import get_skill_engine
+        from connectors.common.native_tools import native_call_to_tag_event, format_openai_tool_result
+        engine = get_skill_engine()
+
+        for idx in sorted(_tc_buffers.keys()):
+            buf = _tc_buffers[idx]
+            try:
+                args = json.loads(buf["args_str"]) if buf["args_str"] else {}
+            except json.JSONDecodeError:
+                args = {}
+
+            fc = {"name": buf["name"], "args": args, "id": buf["id"]}
+            tag_event = native_call_to_tag_event(fc)
+
+            agent.push_stream_event({"type": "skill_start", "name": buf["name"], "attrs": str(args)})
+
+            try:
+                events = await asyncio.to_thread(
+                    lambda: list(engine.process_tag(
+                        tag_event["name"], tag_event["attrs"],
+                        tag_event["content"], namespace=agent.id,
+                    ))
+                )
+            except Exception as exc:
+                events = [{"type": "skill_end", "name": buf["name"], "ok": False, "error": str(exc)}]
+
+            result_text = ""
+            ok = True
+            for evt in events:
+                if isinstance(evt, dict):
+                    if evt.get("type") == "skill_output":
+                        result_text += evt.get("text", "")
+                    elif evt.get("type") == "skill_end":
+                        ok = evt.get("ok", True)
+                    if evt.get("type") != "skill_start":
+                        agent.push_stream_event(evt)
+
+            tool_result = format_openai_tool_result(buf["name"], result_text, ok, buf["id"])
+            messages.append(tool_result)
+
+            # Also update agent.messages + persist for conversation file / side panel
+            _attrs_str = json.dumps(args, ensure_ascii=False)
+            _tool_msg = (
+                f"## Tool\n"
+                f"**Name:** `{buf['name']}`\n"
+                f"**Command:**\n```\n{_attrs_str}\n```\n"
+                f"**Output:**\n```\n{result_text[:2000]}\n```"
+            )
+            agent.messages.append({"role": "tool", "content": _tool_msg})
+            await _persist_message(agent.id, "tool", _tool_msg)
+
+            logger.info("Agent %s: native tool %s executed (ok=%s), continuing loop", agent.id, buf["name"], ok)
+
+        # Update payload with updated messages for next round
+        payload["messages"] = messages
+        # Don't accumulate across rounds — only the final text-only response matters
+        final_accumulated = accumulated
+
+    if not final_accumulated.strip():
         raise RuntimeError("Local model returned empty response")
-    return accumulated, None
+    return final_accumulated, None
 
 
 async def _call_qwen(
@@ -1152,34 +1439,28 @@ async def _call_qwen(
     # Get headers for this agent's assigned account
     headers = await _get_agent_qwen_headers(agent)
 
+    # Diagnostic: print which WAF token is actually being used for this call
+    from pathlib import Path as _P
+    _acct = _P(agent.browser_data_dir).name if agent.browser_data_dir else "default"
+    _ck = headers.get("Cookie", "")
+    logger.info(
+        "[WAF-CALL] agent=%s account=%s model=%s is_first=%s cookies_len=%d has_aui=%s",
+        agent.id, _acct, agent.model, is_first_turn, len(_ck),
+        "aui=" in _ck or "cnaui=" in _ck,
+    )
+
     # Create or reuse upstream Qwen session
     # Prefer DB-stored upstream_session_id; fall back to in-memory cache
     from server.database import get_upstream_session_id as _get_usid, set_upstream_session_id as _set_usid
     chat_id = _get_usid(agent.chat_id) or agent.qwen_session_id
     if is_first_turn or not chat_id:
-        # Clear stale system instruction so it doesn't conflict with agent prompt
-        # Only if agent has its own browser profile — never touch Maria's active session
+        # Disable Qwen built-in tools and clear personalization for the assigned account.
+        # Only if agent has its own browser profile — never touch Maria's active session.
         if agent.browser_data_dir:
             try:
-                import uuid as _uuid
-                import httpx as _httpx
-                _hdrs = dict(headers)
-                _hdrs.update({
-                    "Content-Type": "application/json",
-                    "Version": "0.2.80",
-                    "source": "web",
-                    "Origin": "https://chat.qwen.ai",
-                    "Referer": "https://chat.qwen.ai/settings/personalization",
-                    "X-Request-Id": str(_uuid.uuid4()),
-                })
-                async with _httpx.AsyncClient(timeout=15) as _client:
-                    await _client.post(
-                        "https://chat.qwen.ai/api/v2/users/user/settings/update",
-                        json={"personalization": {"name": "", "description": "", "style": "Default", "instruction": ""}},
-                        headers=_hdrs,
-                    )
+                await _clear_qwen_account_settings(headers, agent.id)
             except Exception as exc:
-                logger.warning("Agent %s: clear instruction failed: %s", agent.id, exc)
+                logger.warning("Agent %s: clear account settings failed: %s", agent.id, exc)
         chat_id = await create_new_chat(headers, model=agent.model)
         if not chat_id:
             # Retry with fresh headers (re-fetch from browser if needed)

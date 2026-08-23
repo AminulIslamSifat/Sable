@@ -467,6 +467,15 @@
       card.appendChild(header);
       card.appendChild(cmdPre);
       card.appendChild(outPre);
+
+      // Image placeholder for generate_image — replaced on skill_end
+      if (name === "generate_image") {
+        const imgPlaceholder = document.createElement("div");
+        imgPlaceholder.className = "skill-image-placeholder";
+        imgPlaceholder.innerHTML = '<span class="sip-spinner"></span><span class="sip-text">Generating image…</span>';
+        card.appendChild(imgPlaceholder);
+      }
+
       return card;
     }
 
@@ -488,7 +497,41 @@
       if (evt.error) pre.textContent += `\n[error] ${evt.error}`;
       if (!evt.ok) pre.classList.add("error");
 
-      if (result.url && result.mime && String(result.mime).startsWith("image/")) {
+      // Handle generate_image placeholder → real image(s) or error
+      const placeholder = card.querySelector(".skill-image-placeholder");
+      if (placeholder) {
+        if (evt.ok && result.url && result.mime && String(result.mime).startsWith("image/")) {
+          // Multi-image gallery or single image
+          const imagesArr = result.images || [{ url: result.url, mime: result.mime }];
+          if (imagesArr.length > 1) {
+            const gallery = document.createElement("div");
+            gallery.className = "skill-image-gallery";
+            for (const imgData of imagesArr) {
+              const img = document.createElement("img");
+              img.src = imgData.url;
+              img.className = "skill-image";
+              img.alt = "Generated image";
+              img.addEventListener("click", () => window.open(imgData.url, "_blank"));
+              gallery.appendChild(img);
+            }
+            placeholder.replaceWith(gallery);
+          } else {
+            const img = document.createElement("img");
+            img.src = result.url;
+            img.className = "skill-image";
+            img.alt = "Generated image";
+            img.addEventListener("click", () => window.open(result.url, "_blank"));
+            placeholder.replaceWith(img);
+          }
+        } else {
+          placeholder.classList.add("sip-failed");
+          const failText = placeholder.querySelector(".sip-text");
+          if (failText) failText.textContent = "Generation failed";
+          const spinner = placeholder.querySelector(".sip-spinner");
+          if (spinner) spinner.style.display = "none";
+        }
+      } else if (result.url && result.mime && String(result.mime).startsWith("image/")) {
+        // Non-generate_image skills that return images (backward compat)
         const img = document.createElement("img");
         img.src = result.url;
         img.className = "skill-image";
@@ -618,6 +661,54 @@
             player.play(ttsText);
           });
           toolbar.appendChild(ttsBtn);
+
+          // Fork button — starts disabled until SSE delivers the DB message ID
+          const forkBtn = document.createElement("button");
+          forkBtn.innerHTML = '<i data-lucide="git-branch"></i>';
+          forkBtn.title = "Fork from here";
+          forkBtn.disabled = true;
+          forkBtn.classList.add("fork-pending");
+          forkBtn.addEventListener("click", async () => {
+            forkBtn.disabled = true;
+            forkBtn.innerHTML = '<i data-lucide="loader-circle" class="spin"></i>';
+            activateLucideIcons(forkBtn);
+            try {
+              const msgDiv = forkBtn.closest(".msg");
+              const dbMsgId = msgDiv?.dataset?.msgId;
+              if (!dbMsgId) return; // shouldn't happen — button only enabled when ID is set
+              const res = await fetch("/api/chat/fork", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: activeChatId, message_id: dbMsgId }),
+              });
+              const data = await res.json();
+              if (!res.ok || data.error) {
+                showToast(data.error || data.detail || "Fork failed", "error");
+                return;
+              }
+              showToast(`Forked ${data.message_count} messages`, "success");
+              if (typeof window._sableLoadChats === "function") await window._sableLoadChats();
+              if (typeof window._sableSelectChat === "function") await window._sableSelectChat(data.chat_id);
+              // Put the fork message content into the input box
+              if (data.fork_message) {
+                const mainInput = document.getElementById("input");
+                const compactInput = document.getElementById("chatCompactInput");
+                const target = (mainInput && mainInput.offsetParent !== null) ? mainInput : compactInput;
+                if (target) {
+                  target.value = data.fork_message;
+                  target.focus();
+                  target.dispatchEvent(new Event("input", { bubbles: true }));
+                }
+              }
+            } catch (err) {
+              showToast("Fork failed: " + err.message, "error");
+            } finally {
+              forkBtn.disabled = false;
+              forkBtn.innerHTML = '<i data-lucide="git-branch"></i>';
+              activateLucideIcons(forkBtn);
+            }
+          });
+          toolbar.appendChild(forkBtn);
 
           div.appendChild(toolbar);
           activateLucideIcons(toolbar);

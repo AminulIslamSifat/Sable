@@ -71,6 +71,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE chats ADD COLUMN provider TEXT")
         if "upstream_session_id" not in chat_cols:
             conn.execute("ALTER TABLE chats ADD COLUMN upstream_session_id TEXT")
+        if "fork_history" not in chat_cols:
+            conn.execute("ALTER TABLE chats ADD COLUMN fork_history TEXT")
 
         # --- Multi-agent tables ---
         conn.execute(

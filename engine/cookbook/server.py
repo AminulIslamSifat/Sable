@@ -96,11 +96,21 @@ class ServeManager:
             "--ctx-size", str(task.ctx_size),
         ]
 
-        if task.threads > 0:
-            cmd.extend(["--threads", str(task.threads)])
+        # Resolve threads: 0 or negative = auto-detect physical cores
+        threads = task.threads
+        if threads <= 0:
+            import os as _os
+            threads = max(1, (_os.cpu_count() or 2) // 2)
+        cmd.extend(["--threads", str(threads)])
 
+        # GPU layers: use task value if set, otherwise skip GPU probing when no GPU detected
         if task.gpu_layers > 0:
             cmd.extend(["--n-gpu-layers", str(task.gpu_layers)])
+        else:
+            from .hardware import detect_hardware
+            hw = detect_hardware()
+            if not hw.can_offload:
+                cmd.extend(["--n-gpu-layers", "0"])
 
         # Enable OpenAI-compatible API
         cmd.append("--api-key")
@@ -142,6 +152,13 @@ class ServeManager:
         state = get_state()
         port = port or state.settings.default_port or 8080
         ctx_size = ctx_size or state.settings.default_ctx or 4096
+
+        # Resolve threads: 0 means use default, -1 means auto-detect physical cores
+        if threads == 0:
+            threads = state.settings.default_threads
+        if threads < 0:
+            import os as _os
+            threads = max(1, _os.cpu_count() // 2)  # physical cores only
 
         # Check port availability
         if self._port_in_use(port):

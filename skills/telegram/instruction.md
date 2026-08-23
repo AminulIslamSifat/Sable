@@ -45,6 +45,10 @@ All commands use `uv run` for automatic telethon dependency resolution.
 
     uv run PROJECT_ROOT/skills/telegram/scripts/telegram_client.py send CHAT_ID --text "message"
 
+### Send File
+
+    uv run PROJECT_ROOT/skills/telegram/scripts/telegram_client.py send-file CHAT_ID --file PATH [--caption "text"]
+
 ### Search Contacts
 
     uv run PROJECT_ROOT/skills/telegram/scripts/telegram_client.py search QUERY [--limit N]
@@ -74,6 +78,14 @@ All commands use `uv run` for automatic telethon dependency resolution.
 | CHAT_ID | Yes | Numeric chat/entity ID |
 | --text | Yes | Message text to send |
 
+### send-file
+
+| Arg/Flag | Required | Notes |
+|---|---|---|
+| CHAT_ID | Yes | Numeric chat/entity ID |
+| --file | Yes | Path to file (photo/video/document) |
+| --caption | No | Optional caption text |
+
 ### search
 
 | Arg/Flag | Required | Default | Notes |
@@ -91,7 +103,7 @@ All commands use `uv run` for automatic telethon dependency resolution.
 - If user wants to message someone by name → `search` first to get the chat_id.
 
 ### Step 2 — Resolve target
-- For `messages` and `send`, a numeric `chat_id` is required.
+- For `messages`, `send`, and `send-file`, a numeric `chat_id` is required.
 - If user gives a name instead of ID → run `search` to find it.
 - If multiple matches, present options and let user choose.
 
@@ -155,7 +167,7 @@ User: "Is Telegram working?"
 
 1. Always use `uv run` — telethon is resolved via PEP 723 inline metadata.
 2. Never expose sensitive data in output.
-3. For `send`, always confirm with the user before executing unless the request was unambiguous.
+3. For `send` and `send-file`, always confirm with the user before executing unless the request was unambiguous.
 4. Use `timeout="30"` on execute_command — connections take time.
 5. When listing chats/messages, format as readable summary — don't dump raw JSON.
 6. This skill uses a separate session from the server — no conflicts.

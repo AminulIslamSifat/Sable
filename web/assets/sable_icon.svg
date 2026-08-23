@@ -1,0 +1,49 @@
+<svg viewBox="0 0 512 512" width="512" height="512" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <linearGradient id="hexGrad" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="var(--accent-text, #e8cd97)"/>
+    <stop offset="100%" stop-color="var(--accent, #c9a464)"/>
+  </linearGradient>
+  <filter id="glow" x="-80%" y="-80%" width="260%" height="260%">
+    <feGaussianBlur stdDeviation="18" result="blur"/>
+    <feMerge>
+      <feMergeNode in="blur"/>
+      <feMergeNode in="SourceGraphic"/>
+    </feMerge>
+  </filter>
+  <filter id="softGlow" x="-60%" y="-60%" width="220%" height="220%">
+    <feGaussianBlur stdDeviation="32" result="blur"/>
+    <feMerge>
+      <feMergeNode in="blur"/>
+      <feMergeNode in="SourceGraphic"/>
+    </feMerge>
+  </filter>
+</defs>
+
+<!-- Uniform hexagon (pointy-top, centered at 256,256, radius 230) -->
+<polygon fill="var(--bg, #181825)" stroke="url(#hexGrad)" stroke-width="26" stroke-linejoin="round"
+  points="256,26 455.2,141 455.2,371 256,486 56.8,371 56.8,141"/>
+
+<!-- Bright core hexagon glow layer (radius 52) -->
+<polygon fill="var(--accent-text, #e8cd97)" opacity="0.15" filter="url(#softGlow)" stroke-linejoin="round" stroke-linecap="round" stroke="var(--accent-text, #e8cd97)" stroke-width="8"
+  points="256,204 301,230 301,282 256,308 211,282 211,230"/>
+
+<!-- Bright core hexagon (radius 28) with rounded border -->
+<polygon fill="var(--accent-text, #e8cd97)" filter="url(#glow)" stroke-linejoin="round" stroke-linecap="round" stroke="var(--accent-text, #e8cd97)" stroke-width="10"
+  points="256,228 280.2,242 280.2,270 256,284 231.8,270 231.8,242"/>
+
+<!-- Mini hollow hexagons at all 6 corners (radius 18, stroke 16, pointy-top) -->
+<polygon fill="var(--bg, #181825)" stroke="var(--accent, #c9a464)" stroke-width="16" stroke-linejoin="round"
+  points="256,8 271.6,17 271.6,35 256,44 240.4,35 240.4,17"/>
+<polygon fill="var(--bg, #181825)" stroke="var(--accent, #c9a464)" stroke-width="16" stroke-linejoin="round"
+  points="455.2,123 470.8,132 470.8,150 455.2,159 439.6,150 439.6,132"/>
+<polygon fill="var(--bg, #181825)" stroke="var(--accent, #c9a464)" stroke-width="16" stroke-linejoin="round"
+  points="455.2,353 470.8,362 470.8,380 455.2,389 439.6,380 439.6,362"/>
+<polygon fill="var(--bg, #181825)" stroke="var(--accent, #c9a464)" stroke-width="16" stroke-linejoin="round"
+  points="256,468 271.6,477 271.6,495 256,504 240.4,495 240.4,477"/>
+<polygon fill="var(--bg, #181825)" stroke="var(--accent, #c9a464)" stroke-width="16" stroke-linejoin="round"
+  points="56.8,353 72.4,362 72.4,380 56.8,389 41.2,380 41.2,362"/>
+<polygon fill="var(--bg, #181825)" stroke="var(--accent, #c9a464)" stroke-width="16" stroke-linejoin="round"
+  points="56.8,123 72.4,132 72.4,150 56.8,159 41.2,150 41.2,132"/>
+
+</svg>

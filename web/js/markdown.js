@@ -432,7 +432,7 @@
       "⏳": "hourglass", "🐋": "whale", "⟳": "refresh-cw", "✕": "x-circle",
       "✓": "check", "✗": "x-circle", "⚙": "settings",
       "ℹ️": "info", "📂": "folder-open", "🗒️": "notepad-text", "🎨": "palette",
-      "👀": "eye", "💀": "skull", "👻": "ghost",
+      "👀": "eye", "💀": "skull", "👻": "ghost", "⏰": "alarm-clock",
     };
     const _EMOJI_RE = new RegExp(Object.keys(EMOJI_LUCIDE_MAP).map(e => e.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
 
@@ -521,11 +521,9 @@
 
     function renderMarkdown(raw) {
       if (!raw) return "";
-      // Strip agentic wrapper blocks — metadata, not user-visible content
+      // Backend parser already strips <tool_call> and <action> tags from the
+      // answer stream. No frontend stripping needed.
       var _s = String(raw);
-      _s = _s.replace(/<action>[\s\S]*?<\/action>/gi, "");
-      _s = _s.replace(/<\s*tool_call\s*>[\s\S]*?<\s*\/\s*tool_call\s*>/gi, "");
-      _s = _s.replace(/<\/?\s*tool_call[^>]*>?/gi, "");
       raw = _s.trim();
       const normalized = normalizeMd(raw.replace(/\r\n/g, "\n"));
       const safe = closeUnclosedFences(normalized);

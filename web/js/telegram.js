@@ -321,10 +321,6 @@
             body: JSON.stringify({ api_id: apiId, api_hash: apiHash, enabled: true }),
           });
           if (!res.ok) { errEl.textContent = 'Failed to save config.'; return; }
-          // Also enable the toggle in settings
-          const toggle = document.getElementById('telegramToggle');
-          if (toggle) { toggle.checked = true; localStorage.setItem('sable_telegram_enabled', 'true'); }
-          document.getElementById('libTelegramTab').style.display = '';
           refreshTgPanel();
         } catch { errEl.textContent = 'Network error.'; }
       });
@@ -646,46 +642,6 @@
           showToast(d.detail || 'Send failed', 'error');
         }
       } catch { showToast('Network error', 'error'); }
-    }
-
-    // ── Telegram Settings Toggle ──
-    function initTelegramToggle() {
-      const toggle = document.getElementById('telegramToggle');
-      const tab = document.getElementById('libTelegramTab');
-      if (!toggle || !tab) return;
-      // Load saved state
-      const saved = localStorage.getItem('sable_telegram_enabled');
-      if (saved === 'true') {
-        toggle.checked = true;
-        tab.style.display = '';
-      } else {
-        toggle.checked = false;
-        tab.style.display = 'none';
-      }
-      toggle.addEventListener('change', async () => {
-        const enabled = toggle.checked;
-        localStorage.setItem('sable_telegram_enabled', String(enabled));
-        tab.style.display = enabled ? '' : 'none';
-        // Update backend config
-        try {
-          const statusRes = await fetch('/api/telegram/status');
-          const status = await statusRes.json();
-          if (status.configured) {
-            // Only send enabled flag — backend merges with existing config
-            await fetch('/api/telegram/config', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ api_id: 0, api_hash: '', enabled }),
-            });
-          }
-        } catch {}
-        // Reset cached state so it reloads fresh
-        _tgState.loaded = false;
-        if (!enabled) {
-          // Disconnect if disabling
-          try { await fetch('/api/telegram/disconnect', { method: 'POST' }); } catch {}
-        }
-      });
     }
 
     async function openLibraryReader(section, filename, title) {

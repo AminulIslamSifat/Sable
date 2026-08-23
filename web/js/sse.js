@@ -37,6 +37,15 @@
       const skipMainContent = message.role !== "user" && hasRoundText;
       const msgDiv = skipMainContent ? null : addMessage(message.role === "user" ? "user" : "bot", displayContent);
       if (message.role === "user" && msgDiv) {
+        // Enable fork button for history-loaded messages (addMessage creates it disabled)
+        if (message.id) {
+          msgDiv.dataset.msgId = String(message.id);
+          const pendingFork = msgDiv.querySelector(".fork-pending");
+          if (pendingFork) {
+            pendingFork.disabled = false;
+            pendingFork.classList.remove("fork-pending");
+          }
+        }
         if (realTs) {
           const tsEl = msgDiv.querySelector(".msg-timestamp");
           if (tsEl) tsEl.textContent = `[${realTs}]`;
@@ -133,6 +142,55 @@
           cpBtn.dataset.msgId = message.id;
           cpBtn.addEventListener("click", () => showCheckpointModal(activeChatId, message.id, cpBtn));
           toolbar.appendChild(cpBtn);
+        }
+        // Fork button (git-branch icon)
+        if (!toolbar.querySelector('[title="Fork from here"]') && message.id) {
+          const forkBtn = document.createElement("button");
+          forkBtn.innerHTML = '<i data-lucide="git-branch"></i>';
+          forkBtn.title = "Fork from here";
+          forkBtn.addEventListener("click", async () => {
+            forkBtn.disabled = true;
+            forkBtn.innerHTML = '<i data-lucide="loader-circle" class="spin"></i>';
+            activateLucideIcons(forkBtn);
+            try {
+              const res = await fetch("/api/chat/fork", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: activeChatId, message_id: String(message.id) }),
+              });
+              const data = await res.json();
+              if (!res.ok || data.error) {
+                showToast(data.error || data.detail || "Fork failed", "error");
+                return;
+              }
+              showToast(`Forked ${data.message_count} messages`, "success");
+              // Navigate to new chat
+              if (typeof window._sableLoadChats === "function") {
+                await window._sableLoadChats();
+              }
+              if (typeof window._sableSelectChat === "function") {
+                await window._sableSelectChat(data.chat_id);
+              }
+              // Put the fork message content into the input box
+              if (data.fork_message) {
+                const mainInput = document.getElementById("input");
+                const compactInput = document.getElementById("chatCompactInput");
+                const target = (mainInput && mainInput.offsetParent !== null) ? mainInput : compactInput;
+                if (target) {
+                  target.value = data.fork_message;
+                  target.focus();
+                  target.dispatchEvent(new Event("input", { bubbles: true }));
+                }
+              }
+            } catch (err) {
+              showToast("Fork failed: " + err.message, "error");
+            } finally {
+              forkBtn.disabled = false;
+              forkBtn.innerHTML = '<i data-lucide="git-branch"></i>';
+              activateLucideIcons(forkBtn);
+            }
+          });
+          toolbar.appendChild(forkBtn);
         }
         activateLucideIcons(toolbar);
       }
@@ -1012,7 +1070,7 @@
           const meta = {
             create_file:  { icon: "📝", label: "Creating file", detail: attrs.path || "", progress: true },
             edit_file:    { icon: "✏️", label: "Editing file", detail: attrs.path || "", progress: true },
-            insert_file:  { icon: "✏️", label: "Inserting into file", detail: attrs.path || "" },
+            insert_file:  { icon: "✏️", label: "Inserting into file", detail: attrs.path || "", progress: true },
             view_file:    { icon: "👁️", label: "Reading file", detail: attrs.path || (attrs.full ? "full file" : "") },
             execute_command: { icon: "⚡", label: attrs.bg === "true" ? "Running background task" : "Running command", detail: "" },
             get_file:     { icon: "📂", label: "Loading file", detail: "" },
@@ -1031,13 +1089,12 @@
           }
           card.className = "tool-activity-card";
           const detailHtml = info.progress
-            ? `<div class="tac-detail tac-detail-split"><span class="tac-path">${info.detail || ""}</span><span class="tac-count">writing…</span></div>`
+            ? `<div class="tac-detail tac-detail-split"><span class="tac-path">${info.detail || ""}</span></div><div class="tac-preview"></div>`
             : (info.detail ? `<div class="tac-detail">${info.detail}</div>` : "");
           card.innerHTML =
             `<div class="tac-icon">${lucideIcon(info.icon)}</div>` +
             `<div class="tac-info"><div class="tac-title">${info.label}</div>` +
             detailHtml +
-            (info.progress ? `<div class="tac-progress-track"><div class="tac-progress-fill"></div></div>` : "") +
             `</div><div class="tac-status">${info.progress ? `<div class="tac-pulse-dot"></div>` : `<div class="tac-spinner"></div>`}</div>`;
           // Always keep it as the last element
           turn.appendChild(card);
@@ -1047,12 +1104,13 @@
         showToolProgress(evt) {
           const card = turn.querySelector(".tool-activity-card");
           if (!card) return;
-          const count = card.querySelector(".tac-count");
-          if (!count) return;
-          const bytes = evt.bytes || 0;
-          const size = bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
-          count.textContent = `${evt.lines || 0} lines · ${size}`;
-
+          const previewEl = card.querySelector(".tac-preview");
+          if (!previewEl) return;
+          const lines = evt.preview_lines || (evt.preview ? [evt.preview] : []);
+          if (!lines.length) return;
+          previewEl.innerHTML = lines.map(l => `<div class="tac-preview-line">${escHtml(l)}</div>`).join("");
+          // Auto-scroll to bottom of preview
+          previewEl.scrollTop = previewEl.scrollHeight;
         },
         showToolDone() {
           const card = turn.querySelector(".tool-activity-card");
@@ -1071,9 +1129,25 @@
           hidePending();
           closeCurrentThinking();
           closeAnswer();
-          // Clean up any lingering tool activity card
+          // Cancel any pending exit timer from a tool that finished just before stop
+          if (_tacExitTimer) { clearTimeout(_tacExitTimer); _tacExitTimer = null; }
+          // Clean up any lingering tool activity card — mark as interrupted then fade out
           const tac = turn.querySelector(".tool-activity-card");
-          if (tac) tac.remove();
+          if (tac) {
+            const status = tac.querySelector(".tac-status");
+            if (status) {
+              status.innerHTML = '<span style="color:var(--danger);font-size:0.85em">✗ interrupted</span>';
+            }
+            const spinner = tac.querySelector(".tac-spinner");
+            if (spinner) spinner.remove();
+            const pulseDot = tac.querySelector(".tac-pulse-dot");
+            if (pulseDot) pulseDot.remove();
+            // Trigger exit animation so the card doesn't stay frozen in place
+            requestAnimationFrame(() => {
+              tac.classList.add("tac-exit");
+              setTimeout(() => tac.remove(), 350);
+            });
+          }
           // Any placeholder still spinning means the stream died mid-tag.
           turn.querySelectorAll(".skill-card.pending").forEach(card => {
             const status = card.querySelector(".pending-status");
@@ -1291,8 +1365,15 @@
           } else if (evt.type === "status") {
             if (evt.message === "feeding_skill_results") ui.nextSkillRound();
           } else if (evt.type === "user_message_id") {
-            // Attach checkpoint restore button to the live user message
+            // Store DB message ID on the div and enable the fork button
             if (userMsgDiv && evt.id) {
+              userMsgDiv.dataset.msgId = String(evt.id);
+              // Enable any pending fork button now that we have the DB ID
+              const pendingFork = userMsgDiv.querySelector(".fork-pending");
+              if (pendingFork) {
+                pendingFork.disabled = false;
+                pendingFork.classList.remove("fork-pending");
+              }
               let toolbar = userMsgDiv.querySelector(".msg-toolbar");
               if (toolbar && !toolbar.querySelector('[title="Restore checkpoint"]')) {
                 const cpBtn = document.createElement("button");
@@ -1339,6 +1420,9 @@
             ui.showToolPending(evt);
           } else if (evt.type === "tool_progress") {
             ui.showToolProgress(evt);
+          } else if (evt.type === "parse_error") {
+            // Parser couldn't parse tool_call JSON — clear pending animation
+            ui.showToolDone();
           } else if (evt.type === "skill_start") {
             if (evt.name === "ask_user") {
               if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }

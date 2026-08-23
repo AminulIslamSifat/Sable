@@ -100,7 +100,8 @@ def compute_next_run(
 
 async def _fire_agent_op(op: dict[str, Any]) -> None:
     """Spawn an agent for a scheduled op and update DB state."""
-    from server.database import update_agent_op, utcnow
+    from server.database import update_agent_op
+    from server.utils import utcnow
     from engine.agents import get_runtime, TaskAssignment
     from engine.agents.registry import get_role_config, get_next_account
     from engine.config import _SYSTEM as _AGENT_SYSTEM_DIR

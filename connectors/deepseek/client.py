@@ -30,6 +30,21 @@ logger = logging.getLogger("sable.deepseek_api")
 BASE_URL = "https://chat.deepseek.com"
 SOLVER_PATH = Path(__file__).resolve().parent / "pow_solver" / "pow_solver"
 
+# Raw request/response logging
+_RAW_LOG_PATH = Path("/home/sifat/sable_output/logs/deepseek_raw.txt")
+
+
+def _log_raw(direction: str, payload: str) -> None:
+    """Append a timestamped raw payload to the log file."""
+    try:
+        _RAW_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(_RAW_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"\n{'='*80}\n[{ts}] {direction}\n{'='*80}\n{payload}\n")
+    except Exception:
+        pass
+
 # Per-account token store: {"browser-data-acc1": ["jwt1", "jwt2", ...], ...}
 # Tokens never expire, so we accumulate them in a list per account.
 # Capped at MAX_TOKENS_PER_ACCOUNT to prevent unbounded file growth.
@@ -221,15 +236,19 @@ def _trim_history(history: list[dict[str, Any]], prefix_len: int, max_chars: int
 # Instruction loading — uses shared builder with project-aware overrides
 _instruction_cache: str | None = None
 _cached_project_id: str | None = "__none__"
+_cached_version: int = -1
 
 
 def _load_instructions(project_id: str | None = None) -> str:
     """Load instruction context for first-message injection. Project-aware."""
-    global _instruction_cache, _cached_project_id
-    # Invalidate cache when project changes
-    if project_id != _cached_project_id:
+    global _instruction_cache, _cached_project_id, _cached_version
+    from connectors.common.instruction_builder import get_instruction_version
+    current_version = get_instruction_version()
+    # Invalidate cache when project or instruction version changes
+    if project_id != _cached_project_id or current_version != _cached_version:
         _instruction_cache = None
         _cached_project_id = project_id
+        _cached_version = current_version
     if _instruction_cache is not None:
         return _instruction_cache
     from connectors.common.instruction_builder import build_instructions
@@ -623,6 +642,7 @@ class DeepSeekClient:
             "action": None,
             "preempt": False,
         }
+        _log_raw("USER_MESSAGE [summarize]", prompt)
         try:
             http = await self._get_http()
             full_answer = ""
@@ -634,6 +654,7 @@ class DeepSeekClient:
                 async for event in self._iter_completion_events(resp):
                     if event.get("type") == "answer":
                         full_answer += event.get("text", "")
+            _log_raw("RESPONSE [summarize] (raw)", full_answer)
             result = strip_summarize_tag(full_answer).strip()
             return result if result else None
         except Exception as e:
@@ -724,7 +745,11 @@ class DeepSeekClient:
                         etype = "thinking" if new_type == "THINK" else "answer"
                         yield {"type": etype, "text": content}
                 continue
-            if p == "response/fragments/-1/content" and o == "APPEND":
+            if p == "response/fragments/-1/content":
+                # Handle both o="APPEND" and o=None — DeepSeek sometimes sends
+                # content continuation events without the APPEND operation tag.
+                # Without this, fragments like 'tool' in '<tool_call>' get dropped,
+                # producing broken tags like '<tool_call>'.
                 text = v if isinstance(v, str) else ""
                 if text:
                     etype = "thinking" if current_frag_type == "THINK" else "answer"
@@ -790,15 +815,6 @@ class DeepSeekClient:
         # Serialize history + current message into prompt
         prompt = self._serialize_history(history, message)
 
-
-
-        # DEBUG: dump full prompt to file before sending
-        try:
-            with open("/home/sifat/hdd/projects/Sable/test/prompt_deepseek.txt", "w") as _f:
-                _f.write(prompt)
-        except Exception:
-            pass
-
         # Try each token with round-robin rotation + failover
         attempts = max(1, len(self._rotate_tokens) or 1)
         last_err = "unknown"
@@ -821,6 +837,8 @@ class DeepSeekClient:
                 "action": None,
                 "preempt": False,
             }
+
+            _log_raw("USER_MESSAGE (prompt sent)", prompt)
 
             try:
                 http = await self._get_http()
@@ -850,6 +868,8 @@ class DeepSeekClient:
                         elif etype == "thinking":
                             full_thinking += event.get("text", "")
                         yield event
+
+                _log_raw("RESPONSE (raw)", (full_thinking + "\n---\n" + full_answer) if full_thinking else full_answer)
 
                 # Success — save user message + assistant response to history
                 _summarize_idx = extract_summarize_tag(full_answer)

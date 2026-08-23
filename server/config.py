@@ -23,6 +23,7 @@ WEB_DIR = BASE_DIR / "web"
 INDEX_FILE = WEB_DIR / "index.html"
 DB_PATH = BASE_DIR / "system/sable.db"
 UPLOAD_DIR = BASE_DIR / "system/uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 _AUTH_TOKEN_FILE = Path(__file__).resolve().parent.parent / "system/.auth_token"
 AUTH_EXEMPT_PREFIXES = ("/api/login", "/api/health", "/static/", "/system/uploads/", "/assets/", "/api/settings/accounts/create", "/api/setup/")
 

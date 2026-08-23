@@ -1,8 +1,11 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections import defaultdict
+
+logger = logging.getLogger(__name__)
 
 
 class CircuitBreaker:
@@ -253,15 +256,27 @@ class MainChatGuard:
         has_open = bool(_re.search(open_pat, raw_text, _re.I))
         has_close = bool(_re.search(close_pat, raw_text, _re.I))
 
-        # Orphan close without open
+        # Orphan close without open — only warn if surrounding content looks like JSON attempt
         if has_close and not has_open:
-            self._malformed_warned = True
-            return MainChatGuard.MALFORMED_NO_OPEN
+            _close_match = _re.search(close_pat, raw_text, _re.I)
+            if _close_match:
+                _before_close = raw_text[:_close_match.start()].rstrip()
+                _looks_like_json = _before_close.endswith('}') or _before_close.endswith(']')
+                if _looks_like_json:
+                    logger.warning("[MALFORMED_GUARD] Orphan close tag with JSON content. raw_len=%d preview=%r", len(raw_text), raw_text[:300])
+                    self._malformed_warned = True
+                    return MainChatGuard.MALFORMED_NO_OPEN
 
-        # Open without close
+        # Open without close — only warn if content after open tag looks like JSON attempt
         if has_open and not has_close:
-            self._malformed_warned = True
-            return MainChatGuard.MALFORMED_NO_CLOSE
+            _open_match = _re.search(open_pat, raw_text, _re.I)
+            if _open_match:
+                _after_open = raw_text[_open_match.end():].lstrip()
+                _looks_like_json = _after_open.startswith('{') or _after_open.startswith('[')
+                if _looks_like_json:
+                    logger.warning("[MALFORMED_GUARD] Open tag without close (JSON content). raw_len=%d preview=%r", len(raw_text), raw_text[:300])
+                    self._malformed_warned = True
+                    return MainChatGuard.MALFORMED_NO_CLOSE
 
         # Check for JSON tool calls outside tool_call blocks
         from engine.skills.parser import KNOWN_TAGS
@@ -291,6 +306,11 @@ class MainChatGuard:
                 # Pre-validate: try sanitizing before declaring failure
                 sanitized_block = sanitize_transport(block)
                 if not _parse_action_payload(sanitized_block) and not _parse_action_payload(block):
+                    logger.warning(
+                        "[MALFORMED_GUARD] Invalid JSON in tool_call block. "
+                        "raw_len=%d block_preview=%r raw_text_preview=%r",
+                        len(raw_text), block[:200], raw_text[:300],
+                    )
                     self._malformed_warned = True
                     diagnosis = _diagnose_json_failure(block)
                     tc_open = chr(60) + 'tool_call' + chr(62)

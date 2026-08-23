@@ -7,9 +7,10 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class RoleConfig:
-    system_prompt: str
-    allowed_skills: list[str]       # all skills the agent CAN use
-    default_skills: list[str]       # subset auto-loaded with instruction.md
+    system_prompt: str              # Built from persona file + output_format (not stored in config)
+    allowed_tools: list[str]        # Handler names from HANDLER_MAP (execute_command, view_file, etc.)
+    allowed_skills: list[str]       # Skill keys from /skills/ (telegram, system_repair, etc.)
+    output_format: str              # Markdown section requirements for final answer
     default_model: str
     default_timeout: float
     max_parallel: int
@@ -21,7 +22,7 @@ class RoleConfig:
 # Ensures no agent ever dies without at least attempting a model switch.
 _DEFAULT_MODEL_CHAIN: list[str] = ["deepseek-expert", "gemini-2.5-flash"]
 
-_MARKDOWN_INSTRUCTION = (
+_MARKDOWN_RULES = (
     "\n\nCRITICAL OUTPUT FORMAT RULES:\n"
     "- You MUST respond with ONLY a clean markdown document as your final answer.\n"
     "- Use proper ## headers, bullet lists, and code blocks where appropriate.\n"
@@ -30,13 +31,11 @@ _MARKDOWN_INSTRUCTION = (
     "- Write it like a human-readable report. Your entire response must be pure markdown."
 )
 
-# Universal skill available to ALL agents (not listed per-role)
-UNIVERSAL_SKILLS: list[str] = ["execute_command"]
-
 # ---------------------------------------------------------------------------
 # Persona-file loader: reads instruction/agents/<role>.md for system prompt
 # ---------------------------------------------------------------------------
 _AGENTS_DIR = Path(__file__).resolve().parent.parent.parent / "instruction" / "agents"
+_PERSONAL_PATH = Path(__file__).resolve().parent.parent.parent / "instruction" / "personal.md"
 
 
 def _load_agent_persona(role: str) -> str:
@@ -47,24 +46,45 @@ def _load_agent_persona(role: str) -> str:
     return f"You are a {role} specialist. Complete the assigned task thoroughly."
 
 
-def _build_system_prompt(role: str, output_format: str) -> str:
-    """Compose full system prompt: persona file + markdown rules + output format."""
-    return _load_agent_persona(role) + _MARKDOWN_INSTRUCTION + output_format
+def _load_personal_context() -> str:
+    """Load personal.md user context. Returns empty string if missing or blank."""
+    if _PERSONAL_PATH.is_file():
+        content = _PERSONAL_PATH.read_text(encoding="utf-8").strip()
+        if content:
+            return content
+    return ""
+
+
+def _build_system_prompt(role: str, output_format: str = "") -> str:
+    """Compose full system prompt: persona + personal context + markdown rules + output format.
+
+    Persona is always loaded from instruction/agents/{role}.md.
+    Personal context from instruction/personal.md is injected for all agents.
+    Output format comes from config (not hardcoded).
+    """
+    persona = _load_agent_persona(role)
+    parts = [persona]
+    personal = _load_personal_context()
+    if personal:
+        parts.append(personal)
+    parts.append(_MARKDOWN_RULES)
+    if output_format:
+        parts.append(f"\n\n{output_format}")
+    return "\n".join(parts)
+
+_ALL_TOOL_GROUPS = [
+    "ask_user", "chat_title", "code_editor", "execute_command",
+    "file_uploader", "grep_search", "image_generator", "mcp",
+    "memory_manager", "multi_agent", "online_search", "tracknote_manager",
+]
 
 AGENT_ROLES: dict[str, RoleConfig] = {
     "analyst": RoleConfig(
-        system_prompt=_build_system_prompt("analyst",
-            "\n\nOUTPUT FORMAT FOR RESEARCH TASKS:\n"
-            "## Topic\n## Findings\n## Sources\n## Summary\n## Confidence (high/medium/low)\n\n"
-            "OUTPUT FORMAT FOR CODE REVIEW TASKS:\n"
-            "## File Reviewed\n## Critical Issues (with location and explanation)\n"
-            "## Warnings\n## Info\n## Verdict (approve/request_changes/needs_discussion)\n\n"
-            "Do NOT use these headers in intermediate responses. "
-            "Intermediate response = one brief sentence + tool call. Nothing else."
-        ),
-        allowed_skills=["execute_command", "online_search", "code_editor", "file_uploader"],
-        default_skills=["online_search", "code_editor"],
-        default_model="qwen3.7-max",
+        system_prompt=_build_system_prompt("analyst"),
+        allowed_tools=list(_ALL_TOOL_GROUPS),
+        allowed_skills=[],
+        output_format="",
+        default_model="qwen3.8-max",
         default_timeout=300,
         max_parallel=4,
         required_sections=[
@@ -73,34 +93,23 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         ],
     ),
     "coder": RoleConfig(
-        system_prompt=_build_system_prompt("coder",
-            "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
-            "Your final answer MUST include these sections:\n"
-            "## Description\n## Files Modified (list each file with path and what changed)\n"
-            "## Tests (pass/fail/skipped)\n## Notes\n\n"
-            "Do NOT use these headers in intermediate responses. "
-            "Intermediate response = one brief sentence + tool call. Nothing else."
-        ),
-        allowed_skills=["execute_command", "code_editor", "online_search"],
-        default_skills=["code_editor"],
-        default_model="qwen3.7-max",
-        default_timeout=300,
-        max_parallel=1,
+        system_prompt=_build_system_prompt("coder"),
+        allowed_tools=list(_ALL_TOOL_GROUPS),
+        allowed_skills=[],
+        output_format="",
+        default_model="qwen3.8-max",
+        default_timeout=600,
+        max_parallel=2,
         required_sections=["Description", "Files Modified", "Tests", "Notes"],
     ),
 
     "writer": RoleConfig(
-        system_prompt=_build_system_prompt("writer",
-            "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
-            "Your final answer MUST include these sections:\n"
-            "## Title\n## Document Path\n## Structure Overview\n## Word Count\n## Notes\n\n"
-            "Do NOT use these headers in intermediate responses. "
-            "Intermediate response = one brief sentence + tool call. Nothing else."
-        ),
-        allowed_skills=["execute_command", "code_editor", "online_search"],
-        default_skills=["code_editor"],
-        default_model="qwen3.7-max",
-        default_timeout=300,
+        system_prompt=_build_system_prompt("writer"),
+        allowed_tools=list(_ALL_TOOL_GROUPS),
+        allowed_skills=[],
+        output_format="",
+        default_model="mistral-large-latest",
+        default_timeout=120,
         max_parallel=2,
         required_sections=["Title", "Document Path", "Structure Overview", "Word Count", "Notes"],
     ),
@@ -109,61 +118,41 @@ AGENT_ROLES: dict[str, RoleConfig] = {
     # Domain-specialist agents (hierarchical routing)
     # ------------------------------------------------------------------
     "sysutil": RoleConfig(
-        system_prompt=_build_system_prompt("sysutil",
-            "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
-            "Your final answer MUST include these sections:\n"
-            "## Task\n## Diagnosis\n## Actions Taken\n## Result\n## Notes\n\n"
-            "Do NOT use these headers in intermediate responses. "
-            "Intermediate response = one brief sentence + tool call. Nothing else."
-        ),
-        allowed_skills=["execute_command", "system_repair", "phone_control", "youtube_downloader", "grep_search", "code_editor", "online_search", "file_uploader"],
-        default_skills=["system_repair", "youtube_downloader", "code_editor"],
-        default_model="qwen3.7-max",
+        system_prompt=_build_system_prompt("sysutil"),
+        allowed_tools=list(_ALL_TOOL_GROUPS),
+        allowed_skills=["system_repair", "phone_control", "youtube_downloader"],
+        output_format="",
+        default_model="qwen3.8-max",
         default_timeout=300,
-        max_parallel=3,
+        max_parallel=2,
         required_sections=["Task", "Diagnosis", "Actions Taken", "Result", "Notes"],
     ),
     "docs": RoleConfig(
-        system_prompt=_build_system_prompt("docs",
-            "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
-            "Your final answer MUST include these sections:\n"
-            "## Task\n## Document Path\n## Structure Overview\n## Notes\n\n"
-            "Do NOT use these headers in intermediate responses. "
-            "Intermediate response = one brief sentence + tool call. Nothing else."
-        ),
-        allowed_skills=["execute_command", "document_skills", "file_uploader", "text_humanizer", "code_editor"],
-        default_skills=["document_skills", "file_uploader"],
-        default_model="qwen3.7-max",
+        system_prompt=_build_system_prompt("docs"),
+        allowed_tools=list(_ALL_TOOL_GROUPS),
+        allowed_skills=["document_skills", "text_humanizer"],
+        output_format="",
+        default_model="qwen3.8-max",
         default_timeout=300,
         max_parallel=2,
         required_sections=["Task", "Document Path", "Structure Overview", "Notes"],
     ),
     "visuals": RoleConfig(
-        system_prompt=_build_system_prompt("visuals",
-            "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
-            "Your final answer MUST include these sections:\n"
-            "## Task\n## Output Path\n## Description\n## Notes\n\n"
-            "Do NOT use these headers in intermediate responses. "
-            "Intermediate response = one brief sentence + tool call. Nothing else."
-        ),
-        allowed_skills=["execute_command", "graph_master", "svg_creator", "frontend_design", "simulacra_engine", "code_editor"],
-        default_skills=["graph_master", "svg_creator"],
-        default_model="qwen3.7-max",
+        system_prompt=_build_system_prompt("visuals"),
+        allowed_tools=list(_ALL_TOOL_GROUPS),
+        allowed_skills=["graph_master", "svg_creator", "frontend_design", "simulacra_engine"],
+        output_format="",
+        default_model="qwen3.8-max",
         default_timeout=300,
         max_parallel=2,
         required_sections=["Task", "Output Path", "Description", "Notes"],
     ),
     "tester": RoleConfig(
-        system_prompt=_build_system_prompt("tester",
-            "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
-            "Your final answer MUST include these sections:\n"
-            "## Bug Summary\n## Root Cause\n## Fix Applied\n## Verification\n## Notes\n\n"
-            "Do NOT use these headers in intermediate responses. "
-            "Intermediate response = one brief sentence + tool call. Nothing else."
-        ),
-        allowed_skills=["execute_command", "testing_debugging", "code_editor", "grep_search"],
-        default_skills=["testing_debugging", "code_editor"],
-        default_model="qwen3.7-max",
+        system_prompt=_build_system_prompt("tester"),
+        allowed_tools=list(_ALL_TOOL_GROUPS),
+        allowed_skills=["testing_debugging"],
+        output_format="",
+        default_model="qwen3.8-max",
         default_timeout=300,
         max_parallel=2,
         required_sections=["Bug Summary", "Root Cause", "Fix Applied", "Verification", "Notes"],
@@ -171,31 +160,26 @@ AGENT_ROLES: dict[str, RoleConfig] = {
 
     # Scheduled agent ops — broad skill set for autonomous tasks
     "scheduled": RoleConfig(
-        system_prompt=_build_system_prompt("scheduled",
-            "\n\nOUTPUT FORMAT (applies ONLY to your very last response, after all tool work is complete):\n"
-            "## Task\n## Result\n## Notes\n\n"
-            "Do NOT use these headers in intermediate responses. "
-            "Intermediate response = one brief sentence + tool call. Nothing else."
-        ),
-        allowed_skills=[
-            "execute_command",
-            "code_editor",
-            "online_search",
-            "file_uploader",
-            "telegram",
-            "email",
-            "grep_search",
-        ],
-        default_skills=[
-            "code_editor",
-            "online_search",
-            "telegram",
-            "grep_search",
-        ],
-        default_model="qwen3.7-max",
+        system_prompt=_build_system_prompt("scheduled"),
+        allowed_tools=list(_ALL_TOOL_GROUPS),
+        allowed_skills=["telegram", "email"],
+        output_format="",
+        default_model="qwen3.8-max",
         default_timeout=600,
         max_parallel=2,
         required_sections=["Task", "Result", "Notes"],
+    ),
+
+    # Maria — full persona from instruction/agents/maria.md, all tools & skills
+    "maria": RoleConfig(
+        system_prompt=_build_system_prompt("maria"),
+        allowed_tools=list(_ALL_TOOL_GROUPS),
+        allowed_skills=[],
+        output_format="",
+        default_model="qwen3.8-max",
+        default_timeout=600,
+        max_parallel=1,
+        required_sections=[],
     ),
 }
 
@@ -213,13 +197,6 @@ def apply_role_overrides(overrides: dict[str, dict], universal: list[str] | None
     global _role_overrides, _universal_overrides
     _role_overrides = overrides or {}
     _universal_overrides = universal
-
-
-def get_universal_skills() -> list[str]:
-    """Get universal skills (config override or hardcoded default)."""
-    if _universal_overrides is not None:
-        return _universal_overrides
-    return UNIVERSAL_SKILLS
 
 
 # Per-role browser account fallback chains: {role: ["browser-data-acc1", "browser-data-acc2", ...]}
@@ -249,19 +226,25 @@ def apply_account_assignments(assignments: dict[str, list[str]]) -> None:
 def get_next_account(role: str, in_use: set[str] | None = None) -> str | None:
     """Get the next available browser account for a role.
 
-    Skips accounts already in `in_use` set. Falls back to round-robin if all are busy.
+    Always respects round-robin ordering. Skips accounts in `in_use` set.
+    If all accounts are busy, returns the round-robin pick anyway (caller decides).
     Returns None if no chain is configured.
     """
     chain = _account_fallback_chains.get(role)
     if not chain:
         return None
-    if in_use:
-        for acc in chain:
-            if acc not in in_use:
-                return acc
     idx = _account_counters.get(role, 0)
-    account = chain[idx % len(chain)]
-    _account_counters[role] = idx + 1
+    n = len(chain)
+    # Walk from current counter position, wrapping around, skipping in-use
+    for offset in range(n):
+        candidate = chain[(idx + offset) % n]
+        if not in_use or candidate not in in_use:
+            # Advance counter past this pick so next call continues rotation
+            _account_counters[role] = (idx + offset + 1) % n
+            return candidate
+    # All accounts in use — still advance counter and return round-robin pick
+    account = chain[idx % n]
+    _account_counters[role] = (idx + 1) % n
     return account
 
 
@@ -296,26 +279,51 @@ def get_role_config(role: str) -> RoleConfig:
         chain = ov["model_chain"]
     if not chain:
         chain = list(_DEFAULT_MODEL_CHAIN)  # Never leave a role without fallback
+    # Build output_format-aware system prompt if override provides output_format
+    ov_output = ov.get("output_format", "") if ov else ""
+    if ov_output:
+        system_prompt = _build_system_prompt(role, ov_output)
+    else:
+        system_prompt = base.system_prompt
+
     if not ov:
         return RoleConfig(
-            system_prompt=base.system_prompt,
+            system_prompt=system_prompt,
+            allowed_tools=base.allowed_tools,
             allowed_skills=base.allowed_skills,
-            default_skills=base.default_skills,
+            output_format=base.output_format,
             default_model=base.default_model,
             default_timeout=base.default_timeout,
             max_parallel=base.max_parallel,
             required_sections=base.required_sections,
             model_chain=chain,
         )
-    # Merge: override fields replace base fields
+
+    # Backward compat: old configs may have allowed_skills/default_skills with tool names mixed in
+    known_tools = {"execute_command", "view_file", "edit_file", "create_file", "insert_file",
+                   "get_file", "grep", "glob", "list_dir", "online_search", "web_search",
+                   "web_fetch", "check_command", "spawn_agent", "agent_status", "kill_agent",
+                   "todo_complete", "todo_skip", "ask_user", "generate_image", "mcp_call",
+                   "memory", "tracknote", "read_file", "openweb", "create_note",
+                   "list_checkpoints", "restore_checkpoint", "run_simulacra"}
+
+    ov_tools = ov.get("allowed_tools", None)
+    ov_skills = ov.get("allowed_skills", None)
+
+    # If old-style allowed_skills exists but no allowed_tools, auto-split
+    if ov_tools is None and ov_skills is not None:
+        ov_tools = [s for s in ov_skills if s in known_tools]
+        ov_skills = [s for s in ov_skills if s not in known_tools]
+
     return RoleConfig(
-        system_prompt=ov.get("system_prompt", base.system_prompt),
-        allowed_skills=ov.get("allowed_skills", base.allowed_skills),
-        default_skills=ov.get("default_skills", base.default_skills),
+        system_prompt=system_prompt,
+        allowed_tools=ov_tools if ov_tools is not None else base.allowed_tools,
+        allowed_skills=ov_skills if ov_skills is not None else base.allowed_skills,
+        output_format=ov.get("output_format", base.output_format),
         default_model=ov.get("default_model", base.default_model),
         default_timeout=ov.get("default_timeout", base.default_timeout),
         max_parallel=ov.get("max_parallel", base.max_parallel),
-        required_sections=ov.get("required_sections", ov.get("required_json_keys", base.required_sections)),
+        required_sections=ov.get("required_sections", base.required_sections),
         model_chain=chain,
     )
 
@@ -325,17 +333,11 @@ def export_roles() -> dict[str, dict]:
     result = {}
     for name in AGENT_ROLES:
         cfg = get_role_config(name)
-        base = AGENT_ROLES[name]
-        # Extract the required sections from system prompt
-        schema = ""
-        if "Your final answer MUST include these sections:" in cfg.system_prompt:
-            schema = cfg.system_prompt.split("Your final answer MUST include these sections:\n", 1)[-1].strip()
         result[name] = {
             "system_prompt": cfg.system_prompt,
-            "base_prompt": base.system_prompt,
-            "output_format": schema,
+            "output_format": cfg.output_format,
+            "allowed_tools": cfg.allowed_tools,
             "allowed_skills": cfg.allowed_skills,
-            "default_skills": cfg.default_skills,
             "default_model": cfg.default_model,
             "default_timeout": cfg.default_timeout,
             "max_parallel": cfg.max_parallel,
