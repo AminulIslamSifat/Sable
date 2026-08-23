@@ -58,13 +58,11 @@
       }
     }
 
-    function openTrackNotePanel(mode) {
-      if (!document.body.classList.contains('tracknote-open')) {
-        document.body.classList.add('tracknote-open');
-        document.body.classList.remove('diff-open');
-        if (typeof AgentPanel !== 'undefined') AgentPanel.close();
+    function openTodoPanel(mode = 'todo') {
+      const panelName = mode === 'agent-tasks' ? 'tasks' : 'todo';
+      if (window.sidebarHost) {
+        window.sidebarHost.openPanel(panelName);
       }
-      setTrackNoteMode(mode);
     }
 
     const DEFAULT_SHORTCUTS = {
@@ -74,7 +72,7 @@
       'open-memory': { keys: 'Alt+Shift+M', label: 'Open Memory', action: () => openSettingsTab('brain') },
       'open-notes': { keys: 'Alt+Shift+N', label: 'Open Notes', action: () => openLibraryTab('lib-notes') },
       'open-prompts': { keys: 'Alt+Shift+P', label: 'Open Prompts', action: () => openLibraryTab('lib-prompts') },
-      'open-tasks': { keys: 'Alt+Shift+T', label: 'Open Tasks', action: () => openTrackNotePanel('todo') },
+      'open-tasks': { keys: 'Alt+Shift+T', label: 'Open Todo', action: () => openTodoPanel('todo') },
       'search-conversations': { keys: 'Alt+F', label: 'Search Conversations', action: () => { const btn = document.getElementById('chatSearchBtn'); if (btn) btn.click(); } },
       'toggle-sidebar': { keys: 'Alt+B', label: 'Toggle Sidebar', action: () => { const isMobile = window.matchMedia('(max-width: 860px)').matches; isMobile ? document.body.classList.toggle('sidebar-open') : document.body.classList.toggle('sidebar-collapsed'); } },
       'focus-input': { keys: 'Alt+I', label: 'Focus Chat Input', action: () => inputEl?.focus() },
@@ -82,8 +80,7 @@
       'delete-session': { keys: 'Alt+Shift+D', label: 'Delete Session', action: () => { if (activeChatId) deleteChat(activeChatId); } },
       'toggle-tts': { keys: 'Alt+Shift+S', label: 'Play/Stop TTS', action: () => { if (_ttsActive) stopGlobalTTS(); } },
       'cheat-sheet': { keys: 'Alt+/', label: 'Shortcut Cheat Sheet', action: () => toggleCheatSheet() },
-      'open-agent-ops': { keys: 'Alt+Shift+A', label: 'Open Agent Ops', action: () => openTrackNotePanel('agent-tasks') },
-      'open-schedules': { keys: 'Alt+Shift+E', label: 'Open Schedules', action: () => openTrackNotePanel('schedule') },
+      'open-agent-ops': { keys: 'Alt+Shift+A', label: 'Open Tasks', action: () => openTodoPanel('agent-tasks') },
       'toggle-settings': { keys: 'Alt+,', label: 'Toggle Settings', action: () => settingsOverlay.classList.contains('hidden') ? openSettings() : closeSettings() },
     };
 

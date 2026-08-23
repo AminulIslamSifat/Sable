@@ -262,6 +262,23 @@ async def refresh_memory_cache() -> dict[str, Any]:
     count = get_searcher().rebuild_cache()
     return {"status": "ok", "detail": f"Cache rebuilt. {count} entries re-embedded."}
 
+
+@router.post("/api/settings/memory-search/query")
+async def search_memory_query(payload: dict[str, Any]) -> dict[str, Any]:
+    """Search memories by query string. Used by Knowledge Base search mode."""
+    query = payload.get("query", "")
+    top_k = payload.get("top_k", 20)
+    if not query:
+        return {"results": []}
+    try:
+        searcher = get_searcher()
+        results = searcher.search(query, top_k=top_k)
+        return {"results": results}
+    except Exception as e:
+        logger.warning("Memory search query failed: %s", e)
+        return {"results": [], "error": str(e)}
+
+
 def _save_user_skill(skill_data: dict[str, Any]) -> bool:
     """Persist a user-created skill to Brain/skills.json (same pattern as Protected.json)."""
     from engine.config import SKILLS_JSON_PATH

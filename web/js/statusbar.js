@@ -4,6 +4,35 @@
     const statusMenuEl = document.getElementById("statusThinkingMenu");
     const statusCwdEl = document.getElementById("statusCwd");
     const statusContextEl = document.getElementById("statusContext");
+    const modelDropdown = document.getElementById("modelDropdown");
+    const modelTrigger = document.getElementById("modelTrigger");
+    const modelMenu = document.getElementById("modelMenu");
+    const modelLabel = document.getElementById("modelLabel");
+    const personaDropdown = document.getElementById("personaDropdown");
+    const personaTrigger = document.getElementById("personaTrigger");
+    const personaMenu = document.getElementById("personaMenu");
+    const statusPersonaEl = document.getElementById("statusPersona");
+    const inputComposite = document.querySelector(".input-composite");
+
+    function _positionMenu(menuEl, alignRight) {
+      if (!inputComposite) return;
+      const rect = inputComposite.getBoundingClientRect();
+      menuEl.style.bottom = (window.innerHeight - rect.top + 2) + "px";
+      menuEl.style.minWidth = Math.max(100, rect.width * 0.3) + "px";
+      if (alignRight) {
+        menuEl.style.left = "auto";
+        menuEl.style.right = (window.innerWidth - rect.right) + "px";
+      } else {
+        menuEl.style.left = rect.left + "px";
+        menuEl.style.right = "auto";
+      }
+    }
+
+    function _closeAllDropdowns(except) {
+      if (except !== "thinking") statusDropdownEl?.classList.remove("open");
+      if (except !== "model") modelDropdown?.classList.remove("open");
+      if (except !== "persona") personaDropdown?.classList.remove("open");
+    }
 
     function syncStatusBarThinking() {
       if (!statusDropdownEl || !statusLabelEl || !statusMenuEl) return;
@@ -32,20 +61,12 @@
     }
 
     const statusTriggerEl = document.getElementById("statusThinkingTrigger");
-    const inputComposite = document.querySelector(".input-composite");
     if (statusTriggerEl && statusDropdownEl && statusMenuEl) {
       statusTriggerEl.addEventListener("click", (e) => {
         e.stopPropagation();
+        _closeAllDropdowns("thinking");
         const isOpen = statusDropdownEl.classList.toggle("open");
-        if (isOpen && inputComposite) {
-          const rect = inputComposite.getBoundingClientRect();
-          statusMenuEl.style.left = rect.left + "px";
-          statusMenuEl.style.bottom = (window.innerHeight - rect.top + 2) + "px";
-          statusMenuEl.style.minWidth = Math.max(100, rect.width * 0.3) + "px";
-        }
-      });
-      document.addEventListener("click", () => {
-        statusDropdownEl.classList.remove("open");
+        if (isOpen) _positionMenu(statusMenuEl);
       });
     }
 
@@ -155,42 +176,152 @@
     document.addEventListener('click', () => document.getElementById('ctxBreakdownPopup')?.remove());
 
 
-    /* ---------- Glass dropdown (custom model selector) ---------- */
-    const glassDropdown = document.getElementById("modelDropdown");
-    const glassTrigger = document.getElementById("modelTrigger");
-    const glassMenu = document.getElementById("modelMenu");
-    const glassLabel = glassTrigger.querySelector(".glass-dropdown-label");
-
-    function syncGlassDropdown() {
-      glassMenu.innerHTML = "";
+    /* ---------- Model dropdown (status-dropdown style) ---------- */
+    function syncModelDropdown() {
+      modelMenu.innerHTML = "";
       for (const opt of modelSelectEl.options) {
         const item = document.createElement("div");
-        item.className = "glass-dropdown-item" + (opt.selected ? " active" : "");
+        item.className = "status-dropdown-item" + (opt.selected ? " active" : "");
         item.textContent = opt.textContent;
         item.dataset.value = opt.value;
-        item.addEventListener("click", () => {
+        item.addEventListener("click", (e) => {
+          e.stopPropagation();
           modelSelectEl.value = opt.value;
           modelSelectEl.dispatchEvent(new Event("change"));
-          glassLabel.textContent = opt.textContent;
-          glassDropdown.classList.remove("open");
-          syncGlassDropdown();
+          modelLabel.textContent = opt.textContent;
+          modelDropdown.classList.remove("open");
+          syncModelDropdown();
         });
-        glassMenu.appendChild(item);
+        modelMenu.appendChild(item);
       }
       const sel = modelSelectEl.options[modelSelectEl.selectedIndex];
-      if (sel) glassLabel.textContent = sel.textContent;
+      if (sel) modelLabel.textContent = sel.textContent;
     }
 
-    glassTrigger.addEventListener("click", (e) => {
-      e.stopPropagation();
-      glassDropdown.classList.toggle("open");
+    if (modelTrigger) {
+      modelTrigger.addEventListener("click", (e) => {
+        e.stopPropagation();
+        _closeAllDropdowns("model");
+        const isOpen = modelDropdown.classList.toggle("open");
+        if (isOpen) _positionMenu(modelMenu);
+      });
+    }
+
+    /* ---------- Persona dropdown (status-dropdown style) ---------- */
+    async function syncStatusPersona() {
+      if (!statusPersonaEl || !personaMenu) return;
+      try {
+        const data = await fetch("/api/personas").then(r => r.json());
+        const personas = data.personas || [];
+        const hasActive = personas.some(p => p.active);
+        const active = personas.find(p => p.active);
+        statusPersonaEl.textContent = active ? active.name : "Default";
+
+        personaMenu.innerHTML = "";
+        const defaultItem = document.createElement("div");
+        defaultItem.className = "status-dropdown-item" + (!hasActive ? " active" : "");
+        defaultItem.textContent = "Default";
+        defaultItem.dataset.name = "__default__";
+        defaultItem.addEventListener("click", (e) => { e.stopPropagation(); selectPersona(null); });
+        personaMenu.appendChild(defaultItem);
+
+        for (const p of personas) {
+          const item = document.createElement("div");
+          item.className = "status-dropdown-item" + (p.active ? " active" : "");
+          item.textContent = p.name;
+          item.dataset.name = p.name;
+          item.addEventListener("click", (e) => { e.stopPropagation(); selectPersona(p.name); });
+          personaMenu.appendChild(item);
+        }
+
+        // Output format toggle
+        const divider = document.createElement("div");
+        divider.className = "status-dropdown-divider";
+        personaMenu.appendChild(divider);
+
+        const fmtRow = document.createElement("div");
+        fmtRow.className = "status-dropdown-toggle";
+        const fmtLabel = document.createElement("span");
+        fmtLabel.textContent = "Output Format";
+        const fmtSwitch = document.createElement("span");
+        const isFmtOn = data.config?.output_format_enabled !== false;
+        fmtSwitch.className = "status-toggle-switch" + (isFmtOn ? " on" : "");
+        fmtSwitch.textContent = isFmtOn ? "ON" : "OFF";
+        fmtRow.appendChild(fmtLabel);
+        fmtRow.appendChild(fmtSwitch);
+        fmtRow.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          const newState = !fmtSwitch.classList.contains("on");
+          fmtSwitch.classList.add("loading");
+          fmtSwitch.innerHTML = '<span class="status-spinner"></span>';
+          try {
+            await fetch("/api/personas/output-format-toggle", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ enabled: newState })
+            });
+            fmtSwitch.classList.toggle("on", newState);
+            fmtSwitch.textContent = newState ? "ON" : "OFF";
+          } catch (err) {
+            fmtSwitch.textContent = isFmtOn ? "ON" : "OFF";
+            console.warn("Failed to toggle output format:", err);
+          } finally {
+            fmtSwitch.classList.remove("loading");
+          }
+        });
+        personaMenu.appendChild(fmtRow);
+      } catch {
+        statusPersonaEl.textContent = "Default";
+      }
+    }
+
+    async function selectPersona(name) {
+      const items = personaMenu.querySelectorAll(".status-dropdown-item");
+      let targetItem = null;
+      items.forEach(item => {
+        if ((name === null && item.dataset.name === "__default__") || item.dataset.name === name) {
+          targetItem = item;
+        }
+      });
+      if (targetItem) {
+        const originalText = targetItem.textContent;
+        targetItem.classList.add("selecting");
+        targetItem.innerHTML = originalText + ' <span class="status-spinner"></span>';
+      }
+      try {
+        await fetch("/api/personas/active", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name })
+        });
+        personaDropdown.classList.remove("open");
+        document.dispatchEvent(new CustomEvent("persona-changed"));
+      } catch (e) {
+        if (targetItem) {
+          targetItem.classList.remove("selecting");
+          targetItem.textContent = targetItem.dataset.name === "__default__" ? "Default" : targetItem.dataset.name;
+        }
+        console.warn("Failed to set persona:", e);
+      }
+    }
+
+    if (personaTrigger) {
+      personaTrigger.addEventListener("click", (e) => {
+        e.stopPropagation();
+        _closeAllDropdowns("persona");
+        const isOpen = personaDropdown.classList.toggle("open");
+        if (isOpen) _positionMenu(personaMenu, true);
+      });
+    }
+
+    // Global click closes all status dropdowns
+    document.addEventListener("click", () => {
+      _closeAllDropdowns(null);
     });
 
-    document.addEventListener("click", (e) => {
-      if (!glassDropdown.contains(e.target)) {
-        glassDropdown.classList.remove("open");
-      }
-    });
+    syncStatusPersona();
+    document.addEventListener("persona-changed", syncStatusPersona);
+
 
     async function loadModels() {
       let models = FALLBACK_MODELS;
@@ -222,7 +353,7 @@
         if (m.id === selectedModel) opt.selected = true;
         modelSelectEl.appendChild(opt);
       }
-      syncGlassDropdown();
+      syncModelDropdown();
 
       populateThinkingModes(savedMode);
       updateAttachUI();
