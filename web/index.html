@@ -213,8 +213,8 @@
           <button id="layoutAgent" class="active" title="Agent chat mode"><span class="icon-emoji">💬</span><i data-lucide="message-square" class="icon-lucide"></i> Agent</button>
           <button id="layoutIde" title="IDE / editor mode"><span class="icon-emoji">🖥</span><i data-lucide="code-2" class="icon-lucide"></i> IDE</button>
         </div>
-        <button id="trackNoteBtn" class="sidebar-footer-btn" title="Todo">
-          <span class="icon-emoji">✅</span><i data-lucide="check-square" class="icon-lucide"></i> Todo
+        <button id="sidebarNewChatBtn" class="sidebar-footer-btn" title="New Chat">
+          <span class="icon-emoji">✨</span><i data-lucide="square-pen" class="icon-lucide"></i> New Chat
         </button>
         <div class="scraper-engine-wrap" id="scraperEngineWrap">
           <select id="scraperEngineSelect" title="Scraper engine"></select>
@@ -225,15 +225,11 @@
     </div>
     <div class="sidebar-section sidebar-chats">
       <div class="chat-search-float">
-        <button id="newChatFloat" class="new-chat-icon" title="New chat">
-          <span class="icon-emoji">＋</span><i data-lucide="square-pen" class="icon-lucide"></i>
-        </button>
+
         <button id="projectMenuBtn" class="new-chat-icon project-menu-btn" title="Project options" style="display:none;">
           <span class="icon-emoji">⋯</span><i data-lucide="more-horizontal" class="icon-lucide"></i>
         </button>
-        <button id="projectFolderBtn" class="new-chat-icon project-folder-btn" title="Projects">
-          <span class="icon-emoji">📁</span><i data-lucide="folder" class="icon-lucide"></i>
-        </button>
+
 
       </div>
       <div id="chats"></div>
@@ -242,6 +238,13 @@
   </aside>
 
   <main class="main">
+    <!-- Mobile menu toggle (visible ≤860px only) -->
+    <button id="mobileMenuBtn" class="mobile-menu-btn" title="Menu">
+      <i data-lucide="menu" class="icon-lucide"></i>
+    </button>
+    <button id="mobileNewChatBtn" class="mobile-new-chat-btn" title="New chat">
+      <i data-lucide="square-pen" class="icon-lucide"></i>
+    </button>
     <header class="hidden">
       <div class="header-row">
         <div class="header-cell header-icon-cell header-left-pair">
