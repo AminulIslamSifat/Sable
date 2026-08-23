@@ -540,12 +540,10 @@
     if (newChatSidebarBtn) {
         newChatSidebarBtn.addEventListener("click", createChat);
     }
-    const newChatFloatBtn = document.getElementById("newChatFloat");
-    if (newChatFloatBtn) {
-        newChatFloatBtn.addEventListener("click", createChat);
-
-
-
+    // Sidebar top "New Chat" button
+    const sidebarNewChatBtn = document.getElementById('sidebarNewChatBtn');
+    if (sidebarNewChatBtn) {
+      sidebarNewChatBtn.addEventListener('click', createChat);
     }
 
     // Chat search toggle + filter
