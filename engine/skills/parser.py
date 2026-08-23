@@ -146,6 +146,11 @@ def _parse_action_payload(raw: str) -> list[dict[str, Any]]:
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
+        # Only attempt repair if JSON is structurally complete (balanced brackets).
+        # Streaming chunks like '[{"name":' are NOT complete — repairing them
+        # produces valid-but-wrong JSON that gets consumed as real tool calls.
+        if not json_structurally_complete(raw):
+            return []
         # Attempt repair of common LLM JSON malformations
         try:
             data = json.loads(repair_json(raw))
