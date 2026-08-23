@@ -37,6 +37,7 @@ dependencies = [
     "tenacity>=8.2.0",
     "huggingface-hub>=0.25.0",
     "edge-tts>=7.2.8",
+    "json-repair>=0.63.3",
 ]
 
 [tool.uv]
