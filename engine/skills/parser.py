@@ -59,6 +59,8 @@ KNOWN_TAGS = (
     "spawn_agent",
     "agent_status",
     "kill_agent",
+    "todo_complete",
+    "todo_skip",
     "ask_user",
     "grep",
     "glob",
@@ -106,6 +108,20 @@ def _stringify_params(params: dict[str, Any]) -> dict[str, str]:
 _INVALID_ESCAPE_RE = re.compile(r"\\(?!['\"\\\/bfnrtu])")
 
 
+# Matches fenced code blocks: ```lang\n...\n``` or ```\n...\n```
+# Used to exclude code examples from bare JSON tool call detection.
+_CODE_FENCE_RE = re.compile(r"```[^\n]*\n.*?```", re.DOTALL)
+
+
+def _strip_code_fences(text: str) -> str:
+    """Remove markdown fenced code blocks from text.
+
+    Prevents bare JSON detection from triggering on code examples
+    that contain tool call syntax inside triple-backtick fences.
+    """
+    return _CODE_FENCE_RE.sub("", text)
+
+
 def _sanitize_json_escapes(raw: str) -> str:
     """Remove invalid backslash escapes that models sometimes produce."""
     # Replace \' with just ' (most common offender)
@@ -130,6 +146,11 @@ def _parse_action_payload(raw: str) -> list[dict[str, Any]]:
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
+        # Only attempt repair if JSON is structurally complete (balanced brackets).
+        # Streaming chunks like '[{"name":' are NOT complete — repairing them
+        # produces valid-but-wrong JSON that gets consumed as real tool calls.
+        if not json_structurally_complete(raw):
+            return []
         # Attempt repair of common LLM JSON malformations
         try:
             data = json.loads(repair_json(raw))
@@ -207,9 +228,13 @@ def _build_calls(data: Any) -> list[dict[str, Any]]:
         tool_name = str(item.get("name") or item.get("tool", "")).strip().lower()
         if not tool_name:
             continue
-        params = item.get("arguments") or item.get("params", {})
+        params = item.get("arguments") or item.get("params")
         if not isinstance(params, dict):
-            params = {}
+            # Fallback: treat top-level keys (besides name/tool) as implicit params.
+            # Models sometimes flatten {"name": "x", "command": "..."} instead of
+            # nesting under "arguments". This prevents silent data loss.
+            _RESERVED_KEYS = {"name", "tool"}
+            params = {k: v for k, v in item.items() if k not in _RESERVED_KEYS}
 
         attrs = _stringify_params(params)
 
@@ -232,6 +257,43 @@ def _build_calls(data: Any) -> list[dict[str, Any]]:
         calls.append({"name": tool_name, "attrs": attrs, "content": content})
 
     return calls
+
+
+def _find_json_end(raw: str) -> int:
+    """Find the index where the first complete JSON structure ends.
+
+    Tracks brace/bracket depth respecting strings and escapes.
+    Returns the index past the closing bracket/brace, or -1 if incomplete.
+    """
+    stripped = raw.strip()
+    if not stripped or stripped[0] not in ('{', '['):
+        return -1
+
+    depth = 0
+    in_string = False
+    escape_next = False
+
+    for i, ch in enumerate(stripped):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == chr(92) and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in ('{', '['):
+            depth += 1
+        elif ch in ('}', ']'):
+            depth -= 1
+            if depth == 0:
+                # Return offset relative to original raw (account for leading whitespace)
+                leading = len(raw) - len(raw.lstrip())
+                return leading + i + 1
+    return -1
 
 
 class SkillParser:
@@ -264,9 +326,16 @@ class SkillParser:
                 # partial extraction already consumed the tool call.
                 # Handle both complete closing tags and partial suffixes
                 # like "_call>" or "call>" that are remnants of </tool_call>
+                # Skip if an opening tag is also present — the close tag belongs
+                # to it and will be handled by the normal close-boundary logic.
                 _orphan_close = self._ACTION_CLOSE.search(self.buf)
-                if _orphan_close is not None:
-                    self.buf = self.buf[:_orphan_close.start()] + self.buf[_orphan_close.end():]
+                if _orphan_close is not None and not self._ACTION_OPEN.search(self.buf):
+                    # Silently strip orphan close tags — they're leftover fragments, not prose
+                    _before_close = self.buf[:_orphan_close.start()]
+                    _after_close = self.buf[_orphan_close.end():]
+                    if _before_close:
+                        yield {"type": "text", "text": _before_close}
+                    self.buf = _after_close
                     if not self.buf:
                         break
                 # Check for orphaned suffix fragments (no < prefix)
@@ -282,6 +351,89 @@ class SkillParser:
                     if _is_fragment:
                         self.buf = ""
                         break
+
+
+                # --- Bare JSON detection (no <tool_call> wrapper) ---
+                # Models sometimes emit [{...}] or {...} directly without tags.
+                # Scan entire buffer for JSON structures that look like tool calls,
+                # not just at the start — text often precedes the JSON in streams.
+                if not self._in_action and self._ACTION_OPEN.search(self.buf) is None:
+                    _bare_done = False   # parsed or errored → continue while loop
+                    _bare_hold = False   # incomplete JSON → break while loop (wait for more)
+                    # Build set of character indices inside code fences to skip
+                    _fenced_indices: set[int] = set()
+                    for _fence_match in _CODE_FENCE_RE.finditer(self.buf):
+                        _fenced_indices.update(range(_fence_match.start(), _fence_match.end()))
+                    for _scan_i, _scan_ch in enumerate(self.buf):
+                        if _scan_i in _fenced_indices:
+                            continue  # Skip characters inside code fences
+                        if _scan_ch in ('{', '['):
+                            _candidate = self.buf[_scan_i:]
+                            _json_end_idx = _find_json_end(_candidate)
+                            if _json_end_idx > 0:
+                                _json_str = _candidate[:_json_end_idx]
+                                _bare_calls = _parse_action_payload(_json_str)
+                                if _bare_calls:
+                                    _plog(f"BARE_JSON_TOOL_CALL: parsed {len(_bare_calls)} calls at offset {_scan_i}")
+                                    if _scan_i > 0 and self.buf[:_scan_i].strip():
+                                        yield {"type": "text", "text": self.buf[:_scan_i]}
+                                    self.buf = _candidate[_json_end_idx:]
+                                    self._pending_tag = None
+                                    self._last_progress = (0, 0)
+                                    for call in _bare_calls:
+                                        yield {
+                                            "type": "tag_found",
+                                            "name": call["name"],
+                                            "attrs": call["attrs"],
+                                            "content": call["content"],
+                                        }
+                                    _bare_done = True
+                                    break
+                                elif json_structurally_complete(_json_str):
+                                    # Only emit parse_error if content looks like a tool call attempt.
+                                    # Prose with balanced brackets (e.g. [!CAUTION], [...]) should be
+                                    # treated as text, not failed tool calls — emitting errors for
+                                    # non-tool-call content creates feedback loops when error messages
+                                    # containing brackets get re-injected into conversation context.
+                                    _looks_like_tool_call = (
+                                        '"name"' in _json_str
+                                        or '"tool"' in _json_str
+                                        or '"tag"' in _json_str
+                                    )
+                                    if _looks_like_tool_call:
+                                        _plog(f"BARE_JSON_PARSE_ERROR: offset={_scan_i} len={len(_json_str)}")
+                                        if _scan_i > 0 and self.buf[:_scan_i].strip():
+                                            yield {"type": "text", "text": self.buf[:_scan_i]}
+                                        self.buf = _candidate[_json_end_idx:]
+                                        yield {
+                                            "type": "parse_error",
+                                            "raw": _json_str[:500],
+                                            "reason": "Bare JSON detected without <tool_call> wrapper. Could not parse as tool calls. Use <tool_call>[{...}]</tool_call> format.",
+                                        }
+                                        _bare_done = True
+                                        break
+                                    else:
+                                        # Not a tool call — treat as prose, skip past this bracket block
+                                        _plog(f"BARE_JSON_NON_TOOL: offset={_scan_i} len={len(_json_str)} | preview={repr(_json_str[:80])}")
+                                        if _scan_i > 0 and self.buf[:_scan_i].strip():
+                                            yield {"type": "text", "text": self.buf[:_scan_i]}
+                                        # Emit the bracket content as text and continue scanning
+                                        yield {"type": "text", "text": _json_str}
+                                        self.buf = _candidate[_json_end_idx:]
+                                        _bare_done = True
+                                        break
+                            else:
+                                # Incomplete JSON at _scan_i — emit preceding text, hold rest
+                                if _scan_i > 0:
+                                    yield {"type": "text", "text": self.buf[:_scan_i]}
+                                    self.buf = self.buf[_scan_i:]
+                                _bare_hold = True
+                                break
+                    if _bare_done:
+                        continue
+                    if _bare_hold:
+                        break  # exit while loop, wait for more chunks
+
 
                 m = self._ACTION_OPEN.search(self.buf)
                 if m is None:
@@ -311,15 +463,40 @@ class SkillParser:
 
                 # JSON validation gate: only enter action mode if content looks like JSON
                 stripped_ahead = self.buf.lstrip()
-                if stripped_ahead and stripped_ahead[0] not in ('{', '['):
-                    # Not JSON — silently discard the opening tag, skip to next < if any
-                    _plog(f"NON_JSON_TOOL_CALL: starts with {repr(stripped_ahead[:30])}, discarding")
-                    # Find the next potential tag start or just continue
-                    next_lt = stripped_ahead.find("<")
-                    if next_lt >= 0:
-                        self.buf = stripped_ahead[next_lt:]
+                if not stripped_ahead:
+                    # Tag found but no content yet — hold and wait for next chunk
+                    # Don't enter action mode blindly; re-prepend the tag so it's
+                    # re-evaluated when more data arrives.
+                    self.buf = m.group(0) + self.buf
+                    break
+                if stripped_ahead[0] not in ('{', '['):
+                    # Not JSON — preserve the ENTIRE sequence (tags + content) as visible text
+                    # Use self.buf (not stripped_ahead) to preserve whitespace between tag and content
+                    _open_tag = m.group(0)
+                    _ahead = self.buf  # original buffer with whitespace intact
+                    _plog(f"NON_JSON_TOOL_CALL: starts with {repr(stripped_ahead[:30])}, emitting as text")
+                    # Check if there's a closing tag — if so, emit full block as text
+                    _close_in_ahead = self._ACTION_CLOSE.search(_ahead)
+                    if _close_in_ahead is not None:
+                        # Emit open tag + inner text + close tag as visible prose
+                        _full_block = _open_tag + _ahead[:_close_in_ahead.end()]
+                        yield {"type": "text", "text": _full_block}
+                        self.buf = _ahead[_close_in_ahead.end():]
                     else:
-                        self.buf = ""
+                        # No closing tag yet — emit open tag as text, hold rest
+                        yield {"type": "text", "text": _open_tag}
+                        # Look for next < that might be a tag start
+                        next_lt = _ahead.find("<")
+                        if next_lt >= 0:
+                            _before_lt = _ahead[:next_lt]
+                            if _before_lt:
+                                yield {"type": "text", "text": _before_lt}
+                            self.buf = _ahead[next_lt:]
+                        else:
+                            # No more tags — emit all remaining text
+                            if _ahead:
+                                yield {"type": "text", "text": _ahead}
+                            self.buf = ""
                     continue
                 self._in_action = True
 
@@ -366,6 +543,27 @@ class SkillParser:
         # Try to parse complete JSON
         calls = _parse_action_payload(raw_stripped)
         if calls:
+            # Emit a final progress snapshot for file-writing tools so the card
+            # shows content preview even when the entire call arrives in one chunk.
+            for call in calls:
+                cname = call["name"]
+                if cname in ("create_file", "edit_file", "insert_file"):
+                    preview_lines: list[str] = []
+                    cpath = call["attrs"].get("path", "")
+                    if cpath:
+                        preview_lines.append(cpath)
+                    ccontent = call.get("content", "") or call["attrs"].get("body", "")
+                    if ccontent:
+                        all_lines = [ln for ln in ccontent.splitlines() if ln.strip()]
+                        for ln in all_lines[-3:]:
+                            preview_lines.append(ln[:150])
+                    if preview_lines:
+                        yield {
+                            "type": "tool_progress",
+                            "tag": cname,
+                            "bytes": len(raw_stripped.encode("utf-8")),
+                            "preview_lines": preview_lines,
+                        }
             self._pending_tag = None
             self._last_progress = (0, 0)
             for call in calls:
@@ -407,21 +605,44 @@ class SkillParser:
                     self._last_progress = (0, 0)
                     yield {"type": "tool_pending", "tag": tag_name, "attrs": {}}
 
-            # Emit progress for large content
-            p_lines = raw_stripped.count("\n") + (1 if raw_stripped else 0)
+            # Emit progress with live content preview
             p_bytes = len(raw_stripped.encode("utf-8"))
             last_lines, last_bytes = self._last_progress
-            if p_lines != last_lines or p_bytes - last_bytes >= 96:
-                self._last_progress = (p_lines, p_bytes)
+            if p_bytes - last_bytes >= 32 or last_bytes == 0:
+                self._last_progress = (0, p_bytes)
+                preview_lines: list[str] = []
+                tag = self._pending_tag or "unknown"
+                # Extract path/filename for file tools
+                path_m = re.search(r'"(?:path|filename)"\s*:\s*"([^"]*)', raw_stripped)
+                if path_m:
+                    preview_lines.append(path_m.group(1))
+                # For edit/create/insert, show last few lines of content being written
+                content_m = re.search(r'"(?:content|body|lines)"\s*:\s*"(.*?)$', raw_stripped, re.DOTALL)
+                if content_m:
+                    raw_tail = content_m.group(1)[-500:]
+                    try:
+                        snippet = raw_tail.encode("utf-8").decode("unicode_escape")
+                    except Exception:
+                        snippet = raw_tail
+                    all_lines = [ln for ln in snippet.splitlines() if ln.strip()]
+                    # Show last 3 non-empty lines
+                    for ln in all_lines[-3:]:
+                        preview_lines.append(ln[:150])
+                if not preview_lines:
+                    size = f"{p_bytes} B" if p_bytes < 1024 else f"{p_bytes/1024:.1f} KB"
+                    preview_lines.append(f"streaming\u2026 {size}")
                 yield {
                     "type": "tool_progress",
-                    "tag": self._pending_tag or "unknown",
-                    "lines": p_lines,
+                    "tag": tag,
                     "bytes": p_bytes,
+                    "preview_lines": preview_lines,
                 }
 
     def flush(self) -> Generator[dict[str, Any], None, None]:
         """Flush remaining buffer. Extracts any complete tool_call blocks."""
+        # Reset progress state so stale events don't emit after stream ends
+        self._pending_tag = None
+        self._last_progress = (0, 0)
         if self.buf:
             if self._in_action:
                 _plog(f"FLUSH_IN_ACTION: buf_len={len(self.buf)} | first_100={repr(self.buf[:100])}")

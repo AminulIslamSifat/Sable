@@ -56,6 +56,40 @@ that's it. that's the whole thing. opens `http://127.0.0.1:61770` in your browse
 
 ***
 
+## VS Code Extension
+
+Want Sable inside your editor? There's a VS Code extension for that.
+
+### Install from Open VSX
+
+Available on [Open VSX](https://open-vsx.org/extension/aminulislamssifat/sable-chat) — works with VSCodium, Cursor, and any Open VSX-compatible editor.
+
+### Install from VSIX
+
+```bash
+# Clone & build
+git clone https://github.com/AminulIslamSifat/sable-vscode.git
+cd sable-vscode
+npm install
+npx @vscode/vsce package
+
+# Install (use `code` or `codium` depending on your editor)
+code --install-extension sable-chat-*.vsix
+```
+
+### Configuration
+
+| Setting | Default | Description |
+|:--|:--|:--|
+| `sable.serverUrl` | `http://localhost:61770` | Your Sable server URL |
+| `sable.authToken` | *(empty)* | Auth token (auto-detected if empty) |
+
+> Make sure Sable is running (`./start`) before using the extension.
+
+**Repo:** [github.com/AminulIslamSifat/sable-vscode](https://github.com/AminulIslamSifat/sable-vscode)
+
+***
+
 ## prerequisites
 
 | Thing | Why |

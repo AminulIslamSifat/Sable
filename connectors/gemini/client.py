@@ -101,14 +101,18 @@ def _save_keys(keys: list[str]) -> None:
 
 _instruction_cache: str | None = None
 _cached_project_id: str | None = "__none__"
+_cached_version: int = -1
 
 
 def _load_instructions(project_id: str | None = None) -> str:
     """Load instruction context. Project-aware via shared builder."""
-    global _instruction_cache, _cached_project_id
-    if project_id != _cached_project_id:
+    global _instruction_cache, _cached_project_id, _cached_version
+    from connectors.common.instruction_builder import get_instruction_version
+    current_version = get_instruction_version()
+    if project_id != _cached_project_id or current_version != _cached_version:
         _instruction_cache = None
         _cached_project_id = project_id
+        _cached_version = current_version
     if _instruction_cache is not None:
         return _instruction_cache
     from connectors.common.instruction_builder import build_instructions

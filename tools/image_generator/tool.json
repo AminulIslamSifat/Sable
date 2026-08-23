@@ -1,0 +1,46 @@
+[
+  {
+    "name": "generate_image",
+    "description": "Generate AI images via Cloudflare (FLUX, free daily), Puter (GPT Image/Gemini/Imagen, 1000 monthly credits), Pollinations (unlimited, flaky), or Perchance (SDXL, free). Auto-fallback if provider not specified.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "Image description / subject"
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["auto", "cloudflare", "puter", "pollinations", "perchance"],
+          "description": "Which provider to use. 'auto' tries Cloudflare → Pollinations → Perchance. Default: auto"
+        },
+        "model": {
+          "type": "string",
+          "description": "Model ID. Cloudflare: @cf/black-forest-labs/flux-1-schnell (default), @cf/black-forest-labs/flux-2-dev, @cf/black-forest-labs/flux-2-klein-4b, @cf/black-forest-labs/flux-2-klein-9b, @cf/lykon/dreamshaper-8-lcm, @cf/stabilityai/stable-diffusion-xl-base-1.0. Puter: openai/gpt-image-1-mini (default), openai/gpt-image-2, openai/gpt-image-1.5, openai/gpt-image-1. Pollinations: flux, turbo. Ignored for Perchance."
+        },
+        "style": {
+          "type": "string",
+          "description": "Art style preset. Best 11: painted_anime, cyberpunk, oil_painting, ghibli, cinematic, fantasy, photorealistic, pixel_art, watercolor, horror, surreal. Also accepts free-text (e.g. 'in the style of Moebius'). Prepended as prompt prefix. Default: no_style"
+        },
+        "shape": {
+          "type": "string",
+          "enum": ["square", "portrait", "landscape"],
+          "description": "Image aspect ratio. Default: square"
+        },
+        "count": {
+          "type": "integer",
+          "description": "Number of images to generate (1-4). Only Perchance supports true batch; other providers generate one at a time. Default: 1"
+        },
+        "negative_prompt": {
+          "type": "string",
+          "description": "What to avoid in the image. Supported by Cloudflare and Perchance. Default: low-quality, deformed, blurry, bad art"
+        },
+        "seed": {
+          "type": "integer",
+          "description": "Seed for reproducibility (-1 for random). Supported by all providers."
+        }
+      },
+      "required": ["prompt"]
+    }
+  }
+]

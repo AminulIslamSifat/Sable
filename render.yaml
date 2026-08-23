@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: sable
+    runtime: python
+    region: singapore
+    plan: free
+    healthCheckPath: /api/health
+    buildCommand: uv sync --frozen && uv run playwright install --with-deps chromium && uv cache prune --ci
+    startCommand: uv run python server.py
+    envVars:
+      - key: SABLE_HOST
+        value: "0.0.0.0"
+      - key: PORT
+        value: "10000"
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      - key: UV_CACHE_DIR
+        value: "/opt/render/.uv-cache"

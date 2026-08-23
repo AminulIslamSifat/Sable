@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from engine.scraper import (
     get_settings as get_scraper_settings,
@@ -294,6 +294,108 @@ async def remove_openai_api_key(index: int) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Puter API key management (free image generation)
+# ---------------------------------------------------------------------------
+
+@router.post("/api/settings/puter/api-key")
+async def add_puter_api_key(request: Request) -> dict[str, Any]:
+    """Add a Puter API token to the pool."""
+    from connectors.puter.client import get_client as get_puter_client
+    body = await request.json()
+    key = body.get("api_key", "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="Missing 'api_key' field")
+    client = get_puter_client()
+    if key in client._keys:
+        raise HTTPException(status_code=409, detail="Key already exists")
+    client.add_key(key)
+    return {"status": "ok", "keys": client.list_keys(), "available": client.is_available}
+
+
+@router.get("/api/settings/puter/keys")
+async def list_puter_keys() -> dict[str, Any]:
+    """List all configured Puter API tokens (masked)."""
+    from connectors.puter.client import get_client as get_puter_client
+    client = get_puter_client()
+    return {"keys": client.list_keys(), "available": client.is_available}
+
+
+@router.delete("/api/settings/puter/api-key/{index}")
+async def remove_puter_api_key(index: int) -> dict[str, Any]:
+    """Remove a Puter API token by index."""
+    from connectors.puter.client import get_client as get_puter_client
+    client = get_puter_client()
+    if not client.remove_key(index):
+        raise HTTPException(status_code=404, detail="Key not found at that index")
+    return {"status": "ok", "keys": client.list_keys(), "available": client.is_available}
+
+
+@router.get("/api/settings/puter/usage")
+async def get_puter_usage() -> dict[str, Any]:
+    """Fetch current Puter monthly allowance + usage for the active key."""
+    from connectors.puter.client import get_client as get_puter_client
+    return get_puter_client().get_usage()
+
+
+@router.get("/api/settings/puter/models")
+async def list_puter_image_models() -> dict[str, Any]:
+    """Return the catalog of Puter image-generation models."""
+    from connectors.puter.client import PUTER_IMAGE_MODELS
+    return {"models": [{"id": k, "label": v} for k, v in PUTER_IMAGE_MODELS.items()]}
+
+
+# ---------------------------------------------------------------------------
+# Cloudflare Workers AI credentials & info
+# ---------------------------------------------------------------------------
+
+@router.post("/api/settings/cloudflare/credentials")
+async def save_cloudflare_creds(request: Request) -> dict[str, Any]:
+    """Save Cloudflare AI API token. Account ID is auto-fetched from the API."""
+    body = await request.json()
+    api_token = (body.get("api_token") or "").strip()
+    if not api_token:
+        raise HTTPException(400, "API token is required")
+    from connectors.cloudflare.client import save_credentials, CloudflareAIClient
+    # Validate token by fetching account ID
+    client = CloudflareAIClient(api_token=api_token)
+    if not client._ensure_account_id():
+        raise HTTPException(400, "Invalid token or could not fetch account ID")
+    save_credentials(api_token, client._account_id)
+    return {"ok": True, "message": "Cloudflare credentials saved", "account_id": client._account_id}
+
+
+@router.get("/api/settings/cloudflare/status")
+async def cloudflare_status() -> dict[str, Any]:
+    """Check if Cloudflare AI is configured and estimate daily budget."""
+    from connectors.cloudflare.client import get_client, CLOUDFLARE_IMAGE_MODELS
+    client = get_client()
+    if not client.is_available:
+        return {"available": False, "models": []}
+    budget = client.estimate_daily_budget()
+    models = [
+        {"id": k, "label": v["label"], "description": v["description"]}
+        for k, v in CLOUDFLARE_IMAGE_MODELS.items()
+    ]
+    return {
+        "available": True,
+        "budget": budget,
+        "models": models,
+    }
+
+
+@router.delete("/api/settings/cloudflare/credentials")
+async def delete_cloudflare_creds() -> dict[str, Any]:
+    """Remove saved Cloudflare credentials."""
+    creds_file = Path(_SYSTEM_DIR) / ".cloudflare_ai_creds.json"
+    if creds_file.exists():
+        creds_file.unlink()
+    # Reset singleton
+    import connectors.cloudflare.client as cf_mod
+    cf_mod._client = None
+    return {"ok": True, "message": "Cloudflare credentials removed"}
+
+
+# ---------------------------------------------------------------------------
 # Provider model listing (fetch available models from a provider's API)
 # ---------------------------------------------------------------------------
 
@@ -419,11 +521,60 @@ async def list_provider_models(provider: str) -> dict[str, Any]:
 
 
 @router.post("/api/settings/providers/custom/models")
+async def _fetch_cloudflare_models(base_url: str, api_key: str) -> dict[str, Any]:
+    """Fetch text-generation models from Cloudflare Workers AI via /ai/models/search."""
+    import re as _re
+    import httpx as _httpx
+    # Extract account ID from base URL
+    match = _re.search(r"/accounts/([a-f0-9]+)", base_url)
+    if not match:
+        return {"models": [], "available": False, "error": "Could not extract Cloudflare account ID from URL"}
+    account_id = match.group(1)
+    search_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/models/search?per_page=300"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        async with _httpx.AsyncClient(timeout=15.0) as http:
+            r = await http.get(search_url, headers=headers)
+            r.raise_for_status()
+            data = r.json()
+            raw = data.get("result", []) or []
+            models = []
+            for m in raw:
+                task_name = (m.get("task") or {}).get("name", "")
+                if task_name != "Text Generation":
+                    continue
+                mid = m.get("name", "")
+                if not mid:
+                    continue
+                desc = m.get("description", "")[:60]
+                props = {p.get("property_id"): p.get("value") for p in m.get("properties", [])}
+                badges = []
+                if "reasoning" in props:
+                    badges.append("🧠")
+                if "function_calling" in props:
+                    badges.append("🔧")
+                label = mid.split("/")[-1].replace("-", " ").title()
+                if badges:
+                    label += " " + "".join(badges)
+                models.append({"id": mid, "label": label})
+            models.sort(key=lambda m: m["id"])
+            return {"models": models, "available": True}
+    except _httpx.HTTPStatusError as exc:
+        code = exc.response.status_code
+        if code in (401, 403):
+            return {"models": [], "available": False, "error": "Auth rejected — check the API token"}
+        return {"models": [], "available": False, "error": f"Cloudflare returned {code}"}
+    except Exception as exc:
+        logger.warning("Cloudflare model fetch failed: %s", exc)
+        return {"models": [], "available": False, "error": f"Could not reach Cloudflare: {exc}"}
+
+
 async def fetch_custom_endpoint_models(request: Request) -> dict[str, Any]:
     """Fetch the model list from an arbitrary OpenAI-compatible endpoint.
 
     Body: {"base_url": "https://.../v1", "api_key": "optional"}
     Hits {base_url}/models and normalizes the response.
+    For Cloudflare endpoints, uses /ai/models/search instead.
     """
     import httpx as _httpx
     body = await request.json()
@@ -431,6 +582,10 @@ async def fetch_custom_endpoint_models(request: Request) -> dict[str, Any]:
     api_key = (body.get("api_key") or "").strip()
     if not base_url:
         raise HTTPException(status_code=400, detail="Missing base_url")
+
+    # Cloudflare Workers AI doesn't support /v1/models — use their search API
+    if "api.cloudflare.com" in base_url and "/accounts/" in base_url:
+        return await _fetch_cloudflare_models(base_url, api_key)
 
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
@@ -491,10 +646,18 @@ def _mask_endpoint_key(key: str) -> str:
 
 
 async def _fetch_openai_models(base_url: str, api_key: str = "") -> dict[str, Any]:
-    """Fetch + normalize models from any OpenAI-compatible /models endpoint."""
-    import httpx as _httpx
+    """Fetch + normalize models from any OpenAI-compatible /models endpoint.
+
+    For Cloudflare endpoints, delegates to _fetch_cloudflare_models.
+    """
     base_url = base_url.strip().rstrip("/")
     api_key = api_key.strip()
+
+    # Cloudflare Workers AI doesn't support /v1/models — use their search API
+    if "api.cloudflare.com" in base_url and "/accounts/" in base_url:
+        return await _fetch_cloudflare_models(base_url, api_key)
+
+    import httpx as _httpx
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
         async with _httpx.AsyncClient(timeout=15.0) as http:
@@ -912,6 +1075,8 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
                     get_deepseek_client().set_token(ds_token, account=account)
                 except Exception as exc:
                     logger.warning("DeepSeek token extraction failed for %s: %s", account, exc)
+            from connectors.common.instruction_builder import invalidate_cache
+            invalidate_cache()
             try:
                 await service.sync_context()
             except Exception as exc:
@@ -1484,7 +1649,9 @@ async def delete_tts_models() -> dict[str, Any]:
 # ── TTS Preferences ──────────────────────────────────────────────────
 _TTS_PREFS_PATH = BASE_DIR / "system/tts_prefs.json"
 _TTS_PREFS_DEFAULTS: dict[str, Any] = {
+    "provider": "kokoro",  # "kokoro" | "edge"
     "voice": "af_bella",
+    "edge_voice": "en-US-AvaMultilingualNeural",
     "speed": 1.0,
 }
 
@@ -1515,8 +1682,14 @@ async def get_tts_prefs() -> dict[str, Any]:
 async def set_tts_prefs(request: Request) -> dict[str, Any]:
     body = await request.json()
     prefs = _load_tts_prefs()
+    if "provider" in body:
+        p = str(body["provider"]).strip().lower()
+        if p in ("kokoro", "edge"):
+            prefs["provider"] = p
     if "voice" in body:
         prefs["voice"] = str(body["voice"]).strip()
+    if "edge_voice" in body:
+        prefs["edge_voice"] = str(body["edge_voice"]).strip()
     if "speed" in body:
         try:
             prefs["speed"] = round(float(body["speed"]), 2)
@@ -1547,15 +1720,13 @@ def _get_kokoro():
 
 @router.post("/api/tts/synthesize")
 async def tts_synthesize(request: Request) -> Response:
-    """Synthesize text to speech. Returns WAV audio."""
+    """Synthesize text to speech. Returns WAV (kokoro) or MP3 (edge)."""
     import io
-    import soundfile as sf
 
     body = await request.json()
     text = (body.get("text") or "").strip()
-    # Fall back to saved prefs if voice/speed not provided
     prefs = _load_tts_prefs()
-    voice = body.get("voice") or prefs.get("voice", "af_bella")
+    provider = body.get("provider") or prefs.get("provider", "kokoro")
     speed = body.get("speed") if body.get("speed") is not None else prefs.get("speed", 1.0)
 
     if not text:
@@ -1563,11 +1734,17 @@ async def tts_synthesize(request: Request) -> Response:
     if len(text) > 5000:
         raise HTTPException(status_code=400, detail="Text too long (max 5000 chars)")
 
+    if provider == "edge":
+        return await _synthesize_edge(text, body, prefs, speed)
+
+    # Kokoro (default)
+    import soundfile as sf
+    voice = body.get("voice") or prefs.get("voice", "af_bella")
     try:
         kokoro = _get_kokoro()
         samples, sr = kokoro.create(text, voice=voice, speed=speed)
     except Exception as e:
-        logger.error(f"TTS synthesis failed: {e}")
+        logger.error(f"Kokoro TTS synthesis failed: {e}")
         raise HTTPException(status_code=500, detail=f"Synthesis failed: {e}")
 
     buf = io.BytesIO()
@@ -1576,9 +1753,68 @@ async def tts_synthesize(request: Request) -> Response:
     return Response(content=buf.read(), media_type="audio/wav")
 
 
+async def _synthesize_edge(
+    text: str,
+    body: dict[str, Any],
+    prefs: dict[str, Any],
+    speed: float,
+) -> Response:
+    """Synthesize via Edge TTS. Returns MP3 audio."""
+    import io
+    import edge_tts
+
+    voice = body.get("voice") or body.get("edge_voice") or prefs.get("edge_voice", "en-US-AvaMultilingualNeural")
+    # Edge TTS rate format: "+20%", "-10%", etc. Convert from multiplier.
+    rate_pct = int((speed - 1.0) * 100)
+    rate_str = f"+{rate_pct}%" if rate_pct >= 0 else f"{rate_pct}%"
+
+    try:
+        communicate = edge_tts.Communicate(text, voice, rate=rate_str)
+        buf = io.BytesIO()
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                buf.write(chunk["data"])
+        buf.seek(0)
+        return Response(content=buf.read(), media_type="audio/mpeg")
+    except Exception as e:
+        logger.error(f"Edge TTS synthesis failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Edge TTS failed: {e}")
+
+
+_edge_voices_cache: list[dict[str, str]] | None = None
+
+
+async def _get_edge_voices() -> list[dict[str, str]]:
+    """Fetch Edge TTS voices (cached after first call)."""
+    global _edge_voices_cache
+    if _edge_voices_cache is not None:
+        return _edge_voices_cache
+    import edge_tts
+    raw = await edge_tts.list_voices()
+    # Return simplified list: {ShortName, Locale, Gender}
+    _edge_voices_cache = [
+        {
+            "id": v["ShortName"],
+            "locale": v.get("Locale", ""),
+            "gender": v.get("Gender", ""),
+        }
+        for v in raw
+    ]
+    return _edge_voices_cache
+
+
 @router.get("/api/tts/voices")
-async def tts_voices() -> dict[str, Any]:
-    """List available TTS voices."""
+async def tts_voices(provider: str = "kokoro") -> dict[str, Any]:
+    """List available TTS voices for the given provider."""
+    if provider == "edge":
+        try:
+            voices = await _get_edge_voices()
+            return {"voices": voices, "provider": "edge"}
+        except Exception as e:
+            logger.error(f"Edge TTS voice listing failed: {e}")
+            return {"voices": [], "provider": "edge", "error": str(e)}
+
+    # Kokoro (default)
     try:
         kokoro = _get_kokoro()
         if hasattr(kokoro, "voices"):
@@ -1587,9 +1823,9 @@ async def tts_voices() -> dict[str, Any]:
             voices = sorted(kokoro.get_voices())
         else:
             voices = []
-        return {"voices": voices}
+        return {"voices": voices, "provider": "kokoro"}
     except HTTPException:
-        return {"voices": [], "error": "TTS models not installed"}
+        return {"voices": [], "provider": "kokoro", "error": "TTS models not installed"}
 # ── /TTS Synthesis ───────────────────────────────────────────────────
 
 
@@ -1820,6 +2056,262 @@ async def get_general_settings() -> dict[str, Any]:
     return {
         "max_tool_output_chars": settings.get("max_tool_output_chars", 100_000),
     }
+
+
+# ── STT (Speech-to-Text) ───────────────────────────────────────────────
+_STT_DIR = _SYSTEM_DIR / "models" / "stt"
+_STT_HF_REPO = "Systran/faster-whisper-small.en"
+_STT_FILES = {
+    "model.bin": {
+        "url": f"https://huggingface.co/{_STT_HF_REPO}/resolve/main/model.bin",
+        "size": 483_545_366,
+        "label": "Whisper small.en Model (CTranslate2)",
+    },
+    "config.json": {
+        "url": f"https://huggingface.co/{_STT_HF_REPO}/resolve/main/config.json",
+        "size": 2_657,
+        "label": "Model Config",
+    },
+    "tokenizer.json": {
+        "url": f"https://huggingface.co/{_STT_HF_REPO}/resolve/main/tokenizer.json",
+        "size": 2_128_466,
+        "label": "Tokenizer",
+    },
+    "vocabulary.txt": {
+        "url": f"https://huggingface.co/{_STT_HF_REPO}/resolve/main/vocabulary.txt",
+        "size": 422_309,
+        "label": "Vocabulary",
+    },
+}
+_STT_PREFS_PATH = _SYSTEM_DIR / "stt_prefs.json"
+_STT_PREFS_DEFAULTS: dict[str, Any] = {
+    "model": "small.en",
+    "device": "cpu",
+    "compute_type": "int8",
+    "language": "en",
+    "beam_size": 5,
+}
+_whisper_model = None
+
+
+def _stt_status() -> dict[str, Any]:
+    files = {}
+    for name, meta in _STT_FILES.items():
+        path = _STT_DIR / name
+        if path.exists():
+            actual = path.stat().st_size
+            files[name] = {
+                "label": meta["label"],
+                "installed": actual >= meta["size"] * 0.90,
+                "size": actual,
+                "expected": meta["size"],
+            }
+        else:
+            files[name] = {
+                "label": meta["label"],
+                "installed": False,
+                "size": 0,
+                "expected": meta["size"],
+            }
+    all_installed = all(f["installed"] for f in files.values())
+    return {"installed": all_installed, "dir": str(_STT_DIR), "files": files}
+
+
+def _load_stt_prefs() -> dict[str, Any]:
+    prefs = dict(_STT_PREFS_DEFAULTS)
+    if _STT_PREFS_PATH.exists():
+        try:
+            with open(_STT_PREFS_PATH, "r", encoding="utf-8") as f:
+                stored = json.load(f)
+            if isinstance(stored, dict):
+                prefs.update(stored)
+        except Exception:
+            pass
+    return prefs
+
+
+def _save_stt_prefs(prefs: dict[str, Any]) -> None:
+    _STT_PREFS_PATH.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
+
+
+def _get_whisper_model():
+    """Lazy-load faster-whisper model (singleton)."""
+    global _whisper_model
+    if _whisper_model is not None:
+        return _whisper_model
+    from faster_whisper import WhisperModel
+    prefs = _load_stt_prefs()
+    model_path = str(_STT_DIR)
+    if not (_STT_DIR / "model.bin").exists():
+        raise HTTPException(status_code=400, detail="STT model not installed")
+    _whisper_model = WhisperModel(
+        model_path,
+        device=prefs.get("device", "cpu"),
+        compute_type=prefs.get("compute_type", "int8"),
+    )
+    return _whisper_model
+
+
+@router.get("/api/settings/stt")
+async def get_stt_status() -> dict[str, Any]:
+    return _stt_status()
+
+
+@router.get("/api/settings/stt/prefs")
+async def get_stt_prefs() -> dict[str, Any]:
+    return _load_stt_prefs()
+
+
+@router.post("/api/settings/stt/prefs")
+async def set_stt_prefs(request: Request) -> dict[str, Any]:
+    body = await request.json()
+    prefs = _load_stt_prefs()
+    if "language" in body:
+        prefs["language"] = str(body["language"]).strip()
+    if "beam_size" in body:
+        try:
+            prefs["beam_size"] = int(body["beam_size"])
+        except (ValueError, TypeError):
+            pass
+    if "compute_type" in body:
+        prefs["compute_type"] = str(body["compute_type"]).strip()
+    _save_stt_prefs(prefs)
+    # Reset singleton so next transcription uses new prefs
+    global _whisper_model
+    _whisper_model = None
+    return {"status": "ok", **prefs}
+
+
+@router.post("/api/settings/stt/download")
+async def download_stt_models(request: Request) -> StreamingResponse:
+    """Download STT model files from HuggingFace with streaming progress."""
+    import urllib.request
+
+    _STT_DIR.mkdir(parents=True, exist_ok=True)
+
+    async def _stream() -> AsyncGenerator[str, None]:
+        for name, meta in _STT_FILES.items():
+            path = _STT_DIR / name
+            if path.exists() and path.stat().st_size >= meta["size"] * 0.90:
+                yield json.dumps({"file": name, "status": "skip", "reason": "already installed"}) + "\n"
+                continue
+
+            yield json.dumps({"file": name, "status": "start", "total": meta["size"]}) + "\n"
+            try:
+                tmp = path.with_suffix(".part")
+                req = urllib.request.Request(meta["url"], headers={"User-Agent": "Sable/1.0"})
+                with urllib.request.urlopen(req, timeout=600) as resp:
+                    downloaded = 0
+                    with open(tmp, "wb") as f:
+                        while True:
+                            if await request.is_disconnected():
+                                tmp.unlink(missing_ok=True)
+                                yield json.dumps({"file": name, "status": "cancelled"}) + "\n"
+                                return
+                            chunk = resp.read(1024 * 256)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            yield json.dumps({"file": name, "status": "progress", "downloaded": downloaded, "total": meta["size"]}) + "\n"
+                            await asyncio.sleep(0)
+                tmp.rename(path)
+                yield json.dumps({"file": name, "status": "done", "size": downloaded}) + "\n"
+            except Exception as e:
+                if tmp.exists():
+                    tmp.unlink()
+                yield json.dumps({"file": name, "status": "error", "error": str(e)}) + "\n"
+
+        yield json.dumps({"status": "complete"}) + "\n"
+
+    return StreamingResponse(_stream(), media_type="application/x-ndjson")
+
+
+@router.delete("/api/settings/stt")
+async def delete_stt_models() -> dict[str, Any]:
+    removed = []
+    for name in _STT_FILES:
+        path = _STT_DIR / name
+        if path.exists():
+            path.unlink()
+            removed.append(name)
+    global _whisper_model
+    _whisper_model = None
+    return {"status": "ok", "removed": removed}
+
+
+@router.post("/api/stt/transcribe")
+async def stt_transcribe(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Transcribe an audio file using faster-whisper. Returns text + segments."""
+    import tempfile
+    import os
+
+    status = _stt_status()
+    if not status["installed"]:
+        raise HTTPException(status_code=400, detail="STT model not installed")
+
+    # Read uploaded audio to temp file
+    suffix = Path(file.filename or "audio.wav").suffix or ".wav"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        content = await file.read()
+        if len(content) > 100 * 1024 * 1024:  # 100MB limit
+            os.unlink(tmp.name)
+            raise HTTPException(status_code=413, detail="Audio file too large (max 100MB)")
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    wav_path = None
+    try:
+        # Convert non-WAV formats (webm, mp4, ogg, etc.) to WAV via ffmpeg
+        if suffix.lower() not in (".wav",):
+            import subprocess
+            wav_fd, wav_path = tempfile.mkstemp(suffix=".wav")
+            os.close(wav_fd)
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y", "-i", tmp_path,
+                "-ar", "16000", "-ac", "1", "-f", "wav", wav_path,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+            if proc.returncode != 0:
+                raise HTTPException(status_code=400, detail=f"Audio conversion failed (unsupported format: {suffix})")
+            transcribe_path = wav_path
+        else:
+            transcribe_path = tmp_path
+
+        model = _get_whisper_model()
+        prefs = _load_stt_prefs()
+        segments_iter, info = model.transcribe(
+            transcribe_path,
+            language=prefs.get("language", "en"),
+            beam_size=prefs.get("beam_size", 5),
+        )
+        segments = []
+        full_text_parts = []
+        for seg in segments_iter:
+            segments.append({
+                "start": round(seg.start, 2),
+                "end": round(seg.end, 2),
+                "text": seg.text.strip(),
+            })
+            full_text_parts.append(seg.text.strip())
+
+        return {
+            "text": " ".join(full_text_parts),
+            "segments": segments,
+            "duration": round(info.duration, 2),
+            "language": info.language,
+            "language_probability": round(info.language_probability, 3),
+        }
+    except Exception as e:
+        logger.error(f"STT transcription failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {e}")
+    finally:
+        os.unlink(tmp_path)
+        if wav_path and os.path.exists(wav_path):
+            os.unlink(wav_path)
+# ── /STT ──────────────────────────────────────────────────────────────
 
 
 @router.post("/api/settings/general")

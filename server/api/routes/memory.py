@@ -458,6 +458,31 @@ async def _try_consolidation_call(
     try:
         api_backend = _resolve_api_backend(model)
 
+        # ── Diagnostic print: what path is actually taken ──
+        _log_path = "API" if api_backend else (f"Qwen@{browser_profile}" if browser_profile else "Qwen@default")
+        _log_browser_dir = ""
+        _log_waf_account = ""
+        if not api_backend:
+            from engine.config import _SYSTEM as _SYS, _resolve_active_account
+            if browser_profile:
+                _log_browser_dir = str(_SYS / browser_profile)
+                _log_waf_account = browser_profile
+            else:
+                _log_browser_dir = str(_SYS / "browser-data")
+                _log_waf_account = _resolve_active_account()
+        print(
+            f"\n{'='*60}\n"
+            f"[CONSOLIDATION CALL]\n"
+            f"  model:              {model}\n"
+            f"  path:               {_log_path}\n"
+            f"  api_backend:        {api_backend or '(none)'}\n"
+            f"  browser_dir:        {_log_browser_dir or '(n/a)'}\n"
+            f"  waf_account:        {_log_waf_account or '(n/a)'}\n"
+            f"  system_instruction: {'YES (personality)' if system_instruction else 'NO (consolidation)'}\n"
+            f"{'='*60}\n",
+            flush=True,
+        )
+
         if api_backend:
             # API-backed model (Gemini/Groq/Mistral/DeepSeek/etc.) — no Playwright
             if api_backend in _CONSOLIDATION_BACKENDS:
@@ -549,14 +574,14 @@ async def _try_consolidation_call(
 
 
 def _try_consolidation_call_threaded(
-    model: str, prompt: str, browser_profile: str = ""
+    model: str, prompt: str, browser_profile: str = "", *, system_instruction: str = ""
 ) -> dict[str, Any] | None:
     """Run a Qwen/Playwright consolidation call in a dedicated thread with its own event loop.
     Only used for Qwen paths — API backends stay on the main loop (shared httpx clients)."""
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(
-            _try_consolidation_call(model, prompt, browser_profile=browser_profile)
+            _try_consolidation_call(model, prompt, browser_profile=browser_profile, system_instruction=system_instruction)
         )
     except Exception:
         return None
@@ -581,23 +606,25 @@ async def _consolidation_llm_phase(
     if api_backend:
         # API backend — run on main event loop (httpx clients bound here)
         result = await _try_consolidation_call(model, prompt)
-    else:
-        # Qwen — run in dedicated thread (Playwright isolation)
-        result = await asyncio.to_thread(_try_consolidation_call_threaded, model, prompt, "")
-
-    if result:
-        attempts.append(f"{model} ✓")
-        return result, attempts
-    attempts.append(f"{model} ✗")
-
-    # ── Browser profile fallbacks (Qwen only) ──
-    if not api_backend and browser_profiles:
+        if result:
+            attempts.append(f"{model} ✓")
+            return result, attempts
+        attempts.append(f"{model} ✗")
+    elif browser_profiles:
+        # Qwen with configured profiles — NEVER use default browser data
         for profile in browser_profiles[:3]:
             result = await asyncio.to_thread(_try_consolidation_call_threaded, model, prompt, profile)
             if result:
                 attempts.append(f"{model}@{profile} ✓")
                 return result, attempts
             attempts.append(f"{model}@{profile} ✗")
+    else:
+        # Qwen with no configured profiles — last resort default
+        result = await asyncio.to_thread(_try_consolidation_call_threaded, model, prompt, "")
+        if result:
+            attempts.append(f"{model}@default ✓")
+            return result, attempts
+        attempts.append(f"{model}@default ✗")
 
     # ── Fallback models (may be API or Qwen) ──
     if fallback_models:
@@ -614,29 +641,44 @@ async def _consolidation_llm_phase(
 
     return None, attempts
 
-async def _run_personality_assessment(conv_text: str, model: str) -> bool:
+async def _run_personality_assessment(conv_text: str, model: str, browser_profiles: list[str] | None = None) -> bool:
     """Run personality assessment on the conversation and save to Brain/user_personality.json.
     
     Returns True if assessment was saved, False otherwise.
     Non-blocking failure — consolidation should not fail if personality assessment fails.
+    Uses same browser-profile routing as consolidation (never touches default browser).
     """
     try:
-        # Load previous assessment if exists
-        previous = ""
-        if _PERSONALITY_PATH.exists():
-            try:
-                previous = _PERSONALITY_PATH.read_text(encoding="utf-8")
-            except Exception:
-                previous = ""
-
         # Build system instruction (template) and user message (conversation)
+        # No previous personality passed — model assesses from conversation only
         system_instruction = _PERSONALITY_ASSESSMENT_TEMPLATE
-        system_instruction = system_instruction.replace("<<PREVIOUS_PERSONALITY>>", previous or "(none)")
+        system_instruction = system_instruction.replace("<<PREVIOUS_PERSONALITY>>", "(none)")
 
         # Conversation goes as user message
         prompt = f"CONVERSATION DATA:\n{conv_text}"
 
-        result = await _try_consolidation_call(model, prompt, system_instruction=system_instruction)
+        # Route through same profile logic as consolidation
+        api_backend = _resolve_api_backend(model)
+        profiles = browser_profiles or []
+
+        if api_backend:
+            result = await _try_consolidation_call(model, prompt, system_instruction=system_instruction)
+        elif profiles:
+            # Qwen with configured profiles — NEVER use default browser data
+            result = None
+            for profile in profiles[:3]:
+                result = await asyncio.to_thread(
+                    _try_consolidation_call_threaded, model, prompt, profile,
+                    system_instruction=system_instruction,
+                )
+                if result:
+                    break
+        else:
+            # Qwen with no configured profiles — last resort default
+            result = await asyncio.to_thread(
+                _try_consolidation_call_threaded, model, prompt, "",
+                system_instruction=system_instruction,
+            )
         if not result:
             return False
 
@@ -1084,7 +1126,7 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     apply_result = await asyncio.to_thread(_consolidation_apply, raw_answer, _mem_path, _proj_id, new_entries)
 
     # Fire personality assessment in background — non-blocking, won't delay response
-    asyncio.create_task(_run_personality_assessment(conv_text, model))
+    asyncio.create_task(_run_personality_assessment(conv_text, model, prep["browser_profiles"]))
 
     return apply_result
 
@@ -1195,6 +1237,8 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
 
     # Fire personality assessment in background — non-blocking, won't delay response
     conv_text = _format_conversation(prep["messages"])
-    asyncio.create_task(_run_personality_assessment(conv_text, model))
+    _scraper_settings = _load_consolidation_settings()
+    _scraper_profiles = _scraper_settings.get("browser_profiles", [])
+    asyncio.create_task(_run_personality_assessment(conv_text, model, _scraper_profiles))
 
     return apply_result

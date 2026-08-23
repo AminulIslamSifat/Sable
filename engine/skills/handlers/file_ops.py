@@ -1,6 +1,9 @@
 
 """Native editor tag handlers: view_file, edit_file, create_file, insert_file."""
 
+# Checkpoint handlers are also defined here since they relate to file state management.
+
+
 from __future__ import annotations
 
 import os
@@ -190,3 +193,109 @@ def handle_insert_file(
             yield file_event
 
     yield _end_event(tag_id, name, ok, started, {"path": path}, None if ok else output_trimmed[:500])
+
+
+def handle_list_checkpoints(
+    tag_id: str, name: str, attrs: dict[str, str], content: str
+) -> Generator[dict[str, Any], None, None]:
+    """List checkpoints with SHA, timestamp, message preview, and tool name."""
+    started = time.time()
+    chat_id = attrs.get("chat_id", "").strip() or None
+    limit_str = attrs.get("limit", "20").strip()
+    try:
+        limit = int(limit_str)
+    except ValueError:
+        limit = 20
+
+    try:
+        from server.database import list_checkpoints_with_preview
+        rows = list_checkpoints_with_preview(chat_id=chat_id, limit=limit)
+    except Exception as exc:
+        yield _output_event(tag_id, f"Error listing checkpoints: {exc}\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error=str(exc))
+        return
+
+    if not rows:
+        yield _output_event(tag_id, "No checkpoints found.\n")
+        yield _end_event(tag_id, name, True, started)
+        return
+
+    lines = [f"Found {len(rows)} checkpoint(s):\n"]
+    for r in rows:
+        sha_short = r["sha"][:12] if r.get("sha") else "?"
+        ts = r.get("timestamp", "")
+        tool = r.get("tool_name", "")
+        preview = (r.get("message_preview") or "").replace("\n", " ")[:100]
+        lines.append(f"  {sha_short} | {ts} | {tool} | {preview}")
+    lines.append("")
+
+    yield _output_event(tag_id, "\n".join(lines) + "\n")
+    yield _end_event(tag_id, name, True, started, {"count": len(rows)})
+
+
+def handle_restore_checkpoint(
+    tag_id: str, name: str, attrs: dict[str, str], content: str
+) -> Generator[dict[str, Any], None, None]:
+    """Restore workspace to a previous checkpoint state."""
+    started = time.time()
+    sha = attrs.get("sha", "").strip()
+    if not sha:
+        yield _output_event(tag_id, "No sha attribute provided\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Missing sha")
+        return
+
+    # Look up checkpoint metadata to get project_root
+    try:
+        from server.database import get_checkpoint_by_sha
+        cp = get_checkpoint_by_sha(sha)
+    except Exception as exc:
+        yield _output_event(tag_id, f"Error looking up checkpoint: {exc}\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error=str(exc))
+        return
+
+    if not cp:
+        yield _output_event(tag_id, f"Checkpoint '{sha}' not found in database.\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Checkpoint not found")
+        return
+
+    project_root = cp.get("project_root", "")
+    if not project_root:
+        yield _output_event(tag_id, "Checkpoint has no project_root recorded.\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="No project_root")
+        return
+
+    # Perform the restore
+    try:
+        from engine.checkpoint import get_checkpoint_manager
+        mgr = get_checkpoint_manager(project_root)
+        result = mgr.restore(sha)
+    except Exception as exc:
+        yield _output_event(tag_id, f"Restore failed: {exc}\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error=str(exc))
+        return
+
+    if not result.get("ok"):
+        err = result.get("error", "Unknown error")
+        yield _output_event(tag_id, f"Restore failed: {err}\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error=err)
+        return
+
+    # Format diff summary
+    diff = result.get("diff", [])
+    lines = [f"Restored to checkpoint {sha[:12]}\n"]
+    if diff:
+        lines.append(f"Files changed: {len(diff)}\n")
+        for f in diff[:30]:
+            status = f.get("status", "?")
+            path = f.get("path", "?")
+            adds = f.get("additions", 0)
+            dels = f.get("deletions", 0)
+            lines.append(f"  [{status}] {path} (+{adds}/-{dels})")
+        if len(diff) > 30:
+            lines.append(f"  ... and {len(diff) - 30} more files")
+    else:
+        lines.append("No file differences detected (workspace may already match).")
+    lines.append("")
+
+    yield _output_event(tag_id, "\n".join(lines) + "\n")
+    yield _end_event(tag_id, name, True, started, {"sha": sha, "files_changed": len(diff)})

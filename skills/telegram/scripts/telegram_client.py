@@ -24,7 +24,9 @@ from typing import Any
 
 _CONFIG_PATHS = [
     Path(__file__).resolve().parents[3] / "system" / ".telegram_config.json",
+    Path.cwd() / "system" / ".telegram_config.json",
     Path.home() / "hdd/projects/Sable/system/.telegram_config.json",
+    Path("/home/sifat/hdd/projects/Sable/system/.telegram_config.json"),
 ]
 
 _SESSION_DIR = None  # resolved at runtime
@@ -206,6 +208,17 @@ async def cmd_send(cfg: dict[str, Any], chat_id: int, text: str) -> dict[str, An
     return {"ok": True, "chat_id": chat_id}
 
 
+async def cmd_send_file(cfg: dict[str, Any], chat_id: int, file_path: str, caption: str | None) -> dict[str, Any]:
+    """Send a file (photo/video/document) to a chat."""
+    p = Path(file_path)
+    if not p.exists():
+        return {"ok": False, "error": f"File not found: {file_path}"}
+    client = await _get_client(cfg)
+    await client.send_file(chat_id, str(p), caption=caption or None)
+    await client.disconnect()
+    return {"ok": True, "chat_id": chat_id, "file": file_path}
+
+
 async def cmd_search_contacts(cfg: dict[str, Any], query: str, limit: int) -> list[dict[str, Any]]:
     """Search contacts/chats by name."""
     client = await _get_client(cfg)
@@ -250,6 +263,12 @@ def main():
     p_send.add_argument("chat_id", type=int, help="Chat/entity ID")
     p_send.add_argument("--text", required=True, help="Message text")
 
+    # send-file
+    p_sendfile = sub.add_parser("send-file", help="Send a file with optional caption")
+    p_sendfile.add_argument("chat_id", type=int, help="Chat/entity ID")
+    p_sendfile.add_argument("--file", required=True, help="Path to file")
+    p_sendfile.add_argument("--caption", default=None, help="Optional caption")
+
     # search
     p_search = sub.add_parser("search", help="Search contacts/chats by name")
     p_search.add_argument("query", help="Search query")
@@ -266,6 +285,8 @@ def main():
         result = asyncio.run(cmd_messages(cfg, args.chat_id, args.limit, args.offset_id))
     elif args.command == "send":
         result = asyncio.run(cmd_send(cfg, args.chat_id, args.text))
+    elif args.command == "send-file":
+        result = asyncio.run(cmd_send_file(cfg, args.chat_id, args.file, args.caption))
     elif args.command == "search":
         result = asyncio.run(cmd_search_contacts(cfg, args.query, args.limit))
     else:

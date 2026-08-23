@@ -165,14 +165,17 @@
 
     // --- Providers tab: Unified API key manager ---
     const _keyProviderMeta = {
-      gemini:  { apiBase: "/api/settings/gemini",  name: "Gemini",  placeholder: "Paste API key (AIza…)" },
-      groq:    { apiBase: "/api/settings/groq",    name: "Groq",    placeholder: "Paste API key (gsk_…)" },
-      mistral: { apiBase: "/api/settings/mistral", name: "Mistral", placeholder: "Paste API key (key: …)" },
-      openai:  { apiBase: "/api/settings/openai",  name: "OpenAI",  placeholder: "Paste API key (sk-…)" },
+      gemini:     { apiBase: "/api/settings/gemini",     name: "Gemini",     placeholder: "Paste API key (AIza…)" },
+      groq:       { apiBase: "/api/settings/groq",       name: "Groq",       placeholder: "Paste API key (gsk_…)" },
+      mistral:    { apiBase: "/api/settings/mistral",    name: "Mistral",    placeholder: "Paste API key (key: …)" },
+      openai:     { apiBase: "/api/settings/openai",     name: "OpenAI",     placeholder: "Paste API key (sk-…)" },
+      puter:      { apiBase: "/api/settings/puter",      name: "Puter",      placeholder: "Paste Puter token (eyJ…)" },
+      cloudflare: { apiBase: "/api/settings/cloudflare", name: "Cloudflare", placeholder: "Paste API token (cfat_…)", singleToken: true },
     };
     const _keyEls = {
       select: document.getElementById("keyProviderSelect"),
       input:  document.getElementById("apiKeyInput"),
+      input2: document.getElementById("apiKeyInput2"),
       btn:    document.getElementById("addApiKeyBtn"),
       list:   document.getElementById("apiKeyList"),
       status: document.getElementById("apiKeyStatus"),
@@ -182,6 +185,45 @@
     async function _loadKeysFor(provider) {
       const meta = _keyProviderMeta[provider];
       if (!meta || !_keyEls.list) return;
+
+      // Cloudflare: special status endpoint (no multi-key rotation)
+      if (meta.singleToken) {
+        try {
+          const res = await fetch(`${meta.apiBase}/status`);
+          const data = await res.json();
+          _keyEls.list.innerHTML = "";
+          if (!data.available) {
+            _keyEls.list.innerHTML = '<div style="font-size:12px;color:var(--text);padding:8px 0;">Not configured yet.</div>';
+            _keyEls.status.textContent = "";
+            return;
+          }
+          const budget = data.budget || {};
+          const row = document.createElement("div");
+          row.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-radius:8px;background:color-mix(in srgb, var(--panel) 60%, transparent);border:1px solid var(--border);";
+          const label = document.createElement("span");
+          label.style.cssText = "font-size:12px;font-family:monospace;color:var(--text);";
+          label.textContent = `✓ Configured · ~${budget.estimated_images_per_day || "?"} images/day free`;
+          const delBtn = document.createElement("button");
+          delBtn.textContent = "✕";
+          delBtn.style.cssText = "background:transparent;border:none;color:var(--danger);cursor:pointer;font-size:13px;padding:2px 6px;border-radius:4px;";
+          delBtn.title = "Remove credentials";
+          delBtn.addEventListener("click", async () => {
+            if (!await sableConfirm(`Remove ${meta.name} credentials?`, { danger: true })) return;
+            try {
+              await fetch(`${meta.apiBase}/credentials`, { method: "DELETE" });
+              _loadKeysFor(_currentKeyProvider);
+            } catch (e) { showToast("Failed to remove", "error"); }
+          });
+          row.appendChild(label);
+          row.appendChild(delBtn);
+          _keyEls.list.appendChild(row);
+          _keyEls.status.textContent = `${data.models?.length || 0} models available · free tier resets daily at UTC midnight`;
+        } catch (e) {
+          _keyEls.status.textContent = "Failed to check status";
+        }
+        return;
+      }
+
       try {
         const res = await fetch(`${meta.apiBase}/keys`);
         const data = await res.json();
@@ -225,6 +267,11 @@
       const meta = _keyProviderMeta[provider];
       if (_keyEls.input && meta) _keyEls.input.placeholder = meta.placeholder;
       if (_keyEls.input) _keyEls.input.value = "";
+      // Hide second input (no longer needed — account ID is auto-fetched)
+      if (_keyEls.input2) {
+        _keyEls.input2.style.display = "none";
+        _keyEls.input2.value = "";
+      }
       _loadKeysFor(provider);
     }
 
@@ -237,6 +284,28 @@
         if (!key) { showToast("Paste an API key first", "error"); return; }
         const meta = _keyProviderMeta[_currentKeyProvider];
         if (!meta) return;
+
+        // Cloudflare: single token (account ID auto-fetched server-side)
+        if (meta.singleToken) {
+          try {
+            const res = await fetch(`${meta.apiBase}/credentials`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ api_token: key }),
+            });
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({}));
+              showToast(err.detail || "Failed to save credentials", "error");
+              return;
+            }
+            if (_keyEls.input) _keyEls.input.value = "";
+            if (_keyEls.input2) _keyEls.input2.value = "";
+            showToast(`${meta.name} credentials saved ✓`, "success");
+            _loadKeysFor(_currentKeyProvider);
+          } catch (e) { showToast("Failed to save credentials", "error"); }
+          return;
+        }
+
         try {
           const res = await fetch(`${meta.apiBase}/api-key`, {
             method: "POST",

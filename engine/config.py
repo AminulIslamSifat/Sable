@@ -9,13 +9,13 @@ logger = logging.getLogger("sable")
 # Project root (two levels up from this file: engine/config.py → engine/ → project root)
 _ROOT = Path(__file__).resolve().parent.parent
 
-# Persistent storage root — survives SSD tree wipes/rebuilds.
-# Sessions, tokens, and auth state MUST live here, not under _ROOT.
+# Persistent storage root — each project instance gets its own system/ folder.
+# Override with SABLE_PERSISTENT_ROOT env var if you need a shared location.
 _PERSISTENT_OVERRIDE = os.getenv("SABLE_PERSISTENT_ROOT")
 PERSISTENT_ROOT = (
     Path(_PERSISTENT_OVERRIDE).resolve()
     if _PERSISTENT_OVERRIDE
-    else Path.home() / "hdd" / "projects" / "Sable"
+    else _ROOT
 )
 
 # --------------------------------------------------------------------------
@@ -24,7 +24,7 @@ PERSISTENT_ROOT = (
 # --------------------------------------------------------------------------
 HOST = os.getenv("SABLE_HOST", "0.0.0.0")
 _DEFAULT_PORT = "61771" if "/home/sifat/hdd/" in str(_ROOT) else "61770"
-PORT = int(os.getenv("SABLE_PORT", _DEFAULT_PORT))
+PORT = int(os.getenv("PORT", os.getenv("SABLE_PORT", _DEFAULT_PORT)))
 
 # --------------------------------------------------------------------------
 # Runtime data paths — single source of truth used by server.py and any
@@ -355,13 +355,22 @@ def get_thinking_mode_config(model_id: str | None = None, thinking_mode_id: str 
     Falls back to that model's first (default) thinking mode if
     thinking_mode_id is missing or not supported by the model — e.g. the
     client requests "auto" on qwen3.7-max, which doesn't have that mode.
+
+    Always returns a dict with safe defaults for all expected keys
+    (auto_thinking, thinking_mode, thinking_enabled) so incomplete
+    custom model configs never cause KeyError downstream.
     """
-    modes = get_model_config(model_id)["thinking_modes"]
+    _defaults = {"thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"}
+    modes = get_model_config(model_id).get("thinking_modes", [{**_defaults, "id": "fast", "label": "Fast"}])
+    selected = None
     if thinking_mode_id:
         for mode in modes:
             if mode["id"] == thinking_mode_id:
-                return mode
-    return modes[0]
+                selected = mode
+                break
+    if selected is None:
+        selected = modes[0] if modes else {"id": "fast", "label": "Fast"}
+    return {**_defaults, **selected}
 
 # --------------------------------------------------------------------------
 # Session tokens — loaded from .session_tokens.json (gitignored) so they
@@ -595,4 +604,31 @@ def get_all_exhaustion_status() -> dict[str, bool]:
     for account in store:
         result[account] = is_account_exhausted(account)
     return result
+
+
+def get_next_available_account(exclude: set[str] | None = None) -> str | None:
+    """Find the next non-exhausted Qwen account by scanning browser-data-accN dirs.
+
+    Args:
+        exclude: Set of account names to skip (e.g. already-tried accounts).
+
+    Returns:
+        Account name (e.g. 'browser-data-acc3') or None if all exhausted.
+    """
+    import re as _re
+    exclude = exclude or set()
+    candidates: list[tuple[int, str]] = []
+    try:
+        for entry in _SYSTEM.iterdir():
+            m = _re.match(r"browser-data-acc(\d+)$", entry.name)
+            if entry.is_dir() and m:
+                name = entry.name
+                if name not in exclude and not is_account_exhausted(name):
+                    candidates.append((int(m.group(1)), name))
+    except OSError:
+        return None
+    if not candidates:
+        return None
+    candidates.sort(key=lambda t: t[0])
+    return candidates[0][1]
 
