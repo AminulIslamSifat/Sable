@@ -1,8 +1,94 @@
-    /* ---------- sidebar ---------- */
+    /* ---------- activity rail ---------- */
+
+    .activity-rail {
+      width: 48px;
+      min-width: 48px;
+      height: calc(100dvh - 12px);
+      margin: 6px 0 6px 6px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-radius: var(--radius-lg, 14px);
+      background: color-mix(in srgb, var(--panel) 50%, transparent);
+      box-shadow:
+        inset 0 0 0 1px rgba(255, 255, 255, 0.05),
+        inset 1.5px 2.5px 0px -1.5px rgba(255, 255, 255, 0.07),
+        inset -1.5px -1.5px 0px -1.5px rgba(255, 255, 255, 0.05),
+        inset -0.3px -1px 3px 0px rgba(0, 0, 0, 0.15),
+        0px 1px 4px 0px rgba(0, 0, 0, 0.12),
+        0px 4px 12px 0px rgba(0, 0, 0, 0.1);
+      transition: margin-left 0.25s ease, opacity 0.25s ease;
+      z-index: 98;
+    }
+    .rail-top,
+    .rail-bottom {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+    .rail-top {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding-bottom: 4px;
+      scrollbar-width: none;
+    }
+    .rail-top::-webkit-scrollbar { display: none; }
+    .rail-btn {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      position: relative;
+      transition: color 0.15s, background 0.15s, transform 0.15s;
+    }
+    .rail-btn .icon-lucide { width: 18px; height: 18px; }
+    .rail-btn:hover {
+      color: var(--text);
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
+    }
+    .rail-btn:active { transform: scale(0.9); }
+    .rail-btn.active {
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 15%, transparent);
+    }
+    .rail-btn.active::before {
+      content: '';
+      position: absolute;
+      left: -6px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 3px;
+      height: 18px;
+      border-radius: 0 3px 3px 0;
+      background: var(--accent);
+    }
+    /* Update dot repositioned for rail buttons */
+    .rail-btn .update-dot {
+      top: 4px;
+      right: 4px;
+      width: 7px;
+      height: 7px;
+    }
+    /* Hide rail when sidebar is collapsed */
+    body.sidebar-collapsed .activity-rail { margin-left: -54px; opacity: 0; pointer-events: none; }
+
+/* ---------- sidebar ---------- */
 
     .sidebar {
-      width: 260px;
-      min-width: 260px;
+      width: var(--sidebar-w, 260px);
+      min-width: 180px;
+      max-width: 480px;
       height: calc(100dvh - 12px);
       margin: 6px 0 6px 6px;
       padding: 0;
@@ -15,7 +101,32 @@
       gap: 6px;
       transition: margin-left 0.25s ease, opacity 0.25s ease;
       overflow: hidden;
+      position: relative;
     }
+
+    /* Sidebar resize handle — thin strip on right edge */
+    .sidebar-resize-handle {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 4px;
+      height: 100%;
+      cursor: col-resize;
+      z-index: 10;
+      background: transparent;
+      transition: background 0.2s ease;
+      border-radius: 0 2px 2px 0;
+    }
+    .sidebar-resize-handle:hover,
+    body.sidebar-resizing .sidebar-resize-handle {
+      background: var(--accent);
+      opacity: 0.35;
+    }
+    body.sidebar-resizing {
+      cursor: col-resize;
+      user-select: none;
+    }
+    body.sidebar-resizing * { cursor: col-resize !important; }
 
     .sidebar-section {
       padding: 14px 12px;
@@ -380,7 +491,7 @@
       background: var(--bg);
       border-bottom: 1px solid var(--border);
     }
-    .terminal-tabs { display: flex; align-items: center; gap: 2px; padding-left: 8px; height: 100%; }
+    .terminal-tabs { display: flex; align-items: center; gap: 2px; padding-left: 8px; height: 100%; min-width: 0; overflow: hidden; flex: 1; }
     .terminal-tab {
       background: none;
       border: none;
@@ -410,7 +521,7 @@
       padding: 0 6px;
       border-radius: 99em;
     }
-    .terminal-bar-actions { display: flex; align-items: center; gap: 2px; padding-right: 6px; }
+    .terminal-bar-actions { display: flex; align-items: center; gap: 2px; padding-right: 6px; flex-shrink: 0; }
     .term-bar-btn {
       background: none;
       border: none;
@@ -567,6 +678,190 @@
     .terminal-container .xterm { height: 100%; }
     .terminal-container .xterm-screen { background: var(--bg) !important; }
     .terminal-container .xterm-viewport { scrollbar-width: thin; scrollbar-color: #2a2a2e transparent; background: var(--bg) !important; }
+
+    /* ── Sidebar content slot & hosted panels ── */
+    .sidebar-content-slot {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .sidebar-content-slot .sidebar-chats {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .sidebar-content-slot .sidebar-chats[hidden] { display: none !important; }
+
+    /* Terminal when hosted in sidebar — vertical layout, fills sidebar width */
+    .terminal-panel.sidebar-hosted {
+      height: 100% !important;
+      min-height: 0;
+      flex: 1;
+      border-top: none;
+      border-right: none;
+    }
+    .terminal-panel.sidebar-hosted .terminal-resize-handle { display: none; }
+    .terminal-panel.sidebar-hosted .terminal-sessions {
+      width: auto;
+      max-width: 140px;
+      border-left: 1px solid var(--border);
+    }
+    body[data-sidebar-host="terminal"] .sidebar-content-slot {
+      overflow: hidden;
+    }
+
+    /* When a panel is hosted in sidebar during IDE mode, keep sidebar visible */
+    body[data-mode="ide"][data-sidebar-host] .sidebar {
+      display: flex !important;
+    }
+    /* When sidebar is collapsed but hosting a panel, un-collapse */
+    body.sidebar-collapsed[data-sidebar-host] .sidebar {
+      margin-left: 0 !important;
+      opacity: 1 !important;
+      pointer-events: auto !important;
+    }
+
+    /* Floating terminal panel */
+    .terminal-panel.floating-panel {
+      position: fixed;
+      z-index: 1000;
+      top: 80px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 600px;
+      height: 400px;
+      min-width: 320px;
+      min-height: 180px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: 0 16px 48px rgba(0,0,0,0.6);
+    }
+    .terminal-panel.floating-panel .terminal-resize-handle { display: none; }
+
+    /* Drag handle — the terminal bar acts as drag zone when floating */
+    .terminal-panel.floating-panel .terminal-bar {
+      cursor: grab;
+      user-select: none;
+    }
+    .terminal-panel.floating-panel .terminal-bar:active { cursor: grabbing; }
+    /* Exclude interactive elements from drag */
+    .terminal-panel.floating-panel .terminal-bar button,
+    .terminal-panel.floating-panel .terminal-bar select,
+    .terminal-panel.floating-panel .terminal-bar input { cursor: auto; }
+
+    /* Floating resize grip (bottom-right corner) */
+    .float-resize-grip {
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      width: 18px;
+      height: 18px;
+      cursor: nwse-resize;
+      z-index: 10;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    .terminal-panel.floating-panel:hover .float-resize-grip { opacity: 1; }
+    .float-resize-grip::after {
+      content: '';
+      position: absolute;
+      right: 3px;
+      bottom: 3px;
+      width: 8px;
+      height: 8px;
+      border-right: 2px solid var(--muted-2);
+      border-bottom: 2px solid var(--muted-2);
+      border-radius: 0 0 3px 0;
+    }
+
+    /* Terminal in right sidebar — matches diff-sidebar glass design */
+    .terminal-panel.right-sidebar {
+      position: fixed;
+      top: 6px;
+      right: 6px;
+      bottom: 6px;
+      width: 325px;
+      max-width: 92vw;
+      z-index: 201;
+      display: flex;
+      flex-direction: column;
+      background: color-mix(in srgb, var(--panel) 50%, transparent);
+      border: none;
+      border-radius: 18px;
+      box-shadow:
+        inset 0 0 0 1px rgba(255, 255, 255, 0.05),
+        inset 1.5px 2.5px 0px -1.5px rgba(255, 255, 255, 0.07),
+        inset -1.5px -1.5px 0px -1.5px rgba(255, 255, 255, 0.05),
+        inset -2px -6px 1px -5px rgba(255, 255, 255, 0.04),
+        inset -0.3px -1px 3px 0px rgba(0, 0, 0, 0.15),
+        inset -1px 2px 3px -1px rgba(0, 0, 0, 0.2),
+        inset 0px 2px 3px -1px rgba(0, 0, 0, 0.2),
+        inset 1.5px -4px 1px -3px rgba(0, 0, 0, 0.1),
+        0px 1px 4px 0px rgba(0, 0, 0, 0.12),
+        0px 4px 12px 0px rgba(0, 0, 0, 0.1);
+      transform: translateX(0);
+      transition: transform .18s ease;
+    }
+    .terminal-panel.right-sidebar.hidden {
+      transform: translateX(105%);
+      pointer-events: none;
+    }
+    .terminal-panel.right-sidebar .terminal-resize-handle { display: none; }
+    .terminal-panel.right-sidebar .terminal-container {
+      flex: 1;
+      min-height: 0;
+    }
+    @media (min-width: 769px) {
+      body.term-right-open .main { margin-right: 331px; transition: margin-right .18s ease; }
+    }
+
+    /* Position switcher */
+    .pos-switcher-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+    .pos-switcher-btn {
+      opacity: 0.5;
+      transition: opacity 0.15s;
+    }
+    .pos-switcher-btn:hover { opacity: 1; }
+    .pos-switcher-menu {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 6px);
+      z-index: 60;
+      min-width: 160px;
+      padding: 4px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .pos-switcher-menu[hidden] { display: none; }
+    .pos-switcher-menu button {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      text-align: left;
+      color: var(--text-dim);
+      font: 400 12px var(--font-body);
+      padding: 6px 8px;
+      border-radius: 6px;
+    }
+    .pos-switcher-menu button:hover { background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--text); }
+    .pos-switcher-menu button.active { color: var(--accent-text); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+    .pos-switcher-menu button svg { width: 13px; height: 13px; color: var(--muted); }
+    .pos-switcher-menu button.active svg { color: var(--accent-text); }
 
     #newChat .spinner,
     #syncContext .spinner {

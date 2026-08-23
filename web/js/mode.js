@@ -585,12 +585,34 @@
     });
   }
 
+  // ─── Activity Rail ───
+
+  function setupActivityRail() {
+    const rail = document.getElementById('activityRail');
+    if (!rail) return;
+    const buttons = rail.querySelectorAll('.rail-btn');
+    buttons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const wasActive = btn.classList.contains('active');
+        buttons.forEach(b => b.classList.remove('active'));
+        if (wasActive) {
+          // Toggle off — deselect, notify with null target
+          window.dispatchEvent(new CustomEvent('rail-switch', { detail: { target: null } }));
+        } else {
+          btn.classList.add('active');
+          window.dispatchEvent(new CustomEvent('rail-switch', { detail: { target: btn.dataset.rail } }));
+        }
+      });
+    });
+  }
+
   // ─── Init ───
 
   function init() {
     const saved = getLayoutMode();
     setLayoutMode(saved);
     setupSwitcherButtons();
+    setupActivityRail();
     patchSidebarToggle();
     setupCompactInput();
     setupCompactCopyDelegation();

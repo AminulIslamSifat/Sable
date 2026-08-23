@@ -1,6 +1,6 @@
     /* ---------- Settings & Live Logs ---------- */
     const settingsOverlay = document.getElementById("settingsOverlay");
-    const settingsBtn = document.getElementById("settingsBtn");
+    const settingsBtn = document.getElementById("railSettingsBtn") || document.getElementById("settingsBtn");
     const settingsClose = document.getElementById("settingsClose");
     const logViewer = document.getElementById("logViewer");
     const logAutoScroll = document.getElementById("logAutoScroll");
@@ -372,7 +372,7 @@ let _updateData = null;
 let _updateCheckTimer = null;
 
 function _setUpdateDot(visible) {
-  const btn = document.getElementById("settingsBtn");
+  const btn = document.getElementById("railSettingsBtn") || document.getElementById("settingsBtn");
   if (btn) {
     let dot = btn.querySelector(".update-dot");
     if (visible && !dot) {
