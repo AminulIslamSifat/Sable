@@ -233,7 +233,11 @@
           window._tempShowFileViewer();
         }
         document.body.classList.add("diff-open");
-        document.body.classList.remove("tracknote-open");
+        // Close todo/tasks panels if open in sidebar
+        if (window.sidebarHost) {
+          const cur = window.sidebarHost.getCurrent();
+          if (cur === 'todo' || cur === 'tasks') window.sidebarHost.closePanel(cur);
+        }
         if (typeof AgentPanel !== "undefined") AgentPanel.close();
         if (typeof setFsSidebarMode === "function") setFsSidebarMode("files");
       }
@@ -1060,7 +1064,11 @@
     // Ensure right panel is visible when picking a folder
     if (!document.body.classList.contains("diff-open")) {
       document.body.classList.add("diff-open");
-      document.body.classList.remove("tracknote-open");
+      // Close todo/tasks panels if open in sidebar
+      if (window.sidebarHost) {
+        const cur = window.sidebarHost.getCurrent();
+        if (cur === 'todo' || cur === 'tasks') window.sidebarHost.closePanel(cur);
+      }
       if (typeof AgentPanel !== "undefined") AgentPanel.close();
     }
     if (typeof setFsSidebarMode === "function") setFsSidebarMode("files");
@@ -1545,6 +1553,189 @@
     diffEditor.setModel({ original: originalModel, modified: modifiedModel });
     refreshIcons();
   };
+
+  /* ==========================================================
+     LEFT SIDEBAR FILES PANEL (activity rail → sidebarHost)
+     ========================================================== */
+  const leftTree = document.getElementById("fsLeftTree");
+  const leftOpenFolderBtn = document.getElementById("fsLeftOpenFolder");
+  let leftRoot = "";
+  let leftExpanded = new Set();
+
+  async function loadLeftTree() {
+    if (!leftTree || !leftRoot) { showLeftPicker(); return; }
+    const data = await sbApi("/list?path=" + encodeURIComponent(leftRoot));
+    const items = data.items || [];
+    if (!items.length) return;
+    leftTree.innerHTML = "";
+
+    const backItem = document.createElement("div");
+    backItem.className = "fs-item fs-back";
+    backItem.innerHTML = `${icon("arrow-left", 12)} <span class="fs-name">← Roots</span>`;
+    backItem.addEventListener("click", () => showLeftPicker());
+    leftTree.appendChild(backItem);
+
+    const rootItem = document.createElement("div");
+    rootItem.className = "fs-item fs-root";
+    rootItem.innerHTML = `<span class="fs-icon">${icon("folder-open", 14)}</span><span class="fs-name">${esc(leftRoot.split("/").pop() || "/")}</span>`;
+    leftTree.appendChild(rootItem);
+
+    const inner = document.createElement("div");
+    leftTree.appendChild(inner);
+    const frag = document.createDocumentFragment();
+    for (const it of items) frag.appendChild(buildLeftNode(it, 0));
+    inner.appendChild(frag);
+    refreshIcons();
+    await expandLeftDirs(inner, 0);
+  }
+
+  async function expandLeftDirs(container, depth) {
+    const dirs = container.querySelectorAll(":scope > .fs-item.fs-dir");
+    for (const row of dirs) {
+      const path = row.dataset.path;
+      if (!leftExpanded.has(path)) continue;
+      if (container.querySelector(`:scope > [data-children="${CSS.escape(path)}"]`)) continue;
+      const data = await sbApi("/list?path=" + encodeURIComponent(path));
+      const children = data.items || [];
+      if (!children.length) continue;
+      const childWrap = document.createElement("div");
+      childWrap.dataset.children = path;
+      for (const it of children) childWrap.appendChild(buildLeftNode(it, depth + 1));
+      row.after(childWrap);
+      await expandLeftDirs(childWrap, depth + 1);
+    }
+    refreshIcons();
+  }
+
+  function buildLeftNode(item, depth) {
+    const row = document.createElement("div");
+    const isDir = item.is_dir || item.type === "dir";
+    row.className = "fs-item" + (isDir ? " fs-dir" : "");
+    row.style.paddingLeft = (10 + depth * 14) + "px";
+    row.dataset.path = item.path;
+    row.dataset.type = isDir ? "dir" : "file";
+    const iconName = isDir
+      ? (leftExpanded.has(item.path) ? "folder-open" : "folder")
+      : fileIcon(item.name);
+    row.innerHTML = `<span class="fs-icon">${icon(iconName, 14)}</span><span class="fs-name">${esc(item.name)}</span>`;
+    if (isDir) {
+      row.addEventListener("click", () => toggleLeftDir(item.path, depth));
+    } else {
+      row.addEventListener("click", () => openSidebarFile(item.path, item.name));
+    }
+    return row;
+  }
+
+  async function toggleLeftDir(path, depth) {
+    if (leftExpanded.has(path)) {
+      leftExpanded.delete(path);
+      const container = leftTree.querySelector(`[data-children="${path}"]`);
+      if (container) container.remove();
+      const row = leftTree.querySelector(`.fs-item[data-path="${path}"]`);
+      if (row) row.innerHTML = `<span class="fs-icon">${icon("folder", 14)}</span><span class="fs-name">${esc(path.split("/").pop())}</span>`;
+      refreshIcons();
+      return;
+    }
+    leftExpanded.add(path);
+    const data = await sbApi("/list?path=" + encodeURIComponent(path));
+    const items = data.items || [];
+    if (!items.length) return;
+    const row = leftTree.querySelector(`.fs-item[data-path="${path}"]`);
+    if (!row) return;
+    row.innerHTML = `<span class="fs-icon">${icon("folder-open", 14)}</span><span class="fs-name">${esc(path.split("/").pop())}</span>`;
+    const container = document.createElement("div");
+    container.dataset.children = path;
+    for (const it of items) container.appendChild(buildLeftNode(it, depth + 1));
+    row.after(container);
+    refreshIcons();
+  }
+
+  async function showLeftPicker() {
+    const dirs = await sbApi("/roots");
+    const recents = sbLoadRecent();
+    leftTree.innerHTML = "";
+    if (recents.length) {
+      const label = document.createElement("div");
+      label.className = "fs-pick-label";
+      label.innerHTML = `${icon("history", 12)} Recent`;
+      leftTree.appendChild(label);
+      recents.forEach((p) => {
+        const item = document.createElement("div");
+        item.className = "fs-item";
+        item.innerHTML = `<span class="fs-icon">${icon("folder", 14)}</span><span class="fs-name">${esc(shorten(p))}</span>`;
+        item.addEventListener("click", () => pickLeftRoot(p));
+        leftTree.appendChild(item);
+      });
+    }
+    const rootsLabel = document.createElement("div");
+    rootsLabel.className = "fs-pick-label";
+    rootsLabel.innerHTML = `${icon("hard-drive", 12)} Quick Access`;
+    leftTree.appendChild(rootsLabel);
+    if (dirs.length) {
+      dirs.forEach((d) => {
+        const item = document.createElement("div");
+        item.className = "fs-item";
+        item.innerHTML = `<span class="fs-icon">${icon("folder", 14)}</span><span class="fs-name" title="${esc(d.path)}">${esc(shorten(d.path))}</span>`;
+        item.addEventListener("click", () => pickLeftRoot(d.path));
+        leftTree.appendChild(item);
+      });
+    } else {
+      const empty = document.createElement("div");
+      empty.className = "fs-item";
+      empty.style.color = "var(--muted)";
+      empty.textContent = "No saved roots";
+      leftTree.appendChild(empty);
+    }
+    refreshIcons();
+  }
+
+  function pickLeftRoot(path) {
+    leftRoot = path;
+    leftExpanded.clear();
+    localStorage.setItem("fs_ide_last_folder", path);
+    window.dispatchEvent(new Event('cwd-changed'));
+    loadLeftTree();
+    // Also sync right sidebar
+    sidebarRoot = path;
+    sidebarExpanded.clear();
+    sidebarExpanded.add(path);
+    loadSidebarTree();
+  }
+
+  if (leftOpenFolderBtn) {
+    leftOpenFolderBtn.addEventListener("click", async () => {
+      try {
+        const res = await fetch("/api/filesystem/pick-folder");
+        const data = await res.json();
+        if (data.path) pickLeftRoot(data.path);
+      } catch (err) {
+        console.error("[FilesPanel] pick-folder failed:", err);
+      }
+    });
+  }
+
+  // Register files panel with sidebar host — always left sidebar
+  if (window.sidebarHost) {
+    window.sidebarHost.savePosition('files', 'left');
+    window.sidebarHost.register('files', {
+      panelId: 'filesPanel',
+      onOpen: () => {
+        document.body.classList.remove("diff-open");
+        document.body.classList.remove("calendar-open");
+        const calView = document.getElementById("calendarView");
+        if (calView) calView.classList.add("hidden");
+        if (typeof AgentPanel !== "undefined") AgentPanel.close();
+        // Load tree from saved folder, or default to home dir
+        const saved = localStorage.getItem("fs_ide_last_folder");
+        const defaultRoot = saved || "/home/sifat";
+        leftRoot = defaultRoot;
+        leftExpanded.clear();
+        leftExpanded.add(defaultRoot);
+        loadLeftTree();
+      },
+      onClose: () => {},
+    });
+  }
 
   /* ---------- Init: populate right sidebar on load ---------- */
   const savedFolder = localStorage.getItem("fs_ide_last_folder");
