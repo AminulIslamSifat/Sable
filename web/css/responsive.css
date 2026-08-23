@@ -1,5 +1,7 @@
     /* ---------- mobile sidebar tint (≤860px, matches sidebar overlay breakpoint) ---------- */
     @media (max-width: 860px) {
+      /* Hide activity rail on mobile — no room */
+      .activity-rail { display: none !important; }
       .sidebar-section { background: color-mix(in srgb, var(--panel) 91%, transparent); }
       .diff-sidebar { background: color-mix(in srgb, var(--panel) 91%, transparent); }
       .agent-panel { background: color-mix(in srgb, var(--panel) 82%, transparent); }

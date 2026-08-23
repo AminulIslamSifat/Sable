@@ -121,104 +121,204 @@ async def stop_generation(request: Request):
 # Auto-switch context builder (summarization for account switching)
 # ---------------------------------------------------------------------------
 
+_SUMMARIZER_CHUNK_LIMIT = 300_000   # max chars per summarizer call
+_TAIL_PRESERVE_LIMIT = 250_000      # max chars to keep verbatim at the end
+_SUMMARIZER_MIN_HEAD = 5_000        # skip summarization if head is smaller than this
+_SUMMARIZER_MAX_CONCURRENCY = 3     # max parallel summarizer API calls
+_SUMMARIZER_CACHE_TTL = 300         # seconds to cache summaries per chat_id
+
+_summarizer_semaphore: asyncio.Semaphore | None = None
+_summarizer_cache: dict[str, tuple[float, str]] = {}  # chat_id → (timestamp, result)
+
+
+def _chunk_text(text: str, limit: int) -> list[str]:
+    """Split text into sequential chunks of at most `limit` chars.
+
+    Tries to break on newline boundaries when possible to avoid splitting
+    mid-message. Falls back to hard cut if no newline found within tolerance.
+    """
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    start = 0
+    while start < len(text):
+        end = start + limit
+        if end >= len(text):
+            chunks.append(text[start:])
+            break
+        # Try to find a newline near the boundary (within last 10% of chunk)
+        search_start = max(start, end - limit // 10)
+        nl = text.rfind("\n", search_start, end)
+        if nl > start:
+            end = nl + 1
+        chunks.append(text[start:end])
+        start = end
+    return chunks
+
+
 async def _build_switch_context(chat_id: str, model: str) -> str:
     """Build a formatted context string for passing to a new account after switch.
 
     Rules:
     - Total context <= 500k chars → return as-is (no summarization needed).
-    - Last user message within last 100k chars → keep last 100k intact, summarize above.
-    - Last user message NOT within 100k → search up to 250k; if found, keep from that point, summarize above.
-    - Last user message beyond 250k → summarize everything, pass only last user message in [Ongoing conversation].
+    - Otherwise: preserve up to 250k chars of tail (including last user message),
+      summarize the head in ≤300k parallel chunks, stitch summaries sequentially.
 
     Returns formatted string with [Context Summary] + [Ongoing conversation] sections.
     """
+    import asyncio as _asyncio
+    import time as _time
+
+    global _summarizer_semaphore
+    if _summarizer_semaphore is None:
+        _summarizer_semaphore = _asyncio.Semaphore(_SUMMARIZER_MAX_CONCURRENCY)
+
     messages = get_messages(chat_id)
     if not messages:
         return ""
 
-    # Build full transcript
+    # --- Calculate total length without materializing full string ---
+    # Build formatted lines but track cumulative length to find split point
     lines: list[str] = []
+    line_lengths: list[int] = []  # cumulative length after each line (including \n)
+    cumulative = 0
     for m in messages:
         role = m.get("role", "unknown")
         content = (m.get("content") or "").strip()
         if not content:
             continue
-        lines.append(f"[{role}]: {content}")
+        line = f"[{role}]: {content}"
+        lines.append(line)
+        cumulative += len(line) + 1  # +1 for \n join separator
+        line_lengths.append(cumulative)
 
-    full_text = "\n".join(lines)
-    total_len = len(full_text)
+    total_len = cumulative - 1 if cumulative > 0 else 0  # remove trailing \n
 
-    # Under threshold — no summarization needed
+    # Under threshold — no summarization needed, materialize and return
     if total_len <= 500_000:
-        return full_text
+        return "\n".join(lines)
 
-    # Find last user message position (searching from end)
-    last_user_idx = None
-    for i in range(len(messages) - 1, -1, -1):
-        if messages[i].get("role") == "user":
-            last_user_idx = i
-            break
+    # --- Check cache before doing any work ---
+    now = _time.monotonic()
+    cached = _summarizer_cache.get(chat_id)
+    if cached and (now - cached[0]) < _SUMMARIZER_CACHE_TTL:
+        logger.info("[auto-switch] Using cached summary for %s", chat_id)
+        return cached[1]
 
-    if last_user_idx is None:
-        # No user message found — summarize everything
-        summary = await _run_summarizer(full_text[:60000], model)
-        return f"[Context Summary]\n{summary}\n\n[Ongoing conversation]\n(No user messages found)"
+    # --- Find tail boundary by line index (no full-string slicing) ---
+    tail_threshold = total_len - _TAIL_PRESERVE_LIMIT
+    # Binary search for the first line whose cumulative length >= tail_threshold
+    lo, hi = 0, len(line_lengths) - 1
+    tail_line_idx = len(lines)  # default: all lines are tail
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if line_lengths[mid] >= tail_threshold:
+            tail_line_idx = mid
+            hi = mid - 1
+        else:
+            lo = mid + 1
 
-    # Calculate char offset of last user message from the END of transcript
-    # Rebuild from last user message to end
-    tail_lines: list[str] = []
-    for m in messages[last_user_idx:]:
-        role = m.get("role", "unknown")
-        content = (m.get("content") or "").strip()
-        if content:
-            tail_lines.append(f"[{role}]: {content}")
-    tail_text = "\n".join(tail_lines)
-    tail_len = len(tail_text)
+    head_lines = lines[:tail_line_idx]
+    tail_lines = lines[tail_line_idx:]
+    head_text = "\n".join(head_lines) if head_lines else ""
+    tail_text = "\n".join(tail_lines) if tail_lines else ""
 
-    if tail_len <= 100_000:
-        # Last user message within 100k — keep last 100k intact, summarize above
-        # Find the cutoff point: go back from end to find where 100k starts
-        cutoff_chars = total_len - 100_000
-        head_text = full_text[:cutoff_chars]
-        tail_text = full_text[cutoff_chars:]
-        summary = await _run_summarizer(head_text[:60000], model)
-        return f"[Context Summary]\n{summary}\n\n[Ongoing conversation]\n{tail_text}"
+    # Head too small to justify an API call — include inline
+    if len(head_text) < _SUMMARIZER_MIN_HEAD:
+        result = f"[Context Summary]\n{head_text}\n\n[Ongoing conversation]\n{tail_text}" if head_text.strip() else tail_text
+        _summarizer_cache[chat_id] = (now, result)
+        return result
 
-    elif tail_len <= 250_000:
-        # Last user message within 250k but not 100k — keep from last user msg, summarize above
-        head_lines: list[str] = []
-        for m in messages[:last_user_idx]:
-            role = m.get("role", "unknown")
-            content = (m.get("content") or "").strip()
-            if content:
-                head_lines.append(f"[{role}]: {content}")
-        head_text = "\n".join(head_lines)
-        summary = await _run_summarizer(head_text[:60000], model)
-        return f"[Context Summary]\n{summary}\n\n[Ongoing conversation]\n{tail_text}"
+    # --- Chunked parallel summarization with concurrency cap ---
+    chunks = _chunk_text(head_text, _SUMMARIZER_CHUNK_LIMIT)
+    total_chunks = len(chunks)
+    logger.info(
+        "[auto-switch] Summarizing %d chars in %d chunk(s) (head=%d, tail=%d)",
+        total_len, total_chunks, len(head_text), len(tail_text),
+    )
 
-    else:
-        # Last user message beyond 250k — summarize everything, pass only last user message
-        summary = await _run_summarizer(full_text[:60000], model)
-        last_user_content = (messages[last_user_idx].get("content") or "").strip()
-        return f"[Context Summary]\n{summary}\n\n[Ongoing conversation]\n[user]: {last_user_content}"
+    async def _guarded_summarize(chunk: str, idx: int) -> str:
+        assert _summarizer_semaphore is not None
+        async with _summarizer_semaphore:
+            return await _run_summarizer(chunk, model, chunk_index=idx, total_chunks=total_chunks)
+
+    tasks = [_guarded_summarize(chunk, i) for i, chunk in enumerate(chunks)]
+    summaries = await _asyncio.gather(*tasks)
+
+    # Stitch sequentially — each summary is already structured
+    stitched = "\n\n".join(
+        f"### Part {i + 1}/{total_chunks}\n{s}"
+        for i, s in enumerate(summaries)
+    )
+
+    result = f"[Context Summary]\n{stitched}\n\n[Ongoing conversation]\n{tail_text}"
+
+    # Cache the result
+    _summarizer_cache[chat_id] = (now, result)
+
+    # Evict stale cache entries
+    stale_keys = [k for k, (ts, _) in _summarizer_cache.items() if (now - ts) > _SUMMARIZER_CACHE_TTL]
+    for k in stale_keys:
+        del _summarizer_cache[k]
+
+    return result
 
 
-async def _run_summarizer(transcript: str, model: str) -> str:
-    """Run the context summarizer model on a transcript chunk."""
+async def _run_summarizer(
+    transcript: str,
+    model: str,
+    *,
+    chunk_index: int = 0,
+    total_chunks: int = 1,
+) -> str:
+    """Run the context summarizer model on a transcript chunk.
+
+    Args:
+        transcript: The text chunk to summarize.
+        model: Fallback model if no dedicated summarizer is configured.
+        chunk_index: 0-based index of this chunk (for structured output ordering).
+        total_chunks: Total number of chunks being summarized in parallel.
+    """
     from server.api.routes.chats import _load_ctx_pass_settings
     settings = _load_ctx_pass_settings()
     sum_model = settings.get("summarizer_model") or model
     browser_acc = settings.get("browser_data_acc", "").strip()
 
+    # Multi-chunk awareness for the prompt
+    if total_chunks > 1:
+        position_note = (
+            f"This is chunk {chunk_index + 1} of {total_chunks}. "
+            "Summarize ONLY this chunk's content. Do not reference other chunks. "
+            "The output will be stitched sequentially with other chunk summaries, "
+            "so maintain chronological flow within this chunk.\n\n"
+        )
+    else:
+        position_note = ""
+
     prompt = (
         "You are a context handoff summarizer. Below is a conversation transcript from "
-        "a session that is being switched to a different account. Produce a focused "
-        "operational briefing so the new session can continue with zero loss of state. "
-        "No filler, no meta-commentary.\n\n"
+        "a session being switched to a different account. Produce a STRUCTURED operational "
+        "briefing so the new session can continue with zero loss of state.\n\n"
+        f"{position_note}"
+        "OUTPUT FORMAT — use these exact section headers:\n\n"
+        "## Task\n"
+        "What the user is trying to accomplish (1-2 sentences).\n\n"
+        "## Intent\n"
+        "The user's underlying goal/motivation and any constraints they've stated.\n\n"
+        "## Plan\n"
+        "The approach being taken. List key decisions and rationale.\n\n"
+        "## Progress\n"
+        "Step-by-step record of what was done. For each significant step:\n"
+        "- Command/action taken\n"
+        "- Output/result summary\n"
+        "- Any errors encountered and how they were resolved\n\n"
+        "## Next Steps\n"
+        "What remains to be done. Be specific and actionable.\n\n"
         "HARD RULES:\n"
         "- Never invent details not in the transcript. Write [unclear] if ambiguous.\n"
         "- Preserve all code, paths, commands, errors VERBATIM in code blocks.\n"
-        "- Target ~800 words of prose (verbatim blocks exempt).\n\n"
+        "- Each section must be present even if brief. Use 'N/A' if not applicable.\n"
+        "- Keep prose concise. Verbatim code blocks are exempt from length limits.\n\n"
         f"---\n{transcript}"
     )
 
@@ -1129,8 +1229,17 @@ async def chat(request: ChatRequest):
                         logger.info("[auto-switch] Triggered by %s for chat %s", _switch_reason, active_chat_id)
                         yield sse({"type": "status", "message": "switching_account", "reason": _switch_reason})
 
-                        from engine.config import get_next_available_account, _resolve_active_account as _get_active
+                        from engine.config import (
+                            get_next_available_account,
+                            _resolve_active_account as _get_active,
+                            mark_account_captcha_blocked,
+                        )
                         _current_acc = _get_active()
+
+                        # Mark captcha-blocked accounts so they're deprioritized
+                        if event_type == "waf_blocked":
+                            mark_account_captcha_blocked(_current_acc)
+
                         _tried_accounts: set[str] = {_current_acc}
                         _next_acc = get_next_available_account(exclude=_tried_accounts)
 
@@ -1250,9 +1359,11 @@ async def chat(request: ChatRequest):
                                     error_message = str(_sw_event.get("message", "Unknown error after switch"))
                                     stream_error = True
                                 elif _sw_type in ("rate_limited", "waf_blocked"):
-                                    # New account also exhausted — mark and try next
+                                    # New account also blocked — mark appropriately
                                     _tried_accounts.add(_next_acc)
-                                    logger.warning("[auto-switch] New account %s also blocked, marking exhausted", _next_acc)
+                                    if _sw_type == "waf_blocked":
+                                        mark_account_captcha_blocked(_next_acc)
+                                    logger.warning("[auto-switch] New account %s also blocked (%s), marking", _next_acc, _sw_type)
                                     pending_thinking.clear()
                                     async for _sse_line in _drain_sync_gen(emit_flush()):
                                         yield _sse_line

@@ -29,54 +29,61 @@
         const opening = !document.body.classList.contains("diff-open");
         document.body.classList.toggle("diff-open");
         if (opening) {
-          document.body.classList.remove("tracknote-open");
+          // Close todo/tasks panels if open in sidebar
+          if (window.sidebarHost) {
+            const cur = window.sidebarHost.getCurrent();
+            if (cur === 'todo' || cur === 'tasks') window.sidebarHost.closePanel(cur);
+          }
           if (typeof AgentPanel !== "undefined") AgentPanel.close();
         }
       }
     });
 
-    // ---------- TrackNote sidebar ----------
+    // ---------- Todo & Tasks: register as left-sidebar hostable panels ----------
     const trackNoteBtn = document.getElementById("trackNoteBtn");
-    const trackNoteCloseBtn = document.getElementById("trackNoteClose");
-    const trackNotePill = document.getElementById("trackNotePill");
-    const tnPanels = {
-      schedule: document.getElementById("tnPanelSchedule"),
-      todo: document.getElementById("tnPanelTodo"),
-      "agent-tasks": document.getElementById("tnPanelAgentTasks"),
-    };
 
-    function setTrackNoteMode(mode) {
-      if (!trackNotePill) return;
-      const btns = trackNotePill.querySelectorAll("button");
-      let idx = 0;
-      btns.forEach((b, i) => {
-        const isActive = b.dataset.mode === mode;
-        b.classList.toggle("active", isActive);
-        if (isActive) idx = i;
+    // Register todo panel with sidebar host — always left sidebar
+    if (window.sidebarHost) {
+      window.sidebarHost.savePosition('todo', 'left');
+      window.sidebarHost.register('todo', {
+        panelId: 'todoPanel',
+        onOpen: (el) => {
+          document.body.classList.remove("diff-open");
+          document.body.classList.remove("calendar-open");
+          const calView = document.getElementById("calendarView");
+          if (calView) calView.classList.add("hidden");
+          if (typeof AgentPanel !== "undefined") AgentPanel.close();
+          loadAllPanels();
+        },
+        onClose: () => {},
       });
-      trackNotePill.style.setProperty("--i", idx);
-      Object.entries(tnPanels).forEach(([k, el]) => {
-        if (el) el.classList.toggle("active", k === mode);
+
+      window.sidebarHost.savePosition('tasks', 'left');
+      window.sidebarHost.register('tasks', {
+        panelId: 'tasksPanel',
+        onOpen: (el) => {
+          document.body.classList.remove("diff-open");
+          document.body.classList.remove("calendar-open");
+          const calView = document.getElementById("calendarView");
+          if (calView) calView.classList.add("hidden");
+          if (typeof AgentPanel !== "undefined") AgentPanel.close();
+          loadAllPanels();
+        },
+        onClose: () => {},
       });
     }
 
+    // Legacy footer button — opens todo in left sidebar
     if (trackNoteBtn) trackNoteBtn.addEventListener("click", () => {
-      const opening = !document.body.classList.contains("tracknote-open");
-      document.body.classList.toggle("tracknote-open");
-      if (opening) {
-        document.body.classList.remove("diff-open");
-        if (typeof AgentPanel !== "undefined") AgentPanel.close();
+      if (window.sidebarHost) {
+        const current = window.sidebarHost.getCurrent();
+        if (current === 'todo') {
+          window.sidebarHost.closePanel('todo');
+        } else {
+          window.sidebarHost.openPanel('todo');
+        }
       }
     });
-    if (trackNoteCloseBtn) trackNoteCloseBtn.addEventListener("click", () => {
-      document.body.classList.remove("tracknote-open");
-    });
-    if (trackNotePill) {
-      trackNotePill.addEventListener("click", (e) => {
-        const btn = e.target.closest("button[data-mode]");
-        if (btn) setTrackNoteMode(btn.dataset.mode);
-      });
-    }
 
 
     // ---------- TrackNote: API helpers ----------
@@ -103,52 +110,7 @@
       return r.json();
     }
 
-    // ---------- TrackNote: Schedule panel ----------
-    const tnSchedList = document.getElementById("tnSchedList");
-    const tnSchedEmpty = document.getElementById("tnSchedEmpty");
-
-    function formatTime24(t) {
-      if (!t) return "";
-      // Already HH:MM (24h) from backend — just return as-is
-      return t;
-    }
-
-    function renderScheduleItem(s) {
-      const div = document.createElement("div");
-      div.className = "tn-item";
-      const typeLabel = s.schedule_type === "weekly" ? `Weekly (${["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][s.day_of_week || 0]})` : s.schedule_type === "occasional" ? `Once (${(s.start_date||"").slice(0,10)})` : "Daily";
-      div.innerHTML = `<div class="tn-item-title">${esc(s.title)}</div><div class="tn-item-meta">${typeLabel} ${formatTime24(s.time)}${s.description ? " — " + esc(s.description) : ""}</div><div class="tn-item-actions"><button class="tn-item-action" data-edit="${s.id}" title="Edit">✎</button><button class="tn-item-action danger" data-del="${s.id}" title="Delete">✕</button></div>`;
-      div.querySelector("[data-del]").addEventListener("click", async () => {
-        await tnDelete("/schedules/" + s.id);
-        loadSchedules();
-      });
-      div.querySelector("[data-edit]").addEventListener("click", () => {
-        openTnEditModal("schedule", s);
-      });
-      return div;
-    }
-
-    async function loadSchedules() {
-      try {
-        const data = await tnFetch("/schedules");
-        tnSchedList.innerHTML = "";
-        const items = data.schedules || [];
-        items.forEach(s => tnSchedList.appendChild(renderScheduleItem(s)));
-        tnSchedEmpty.style.display = items.length ? "none" : "block";
-      } catch(e) { console.warn("loadSchedules failed", e); }
-    }
-
-    document.getElementById("tnSchedAdd")?.addEventListener("click", async () => {
-      const title = document.getElementById("tnSchedTitle").value.trim();
-      if (!title) return;
-      const stype = document.getElementById("tnSchedType").value;
-      const time = document.getElementById("tnSchedTime").value || null;
-      await tnPost("/schedules", { title, schedule_type: stype, time });
-      document.getElementById("tnSchedTitle").value = "";
-      loadSchedules();
-    });
-
-    // ---------- TrackNote: Notes/Todos panel ----------
+    // ---------- Notes/Todos panel ----------
     const tnNoteList = document.getElementById("tnNoteList");
     const tnNoteEmpty = document.getElementById("tnNoteEmpty");
 
@@ -167,7 +129,7 @@
         });
         html += `</div>`;
       }
-      html += `<div class="tn-item-actions"><button class="tn-item-action" data-edit="${n.id}" title="Edit">✎</button><button class="tn-item-action danger" data-del="${n.id}" title="Delete">✕</button></div>`;
+      html += `<div class="tn-item-actions"><button class="tn-item-action" data-edit="${n.id}" title="Edit"><i data-lucide="pencil" class="icon-lucide"></i></button><button class="tn-item-action danger" data-del="${n.id}" title="Delete"><i data-lucide="x" class="icon-lucide"></i></button></div>`;
       div.innerHTML = html;
       div.querySelector("[data-del]").addEventListener("click", async () => {
         await tnDelete("/notes/" + n.id);
@@ -192,7 +154,35 @@
         const items = data.notes || [];
         items.forEach(n => tnNoteList.appendChild(renderNoteItem(n)));
         tnNoteEmpty.style.display = items.length ? "none" : "block";
+        if (window.lucide) lucide.createIcons({ nodes: tnNoteList.querySelectorAll("[data-lucide]") });
       } catch(e) { console.warn("loadNotes failed", e); }
+    }
+
+    // ---------- Add form toggle (+ button) ----------
+    function setupAddToggle(toggleId, formId) {
+      const toggle = document.getElementById(toggleId);
+      const form = document.getElementById(formId);
+      if (!toggle || !form) return;
+      toggle.addEventListener("click", () => {
+        const isHidden = form.classList.contains("hidden");
+        form.classList.toggle("hidden", !isHidden);
+        toggle.classList.toggle("active", isHidden);
+        if (isHidden) {
+          // Focus first input when opening
+          const firstInput = form.querySelector("input, textarea");
+          if (firstInput) requestAnimationFrame(() => firstInput.focus());
+        }
+      });
+    }
+    setupAddToggle("tnAddToggle", "tnAddForm");
+    setupAddToggle("tnAgentAddToggle", "tnAgentForm");
+
+    // Helper: collapse add form after successful add
+    function collapseAddForm(toggleId, formId) {
+      const toggle = document.getElementById(toggleId);
+      const form = document.getElementById(formId);
+      if (form) form.classList.add("hidden");
+      if (toggle) toggle.classList.remove("active");
     }
 
     document.getElementById("tnNoteAdd")?.addEventListener("click", async () => {
@@ -202,6 +192,7 @@
       await tnPost("/notes", { title: title || "Untitled", content, note_type: "note" });
       document.getElementById("tnNoteTitle").value = "";
       document.getElementById("tnNoteContent").value = "";
+      collapseAddForm("tnAddToggle", "tnAddForm");
       loadNotes();
     });
 
@@ -213,6 +204,7 @@
       await tnPost("/notes", { title: title || "Untitled", note_type: "checklist", items: [{ text: firstItem, done: false }] });
       document.getElementById("tnNoteTitle").value = "";
       document.getElementById("tnNoteContent").value = "";
+      collapseAddForm("tnAddToggle", "tnAddForm");
       loadNotes();
     });
 
@@ -242,9 +234,11 @@
       const div = document.createElement("div");
       div.className = "tn-item";
       const statusClass = op.enabled ? "on" : "off";
-      const schedInfo = op.schedule_type === "cron" ? `Cron: ${op.cron_expression || "?"}` : `${op.schedule_type} ${formatTime24(op.schedule_time)}`;
+      const tStr = op.schedule_time || "";
+      const schedInfo = op.schedule_type === "cron" ? `Cron: ${op.cron_expression || "?"}` : `${op.schedule_type}${tStr ? " " + tStr : ""}`;
       const lastRun = op.last_run ? new Date(op.last_run).toLocaleString() : "never";
-      div.innerHTML = `<div class="tn-item-title"><span class="tn-agent-status ${statusClass}"></span>${esc(op.name)}</div><div class="tn-item-meta">${schedInfo} · Model: ${esc(op.model)} · Last: ${lastRun}</div><div class="tn-item-meta" style="margin-top:4px;opacity:.7">${esc(op.prompt).slice(0, 150)}${op.prompt.length > 150 ? "…" : ""}</div><div class="tn-item-actions"><button class="tn-item-action" data-toggle="${op.id}" title="Toggle">${op.enabled ? "⏸" : "▶"}</button><button class="tn-item-action" data-edit="${op.id}" title="Edit">✎</button><button class="tn-item-action danger" data-del="${op.id}" title="Delete">✕</button></div>`;
+      const toggleIcon = op.enabled ? "pause" : "play";
+      div.innerHTML = `<div class="tn-item-title"><span class="tn-agent-status ${statusClass}"></span>${esc(op.name)}</div><div class="tn-item-meta">${schedInfo} · Model: ${esc(op.model)} · Last: ${lastRun}</div><div class="tn-item-meta" style="margin-top:4px;opacity:.7">${esc(op.prompt).slice(0, 150)}${op.prompt.length > 150 ? "…" : ""}</div><div class="tn-item-actions"><button class="tn-item-action" data-toggle="${op.id}" title="Toggle"><i data-lucide="${toggleIcon}" class="icon-lucide"></i></button><button class="tn-item-action" data-edit="${op.id}" title="Edit"><i data-lucide="pencil" class="icon-lucide"></i></button><button class="tn-item-action danger" data-del="${op.id}" title="Delete"><i data-lucide="x" class="icon-lucide"></i></button></div>`;
       div.querySelector("[data-toggle]").addEventListener("click", async () => {
         await tnPut("/agent-ops/" + op.id, { enabled: op.enabled ? 0 : 1 });
         loadAgentOps();
@@ -262,24 +256,33 @@
     async function loadAgentOps() {
       try {
         const data = await tnFetch("/agent-ops");
+        console.log("[TrackNote] loadAgentOps response:", data);
+        if (!tnAgentList) { console.error("[TrackNote] tnAgentList is null!"); return; }
         tnAgentList.innerHTML = "";
         const items = data.ops || [];
+        console.log(`[TrackNote] Rendering ${items.length} agent ops`);
         items.forEach(op => tnAgentList.appendChild(renderAgentOp(op)));
         tnAgentEmpty.style.display = items.length ? "none" : "block";
-      } catch(e) { console.warn("loadAgentOps failed", e); }
+        if (window.lucide) lucide.createIcons({ nodes: tnAgentList.querySelectorAll("[data-lucide]") });
+      } catch(e) { console.error("[TrackNote] loadAgentOps FAILED:", e); }
     }
 
     document.getElementById("tnAgentAdd")?.addEventListener("click", async () => {
       const name = document.getElementById("tnAgentName").value.trim();
       const prompt = document.getElementById("tnAgentPrompt").value.trim();
-      if (!name || !prompt) return;
+      console.log("[TrackNote] Add clicked:", { name, prompt });
+      if (!name || !prompt) { console.warn("[TrackNote] Missing name or prompt"); return; }
       const model = tnAgentModelSel?.value || "qwen3.7-max";
       const stype = document.getElementById("tnAgentSchedType").value;
       const time = document.getElementById("tnAgentTime").value || null;
-      await tnPost("/agent-ops", { name, prompt, model, schedule_type: stype, schedule_time: time });
-      document.getElementById("tnAgentName").value = "";
-      document.getElementById("tnAgentPrompt").value = "";
-      loadAgentOps();
+      try {
+        const result = await tnPost("/agent-ops", { name, prompt, model, schedule_type: stype, schedule_time: time });
+        console.log("[TrackNote] Add result:", result);
+        document.getElementById("tnAgentName").value = "";
+        document.getElementById("tnAgentPrompt").value = "";
+        collapseAddForm("tnAgentAddToggle", "tnAgentForm");
+        loadAgentOps();
+      } catch(e) { console.error("[TrackNote] Add FAILED:", e); }
     });
 
     // ---------- TrackNote: Edit Modal ----------
@@ -309,20 +312,7 @@
       body.innerHTML = "";
       overlay.style.display = "flex";
 
-      if (type === "schedule") {
-        titleEl.textContent = "Edit Schedule";
-        const time12 = item.time ? (() => { const [h,m] = item.time.split(":"); const hr = parseInt(h,10); const ampm = hr >= 12 ? "PM" : "AM"; const h12 = hr % 12 || 12; return `${h12}:${m} ${ampm}`; })() : "";
-        body.innerHTML = `<label>Title<input type="text" id="tnEditTitle" value="${esc(item.title)}" /></label><label>Type<select id="tnEditType"><option value="daily"${item.schedule_type==="daily"?" selected":""}>Daily</option><option value="weekly"${item.schedule_type==="weekly"?" selected":""}>Weekly</option><option value="occasional"${item.schedule_type==="occasional"?" selected":""}>Occasional</option></select></label><label>Time<input type="time" id="tnEditTime" value="${item.time||""}" /><span class="tn-time-preview">${time12}</span></label><label>Description<textarea id="tnEditDesc" rows="2">${esc(item.description||"")}</textarea></label>`;
-        saveBtn.onclick = async () => {
-          await tnPut("/schedules/" + item.id, {
-            title: document.getElementById("tnEditTitle").value.trim(),
-            schedule_type: document.getElementById("tnEditType").value,
-            time: document.getElementById("tnEditTime").value || null,
-            description: document.getElementById("tnEditDesc").value.trim(),
-          });
-          closeTnEditModal(); loadSchedules();
-        };
-      } else if (type === "note") {
+      if (type === "note") {
         titleEl.textContent = "Edit Note / Todo";
         const isChecklist = item.items && item.items.length > 0;
         let itemsHtml = "";
@@ -369,14 +359,10 @@
       }
     }
 
-    // Load all panels when TrackNote opens
-    const _origTnToggle = trackNoteBtn ? trackNoteBtn.onclick : null;
-    if (trackNoteBtn) {
-      trackNoteBtn.addEventListener("click", () => {
-        if (document.body.classList.contains("tracknote-open")) {
-          loadSchedules(); loadNotes(); loadAgentOps();
-        }
-      });
+    // Load all panels when sidebar opens
+    function loadAllPanels() {
+      loadNotes();
+      loadAgentOps();
     }
 
 

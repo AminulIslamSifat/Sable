@@ -8,14 +8,18 @@
 
   <link rel="stylesheet" href="/static/css/variables.css?v=4">
   <link rel="stylesheet" href="/static/css/base.css?v=5">
-  <link rel="stylesheet" href="/static/css/layout.css?v=53">
+  <link rel="stylesheet" href="/static/css/layout.css?v=60">
   <link rel="stylesheet" href="/static/css/ide.css?v=5">
   <link rel="stylesheet" href="/static/css/chat.css?v=34">
   <link rel="stylesheet" href="/static/css/panels.css?v=54">
-  <link rel="stylesheet" href="/static/css/components.css?v=14">
+  <link rel="stylesheet" href="/static/css/components.css?v=20">
   <link rel="stylesheet" href="/static/css/responsive.css?v=6">
   <link rel="stylesheet" href="/static/css/agents.css?v=33">
   <link rel="stylesheet" href="/static/css/cookbook.css?v=1">
+  <link rel="stylesheet" href="/static/css/search-panel.css?v=2">
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=1">
+  <link rel="stylesheet" href="/static/css/calendar.css?v=1">
+  <link rel="stylesheet" href="/static/css/knowledge.css?v=1">
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v=2">
 
   <link rel="manifest" href="/static/assets/manifest.json">
@@ -120,6 +124,73 @@
     </div>
   </aside>
 
+  <!-- Activity Rail — slim vertical quick-access panel -->
+  <nav id="activityRail" class="activity-rail" aria-label="Activity rail">
+    <div class="rail-top">
+      <!-- System -->
+      <button class="rail-btn" id="railSidebarToggle" title="Toggle Sidebar (Alt+B)">
+        <span class="icon-emoji">📋</span><i data-lucide="panel-left-close" class="icon-lucide"></i>
+      </button>
+      <div class="rail-sep"></div>
+      <!-- Core -->
+      <button class="rail-btn active" data-rail="chat" title="Chat">
+        <span class="icon-emoji">💬</span><i data-lucide="message-square" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="search" title="Search">
+        <span class="icon-emoji">🔍</span><i data-lucide="search" class="icon-lucide"></i>
+      </button>
+      <div class="rail-sep"></div>
+      <!-- Creative & Research -->
+      <button class="rail-btn" data-rail="research" title="Deep Research">
+        <span class="icon-emoji">🔬</span><i data-lucide="flask-conical" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="image" title="Image Generator">
+        <span class="icon-emoji">🎨</span><i data-lucide="image" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="prompt" title="Prompt Generator">
+        <span class="icon-emoji">✨</span><i data-lucide="sparkles" class="icon-lucide"></i>
+      </button>
+      <div class="rail-sep"></div>
+      <!-- Workspace -->
+      <button class="rail-btn" data-rail="terminal" title="Terminal">
+        <span class="icon-emoji">🖥</span><i data-lucide="terminal" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="files" title="Files">
+        <span class="icon-emoji">📂</span><i data-lucide="folder-tree" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="projects" title="Projects">
+        <span class="icon-emoji">📁</span><i data-lucide="folder-open" class="icon-lucide"></i>
+      </button>
+      <div class="rail-sep"></div>
+      <!-- Planning -->
+      <button class="rail-btn" data-rail="todo" title="Todo">
+        <span class="icon-emoji">✅</span><i data-lucide="check-square" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="tasks" title="Tasks">
+        <span class="icon-emoji">🤖</span><i data-lucide="bot" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="calendar" title="Calendar">
+        <span class="icon-emoji">📅</span><i data-lucide="calendar-days" class="icon-lucide"></i>
+      </button>
+      <div class="rail-sep"></div>
+      <!-- Meta -->
+      <button class="rail-btn" data-rail="knowledge" title="Knowledge Base">
+        <span class="icon-emoji">🧠</span><i data-lucide="brain" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="dashboard" title="Dashboard">
+        <span class="icon-emoji">📊</span><i data-lucide="layout-dashboard" class="icon-lucide"></i>
+      </button>
+    </div>
+    <div class="rail-bottom">
+      <button class="rail-btn" id="railLibraryBtn" data-rail="library" title="Library">
+        <span class="icon-emoji">📚</span><i data-lucide="book-open" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" id="railSettingsBtn" data-rail="settings" title="Settings">
+        <span class="icon-emoji">⚙</span><i data-lucide="settings" class="icon-lucide"></i>
+      </button>
+    </div>
+  </nav>
+
   <aside class="sidebar">
     <div class="sidebar-section sidebar-top">
       <div class="brand-row">
@@ -142,8 +213,8 @@
           <button id="layoutAgent" class="active" title="Agent chat mode"><span class="icon-emoji">💬</span><i data-lucide="message-square" class="icon-lucide"></i> Agent</button>
           <button id="layoutIde" title="IDE / editor mode"><span class="icon-emoji">🖥</span><i data-lucide="code-2" class="icon-lucide"></i> IDE</button>
         </div>
-        <button id="trackNoteBtn" class="sidebar-footer-btn" title="TrackNote">
-          <span class="icon-emoji">📋</span><i data-lucide="clipboard-list" class="icon-lucide"></i> TrackNote
+        <button id="trackNoteBtn" class="sidebar-footer-btn" title="Todo">
+          <span class="icon-emoji">✅</span><i data-lucide="check-square" class="icon-lucide"></i> Todo
         </button>
         <div class="scraper-engine-wrap" id="scraperEngineWrap">
           <select id="scraperEngineSelect" title="Scraper engine"></select>
@@ -163,25 +234,15 @@
         <button id="projectFolderBtn" class="new-chat-icon project-folder-btn" title="Projects">
           <span class="icon-emoji">📁</span><i data-lucide="folder" class="icon-lucide"></i>
         </button>
-        <button id="chatSearchBtn" class="new-chat-icon chat-search-btn" title="Search chats">
-          <span class="icon-emoji">🔍</span><i data-lucide="search" class="icon-lucide"></i>
-        </button>
-        <input type="text" id="chatSearch" class="chat-search-input" placeholder="Search chats…" autocomplete="off">
+
       </div>
       <div id="chats"></div>
     </div>
-    <div class="sidebar-section sidebar-bottom">
-      <button id="libraryBtn" class="sidebar-footer-btn" title="Library">
-        <span class="icon-emoji">📚</span><i data-lucide="book-open" class="icon-lucide"></i> Library
-      </button>
-      <button id="settingsBtn" class="sidebar-footer-btn" title="Settings">
-        <span class="icon-emoji">⚙</span><i data-lucide="settings" class="icon-lucide"></i> Settings
-      </button>
-    </div>
+
   </aside>
 
   <main class="main">
-    <header>
+    <header class="hidden">
       <div class="header-row">
         <div class="header-cell header-icon-cell header-left-pair">
           <button id="sidebarToggle" class="icon-btn" title="Toggle sidebar"><span class="icon-emoji">☰</span><i data-lucide="panel-left-close" class="icon-lucide"></i></button>
@@ -189,19 +250,9 @@
         <div class="header-cell header-icon-cell header-left-pair">
           <button id="personaQuickBtn" class="icon-btn" title="Persona & Format"><span class="icon-emoji">👤</span><i data-lucide="user-circle" class="icon-lucide"></i></button>
         </div>
-        <!-- IDE Tab Bar (in top bar, between sidebar toggle and right buttons) -->
         <div id="editorTabBar" class="ide-header-tab-bar hidden"></div>
         <div class="header-center-group">
-          <div class="header-cell header-model-cell">
-            <div class="glass-dropdown" id="modelDropdown">
-              <button class="glass-dropdown-trigger" id="modelTrigger" title="Model used for new chats">
-                <span class="glass-dropdown-label">Model</span>
-                <span class="glass-dropdown-arrow"><i data-lucide="chevron-down" style="width:12px;height:12px;"></i></span>
-              </button>
-              <div class="glass-dropdown-menu" id="modelMenu"></div>
-              <select id="modelSelect" hidden></select>
-            </div>
-          </div>
+          <div class="header-cell header-model-cell"></div>
           <div class="header-agent-cell" id="agentTopBarSlot"></div>
         </div>
         <div class="header-cell header-icon-cell header-right-pair">
@@ -222,6 +273,218 @@
     <!-- #chat is now a wrapper containing per-tab .tab-pane divs.
          Each pane scrolls independently. Only the active pane is visible. -->
     <div id="chat"></div>
+
+    <!-- Search view (replaces chat area when active) -->
+    <div id="searchView" class="search-view hidden">
+      <div class="search-header">
+        <div class="search-input-wrap">
+          <i data-lucide="search" class="search-icon"></i>
+          <input type="text" id="searchInput" class="search-input" placeholder="Search chats, skills, memory…" autocomplete="off" />
+        </div>
+      </div>
+      <div id="searchResults" class="search-results">
+        <div class="search-empty">Start typing to search across chats, skills, and memory</div>
+      </div>
+    </div>
+
+    <!-- Dashboard view (replaces chat area when active) -->
+    <div id="dashboardView" class="dashboard-view hidden">
+      <div class="dash-header">
+        <h2 class="dash-title">📊 Dashboard</h2>
+        <button class="dash-refresh-btn" id="dashRefreshBtn" title="Refresh">↻</button>
+      </div>
+      <div class="dash-grid" id="dashGrid">
+        <!-- Populated by dashboard.js -->
+        <div class="dash-loading">Loading dashboard…</div>
+      </div>
+    </div>
+
+    <!-- Research view (replaces chat area when active) -->
+    <div id="researchView" class="research-view hidden"></div>
+
+    <!-- Image Generator view (replaces chat area when active) -->
+    <div id="imageView" class="image-view hidden"></div>
+
+    <!-- Prompt Generator view (replaces chat area when active) -->
+    <div id="promptgenView" class="promptgen-view hidden"></div>
+
+    <!-- Knowledge Base view (replaces chat area when active) -->
+    <div id="knowledgeView" class="knowledge-view hidden">
+      <!-- Header -->
+      <div class="kb-header">
+        <h2 class="kb-title">🧠 Knowledge Base</h2>
+        <div class="kb-header-actions">
+          <div class="kb-mode-tabs">
+            <button class="kb-mode-tab active" data-kb-mode="graph">Graph</button>
+            <button class="kb-mode-tab" data-kb-mode="cards">Cards</button>
+            <button class="kb-mode-tab" data-kb-mode="search">Search</button>
+          </div>
+          <button class="kb-icon-btn" id="kbReindexBtn" title="Re-index embeddings">↻</button>
+        </div>
+      </div>
+
+      <!-- Add form (slides down) -->
+      <div class="kb-add-form" id="kbAddForm">
+        <div class="kb-add-form-row">
+          <input type="text" class="kb-add-input" id="kbAddKey" placeholder="Key (e.g. Favorite color)">
+          <select class="kb-add-select" id="kbAddCategory">
+            <option value="semantic">Semantic</option>
+            <option value="episodic">Episodic</option>
+            <option value="ephemeral">Ephemeral</option>
+            <option value="protected">Protected 🔒</option>
+          </select>
+        </div>
+        <div class="kb-add-form-row">
+          <textarea class="kb-add-textarea" id="kbAddValue" placeholder="Value / description..."></textarea>
+        </div>
+        <div class="kb-add-form-actions">
+          <button class="kb-btn kb-btn-ghost" id="kbAddCancel">Cancel</button>
+          <button class="kb-btn kb-btn-primary" id="kbAddSave">Add Memory</button>
+        </div>
+      </div>
+
+      <!-- Sidebar content (hosted in left sidebar via sidebar-host) -->
+      <div id="kbSidebarContent" class="kb-sidebar-panel hidden">
+        <div class="kb-sidebar">
+          <div>
+            <div class="kb-sidebar-section-title">Categories</div>
+            <div class="kb-filter-item checked" data-kb-cat="semantic">
+              <div class="kb-filter-checkbox"></div>
+              <span class="kb-cat-dot semantic"></span>
+              <span class="kb-filter-label">Semantic</span>
+              <span class="kb-filter-count" id="kbCountSemantic">0</span>
+            </div>
+            <div class="kb-filter-item checked" data-kb-cat="episodic">
+              <div class="kb-filter-checkbox"></div>
+              <span class="kb-cat-dot episodic"></span>
+              <span class="kb-filter-label">Episodic</span>
+              <span class="kb-filter-count" id="kbCountEpisodic">0</span>
+            </div>
+            <div class="kb-filter-item checked" data-kb-cat="ephemeral">
+              <div class="kb-filter-checkbox"></div>
+              <span class="kb-cat-dot ephemeral"></span>
+              <span class="kb-filter-label">Ephemeral</span>
+              <span class="kb-filter-count" id="kbCountEphemeral">0</span>
+            </div>
+            <div class="kb-filter-item checked" data-kb-cat="protected">
+              <div class="kb-filter-checkbox"></div>
+              <span class="kb-cat-dot protected"></span>
+              <span class="kb-filter-label">Protected 🔒</span>
+              <span class="kb-filter-count" id="kbCountProtected">0</span>
+            </div>
+          </div>
+
+          <div>
+            <div class="kb-sidebar-section-title">Filter Nodes</div>
+            <div class="kb-sidebar-search">
+              <span class="kb-sidebar-search-icon">🔍</span>
+              <input type="text" id="kbNodeFilter" placeholder="Filter by keyword...">
+            </div>
+          </div>
+
+          <div>
+            <div class="kb-sidebar-section-title">Stats</div>
+            <div class="kb-stat-row">
+              <span>Total entries</span>
+              <span class="kb-stat-value" id="kbStatTotal">0</span>
+            </div>
+            <div class="kb-sync-status">
+              <span class="kb-sync-dot" id="kbSyncDot"></span>
+              <span id="kbSyncLabel">Loading...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Body: main content only (sidebar is hosted separately) -->
+      <div class="kb-body">
+        <!-- Main content -->
+        <div class="kb-main">
+          <!-- Graph mode -->
+          <div class="kb-graph-wrap" id="kbGraphWrap">
+            <div id="kbGraphCanvas"></div>
+            <div class="kb-graph-loading" id="kbGraphLoading">
+              <div class="kb-spinner"></div>
+              <span>Building knowledge graph...</span>
+            </div>
+            <div class="kb-graph-empty hidden" id="kbGraphEmpty">
+              <span class="kb-graph-empty-icon">🧠</span>
+              <span>No memories yet</span>
+              <button class="kb-graph-empty-btn" id="kbEmptyAddBtn">Add your first memory</button>
+            </div>
+            <div class="kb-graph-controls">
+              <button class="kb-graph-ctrl-btn" id="kbZoomIn" title="Zoom in">+</button>
+              <button class="kb-graph-ctrl-btn" id="kbZoomOut" title="Zoom out">−</button>
+              <button class="kb-graph-ctrl-btn" id="kbZoomFit" title="Fit all">⊡</button>
+            </div>
+          </div>
+
+          <!-- Cards mode -->
+          <div class="kb-cards-view hidden" id="kbCardsView">
+            <div class="kb-cards-grid" id="kbCardsGrid"></div>
+          </div>
+
+          <!-- Search mode -->
+          <div class="kb-search-view hidden" id="kbSearchView">
+            <div class="kb-search-bar-wrap">
+              <div class="kb-search-input-wrap">
+                <span class="kb-search-icon">🔍</span>
+                <input type="text" class="kb-search-input" id="kbSearchInput" placeholder="Search memories...">
+                <span class="kb-search-kbd">⌘K</span>
+              </div>
+            </div>
+            <div class="kb-search-results" id="kbSearchResults">
+              <div style="text-align:center;padding:var(--sp-8);color:var(--muted);font-size:13px;">Type to search your knowledge base</div>
+            </div>
+          </div>
+
+          <!-- Detail panel (slides up) -->
+          <div class="kb-detail-panel" id="kbDetailPanel">
+            <button class="kb-detail-close" id="kbDetailClose">×</button>
+            <div class="kb-detail-header">
+              <div>
+                <div class="kb-detail-title" id="kbDetailTitle"></div>
+                <div class="kb-detail-meta">
+                  <span class="kb-detail-badge" id="kbDetailBadge"></span>
+                  <span class="kb-detail-time" id="kbDetailTime"></span>
+                </div>
+              </div>
+              <div class="kb-detail-actions">
+                <button class="kb-detail-action-btn" id="kbDetailEdit" title="Edit">✏️</button>
+                <button class="kb-detail-action-btn danger" id="kbDetailDelete" title="Delete">🗑</button>
+              </div>
+            </div>
+            <div class="kb-detail-value" id="kbDetailValue"></div>
+            <div class="kb-detail-connections" id="kbDetailConnections">
+              <div class="kb-detail-connections-title">Connected Memories</div>
+              <div class="kb-detail-chips" id="kbDetailChips"></div>
+            </div>
+          </div>
+
+          <!-- Toast -->
+          <div class="kb-toast" id="kbToast">
+            <span id="kbToastMsg"></span>
+            <button class="kb-toast-undo" id="kbToastUndo">Undo</button>
+          </div>
+        </div>
+
+
+      </div>
+    </div>
+
+    <!-- Calendar view (replaces chat area when active) -->
+    <div id="calendarView" class="calendar-view hidden">
+      <div class="cal-header">
+        <button class="cal-nav" id="calPrev" title="Previous month">‹</button>
+        <h2 class="cal-title" id="calTitle"></h2>
+        <button class="cal-nav" id="calNext" title="Next month">›</button>
+        <button class="cal-today" id="calToday" title="Go to today">Today</button>
+      </div>
+      <div class="cal-weekdays">
+        <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
+      </div>
+      <div class="cal-grid" id="calGrid"></div>
+    </div>
 
     <!-- IDE mode: file editor pane (hidden in agent mode) -->
     <div id="editorPane" class="editor-pane hidden">
@@ -275,13 +538,23 @@
       <div class="attach-preview" id="attachPreview"></div>
       <div class="input-composite">
         <div id="approvalBanner" class="approval-banner hidden"></div>
+        <!-- Row 1: Attach · Mic · Input · Live Chat · Send -->
         <div class="input-row">
           <div class="input-cell attach-cell">
             <button class="attach-btn" id="attachBtn" title="Attach file"><span class="icon-emoji">+</span><i data-lucide="paperclip" class="icon-lucide"></i></button>
           </div>
           <input type="file" id="fileInput" accept="image/*" multiple hidden>
+          <div class="input-cell mic-cell">
+            <button class="stt-mic-btn" id="sttMicGlobalBtn" title="Voice input (hold Ctrl+Space)">
+              <i data-lucide="mic" class="icon-lucide"></i>
+              <span class="stt-mic-pulse"></span>
+            </button>
+          </div>
           <div class="input-cell text-cell">
             <textarea id="input" placeholder="Chat..." rows="1"></textarea>
+          </div>
+          <div class="input-cell live-chat-cell">
+            <button class="live-chat-btn" id="liveChatBtn" title="Live voice chat"><span class="icon-emoji">🔊</span><i data-lucide="audio-lines" class="icon-lucide"></i></button>
           </div>
           <div class="input-cell send-cell">
             <button id="send">
@@ -291,12 +564,9 @@
             </button>
           </div>
         </div>
+        <!-- Row 2: Thinking(left) · Model(mid-left) · CWD(center) · Persona(mid-right) · Context(right) -->
         <div class="status-bar" id="statusBar">
-          <div class="status-left">
-            <button class="stt-mic-btn" id="sttMicGlobalBtn" title="Voice input (hold Ctrl+Space)">
-              <i data-lucide="mic" class="icon-lucide"></i>
-              <span class="stt-mic-pulse"></span>
-            </button>
+          <div class="status-item sb-left">
             <div class="status-dropdown" id="statusThinkingDropdown" title="Thinking mode">
               <div class="status-dropdown-trigger" id="statusThinkingTrigger">
                 <span class="status-dropdown-label" id="statusThinkingLabel"></span>
@@ -304,10 +574,27 @@
               <div class="status-dropdown-menu" id="statusThinkingMenu"></div>
             </div>
           </div>
-          <div class="status-center">
+          <div class="status-item sb-mid-left">
+            <div class="status-dropdown" id="modelDropdown" title="Model">
+              <div class="status-dropdown-trigger" id="modelTrigger">
+                <span class="status-dropdown-label" id="modelLabel">Model</span>
+              </div>
+              <div class="status-dropdown-menu" id="modelMenu"></div>
+              <select id="modelSelect" hidden></select>
+            </div>
+          </div>
+          <div class="status-item sb-center">
             <span class="status-cwd" id="statusCwd" title="Working directory"></span>
           </div>
-          <div class="status-right">
+          <div class="status-item sb-mid-right">
+            <div class="status-dropdown" id="personaDropdown" title="Persona">
+              <div class="status-dropdown-trigger" id="personaTrigger">
+                <span class="status-dropdown-label" id="statusPersona">Default</span>
+              </div>
+              <div class="status-dropdown-menu" id="personaMenu"></div>
+            </div>
+          </div>
+          <div class="status-item sb-right">
             <span class="status-context" id="statusContext" title="Context usage"></span>
           </div>
         </div>
@@ -348,6 +635,10 @@
   <script src="/static/vendor/purify.min.js"></script>
   <script src="/static/vendor/morphdom.min.js"></script>
   <script src="/static/vendor/lucide.min.js"></script>
+  <script src="/static/vendor/cytoscape.min.js"></script>
+  <script src="/static/vendor/layout-base.js"></script>
+  <script src="/static/vendor/cose-base.js"></script>
+  <script src="/static/vendor/cytoscape-cose-bilkent.js"></script>
   <script>
     /* Lazy-load Mermaid & MathJax — only fetched when first needed */
     window._lazyLoadMermaid = () => {
@@ -379,65 +670,86 @@
     };
   </script>
 
-  <!-- TrackNote right sidebar -->
-  <aside id="trackNoteSidebar" class="diff-sidebar tracknote-sidebar" aria-label="TrackNote">
-    <div class="diff-sidebar-header">
-      <div class="sidebar-mode-pill tracknote-mode-pill" id="trackNotePill" style="--n:3;--i:0;">
-        <button class="active" data-mode="schedule">Schedule</button>
-        <button data-mode="todo">Todo</button>
-        <button data-mode="agent-tasks">Agent Ops</button>
-      </div>
-      <button id="trackNoteClose" class="new-chat-icon sidebar-close-icon" title="Close"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
+  <!-- Todo panel (left-sidebar hostable) -->
+  <div id="todoPanel" class="tracknote-standalone hidden" aria-label="Todo">
+    <div class="tracknote-standalone-header">
+      <span class="tracknote-standalone-title"><i data-lucide="circle-check" class="icon-lucide"></i> Todo</span>
+      <button id="tnAddToggle" class="tn-add-toggle" title="Add new"><i data-lucide="plus" class="icon-lucide"></i></button>
     </div>
     <div class="tracknote-body">
-      <div id="tnPanelSchedule" class="tracknote-panel active">
-        <div class="tn-card">
-          <div class="tn-card-header">
-            <span class="tn-card-icon">🗓️</span>
-            <span class="tn-card-title">New Schedule</span>
-          </div>
-          <input id="tnSchedTitle" class="tn-card-input" type="text" placeholder="What's scheduled?" />
-          <div class="tn-card-controls">
-            <select id="tnSchedType"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="occasional">Occasional</option></select>
-            <input id="tnSchedTime" type="time" />
-            <button id="tnSchedAdd" class="tn-card-btn" title="Add schedule">Add</button>
-          </div>
+      <div class="tn-card tn-add-form hidden" id="tnAddForm">
+        <div class="tn-card-header">
+          <span class="tn-card-icon"><i data-lucide="pen-line" class="icon-lucide"></i></span>
+          <span class="tn-card-title">New Note / Todo</span>
         </div>
-        <div id="tnSchedList" class="tn-list"></div>
-        <div id="tnSchedEmpty" class="tracknote-empty">No schedules yet</div>
-      </div>
-      <div id="tnPanelTodo" class="tracknote-panel">
-        <div class="tn-card">
-          <div class="tn-card-header">
-            <span class="tn-card-icon">📝</span>
-            <span class="tn-card-title">New Note / Todo</span>
-          </div>
-          <input id="tnNoteTitle" class="tn-card-input" type="text" placeholder="Title" />
-          <textarea id="tnNoteContent" class="tn-card-input" placeholder="Write something..." rows="3" style="resize:vertical;min-height:60px;margin-top:6px;font-family:inherit;font-size:inherit;"></textarea>
-          <div class="tn-card-controls">
-            <button id="tnNoteAdd" class="tn-card-btn tn-card-btn-secondary" title="Add note">+ Note</button>
-            <button id="tnTodoAdd" class="tn-card-btn" title="Add todo checklist">☑ Todo</button>
-          </div>
+        <input id="tnNoteTitle" class="tn-card-input" type="text" placeholder="Title" />
+        <textarea id="tnNoteContent" class="tn-card-input" placeholder="Write something..." rows="3" style="resize:vertical;min-height:60px;margin-top:6px;font-family:inherit;font-size:inherit;"></textarea>
+        <div class="tn-card-controls">
+          <button id="tnNoteAdd" class="tn-card-btn tn-card-btn-secondary" title="Add note">+ Note</button>
+          <button id="tnTodoAdd" class="tn-card-btn" title="Add todo checklist">☑ Todo</button>
         </div>
-        <div id="tnNoteList" class="tn-list"></div>
-        <div id="tnNoteEmpty" class="tracknote-empty">No notes or todos yet</div>
       </div>
-      <div id="tnPanelAgentTasks" class="tracknote-panel">
-        <div class="tn-agent-form" id="tnAgentForm">
-          <input id="tnAgentName" type="text" placeholder="Task name" />
-          <textarea id="tnAgentPrompt" placeholder="What should the agent do?" rows="3"></textarea>
-          <div class="tn-agent-row">
-            <select id="tnAgentModel"></select>
-            <select id="tnAgentSchedType"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="cron">Cron</option></select>
-            <input id="tnAgentTime" type="time" />
-          </div>
-          <button id="tnAgentAdd" class="tn-card-btn tn-full-width">Create Agent Op</button>
-        </div>
-        <div id="tnAgentList" class="tn-list"></div>
-        <div id="tnAgentEmpty" class="tracknote-empty">No agent tasks queued</div>
-      </div>
+      <div id="tnNoteList" class="tn-list"></div>
+      <div id="tnNoteEmpty" class="tracknote-empty">No notes or todos yet</div>
     </div>
-  </aside>
+  </div>
+
+  <!-- Projects panel (left-sidebar hostable) -->
+  <div id="projectsPanel" class="tracknote-standalone hidden" aria-label="Projects">
+    <div class="tracknote-standalone-header">
+      <span class="tracknote-standalone-title"><i data-lucide="folder-open" class="icon-lucide"></i> Projects</span>
+      <button id="projAddBtn" class="tn-add-toggle" title="New Project"><i data-lucide="plus" class="icon-lucide"></i></button>
+    </div>
+    <div class="tracknote-body">
+      <div id="projAddForm" class="tn-card tn-add-form hidden">
+        <div class="tn-card-header">
+          <span class="tn-card-icon"><i data-lucide="folder-plus" class="icon-lucide"></i></span>
+          <span class="tn-card-title">New Project</span>
+        </div>
+        <input id="projNewName" class="tn-card-input" type="text" placeholder="Project name" />
+        <input id="projNewPath" class="tn-card-input" type="text" placeholder="/path/to/project (optional)" style="margin-top:6px;" />
+        <div class="tn-card-controls">
+          <button id="projCreateBtn" class="tn-card-btn" title="Create project">Create</button>
+          <button id="projCancelBtn" class="tn-card-btn tn-card-btn-secondary" title="Cancel">Cancel</button>
+        </div>
+      </div>
+      <div id="projList" class="tn-list"></div>
+      <div id="projEmpty" class="tracknote-empty">No projects yet</div>
+    </div>
+  </div>
+
+  <!-- Tasks panel (left-sidebar hostable) -->
+  <div id="tasksPanel" class="tracknote-standalone hidden" aria-label="Tasks">
+    <div class="tracknote-standalone-header">
+      <span class="tracknote-standalone-title"><i data-lucide="bot" class="icon-lucide"></i> Tasks</span>
+      <button id="tnAgentAddToggle" class="tn-add-toggle" title="Add new task"><i data-lucide="plus" class="icon-lucide"></i></button>
+    </div>
+    <div class="tracknote-body">
+      <div class="tn-agent-form hidden" id="tnAgentForm">
+        <input id="tnAgentName" type="text" placeholder="Task name" />
+        <textarea id="tnAgentPrompt" placeholder="What should the agent do?" rows="3"></textarea>
+        <div class="tn-agent-row">
+          <select id="tnAgentModel"></select>
+          <select id="tnAgentSchedType"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="cron">Cron</option></select>
+          <input id="tnAgentTime" type="time" />
+        </div>
+        <button id="tnAgentAdd" class="tn-card-btn tn-full-width">Create Task</button>
+      </div>
+      <div id="tnAgentList" class="tn-list"></div>
+      <div id="tnAgentEmpty" class="tracknote-empty">No agent tasks queued</div>
+    </div>
+  </div>
+
+  <!-- Files panel (left-sidebar hostable) -->
+  <div id="filesPanel" class="tracknote-standalone hidden" aria-label="Files">
+    <div class="tracknote-standalone-header">
+      <span class="tracknote-standalone-title"><i data-lucide="folder-tree" class="icon-lucide"></i> Files</span>
+      <button id="fsLeftOpenFolder" class="new-chat-icon sidebar-action-icon" title="Open Folder"><span class="icon-emoji">📂</span><i data-lucide="folder-open" class="icon-lucide"></i></button>
+    </div>
+    <div class="tracknote-body">
+      <div id="fsLeftTree" class="fs-sidebar-tree"></div>
+    </div>
+  </div>
 
   <aside id="diffSidebar" class="diff-sidebar" aria-label="File sidebar">
     <div class="diff-sidebar-header">
@@ -1640,11 +1952,13 @@
   <script src="/static/js/tts.js?v=1"></script>
   <script src="/static/js/markdown.js?v=1"></script>
   <script src="/static/js/chat.js?v=2"></script>
-  <script src="/static/js/tracknote.js?v=1"></script>
+  <script src="/static/js/sidebar-host.js?v=10"></script>
+  <script src="/static/js/tracknote.js?v=7"></script>
   <script src="/static/js/sse.js?v=1"></script>
   <script src="/static/js/sidebar.js?v=1"></script>
   <script src="/static/js/statusbar.js?v=1"></script>
   <script src="/static/js/settings-projects.js?v=1"></script>
+  <script src="/static/js/projects-panel.js?v=1"></script>
   <script src="/static/js/settings-init.js?v=1"></script>
   <script src="/static/js/settings-ui.js?v=2"></script>
   <script src="/static/js/library.js?v=2"></script>
@@ -1653,12 +1967,19 @@
   <script src="/static/js/skills-panel.js?v=11"></script>
   <script src="/static/js/appearance.js?v=2"></script>
   <script src="/static/src/research.js?v=10"></script>
+  <script src="/static/js/research-panel.js?v=3"></script>
+  <script src="/static/js/image-panel.js?v=1"></script>
+  <script src="/static/js/prompt-panel.js?v=1"></script>
   <script src="/static/js/agents.js?v=26"></script>
-  <script src="/static/js/filesystem.js?v=31"></script>
+  <script src="/static/js/filesystem.js?v=32"></script>
   <script src="/static/js/mode.js?v=20"></script>
-  <script src="/static/js/resize-panels.js?v=1"></script>
-  <script src="/static/js/terminal.js?v=4"></script>
+  <script src="/static/js/resize-panels.js?v=3"></script>
+  <script src="/static/js/terminal.js?v=9"></script>
   <script src="/static/js/cookbook.js?v=4"></script>
+  <script src="/static/js/search-panel.js?v=5"></script>
+  <script src="/static/js/dashboard.js?v=1"></script>
+  <script src="/static/js/calendar.js?v=1"></script>
+  <script src="/static/js/knowledge.js?v=1"></script>
 <!-- Persona Quick Popup (portal — positioned via JS) -->
 <div id="personaQuickPopup" class="persona-quick-popup hidden">
   <div class="pq-header">Persona</div>

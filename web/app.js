@@ -6,7 +6,7 @@
 //   js/tts.js               — TTS stream player, model capabilities
 //   js/markdown.js          — Markdown renderer, mermaid, MathJax, lucide icons
 //   js/chat.js              — Toast, dialog, tabs, panes, streaming, skill cards
-//   js/tracknote.js         — File edit sidebar, TrackNote panel
+//   js/tracknote.js         — File edit sidebar, Todo & Agent Ops panel
 //   js/sse.js               — SSE processing, message rendering, typewriter
 //   js/sidebar.js           — Chat list, selectChat, project banner
 //   js/statusbar.js         — Status bar, context breakdown, model selector

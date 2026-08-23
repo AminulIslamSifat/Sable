@@ -585,12 +585,72 @@
     });
   }
 
+  // ─── Activity Rail ───
+
+  function setupActivityRail() {
+    const rail = document.getElementById('activityRail');
+    if (!rail) return;
+    const buttons = rail.querySelectorAll('.rail-btn');
+    buttons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const wasActive = btn.classList.contains('active');
+        buttons.forEach(b => b.classList.remove('active'));
+        if (wasActive) {
+          // Toggle off — deselect, notify with null target
+          window.dispatchEvent(new CustomEvent('rail-switch', { detail: { target: null } }));
+        } else {
+          btn.classList.add('active');
+          window.dispatchEvent(new CustomEvent('rail-switch', { detail: { target: btn.dataset.rail } }));
+        }
+      });
+    });
+  }
+
+  // ─── Rail Sidebar Toggle ───
+
+  function setupRailSidebarToggle() {
+    const btn = document.getElementById('railSidebarToggle');
+    if (!btn) return;
+
+    const syncState = () => {
+      const isMobile = window.matchMedia('(max-width: 860px)').matches;
+      const isOpen = isMobile
+        ? body.classList.contains('sidebar-open')
+        : !body.classList.contains('sidebar-collapsed');
+      btn.classList.toggle('active', isOpen);
+      // Swap icon between panel-left-close and panel-left-open
+      const lucideIcon = btn.querySelector('.icon-lucide');
+      if (lucideIcon) {
+        lucideIcon.setAttribute('data-lucide', isOpen ? 'panel-left-close' : 'panel-left-open');
+        if (window.lucide) lucide.createIcons({ nodes: [btn] });
+      }
+    };
+
+    btn.addEventListener('click', () => {
+      const isMobile = window.matchMedia('(max-width: 860px)').matches;
+      if (isMobile) {
+        body.classList.toggle('sidebar-open');
+      } else {
+        body.classList.toggle('sidebar-collapsed');
+      }
+      syncState();
+    });
+
+    // Observe body class changes to stay in sync (Alt+B, other toggles)
+    new MutationObserver(syncState).observe(body, { attributes: true, attributeFilter: ['class'] });
+
+    // Initial state
+    syncState();
+  }
+
   // ─── Init ───
 
   function init() {
     const saved = getLayoutMode();
     setLayoutMode(saved);
     setupSwitcherButtons();
+    setupActivityRail();
+    setupRailSidebarToggle();
     patchSidebarToggle();
     setupCompactInput();
     setupCompactCopyDelegation();

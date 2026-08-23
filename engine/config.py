@@ -530,6 +530,7 @@ def save_qwen_tokens_for_account(
 # --------------------------------------------------------------------------
 
 _QWEN_EXHAUSTION_PATH = _SYSTEM / ".qwen_exhaustion.json"
+_QWEN_CAPTCHA_BLOCK_PATH = _SYSTEM / ".qwen_captcha_blocks.json"
 
 
 def _load_exhaustion_store() -> dict[str, dict]:
@@ -606,29 +607,136 @@ def get_all_exhaustion_status() -> dict[str, bool]:
     return result
 
 
-def get_next_available_account(exclude: set[str] | None = None) -> str | None:
-    """Find the next non-exhausted Qwen account by scanning browser-data-accN dirs.
+def _load_captcha_block_store() -> dict[str, str]:
+    """Load captcha block timestamps. Returns {account_name: iso_timestamp}."""
+    import json as _json
+    if _QWEN_CAPTCHA_BLOCK_PATH.exists():
+        try:
+            return _json.loads(_QWEN_CAPTCHA_BLOCK_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _save_captcha_block_store(store: dict[str, str]) -> None:
+    """Atomically save captcha block timestamps."""
+    import json as _json
+    import tempfile, os as _os
+    try:
+        data = _json.dumps(store, indent=2)
+        fd, tmp = tempfile.mkstemp(dir=str(_QWEN_CAPTCHA_BLOCK_PATH.parent), suffix=".tmp")
+        try:
+            with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+            _os.replace(tmp, str(_QWEN_CAPTCHA_BLOCK_PATH))
+        except BaseException:
+            try:
+                _os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except Exception:
+        pass
+
+
+def mark_account_captcha_blocked(account: str) -> None:
+    """Mark an account as captcha-blocked with current UTC timestamp."""
+    from datetime import datetime, timezone
+    store = _load_captcha_block_store()
+    store[account] = datetime.now(timezone.utc).isoformat()
+    _save_captcha_block_store(store)
+    logger.info("Account %s marked captcha-blocked", account)
+
+
+def is_account_captcha_blocked(account: str) -> bool:
+    """Check if account is captcha-blocked. Auto-clears if blocked before today's UTC midnight."""
+    from datetime import datetime, timezone
+    store = _load_captcha_block_store()
+    ts = store.get(account)
+    if not ts:
+        return False
+    try:
+        dt = datetime.fromisoformat(ts)
+        now = datetime.now(timezone.utc)
+        if dt.date() < now.date():
+            del store[account]
+            _save_captcha_block_store(store)
+            return False
+    except (ValueError, TypeError):
+        pass
+    return True
+
+
+def clear_account_captcha_block(account: str) -> None:
+    """Manually clear captcha block for an account."""
+    store = _load_captcha_block_store()
+    if account in store:
+        del store[account]
+        _save_captcha_block_store(store)
+
+
+def get_all_captcha_block_status() -> dict[str, bool]:
+    """Return {account_name: is_captcha_blocked} for all tracked accounts."""
+    store = _load_captcha_block_store()
+    result = {}
+    for account in store:
+        result[account] = is_account_captcha_blocked(account)
+    return result
+
+
+def get_next_available_account(
+    exclude: set[str] | None = None,
+    prefer_non_captcha: bool = True,
+) -> str | None:
+    """Find the next available Qwen account, preferring non-captcha-blocked ones.
+
+    Selection priority when prefer_non_captcha=True:
+      1. Fresh accounts (not exhausted, not captcha-blocked), lowest number first
+      2. If no fresh accounts, return the earliest captcha-blocked account (oldest timestamp)
+      3. Returns None only if all accounts are rate-limit exhausted
 
     Args:
-        exclude: Set of account names to skip (e.g. already-tried accounts).
+        exclude: Set of account names to skip (e.g. already-tried in current request).
+        prefer_non_captcha: If True, avoid captcha-blocked accounts unless no fresh ones exist.
 
     Returns:
         Account name (e.g. 'browser-data-acc3') or None if all exhausted.
     """
     import re as _re
     exclude = exclude or set()
-    candidates: list[tuple[int, str]] = []
+    fresh: list[tuple[int, str]] = []
+    captcha_blocked: list[tuple[str, int, str]] = []  # (timestamp, num, name)
     try:
+        captcha_store = _load_captcha_block_store() if prefer_non_captcha else {}
         for entry in _SYSTEM.iterdir():
             m = _re.match(r"browser-data-acc(\d+)$", entry.name)
             if entry.is_dir() and m:
                 name = entry.name
-                if name not in exclude and not is_account_exhausted(name):
-                    candidates.append((int(m.group(1)), name))
+                if name in exclude:
+                    continue
+                if is_account_exhausted(name):
+                    continue  # rate-limited accounts are fully skipped
+                num = int(m.group(1))
+                if prefer_non_captcha:
+                    ts = captcha_store.get(name)
+                    if ts and is_account_captcha_blocked(name):
+                        captcha_blocked.append((ts, num, name))
+                    else:
+                        fresh.append((num, name))
+                else:
+                    fresh.append((num, name))
     except OSError:
         return None
-    if not candidates:
-        return None
-    candidates.sort(key=lambda t: t[0])
-    return candidates[0][1]
+
+    # Priority 1: fresh accounts, sorted by account number
+    if fresh:
+        fresh.sort(key=lambda t: t[0])
+        return fresh[0][1]
+
+    # Priority 2: earliest captcha-blocked account (oldest timestamp = most likely recovered)
+    if captcha_blocked:
+        captcha_blocked.sort(key=lambda t: t[0])  # oldest timestamp first
+        return captcha_blocked[0][2]
+
+    return None
 

@@ -1063,7 +1063,7 @@
     if (action === 'new-chat') {
       document.getElementById('newChat')?.click();
     } else if (action === 'settings') {
-      document.getElementById('settingsBtn')?.click();
+      (document.getElementById('railSettingsBtn') || document.getElementById('settingsBtn'))?.click();
     } else if (action === 'context-pass') {
       if (!activeChatId) { showToast('No active chat to pass context from', 'error'); return; }
       showToast('Summarizing context…', 'info');

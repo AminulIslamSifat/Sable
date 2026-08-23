@@ -537,9 +537,9 @@
 
       // Only scraping gets hard-disabled; qwen/deepseek allow within-group switching
       modelSelectEl.disabled = provider === "scraping";
-      glassTrigger.disabled = provider === "scraping";
-      glassTrigger.style.opacity = provider === "scraping" ? "0.45" : "";
-      syncGlassDropdown();
+      const _mt = document.getElementById("modelTrigger");
+      if (_mt) { _mt.style.pointerEvents = provider === "scraping" ? "none" : ""; _mt.style.opacity = provider === "scraping" ? "0.45" : ""; }
+      syncModelDropdown();
     }
 
     // Guard against concurrent loadMessages for the same chat
