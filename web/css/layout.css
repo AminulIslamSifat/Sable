@@ -38,6 +38,13 @@
       scrollbar-width: none;
     }
     .rail-top::-webkit-scrollbar { display: none; }
+    .rail-sep {
+      width: 20px;
+      height: 1px;
+      background: color-mix(in srgb, var(--border) 60%, transparent);
+      margin: 4px 0;
+      flex-shrink: 0;
+    }
     .rail-btn {
       width: 36px;
       height: 36px;
@@ -80,8 +87,15 @@
       width: 7px;
       height: 7px;
     }
-    /* Hide rail when sidebar is collapsed */
-    body.sidebar-collapsed .activity-rail { margin-left: -54px; opacity: 0; pointer-events: none; }
+    /* Sidebar toggle button in rail — visual state */
+    #railSidebarToggle.active {
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 15%, transparent);
+    }
+    body.sidebar-collapsed #railSidebarToggle .icon-lucide {
+      /* Swap icon visually when collapsed */
+      transform: scaleX(-1);
+    }
 
 /* ---------- sidebar ---------- */
 
