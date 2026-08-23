@@ -170,6 +170,130 @@ def delete_schedule_route(sched_id: str) -> dict[str, Any]:
     return {"deleted": True}
 
 
+# ── Calendar Events (computed) ─────────────────────────────────────────────
+
+@router.get("/api/calendar/events")
+def get_calendar_events(year: int | None = None, month: int | None = None) -> dict[str, Any]:
+    """Return events for a given month, expanding schedules into per-day occurrences.
+
+    Response: { "events": { "YYYY-MM-DD": [ { id, title, time, type, description, schedule_type }, ... ] } }
+    """
+    from datetime import date, timedelta
+    import calendar as cal_mod
+
+    today = date.today()
+    y = year or today.year
+    m = month or today.month
+
+    # Clamp
+    if m < 1 or m > 12:
+        m = today.month
+    if y < 2000 or y > 2100:
+        y = today.year
+
+    first_day = date(y, m, 1)
+    last_day_num = cal_mod.monthrange(y, m)[1]
+    last_day = date(y, m, last_day_num)
+
+    events: dict[str, list[dict[str, Any]]] = {}
+
+    def add_event(d: date, evt: dict[str, Any]) -> None:
+        key = d.isoformat()
+        events.setdefault(key, []).append(evt)
+
+    # 1. Schedules
+    schedules = list_schedules()
+    current = first_day
+    while current <= last_day:
+        for s in schedules:
+            if s.get("completed"):
+                continue
+            stype = s.get("schedule_type", "daily")
+            match = False
+            if stype == "daily":
+                # Check start/end bounds
+                if s.get("start_date"):
+                    sd = date.fromisoformat(s["start_date"][:10])
+                    if current < sd:
+                        continue
+                if s.get("end_date"):
+                    ed = date.fromisoformat(s["end_date"][:10])
+                    if current > ed:
+                        continue
+                match = True
+            elif stype == "weekly":
+                dow = s.get("day_of_week")  # 0=Mon .. 6=Sun
+                if dow is not None and current.weekday() == int(dow):
+                    if s.get("start_date"):
+                        sd = date.fromisoformat(s["start_date"][:10])
+                        if current < sd:
+                            continue
+                    if s.get("end_date"):
+                        ed = date.fromisoformat(s["end_date"][:10])
+                        if current > ed:
+                            continue
+                    match = True
+            elif stype == "occasional":
+                if s.get("start_date"):
+                    sd = date.fromisoformat(s["start_date"][:10])
+                    if sd == current:
+                        match = True
+
+            if match:
+                add_event(current, {
+                    "id": s["id"],
+                    "title": s.get("title", ""),
+                    "time": s.get("time"),
+                    "type": "schedule",
+                    "description": s.get("description", ""),
+                    "schedule_type": stype,
+                })
+        current += timedelta(days=1)
+
+    # 2. Notes with due_date
+    notes = list_notes()
+    for n in notes:
+        dd = n.get("due_date")
+        if not dd:
+            continue
+        try:
+            nd = date.fromisoformat(dd[:10])
+        except (ValueError, TypeError):
+            continue
+        if first_day <= nd <= last_day:
+            add_event(nd, {
+                "id": n["id"],
+                "title": n.get("title", "Untitled"),
+                "time": None,
+                "type": "note",
+                "description": (n.get("content") or "")[:120],
+                "schedule_type": None,
+                "note_type": n.get("note_type", "note"),
+            })
+
+    # 3. Agent ops (enabled ones with next_run in this month)
+    ops = list_agent_ops()
+    for op in ops:
+        nr = op.get("next_run")
+        if not nr or not op.get("enabled"):
+            continue
+        try:
+            nr_date = date.fromisoformat(nr[:10])
+        except (ValueError, TypeError):
+            continue
+        if first_day <= nr_date <= last_day:
+            add_event(nr_date, {
+                "id": op["id"],
+                "title": f"🤖 {op.get('name', 'Agent Op')}",
+                "time": op.get("schedule_time"),
+                "type": "agent_op",
+                "description": (op.get("prompt") or "")[:120],
+                "schedule_type": op.get("schedule_type", "daily"),
+            })
+
+    return {"events": events, "year": y, "month": m}
+
+
 # ── Agent Ops ───────────────────────────────────────────────────────────────
 
 @router.get("/api/agent-ops")

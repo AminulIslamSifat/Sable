@@ -29,6 +29,430 @@ def search_chats(q: str = "") -> dict[str, Any]:
         return {"results": []}
     return {"results": search_messages(q.strip())}
 
+
+def _fuzzy_score(query: str, text: str) -> float:
+    """True fuzzy score (0.0–1.0) using SequenceMatcher + token overlap.
+    Handles typos like 'contex' → 'context'. Case-insensitive.
+    """
+    if not query or not text:
+        return 0.0
+    from difflib import SequenceMatcher
+    ql = query.lower().strip()
+    tl = text.lower()
+
+    # 1. Exact substring → instant high score
+    if ql in tl:
+        return 1.0
+
+    # 2. Best SequenceMatcher ratio against sliding windows of text
+    #    This catches typos, partial matches, transpositions
+    best = 0.0
+    q_len = len(ql)
+    # Check full-text ratio first
+    best = SequenceMatcher(None, ql, tl[:max(q_len * 3, 200)]).ratio()
+
+    # Slide through words for better local matches
+    words = tl.split()
+    for i, word in enumerate(words):
+        # Single word comparison
+        r = SequenceMatcher(None, ql, word).ratio()
+        if r > best:
+            best = r
+        # Multi-word window (up to 4 words)
+        if i < len(words) - 1:
+            window = " ".join(words[i : i + min(4, len(words) - i)])
+            r = SequenceMatcher(None, ql, window).ratio()
+            if r > best:
+                best = r
+        if best >= 0.95:
+            break  # Good enough
+
+    # 3. Token overlap bonus — if query tokens partially match text tokens
+    q_tokens = ql.split()
+    if len(q_tokens) > 1:
+        matched = 0
+        for qt in q_tokens:
+            for tw in words:
+                if SequenceMatcher(None, qt, tw).ratio() >= 0.7:
+                    matched += 1
+                    break
+        token_ratio = matched / len(q_tokens)
+        # Blend: sequence matcher (70%) + token overlap (30%)
+        best = best * 0.7 + token_ratio * 0.3
+
+    return round(min(1.0, best), 4)
+
+
+_PER_SECTION = 10
+_MIN_SCORE = 0.75
+
+
+@router.get("/api/search/unified")
+async def unified_search(q: str = "") -> dict[str, Any]:
+    """Unified fuzzy search across all Sable data sources.
+    Returns up to 10 results per section with score >= 0.75.
+    """
+    query = q.strip()
+    sources = ("messages", "skills", "memory", "notes", "todos", "schedules", "research", "agents")
+    if not query:
+        return {k: [] for k in sources}
+
+    from server.database import get_db
+    import re
+
+    results: dict[str, list] = {k: [] for k in sources}
+    like_ci = f"%{query}%"  # SQLite LIKE is case-insensitive for ASCII
+
+    # ── 1. Chat messages (broad fetch → fuzzy filter) ──
+    _mem_re = re.compile(r'^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n')
+    _ts_re = re.compile(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\n?')
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT m.id, m.chat_id, m.role, m.content, m.created_at, c.title "
+                "FROM messages m JOIN chats c ON m.chat_id = c.id "
+                "WHERE m.content LIKE ? COLLATE NOCASE ORDER BY m.id DESC LIMIT 200",
+                (like_ci,),
+            ).fetchall()
+            scored = []
+            for row in rows:
+                d = dict(row)
+                content = d.get("content") or ""
+                content = _mem_re.sub("", content)
+                content = _ts_re.sub("", content)
+                # Score against chat title + content
+                score = max(_fuzzy_score(query, d.get("title") or ""), _fuzzy_score(query, content))
+                if score >= _MIN_SCORE:
+                    scored.append((score, {
+                        **d,
+                        "preview": content[:300],
+                        "score": round(score, 3),
+                        "source": "message",
+                    }))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            results["messages"] = [item for _, item in scored[:_PER_SECTION]]
+    except Exception as e:
+        logger.warning("Search messages failed: %s", e)
+
+    # ── 2. Skill events ──
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT se.event_data, se.message_id, m.chat_id, c.title, m.created_at "
+                "FROM skill_events se "
+                "JOIN messages m ON se.message_id = m.id "
+                "JOIN chats c ON m.chat_id = c.id "
+                "WHERE se.event_data LIKE ? COLLATE NOCASE ORDER BY se.id DESC LIMIT 200",
+                (like_ci,),
+            ).fetchall()
+            seen: set[int] = set()
+            scored = []
+            for row in rows:
+                d = dict(row)
+                mid = d.get("message_id")
+                if mid in seen:
+                    continue
+                seen.add(mid)
+                try:
+                    ev = json.loads(d["event_data"])
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                skill_name = ev.get("skill") or ev.get("tool") or ev.get("type") or "unknown"
+                raw = ev.get("summary") or ev.get("result") or ev.get("output") or ""
+                if isinstance(raw, dict):
+                    raw = json.dumps(raw, ensure_ascii=False)
+                raw_str = str(raw)
+                score = max(_fuzzy_score(query, skill_name), _fuzzy_score(query, raw_str), _fuzzy_score(query, d.get("title") or ""))
+                if score >= _MIN_SCORE:
+                    scored.append((score, {
+                        "skill": skill_name,
+                        "preview": raw_str[:300],
+                        "chat_id": d.get("chat_id"),
+                        "title": d.get("title"),
+                        "created_at": d.get("created_at"),
+                        "message_id": mid,
+                        "score": round(score, 3),
+                        "source": "skill",
+                    }))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            results["skills"] = [item for _, item in scored[:_PER_SECTION]]
+    except Exception as e:
+        logger.warning("Search skills failed: %s", e)
+
+    # ── 3. Memory (vector search + fuzzy fallback) ──
+    try:
+        from server.api.routes.memory import get_searcher
+        searcher = get_searcher()
+        seen_keys: set[str] = set()
+
+        # Primary: vector/semantic search
+        for mr in searcher.search(query, top_k=_PER_SECTION, threshold=_MIN_SCORE):
+            text = mr.get("value") or mr.get("text") or mr.get("content") or ""
+            key = mr.get("key", "")
+            seen_keys.add(key)
+            results["memory"].append({
+                "key": key,
+                "preview": text[:300],
+                "full_content": text,
+                "score": round(mr.get("score", 0), 3),
+                "category": mr.get("category", ""),
+                "source": "memory",
+            })
+
+        # Fallback: if vector search missed results (e.g. typos), brute-force fuzzy scan
+        if len(results["memory"]) < _PER_SECTION:
+            searcher._ensure_loaded()
+            scored_mem: list[tuple[float, dict]] = []
+            for entry_str in searcher._entries:
+                if not isinstance(entry_str, str) or ": " not in entry_str:
+                    continue
+                mkey, _, mval = entry_str.partition(": ")
+                if mkey in seen_keys:
+                    continue
+                score = max(_fuzzy_score(query, mkey), _fuzzy_score(query, mval))
+                if score >= _MIN_SCORE:
+                    scored_mem.append((score, {
+                        "key": mkey,
+                        "preview": mval[:300],
+                        "full_content": mval,
+                        "score": round(score, 3),
+                        "category": "fuzzy",
+                        "source": "memory",
+                    }))
+            scored_mem.sort(key=lambda x: x[0], reverse=True)
+            for _, item in scored_mem:
+                if len(results["memory"]) >= _PER_SECTION:
+                    break
+                results["memory"].append(item)
+    except Exception as e:
+        logger.debug("Search memory skipped: %s", e)
+
+    # ── 4. Notes (note_type != 'todo') ──
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT id, title, content, note_type, created_at, updated_at FROM notes "
+                "WHERE note_type != 'todo' AND archived = 0 "
+                "AND (title LIKE ? COLLATE NOCASE OR content LIKE ? COLLATE NOCASE) "
+                "ORDER BY updated_at DESC LIMIT 100",
+                (like_ci, like_ci),
+            ).fetchall()
+            scored = []
+            for row in rows:
+                d = dict(row)
+                score = max(_fuzzy_score(query, d.get("title") or ""), _fuzzy_score(query, d.get("content") or ""))
+                if score >= _MIN_SCORE:
+                    scored.append((score, {
+                        **d,
+                        "preview": (d.get("content") or "")[:300],
+                        "score": round(score, 3),
+                        "source": "note",
+                    }))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            results["notes"] = [item for _, item in scored[:_PER_SECTION]]
+    except Exception as e:
+        logger.warning("Search notes failed: %s", e)
+
+    # ── 5. Todos (note_type == 'todo') ──
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT id, title, content, items, due_date, created_at, updated_at FROM notes "
+                "WHERE note_type = 'todo' AND archived = 0 "
+                "AND (title LIKE ? COLLATE NOCASE OR content LIKE ? COLLATE NOCASE) "
+                "ORDER BY updated_at DESC LIMIT 100",
+                (like_ci, like_ci),
+            ).fetchall()
+            scored = []
+            for row in rows:
+                d = dict(row)
+                score = max(_fuzzy_score(query, d.get("title") or ""), _fuzzy_score(query, d.get("content") or ""))
+                if score >= _MIN_SCORE:
+                    scored.append((score, {
+                        **d,
+                        "preview": (d.get("content") or "")[:300],
+                        "score": round(score, 3),
+                        "source": "todo",
+                    }))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            results["todos"] = [item for _, item in scored[:_PER_SECTION]]
+    except Exception as e:
+        logger.warning("Search todos failed: %s", e)
+
+    # ── 6. Schedules ──
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT * FROM schedules "
+                "WHERE title LIKE ? COLLATE NOCASE OR description LIKE ? COLLATE NOCASE "
+                "ORDER BY start_date DESC LIMIT 100",
+                (like_ci, like_ci),
+            ).fetchall()
+            scored = []
+            for row in rows:
+                d = dict(row)
+                score = max(_fuzzy_score(query, d.get("title") or ""), _fuzzy_score(query, d.get("description") or ""))
+                if score >= _MIN_SCORE:
+                    scored.append((score, {
+                        **d,
+                        "preview": (d.get("description") or d.get("title") or "")[:300],
+                        "score": round(score, 3),
+                        "source": "schedule",
+                    }))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            results["schedules"] = [item for _, item in scored[:_PER_SECTION]]
+    except Exception as e:
+        logger.warning("Search schedules failed: %s", e)
+
+    # ── 7. Research (sable_output markdown files) ──
+    try:
+        from engine.config import RESEARCH_DIR
+        if RESEARCH_DIR.exists():
+            scored = []
+            for f in sorted(RESEARCH_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
+                try:
+                    text = f.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+                title = f.stem.replace("_", " ").replace("-", " ")
+                score = max(_fuzzy_score(query, title), _fuzzy_score(query, text[:2000]))
+                if score >= _MIN_SCORE:
+                    body = re.sub(r'^---\s*\n.*?\n---\s*\n', '', text, count=1, flags=re.DOTALL)
+                    first_para = ""
+                    for line in body.splitlines():
+                        s = line.strip()
+                        if s and not s.startswith(("#", ">", "---")):
+                            first_para = s[:300]
+                            break
+                    scored.append((score, {
+                        "id": f.stem,
+                        "filename": f.name,
+                        "title": title.title(),
+                        "preview": first_para,
+                        "score": round(score, 3),
+                        "source": "research",
+                    }))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            results["research"] = [item for _, item in scored[:_PER_SECTION]]
+    except Exception as e:
+        logger.debug("Search research skipped: %s", e)
+
+    # ── 8. Agents (sable_output markdown files) ──
+    try:
+        from engine.config import AGENT_OUTPUT_DIR
+        if AGENT_OUTPUT_DIR.exists():
+            scored = []
+            for f in sorted(AGENT_OUTPUT_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
+                if f.stem.endswith("_conversation"):
+                    continue
+                try:
+                    text = f.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+                title = f.stem.replace("_", " ").replace("-", " ")
+                score = max(_fuzzy_score(query, title), _fuzzy_score(query, text[:2000]))
+                if score >= _MIN_SCORE:
+                    body = re.sub(r'^---\s*\n.*?\n---\s*\n', '', text, count=1, flags=re.DOTALL)
+                    first_para = ""
+                    for line in body.splitlines():
+                        s = line.strip()
+                        if s and not s.startswith(("#", ">", "---")):
+                            first_para = s[:300]
+                            break
+                    scored.append((score, {
+                        "id": f.stem,
+                        "filename": f.name,
+                        "title": title.title(),
+                        "preview": first_para,
+                        "score": round(score, 3),
+                        "source": "agent",
+                    }))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            results["agents"] = [item for _, item in scored[:_PER_SECTION]]
+    except Exception as e:
+        logger.debug("Search agents skipped: %s", e)
+
+    return results
+
+
+@router.get("/api/search/full-content")
+async def search_full_content(source: str = "", id: str = "", chat_id: str = "", message_id: str = "") -> dict[str, Any]:
+    """Return full content for a search result card expansion."""
+    if source == "message":
+        from server.database import get_db
+        try:
+            with get_db() as conn:
+                row = conn.execute(
+                    "SELECT m.content, m.role, m.created_at, c.title "
+                    "FROM messages m JOIN chats c ON m.chat_id = c.id "
+                    "WHERE m.id = ?", (int(id),),
+                ).fetchone()
+            if row:
+                d = dict(row)
+                import re
+                content = d.get("content") or ""
+                content = re.sub(r'^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n', '', content)
+                content = re.sub(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\n?', '', content)
+                return {"content": content, "role": d["role"], "title": d["title"], "created_at": d["created_at"]}
+        except Exception as e:
+            return {"error": str(e)}
+        return {"error": "Message not found"}
+
+    elif source == "skill":
+        from server.database import get_db
+        try:
+            with get_db() as conn:
+                rows = conn.execute(
+                    "SELECT event_data FROM skill_events WHERE message_id = ? ORDER BY seq ASC",
+                    (int(message_id),),
+                ).fetchall()
+            events = []
+            for row in rows:
+                try:
+                    events.append(json.loads(row["event_data"]))
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            return {"events": events}
+        except Exception as e:
+            return {"error": str(e)}
+
+    elif source == "note" or source == "todo":
+        from server.database.notes import get_note
+        note = get_note(id)
+        if note:
+            return {"content": note.get("content", ""), "title": note.get("title", ""), "items": note.get("items", [])}
+        return {"error": "Note not found"}
+
+    elif source == "schedule":
+        from server.database import get_db
+        try:
+            with get_db() as conn:
+                row = conn.execute("SELECT * FROM schedules WHERE id = ?", (id,)).fetchone()
+            if row:
+                return dict(row)
+        except Exception as e:
+            return {"error": str(e)}
+        return {"error": "Schedule not found"}
+
+    elif source in ("research", "agent"):
+        from engine.config import RESEARCH_DIR, AGENT_OUTPUT_DIR
+        dir_map = {"research": RESEARCH_DIR, "agent": AGENT_OUTPUT_DIR}
+        target_dir = dir_map.get(source)
+        if target_dir:
+            fpath = target_dir / f"{id}.md"
+            if fpath.exists():
+                try:
+                    return {"content": fpath.read_text(encoding="utf-8")}
+                except Exception as e:
+                    return {"error": str(e)}
+        return {"error": "File not found"}
+
+    elif source == "memory":
+        # Memory results are self-contained; no expansion needed
+        return {"error": "Memory results don't expand"}
+
+    return {"error": f"Unknown source: {source}"}
+
 @router.get("/api/chats")
 def chats(project_id: str | None = None) -> dict[str, list[dict[str, Any]]]:
     return {"chats": list_chats(project_id=project_id)}
