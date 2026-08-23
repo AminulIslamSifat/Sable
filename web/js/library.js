@@ -1,6 +1,6 @@
     /* ---------- Library Panel ---------- */
     const libraryOverlay = document.getElementById("libraryOverlay");
-    const libraryBtn = document.getElementById("libraryBtn");
+    const libraryBtn = document.getElementById("railLibraryBtn") || document.getElementById("libraryBtn");
     const libraryClose = document.getElementById("libraryClose");
     const libraryTabs = document.getElementById("libraryTabs");
     const libraryBody = document.getElementById("libraryBody");

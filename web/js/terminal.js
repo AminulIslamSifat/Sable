@@ -52,11 +52,17 @@
   }
 
   /* ---------- height / push-up ---------- */
+  const isSidebarHosted = () => panel.classList.contains('sidebar-hosted');
+  const isFloating = () => panel.classList.contains('floating-panel');
+  const isRightSidebar = () => panel.classList.contains('right-sidebar');
+
   function setPanelHeight(h) {
     height = clamp(h);
-    panel.style.height = height + 'px';
-    // Push the floating input row up so it sits right above the terminal.
-    if (inputArea) inputArea.style.bottom = isIde() ? '' : height + 'px';
+    // When hosted in sidebar, floating, or right sidebar — don't set inline height or push input
+    if (!isSidebarHosted() && !isFloating() && !isRightSidebar()) {
+      panel.style.height = height + 'px';
+      if (inputArea) inputArea.style.bottom = isIde() ? '' : height + 'px';
+    }
     try { localStorage.setItem(H_KEY, String(height)); } catch (e) {}
   }
 
@@ -339,6 +345,7 @@
       requestAnimationFrame(() => { rafPending = false; fitActive(); });
     };
     handle.addEventListener('mousedown', (e) => {
+      if (isSidebarHosted() || isFloating() || isRightSidebar()) return;
       dragging = true; startY = e.clientY; startH = height;
       document.body.classList.add('term-resizing');
       e.preventDefault();
@@ -370,9 +377,41 @@
     sessions.forEach((s) => { s.term.options.theme = th; });
   }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
+  /* ---------- Exposed: ensure at least one session exists (for sidebar-host) ---------- */
+  window.ensureTerminalSession = function () {
+    if (!sessions.length) createSession();
+    startOutput();
+    hookMonacoMarkers();
+    updateEmpty();
+  };
+
+  /* ---------- React to sidebar host/unhost events ---------- */
+  panel.addEventListener('sidebar-hosted', () => {
+    // Reset inline height so CSS flex takes over
+    panel.style.height = '';
+    if (inputArea) inputArea.style.bottom = '';
+    requestAnimationFrame(() => fitActive());
+  });
+  panel.addEventListener('sidebar-unhosted', () => {
+    // Only restore bottom-dock height if panel is still visible (moved to bottom)
+    // If closing, sidebar-host handles cleanup — don't push inputArea
+    if (!panel.classList.contains('hidden')) {
+      setPanelHeight(height);
+      requestAnimationFrame(() => fitActive());
+    }
+  });
+
+  /* ---------- Exposed: fit active terminal (used by sidebar-host) ---------- */
+  window.fitTerminalActive = fitActive;
+
   /* ---------- Exposed: run a command in the active terminal ---------- */
   window.runInTerminal = function (cmd) {
-    open();
+    // Delegate to sidebar-host if it manages terminal positioning
+    if (window.sidebarHost && window.sidebarHost.openTerminal) {
+      window.sidebarHost.openTerminal();
+    } else {
+      open();
+    }
     // Wait briefly for session to be ready if just opened
     const trySend = () => {
       const s = active();
