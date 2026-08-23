@@ -1,16 +1,18 @@
 
 /**
- * resize-panels.js — Resizable left/right panels in IDE mode (desktop only)
+ * resize-panels.js — Resizable left/right panels in IDE mode + agent sidebar
  */
 (function () {
   'use strict';
 
   const LEFT_KEY = 'sable_ide_left_w';
   const RIGHT_KEY = 'sable_ide_right_w';
+  const SIDEBAR_KEY = 'sable_sidebar_w';
   const MIN_LEFT = 200, MAX_LEFT = 500;
   const MIN_RIGHT = 220, MAX_RIGHT = 550;
+  const MIN_SIDEBAR = 180, MAX_SIDEBAR = 480;
 
-  let leftHandle, rightHandle;
+  let leftHandle, rightHandle, sidebarHandle;
 
   function isDesktop() {
     return window.innerWidth >= 769;
@@ -31,6 +33,52 @@
 
     document.body.appendChild(leftHandle);
     document.body.appendChild(rightHandle);
+  }
+
+  /* ── Agent-mode sidebar resize ── */
+  function createSidebarHandle() {
+    const sidebar = document.querySelector('.sidebar');
+    if (!sidebar || sidebar.querySelector('.sidebar-resize-handle')) return;
+    sidebarHandle = document.createElement('div');
+    sidebarHandle.className = 'sidebar-resize-handle';
+    sidebarHandle.title = 'Drag to resize sidebar';
+    sidebar.appendChild(sidebarHandle);
+
+    sidebarHandle.addEventListener('mousedown', (e) => {
+      if (!isDesktop() || isIdeMode()) return;
+      if (document.body.classList.contains('sidebar-collapsed')) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const startX = e.clientX;
+      const startW = sidebar.getBoundingClientRect().width;
+      document.body.classList.add('sidebar-resizing');
+
+      function onMove(ev) {
+        const dx = ev.clientX - startX;
+        const newW = clamp(startW + dx, MIN_SIDEBAR, MAX_SIDEBAR);
+        sidebar.style.setProperty('--sidebar-w', newW + 'px');
+        localStorage.setItem(SIDEBAR_KEY, newW);
+      }
+
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.classList.remove('sidebar-resizing');
+      }
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
+
+  function restoreSidebarWidth() {
+    if (isIdeMode()) return;
+    const saved = localStorage.getItem(SIDEBAR_KEY);
+    if (saved) {
+      const sidebar = document.querySelector('.sidebar');
+      if (sidebar) sidebar.style.setProperty('--sidebar-w', saved + 'px');
+    }
   }
 
   function positionHandles() {
@@ -146,7 +194,9 @@
   function init() {
     if (!isDesktop()) return;
     createHandles();
+    createSidebarHandle();
     restoreWidths();
+    restoreSidebarWidth();
     positionHandles();
 
     leftHandle.addEventListener('mousedown', startDrag(leftHandle, 'left'));
@@ -157,7 +207,11 @@
 
     const observer = new MutationObserver(() => {
       positionHandles();
-      if (isIdeMode() && isDesktop()) restoreWidths();
+      if (isIdeMode() && isDesktop()) {
+        restoreWidths();
+      } else {
+        restoreSidebarWidth();
+      }
     });
     observer.observe(document.body, {
       attributes: true,

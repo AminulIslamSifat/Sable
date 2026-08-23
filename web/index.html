@@ -8,7 +8,7 @@
 
   <link rel="stylesheet" href="/static/css/variables.css?v=4">
   <link rel="stylesheet" href="/static/css/base.css?v=5">
-  <link rel="stylesheet" href="/static/css/layout.css?v=53">
+  <link rel="stylesheet" href="/static/css/layout.css?v=60">
   <link rel="stylesheet" href="/static/css/ide.css?v=5">
   <link rel="stylesheet" href="/static/css/chat.css?v=34">
   <link rel="stylesheet" href="/static/css/panels.css?v=54">
@@ -120,6 +120,56 @@
     </div>
   </aside>
 
+  <!-- Activity Rail — slim vertical quick-access panel -->
+  <nav id="activityRail" class="activity-rail" aria-label="Activity rail">
+    <div class="rail-top">
+      <button class="rail-btn active" data-rail="chat" title="Chat">
+        <span class="icon-emoji">💬</span><i data-lucide="message-square" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="search" title="Search">
+        <span class="icon-emoji">🔍</span><i data-lucide="search" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="research" title="Deep Research">
+        <span class="icon-emoji">🔬</span><i data-lucide="flask-conical" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="image" title="Image Generator">
+        <span class="icon-emoji">🎨</span><i data-lucide="image" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="prompt" title="Prompt Generator">
+        <span class="icon-emoji">✨</span><i data-lucide="sparkles" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="terminal" title="Terminal">
+        <span class="icon-emoji">🖥</span><i data-lucide="terminal" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="projects" title="Projects">
+        <span class="icon-emoji">📁</span><i data-lucide="folder-open" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="tracknote" title="TrackNote">
+        <span class="icon-emoji">📋</span><i data-lucide="clipboard-list" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="tasks" title="Tasks">
+        <span class="icon-emoji">✅</span><i data-lucide="circle-check" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="calendar" title="Calendar">
+        <span class="icon-emoji">📅</span><i data-lucide="calendar-days" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="knowledge" title="Knowledge Base">
+        <span class="icon-emoji">🧠</span><i data-lucide="brain" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="dashboard" title="Dashboard">
+        <span class="icon-emoji">📊</span><i data-lucide="layout-dashboard" class="icon-lucide"></i>
+      </button>
+    </div>
+    <div class="rail-bottom">
+      <button class="rail-btn" id="railLibraryBtn" data-rail="library" title="Library">
+        <span class="icon-emoji">📚</span><i data-lucide="book-open" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" id="railSettingsBtn" data-rail="settings" title="Settings">
+        <span class="icon-emoji">⚙</span><i data-lucide="settings" class="icon-lucide"></i>
+      </button>
+    </div>
+  </nav>
+
   <aside class="sidebar">
     <div class="sidebar-section sidebar-top">
       <div class="brand-row">
@@ -170,14 +220,7 @@
       </div>
       <div id="chats"></div>
     </div>
-    <div class="sidebar-section sidebar-bottom">
-      <button id="libraryBtn" class="sidebar-footer-btn" title="Library">
-        <span class="icon-emoji">📚</span><i data-lucide="book-open" class="icon-lucide"></i> Library
-      </button>
-      <button id="settingsBtn" class="sidebar-footer-btn" title="Settings">
-        <span class="icon-emoji">⚙</span><i data-lucide="settings" class="icon-lucide"></i> Settings
-      </button>
-    </div>
+
   </aside>
 
   <main class="main">
@@ -222,6 +265,20 @@
     <!-- #chat is now a wrapper containing per-tab .tab-pane divs.
          Each pane scrolls independently. Only the active pane is visible. -->
     <div id="chat"></div>
+
+    <!-- Calendar view (replaces chat area when active) -->
+    <div id="calendarView" class="calendar-view hidden">
+      <div class="cal-header">
+        <button class="cal-nav" id="calPrev" title="Previous month">‹</button>
+        <h2 class="cal-title" id="calTitle"></h2>
+        <button class="cal-nav" id="calNext" title="Next month">›</button>
+        <button class="cal-today" id="calToday" title="Go to today">Today</button>
+      </div>
+      <div class="cal-weekdays">
+        <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
+      </div>
+      <div class="cal-grid" id="calGrid"></div>
+    </div>
 
     <!-- IDE mode: file editor pane (hidden in agent mode) -->
     <div id="editorPane" class="editor-pane hidden">
@@ -1656,8 +1713,9 @@
   <script src="/static/js/agents.js?v=26"></script>
   <script src="/static/js/filesystem.js?v=31"></script>
   <script src="/static/js/mode.js?v=20"></script>
-  <script src="/static/js/resize-panels.js?v=1"></script>
-  <script src="/static/js/terminal.js?v=4"></script>
+  <script src="/static/js/resize-panels.js?v=3"></script>
+  <script src="/static/js/terminal.js?v=9"></script>
+  <script src="/static/js/sidebar-host.js?v=7"></script>
   <script src="/static/js/cookbook.js?v=4"></script>
 <!-- Persona Quick Popup (portal — positioned via JS) -->
 <div id="personaQuickPopup" class="persona-quick-popup hidden">
