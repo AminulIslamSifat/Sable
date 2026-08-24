@@ -368,13 +368,15 @@ class StreamResult:
 
 
 class StreamDisplay:
-    """Manages a single Telegram message that streams thinking + answer tokens.
+    """Manages streaming display across chained Telegram messages.
 
-    Throttles edits to avoid Telegram rate limits (~1 edit/sec).
-    Formats: 💭 thinking (italic) followed by answer text.
+    When the current message approaches Telegram's 4096-char limit,
+    finalizes it (removes stop button) and spawns a new message with
+    the stop button attached. No content is ever truncated.
     """
 
     MIN_EDIT_INTERVAL = 0.8  # seconds between edits
+    CHAIN_THRESHOLD = 3500  # spawn new message when current exceeds this
 
     def __init__(self, message: Any, stop_kb: InlineKeyboardMarkup | None = None, thinking_enabled: bool = True):
         self._message = message
@@ -383,7 +385,8 @@ class StreamDisplay:
         self._thinking = ""
         self._answer = ""
         self._last_edit_time: float = 0
-        self._msg: Any = None  # The live status message being edited
+        self._msg: Any = None  # current live message being edited
+        self._chain: list[Any] = []  # all messages in the chain (including _msg)
         self._dirty = False
         self._finalized = False
 
@@ -399,6 +402,7 @@ class StreamDisplay:
             self._msg = await self._message.reply_text(init_text, parse_mode="Markdown", reply_markup=self._stop_kb)
         except Exception:
             self._msg = await self._message.reply_text(fallback, reply_markup=self._stop_kb)
+        self._chain.append(self._msg)
 
     async def append_thinking(self, text: str) -> None:
         if not text or self._finalized:
@@ -424,15 +428,36 @@ class StreamDisplay:
         self._dirty = False
         self._last_edit_time = now
         display = self._build_display()
+        # If current message is getting too long, chain a new one
+        if len(display) > self.CHAIN_THRESHOLD:
+            await self._chain_new_message()
+            return
         try:
             await self._msg.edit_text(display, parse_mode="Markdown", reply_markup=self._stop_kb)
         except Exception:
             pass
 
+    async def _chain_new_message(self) -> None:
+        """Finalize current message and spawn a new one for continued streaming."""
+        # Lock current message: remove stop button, show full content
+        current_display = self._build_display()
+        try:
+            await self._msg.edit_text(current_display, parse_mode="Markdown", reply_markup=None)
+        except Exception:
+            pass
+        # Reset accumulated content for the new message
+        self._thinking = ""
+        self._answer = ""
+        # Spawn new message with stop button
+        try:
+            self._msg = await self._message.reply_text("⏳ _…continuing…_", parse_mode="Markdown", reply_markup=self._stop_kb)
+        except Exception:
+            self._msg = await self._message.reply_text("⏳ …continuing…", reply_markup=self._stop_kb)
+        self._chain.append(self._msg)
+
     def _build_display(self) -> str:
         parts: list[str] = []
         if self._thinking and self._thinking_enabled:
-            # Truncate long thinking for display
             t = self._thinking
             if len(t) > 2000:
                 t = t[:2000] + "…"
