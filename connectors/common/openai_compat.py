@@ -473,7 +473,9 @@ class OpenAICompatClient:
             # Dump raw history before sanitization
             import json as _raw_json
             try:
-                with open("/home/sifat/sable_output/logs/cloudflare_raw_history.jsonl", "a") as _rf:
+                from engine.config import LOGS_DIR as _LD
+                _LD.mkdir(parents=True, exist_ok=True)
+                with open(_LD / "cloudflare_raw_history.jsonl", "a") as _rf:
                     _rf.write(_raw_json.dumps({"ts": __import__("time").time(), "history": history}, default=str) + "\n")
             except Exception:
                 pass
@@ -512,7 +514,8 @@ class OpenAICompatClient:
 
         # DEBUG: dump full payload to file for inspection (append mode)
         import json as _dbg_json, time as _dbg_time
-        _dbg_path = "/home/sifat/sable_output/logs/cloudflare_payload.jsonl"
+        from engine.config import LOGS_DIR as _LD2
+        _dbg_path = str(_LD2 / "cloudflare_payload.jsonl")
         try:
             from pathlib import Path as _P
             _P(_dbg_path).parent.mkdir(parents=True, exist_ok=True)
@@ -568,7 +571,8 @@ class OpenAICompatClient:
                     # DEBUG: save exact payload sent to Cloudflare
                     import json as _pj
                     try:
-                        with open("/home/sifat/sable_output/logs/cloudflare_sent_payload.json", "w") as _pf:
+                        from engine.config import LOGS_DIR as _LD3
+                        with open(_LD3 / "cloudflare_sent_payload.json", "w") as _pf:
                             _pj.dump(payload, _pf, indent=2, default=str)
                     except Exception:
                         pass

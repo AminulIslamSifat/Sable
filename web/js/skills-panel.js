@@ -1206,6 +1206,8 @@
     // ── General Settings (tool output cap) ──
     const maxToolOutputInput = document.getElementById("maxToolOutputInput");
 
+    const desktopNotifToggle = document.getElementById("desktopNotifToggle");
+
     async function loadGeneralSettings() {
       try {
         const res = await fetch("/api/settings/general");
@@ -1213,6 +1215,9 @@
           const d = await res.json();
           if (maxToolOutputInput && d.max_tool_output_chars) {
             maxToolOutputInput.value = d.max_tool_output_chars;
+          }
+          if (desktopNotifToggle) {
+            desktopNotifToggle.checked = d.desktop_notifications !== false;
           }
         }
       } catch {}
@@ -1232,40 +1237,66 @@
       });
     }
 
-    // ── Context Pass Settings ──
+    if (desktopNotifToggle) {
+      desktopNotifToggle.addEventListener("change", async () => {
+        try {
+          await fetch("/api/settings/general", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ desktop_notifications: desktopNotifToggle.checked }),
+          });
+        } catch {}
+      });
+    }
+
+    // ── Context Pass Settings (3-step fallback chain) ──
     const ctxPassModel = document.getElementById("ctxPassModel");
+    const ctxPassFb1 = document.getElementById("ctxPassFb1");
+    const ctxPassFb2 = document.getElementById("ctxPassFb2");
     const ctxPassBrowserAcc = document.getElementById("ctxPassBrowserAcc");
+    const ctxPassBp1 = document.getElementById("ctxPassBp1");
+    const ctxPassBp2 = document.getElementById("ctxPassBp2");
+    const _ctxPassModelSelects = [ctxPassModel, ctxPassFb1, ctxPassFb2];
+    const _ctxPassBrowserSelects = [ctxPassBrowserAcc, ctxPassBp1, ctxPassBp2];
 
     function populateCtxPassModels() {
-      if (!ctxPassModel) return;
-      const current = ctxPassModel.value;
-      ctxPassModel.innerHTML = '<option value="">Default (current model)</option>';
-      for (const m of modelList) {
-        const opt = document.createElement("option");
-        opt.value = m.id;
-        opt.textContent = m.name || m.id;
-        ctxPassModel.appendChild(opt);
+      for (const sel of _ctxPassModelSelects) {
+        if (!sel) continue;
+        const current = sel.value;
+        const isPrimary = sel === ctxPassModel;
+        sel.innerHTML = `<option value="">${isPrimary ? "Default (current model)" : "— none —"}</option>`;
+        for (const m of modelList) {
+          const opt = document.createElement("option");
+          opt.value = m.id;
+          opt.textContent = m.name || m.id;
+          sel.appendChild(opt);
+        }
+        sel.value = current;
       }
-      ctxPassModel.value = current;
     }
 
     async function populateCtxPassProfiles() {
-      if (!ctxPassBrowserAcc) return;
-      const current = ctxPassBrowserAcc.value;
-      ctxPassBrowserAcc.innerHTML = '<option value="">Default (current)</option>';
+      let accounts = [];
       try {
         const res = await fetch("/api/settings/accounts");
         if (res.ok) {
           const data = await res.json();
-          for (const acc of (data.accounts || [])) {
-            const opt = document.createElement("option");
-            opt.value = acc.name;
-            opt.textContent = acc.email ? `${acc.name} (${acc.email})` : acc.name;
-            ctxPassBrowserAcc.appendChild(opt);
-          }
+          accounts = data.accounts || [];
         }
       } catch {}
-      ctxPassBrowserAcc.value = current;
+      for (const sel of _ctxPassBrowserSelects) {
+        if (!sel) continue;
+        const current = sel.value;
+        const isPrimary = sel === ctxPassBrowserAcc;
+        sel.innerHTML = `<option value="">${isPrimary ? "Default (current)" : "— none —"}</option>`;
+        for (const acc of accounts) {
+          const opt = document.createElement("option");
+          opt.value = acc.name;
+          opt.textContent = acc.email ? `${acc.name} (${acc.email})` : acc.name;
+          sel.appendChild(opt);
+        }
+        sel.value = current;
+      }
     }
 
     async function loadContextPassSettings() {
@@ -1277,8 +1308,31 @@
           const d = await res.json();
           if (ctxPassModel) ctxPassModel.value = d.summarizer_model || "";
           if (ctxPassBrowserAcc) ctxPassBrowserAcc.value = d.browser_data_acc || "";
+          const fbm = d.fallback_models || [];
+          if (ctxPassFb1) ctxPassFb1.value = fbm[0] || "";
+          if (ctxPassFb2) ctxPassFb2.value = fbm[1] || "";
+          const fbp = d.browser_profiles || [];
+          if (ctxPassBp1) ctxPassBp1.value = fbp[0] || "";
+          if (ctxPassBp2) ctxPassBp2.value = fbp[1] || "";
         }
       } catch {}
+    }
+
+    function _buildCtxPassPayload() {
+      const fb_models = [
+        ctxPassFb1?.value,
+        ctxPassFb2?.value,
+      ].filter(v => v && v.trim());
+      const fb_profiles = [
+        ctxPassBp1?.value,
+        ctxPassBp2?.value,
+      ].filter(v => v && v.trim());
+      return {
+        summarizer_model: ctxPassModel ? ctxPassModel.value : "",
+        fallback_models: fb_models,
+        browser_data_acc: ctxPassBrowserAcc ? ctxPassBrowserAcc.value : "",
+        browser_profiles: fb_profiles,
+      };
     }
 
     async function saveContextPassSettings() {
@@ -1286,16 +1340,14 @@
         await fetch("/api/settings/context-pass", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            summarizer_model: ctxPassModel ? ctxPassModel.value : "",
-            browser_data_acc: ctxPassBrowserAcc ? ctxPassBrowserAcc.value : "",
-          }),
+          body: JSON.stringify(_buildCtxPassPayload()),
         });
       } catch {}
     }
 
-    if (ctxPassModel) ctxPassModel.addEventListener("change", saveContextPassSettings);
-    if (ctxPassBrowserAcc) ctxPassBrowserAcc.addEventListener("change", saveContextPassSettings);
+    for (const sel of [..._ctxPassModelSelects, ..._ctxPassBrowserSelects]) {
+      if (sel) sel.addEventListener("change", saveContextPassSettings);
+    }
 
     // Register General tab with universal save
     _universalSave.register("general", async () => {
@@ -1310,10 +1362,7 @@
       // Save context pass settings
       await fetch("/api/settings/context-pass", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          summarizer_model: ctxPassModel ? ctxPassModel.value : "",
-          browser_data_acc: ctxPassBrowserAcc ? ctxPassBrowserAcc.value : "",
-        }),
+        body: JSON.stringify(_buildCtxPassPayload()),
       });
     });
     // ── /Context Pass Settings ──

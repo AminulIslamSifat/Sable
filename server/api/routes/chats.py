@@ -30,61 +30,94 @@ def search_chats(q: str = "") -> dict[str, Any]:
     return {"results": search_messages(q.strip())}
 
 
-def _fuzzy_score(query: str, text: str) -> float:
-    """True fuzzy score (0.0–1.0) using SequenceMatcher + token overlap.
-    Handles typos like 'contex' → 'context'. Case-insensitive.
+import re as _re
+
+# ── Search Scoring ──────────────────────────────────────────────────────────
+# Simple, reliable scoring: exact substring match + token overlap ratio.
+# No external libraries, no IDF/BM25 that breaks on small pre-filtered corpora.
+
+_STOP_WORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "need", "dare", "ought",
+    "used", "to", "of", "in", "for", "on", "with", "at", "by", "from",
+    "as", "into", "through", "during", "before", "after", "above", "below",
+    "between", "out", "off", "over", "under", "again", "further", "then",
+    "once", "here", "there", "when", "where", "why", "how", "all", "each",
+    "every", "both", "few", "more", "most", "other", "some", "such", "no",
+    "nor", "not", "only", "own", "same", "so", "than", "too", "very",
+    "just", "because", "but", "and", "or", "if", "while", "about", "up",
+    "it", "its", "i", "me", "my", "we", "our", "you", "your", "he", "him",
+    "his", "she", "her", "they", "them", "their", "what", "which", "who",
+})
+
+_WORD_RE = _re.compile(r'[a-z0-9]+')
+
+
+def _tokenize(text: str) -> list[str]:
+    """Lowercase tokenize, strip stop words and short tokens."""
+    return [t for t in _WORD_RE.findall(text.lower()) if t not in _STOP_WORDS and len(t) > 1]
+
+
+def _score_doc(query: str, text: str) -> float:
+    """Score a document against a query. Returns 0.0–1.0.
+
+    Scoring logic:
+    - Exact substring match → 1.0
+    - Otherwise: (matched query tokens / total query tokens)
+      with partial credit for prefix/stem matches
     """
     if not query or not text:
         return 0.0
-    from difflib import SequenceMatcher
+
     ql = query.lower().strip()
     tl = text.lower()
 
-    # 1. Exact substring → instant high score
+    # Exact substring → perfect match
     if ql in tl:
         return 1.0
 
-    # 2. Best SequenceMatcher ratio against sliding windows of text
-    #    This catches typos, partial matches, transpositions
-    best = 0.0
-    q_len = len(ql)
-    # Check full-text ratio first
-    best = SequenceMatcher(None, ql, tl[:max(q_len * 3, 200)]).ratio()
+    q_tokens = _tokenize(query)
+    if not q_tokens:
+        return 0.0
 
-    # Slide through words for better local matches
-    words = tl.split()
-    for i, word in enumerate(words):
-        # Single word comparison
-        r = SequenceMatcher(None, ql, word).ratio()
-        if r > best:
-            best = r
-        # Multi-word window (up to 4 words)
-        if i < len(words) - 1:
-            window = " ".join(words[i : i + min(4, len(words) - i)])
-            r = SequenceMatcher(None, ql, window).ratio()
-            if r > best:
-                best = r
-        if best >= 0.95:
-            break  # Good enough
+    doc_tokens = set(_tokenize(text))
+    if not doc_tokens:
+        return 0.0
 
-    # 3. Token overlap bonus — if query tokens partially match text tokens
-    q_tokens = ql.split()
-    if len(q_tokens) > 1:
-        matched = 0
-        for qt in q_tokens:
-            for tw in words:
-                if SequenceMatcher(None, qt, tw).ratio() >= 0.7:
-                    matched += 1
+    matched = 0
+    for qt in q_tokens:
+        if qt in doc_tokens:
+            matched += 1
+        else:
+            # Partial credit: check if any doc token starts with query token
+            # Catches "config" matching "configuration", "hypr" matching "hyprland"
+            for dt in doc_tokens:
+                if dt.startswith(qt) or qt.startswith(dt):
+                    matched += 0.5
                     break
-        token_ratio = matched / len(q_tokens)
-        # Blend: sequence matcher (70%) + token overlap (30%)
-        best = best * 0.7 + token_ratio * 0.3
 
-    return round(min(1.0, best), 4)
+    return round(matched / len(q_tokens), 4)
+
+
+def _rank_results(query: str, documents: list[dict], text_key: str = "text",
+                  top_k: int = 10, min_score: float = 0.3) -> list[tuple[float, dict]]:
+    """Rank documents by relevance to query. Returns (score, doc) tuples."""
+    if not query or not documents:
+        return []
+
+    scored: list[tuple[float, dict]] = []
+    for doc in documents:
+        s = _score_doc(query, doc.get(text_key, ""))
+        if s >= min_score:
+            scored.append((s, doc))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored[:top_k]
 
 
 _PER_SECTION = 10
-_MIN_SCORE = 0.75
+_MIN_SCORE = 0.3
 
 
 @router.get("/api/search/unified")
@@ -98,39 +131,57 @@ async def unified_search(q: str = "") -> dict[str, Any]:
         return {k: [] for k in sources}
 
     from server.database import get_db
-    import re
 
     results: dict[str, list] = {k: [] for k in sources}
-    like_ci = f"%{query}%"  # SQLite LIKE is case-insensitive for ASCII
+
+    # Build per-term LIKE clauses so words don't need to be adjacent.
+    # e.g. "dark canvas" → "%dark%" AND "%canvas%" matches both
+    # "dark canvas matching" → all three terms must appear somewhere in the text.
+    _q_terms = [t for t in _re.split(r'\s+', query.strip()) if len(t) > 1]
+    if not _q_terms:
+        return {k: [] for k in sources}
+    # For DB pre-filter: require ALL terms present (AND), each anywhere in text
+    _like_clauses = " AND ".join(["content LIKE ? COLLATE NOCASE"] * len(_q_terms))
+    _like_params = tuple(f"%{t}%" for t in _q_terms)
+    # For title/description fields that use different column names
+    def _make_like(columns: list[str]) -> tuple[str, tuple]:
+        """Build OR'd multi-term LIKE for multiple columns."""
+        parts = []
+        params: list[str] = []
+        for col in columns:
+            col_parts = " AND ".join([f"{col} LIKE ? COLLATE NOCASE"] * len(_q_terms))
+            parts.append(f"({col_parts})")
+            params.extend(f"%{t}%" for t in _q_terms)
+        return " OR ".join(parts), tuple(params)
 
     # ── 1. Chat messages (broad fetch → fuzzy filter) ──
-    _mem_re = re.compile(r'^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n')
-    _ts_re = re.compile(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\n?')
+    _mem_re = _re.compile(r'^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n')
+    _ts_re = _re.compile(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\n?')
     try:
         with get_db() as conn:
             rows = conn.execute(
                 "SELECT m.id, m.chat_id, m.role, m.content, m.created_at, c.title "
                 "FROM messages m JOIN chats c ON m.chat_id = c.id "
-                "WHERE m.content LIKE ? COLLATE NOCASE ORDER BY m.id DESC LIMIT 200",
-                (like_ci,),
+                f"WHERE {_like_clauses} ORDER BY m.id DESC LIMIT 200",
+                _like_params,
             ).fetchall()
-            scored = []
+            docs = []
             for row in rows:
                 d = dict(row)
                 content = d.get("content") or ""
                 content = _mem_re.sub("", content)
                 content = _ts_re.sub("", content)
-                # Score against chat title + content
-                score = max(_fuzzy_score(query, d.get("title") or ""), _fuzzy_score(query, content))
-                if score >= _MIN_SCORE:
-                    scored.append((score, {
-                        **d,
-                        "preview": content[:300],
-                        "score": round(score, 3),
-                        "source": "message",
-                    }))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            results["messages"] = [item for _, item in scored[:_PER_SECTION]]
+                searchable = (d.get("title") or "") + " " + content
+                docs.append({
+                    **d,
+                    "text": searchable,
+                    "preview": content[:300],
+                    "source": "message",
+                })
+            ranked = _rank_results(query, docs, text_key="text", top_k=_PER_SECTION, min_score=_MIN_SCORE)
+            for score, doc in ranked:
+                doc["score"] = score
+            results["messages"] = [doc for _, doc in ranked]
     except Exception as e:
         logger.warning("Search messages failed: %s", e)
 
@@ -142,11 +193,11 @@ async def unified_search(q: str = "") -> dict[str, Any]:
                 "FROM skill_events se "
                 "JOIN messages m ON se.message_id = m.id "
                 "JOIN chats c ON m.chat_id = c.id "
-                "WHERE se.event_data LIKE ? COLLATE NOCASE ORDER BY se.id DESC LIMIT 200",
-                (like_ci,),
+                f"WHERE {' AND '.join(['se.event_data LIKE ? COLLATE NOCASE'] * len(_q_terms))} ORDER BY se.id DESC LIMIT 200",
+                _like_params,
             ).fetchall()
             seen: set[int] = set()
-            scored = []
+            docs = []
             for row in rows:
                 d = dict(row)
                 mid = d.get("message_id")
@@ -162,20 +213,21 @@ async def unified_search(q: str = "") -> dict[str, Any]:
                 if isinstance(raw, dict):
                     raw = json.dumps(raw, ensure_ascii=False)
                 raw_str = str(raw)
-                score = max(_fuzzy_score(query, skill_name), _fuzzy_score(query, raw_str), _fuzzy_score(query, d.get("title") or ""))
-                if score >= _MIN_SCORE:
-                    scored.append((score, {
-                        "skill": skill_name,
-                        "preview": raw_str[:300],
-                        "chat_id": d.get("chat_id"),
-                        "title": d.get("title"),
-                        "created_at": d.get("created_at"),
-                        "message_id": mid,
-                        "score": round(score, 3),
-                        "source": "skill",
-                    }))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            results["skills"] = [item for _, item in scored[:_PER_SECTION]]
+                searchable = skill_name + " " + raw_str + " " + (d.get("title") or "")
+                docs.append({
+                    "text": searchable,
+                    "skill": skill_name,
+                    "preview": raw_str[:300],
+                    "chat_id": d.get("chat_id"),
+                    "title": d.get("title"),
+                    "created_at": d.get("created_at"),
+                    "message_id": mid,
+                    "source": "skill",
+                })
+            ranked = _rank_results(query, docs, text_key="text", top_k=_PER_SECTION, min_score=_MIN_SCORE)
+            for score, doc in ranked:
+                doc["score"] = score
+            results["skills"] = [doc for _, doc in ranked]
     except Exception as e:
         logger.warning("Search skills failed: %s", e)
 
@@ -209,7 +261,7 @@ async def unified_search(q: str = "") -> dict[str, Any]:
                 mkey, _, mval = entry_str.partition(": ")
                 if mkey in seen_keys:
                     continue
-                score = max(_fuzzy_score(query, mkey), _fuzzy_score(query, mval))
+                score = max(_score_doc(query, mkey), _score_doc(query, mval))
                 if score >= _MIN_SCORE:
                     scored_mem.append((score, {
                         "key": mkey,
@@ -230,77 +282,80 @@ async def unified_search(q: str = "") -> dict[str, Any]:
     # ── 4. Notes (note_type != 'todo') ──
     try:
         with get_db() as conn:
+            _nl, _np = _make_like(["title", "content"])
             rows = conn.execute(
                 "SELECT id, title, content, note_type, created_at, updated_at FROM notes "
-                "WHERE note_type != 'todo' AND archived = 0 "
-                "AND (title LIKE ? COLLATE NOCASE OR content LIKE ? COLLATE NOCASE) "
+                f"WHERE note_type != 'todo' AND archived = 0 AND ({_nl}) "
                 "ORDER BY updated_at DESC LIMIT 100",
-                (like_ci, like_ci),
+                _np,
             ).fetchall()
-            scored = []
+            docs = []
             for row in rows:
                 d = dict(row)
-                score = max(_fuzzy_score(query, d.get("title") or ""), _fuzzy_score(query, d.get("content") or ""))
-                if score >= _MIN_SCORE:
-                    scored.append((score, {
-                        **d,
-                        "preview": (d.get("content") or "")[:300],
-                        "score": round(score, 3),
-                        "source": "note",
-                    }))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            results["notes"] = [item for _, item in scored[:_PER_SECTION]]
+                searchable = (d.get("title") or "") + " " + (d.get("content") or "")
+                docs.append({
+                    **d,
+                    "text": searchable,
+                    "preview": (d.get("content") or "")[:300],
+                    "source": "note",
+                })
+            ranked = _rank_results(query, docs, text_key="text", top_k=_PER_SECTION, min_score=_MIN_SCORE)
+            for score, doc in ranked:
+                doc["score"] = score
+            results["notes"] = [doc for _, doc in ranked]
     except Exception as e:
         logger.warning("Search notes failed: %s", e)
 
     # ── 5. Todos (note_type == 'todo') ──
     try:
         with get_db() as conn:
+            _tl, _tp = _make_like(["title", "content"])
             rows = conn.execute(
                 "SELECT id, title, content, items, due_date, created_at, updated_at FROM notes "
-                "WHERE note_type = 'todo' AND archived = 0 "
-                "AND (title LIKE ? COLLATE NOCASE OR content LIKE ? COLLATE NOCASE) "
+                f"WHERE note_type = 'todo' AND archived = 0 AND ({_tl}) "
                 "ORDER BY updated_at DESC LIMIT 100",
-                (like_ci, like_ci),
+                _tp,
             ).fetchall()
-            scored = []
+            docs = []
             for row in rows:
                 d = dict(row)
-                score = max(_fuzzy_score(query, d.get("title") or ""), _fuzzy_score(query, d.get("content") or ""))
-                if score >= _MIN_SCORE:
-                    scored.append((score, {
-                        **d,
-                        "preview": (d.get("content") or "")[:300],
-                        "score": round(score, 3),
-                        "source": "todo",
-                    }))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            results["todos"] = [item for _, item in scored[:_PER_SECTION]]
+                searchable = (d.get("title") or "") + " " + (d.get("content") or "")
+                docs.append({
+                    **d,
+                    "text": searchable,
+                    "preview": (d.get("content") or "")[:300],
+                    "source": "todo",
+                })
+            ranked = _rank_results(query, docs, text_key="text", top_k=_PER_SECTION, min_score=_MIN_SCORE)
+            for score, doc in ranked:
+                doc["score"] = score
+            results["todos"] = [doc for _, doc in ranked]
     except Exception as e:
         logger.warning("Search todos failed: %s", e)
 
     # ── 6. Schedules ──
     try:
         with get_db() as conn:
+            _sl, _sp = _make_like(["title", "description"])
             rows = conn.execute(
-                "SELECT * FROM schedules "
-                "WHERE title LIKE ? COLLATE NOCASE OR description LIKE ? COLLATE NOCASE "
+                f"SELECT * FROM schedules WHERE ({_sl}) "
                 "ORDER BY start_date DESC LIMIT 100",
-                (like_ci, like_ci),
+                _sp,
             ).fetchall()
-            scored = []
+            docs = []
             for row in rows:
                 d = dict(row)
-                score = max(_fuzzy_score(query, d.get("title") or ""), _fuzzy_score(query, d.get("description") or ""))
-                if score >= _MIN_SCORE:
-                    scored.append((score, {
-                        **d,
-                        "preview": (d.get("description") or d.get("title") or "")[:300],
-                        "score": round(score, 3),
-                        "source": "schedule",
-                    }))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            results["schedules"] = [item for _, item in scored[:_PER_SECTION]]
+                searchable = (d.get("title") or "") + " " + (d.get("description") or "")
+                docs.append({
+                    **d,
+                    "text": searchable,
+                    "preview": (d.get("description") or d.get("title") or "")[:300],
+                    "source": "schedule",
+                })
+            ranked = _rank_results(query, docs, text_key="text", top_k=_PER_SECTION, min_score=_MIN_SCORE)
+            for score, doc in ranked:
+                doc["score"] = score
+            results["schedules"] = [doc for _, doc in ranked]
     except Exception as e:
         logger.warning("Search schedules failed: %s", e)
 
@@ -308,32 +363,33 @@ async def unified_search(q: str = "") -> dict[str, Any]:
     try:
         from engine.config import RESEARCH_DIR
         if RESEARCH_DIR.exists():
-            scored = []
+            docs = []
             for f in sorted(RESEARCH_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
                 try:
                     text = f.read_text(encoding="utf-8")
                 except Exception:
                     continue
                 title = f.stem.replace("_", " ").replace("-", " ")
-                score = max(_fuzzy_score(query, title), _fuzzy_score(query, text[:2000]))
-                if score >= _MIN_SCORE:
-                    body = re.sub(r'^---\s*\n.*?\n---\s*\n', '', text, count=1, flags=re.DOTALL)
-                    first_para = ""
-                    for line in body.splitlines():
-                        s = line.strip()
-                        if s and not s.startswith(("#", ">", "---")):
-                            first_para = s[:300]
-                            break
-                    scored.append((score, {
-                        "id": f.stem,
-                        "filename": f.name,
-                        "title": title.title(),
-                        "preview": first_para,
-                        "score": round(score, 3),
-                        "source": "research",
-                    }))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            results["research"] = [item for _, item in scored[:_PER_SECTION]]
+                body = _re.sub(r'^---\s*\n.*?\n---\s*\n', '', text, count=1, flags=_re.DOTALL)
+                first_para = ""
+                for line in body.splitlines():
+                    s = line.strip()
+                    if s and not s.startswith(("#", ">", "---")):
+                        first_para = s[:300]
+                        break
+                searchable = title + " " + text[:5000]
+                docs.append({
+                    "text": searchable,
+                    "id": f.stem,
+                    "filename": f.name,
+                    "title": title.title(),
+                    "preview": first_para,
+                    "source": "research",
+                })
+            ranked = _rank_results(query, docs, text_key="text", top_k=_PER_SECTION, min_score=_MIN_SCORE)
+            for score, doc in ranked:
+                doc["score"] = score
+            results["research"] = [doc for _, doc in ranked]
     except Exception as e:
         logger.debug("Search research skipped: %s", e)
 
@@ -341,7 +397,7 @@ async def unified_search(q: str = "") -> dict[str, Any]:
     try:
         from engine.config import AGENT_OUTPUT_DIR
         if AGENT_OUTPUT_DIR.exists():
-            scored = []
+            docs = []
             for f in sorted(AGENT_OUTPUT_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
                 if f.stem.endswith("_conversation"):
                     continue
@@ -350,25 +406,26 @@ async def unified_search(q: str = "") -> dict[str, Any]:
                 except Exception:
                     continue
                 title = f.stem.replace("_", " ").replace("-", " ")
-                score = max(_fuzzy_score(query, title), _fuzzy_score(query, text[:2000]))
-                if score >= _MIN_SCORE:
-                    body = re.sub(r'^---\s*\n.*?\n---\s*\n', '', text, count=1, flags=re.DOTALL)
-                    first_para = ""
-                    for line in body.splitlines():
-                        s = line.strip()
-                        if s and not s.startswith(("#", ">", "---")):
-                            first_para = s[:300]
-                            break
-                    scored.append((score, {
-                        "id": f.stem,
-                        "filename": f.name,
-                        "title": title.title(),
-                        "preview": first_para,
-                        "score": round(score, 3),
-                        "source": "agent",
-                    }))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            results["agents"] = [item for _, item in scored[:_PER_SECTION]]
+                body = _re.sub(r'^---\s*\n.*?\n---\s*\n', '', text, count=1, flags=_re.DOTALL)
+                first_para = ""
+                for line in body.splitlines():
+                    s = line.strip()
+                    if s and not s.startswith(("#", ">", "---")):
+                        first_para = s[:300]
+                        break
+                searchable = title + " " + text[:5000]
+                docs.append({
+                    "text": searchable,
+                    "id": f.stem,
+                    "filename": f.name,
+                    "title": title.title(),
+                    "preview": first_para,
+                    "source": "agent",
+                })
+            ranked = _rank_results(query, docs, text_key="text", top_k=_PER_SECTION, min_score=_MIN_SCORE)
+            for score, doc in ranked:
+                doc["score"] = score
+            results["agents"] = [doc for _, doc in ranked]
     except Exception as e:
         logger.debug("Search agents skipped: %s", e)
 
@@ -389,10 +446,9 @@ async def search_full_content(source: str = "", id: str = "", chat_id: str = "",
                 ).fetchone()
             if row:
                 d = dict(row)
-                import re
                 content = d.get("content") or ""
-                content = re.sub(r'^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n', '', content)
-                content = re.sub(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\n?', '', content)
+                content = _re.sub(r'^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n', '', content)
+                content = _re.sub(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\n?', '', content)
                 return {"content": content, "role": d["role"], "title": d["title"], "created_at": d["created_at"]}
         except Exception as e:
             return {"error": str(e)}
@@ -555,22 +611,11 @@ async def new_chat(request: NewChatRequest = NewChatRequest()) -> dict[str, str 
         ensure_chat(chat_id, "New chat", None, project_id=request.project_id)
         return {"chat_id": chat_id}
     # Always use a local Sable UUID as the chat_id.
-    # For Qwen models, create upstream session separately and store in DB.
-    from server.utils import _is_api_model
+    # Upstream Qwen session is created lazily on first message send
+    # (session recovery in /api/chat handles it). This avoids blocking
+    # chat creation on slow/unreachable upstream servers.
     local_chat_id = uuid.uuid4().hex
-    upstream_session_id = None
-    if not _is_api_model(request.model):
-        # Qwen model — create upstream session
-        try:
-            upstream_session_id = await retry_async(
-                lambda: service.create_chat(model=request.model),
-                label="create_chat",
-            )
-        except Exception as exc:
-            return {"error": f"Session startup failed: {type(exc).__name__}: {exc}"}
-        if not upstream_session_id:
-            return {"error": "Could not create chat session"}
-    ensure_chat(local_chat_id, "New chat", None, project_id=request.project_id, upstream_session_id=upstream_session_id)
+    ensure_chat(local_chat_id, "New chat", None, project_id=request.project_id)
     return {"chat_id": local_chat_id}
 
 @router.get("/api/chats/{chat_id}/messages")
@@ -685,137 +730,237 @@ def _load_ctx_pass_settings() -> dict[str, str]:
 
 @router.post("/api/context/pass")
 async def context_pass(req: ContextPassRequest) -> dict[str, Any]:
+    import re as _re
+    _tc_re = _re.compile(r'<tool_call[\s>]', _re.IGNORECASE)
+    _tr_re = _re.compile(r'<tool_result[\s>]', _re.IGNORECASE)
+
     messages = get_messages(req.chat_id)
     if not messages:
         return {"error": "No messages in this chat"}
 
-    # Build a compact transcript (skip empty/system noise)
-    lines: list[str] = []
-    for m in messages:
+    if len(messages) < 2:
+        return {"error": "Not enough context to summarize"}
+
+    # --- Extract head/tail programmatically ---
+    # Find first user message
+    first_user_idx = None
+    for i, m in enumerate(messages):
+        if m.get("role") == "user":
+            first_user_idx = i
+            break
+
+    # Find last user message
+    last_user_idx = None
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            last_user_idx = i
+            break
+
+    if first_user_idx is None or last_user_idx is None:
+        return {"error": "No user messages found"}
+
+    # Collect first 3 tool_call/result pairs after first user message
+    head_end_idx = first_user_idx + 1
+    tc_count = 0
+    for i in range(first_user_idx + 1, len(messages)):
+        content = (messages[i].get("content") or "")
+        role = messages[i].get("role", "")
+        if _tc_re.search(content) or _tr_re.search(content) or role == "tool":
+            head_end_idx = i + 1
+            tc_count += 1
+            if tc_count >= 6:  # 3 pairs
+                break
+        elif role == "assistant" and not _tc_re.search(content):
+            head_end_idx = i + 1
+
+    # Collect last 5 tool_call/result pairs
+    tail_start_idx = last_user_idx
+    tc_count = 0
+    for i in range(len(messages) - 1, last_user_idx - 1, -1):
+        content = (messages[i].get("content") or "")
+        role = messages[i].get("role", "")
+        if _tc_re.search(content) or _tr_re.search(content) or role == "tool":
+            tail_start_idx = i
+            tc_count += 1
+            if tc_count >= 10:  # 5 pairs
+                break
+
+    if tail_start_idx < head_end_idx:
+        tail_start_idx = head_end_idx
+
+    # --- Expand tail to meet minimum 100k char threshold ---
+    _TAIL_MIN_CHARS = 100_000
+    _TAIL_PRESERVE_LIMIT = 250_000
+    tail_char_count = sum(
+        len((messages[i].get("content") or "").strip())
+        for i in range(tail_start_idx, len(messages))
+    )
+    while tail_char_count < _TAIL_MIN_CHARS and tail_start_idx > head_end_idx:
+        tail_start_idx -= 1
+        tail_char_count += len((messages[tail_start_idx].get("content") or "").strip())
+
+    # Cap at preserve limit
+    if tail_char_count > _TAIL_PRESERVE_LIMIT:
+        while tail_char_count > _TAIL_PRESERVE_LIMIT and tail_start_idx < len(messages) - 1:
+            tail_char_count -= len((messages[tail_start_idx].get("content") or "").strip())
+            tail_start_idx += 1
+
+    # --- Format head verbatim ---
+    first_user_content = (messages[first_user_idx].get("content") or "").strip()
+    head_parts = [f"## First User Message\n{first_user_content}"]
+    early_tc = []
+    for m in messages[first_user_idx + 1:head_end_idx]:
+        c = (m.get("content") or "").strip()
+        if c:
+            if len(c) > 3000:
+                c = c[:3000] + "… [truncated]"
+            early_tc.append(c)
+    if early_tc:
+        head_parts.append("## Early Tool Calls\n" + "\n".join(early_tc))
+    head_text = "\n\n".join(head_parts)
+
+    # --- Format tail verbatim ---
+    last_user_content = (messages[last_user_idx].get("content") or "").strip()
+    tail_parts = [f"## Last User Message\n{last_user_content}"]
+    recent_tc = []
+    for m in messages[last_user_idx + 1:]:
+        c = (m.get("content") or "").strip()
+        if c:
+            if len(c) > 3000:
+                c = c[:3000] + "… [truncated]"
+            recent_tc.append(c)
+    if recent_tc:
+        tail_parts.append("## Recent Tool Calls\n" + "\n".join(recent_tc))
+    tail_text = "\n\n".join(tail_parts)
+
+    # --- Build middle transcript for summarizer ---
+    middle_msgs = messages[head_end_idx:tail_start_idx]
+    middle_lines = []
+    for m in middle_msgs:
         role = m.get("role", "unknown")
         content = (m.get("content") or "").strip()
         if not content:
             continue
         if len(content) > 3000:
             content = content[:3000] + "… [truncated]"
-        lines.append(f"[{role}]: {content}")
+        middle_lines.append(f"[{role}]: {content}")
 
-    if len(lines) < 2:
-        return {"error": "Not enough context to summarize"}
+    middle_text = "\n".join(middle_lines)
+    if len(middle_text) > 60000:
+        middle_text = middle_text[:60000] + "\n… [transcript truncated]"
 
-    transcript = "\n".join(lines)
-    if len(transcript) > 60000:
-        transcript = transcript[:60000] + "\n… [transcript truncated]"
-
+    # Only send middle to summarizer — head/tail already extracted
     prompt = (
-        "You are a context handoff summarizer. Below is a conversation transcript from "
-        "a session that is being switched to a different model. Produce a focused "
-        "operational briefing so the new model can continue the work with zero loss "
-        "of state. No filler, no meta-commentary, no 'here is a summary' — jump "
-        "straight to substance.\n\n"
+        "You are compressing the MIDDLE portion of a conversation transcript. "
+        "The first user message, early tool calls, last user message, and recent tool "
+        "calls are already extracted separately — DO NOT reproduce them.\n\n"
 
-        "HARD RULES (apply to all sections):\n"
-        "- Never invent, infer, or smooth over details that are not explicitly present "
-        "in the transcript. If something is ambiguous, unstated, or uncertain, write "
-        "[unclear] instead of guessing.\n"
-        "- Preserve all code snippets, file paths, commands, config values, error "
-        "messages, and stack traces VERBATIM — never paraphrase or reword these. "
-        "Quote them exactly as they appear in the transcript, in code blocks.\n"
-        "- Preserve exact technical details: package/library versions, OS, device/"
-        "environment specifics, variable names, function signatures.\n"
-        "- The word limit below applies to prose only. Verbatim code/error/config "
-        "blocks are exempt from the word count and should be included in full when "
-        "they represent the current working state.\n\n"
+        "YOUR ONLY JOB: Compress this transcript into labeled turn pairs.\n\n"
 
-        "Structure (each section progressively more detailed than the last, except "
-        "verbatim blocks which are always complete regardless of section):\n\n"
+        "OUTPUT FORMAT:\n\n"
+        "## user\n"
+        "[1-2 sentence summary: what the user asked/requested]\n"
+        "## model\n"
+        "[Compressed actions: which files were viewed/edited/created, which tools were "
+        "called, compressed tool result, any errors or problems encountered]\n\n"
+        "Repeat ## user / ## model pairs as needed. Single-sided turns are allowed "
+        "(e.g., only ## model if the model acted without a new user prompt).\n"
+        "Be DENSE — name files, tools, and outcomes. Skip pleasantries and meta-talk.\n\n"
 
-        "• Working topic — Concise but complete: what the topic is, the motive/goal, "
-        "the plan, what's been done, what's pending. State clearly whether the task "
-        "is finished, abandoned, or stopped mid-way — and if mid-way, the exact point "
-        "of interruption.\n\n"
+        "If this transcript segment contains MORE THAN 5 tool calls, also add at the end:\n\n"
+        "## Intermediary Summary\n"
+        "[For each tool call beyond the last 5: what tool was called, compressed result, "
+        "any problems or improvements needed]\n\n"
 
-        "• Background — Only the context needed to understand the current task "
-        "(prior decisions, constraints, why this approach was chosen over others). "
-        "Skip anything not relevant to continuing the work.\n\n"
-
-        "• Last exchange (most detailed so far) — The user's most recent prompt "
-        "passed near-verbatim, plus what was actually attempted in response: what "
-        "was tried, why that approach was chosen, what succeeded, what failed (with "
-        "exact error output), and the precise current state of any files/code/"
-        "commands at the point the session stopped.\n\n"
-
-        "• Planned next move (MOST detailed) — Concrete next steps in order, open "
-        "questions, known blockers, and every specific file/path/config/command "
-        "involved. If the previous model had a next action in mind but didn't "
-        "execute it, state exactly what that action was.\n\n"
-
-        "Target ~800 words of prose across all sections combined (verbatim blocks "
-        "excluded from this count). Omit anything irrelevant to resuming the work.\n\n"
-        f"---\n{transcript}"
+        "HARD RULES:\n"
+        "- Output ONLY the ## user / ## model pairs (and optional ## Intermediary Summary).\n"
+        "- NEVER output ## First User Message, ## Early Tool Calls, ## Last User Message, "
+        "## Recent Tool Calls, or any other section headers.\n"
+        "- NEVER add high-level summaries, synthesis, overview, or commentary.\n"
+        "- Never invent details. Write [unclear] if ambiguous.\n"
+        "- Preserve code, paths, commands, errors VERBATIM in code blocks within turn pairs.\n"
+        "- BUG FIX REPORTING (MANDATORY): When a bug was found AND fixed in a specific file, "
+        "the ## model turn MUST include the actual code — not just a prose description. Format:\n"
+        "    File: path/to/file.py:L###\n"
+        "    PROBLEM: [2-5 line code snippet showing the broken code]\n"
+        "    FIX: [2-5 line code snippet showing the corrected code]\n"
+        "  If an issue was identified but NOT resolved, do NOT mention it at all.\n"
+        "  Only include fix details for bugs actually fixed in that turn.\n\n"
+        f"---\n{middle_text}"
     )
 
-    # Load settings: model + browser-data-acc
+    # Load settings: primary model + fallback chain
     settings = _load_ctx_pass_settings()
     model = settings.get("summarizer_model") or req.model  # fallback to current
     browser_acc = settings.get("browser_data_acc", "").strip()
+    fallback_models: list[str] = settings.get("fallback_models", [])
+    browser_profiles: list[str] = settings.get("browser_profiles", [])
 
     logger.info(
-        "[context-pass] chat_id=%s | model=%r | browser_acc=%r | settings=%s | transcript_len=%d",
-        req.chat_id, model, browser_acc, settings, len(transcript),
+        "[context-pass] chat_id=%s | model=%r | browser_acc=%r | fallbacks=%s/%s | transcript_len=%d",
+        req.chat_id, model, browser_acc, fallback_models, browser_profiles, len(messages),
     )
 
-    try:
-        # Route: API connector (gemini/deepseek/groq/mistral) vs Qwen ChatService
-        api_backend = _resolve_api_backend(model)
+    async def _try_ctx_pass_call(mdl: str, browser_acc_name: str = "") -> dict[str, Any] | None:
+        """Try a single context pass call. Returns result dict or None on failure."""
+        try:
+            api_backend = _resolve_api_backend(mdl)
+            if api_backend:
+                connector = get_connector(api_backend)
+                result = await connector.chat(message=prompt, model=mdl, thinking_mode="fast")
+            elif browser_acc_name:
+                from engine.service import ChatService
+                from engine.config import _SYSTEM
+                acc_dir = _SYSTEM / browser_acc_name
+                if not acc_dir.exists():
+                    logger.warning("[context-pass] Browser profile dir not found: %s", acc_dir)
+                    return None
+                temp_service = ChatService(user_data_dir=str(acc_dir))
+                try:
+                    result = await temp_service.chat(message=prompt, model=mdl, thinking_mode="fast")
+                finally:
+                    await temp_service.close()
+            else:
+                result = await service.chat(message=prompt, model=mdl, thinking_mode="fast")
 
-        if api_backend:
-            # Non-Qwen model → use the appropriate API connector directly
-            logger.info("[context-pass] routing via connector: %s", api_backend)
-            connector = get_connector(api_backend)
-            result = await connector.chat(
-                message=prompt,
-                model=model,
-                thinking_mode="fast",
-            )
-        elif browser_acc:
-            # Qwen model with dedicated browser profile
-            from engine.service import ChatService
-            from engine.config import _SYSTEM
-            acc_dir = _SYSTEM / browser_acc
-            if not acc_dir.exists():
-                logger.error("[context-pass] browser profile dir not found: %s", acc_dir)
-                return {"error": f"Browser profile '{browser_acc}' not found"}
-            logger.info("[context-pass] using dedicated ChatService with profile: %s", acc_dir)
-            temp_service = ChatService(user_data_dir=str(acc_dir))
-            try:
-                result = await temp_service.chat(
-                    message=prompt,
-                    model=model,
-                    thinking_mode="fast",
-                )
-            finally:
-                await temp_service.close()
-        else:
-            # Qwen model, default service
-            logger.info("[context-pass] using default service, model=%r", model)
-            result = await service.chat(
-                message=prompt,
-                model=model,
-                thinking_mode="fast",
-            )
+            answer = result.get("answer", "").strip()
+            if answer:
+                return result
+            logger.warning("[context-pass] %s returned empty: %s", mdl, result.get("error", ""))
+            return None
+        except Exception as exc:
+            logger.warning("[context-pass] %s failed: %s: %s", mdl, type(exc).__name__, exc)
+            return None
 
-        logger.info("[context-pass] result keys=%s, answer_len=%d, error=%r",
-                    list(result.keys()), len(result.get("answer", "")), result.get("error"))
-        answer = result.get("answer", "").strip()
-        if not answer:
-            err = result.get("error", "")
-            logger.warning("[context-pass] empty answer. error=%r, full result: %s", err, result)
-            return {"error": f"Summarization returned empty response. {err}".strip()}
-        return {"summary": answer}
-    except Exception as exc:
-        logger.exception("[context-pass] summarization failed")
-        return {"error": f"Summarization failed: {type(exc).__name__}: {exc}"}
+    def _assemble_summary(flow_text: str) -> str:
+        """Assemble final output: head + flow + tail + continue."""
+        parts = [head_text]
+        if flow_text.strip():
+            parts.append(f"## Conversation Flow\n{flow_text}")
+        parts.append(tail_text)
+        parts.append("continue")
+        return "\n\n".join(parts)
+
+    # Step 1: Primary model (with primary browser profile if Qwen)
+    result = await _try_ctx_pass_call(model, browser_acc)
+    if result:
+        return {"summary": _assemble_summary(result.get("answer", "").strip())}
+
+    # Step 2: Fallback models
+    for fb_model in fallback_models[:2]:
+        result = await _try_ctx_pass_call(fb_model)
+        if result:
+            logger.info("[context-pass] Fallback model succeeded: %s", fb_model)
+            return {"summary": _assemble_summary(result.get("answer", "").strip())}
+
+    # Step 3: Fallback browser profiles (using primary model)
+    for fb_profile in browser_profiles[:2]:
+        result = await _try_ctx_pass_call(model, fb_profile)
+        if result:
+            logger.info("[context-pass] Fallback browser profile succeeded: %s", fb_profile)
+            return {"summary": _assemble_summary(result.get("answer", "").strip())}
+
+    return {"error": "All summarizer fallbacks exhausted — no model/browser combination succeeded"}
 
 
 # ---------------------------------------------------------------------------

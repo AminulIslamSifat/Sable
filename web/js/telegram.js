@@ -707,6 +707,7 @@
         lucide.createIcons({ nodes: overlay.querySelectorAll("[data-lucide]") });
       } catch { showToast("Failed to load file", "error"); }
     }
+    window.openLibraryReader = openLibraryReader;
 
     let _libReaderDocked = false;
     let _libReaderTempHidden = false;

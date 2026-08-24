@@ -13,9 +13,11 @@ from fastapi.responses import FileResponse
 
 router = APIRouter()
 
+from pathlib import Path as _Path
+
 # Allowed browse roots (read-only from UI)
 _BROWSE_ROOTS = (
-    "/home/sifat",
+    str(_Path.home()),
     "/tmp",
 )
 
@@ -301,12 +303,13 @@ def filesystem_pick_folder() -> dict[str, Any]:
 @router.get("/api/filesystem/roots")
 def filesystem_roots() -> list[dict[str, Any]]:
     """Return quick-access browse roots."""
+    _h = str(_Path.home())
     quick_paths = [
-        "/home/sifat/Projects/Sable",
-        "/home/sifat/hdd/projects/Sable",
-        "/home/sifat/hdd",
-        "/home/sifat/Projects",
-        "/home/sifat",
+        f"{_h}/Projects/Sable",
+        f"{_h}/hdd/projects/Sable",
+        f"{_h}/hdd",
+        f"{_h}/Projects",
+        _h,
         "/tmp",
     ]
     roots = []

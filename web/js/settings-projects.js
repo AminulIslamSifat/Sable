@@ -454,10 +454,17 @@
       }
     }
 
-    async function loadMessages(chatId) {
+    // Cancellation token for stale loadMessages renders.
+    // Incremented on every selectChat; loadMessages checks before each batch.
+    let _loadGeneration = 0;
+
+    async function loadMessages(chatId, generation) {
       try {
         // Single fetch — all messages at once, no pagination
         const data = await fetch(`/api/chats/${chatId}/messages?include_skill_events=true`).then(r => r.json());
+        // Abort if another selectChat started while we were fetching
+        if (generation !== _loadGeneration) return [];
+
         const pane = ensurePane(chatId);
         pane.innerHTML = "";
         const chars = data.context_chars || 0;
@@ -478,6 +485,11 @@
         const prevPane = activePane;
         activePane = pane;
         for (let i = 0; i < messages.length; i += BATCH_SIZE) {
+          // Abort stale render — user switched to another chat
+          if (generation !== _loadGeneration) {
+            activePane = prevPane;
+            return [];
+          }
           const batch = messages.slice(i, i + BATCH_SIZE);
           for (const msg of batch) addHistoryMessage(msg);
           // Yield to browser every batch so it can GC and keep spinner animated
@@ -565,21 +577,31 @@
       saveActiveChat();
       renderChats();
 
+      // Cancel any in-flight loadMessages render from a previous selectChat
+      _loadGeneration++;
+      const myGeneration = _loadGeneration;
+
       // Only load messages from API if this tab hasn't been loaded yet
       // Use _loadingChats guard to prevent duplicate loads from race conditions
       if (!alreadyOpen && !_loadingChats.has(chatId)) {
         _loadingChats.add(chatId);
         const targetPane = ensurePane(chatId);
         showPaneLoading(targetPane);
-        const msgs = await loadMessages(chatId);
-        hidePaneLoading(targetPane);
-        _loadingChats.delete(chatId);
-        // Derive parentId from the actual message chain
-        if (Array.isArray(msgs) && msgs.length) {
-          const last = msgs[msgs.length - 1];
-          parentId = last?.parent_id ? String(last.parent_id) : last?.id ? String(last.id) : null;
-        } else {
-          parentId = meta?.parent_id ? String(meta.parent_id) : null;
+        try {
+          const msgs = await loadMessages(chatId, myGeneration);
+          // If stale (user switched away), skip state updates
+          if (myGeneration !== _loadGeneration) return;
+          hidePaneLoading(targetPane);
+          // Derive parentId from the actual message chain
+          if (Array.isArray(msgs) && msgs.length) {
+            const last = msgs[msgs.length - 1];
+            parentId = last?.parent_id ? String(last.parent_id) : last?.id ? String(last.id) : null;
+          } else {
+            parentId = meta?.parent_id ? String(meta.parent_id) : null;
+          }
+        } finally {
+          _loadingChats.delete(chatId);
+          hidePaneLoading(targetPane);
         }
       } else {
         // Already loaded — just derive parentId from cached meta

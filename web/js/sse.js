@@ -1364,6 +1364,9 @@
             }
           } else if (evt.type === "status") {
             if (evt.message === "feeding_skill_results") ui.nextSkillRound();
+          } else if (evt.type === "account_switch") {
+            const _ascTurn = activePane.querySelector('.turn:last-child');
+            if (_ascTurn) handleAccountSwitchEvent(evt, _ascTurn);
           } else if (evt.type === "user_message_id") {
             // Store DB message ID on the div and enable the fork button
             if (userMsgDiv && evt.id) {
@@ -1548,4 +1551,137 @@
         endStream(streamChatId);
       }
     }
+
+// ── Account Switch Status Card ──────────────────────────────────────────────
+const _ACCOUNT_SWITCH_STEPS = [
+  { key: "triggered",        label: "Trigger detected",       icon: "triangle-alert" },
+  { key: "searching",        label: "Searching accounts…",    icon: "search" },
+  { key: "switching",        label: "Switching account…",     icon: "repeat" },
+  { key: "syncing",          label: "Syncing context…",       icon: "clipboard-list" },
+  { key: "summarizing",      label: "Summarizing history…",   icon: "file-text" },
+  { key: "creating_session", label: "Creating new session…",  icon: "message-square" },
+  { key: "warming_up",       label: "Warming up WAF…",        icon: "flame" },
+  { key: "retrying",         label: "Retrying with next…",    icon: "refresh-cw" },
+  { key: "complete",         label: "Switch complete",         icon: "circle-check" },
+  { key: "failed",           label: "Failed",                  icon: "circle-x" },
+];
+
+function _ascIcon(name, size = 14) {
+  return `<i data-lucide="${name}" style="width:${size}px;height:${size}px"></i>`;
+}
+
+function handleAccountSwitchEvent(evt, container) {
+  // Find or create the card
+  let card = container.querySelector(".account-switch-card");
+  if (!card) {
+    card = document.createElement("div");
+    card.className = "skill-card account-switch-card";
+    card.innerHTML = `
+      <div class="skill-header">
+        <div class="skill-header-left">
+          <span class="skill-arrow">${_ascIcon("chevron-down")}</span>
+          <span class="skill-name">${_ascIcon("shuffle", 15)} Account Switch</span>
+        </div>
+        <div class="skill-header-right" style="display:flex;align-items:center;gap:8px;">
+          <span class="skill-status asc-status">initializing…</span>
+        </div>
+      </div>
+      <div class="asc-steps"></div>`;
+    card.querySelector(".skill-header").onclick = () => card.classList.toggle("collapsed");
+    container.appendChild(card);
+    if (typeof activateLucideIcons === "function") activateLucideIcons(card);
+  }
+
+  // Track completed steps across retry cycles (persisted on card element)
+  if (!card._ascCompleted) card._ascCompleted = new Set();
+
+  const stepsEl = card.querySelector(".asc-steps");
+  const statusEl = card.querySelector(".asc-status");
+  const step = evt.step;
+
+  // On retry, reset intermediate steps (searching..warming_up) back to pending
+  if (step === "retrying") {
+    const resetKeys = ["searching", "switching", "syncing", "summarizing", "creating_session", "warming_up"];
+    resetKeys.forEach(k => {
+      card._ascCompleted.delete(k);
+      const r = stepsEl.querySelector(`[data-step="${k}"]`);
+      if (r) {
+        r.classList.remove("asc-step-done", "asc-step-active");
+        const oldDetail = r.querySelector(".asc-step-detail");
+        if (oldDetail) oldDetail.remove();
+      }
+    });
+  }
+
+  // Mark current step and all prior linear steps as done (using persistent set for retry safety)
+  const stepIndex = _ACCOUNT_SWITCH_STEPS.findIndex(s => s.key === step);
+  // For non-retry steps, mark all preceding steps as completed
+  if (step !== "retrying" && step !== "failed") {
+    for (let i = 0; i < stepIndex; i++) {
+      card._ascCompleted.add(_ACCOUNT_SWITCH_STEPS[i].key);
+    }
+  }
+
+  _ACCOUNT_SWITCH_STEPS.forEach((s, i) => {
+    let row = stepsEl.querySelector(`[data-step="${s.key}"]`);
+    if (!row && (card._ascCompleted.has(s.key) || i <= stepIndex)) {
+      row = document.createElement("div");
+      row.className = "asc-step";
+      row.dataset.step = s.key;
+      row.innerHTML = `<span class="asc-step-icon">${_ascIcon(s.icon)}</span><span class="asc-step-label">${s.label}</span>`;
+      stepsEl.appendChild(row);
+    }
+    if (row) {
+      if (step === "failed" && s.key === "failed") {
+        row.classList.add("asc-step-failed");
+        row.classList.remove("asc-step-active", "asc-step-done");
+        row.querySelector(".asc-step-label").textContent = `Failed: ${evt.error || "unknown error"}`;
+      } else if (s.key === step && step !== "failed") {
+        // Current active step
+        row.classList.add("asc-step-active");
+        row.classList.remove("asc-step-done");
+        // Update contextual detail (replace existing on retry cycles)
+        let detail = row.querySelector(".asc-step-detail");
+        if (evt.reason || evt.from || evt.to || evt.account || evt.error) {
+          if (!detail) {
+            detail = document.createElement("span");
+            detail.className = "asc-step-detail";
+            row.appendChild(detail);
+          }
+          if (step === "triggered") detail.textContent = evt.reason === "rate_limit" ? "(rate limited)" : "(WAF/captcha block)";
+          else if (step === "switching") detail.textContent = `${evt.from} → ${evt.to}`;
+          else if (step === "searching") detail.textContent = `current: ${evt.current}${evt.attempt > 1 ? ` (attempt ${evt.attempt})` : ""}`;
+          else if (step === "retrying") detail.textContent = `${evt.account} (${evt.reason})`;
+          else if (evt.account) detail.textContent = evt.account;
+        }
+      } else if (card._ascCompleted.has(s.key)) {
+        // Previously completed step (survives retry cycles)
+        row.classList.add("asc-step-done");
+        row.classList.remove("asc-step-active");
+      }
+    }
+  });
+
+  // Re-render lucide icons for newly added rows
+  if (typeof activateLucideIcons === "function") activateLucideIcons(card);
+
+  // Update header status text
+  if (step === "complete") {
+    statusEl.textContent = `${evt.account || "switched"}`;
+    card.classList.add("asc-complete");
+    const finalRow = stepsEl.querySelector(`[data-step="complete"]`);
+    if (finalRow) { finalRow.classList.add("asc-step-done"); finalRow.classList.remove("asc-step-active"); }
+  } else if (step === "failed") {
+    statusEl.textContent = "failed";
+    card.classList.add("asc-failed");
+  } else {
+    const meta = _ACCOUNT_SWITCH_STEPS.find(s => s.key === step);
+    statusEl.textContent = meta ? meta.label : step;
+  }
+
+  // Auto-scroll steps into view
+  const activeRow = stepsEl.querySelector(".asc-step-active, .asc-step-failed");
+  if (activeRow) activeRow.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
 

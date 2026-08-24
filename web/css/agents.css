@@ -1,19 +1,24 @@
 
 /* ===== Agent Multi-Chat UI ===== */
 
-/* --- Header slot (between model dropdown and diff toggle) --- */
-.header-agent-cell {
-  background: none;
-  border: none;
-  box-shadow: none;
-  flex: 0 1 auto;
-  max-width: 70%;
-  min-width: 0;
-  overflow: hidden;
+/* --- Standalone agent bar slot (fixed to viewport, always visible) --- */
+.agent-top-bar-slot {
+  position: fixed;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  display: flex;
+  justify-content: center;
+  padding: 4px 12px;
+  pointer-events: none;
+}
+.agent-top-bar-slot.hidden { display: none !important; }
+.agent-top-bar-slot > .agent-top-bar {
+  pointer-events: auto;
 }
 
-
-/* --- Top Bar (inline in header, centered) --- */
+/* --- Top Bar (inline, centered) --- */
 .agent-top-bar {
   display: flex;
   align-items: center;

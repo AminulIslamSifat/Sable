@@ -49,6 +49,7 @@ from .routes.checkpoints import router as checkpoints_router
 from .routes.personas import router as personas_router
 from .routes.update import router as update_router
 from .routes.dashboard import router as dashboard_router
+from .routes.telegram_bot import router as telegram_bot_router
 
 def _raise_nofile_limit() -> None:
     """Raise open file limit for agentic workloads (browsers, agents, streams)."""
@@ -115,6 +116,24 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     except Exception as exc:
         logger.warning("Agent ops scheduler failed to start: %s: %s", type(exc).__name__, exc)
 
+    # ── Auto-start Telegram Bot if token is configured ──
+    _tg_bot_task = None
+    try:
+        from engine.config import PERSISTENT_ROOT as _PROOT
+        _tg_cfg_path = _PROOT / "system" / ".telegram_bot_config.json"
+        if _tg_cfg_path.exists():
+            _tg_cfg = json.loads(_tg_cfg_path.read_text(encoding="utf-8"))
+            if _tg_cfg.get("bot_token") and _tg_cfg.get("enabled", True):
+                from telegram_bot.bot import start_bot_in_background
+                _tg_bot_task = _aio.create_task(start_bot_in_background())
+                logger.info("Telegram Bot auto-started (token configured)")
+            else:
+                logger.info("Telegram Bot: skipped (no token or disabled)")
+        else:
+            logger.info("Telegram Bot: no config file at %s", _tg_cfg_path)
+    except Exception as exc:
+        logger.warning("Telegram Bot auto-start failed: %s: %s", type(exc).__name__, exc)
+
     await service.warmup()
     try:
         ds_token = await service.refresh_deepseek_token()
@@ -166,12 +185,20 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     except Exception:
         pass
 
-    # 6. Telegram — 0.3s timeout
+    # 6. Telegram (Telethon) — 0.3s timeout
     try:
         from server.api.routes.telegram import disconnect_client
         await asyncio.wait_for(disconnect_client(), timeout=0.3)
     except Exception:
         pass
+
+    # 7. Telegram Bot — cancel background task
+    if _tg_bot_task and not _tg_bot_task.done():
+        _tg_bot_task.cancel()
+        try:
+            await asyncio.wait_for(_tg_bot_task, timeout=1.0)
+        except Exception:
+            pass
 
 app = FastAPI(title="Sable API", version="0.4.0", lifespan=lifespan)
 
@@ -243,6 +270,7 @@ app.include_router(checkpoints_router)
 app.include_router(personas_router)
 app.include_router(update_router)
 app.include_router(dashboard_router)
+app.include_router(telegram_bot_router)
 
 # Wire agent runtime event callback → SSE push
 from .routes.agents import _async_push_agent_event, push_agent_event

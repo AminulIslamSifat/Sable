@@ -10,16 +10,29 @@
     function openSettings() {
       settingsOverlay.classList.remove("hidden");
       if (!logSource) connectLogs();
+      // If update available, scroll to Updates tab and show hint
+      if (_updateData?.update_available) {
+        requestAnimationFrame(() => _setUpdateDot(true));
+      }
     }
 
     function closeSettings() {
       settingsOverlay.classList.add("hidden");
+      // Sync activity rail button state
+      const railBtn = document.getElementById("railSettingsBtn") || document.getElementById("settingsBtn");
+      if (railBtn) railBtn.classList.remove('active');
     }
 
     settingsBtn.addEventListener("click", openSettings);
     settingsClose.addEventListener("click", closeSettings);
     settingsOverlay.addEventListener("click", (e) => {
       if (e.target === settingsOverlay) closeSettings();
+    });
+    // Close when rail deselects (e.g. clicking another rail button or toggling off)
+    window.addEventListener('rail-switch', (e) => {
+      if (!e.detail?.target || e.detail.target === 'chat') {
+        if (!settingsOverlay.classList.contains('hidden')) closeSettings();
+      }
     });
 
     // ── Configurable Keyboard Shortcut System ────────────────────────────────
@@ -261,6 +274,7 @@
         else if (tabName === 'mcp') loadMcpServers();
         else if (tabName === 'cookbook') { if (window._cbInit) window._cbInit(); }
         else if (tabName === 'personas') { if (window._personaInit) window._personaInit(); }
+        else if (tabName === 'bot') { if (window._botSettingsInit) window._botSettingsInit(); }
         else if (tabName === 'shortcuts') renderShortcutsTab();
         else if (tabName === 'updates') loadUpdatesTab();
       });
@@ -384,6 +398,27 @@ function _setUpdateDot(visible) {
   const updatesTab = document.querySelector('.settings-tab[data-tab="updates"]');
   if (updatesTab) {
     updatesTab.classList.toggle("has-update", visible);
+    // Auto-scroll the tab into view when update is available and settings are open
+    if (visible && !settingsOverlay.classList.contains("hidden")) {
+      updatesTab.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }
+  // Show/hide scroll-down hint arrow in settings tabs container
+  const tabsContainer = document.querySelector(".settings-tabs");
+  if (tabsContainer) {
+    let hint = tabsContainer.querySelector(".update-scroll-hint");
+    if (visible && !hint) {
+      hint = document.createElement("div");
+      hint.className = "update-scroll-hint";
+      hint.innerHTML = "↓ update available";
+      hint.addEventListener("click", () => {
+        const t = document.querySelector('.settings-tab[data-tab="updates"]');
+        if (t) { t.click(); t.scrollIntoView({ behavior: "smooth", block: "nearest" }); }
+      });
+      tabsContainer.appendChild(hint);
+    } else if (!visible && hint) {
+      hint.remove();
+    }
   }
 }
 

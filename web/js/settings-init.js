@@ -289,8 +289,13 @@
         return;
       }
 
-      const message = inputEl.value.trim();
+      let message = inputEl.value.trim();
       if (!message) return;
+
+      // Inject speech interruption note if user spoke over TTS
+      if (typeof window.takeSpeechInterrupted === 'function' && window.takeSpeechInterrupted()) {
+        message = '[Note: the user interrupted your previous spoken reply]\n\n' + message;
+      }
 
       // @ mention → spawn agent instead of sending chat message
       if (typeof parseAgentMention === "function") {
@@ -420,6 +425,15 @@
         if ((emptyResponse || gotError) && userMsgDiv && lastSentMessage) {
           attachResendBar(userMsgDiv, lastSentMessage);
         }
+
+        // Auto-TTS for live voice chat mode
+        if (gotAnswer && !gotError && typeof LiveVoiceChat !== 'undefined' && LiveVoiceChat._active) {
+          const botMsg = userMsgDiv?.parentElement?.querySelector('.msg.bot .md-content');
+          const responseText = botMsg ? botMsg.innerText : '';
+          if (responseText.trim() && typeof window.playAutoTTS === 'function') {
+            window.playAutoTTS(responseText);
+          }
+        }
       } catch (err) {
         if (err.name === "AbortError") {
           showToast("Generation stopped", "info");
@@ -447,6 +461,7 @@
     }
 
     sendBtn.addEventListener("click", sendMessage);
+    window.sendMessage = sendMessage; // expose for LiveVoiceChat
 
 
     // Programmatic message send for auto-turn (agent completion notifications).
@@ -540,12 +555,10 @@
     if (newChatSidebarBtn) {
         newChatSidebarBtn.addEventListener("click", createChat);
     }
-    const newChatFloatBtn = document.getElementById("newChatFloat");
-    if (newChatFloatBtn) {
-        newChatFloatBtn.addEventListener("click", createChat);
-
-
-
+    // Sidebar top "New Chat" button
+    const sidebarNewChatBtn = document.getElementById('sidebarNewChatBtn');
+    if (sidebarNewChatBtn) {
+      sidebarNewChatBtn.addEventListener('click', createChat);
     }
 
     // Chat search toggle + filter

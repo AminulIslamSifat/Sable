@@ -46,14 +46,16 @@ const AgentTopBar = {
   container: null,
   cards: new Map(),
 
+  _slotEl: null,
+
   init() {
     if (this.container) return;
     this.container = document.createElement("div");
     this.container.id = "agent-top-bar";
-    this.container.className = "agent-top-bar hidden";
-    // Insert into the dedicated slot between model dropdown and diff toggle
-    const slot = document.getElementById("agentTopBarSlot");
-    if (slot) slot.appendChild(this.container);
+    this.container.className = "agent-top-bar";
+    // Insert into the dedicated standalone slot (outside <header>)
+    this._slotEl = document.getElementById("agentTopBarSlot");
+    if (this._slotEl) this._slotEl.appendChild(this.container);
     else document.body.appendChild(this.container);
     // Vertical wheel → horizontal scroll
     this.container.addEventListener("wheel", (e) => {
@@ -64,9 +66,21 @@ const AgentTopBar = {
     }, { passive: false });
   },
 
+  _show() {
+    if (!this.container) return;
+    this.container.classList.remove("hidden");
+    if (this._slotEl) this._slotEl.classList.remove("hidden");
+  },
+
+  _hide() {
+    if (!this.container) return;
+    this.container.classList.add("hidden");
+    if (this._slotEl) this._slotEl.classList.add("hidden");
+  },
+
   addCard(agentId, role, task, model) {
     this.init();
-    this.container.classList.remove("hidden");
+    this._show();
     const card = document.createElement("div");
     card.className = "agent-card running";
     card.dataset.agentId = agentId;
@@ -117,14 +131,14 @@ const AgentTopBar = {
     setTimeout(() => {
       card.remove();
       this.cards.delete(agentId);
-      if (this.cards.size === 0) this.container.classList.add("hidden");
+      if (this.cards.size === 0) AgentTopBar._hide();
     }, 400);
   },
 
   clear() {
     this.cards.forEach((card) => card.remove());
     this.cards.clear();
-    if (this.container) this.container.classList.add("hidden");
+    this._hide();
   },
 };
 
@@ -698,19 +712,25 @@ function connectAgentEvents(chatId) {
 
   _agentEventChatId = chatId;
   const token = localStorage.getItem("sable_token") || "";
+  const url = `/api/chat/${chatId}/agent-events?token=${encodeURIComponent(token)}`;
+  console.log("[AgentDebug] connectAgentEvents called, chatId:", chatId, "url:", url);
   // EventSource doesn't support custom headers — use query param for auth
-  _agentEventSource = new EventSource(`/api/chat/${chatId}/agent-events?token=${encodeURIComponent(token)}`);
+  _agentEventSource = new EventSource(url);
+
+  _agentEventSource.onopen = () => {
+    console.log("[AgentDebug] SSE connection OPENED for chat:", chatId);
+  };
 
   _agentEventSource.onmessage = (e) => {
+    console.log("[AgentDebug] SSE message received:", e.data?.slice(0, 200));
     try {
       const ev = JSON.parse(e.data);
       handleAgentEvent(ev);
-    } catch { /* ignore malformed */ }
+    } catch (err) { console.error("[AgentDebug] SSE parse error:", err); }
   };
 
-  _agentEventSource.onerror = () => {
-    // EventSource auto-reconnects; just log
-    console.debug("[agents] SSE connection error, will retry…");
+  _agentEventSource.onerror = (err) => {
+    console.error("[AgentDebug] SSE connection error:", err, "readyState:", _agentEventSource?.readyState);
   };
 }
 
@@ -726,8 +746,10 @@ function disconnectAgentEvents() {
 const _agentTodosRaw = new Map(); // agent_id -> raw pipe-separated string
 
 function handleAgentEvent(ev) {
+  console.log("[AgentDebug] handleAgentEvent type:", ev.type, "agent_id:", ev.agent_id);
   switch (ev.type) {
     case "agent_spawned":
+      console.log("[AgentDebug] agent_spawned → calling addCard", ev.agent_id, ev.data);
       AgentTopBar.addCard(ev.agent_id, ev.data?.role || "agent", ev.data?.task || "", ev.data?.model || "");
       // Capture todos for spawn-card injection
       if (ev.data?.todos && ev.data.todos.length) {
@@ -766,20 +788,23 @@ function handleAgentEvent(ev) {
 
 // Called when a chat is selected/opened
 function onChatOpened(chatId) {
+  console.log("[AgentDebug] onChatOpened called, chatId:", chatId);
   AgentTopBar.clear();
   connectAgentEvents(chatId);
   // Load any active agents for this chat
   fetch(`/api/agents/active?chat_id=${encodeURIComponent(chatId)}`)
     .then((r) => r.json())
     .then((agents) => {
+      console.log("[AgentDebug] /api/agents/active response:", agents);
       if (!Array.isArray(agents)) return;
       for (const a of agents) {
         if (a.status === "running" || a.status === "spawned") {
+          console.log("[AgentDebug] restoring active agent card:", a.id, a.role);
           AgentTopBar.addCard(a.id, a.role, a.task, a.model);
         }
       }
     })
-    .catch(() => {});
+    .catch((err) => { console.error("[AgentDebug] /api/agents/active failed:", err); });
 }
 
 // Called when navigating away / closing chat
@@ -2132,28 +2157,36 @@ const GlobalVoiceInput = {
   _mediaRecorder: null,
   _chunks: [],
   _stream: null,
+  _analyser: null,
+  _audioCtx: null,
   _recording: false,
-  _heldDown: false, // true when triggered by holding Ctrl+Space
+  _heldDown: false,
   _btn: null,
+  _startTime: 0,
+  _maxCapTimer: null,
+  _silenceTimer: null,
+  _rmsFrame: null,
+
+  // Configurable thresholds
+  MAX_RECORDING_SECONDS: 120,
+  SILENCE_THRESHOLD: 0.01,   // RMS below this = silence
+  SILENCE_DURATION_MS: 1500, // ms of continuous silence before auto-stop
+  STOP_PHRASES: ['stop', 'cancel', 'never mind', 'nevermind', 'shut up', 'abort', 'enough'],
 
   init() {
     this._btn = document.getElementById('sttMicGlobalBtn');
     if (!this._btn) return;
 
-    // Click toggle
     this._btn.addEventListener('click', (e) => {
       e.preventDefault();
       if (this._recording) this.stop();
       else this.start(false);
     });
 
-    // Global hotkey: hold Ctrl+Space to record, release to stop
     let spaceHeld = false;
     document.addEventListener('keydown', (e) => {
-      // Ignore if focused on input/textarea/select
       const tag = e.target?.tagName;
       const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
-
       if ((e.ctrlKey || e.metaKey) && e.code === 'Space') {
         e.preventDefault();
         if (!spaceHeld && !this._recording) {
@@ -2175,7 +2208,6 @@ const GlobalVoiceInput = {
       }
     });
 
-    // Safety: stop recording if window loses focus
     window.addEventListener('blur', () => {
       if (this._recording) this.stop();
     });
@@ -2206,6 +2238,18 @@ const GlobalVoiceInput = {
     this._mediaRecorder.onstop = () => this._onStopped(mimeType);
     this._mediaRecorder.start(250);
     this._recording = true;
+    this._startTime = Date.now();
+
+    // Max recording cap
+    this._maxCapTimer = setTimeout(() => {
+      if (this._recording) {
+        console.log('[STT] Max recording cap reached, auto-stopping');
+        this.stop();
+      }
+    }, this.MAX_RECORDING_SECONDS * 1000);
+
+    // Silence auto-stop via RMS monitoring
+    this._setupSilenceDetection();
 
     if (this._btn) {
       this._btn.classList.add('recording');
@@ -2213,9 +2257,52 @@ const GlobalVoiceInput = {
     }
   },
 
+  _setupSilenceDetection() {
+    try {
+      this._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = this._audioCtx.createMediaStreamSource(this._stream);
+      this._analyser = this._audioCtx.createAnalyser();
+      this._analyser.fftSize = 256;
+      source.connect(this._analyser);
+    } catch (e) {
+      console.warn('[STT] AudioContext for silence detection failed:', e);
+      return;
+    }
+
+    const bufLen = this._analyser.frequencyBinCount;
+    const dataArr = new Float32Array(bufLen);
+    let silentSince = null;
+
+    const checkRMS = () => {
+      if (!this._recording) return;
+      this._rmsFrame = requestAnimationFrame(checkRMS);
+
+      this._analyser.getFloatTimeDomainData(dataArr);
+      let sumSq = 0;
+      for (let i = 0; i < bufLen; i++) sumSq += dataArr[i] * dataArr[i];
+      const rms = Math.sqrt(sumSq / bufLen);
+
+      if (rms < this.SILENCE_THRESHOLD) {
+        if (!silentSince) silentSince = Date.now();
+        else if (Date.now() - silentSince >= this.SILENCE_DURATION_MS) {
+          console.log('[STT] Silence detected, auto-stopping');
+          this.stop();
+          return;
+        }
+      } else {
+        silentSince = null;
+      }
+    };
+    checkRMS();
+  },
+
   stop() {
     if (!this._recording) return;
     this._recording = false;
+
+    if (this._maxCapTimer) { clearTimeout(this._maxCapTimer); this._maxCapTimer = null; }
+    if (this._rmsFrame) { cancelAnimationFrame(this._rmsFrame); this._rmsFrame = null; }
+    if (this._audioCtx) { this._audioCtx.close().catch(() => {}); this._audioCtx = null; }
 
     if (this._mediaRecorder && this._mediaRecorder.state !== 'inactive') {
       this._mediaRecorder.stop();
@@ -2232,6 +2319,11 @@ const GlobalVoiceInput = {
     }
   },
 
+  _isStopPhrase(text) {
+    const lower = text.toLowerCase().trim().replace(/[.,!?]/g, '');
+    return this.STOP_PHRASES.some(phrase => lower === phrase || lower.startsWith(phrase + ' '));
+  },
+
   async _onStopped(mimeType) {
     const blob = new Blob(this._chunks, { type: mimeType });
     const ext = mimeType.includes('webm') ? '.webm' : '.mp4';
@@ -2241,9 +2333,13 @@ const GlobalVoiceInput = {
       const formData = new FormData();
       formData.append('file', file);
 
+      const sessionId = localStorage.getItem('sable_session_id') || '';
+      const headers = { Authorization: `Bearer ${localStorage.getItem('sable_token') || ''}` };
+      if (sessionId) headers['X-Session-Id'] = sessionId;
+
       const res = await fetch('/api/stt/transcribe', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${localStorage.getItem('sable_token') || ''}` },
+        headers,
         body: formData,
       });
 
@@ -2253,10 +2349,23 @@ const GlobalVoiceInput = {
       }
 
       const data = await res.json();
-      const text = data.text?.trim();
-      if (text) {
-        this._insertText(text);
+
+      // Skip filtered transcripts (hallucination / echo)
+      if (data.filtered) {
+        console.log(`[STT] Transcript filtered: ${data.filtered}`);
+        return;
       }
+
+      const text = data.text?.trim();
+      if (!text) return;
+
+      // Stop phrase detection
+      if (this._isStopPhrase(text)) {
+        console.log('[STT] Stop phrase detected, discarding');
+        return;
+      }
+
+      this._insertText(text);
     } catch (e) {
       console.error('[STT] Transcription failed:', e);
     } finally {
@@ -2269,25 +2378,266 @@ const GlobalVoiceInput = {
   },
 
   _insertText(text) {
-    // Insert into main chat input or compact input (whichever is visible)
     const input = document.getElementById('input') || document.getElementById('chatCompactInput');
     if (!input) return;
 
     const existing = input.value.trim();
     input.value = existing ? `${existing} ${text}` : text;
 
-    // Auto-resize textarea
     input.style.height = 'auto';
     input.style.height = Math.min(input.scrollHeight, 200) + 'px';
 
-    // Focus and move cursor to end
     input.focus();
     input.setSelectionRange(input.value.length, input.value.length);
-
-    // Dispatch input event so any listeners pick up the change
     input.dispatchEvent(new Event('input', { bubbles: true }));
   },
 };
 
-// Initialize global voice input on DOM ready
-document.addEventListener('DOMContentLoaded', () => GlobalVoiceInput.init());
+// ── Live Voice Chat ─────────────────────────────────────────────────────
+// Click live button → mic records continuously → chunks transcribed in real-time
+// → text appears in input as you speak → silence triggers auto-send → bot responds
+// → response auto-plays via TTS → cycle repeats until you click stop.
+const LiveVoiceChat = {
+  _active: false,
+  _stream: null,
+  _analyser: null,
+  _audioCtx: null,
+  _rmsFrame: null,
+  _btn: null,
+
+  // Recording state
+  _mediaRecorder: null,
+  _chunks: [],
+  _chunkTimer: null,
+  _mimeType: '',
+
+  // Transcript accumulation
+  _accumulatedText: '',
+  _pendingTranscriptions: 0, // track in-flight requests
+
+  // Silence detection
+  _silentSince: null,
+  _hasSpeech: false, // true once we get at least one transcript chunk
+
+  CHUNK_MS: 2000,           // record 2s chunks
+  SILENCE_RMS: 0.01,        // RMS below this = silence
+  SEND_SILENCE_MS: 1800,    // send after 1.8s of continuous silence (if we have text)
+  STOP_PHRASES: ['stop', 'cancel', 'never mind', 'nevermind', 'shut up', 'abort', 'enough'],
+
+  init() {
+    this._btn = document.getElementById('liveChatBtn');
+    if (!this._btn) return;
+    this._btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (this._active) this.stop();
+      else this.start();
+    });
+  },
+
+  async start() {
+    if (this._active) return;
+
+    try {
+      this._stream = await navigator.mediaDevices.getUserMedia({
+        audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
+      });
+    } catch (e) {
+      console.error('[Live] Mic denied:', e);
+      return;
+    }
+
+    this._active = true;
+    this._accumulatedText = '';
+    this._pendingTranscriptions = 0;
+    this._silentSince = null;
+    this._hasSpeech = false;
+
+    // Determine codec
+    this._mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : 'audio/mp4';
+
+    this._setupRMS();
+    this._startChunkLoop();
+
+    if (this._btn) {
+      this._btn.classList.add('recording');
+      this._btn.title = 'Live voice chat — click to stop';
+    }
+
+    // Kill any playing TTS
+    if (typeof stopGlobalTTS === 'function') stopGlobalTTS();
+
+    console.log('[Live] Started');
+  },
+
+  _setupRMS() {
+    try {
+      this._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const src = this._audioCtx.createMediaStreamSource(this._stream);
+      this._analyser = this._audioCtx.createAnalyser();
+      this._analyser.fftSize = 256;
+      src.connect(this._analyser);
+    } catch (e) {
+      console.warn('[Live] AudioContext failed:', e);
+      return;
+    }
+
+    const bufLen = this._analyser.frequencyBinCount;
+    const data = new Float32Array(bufLen);
+
+    const tick = () => {
+      if (!this._active) return;
+      this._rmsFrame = requestAnimationFrame(tick);
+
+      this._analyser.getFloatTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < bufLen; i++) sum += data[i] * data[i];
+      const rms = Math.sqrt(sum / bufLen);
+
+      if (rms < this.SILENCE_RMS) {
+        if (!this._silentSince) this._silentSince = Date.now();
+        else if (this._hasSpeech && Date.now() - this._silentSince >= this.SEND_SILENCE_MS) {
+          // Enough silence after speech — flush and send
+          this._flushAndSend();
+        }
+      } else {
+        this._silentSince = null;
+      }
+    };
+    tick();
+  },
+
+  _startChunkLoop() {
+    const recordOne = () => {
+      if (!this._active) return;
+
+      this._chunks = [];
+      this._mediaRecorder = new MediaRecorder(this._stream, { mimeType: this._mimeType });
+      this._mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) this._chunks.push(e.data);
+      };
+      this._mediaRecorder.onstop = () => {
+        this._transcribeChunk();
+        // Start next chunk immediately
+        if (this._active) recordOne();
+      };
+      this._mediaRecorder.start();
+
+      this._chunkTimer = setTimeout(() => {
+        if (this._mediaRecorder?.state === 'recording') this._mediaRecorder.stop();
+      }, this.CHUNK_MS);
+    };
+
+    recordOne();
+  },
+
+  async _transcribeChunk() {
+    if (this._chunks.length === 0) return;
+
+    const blob = new Blob(this._chunks, { type: this._mimeType });
+    const ext = this._mimeType.includes('webm') ? '.webm' : '.mp4';
+    const file = new File([blob], `live${ext}`, { type: this._mimeType });
+
+    this._pendingTranscriptions++;
+
+    try {
+      const form = new FormData();
+      form.append('file', file);
+
+      const sid = localStorage.getItem('sable_session_id') || '';
+      const hdrs = { Authorization: `Bearer ${localStorage.getItem('sable_token') || ''}` };
+      if (sid) hdrs['X-Session-Id'] = sid;
+
+      const res = await fetch('/api/stt/transcribe', { method: 'POST', headers: hdrs, body: form });
+      if (!res.ok) { console.error('[Live] STT error:', res.status); return; }
+
+      const data = await res.json();
+      if (data.filtered || !data.text?.trim()) return;
+
+      const text = data.text.trim();
+
+      // Stop phrase check
+      const lower = text.toLowerCase().replace(/[.,!?]/g, '').trim();
+      if (this.STOP_PHRASES.some(p => lower === p || lower.startsWith(p + ' '))) {
+        console.log('[Live] Stop phrase, ending');
+        this.stop();
+        return;
+      }
+
+      // Accumulate
+      this._accumulatedText += (this._accumulatedText ? ' ' : '') + text;
+      this._hasSpeech = true;
+
+      // Show in input box live
+      const inp = document.getElementById('input');
+      if (inp) {
+        inp.value = this._accumulatedText;
+        inp.style.height = 'auto';
+        inp.style.height = Math.min(inp.scrollHeight, 200) + 'px';
+        inp.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+
+      console.log('[Live] Chunk:', text);
+    } catch (e) {
+      console.error('[Live] Transcribe error:', e);
+    } finally {
+      this._pendingTranscriptions--;
+    }
+  },
+
+  _flushAndSend() {
+    const text = this._accumulatedText.trim();
+    if (!text) return;
+
+    // Reset for next utterance
+    this._accumulatedText = '';
+    this._hasSpeech = false;
+    this._silentSince = null;
+
+    // Clear input visually
+    const inp = document.getElementById('input');
+    if (inp) {
+      inp.value = '';
+      inp.style.height = 'auto';
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
+    // Send via exposed sendMessage
+    if (typeof window.sendMessage === 'function') {
+      // Set input value so sendMessage reads it
+      if (inp) inp.value = text;
+      window.sendMessage();
+      console.log('[Live] Sent:', text);
+    }
+  },
+
+  stop() {
+    if (!this._active) return;
+    this._active = false;
+
+    if (this._chunkTimer) { clearTimeout(this._chunkTimer); this._chunkTimer = null; }
+    if (this._rmsFrame) { cancelAnimationFrame(this._rmsFrame); this._rmsFrame = null; }
+    if (this._audioCtx) { this._audioCtx.close().catch(() => {}); this._audioCtx = null; }
+    if (this._mediaRecorder?.state === 'recording') this._mediaRecorder.stop();
+    if (this._stream) { this._stream.getTracks().forEach(t => t.stop()); this._stream = null; }
+
+    // Flush remaining text
+    if (this._accumulatedText.trim()) this._flushAndSend();
+
+    if (this._btn) {
+      this._btn.classList.remove('recording');
+      this._btn.title = 'Live voice chat';
+    }
+
+    console.log('[Live] Stopped');
+  },
+};
+
+// Initialize voice systems on DOM ready
+document.addEventListener('DOMContentLoaded', () => {
+  GlobalVoiceInput.init();
+  LiveVoiceChat.init();
+});

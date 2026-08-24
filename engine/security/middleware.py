@@ -19,6 +19,13 @@ from engine.security.prompt_guard import PromptGuard, Severity
 
 logger = logging.getLogger(__name__)
 
+
+def _get_ssd_tree() -> str:
+    """Lazy-load SSD_TREE from config to avoid circular imports."""
+    from engine.config import SSD_TREE
+    return SSD_TREE
+
+
 # ─── Hard-blocked commands (instant reject, no negotiation) ───────────────────
 _BLOCKED_COMMANDS = re.compile(
     r"(?:rm\s+-rf\s+/(?:\s|$|\*)|rm\s+-rf\s+~(?:\s|$)|mkfs\.|dd\s+if=/dev/(?:zero|random)\s+of=/dev/|"
@@ -78,8 +85,8 @@ _PERMISSION_REQUIRED: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r"crontab\s+-r", re.I), "system", "Wipe entire crontab"),
     (re.compile(r"sysctl\s+-w", re.I), "system", "Runtime kernel parameter change"),
 
-    # SSD tree write guard
-    (re.compile(r"(?:cp|mv|tee|cat\s*>|echo\s*>)\s+.*?/home/sifat/Projects/Sable", re.I), "filesystem", "Direct write to SSD Sable tree (edit HDD first)"),
+    # SSD tree write guard — pattern built at import time from config
+    (re.compile(rf"(?:cp|mv|tee|cat\s*>|echo\s*>)\s+.*?{re.escape(_get_ssd_tree())}", re.I), "filesystem", "Direct write to SSD Sable tree (edit HDD first)"),
 ]
 
 # Tags whose content is a shell command
