@@ -11,18 +11,18 @@ Write a **self-contained Python script** and execute it via the `execute_command
 1. Import matplotlib and numpy.
 2. Apply the mandatory style spec (see below).
 3. Plot all curves.
-4. Save to `/home/sifat/sable_output/assets/{filename}`.
+4. Save to `~/sable_output/assets/{filename}`.
 5. Print a JSON status on completion.
 
 After successful execution, embed the plot in your response:
 
 ```markdown
-![Description](/home/sifat/sable_output/assets/filename.png)
+![Description](~/sable_output/assets/filename.png)
 ```
 
 ### Critical Rules for Output
 1. Always use `execute_command` to run the script — never use `<plot_graph>` tags (deprecated).
-2. Save output to `/home/sifat/sable_output/assets/` with a descriptive `.png` filename.
+2. Save output to `~/sable_output/assets/` with a descriptive `.png` filename.
 3. The script must be fully self-contained — no external config files or imports from the Sable project.
 4. Always print `{"status": "SUCCESS", "path": "..."}` on success or `{"status": "FAILED", "message": "..."}` on error.
 5. After saving, always embed the result so the user sees it inline.
@@ -67,7 +67,7 @@ ax.set_ylabel('Amplitude', color='#cdd6f4')
 ax.legend(facecolor='#313244', edgecolor='#45475a', labelcolor='#cdd6f4', fontsize=9)
 
 # === Save ===
-out_dir = '/home/sifat/sable_output/assets'
+out_dir = '~/sable_output/assets'
 os.makedirs(out_dir, exist_ok=True)
 out_path = os.path.join(out_dir, 'shm_x_v.png')
 plt.tight_layout()
@@ -78,7 +78,7 @@ print(json.dumps({"status": "SUCCESS", "path": out_path}))
 
 Then in your response:
 ```markdown
-![SHM Plot](/home/sifat/sable_output/assets/shm_x_v.png)
+![SHM Plot](~/sable_output/assets/shm_x_v.png)
 ```
 
 ***
@@ -175,6 +175,6 @@ If the script fails:
 5. **Physical accuracy**: Label axes with correct units (e.g., `"Time (s)"`, `"Displacement (m)"`). Use physically correct equations.
 6. **Smart range selection**: Use the Range Selection Guide. Never default lazily to `[0, 10]`.
 7. **Descriptive filenames**: Name by content (e.g., `wave_superposition.png`, `gaussian_distribution.png`) — not generic names like `plot1.png`.
-8. **Save to output directory**: Always use `/home/sifat/sable_output/assets/` as the target directory.
+8. **Save to output directory**: Always use `~/sable_output/assets/` as the target directory.
 9. **Embed after saving**: Always include a markdown image link in your response after successful execution.
 10. **Print JSON status**: Script must print `{"status": "SUCCESS", "path": "..."}` or `{"status": "FAILED", "message": "..."}` as the last line.

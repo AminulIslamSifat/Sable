@@ -1106,7 +1106,8 @@ ${task}`;
             const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
             const slug = task.slice(0, 40).replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_|_$/g, "").toLowerCase();
             const filename = `${ts}_${slug || "prompt"}.md`;
-            const savePath = `/home/sifat/sable_output/prompts/${filename}`;
+            const homeBase = window.__sable_home || ("/home/" + (window.__sable_user || "user"));
+            const savePath = `${homeBase}/sable_output/prompts/${filename}`;
             const meta = `---\ngenerated: ${new Date().toISOString()}\nmodel: ${primaryModel}\ntask: ${task.slice(0, 200)}\n---\n\n`;
             await fetch("/api/filesystem/write", {
               method: "POST",
