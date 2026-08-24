@@ -1744,6 +1744,11 @@ async def tts_synthesize(request: Request) -> Response:
     if len(text) > 5000:
         raise HTTPException(status_code=400, detail="Text too long (max 5000 chars)")
 
+    # Track TTS output for echo cancellation
+    session_id = request.headers.get("X-Session-Id", "")
+    if session_id:
+        record_tts_output(session_id, text)
+
     if provider == "edge":
         return await _synthesize_edge(text, body, prefs, speed)
 
@@ -2065,7 +2070,89 @@ async def get_general_settings() -> dict[str, Any]:
     settings = _read_system_settings()
     return {
         "max_tool_output_chars": settings.get("max_tool_output_chars", 100_000),
+        "desktop_notifications": settings.get("desktop_notifications", True),
     }
+
+
+# ── Voice Filters ─────────────────────────────────────────────────────
+import re
+from difflib import SequenceMatcher
+
+_WHISPER_HALLUCINATION_PHRASES = [
+    "thank you for watching",
+    "please subscribe",
+    "like and subscribe",
+    "don't forget to subscribe",
+    "thanks for watching",
+    "see you in the next video",
+    "in this video",
+    "welcome back to my channel",
+    "hit that subscribe button",
+    "smash that like button",
+    "link in the description",
+    "check out the link",
+    "let me know in the comments",
+    "drop a comment below",
+    "you're listening to",
+    "this has been",
+    "stay tuned",
+    "up next",
+]
+
+_REPEATED_WORD_THRESHOLD = 0.6  # fraction of words that are the same token
+
+
+def is_whisper_hallucination(text: str) -> bool:
+    """Detect known Whisper failure modes."""
+    if not text or not text.strip():
+        return True
+    lower = text.lower().strip()
+    for phrase in _WHISPER_HALLUCINATION_PHRASES:
+        if phrase in lower:
+            return True
+    # Repeated word/phrase detection: "the the the the"
+    words = lower.split()
+    if len(words) >= 4:
+        unique_ratio = len(set(words)) / len(words)
+        if unique_ratio < (1 - _REPEATED_WORD_THRESHOLD):
+            return True
+    # All punctuation / no real content
+    alpha_chars = sum(1 for c in lower if c.isalpha())
+    if alpha_chars < 3:
+        return True
+    return False
+
+
+# Per-session TTS echo tracking: {session_id: [recent_tts_texts]}
+_tts_echo_history: dict[str, list[str]] = {}
+_TTS_ECHO_MAX_HISTORY = 5
+_TTS_ECHO_SIMILARITY_THRESHOLD = 0.75
+
+
+def record_tts_output(session_id: str, text: str) -> None:
+    """Track recent TTS output for echo cancellation."""
+    if session_id not in _tts_echo_history:
+        _tts_echo_history[session_id] = []
+    history = _tts_echo_history[session_id]
+    normalized = re.sub(r'[^a-z0-9\s]', '', text.lower()).strip()
+    if normalized:
+        history.append(normalized)
+        if len(history) > _TTS_ECHO_MAX_HISTORY:
+            history.pop(0)
+
+
+def is_tts_echo(transcript: str, session_id: str) -> bool:
+    """Check if transcript matches recent TTS output (mic picked up speaker)."""
+    if session_id not in _tts_echo_history:
+        return False
+    normalized = re.sub(r'[^a-z0-9\s]', '', transcript.lower()).strip()
+    if not normalized or len(normalized) < 10:
+        return False
+    for prev in _tts_echo_history[session_id]:
+        ratio = SequenceMatcher(None, normalized, prev).ratio()
+        if ratio >= _TTS_ECHO_SIMILARITY_THRESHOLD:
+            return True
+    return False
 
 
 # ── STT (Speech-to-Text) ───────────────────────────────────────────────
@@ -2251,7 +2338,7 @@ async def delete_stt_models() -> dict[str, Any]:
 
 
 @router.post("/api/stt/transcribe")
-async def stt_transcribe(file: UploadFile = File(...)) -> dict[str, Any]:
+async def stt_transcribe(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     """Transcribe an audio file using faster-whisper. Returns text + segments."""
     import tempfile
     import os
@@ -2307,13 +2394,31 @@ async def stt_transcribe(file: UploadFile = File(...)) -> dict[str, Any]:
             })
             full_text_parts.append(seg.text.strip())
 
-        return {
-            "text": " ".join(full_text_parts),
+        full_text = " ".join(full_text_parts)
+
+        # Apply voice filters
+        filtered_reason = None
+        if is_whisper_hallucination(full_text):
+            filtered_reason = "hallucination"
+            full_text = ""
+            segments = []
+        elif request.headers.get("X-Session-Id"):
+            session_id = request.headers["X-Session-Id"]
+            if is_tts_echo(full_text, session_id):
+                filtered_reason = "tts_echo"
+                full_text = ""
+                segments = []
+
+        result: dict[str, Any] = {
+            "text": full_text,
             "segments": segments,
             "duration": round(info.duration, 2),
             "language": info.language,
             "language_probability": round(info.language_probability, 3),
         }
+        if filtered_reason:
+            result["filtered"] = filtered_reason
+        return result
     except Exception as e:
         logger.error(f"STT transcription failed: {e}")
         raise HTTPException(status_code=500, detail=f"Transcription failed: {e}")
@@ -2339,7 +2444,15 @@ async def update_general_settings(payload: dict[str, Any]) -> dict[str, Any]:
         except (ValueError, TypeError):
             raise HTTPException(400, "max_tool_output_chars must be an integer >= 1000")
 
+    if "desktop_notifications" in payload:
+        settings["desktop_notifications"] = bool(payload["desktop_notifications"])
+
     _write_system_settings(settings)
-    logger.info("General settings updated: max_tool_output_chars=%s", settings.get("max_tool_output_chars"))
-    return {"status": "ok", "max_tool_output_chars": settings.get("max_tool_output_chars", 100_000)}
+    logger.info("General settings updated: max_tool_output_chars=%s, desktop_notifications=%s",
+                settings.get("max_tool_output_chars"), settings.get("desktop_notifications"))
+    return {
+        "status": "ok",
+        "max_tool_output_chars": settings.get("max_tool_output_chars", 100_000),
+        "desktop_notifications": settings.get("desktop_notifications", True),
+    }
 

@@ -1070,6 +1070,15 @@
   opacity: 1;
 }
 .live-chat-btn .icon-lucide { width: 14px; height: 14px; }
+.live-chat-btn.recording {
+  color: var(--danger, #e74c3c);
+  opacity: 1;
+  animation: live-pulse 1.5s ease-in-out infinite;
+}
+@keyframes live-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.4); }
+  50% { box-shadow: 0 0 0 6px rgba(231, 76, 60, 0); }
+}
 
 /* Persona label in status bar */
 .status-persona {
