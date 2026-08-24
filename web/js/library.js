@@ -18,12 +18,21 @@
     function closeLibrary() {
       stopTgPoll();
       libraryOverlay.classList.add("hidden");
+      // Sync activity rail button state
+      const railBtn = document.getElementById("railLibraryBtn") || document.getElementById("libraryBtn");
+      if (railBtn) railBtn.classList.remove('active');
     }
 
     libraryBtn.addEventListener("click", openLibrary);
     libraryClose.addEventListener("click", closeLibrary);
     libraryOverlay.addEventListener("click", (e) => {
       if (e.target === libraryOverlay) closeLibrary();
+    });
+    // Close when rail deselects (e.g. clicking another rail button or toggling off)
+    window.addEventListener('rail-switch', (e) => {
+      if (!e.detail?.target || e.detail.target === 'chat') {
+        if (!libraryOverlay.classList.contains('hidden')) closeLibrary();
+      }
     });
 
     // Library tab switching

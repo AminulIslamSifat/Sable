@@ -43,7 +43,7 @@ SSD_TREE = os.getenv("SABLE_SSD_TREE", str(HOME_DIR / "Projects" / "Sable"))
 HDD_TREE = os.getenv("SABLE_HDD_TREE", str(HOME_DIR / "hdd" / "projects" / "Sable"))
 
 # Display name for the user (used in session personalization)
-USER_NAME = os.getenv("SABLE_USER_NAME", "Sifat")
+USER_NAME = os.getenv("SABLE_USER_NAME", "User")
 
 # Port selection: prefer env var, otherwise detect HDD vs SSD instance
 _DEFAULT_PORT = "61771" if HDD_TREE in str(_ROOT) else "61770"

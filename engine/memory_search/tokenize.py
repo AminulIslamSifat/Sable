@@ -57,8 +57,8 @@ _PATH_NOISE = frozenset({
 def _strip_paths(text: str) -> str:
     """Replace file paths with their meaningful last component(s).
 
-    /home/sifat/Projects/odysseus → "odysseus"
-    /home/sifat/.config/waybar/style.css → "waybar"
+    /home/user/Projects/odysseus → "odysseus"
+    /home/user/.config/waybar/style.css → "waybar"
     """
     def _path_replacer(m: re.Match) -> str:
         path = m.group(0)

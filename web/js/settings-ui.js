@@ -18,12 +18,21 @@
 
     function closeSettings() {
       settingsOverlay.classList.add("hidden");
+      // Sync activity rail button state
+      const railBtn = document.getElementById("railSettingsBtn") || document.getElementById("settingsBtn");
+      if (railBtn) railBtn.classList.remove('active');
     }
 
     settingsBtn.addEventListener("click", openSettings);
     settingsClose.addEventListener("click", closeSettings);
     settingsOverlay.addEventListener("click", (e) => {
       if (e.target === settingsOverlay) closeSettings();
+    });
+    // Close when rail deselects (e.g. clicking another rail button or toggling off)
+    window.addEventListener('rail-switch', (e) => {
+      if (!e.detail?.target || e.detail.target === 'chat') {
+        if (!settingsOverlay.classList.contains('hidden')) closeSettings();
+      }
     });
 
     // ── Configurable Keyboard Shortcut System ────────────────────────────────

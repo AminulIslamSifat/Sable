@@ -203,7 +203,33 @@
     let _ttsLastAction = 0; // timestamp of last start/stop action (ms)
     const TTS_DEBOUNCE_MS = 400; // minimum ms between any TTS actions
     const _activeTTS = { player: null, btn: null, gen: -1 };
+
+    // Speech interruption latch: tracks when user speaks over TTS playback
+    let _speechInterrupted = false;
+    let _speechInterruptedAt = 0;
+    const SPEECH_INTERRUPT_TTL_MS = 120_000; // 2 minutes
+
+    window.markSpeechInterrupted = function() {
+      _speechInterrupted = true;
+      _speechInterruptedAt = Date.now();
+      console.log('[TTS] Speech interruption marked');
+    };
+
+    window.takeSpeechInterrupted = function() {
+      if (!_speechInterrupted) return false;
+      if (Date.now() - _speechInterruptedAt > SPEECH_INTERRUPT_TTL_MS) {
+        _speechInterrupted = false;
+        return false;
+      }
+      _speechInterrupted = false;
+      return true;
+    };
+
     function stopGlobalTTS() {
+      // If TTS was actively playing (not just in cooldown), mark interruption
+      if (_ttsActive && !_ttsStopping && _activeTTS.player) {
+        window.markSpeechInterrupted();
+      }
       const prevGen = _ttsGeneration;
       _ttsGeneration++; // invalidate ALL pending callbacks from previous sessions
       _ttsStopping = true; // mark that WE initiated this stop
@@ -230,6 +256,32 @@
         _ttsStopping = false;
       }, TTS_DEBOUNCE_MS);
     }
+
+    // Auto-TTS for live voice chat: plays text through the global TTS system
+    // so stopGlobalTTS() can interrupt it and _ttsActive guard works correctly.
+    window.playAutoTTS = function(text) {
+      if (!text || !text.trim()) return;
+      // Stop any current TTS first
+      stopGlobalTTS();
+      // Wait for debounce cooldown then start
+      setTimeout(() => {
+        const gen = _ttsGeneration;
+        const player = new TTSStreamPlayer((state) => {
+          if (gen !== _ttsGeneration) return; // stale
+          if (state === 'stopped') {
+            _ttsActive = false;
+            _activeTTS.player = null;
+            _activeTTS.btn = null;
+            console.log('[TTS] Auto-TTS finished');
+          }
+        });
+        _ttsActive = true;
+        _activeTTS.player = player;
+        _activeTTS.btn = null; // no button to update
+        _activeTTS.gen = gen;
+        player.play(text);
+      }, TTS_DEBOUNCE_MS + 50);
+    };
 
     const attachBtn     = document.getElementById("attachBtn");
     const fileInput     = document.getElementById("fileInput");
