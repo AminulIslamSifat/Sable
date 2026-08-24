@@ -38,6 +38,7 @@ dependencies = [
     "huggingface-hub>=0.25.0",
     "edge-tts>=7.2.8",
     "json-repair>=0.63.3",
+    "rank-bm25>=0.2.2",
 ]
 
 [tool.uv]
