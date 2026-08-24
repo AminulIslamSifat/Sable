@@ -440,24 +440,17 @@
       boxSelectionEnabled: false,
     });
 
-    // ── cose-bilkent layout — fast force-directed, no clustering overhead ──
+    // ── Concentric layout — Obsidian-style radial rings by connectivity ──
     const layout = cy.layout({
-      name: 'cose-bilkent',
+      name: 'concentric',
       animate: 'end',
       animationDuration: 400,
       fit: true,
       padding: 60,
-      randomize: false,
-      nodeRepulsion: 1500,
-      idealEdgeLength: 30,
-      edgeElasticity: 0.1,
-      numIter: 100,
-      tile: true,
-      tilingPaddingVertical: 10,
-      tilingPaddingHorizontal: 10,
-      gravityRangeCompound: 1.5,
-      gravityCompound: 1.0,
-      gravityRange: 3.8,
+      concentric: (node) => node.degree(),
+      levelWidth: () => 2,
+      minNodeSpacing: 30,
+      avoidOverlap: true,
     });
 
     layout.run();
