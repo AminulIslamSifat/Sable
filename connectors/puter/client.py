@@ -24,7 +24,7 @@ _SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
 _KEYS_PATH = _SYSTEM_DIR / ".puter_api_keys.json"
 _DRIVER_URL = "https://api.puter.com/drivers/call"
 _USAGE_URL = "https://api.puter.com/metering/usage"
-_OUTPUT_DIR = Path("/home/sifat/sable_output/assets")
+from engine.config import ASSETS_DIR as _OUTPUT_DIR
 
 # Models verified working on the FREE tier (probed 2026-08-17).
 # Other models exist but require paid credits ("Insufficient credits").

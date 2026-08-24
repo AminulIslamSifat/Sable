@@ -23,7 +23,30 @@ PERSISTENT_ROOT = (
 # Override with SABLE_HOST / SABLE_PORT environment variables when needed.
 # --------------------------------------------------------------------------
 HOST = os.getenv("SABLE_HOST", "0.0.0.0")
-_DEFAULT_PORT = "61771" if "/home/sifat/hdd/" in str(_ROOT) else "61770"
+# User home directory — single source of truth for all ~ expansion
+HOME_DIR = Path.home()
+
+# Output directories — where generated content lands
+# Lives outside project root so outputs survive tree wipes/rebuilds.
+OUTPUT_ROOT = HOME_DIR / "sable_output"
+RESEARCH_DIR = OUTPUT_ROOT / "research"
+NOTES_DIR = OUTPUT_ROOT / "notes"
+PROMPTS_DIR = OUTPUT_ROOT / "prompts"
+AGENT_OUTPUT_DIR = OUTPUT_ROOT / "agent"
+ASSETS_DIR = OUTPUT_ROOT / "assets"
+LOGS_DIR = OUTPUT_ROOT / "logs"
+
+# SSD vs HDD tree detection — used by security guards to prevent
+# accidental writes to the live SSD deployment tree.
+# Override with SABLE_SSD_TREE / SABLE_HDD_TREE env vars if needed.
+SSD_TREE = os.getenv("SABLE_SSD_TREE", str(HOME_DIR / "Projects" / "Sable"))
+HDD_TREE = os.getenv("SABLE_HDD_TREE", str(HOME_DIR / "hdd" / "projects" / "Sable"))
+
+# Display name for the user (used in session personalization)
+USER_NAME = os.getenv("SABLE_USER_NAME", "Sifat")
+
+# Port selection: prefer env var, otherwise detect HDD vs SSD instance
+_DEFAULT_PORT = "61771" if HDD_TREE in str(_ROOT) else "61770"
 PORT = int(os.getenv("PORT", os.getenv("SABLE_PORT", _DEFAULT_PORT)))
 
 # --------------------------------------------------------------------------
@@ -39,15 +62,6 @@ INSTRUCTION_DIR = _ROOT / "instruction"
 PERSONAL_PATH = INSTRUCTION_DIR / "personal.md"
 MEMORY_SEARCH_SETTINGS_PATH = _ROOT / "system/memory_search_settings.json"
 AGENT_CONFIG_PATH = _ROOT / "system/agent_config.json"
-
-# Output directories — where generated content lands
-# Lives outside project root so outputs survive tree wipes/rebuilds.
-OUTPUT_ROOT = Path.home() / "sable_output"
-RESEARCH_DIR = OUTPUT_ROOT / "research"
-NOTES_DIR = OUTPUT_ROOT / "notes"
-PROMPTS_DIR = OUTPUT_ROOT / "prompts"
-AGENT_OUTPUT_DIR = OUTPUT_ROOT / "agent"
-ASSETS_DIR = OUTPUT_ROOT / "assets"
 
 # User-created skills (managed via memory consolidation)
 SKILLS_JSON_PATH = BRAIN_DIR / "skills.json"

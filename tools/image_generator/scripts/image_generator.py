@@ -47,7 +47,7 @@ HEADERS = {
     "Content-Type": "text/plain;charset=UTF-8",
 }
 
-OUTPUT_DIR = Path("/home/sifat/sable_output/assets")
+OUTPUT_DIR = Path.home() / "sable_output" / "assets"
 
 
 # ─── Key Management (delegated to perchance_key module) ───────────────────────────────────────────────────────────────────────────────────......

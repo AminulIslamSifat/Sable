@@ -1472,8 +1472,10 @@ async def import_data() -> StreamingResponse:
 # ── Context Pass Settings ──────────────────────────────────────────
 _CONTEXT_PASS_SETTINGS_PATH = BASE_DIR / "system/context_pass_settings.json"
 _CONTEXT_PASS_DEFAULTS: dict[str, Any] = {
-    "summarizer_model": "",   # empty = use current model
-    "browser_data_acc": "",   # empty = use current/default account
+    "summarizer_model": "",   # primary model (empty = use current model)
+    "fallback_models": [],    # ordered list of fallback model IDs (max 2)
+    "browser_data_acc": "",   # primary browser profile (empty = default)
+    "browser_profiles": [],   # ordered list of fallback browser profiles (max 2)
 }
 
 def _load_context_pass_settings() -> dict[str, Any]:
@@ -1501,8 +1503,14 @@ async def set_context_pass_settings(request: Request) -> dict[str, Any]:
     settings = _load_context_pass_settings()
     if "summarizer_model" in body:
         settings["summarizer_model"] = str(body["summarizer_model"]).strip()
+    if "fallback_models" in body:
+        fm = body["fallback_models"]
+        settings["fallback_models"] = [str(m).strip() for m in fm if isinstance(fm, list)] if isinstance(fm, list) else []
     if "browser_data_acc" in body:
         settings["browser_data_acc"] = str(body["browser_data_acc"]).strip()
+    if "browser_profiles" in body:
+        bp = body["browser_profiles"]
+        settings["browser_profiles"] = [str(p).strip() for p in bp if isinstance(bp, list)] if isinstance(bp, list) else []
     _save_context_pass_settings(settings)
     return {"status": "ok", **settings}
 # ── /Context Pass Settings ─────────────────────────────────────────

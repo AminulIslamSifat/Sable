@@ -811,6 +811,7 @@
         <button class="settings-tab" data-tab="cookbook">Cookbook</button>
         <button class="settings-tab" data-tab="personas">Personas</button>
         <button class="settings-tab" data-tab="logs">Live Logs</button>
+        <button class="settings-tab" data-tab="bot"><span class="icon-emoji">🤖</span> Bot</button>
 
         <button class="settings-tab" data-tab="shortcuts"><span class="icon-emoji">⌨️</span> Shortcuts</button>
         <button class="settings-tab" data-tab="updates"><span class="icon-emoji">🔄</span> Updates</button>
@@ -829,6 +830,9 @@
             <button id="logClear" class="icon-btn" title="Clear logs"><span class="icon-emoji">🗑</span><i data-lucide="trash-2" class="icon-lucide"></i></button>
           </div>
           <pre id="logViewer" class="log-viewer"></pre>
+        </div>
+        <div id="tab-bot" class="settings-tab-content">
+          <div id="botSettingsPanel"><p class="muted" style="font-size:12px;">Loading…</p></div>
         </div>
         <div id="tab-general" class="settings-tab-content active">
           <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
@@ -924,20 +928,50 @@
 
           <!-- Context Pass Settings -->
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
-            <label style="font-size:13px;color:var(--text-dim);font-weight:600;display:block;margin-bottom:10px;"><span class="icon-emoji">🔀</span><i data-lucide="arrow-right-left" class="icon-lucide"></i> Context Pass</label>
+            <label style="font-size:13px;color:var(--text-dim);font-weight:600;display:block;margin-bottom:10px;"><span class="icon-emoji">🔀</span><i data-lucide="arrow-right-left" class="icon-lucide"></i> Context Pass — Fallback Chain</label>
+            <!-- Primary model -->
             <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;">
-              <label for="ctxPassModel" style="font-size:12px;color:var(--text-dim);">Summarizer Model</label>
+              <label for="ctxPassModel" style="font-size:12px;color:var(--text-dim);">① Primary Model</label>
               <select id="ctxPassModel" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;width:200px;">
                 <option value="">Default (current model)</option>
               </select>
             </div>
+            <!-- Fallback model 1 -->
             <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;">
-              <label for="ctxPassBrowserAcc" style="font-size:12px;color:var(--text-dim);">Browser Profile</label>
+              <label for="ctxPassFb1" style="font-size:12px;color:var(--text-dim);">② Fallback Model</label>
+              <select id="ctxPassFb1" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;width:200px;">
+                <option value="">— none —</option>
+              </select>
+            </div>
+            <!-- Fallback model 2 -->
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;">
+              <label for="ctxPassFb2" style="font-size:12px;color:var(--text-dim);">③ Fallback Model</label>
+              <select id="ctxPassFb2" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;width:200px;">
+                <option value="">— none —</option>
+              </select>
+            </div>
+            <!-- Primary browser -->
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;margin-top:4px;">
+              <label for="ctxPassBrowserAcc" style="font-size:12px;color:var(--text-dim);">① Primary Browser</label>
               <select id="ctxPassBrowserAcc" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;width:200px;">
                 <option value="">Default (current)</option>
               </select>
             </div>
-            <p class="muted" style="font-size:11px;margin-top:6px;">Model and browser profile used for context summarization. Leave empty to use current defaults.</p>
+            <!-- Fallback browser 1 -->
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;">
+              <label for="ctxPassBp1" style="font-size:12px;color:var(--text-dim);">② Fallback Browser</label>
+              <select id="ctxPassBp1" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;width:200px;">
+                <option value="">— none —</option>
+              </select>
+            </div>
+            <!-- Fallback browser 2 -->
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;">
+              <label for="ctxPassBp2" style="font-size:12px;color:var(--text-dim);">③ Fallback Browser</label>
+              <select id="ctxPassBp2" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;width:200px;">
+                <option value="">— none —</option>
+              </select>
+            </div>
+            <p class="muted" style="font-size:11px;margin-top:6px;">Tries primary → fallback models → fallback browsers in order. First success wins.</p>
           </div>
 
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
@@ -1973,6 +2007,7 @@
   <script src="/static/js/projects-panel.js?v=1"></script>
   <script src="/static/js/settings-init.js?v=1"></script>
   <script src="/static/js/settings-ui.js?v=2"></script>
+  <script src="/static/js/settings-bot.js?v=1"></script>
   <script src="/static/js/library.js?v=2"></script>
   <script src="/static/js/telegram.js?v=3"></script>
   <script src="/static/js/memory-panel.js?v=1"></script>

@@ -5,6 +5,13 @@
 (function () {
   "use strict";
 
+  // Fetch home dir + username from backend for dynamic path resolution
+  fetch("/api/env").then(r => r.json()).then(d => {
+    window.__sable_home = d.home;
+    window.__sable_user = d.user;
+  }).catch(() => {});
+
+
   const overlay = document.getElementById("fsOverlay");
   const closeBtn = document.getElementById("fsClose");
   const switchRootBtn = document.getElementById("fsSwitchRoot");
@@ -975,8 +982,12 @@
   }
 
   /* ---------- Utilities ---------- */
+  // Dynamically detect home dir from first loaded tree path or fallback
+  const _homeDir = (typeof window.__sable_home === 'string') ? window.__sable_home : null;
   function shorten(p) {
-    return p.replace(/^\/home\/sifat/, "~");
+    if (_homeDir) return p.replace(new RegExp('^' + _homeDir.replace(/[.*+?^${}()|[\]\]/g, '\$&')), "~");
+    // Fallback: generic /home/<user> pattern
+    return p.replace(/^\/home\/[^/]+/, "~");
   }
 
   function esc(str) {
@@ -1727,7 +1738,8 @@
         if (typeof AgentPanel !== "undefined") AgentPanel.close();
         // Load tree from saved folder, or default to home dir
         const saved = localStorage.getItem("fs_ide_last_folder");
-        const defaultRoot = saved || "/home/sifat";
+        const homeFallback = window.__sable_home || "/home/" + (window.__sable_user || "user");
+        const defaultRoot = saved || homeFallback;
         leftRoot = defaultRoot;
         leftExpanded.clear();
         leftExpanded.add(defaultRoot);

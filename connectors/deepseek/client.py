@@ -31,7 +31,8 @@ BASE_URL = "https://chat.deepseek.com"
 SOLVER_PATH = Path(__file__).resolve().parent / "pow_solver" / "pow_solver"
 
 # Raw request/response logging
-_RAW_LOG_PATH = Path("/home/sifat/sable_output/logs/deepseek_raw.txt")
+from engine.config import LOGS_DIR as _LOGS_DIR
+_RAW_LOG_PATH = _LOGS_DIR / "deepseek_raw.txt"
 
 
 def _log_raw(direction: str, payload: str) -> None:

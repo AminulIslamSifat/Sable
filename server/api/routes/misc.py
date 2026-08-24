@@ -33,6 +33,16 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@router.get("/api/env")
+def env_info() -> dict[str, str]:
+    """Return non-sensitive environment info for frontend path resolution."""
+    from pathlib import Path
+    from engine.config import USER_NAME
+    return {
+        "home": str(Path.home()),
+        "user": USER_NAME,
+    }
+
 
 @router.get("/api/config/ui")
 def ui_config() -> dict[str, Any]:

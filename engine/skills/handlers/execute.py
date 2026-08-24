@@ -41,35 +41,36 @@ def handle_execute_command(
 
     # Block agent-issued restart/stop of sable.service (user can still do it manually)
     import re as _re
+    from engine.config import SSD_TREE, HDD_TREE, USER_NAME
     if _re.search(r'systemctl\s+(--user\s+)?(restart|stop)\s+sable\.service', cmd):
-        msg = "[BLOCKED] Agent cannot restart/stop sable.service mid-session.\nAsk Sifat to run it manually in a terminal.\n"
+        msg = f"[BLOCKED] Agent cannot restart/stop sable.service mid-session.\nAsk {USER_NAME} to run it manually in a terminal.\n"
         yield _output_event(tag_id, msg, "stderr")
         yield _end_event(tag_id, name, False, started, error="Blocked: sable.service restart not allowed via execute_command")
         return
 
     # Block git checkout universally — destroys uncommitted work
     if _re.search(r'\bgit\s+checkout\b', cmd):
-        msg = "[BLOCKED] git checkout is not allowed. It destroys uncommitted working changes.\nIf you need to revert, ask Sifat first or use targeted file restoration.\n"
+        msg = f"[BLOCKED] git checkout is not allowed. It destroys uncommitted working changes.\nIf you need to revert, ask {USER_NAME} first or use targeted file restoration.\n"
         yield _output_event(tag_id, msg, "stderr")
         yield _end_event(tag_id, name, False, started, error="Blocked: git checkout not allowed")
         return
 
-    # --- SSD tree write guard: block edits to /home/sifat/Projects/Sable ---
+    # --- SSD tree write guard ---
     # Only allow reads and explicit cp from HDD tree (the sanctioned sync path).
-    _SSD_TREE = r'/home/sifat/Projects/Sable'
-    _HDD_TREE = r'/home/sifat/hdd/projects/Sable'
+    _ssd_escaped = _re.escape(SSD_TREE)
+    _hdd_escaped = _re.escape(HDD_TREE)
     _ssd_pattern = _re.compile(
-        r'(/home/sifat/Projects/Sable|~/Projects/Sable|$PROJECT_ROOT)'
+        rf'({_ssd_escaped}|~/Projects/Sable|\$PROJECT_ROOT)'
     )
     if _ssd_pattern.search(cmd):
         # Reads ALWAYS pass. Only block destructive/code-overwriting ops.
         # Sync (HDD->SSD copy) is always allowed — that's the sanctioned path.
-        _has_hdd = bool(_re.search(r'(/home/sifat/hdd/projects/Sable|~/hdd/projects/Sable)', cmd))
+        _has_hdd = bool(_re.search(rf'({_hdd_escaped}|~/hdd/projects/Sable)', cmd))
         _is_cp = bool(_re.search(r'(?:^|\s|;|&&|\|\||\|)\s*cp\b', cmd))
         is_sync = _is_cp and _has_hdd
         is_write = False
         # 1. shell redirection INTO an SSD path  (> or >> or 2>)
-        if _re.search(r'(>>?|2>)\s*["\']?(/home/sifat/Projects/Sable|~/Projects/Sable)', cmd):
+        if _re.search(rf'(>>?|2>)\s*["\']?({_ssd_escaped}|~/Projects/Sable)', cmd):
             is_write = True
         # 2. destructive / in-place-mutating verbs (mkdir excluded — safe, needed for sync)
         _mutate = r'(?:^|\s|;|&&|\|\||\|)\s*(rm|mv|touch|tee|chmod|chown|truncate|shred|sed\s+-i|perl\s+-i)\b'
@@ -82,7 +83,7 @@ def handle_execute_command(
         if _re.search(r'\bgit\s+(add|commit|push|merge|rebase|reset|checkout|pull|clone|rm|mv)\b', cmd):
             is_write = True
         if is_write and not is_sync:
-            msg = "[BLOCKED] Direct write to /home/sifat/Projects/Sable is not allowed.\nEdit in /home/sifat/hdd/projects/Sable first, dont touch ssd Sable.\n"
+            msg = f"[BLOCKED] Direct write to {SSD_TREE} is not allowed.\nEdit in {HDD_TREE} first, dont touch ssd Sable.\n"
             yield _output_event(tag_id, msg, 'stderr')
             yield _end_event(tag_id, name, False, started, error='Blocked: SSD tree write guard')
             return
