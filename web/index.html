@@ -14,7 +14,7 @@
   <link rel="stylesheet" href="/static/css/panels.css?v=54">
   <link rel="stylesheet" href="/static/css/components.css?v=20">
   <link rel="stylesheet" href="/static/css/responsive.css?v=6">
-  <link rel="stylesheet" href="/static/css/agents.css?v=33">
+  <link rel="stylesheet" href="/static/css/agents.css?v=36">
   <link rel="stylesheet" href="/static/css/cookbook.css?v=1">
   <link rel="stylesheet" href="/static/css/search-panel.css?v=2">
   <link rel="stylesheet" href="/static/css/dashboard.css?v=1">
@@ -256,7 +256,6 @@
         <div id="editorTabBar" class="ide-header-tab-bar hidden"></div>
         <div class="header-center-group">
           <div class="header-cell header-model-cell"></div>
-          <div class="header-agent-cell" id="agentTopBarSlot"></div>
         </div>
         <div class="header-cell header-icon-cell header-right-pair">
           <button id="terminalToggle" class="icon-btn" title="Toggle terminal"><span class="icon-emoji">🖥</span><i data-lucide="terminal" class="icon-lucide"></i></button>
@@ -269,6 +268,9 @@
         </div>
       </div>
     </header>
+
+    <!-- Agent status bar (outside header so it's visible even when header is hidden) -->
+    <div id="agentTopBarSlot" class="agent-top-bar-slot hidden"></div>
 
     <!-- Tab bar for multi-chat -->
 
@@ -1980,7 +1982,7 @@
   <script src="/static/js/research-panel.js?v=3"></script>
   <script src="/static/js/image-panel.js?v=1"></script>
   <script src="/static/js/prompt-panel.js?v=1"></script>
-  <script src="/static/js/agents.js?v=26"></script>
+  <script src="/static/js/agents.js?v=30"></script>
   <script src="/static/js/filesystem.js?v=32"></script>
   <script src="/static/js/mode.js?v=20"></script>
   <script src="/static/js/resize-panels.js?v=3"></script>
