@@ -741,137 +741,213 @@ def _load_ctx_pass_settings() -> dict[str, str]:
 
 @router.post("/api/context/pass")
 async def context_pass(req: ContextPassRequest) -> dict[str, Any]:
+    import re as _re
+    _tc_re = _re.compile(r'<tool_call[\s>]', _re.IGNORECASE)
+    _tr_re = _re.compile(r'<tool_result[\s>]', _re.IGNORECASE)
+
     messages = get_messages(req.chat_id)
     if not messages:
         return {"error": "No messages in this chat"}
 
-    # Build a compact transcript (skip empty/system noise)
-    lines: list[str] = []
-    for m in messages:
+    if len(messages) < 2:
+        return {"error": "Not enough context to summarize"}
+
+    # --- Extract head/tail programmatically ---
+    # Find first user message
+    first_user_idx = None
+    for i, m in enumerate(messages):
+        if m.get("role") == "user":
+            first_user_idx = i
+            break
+
+    # Find last user message
+    last_user_idx = None
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            last_user_idx = i
+            break
+
+    if first_user_idx is None or last_user_idx is None:
+        return {"error": "No user messages found"}
+
+    # Collect first 3 tool_call/result pairs after first user message
+    head_end_idx = first_user_idx + 1
+    tc_count = 0
+    for i in range(first_user_idx + 1, len(messages)):
+        content = (messages[i].get("content") or "")
+        role = messages[i].get("role", "")
+        if _tc_re.search(content) or _tr_re.search(content) or role == "tool":
+            head_end_idx = i + 1
+            tc_count += 1
+            if tc_count >= 6:  # 3 pairs
+                break
+        elif role == "assistant" and not _tc_re.search(content):
+            head_end_idx = i + 1
+
+    # Collect last 5 tool_call/result pairs
+    tail_start_idx = last_user_idx
+    tc_count = 0
+    for i in range(len(messages) - 1, last_user_idx - 1, -1):
+        content = (messages[i].get("content") or "")
+        role = messages[i].get("role", "")
+        if _tc_re.search(content) or _tr_re.search(content) or role == "tool":
+            tail_start_idx = i
+            tc_count += 1
+            if tc_count >= 10:  # 5 pairs
+                break
+
+    if tail_start_idx < head_end_idx:
+        tail_start_idx = head_end_idx
+
+    # --- Format head verbatim ---
+    first_user_content = (messages[first_user_idx].get("content") or "").strip()
+    head_parts = [f"## First User Message\n{first_user_content}"]
+    early_tc = []
+    for m in messages[first_user_idx + 1:head_end_idx]:
+        c = (m.get("content") or "").strip()
+        if c:
+            if len(c) > 3000:
+                c = c[:3000] + "… [truncated]"
+            early_tc.append(c)
+    if early_tc:
+        head_parts.append("## Early Tool Calls\n" + "\n".join(early_tc))
+    head_text = "\n\n".join(head_parts)
+
+    # --- Format tail verbatim ---
+    last_user_content = (messages[last_user_idx].get("content") or "").strip()
+    tail_parts = [f"## Last User Message\n{last_user_content}"]
+    recent_tc = []
+    for m in messages[last_user_idx + 1:]:
+        c = (m.get("content") or "").strip()
+        if c:
+            if len(c) > 3000:
+                c = c[:3000] + "… [truncated]"
+            recent_tc.append(c)
+    if recent_tc:
+        tail_parts.append("## Recent Tool Calls\n" + "\n".join(recent_tc))
+    tail_text = "\n\n".join(tail_parts)
+
+    # --- Build middle transcript for summarizer ---
+    middle_msgs = messages[head_end_idx:tail_start_idx]
+    middle_lines = []
+    for m in middle_msgs:
         role = m.get("role", "unknown")
         content = (m.get("content") or "").strip()
         if not content:
             continue
         if len(content) > 3000:
             content = content[:3000] + "… [truncated]"
-        lines.append(f"[{role}]: {content}")
+        middle_lines.append(f"[{role}]: {content}")
 
-    if len(lines) < 2:
-        return {"error": "Not enough context to summarize"}
+    middle_text = "\n".join(middle_lines)
+    if len(middle_text) > 60000:
+        middle_text = middle_text[:60000] + "\n… [transcript truncated]"
 
-    transcript = "\n".join(lines)
-    if len(transcript) > 60000:
-        transcript = transcript[:60000] + "\n… [transcript truncated]"
-
+    # Only send middle to summarizer — head/tail already extracted
     prompt = (
-        "You are a context handoff summarizer. Below is a conversation transcript from "
-        "a session that is being switched to a different model. Produce a focused "
-        "operational briefing so the new model can continue the work with zero loss "
-        "of state. No filler, no meta-commentary, no 'here is a summary' — jump "
-        "straight to substance.\n\n"
+        "You are compressing the MIDDLE portion of a conversation transcript. "
+        "The first user message, early tool calls, last user message, and recent tool "
+        "calls are already extracted separately — DO NOT reproduce them.\n\n"
 
-        "HARD RULES (apply to all sections):\n"
-        "- Never invent, infer, or smooth over details that are not explicitly present "
-        "in the transcript. If something is ambiguous, unstated, or uncertain, write "
-        "[unclear] instead of guessing.\n"
-        "- Preserve all code snippets, file paths, commands, config values, error "
-        "messages, and stack traces VERBATIM — never paraphrase or reword these. "
-        "Quote them exactly as they appear in the transcript, in code blocks.\n"
-        "- Preserve exact technical details: package/library versions, OS, device/"
-        "environment specifics, variable names, function signatures.\n"
-        "- The word limit below applies to prose only. Verbatim code/error/config "
-        "blocks are exempt from the word count and should be included in full when "
-        "they represent the current working state.\n\n"
+        "YOUR ONLY JOB: Compress this transcript into labeled turn pairs.\n\n"
 
-        "Structure (each section progressively more detailed than the last, except "
-        "verbatim blocks which are always complete regardless of section):\n\n"
+        "OUTPUT FORMAT:\n\n"
+        "## user\n"
+        "[1-2 sentence summary: what the user asked/requested]\n"
+        "## model\n"
+        "[Compressed actions: which files were viewed/edited/created, which tools were "
+        "called, compressed tool result, any errors or problems encountered]\n\n"
+        "Repeat ## user / ## model pairs as needed. Single-sided turns are allowed "
+        "(e.g., only ## model if the model acted without a new user prompt).\n"
+        "Be DENSE — name files, tools, and outcomes. Skip pleasantries and meta-talk.\n\n"
 
-        "• Working topic — Concise but complete: what the topic is, the motive/goal, "
-        "the plan, what's been done, what's pending. State clearly whether the task "
-        "is finished, abandoned, or stopped mid-way — and if mid-way, the exact point "
-        "of interruption.\n\n"
+        "If this transcript segment contains MORE THAN 5 tool calls, also add at the end:\n\n"
+        "## Intermediary Summary\n"
+        "[For each tool call beyond the last 5: what tool was called, compressed result, "
+        "any problems or improvements needed]\n\n"
 
-        "• Background — Only the context needed to understand the current task "
-        "(prior decisions, constraints, why this approach was chosen over others). "
-        "Skip anything not relevant to continuing the work.\n\n"
-
-        "• Last exchange (most detailed so far) — The user's most recent prompt "
-        "passed near-verbatim, plus what was actually attempted in response: what "
-        "was tried, why that approach was chosen, what succeeded, what failed (with "
-        "exact error output), and the precise current state of any files/code/"
-        "commands at the point the session stopped.\n\n"
-
-        "• Planned next move (MOST detailed) — Concrete next steps in order, open "
-        "questions, known blockers, and every specific file/path/config/command "
-        "involved. If the previous model had a next action in mind but didn't "
-        "execute it, state exactly what that action was.\n\n"
-
-        "Target ~800 words of prose across all sections combined (verbatim blocks "
-        "excluded from this count). Omit anything irrelevant to resuming the work.\n\n"
-        f"---\n{transcript}"
+        "HARD RULES:\n"
+        "- Output ONLY the ## user / ## model pairs (and optional ## Intermediary Summary).\n"
+        "- NEVER output ## First User Message, ## Early Tool Calls, ## Last User Message, "
+        "## Recent Tool Calls, or any other section headers.\n"
+        "- NEVER add high-level summaries, synthesis, overview, or commentary.\n"
+        "- Never invent details. Write [unclear] if ambiguous.\n"
+        "- Preserve code, paths, commands, errors VERBATIM in code blocks within turn pairs.\n\n"
+        f"---\n{middle_text}"
     )
 
-    # Load settings: model + browser-data-acc
+    # Load settings: primary model + fallback chain
     settings = _load_ctx_pass_settings()
     model = settings.get("summarizer_model") or req.model  # fallback to current
     browser_acc = settings.get("browser_data_acc", "").strip()
+    fallback_models: list[str] = settings.get("fallback_models", [])
+    browser_profiles: list[str] = settings.get("browser_profiles", [])
 
     logger.info(
-        "[context-pass] chat_id=%s | model=%r | browser_acc=%r | settings=%s | transcript_len=%d",
-        req.chat_id, model, browser_acc, settings, len(transcript),
+        "[context-pass] chat_id=%s | model=%r | browser_acc=%r | fallbacks=%s/%s | transcript_len=%d",
+        req.chat_id, model, browser_acc, fallback_models, browser_profiles, len(transcript),
     )
 
-    try:
-        # Route: API connector (gemini/deepseek/groq/mistral) vs Qwen ChatService
-        api_backend = _resolve_api_backend(model)
+    async def _try_ctx_pass_call(mdl: str, browser_acc_name: str = "") -> dict[str, Any] | None:
+        """Try a single context pass call. Returns result dict or None on failure."""
+        try:
+            api_backend = _resolve_api_backend(mdl)
+            if api_backend:
+                connector = get_connector(api_backend)
+                result = await connector.chat(message=prompt, model=mdl, thinking_mode="fast")
+            elif browser_acc_name:
+                from engine.service import ChatService
+                from engine.config import _SYSTEM
+                acc_dir = _SYSTEM / browser_acc_name
+                if not acc_dir.exists():
+                    logger.warning("[context-pass] Browser profile dir not found: %s", acc_dir)
+                    return None
+                temp_service = ChatService(user_data_dir=str(acc_dir))
+                try:
+                    result = await temp_service.chat(message=prompt, model=mdl, thinking_mode="fast")
+                finally:
+                    await temp_service.close()
+            else:
+                result = await service.chat(message=prompt, model=mdl, thinking_mode="fast")
 
-        if api_backend:
-            # Non-Qwen model → use the appropriate API connector directly
-            logger.info("[context-pass] routing via connector: %s", api_backend)
-            connector = get_connector(api_backend)
-            result = await connector.chat(
-                message=prompt,
-                model=model,
-                thinking_mode="fast",
-            )
-        elif browser_acc:
-            # Qwen model with dedicated browser profile
-            from engine.service import ChatService
-            from engine.config import _SYSTEM
-            acc_dir = _SYSTEM / browser_acc
-            if not acc_dir.exists():
-                logger.error("[context-pass] browser profile dir not found: %s", acc_dir)
-                return {"error": f"Browser profile '{browser_acc}' not found"}
-            logger.info("[context-pass] using dedicated ChatService with profile: %s", acc_dir)
-            temp_service = ChatService(user_data_dir=str(acc_dir))
-            try:
-                result = await temp_service.chat(
-                    message=prompt,
-                    model=model,
-                    thinking_mode="fast",
-                )
-            finally:
-                await temp_service.close()
-        else:
-            # Qwen model, default service
-            logger.info("[context-pass] using default service, model=%r", model)
-            result = await service.chat(
-                message=prompt,
-                model=model,
-                thinking_mode="fast",
-            )
+            answer = result.get("answer", "").strip()
+            if answer:
+                return result
+            logger.warning("[context-pass] %s returned empty: %s", mdl, result.get("error", ""))
+            return None
+        except Exception as exc:
+            logger.warning("[context-pass] %s failed: %s: %s", mdl, type(exc).__name__, exc)
+            return None
 
-        logger.info("[context-pass] result keys=%s, answer_len=%d, error=%r",
-                    list(result.keys()), len(result.get("answer", "")), result.get("error"))
-        answer = result.get("answer", "").strip()
-        if not answer:
-            err = result.get("error", "")
-            logger.warning("[context-pass] empty answer. error=%r, full result: %s", err, result)
-            return {"error": f"Summarization returned empty response. {err}".strip()}
-        return {"summary": answer}
-    except Exception as exc:
-        logger.exception("[context-pass] summarization failed")
-        return {"error": f"Summarization failed: {type(exc).__name__}: {exc}"}
+    def _assemble_summary(flow_text: str) -> str:
+        """Assemble final output: head + flow + tail + continue."""
+        parts = [head_text]
+        if flow_text.strip():
+            parts.append(f"## Conversation Flow\n{flow_text}")
+        parts.append(tail_text)
+        parts.append("continue")
+        return "\n\n".join(parts)
+
+    # Step 1: Primary model (with primary browser profile if Qwen)
+    result = await _try_ctx_pass_call(model, browser_acc)
+    if result:
+        return {"summary": _assemble_summary(result.get("answer", "").strip())}
+
+    # Step 2: Fallback models
+    for fb_model in fallback_models[:2]:
+        result = await _try_ctx_pass_call(fb_model)
+        if result:
+            logger.info("[context-pass] Fallback model succeeded: %s", fb_model)
+            return {"summary": _assemble_summary(result.get("answer", "").strip())}
+
+    # Step 3: Fallback browser profiles (using primary model)
+    for fb_profile in browser_profiles[:2]:
+        result = await _try_ctx_pass_call(model, fb_profile)
+        if result:
+            logger.info("[context-pass] Fallback browser profile succeeded: %s", fb_profile)
+            return {"summary": _assemble_summary(result.get("answer", "").strip())}
+
+    return {"error": "All summarizer fallbacks exhausted — no model/browser combination succeeded"}
 
 
 # ---------------------------------------------------------------------------

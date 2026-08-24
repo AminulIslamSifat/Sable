@@ -127,9 +127,116 @@ _TAIL_PRESERVE_LIMIT = 250_000      # max chars to keep verbatim at the end
 _SUMMARIZER_MIN_HEAD = 5_000        # skip summarization if head is smaller than this
 _SUMMARIZER_MAX_CONCURRENCY = 3     # max parallel summarizer API calls
 _SUMMARIZER_CACHE_TTL = 300         # seconds to cache summaries per chat_id
+_HEAD_TOOL_CALLS = 3                # first N tool_call/result pairs to preserve verbatim
+_TAIL_TOOL_CALLS = 5                # last N tool_call/result pairs to preserve verbatim
 
 _summarizer_semaphore: asyncio.Semaphore | None = None
 _summarizer_cache: dict[str, tuple[float, str]] = {}  # chat_id → (timestamp, result)
+
+import re as _re
+_tool_call_re = _re.compile(r'<tool_call[\s>]', _re.IGNORECASE)
+_tool_result_re = _re.compile(r'<tool_result[\s>]', _re.IGNORECASE)
+
+
+def _extract_head_tail(messages: list[dict]) -> tuple[str, str, list[dict]]:
+    """Extract verbatim head/tail from messages, return (head_text, tail_text, middle_messages).
+
+    Head: first user message + first N tool_call/result pairs.
+    Tail: last user message + last N tool_call/result pairs.
+    Middle: everything between head and tail (sent to summarizer).
+    """
+    if not messages:
+        return "", "", []
+
+    # --- Find first user message ---
+    first_user_idx = None
+    for i, m in enumerate(messages):
+        if m.get("role") == "user":
+            first_user_idx = i
+            break
+
+    # --- Find last user message ---
+    last_user_idx = None
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            last_user_idx = i
+            break
+
+    if first_user_idx is None or last_user_idx is None:
+        return "", "", messages
+
+    # --- Collect first N tool_call/result pairs after first user message ---
+    head_end_idx = first_user_idx + 1  # at minimum, include first user message
+    tc_count = 0
+    for i in range(first_user_idx + 1, len(messages)):
+        content = (messages[i].get("content") or "")
+        role = messages[i].get("role", "")
+        if _tool_call_re.search(content) or _tool_result_re.search(content) or role == "tool":
+            head_end_idx = i + 1
+            tc_count += 1
+            if tc_count >= _HEAD_TOOL_CALLS * 2:  # pairs = call + result
+                break
+        elif role == "assistant" and not _tool_call_re.search(content):
+            # Non-tool assistant message — still include in head if within range
+            head_end_idx = i + 1
+
+    # --- Collect last N tool_call/result pairs before/at last user message ---
+    tail_start_idx = last_user_idx
+    tc_count = 0
+    for i in range(len(messages) - 1, last_user_idx - 1, -1):
+        content = (messages[i].get("content") or "")
+        role = messages[i].get("role", "")
+        if _tool_call_re.search(content) or _tool_result_re.search(content) or role == "tool":
+            tail_start_idx = i
+            tc_count += 1
+            if tc_count >= _TAIL_TOOL_CALLS * 2:
+                break
+
+    # Ensure tail doesn't overlap head
+    if tail_start_idx < head_end_idx:
+        tail_start_idx = head_end_idx
+
+    # --- Format head ---
+    head_msgs = messages[first_user_idx:head_end_idx]
+    head_lines = []
+    first_user_content = (messages[first_user_idx].get("content") or "").strip()
+    head_lines.append(f"## First User Message\n{first_user_content}")
+
+    # Remaining head messages are early tool calls
+    early_tc_parts = []
+    for m in head_msgs[1:]:
+        content = (m.get("content") or "").strip()
+        if content:
+            early_tc_parts.append(content)
+    if early_tc_parts:
+        head_lines.append("## Early Tool Calls\n" + "\n".join(early_tc_parts))
+
+    head_text = "\n\n".join(head_lines)
+
+    # --- Format tail ---
+    tail_msgs = messages[tail_start_idx:]
+    tail_lines = []
+
+    # Find last user message content in tail
+    last_user_content = (messages[last_user_idx].get("content") or "").strip()
+
+    # Messages after last user message are recent tool calls
+    recent_tc_parts = []
+    for m in messages[last_user_idx + 1:]:
+        content = (m.get("content") or "").strip()
+        if content:
+            recent_tc_parts.append(content)
+
+    tail_lines.append(f"## Last User Message\n{last_user_content}")
+    if recent_tc_parts:
+        tail_lines.append("## Recent Tool Calls\n" + "\n".join(recent_tc_parts))
+
+    tail_text = "\n\n".join(tail_lines)
+
+    # --- Middle messages (between head end and tail start) ---
+    middle = messages[head_end_idx:tail_start_idx]
+
+    return head_text, tail_text, middle
 
 
 def _chunk_text(text: str, limit: int) -> list[str]:
@@ -160,12 +267,14 @@ def _chunk_text(text: str, limit: int) -> list[str]:
 async def _build_switch_context(chat_id: str, model: str) -> str:
     """Build a formatted context string for passing to a new account after switch.
 
-    Rules:
-    - Total context <= 500k chars → return as-is (no summarization needed).
-    - Otherwise: preserve up to 250k chars of tail (including last user message),
-      summarize the head in ≤300k parallel chunks, stitch summaries sequentially.
+    Hermes-style format:
+    - Head (first user msg + first 3 tool calls) extracted verbatim in code
+    - Tail (last user msg + last 5 tool calls) extracted verbatim in code
+    - Only the middle portion is sent to the summarizer model
+    - Model produces ## Conversation Flow + optional ## Intermediary Summary
+    - Final output assembled: head + flow + intermediary + tail + 'continue'
 
-    Returns formatted string with [Context Summary] + [Ongoing conversation] sections.
+    Falls back to raw transcript if total <= 500k chars.
     """
     import asyncio as _asyncio
     import time as _time
@@ -178,64 +287,55 @@ async def _build_switch_context(chat_id: str, model: str) -> str:
     if not messages:
         return ""
 
-    # --- Calculate total length without materializing full string ---
-    # Build formatted lines but track cumulative length to find split point
-    lines: list[str] = []
-    line_lengths: list[int] = []  # cumulative length after each line (including \n)
-    cumulative = 0
-    for m in messages:
-        role = m.get("role", "unknown")
-        content = (m.get("content") or "").strip()
-        if not content:
-            continue
-        line = f"[{role}]: {content}"
-        lines.append(line)
-        cumulative += len(line) + 1  # +1 for \n join separator
-        line_lengths.append(cumulative)
+    # --- Calculate total length ---
+    total_chars = sum(len((m.get("content") or "").strip()) for m in messages)
 
-    total_len = cumulative - 1 if cumulative > 0 else 0  # remove trailing \n
-
-    # Under threshold — no summarization needed, materialize and return
-    if total_len <= 500_000:
+    # Under threshold — no summarization needed
+    if total_chars <= 500_000:
+        lines = []
+        for m in messages:
+            role = m.get("role", "unknown")
+            content = (m.get("content") or "").strip()
+            if content:
+                lines.append(f"[{role}]: {content}")
         return "\n".join(lines)
 
-    # --- Check cache before doing any work ---
+    # --- Check cache ---
     now = _time.monotonic()
     cached = _summarizer_cache.get(chat_id)
     if cached and (now - cached[0]) < _SUMMARIZER_CACHE_TTL:
         logger.info("[auto-switch] Using cached summary for %s", chat_id)
         return cached[1]
 
-    # --- Find tail boundary by line index (no full-string slicing) ---
-    tail_threshold = total_len - _TAIL_PRESERVE_LIMIT
-    # Binary search for the first line whose cumulative length >= tail_threshold
-    lo, hi = 0, len(line_lengths) - 1
-    tail_line_idx = len(lines)  # default: all lines are tail
-    while lo <= hi:
-        mid = (lo + hi) // 2
-        if line_lengths[mid] >= tail_threshold:
-            tail_line_idx = mid
-            hi = mid - 1
-        else:
-            lo = mid + 1
+    # --- Extract head/tail programmatically ---
+    head_text, tail_text, middle_messages = _extract_head_tail(messages)
 
-    head_lines = lines[:tail_line_idx]
-    tail_lines = lines[tail_line_idx:]
-    head_text = "\n".join(head_lines) if head_lines else ""
-    tail_text = "\n".join(tail_lines) if tail_lines else ""
+    # Format middle into transcript for summarizer
+    middle_lines = []
+    for m in middle_messages:
+        role = m.get("role", "unknown")
+        content = (m.get("content") or "").strip()
+        if content:
+            middle_lines.append(f"[{role}]: {content}")
+    middle_text = "\n".join(middle_lines)
 
-    # Head too small to justify an API call — include inline
-    if len(head_text) < _SUMMARIZER_MIN_HEAD:
-        result = f"[Context Summary]\n{head_text}\n\n[Ongoing conversation]\n{tail_text}" if head_text.strip() else tail_text
+    # Middle too small — skip summarization, include inline
+    if len(middle_text) < _SUMMARIZER_MIN_HEAD:
+        parts = [head_text]
+        if middle_text.strip():
+            parts.append(f"## Conversation Flow\n{middle_text}")
+        parts.append(tail_text)
+        parts.append("continue")
+        result = "\n\n".join(parts)
         _summarizer_cache[chat_id] = (now, result)
         return result
 
-    # --- Chunked parallel summarization with concurrency cap ---
-    chunks = _chunk_text(head_text, _SUMMARIZER_CHUNK_LIMIT)
+    # --- Chunked parallel summarization of MIDDLE only ---
+    chunks = _chunk_text(middle_text, _SUMMARIZER_CHUNK_LIMIT)
     total_chunks = len(chunks)
     logger.info(
-        "[auto-switch] Summarizing %d chars in %d chunk(s) (head=%d, tail=%d)",
-        total_len, total_chunks, len(head_text), len(tail_text),
+        "[auto-switch] Summarizing middle %d chars in %d chunk(s) (head=%d, tail=%d, total=%d)",
+        len(middle_text), total_chunks, len(head_text), len(tail_text), total_chars,
     )
 
     async def _guarded_summarize(chunk: str, idx: int) -> str:
@@ -244,15 +344,33 @@ async def _build_switch_context(chat_id: str, model: str) -> str:
             return await _run_summarizer(chunk, model, chunk_index=idx, total_chunks=total_chunks)
 
     tasks = [_guarded_summarize(chunk, i) for i, chunk in enumerate(chunks)]
-    summaries = await _asyncio.gather(*tasks)
+    flow_summaries = await _asyncio.gather(*tasks)
 
-    # Stitch sequentially — each summary is already structured
-    stitched = "\n\n".join(
-        f"### Part {i + 1}/{total_chunks}\n{s}"
-        for i, s in enumerate(summaries)
+    # Stitch conversation flow parts
+    if total_chunks > 1:
+        stitched_flow = "\n\n".join(
+            f"### Part {i + 1}/{total_chunks}\n{s}"
+            for i, s in enumerate(flow_summaries)
+        )
+    else:
+        stitched_flow = flow_summaries[0] if flow_summaries else ""
+
+    # --- Assemble final output ---
+    parts = [head_text, f"## Conversation Flow\n{stitched_flow}"]
+
+    # Count tool calls after last user message for intermediary summary decision
+    tail_tc_count = sum(
+        1 for m in messages
+        if (_tool_call_re.search(m.get("content") or "") or
+            _tool_result_re.search(m.get("content") or "") or
+            m.get("role") == "tool")
     )
+    # The summarizer handles intermediary summary in its output;
+    # if it produced one, it's already in stitched_flow
 
-    result = f"[Context Summary]\n{stitched}\n\n[Ongoing conversation]\n{tail_text}"
+    parts.append(tail_text)
+    parts.append("continue")
+    result = "\n\n".join(parts)
 
     # Cache the result
     _summarizer_cache[chat_id] = (now, result)
@@ -297,60 +415,93 @@ async def _run_summarizer(
         position_note = ""
 
     prompt = (
-        "You are a context handoff summarizer. Below is a conversation transcript from "
-        "a session being switched to a different account. Produce a STRUCTURED operational "
-        "briefing so the new session can continue with zero loss of state.\n\n"
+        "You are compressing the MIDDLE portion of a conversation transcript. "
+        "The first user message, early tool calls, last user message, and recent tool "
+        "calls are already extracted separately — DO NOT reproduce them.\n\n"
         f"{position_note}"
-        "OUTPUT FORMAT — use these exact section headers:\n\n"
-        "## Task\n"
-        "What the user is trying to accomplish (1-2 sentences).\n\n"
-        "## Intent\n"
-        "The user's underlying goal/motivation and any constraints they've stated.\n\n"
-        "## Plan\n"
-        "The approach being taken. List key decisions and rationale.\n\n"
-        "## Progress\n"
-        "Step-by-step record of what was done. For each significant step:\n"
-        "- Command/action taken\n"
-        "- Output/result summary\n"
-        "- Any errors encountered and how they were resolved\n\n"
-        "## Next Steps\n"
-        "What remains to be done. Be specific and actionable.\n\n"
+        "YOUR ONLY JOB: Compress this transcript into labeled turn pairs.\n\n"
+
+        "OUTPUT FORMAT:\n\n"
+        "## user\n"
+        "[1-2 sentence summary: what the user asked/requested]\n"
+        "## model\n"
+        "[Compressed actions: which files were viewed/edited/created, which tools were "
+        "called, compressed tool result, any errors or problems encountered]\n\n"
+        "Repeat ## user / ## model pairs as needed. Single-sided turns are allowed "
+        "(e.g., only ## model if the model acted without a new user prompt).\n"
+        "Be DENSE — name files, tools, and outcomes. Skip pleasantries and meta-talk.\n\n"
+
+        "If this transcript segment contains MORE THAN 5 tool calls, also add at the end:\n\n"
+        "## Intermediary Summary\n"
+        "[For each tool call beyond the last 5: what tool was called, compressed result, "
+        "any problems or improvements needed]\n\n"
+
         "HARD RULES:\n"
-        "- Never invent details not in the transcript. Write [unclear] if ambiguous.\n"
-        "- Preserve all code, paths, commands, errors VERBATIM in code blocks.\n"
-        "- Each section must be present even if brief. Use 'N/A' if not applicable.\n"
-        "- Keep prose concise. Verbatim code blocks are exempt from length limits.\n\n"
+        "- Output ONLY the ## user / ## model pairs (and optional ## Intermediary Summary).\n"
+        "- NEVER output ## First User Message, ## Early Tool Calls, ## Last User Message, "
+        "## Recent Tool Calls, or any other section headers.\n"
+        "- NEVER add high-level summaries, synthesis, overview, or commentary.\n"
+        "- Never invent details. Write [unclear] if ambiguous.\n"
+        "- Preserve code, paths, commands, errors VERBATIM in code blocks within turn pairs.\n\n"
         f"---\n{transcript}"
     )
 
-    try:
-        api_backend = _resolve_api_backend(sum_model)
-        if api_backend:
-            connector = get_connector(api_backend)
-            result = await connector.chat(message=prompt, model=sum_model, thinking_mode="fast")
-        elif browser_acc:
-            from engine.service import ChatService
-            from engine.config import _SYSTEM
-            acc_dir = _SYSTEM / browser_acc
-            if acc_dir.exists():
-                temp_service = ChatService(user_data_dir=str(acc_dir))
-                try:
-                    result = await temp_service.chat(message=prompt, model=sum_model, thinking_mode="fast")
-                finally:
-                    await temp_service.close()
-            else:
-                result = await service.chat(message=prompt, model=sum_model, thinking_mode="fast")
-        else:
-            result = await service.chat(message=prompt, model=sum_model, thinking_mode="fast")
+    # Build fallback chain: primary → fallback_models → browser_profiles
+    fallback_models: list[str] = settings.get("fallback_models", [])
+    browser_profiles: list[str] = settings.get("browser_profiles", [])
 
-        answer = result.get("answer", "").strip()
+    async def _try_summarizer_call(mdl: str, browser_acc_name: str = "") -> str | None:
+        """Try a single summarizer call. Returns answer string or None on failure."""
+        try:
+            api_backend = _resolve_api_backend(mdl)
+            if api_backend:
+                connector = get_connector(api_backend)
+                result = await connector.chat(message=prompt, model=mdl, thinking_mode="fast")
+            elif browser_acc_name:
+                from engine.service import ChatService
+                from engine.config import _SYSTEM
+                acc_dir = _SYSTEM / browser_acc_name
+                if acc_dir.exists():
+                    temp_service = ChatService(user_data_dir=str(acc_dir))
+                    try:
+                        result = await temp_service.chat(message=prompt, model=mdl, thinking_mode="fast")
+                    finally:
+                        await temp_service.close()
+                else:
+                    logger.warning("[auto-switch] Browser profile dir not found: %s", acc_dir)
+                    return None
+            else:
+                result = await service.chat(message=prompt, model=mdl, thinking_mode="fast")
+
+            answer = result.get("answer", "").strip()
+            if answer:
+                return answer
+            logger.warning("[auto-switch] Summarizer %s returned empty: %s", mdl, result.get("error", ""))
+            return None
+        except Exception as exc:
+            logger.warning("[auto-switch] Summarizer %s failed: %s: %s", mdl, type(exc).__name__, exc)
+            return None
+
+    # Step 1: Primary model (with primary browser profile if Qwen)
+    answer = await _try_summarizer_call(sum_model, browser_acc)
+    if answer:
+        return answer
+
+    # Step 2: Fallback models (API or Qwen with default browser)
+    for fb_model in fallback_models[:2]:
+        answer = await _try_summarizer_call(fb_model)
         if answer:
+            logger.info("[auto-switch] Fallback model succeeded: %s", fb_model)
             return answer
-        logger.warning("[auto-switch] Summarizer returned empty: %s", result.get("error", ""))
-        return "[Summary unavailable — summarizer returned empty response]"
-    except Exception as exc:
-        logger.exception("[auto-switch] Summarizer failed")
-        return f"[Summary unavailable — {type(exc).__name__}: {exc}]"
+
+    # Step 3: Fallback browser profiles (using primary model)
+    for fb_profile in browser_profiles[:2]:
+        answer = await _try_summarizer_call(sum_model, fb_profile)
+        if answer:
+            logger.info("[auto-switch] Fallback browser profile succeeded: %s", fb_profile)
+            return answer
+
+    return "[Summary unavailable — all summarizer fallbacks exhausted]"
 
 
 @router.post("/api/chat")

@@ -70,7 +70,7 @@ _SHAPES: dict[str, tuple[int, int]] = {
     "landscape": (1024, 768),
 }
 
-_OUTPUT_DIR = Path("/home/sifat/sable_output/assets")
+from engine.config import ASSETS_DIR as _OUTPUT_DIR
 _API_BASE = "https://api.cloudflare.com/client/v4"
 
 
@@ -247,7 +247,8 @@ def get_client() -> CloudflareAIClient:
     """Return singleton CloudflareAIClient, loading credentials from disk."""
     global _client
     if _client is None:
-        creds_file = Path("/home/sifat/hdd/projects/Sable/system/.cloudflare_ai_creds.json")
+        from engine.config import _ROOT as _CF_ROOT
+        creds_file = _CF_ROOT / "system" / ".cloudflare_ai_creds.json"
         token = ""
         account_id = ""
         if creds_file.exists():
@@ -264,7 +265,8 @@ def get_client() -> CloudflareAIClient:
 def save_credentials(api_token: str, account_id: str = "") -> None:
     """Persist credentials and reset singleton. Account ID is auto-fetched if omitted."""
     global _client
-    creds_file = Path("/home/sifat/hdd/projects/Sable/system/.cloudflare_ai_creds.json")
+    from engine.config import _ROOT as _CF_ROOT2
+    creds_file = _CF_ROOT2 / "system" / ".cloudflare_ai_creds.json"
     creds_file.parent.mkdir(parents=True, exist_ok=True)
     data: dict[str, str] = {"api_token": api_token}
     if account_id:
