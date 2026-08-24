@@ -129,6 +129,48 @@ def _sanitize_json_escapes(raw: str) -> str:
     # Catch any other invalid escapes: backslash not followed by valid escape char
     return _INVALID_ESCAPE_RE.sub("", raw)
 
+def _extract_first_json_array(raw: str) -> str:
+    """Extract the first valid JSON array from potentially concatenated arrays.
+
+    Models (especially DeepSeek) sometimes emit multiple JSON arrays back-to-back
+    like '[{...}][{...}]' or '[{...}][{...}]trailing prose'. This function finds
+    the first complete [...] boundary and returns just that substring.
+
+    Returns the original string if no concatenation is detected.
+    """
+    raw = raw.strip()
+    if not raw.startswith("["):
+        return raw
+
+    depth = 0
+    in_string = False
+    escape_next = False
+    for i, ch in enumerate(raw):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\" and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                # Found end of first array — check if there's junk after
+                remainder = raw[i + 1:].strip()
+                if remainder:
+                    # Concatenated arrays or trailing garbage detected
+                    return raw[: i + 1]
+                return raw  # Clean single array
+    return raw  # No complete array found, return as-is
+
+
 def _parse_action_payload(raw: str) -> list[dict[str, Any]]:
     """Parse tool_call JSON content into a list of normalized tool call dicts.
 
@@ -142,6 +184,9 @@ def _parse_action_payload(raw: str) -> list[dict[str, Any]]:
 
     # Fix transport-level corruption (backslashes, mixed quotes)
     raw = sanitize_transport(raw)
+
+    # Handle concatenated JSON arrays (DeepSeek retry anti-pattern)
+    raw = _extract_first_json_array(raw)
 
     try:
         data = json.loads(raw)

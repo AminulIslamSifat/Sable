@@ -594,38 +594,79 @@ class MainChatGuard:
         "3. Explain what is failing and ask for guidance"
     )
 
+    # Default (tag-based) malformed warnings
     MALFORMED_NO_OPEN = (
-        "[FORMAT WARNING] Found a closing </tool_call> tag without a matching "
-        "<tool_call> opening tag. Wrap your tool calls like this:\n"
-        '<tool_call>{"name": "tool_name", "arguments": {...}}</tool_call>'
+        "[FORMAT WARNING] Found a closing tag without a matching opening tag. "
+        "Wrap your tool calls properly."
     )
 
     MALFORMED_NO_CLOSE = (
-        "[FORMAT WARNING] Found an opening <tool_call> tag without a closing </tool_call>. "
-        "Every tool_call block must be properly closed:\n"
-        '<tool_call>{"name": "tool_name", "arguments": {...}}</tool_call>'
+        "[FORMAT WARNING] Found an opening tag without a closing tag. "
+        "Every tool call block must be properly closed."
     )
 
     MALFORMED_JSON_OUTSIDE = (
-        "[FORMAT WARNING] A JSON tool call was found outside a <tool_call> block. "
-        "All tool calls MUST be wrapped:\n"
-        '<tool_call>{"name": "tool_name", "arguments": {...}}</tool_call>'
+        "[FORMAT WARNING] A JSON tool call was found outside the expected format. "
+        "All tool calls MUST use the correct wrapper."
     )
 
     MALFORMED_INVALID_JSON = (
-        "[FORMAT WARNING] The content inside your <tool_call> block is not valid JSON. "
-        "Expected format:\n"
-        '<tool_call>{"name": "tool_name", "arguments": {...}}</tool_call>\n'
-        "For multiple calls, use a JSON array inside ONE wrapper: <tool_call>[{...}, {...}]</tool_call>"
+        "[FORMAT WARNING] Your tool call contains invalid JSON. "
+        "Fix the JSON syntax and try again."
     )
 
-    def __init__(self):
+    # DeepSeek-specific warnings (no tag examples to avoid reinforcing XML habits)
+    _DEEPSEEK_MALFORMED_NO_OPEN = (
+        "[FORMAT WARNING] Tool call format error. Output a plain JSON array at the end of your message. "
+        'Example: [{"name": "tool_name", "arguments": {...}}]\n'
+        "Do NOT use any XML tags, wrappers, or custom markup."
+    )
+
+    _DEEPSEEK_MALFORMED_NO_CLOSE = (
+        "[FORMAT WARNING] Tool call format error. Output a plain JSON array at the end of your message. "
+        'Example: [{"name": "tool_name", "arguments": {...}}]\n'
+        "Do NOT use any XML tags, wrappers, or custom markup."
+    )
+
+    _DEEPSEEK_MALFORMED_JSON_OUTSIDE = (
+        "[FORMAT WARNING] Tool call JSON was not in the expected format. "
+        "Output a plain JSON array at the end of your message. "
+        'Example: [{"name": "tool_name", "arguments": {...}}]\n'
+        "Do NOT wrap it in any tags or elements."
+    )
+
+    _DEEPSEEK_MALFORMED_INVALID_JSON = (
+        "[FORMAT WARNING] Your tool call JSON is invalid. "
+        "Output a valid JSON array: [{\"name\": \"tool_name\", \"arguments\": {...}}]\n"
+        "No tags, no wrappers, just clean JSON."
+    )
+
+    def __init__(self, provider: str | None = None):
+        self._provider = provider
         self._command_history: list[str] = []
         self._consecutive_failures: int = 0
         self._loop_warned: bool = False
         self._failure_warned: bool = False
         self._malformed_warned: bool = False
         self._incomplete_warned: bool = False
+
+    def _get_malformed_warning(self, kind: str) -> str:
+        """Return provider-appropriate malformed warning message."""
+        if self._provider == "deepseek":
+            mapping = {
+                "no_open": self._DEEPSEEK_MALFORMED_NO_OPEN,
+                "no_close": self._DEEPSEEK_MALFORMED_NO_CLOSE,
+                "json_outside": self._DEEPSEEK_MALFORMED_JSON_OUTSIDE,
+                "invalid_json": self._DEEPSEEK_MALFORMED_INVALID_JSON,
+            }
+        else:
+            mapping = {
+                "no_open": self.MALFORMED_NO_OPEN,
+                "no_close": self.MALFORMED_NO_CLOSE,
+                "json_outside": self.MALFORMED_JSON_OUTSIDE,
+                "invalid_json": self.MALFORMED_INVALID_JSON,
+            }
+        return mapping.get(kind, self.MALFORMED_INVALID_JSON)
 
     def record_command(self, tag_name: str, tag_content: str) -> None:
         """Record a command execution for loop detection."""
@@ -686,7 +727,7 @@ class MainChatGuard:
                 if _looks_like_json:
                     logger.warning("[MALFORMED_GUARD] Orphan close tag with JSON content. raw_len=%d preview=%r", len(raw_text), raw_text[:300])
                     self._malformed_warned = True
-                    return MainChatGuard.MALFORMED_NO_OPEN
+                    return self._get_malformed_warning("no_open")
 
         # Open without close — only warn if content after open tag looks like JSON attempt
         if has_open and not has_close:
@@ -697,7 +738,7 @@ class MainChatGuard:
                 if _looks_like_json:
                     logger.warning("[MALFORMED_GUARD] Open tag without close (JSON content). raw_len=%d preview=%r", len(raw_text), raw_text[:300])
                     self._malformed_warned = True
-                    return MainChatGuard.MALFORMED_NO_CLOSE
+                    return self._get_malformed_warning("no_close")
 
         # Check for JSON tool calls outside tool_call blocks
         from engine.skills.parser import KNOWN_TAGS
@@ -709,12 +750,12 @@ class MainChatGuard:
         if not has_open and not has_close:
             if tool_json_pat.search(raw_text):
                 self._malformed_warned = True
-                return MainChatGuard.MALFORMED_JSON_OUTSIDE
+                return self._get_malformed_warning("json_outside")
         elif has_open and has_close:
             stripped = _re.sub(r"<\s*tool_call\s*>.*?<\s*/\s*tool_call\s*>", "", raw_text, flags=_re.S | _re.I)
             if tool_json_pat.search(stripped):
                 self._malformed_warned = True
-                return MainChatGuard.MALFORMED_JSON_OUTSIDE
+                return self._get_malformed_warning("json_outside")
 
         # Check for invalid JSON inside tool_call blocks
         if has_open and has_close:
@@ -733,15 +774,23 @@ class MainChatGuard:
                         len(raw_text), block[:200], raw_text[:300],
                     )
                     self._malformed_warned = True
-                    diagnosis = _diagnose_json_failure(block)
-                    tc_open = chr(60) + 'tool_call' + chr(62)
-                    tc_close = chr(60) + '/tool_call' + chr(62)
-                    fmt_ex = chr(123) + chr(34) + 'name' + chr(34) + ': ' + chr(34) + 'tool' + chr(34) + chr(125)
-                    return (
-                        '[FORMAT WARNING] Invalid JSON in ' + tc_open + ' block.' + chr(10)
-                        + diagnosis + chr(10) + chr(10)
-                        + 'Expected: ' + tc_open + fmt_ex + tc_close
-                    )
+                    if self._provider == "deepseek":
+                        return (
+                            '[FORMAT WARNING] Invalid JSON in tool call.\n'
+                            + _diagnose_json_failure(block) + '\n\n'
+                            + 'Output a valid JSON array: [{"name": "tool_name", "arguments": {...}}]\n'
+                            + 'No tags, no wrappers, just clean JSON.'
+                        )
+                    else:
+                        diagnosis = _diagnose_json_failure(block)
+                        tc_open = chr(60) + 'tool_call' + chr(62)
+                        tc_close = chr(60) + '/tool_call' + chr(62)
+                        fmt_ex = chr(123) + chr(34) + 'name' + chr(34) + ': ' + chr(34) + 'tool' + chr(34) + chr(125)
+                        return (
+                            '[FORMAT WARNING] Invalid JSON in ' + tc_open + ' block.' + chr(10)
+                            + diagnosis + chr(10) + chr(10)
+                            + 'Expected: ' + tc_open + fmt_ex + tc_close
+                        )
 
         return None
 

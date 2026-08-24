@@ -68,12 +68,79 @@ def _filter_skills_prompt(skills_prompt: str, skills_config: dict) -> str:
     return "\n".join(filtered)
 
 
-def build_instructions(project_id: str | None = None) -> str:
+# ---------------------------------------------------------------------------
+# Provider-specific tool call format instructions
+# ---------------------------------------------------------------------------
+
+_TOOL_FORMAT_DEEPSEEK = """\
+## Tool Call Format (CRITICAL)
+
+You MUST output tool calls as a **plain JSON array** — no XML tags, no wrapper elements, no custom markup.
+
+Single call:
+[{"name": "grep", "arguments": {"pattern": "foo", "path": "/bar"}}]
+
+Multiple parallel calls (independent, read-only only):
+[
+  {"name": "grep", "arguments": {"pattern": "foo", "path": "/bar"}},
+  {"name": "view_file", "arguments": {"path": "/some/file"}}
+]
+
+### STRICT RULES
+- Output exactly ONE JSON array per response. Place it at the END of your message.
+- NEVER use <invoke>, <parameter>, <tool_calls>, or any XML/custom tags.
+- NEVER wrap the JSON array in any tag or element.
+- NEVER output multiple separate arrays. If you need multiple calls, put them ALL in one array.
+- The JSON array must be valid JSON — no trailing commas, no comments, no prose inside it.
+- If you output anything other than a clean JSON array for tool calls, the system WILL fail.
+"""
+
+_TOOL_FORMAT_NATIVE = """\
+## Tool Call Format
+
+All tool calls use exactly ONE format. Single call or multiple calls — always a JSON array inside one wrapper:
+
+Single call: output a JSON array wrapped in the designated tool-call markers.
+Multiple parallel calls: output ALL calls in ONE JSON array inside ONE wrapper.
+
+### Rules
+- Exactly ONE wrapper per response, placed at the end. All calls go inside as a JSON array.
+- NEVER output multiple separate wrappers. Always combine into one array.
+- Keep prose to ONE short sentence before the tool call block.
+- Tool call blocks appear only in plain text, never inside fenced code blocks.
+"""
+
+_TOOL_FORMAT_NONE = """\
+## Tool Call Format
+
+Tool calls are handled via native API function calling. No prompt-based format needed.
+Follow the function schemas provided in the API request.
+"""
+
+_PROVIDER_TOOL_FORMATS: dict[str, str] = {
+    "deepseek": _TOOL_FORMAT_DEEPSEEK,
+    "native": _TOOL_FORMAT_NATIVE,
+    "none": _TOOL_FORMAT_NONE,
+}
+
+
+def build_instructions(
+    project_id: str | None = None,
+    provider: str | None = None,
+) -> str:
     """Build full system instruction with optional project overrides.
 
     This is the single source of truth for instruction assembly across all
     API connectors (DeepSeek, Gemini, Mistral). Qwen uses session.py directly.
     Groq/OpenAI use their own minimal prompts and are NOT affected.
+
+    Args:
+        project_id: Optional project ID for project-specific overrides.
+        provider: Provider key for tool format selection.
+                  "deepseek" → pure JSON, no tags.
+                  "native"   → tag-wrapped format (Gemini, Mistral, etc.).
+                  "none"     → native API function calling (no prompt format).
+                  None       → no tool format section appended.
     """
     proj = _get_project(project_id)
     parts: list[str] = []
@@ -175,7 +242,7 @@ def build_instructions(project_id: str | None = None) -> str:
             _dt = json.loads(_disabled_tools_path.read_text(encoding="utf-8"))
             if isinstance(_dt, list):
                 _disabled_tools = _dt
-        tools_section = get_tools_prompt_section(disabled=_disabled_tools)
+        tools_section = get_tools_prompt_section(disabled=_disabled_tools, provider=provider)
         if tools_section:
             parts.append(tools_section)
     except Exception:
@@ -200,6 +267,10 @@ def build_instructions(project_id: str | None = None) -> str:
         f"When user asks to 'save' anything without specifying a path, default to `{_OUT}/notes/` "
         f"for text/docs, or the appropriate subdirectory otherwise."
     )
+
+    # --- Provider-specific tool call format ---
+    if provider and provider in _PROVIDER_TOOL_FORMATS:
+        parts.append(_PROVIDER_TOOL_FORMATS[provider])
 
     return "\n\n".join(parts)
 
