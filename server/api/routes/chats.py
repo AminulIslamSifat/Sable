@@ -30,61 +30,94 @@ def search_chats(q: str = "") -> dict[str, Any]:
     return {"results": search_messages(q.strip())}
 
 
-def _fuzzy_score(query: str, text: str) -> float:
-    """True fuzzy score (0.0–1.0) using SequenceMatcher + token overlap.
-    Handles typos like 'contex' → 'context'. Case-insensitive.
+import re as _re
+
+# ── Search Scoring ──────────────────────────────────────────────────────────
+# Simple, reliable scoring: exact substring match + token overlap ratio.
+# No external libraries, no IDF/BM25 that breaks on small pre-filtered corpora.
+
+_STOP_WORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "need", "dare", "ought",
+    "used", "to", "of", "in", "for", "on", "with", "at", "by", "from",
+    "as", "into", "through", "during", "before", "after", "above", "below",
+    "between", "out", "off", "over", "under", "again", "further", "then",
+    "once", "here", "there", "when", "where", "why", "how", "all", "each",
+    "every", "both", "few", "more", "most", "other", "some", "such", "no",
+    "nor", "not", "only", "own", "same", "so", "than", "too", "very",
+    "just", "because", "but", "and", "or", "if", "while", "about", "up",
+    "it", "its", "i", "me", "my", "we", "our", "you", "your", "he", "him",
+    "his", "she", "her", "they", "them", "their", "what", "which", "who",
+})
+
+_WORD_RE = _re.compile(r'[a-z0-9]+')
+
+
+def _tokenize(text: str) -> list[str]:
+    """Lowercase tokenize, strip stop words and short tokens."""
+    return [t for t in _WORD_RE.findall(text.lower()) if t not in _STOP_WORDS and len(t) > 1]
+
+
+def _score_doc(query: str, text: str) -> float:
+    """Score a document against a query. Returns 0.0–1.0.
+
+    Scoring logic:
+    - Exact substring match → 1.0
+    - Otherwise: (matched query tokens / total query tokens)
+      with partial credit for prefix/stem matches
     """
     if not query or not text:
         return 0.0
-    from difflib import SequenceMatcher
+
     ql = query.lower().strip()
     tl = text.lower()
 
-    # 1. Exact substring → instant high score
+    # Exact substring → perfect match
     if ql in tl:
         return 1.0
 
-    # 2. Best SequenceMatcher ratio against sliding windows of text
-    #    This catches typos, partial matches, transpositions
-    best = 0.0
-    q_len = len(ql)
-    # Check full-text ratio first
-    best = SequenceMatcher(None, ql, tl[:max(q_len * 3, 200)]).ratio()
+    q_tokens = _tokenize(query)
+    if not q_tokens:
+        return 0.0
 
-    # Slide through words for better local matches
-    words = tl.split()
-    for i, word in enumerate(words):
-        # Single word comparison
-        r = SequenceMatcher(None, ql, word).ratio()
-        if r > best:
-            best = r
-        # Multi-word window (up to 4 words)
-        if i < len(words) - 1:
-            window = " ".join(words[i : i + min(4, len(words) - i)])
-            r = SequenceMatcher(None, ql, window).ratio()
-            if r > best:
-                best = r
-        if best >= 0.95:
-            break  # Good enough
+    doc_tokens = set(_tokenize(text))
+    if not doc_tokens:
+        return 0.0
 
-    # 3. Token overlap bonus — if query tokens partially match text tokens
-    q_tokens = ql.split()
-    if len(q_tokens) > 1:
-        matched = 0
-        for qt in q_tokens:
-            for tw in words:
-                if SequenceMatcher(None, qt, tw).ratio() >= 0.7:
-                    matched += 1
+    matched = 0
+    for qt in q_tokens:
+        if qt in doc_tokens:
+            matched += 1
+        else:
+            # Partial credit: check if any doc token starts with query token
+            # Catches "config" matching "configuration", "hypr" matching "hyprland"
+            for dt in doc_tokens:
+                if dt.startswith(qt) or qt.startswith(dt):
+                    matched += 0.5
                     break
-        token_ratio = matched / len(q_tokens)
-        # Blend: sequence matcher (70%) + token overlap (30%)
-        best = best * 0.7 + token_ratio * 0.3
 
-    return round(min(1.0, best), 4)
+    return round(matched / len(q_tokens), 4)
+
+
+def _rank_results(query: str, documents: list[dict], text_key: str = "text",
+                  top_k: int = 10, min_score: float = 0.3) -> list[tuple[float, dict]]:
+    """Rank documents by relevance to query. Returns (score, doc) tuples."""
+    if not query or not documents:
+        return []
+
+    scored: list[tuple[float, dict]] = []
+    for doc in documents:
+        s = _score_doc(query, doc.get(text_key, ""))
+        if s >= min_score:
+            scored.append((s, doc))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored[:top_k]
 
 
 _PER_SECTION = 10
-_MIN_SCORE = 0.75
+_MIN_SCORE = 0.3
 
 
 @router.get("/api/search/unified")
@@ -98,39 +131,57 @@ async def unified_search(q: str = "") -> dict[str, Any]:
         return {k: [] for k in sources}
 
     from server.database import get_db
-    import re
 
     results: dict[str, list] = {k: [] for k in sources}
-    like_ci = f"%{query}%"  # SQLite LIKE is case-insensitive for ASCII
+
+    # Build per-term LIKE clauses so words don't need to be adjacent.
+    # e.g. "dark canvas" → "%dark%" AND "%canvas%" matches both
+    # "dark canvas matching" → all three terms must appear somewhere in the text.
+    _q_terms = [t for t in _re.split(r'\s+', query.strip()) if len(t) > 1]
+    if not _q_terms:
+        return {k: [] for k in sources}
+    # For DB pre-filter: require ALL terms present (AND), each anywhere in text
+    _like_clauses = " AND ".join(["content LIKE ? COLLATE NOCASE"] * len(_q_terms))
+    _like_params = tuple(f"%{t}%" for t in _q_terms)
+    # For title/description fields that use different column names
+    def _make_like(columns: list[str]) -> tuple[str, tuple]:
+        """Build OR'd multi-term LIKE for multiple columns."""
+        parts = []
+        params: list[str] = []
+        for col in columns:
+            col_parts = " AND ".join([f"{col} LIKE ? COLLATE NOCASE"] * len(_q_terms))
+            parts.append(f"({col_parts})")
+            params.extend(f"%{t}%" for t in _q_terms)
+        return " OR ".join(parts), tuple(params)
 
     # ── 1. Chat messages (broad fetch → fuzzy filter) ──
-    _mem_re = re.compile(r'^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n')
-    _ts_re = re.compile(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\n?')
+    _mem_re = _re.compile(r'^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n')
+    _ts_re = _re.compile(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\n?')
     try:
         with get_db() as conn:
             rows = conn.execute(
                 "SELECT m.id, m.chat_id, m.role, m.content, m.created_at, c.title "
                 "FROM messages m JOIN chats c ON m.chat_id = c.id "
-                "WHERE m.content LIKE ? COLLATE NOCASE ORDER BY m.id DESC LIMIT 200",
-                (like_ci,),
+                f"WHERE {_like_clauses} ORDER BY m.id DESC LIMIT 200",
+                _like_params,
             ).fetchall()
-            scored = []
+            docs = []
             for row in rows:
                 d = dict(row)
                 content = d.get("content") or ""
                 content = _mem_re.sub("", content)
                 content = _ts_re.sub("", content)
-                # Score against chat title + content
-                score = max(_fuzzy_score(query, d.get("title") or ""), _fuzzy_score(query, content))
-                if score >= _MIN_SCORE:
-                    scored.append((score, {
-                        **d,
-                        "preview": content[:300],
-                        "score": round(score, 3),
-                        "source": "message",
-                    }))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            results["messages"] = [item for _, item in scored[:_PER_SECTION]]
+                searchable = (d.get("title") or "") + " " + content
+                docs.append({
+                    **d,
+                    "text": searchable,
+                    "preview": content[:300],
+                    "source": "message",
+                })
+            ranked = _rank_results(query, docs, text_key="text", top_k=_PER_SECTION, min_score=_MIN_SCORE)
+            for score, doc in ranked:
+                doc["score"] = score
+            results["messages"] = [doc for _, doc in ranked]
     except Exception as e:
         logger.warning("Search messages failed: %s", e)
 
@@ -142,11 +193,11 @@ async def unified_search(q: str = "") -> dict[str, Any]:
                 "FROM skill_events se "
                 "JOIN messages m ON se.message_id = m.id "
                 "JOIN chats c ON m.chat_id = c.id "
-                "WHERE se.event_data LIKE ? COLLATE NOCASE ORDER BY se.id DESC LIMIT 200",
-                (like_ci,),
+                f"WHERE {' AND '.join(['se.event_data LIKE ? COLLATE NOCASE'] * len(_q_terms))} ORDER BY se.id DESC LIMIT 200",
+                _like_params,
             ).fetchall()
             seen: set[int] = set()
-            scored = []
+            docs = []
             for row in rows:
                 d = dict(row)
                 mid = d.get("message_id")
@@ -162,20 +213,21 @@ async def unified_search(q: str = "") -> dict[str, Any]:
                 if isinstance(raw, dict):
                     raw = json.dumps(raw, ensure_ascii=False)
                 raw_str = str(raw)
-                score = max(_fuzzy_score(query, skill_name), _fuzzy_score(query, raw_str), _fuzzy_score(query, d.get("title") or ""))
-                if score >= _MIN_SCORE:
-                    scored.append((score, {
-                        "skill": skill_name,
-                        "preview": raw_str[:300],
-                        "chat_id": d.get("chat_id"),
-                        "title": d.get("title"),
-                        "created_at": d.get("created_at"),
-                        "message_id": mid,
-                        "score": round(score, 3),
-                        "source": "skill",
-                    }))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            results["skills"] = [item for _, item in scored[:_PER_SECTION]]
+                searchable = skill_name + " " + raw_str + " " + (d.get("title") or "")
+                docs.append({
+                    "text": searchable,
+                    "skill": skill_name,
+                    "preview": raw_str[:300],
+                    "chat_id": d.get("chat_id"),
+                    "title": d.get("title"),
+                    "created_at": d.get("created_at"),
+                    "message_id": mid,
+                    "source": "skill",
+                })
+            ranked = _rank_results(query, docs, text_key="text", top_k=_PER_SECTION, min_score=_MIN_SCORE)
+            for score, doc in ranked:
+                doc["score"] = score
+            results["skills"] = [doc for _, doc in ranked]
     except Exception as e:
         logger.warning("Search skills failed: %s", e)
 
@@ -209,7 +261,7 @@ async def unified_search(q: str = "") -> dict[str, Any]:
                 mkey, _, mval = entry_str.partition(": ")
                 if mkey in seen_keys:
                     continue
-                score = max(_fuzzy_score(query, mkey), _fuzzy_score(query, mval))
+                score = max(_score_doc(query, mkey), _score_doc(query, mval))
                 if score >= _MIN_SCORE:
                     scored_mem.append((score, {
                         "key": mkey,
@@ -230,77 +282,80 @@ async def unified_search(q: str = "") -> dict[str, Any]:
     # ── 4. Notes (note_type != 'todo') ──
     try:
         with get_db() as conn:
+            _nl, _np = _make_like(["title", "content"])
             rows = conn.execute(
                 "SELECT id, title, content, note_type, created_at, updated_at FROM notes "
-                "WHERE note_type != 'todo' AND archived = 0 "
-                "AND (title LIKE ? COLLATE NOCASE OR content LIKE ? COLLATE NOCASE) "
+                f"WHERE note_type != 'todo' AND archived = 0 AND ({_nl}) "
                 "ORDER BY updated_at DESC LIMIT 100",
-                (like_ci, like_ci),
+                _np,
             ).fetchall()
-            scored = []
+            docs = []
             for row in rows:
                 d = dict(row)
-                score = max(_fuzzy_score(query, d.get("title") or ""), _fuzzy_score(query, d.get("content") or ""))
-                if score >= _MIN_SCORE:
-                    scored.append((score, {
-                        **d,
-                        "preview": (d.get("content") or "")[:300],
-                        "score": round(score, 3),
-                        "source": "note",
-                    }))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            results["notes"] = [item for _, item in scored[:_PER_SECTION]]
+                searchable = (d.get("title") or "") + " " + (d.get("content") or "")
+                docs.append({
+                    **d,
+                    "text": searchable,
+                    "preview": (d.get("content") or "")[:300],
+                    "source": "note",
+                })
+            ranked = _rank_results(query, docs, text_key="text", top_k=_PER_SECTION, min_score=_MIN_SCORE)
+            for score, doc in ranked:
+                doc["score"] = score
+            results["notes"] = [doc for _, doc in ranked]
     except Exception as e:
         logger.warning("Search notes failed: %s", e)
 
     # ── 5. Todos (note_type == 'todo') ──
     try:
         with get_db() as conn:
+            _tl, _tp = _make_like(["title", "content"])
             rows = conn.execute(
                 "SELECT id, title, content, items, due_date, created_at, updated_at FROM notes "
-                "WHERE note_type = 'todo' AND archived = 0 "
-                "AND (title LIKE ? COLLATE NOCASE OR content LIKE ? COLLATE NOCASE) "
+                f"WHERE note_type = 'todo' AND archived = 0 AND ({_tl}) "
                 "ORDER BY updated_at DESC LIMIT 100",
-                (like_ci, like_ci),
+                _tp,
             ).fetchall()
-            scored = []
+            docs = []
             for row in rows:
                 d = dict(row)
-                score = max(_fuzzy_score(query, d.get("title") or ""), _fuzzy_score(query, d.get("content") or ""))
-                if score >= _MIN_SCORE:
-                    scored.append((score, {
-                        **d,
-                        "preview": (d.get("content") or "")[:300],
-                        "score": round(score, 3),
-                        "source": "todo",
-                    }))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            results["todos"] = [item for _, item in scored[:_PER_SECTION]]
+                searchable = (d.get("title") or "") + " " + (d.get("content") or "")
+                docs.append({
+                    **d,
+                    "text": searchable,
+                    "preview": (d.get("content") or "")[:300],
+                    "source": "todo",
+                })
+            ranked = _rank_results(query, docs, text_key="text", top_k=_PER_SECTION, min_score=_MIN_SCORE)
+            for score, doc in ranked:
+                doc["score"] = score
+            results["todos"] = [doc for _, doc in ranked]
     except Exception as e:
         logger.warning("Search todos failed: %s", e)
 
     # ── 6. Schedules ──
     try:
         with get_db() as conn:
+            _sl, _sp = _make_like(["title", "description"])
             rows = conn.execute(
-                "SELECT * FROM schedules "
-                "WHERE title LIKE ? COLLATE NOCASE OR description LIKE ? COLLATE NOCASE "
+                f"SELECT * FROM schedules WHERE ({_sl}) "
                 "ORDER BY start_date DESC LIMIT 100",
-                (like_ci, like_ci),
+                _sp,
             ).fetchall()
-            scored = []
+            docs = []
             for row in rows:
                 d = dict(row)
-                score = max(_fuzzy_score(query, d.get("title") or ""), _fuzzy_score(query, d.get("description") or ""))
-                if score >= _MIN_SCORE:
-                    scored.append((score, {
-                        **d,
-                        "preview": (d.get("description") or d.get("title") or "")[:300],
-                        "score": round(score, 3),
-                        "source": "schedule",
-                    }))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            results["schedules"] = [item for _, item in scored[:_PER_SECTION]]
+                searchable = (d.get("title") or "") + " " + (d.get("description") or "")
+                docs.append({
+                    **d,
+                    "text": searchable,
+                    "preview": (d.get("description") or d.get("title") or "")[:300],
+                    "source": "schedule",
+                })
+            ranked = _rank_results(query, docs, text_key="text", top_k=_PER_SECTION, min_score=_MIN_SCORE)
+            for score, doc in ranked:
+                doc["score"] = score
+            results["schedules"] = [doc for _, doc in ranked]
     except Exception as e:
         logger.warning("Search schedules failed: %s", e)
 
@@ -308,32 +363,33 @@ async def unified_search(q: str = "") -> dict[str, Any]:
     try:
         from engine.config import RESEARCH_DIR
         if RESEARCH_DIR.exists():
-            scored = []
+            docs = []
             for f in sorted(RESEARCH_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
                 try:
                     text = f.read_text(encoding="utf-8")
                 except Exception:
                     continue
                 title = f.stem.replace("_", " ").replace("-", " ")
-                score = max(_fuzzy_score(query, title), _fuzzy_score(query, text[:2000]))
-                if score >= _MIN_SCORE:
-                    body = re.sub(r'^---\s*\n.*?\n---\s*\n', '', text, count=1, flags=re.DOTALL)
-                    first_para = ""
-                    for line in body.splitlines():
-                        s = line.strip()
-                        if s and not s.startswith(("#", ">", "---")):
-                            first_para = s[:300]
-                            break
-                    scored.append((score, {
-                        "id": f.stem,
-                        "filename": f.name,
-                        "title": title.title(),
-                        "preview": first_para,
-                        "score": round(score, 3),
-                        "source": "research",
-                    }))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            results["research"] = [item for _, item in scored[:_PER_SECTION]]
+                body = _re.sub(r'^---\s*\n.*?\n---\s*\n', '', text, count=1, flags=_re.DOTALL)
+                first_para = ""
+                for line in body.splitlines():
+                    s = line.strip()
+                    if s and not s.startswith(("#", ">", "---")):
+                        first_para = s[:300]
+                        break
+                searchable = title + " " + text[:5000]
+                docs.append({
+                    "text": searchable,
+                    "id": f.stem,
+                    "filename": f.name,
+                    "title": title.title(),
+                    "preview": first_para,
+                    "source": "research",
+                })
+            ranked = _rank_results(query, docs, text_key="text", top_k=_PER_SECTION, min_score=_MIN_SCORE)
+            for score, doc in ranked:
+                doc["score"] = score
+            results["research"] = [doc for _, doc in ranked]
     except Exception as e:
         logger.debug("Search research skipped: %s", e)
 
@@ -341,7 +397,7 @@ async def unified_search(q: str = "") -> dict[str, Any]:
     try:
         from engine.config import AGENT_OUTPUT_DIR
         if AGENT_OUTPUT_DIR.exists():
-            scored = []
+            docs = []
             for f in sorted(AGENT_OUTPUT_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
                 if f.stem.endswith("_conversation"):
                     continue
@@ -350,25 +406,26 @@ async def unified_search(q: str = "") -> dict[str, Any]:
                 except Exception:
                     continue
                 title = f.stem.replace("_", " ").replace("-", " ")
-                score = max(_fuzzy_score(query, title), _fuzzy_score(query, text[:2000]))
-                if score >= _MIN_SCORE:
-                    body = re.sub(r'^---\s*\n.*?\n---\s*\n', '', text, count=1, flags=re.DOTALL)
-                    first_para = ""
-                    for line in body.splitlines():
-                        s = line.strip()
-                        if s and not s.startswith(("#", ">", "---")):
-                            first_para = s[:300]
-                            break
-                    scored.append((score, {
-                        "id": f.stem,
-                        "filename": f.name,
-                        "title": title.title(),
-                        "preview": first_para,
-                        "score": round(score, 3),
-                        "source": "agent",
-                    }))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            results["agents"] = [item for _, item in scored[:_PER_SECTION]]
+                body = _re.sub(r'^---\s*\n.*?\n---\s*\n', '', text, count=1, flags=_re.DOTALL)
+                first_para = ""
+                for line in body.splitlines():
+                    s = line.strip()
+                    if s and not s.startswith(("#", ">", "---")):
+                        first_para = s[:300]
+                        break
+                searchable = title + " " + text[:5000]
+                docs.append({
+                    "text": searchable,
+                    "id": f.stem,
+                    "filename": f.name,
+                    "title": title.title(),
+                    "preview": first_para,
+                    "source": "agent",
+                })
+            ranked = _rank_results(query, docs, text_key="text", top_k=_PER_SECTION, min_score=_MIN_SCORE)
+            for score, doc in ranked:
+                doc["score"] = score
+            results["agents"] = [doc for _, doc in ranked]
     except Exception as e:
         logger.debug("Search agents skipped: %s", e)
 
@@ -389,10 +446,9 @@ async def search_full_content(source: str = "", id: str = "", chat_id: str = "",
                 ).fetchone()
             if row:
                 d = dict(row)
-                import re
                 content = d.get("content") or ""
-                content = re.sub(r'^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n', '', content)
-                content = re.sub(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\n?', '', content)
+                content = _re.sub(r'^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n', '', content)
+                content = _re.sub(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\n?', '', content)
                 return {"content": content, "role": d["role"], "title": d["title"], "created_at": d["created_at"]}
         except Exception as e:
             return {"error": str(e)}

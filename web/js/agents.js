@@ -46,14 +46,16 @@ const AgentTopBar = {
   container: null,
   cards: new Map(),
 
+  _slotEl: null,
+
   init() {
     if (this.container) return;
     this.container = document.createElement("div");
     this.container.id = "agent-top-bar";
-    this.container.className = "agent-top-bar hidden";
-    // Insert into the dedicated slot between model dropdown and diff toggle
-    const slot = document.getElementById("agentTopBarSlot");
-    if (slot) slot.appendChild(this.container);
+    this.container.className = "agent-top-bar";
+    // Insert into the dedicated standalone slot (outside <header>)
+    this._slotEl = document.getElementById("agentTopBarSlot");
+    if (this._slotEl) this._slotEl.appendChild(this.container);
     else document.body.appendChild(this.container);
     // Vertical wheel → horizontal scroll
     this.container.addEventListener("wheel", (e) => {
@@ -64,9 +66,21 @@ const AgentTopBar = {
     }, { passive: false });
   },
 
+  _show() {
+    if (!this.container) return;
+    this.container.classList.remove("hidden");
+    if (this._slotEl) this._slotEl.classList.remove("hidden");
+  },
+
+  _hide() {
+    if (!this.container) return;
+    this.container.classList.add("hidden");
+    if (this._slotEl) this._slotEl.classList.add("hidden");
+  },
+
   addCard(agentId, role, task, model) {
     this.init();
-    this.container.classList.remove("hidden");
+    this._show();
     const card = document.createElement("div");
     card.className = "agent-card running";
     card.dataset.agentId = agentId;
@@ -117,14 +131,14 @@ const AgentTopBar = {
     setTimeout(() => {
       card.remove();
       this.cards.delete(agentId);
-      if (this.cards.size === 0) this.container.classList.add("hidden");
+      if (this.cards.size === 0) AgentTopBar._hide();
     }, 400);
   },
 
   clear() {
     this.cards.forEach((card) => card.remove());
     this.cards.clear();
-    if (this.container) this.container.classList.add("hidden");
+    this._hide();
   },
 };
 
@@ -698,19 +712,25 @@ function connectAgentEvents(chatId) {
 
   _agentEventChatId = chatId;
   const token = localStorage.getItem("sable_token") || "";
+  const url = `/api/chat/${chatId}/agent-events?token=${encodeURIComponent(token)}`;
+  console.log("[AgentDebug] connectAgentEvents called, chatId:", chatId, "url:", url);
   // EventSource doesn't support custom headers — use query param for auth
-  _agentEventSource = new EventSource(`/api/chat/${chatId}/agent-events?token=${encodeURIComponent(token)}`);
+  _agentEventSource = new EventSource(url);
+
+  _agentEventSource.onopen = () => {
+    console.log("[AgentDebug] SSE connection OPENED for chat:", chatId);
+  };
 
   _agentEventSource.onmessage = (e) => {
+    console.log("[AgentDebug] SSE message received:", e.data?.slice(0, 200));
     try {
       const ev = JSON.parse(e.data);
       handleAgentEvent(ev);
-    } catch { /* ignore malformed */ }
+    } catch (err) { console.error("[AgentDebug] SSE parse error:", err); }
   };
 
-  _agentEventSource.onerror = () => {
-    // EventSource auto-reconnects; just log
-    console.debug("[agents] SSE connection error, will retry…");
+  _agentEventSource.onerror = (err) => {
+    console.error("[AgentDebug] SSE connection error:", err, "readyState:", _agentEventSource?.readyState);
   };
 }
 
@@ -726,8 +746,10 @@ function disconnectAgentEvents() {
 const _agentTodosRaw = new Map(); // agent_id -> raw pipe-separated string
 
 function handleAgentEvent(ev) {
+  console.log("[AgentDebug] handleAgentEvent type:", ev.type, "agent_id:", ev.agent_id);
   switch (ev.type) {
     case "agent_spawned":
+      console.log("[AgentDebug] agent_spawned → calling addCard", ev.agent_id, ev.data);
       AgentTopBar.addCard(ev.agent_id, ev.data?.role || "agent", ev.data?.task || "", ev.data?.model || "");
       // Capture todos for spawn-card injection
       if (ev.data?.todos && ev.data.todos.length) {
@@ -766,20 +788,23 @@ function handleAgentEvent(ev) {
 
 // Called when a chat is selected/opened
 function onChatOpened(chatId) {
+  console.log("[AgentDebug] onChatOpened called, chatId:", chatId);
   AgentTopBar.clear();
   connectAgentEvents(chatId);
   // Load any active agents for this chat
   fetch(`/api/agents/active?chat_id=${encodeURIComponent(chatId)}`)
     .then((r) => r.json())
     .then((agents) => {
+      console.log("[AgentDebug] /api/agents/active response:", agents);
       if (!Array.isArray(agents)) return;
       for (const a of agents) {
         if (a.status === "running" || a.status === "spawned") {
+          console.log("[AgentDebug] restoring active agent card:", a.id, a.role);
           AgentTopBar.addCard(a.id, a.role, a.task, a.model);
         }
       }
     })
-    .catch(() => {});
+    .catch((err) => { console.error("[AgentDebug] /api/agents/active failed:", err); });
 }
 
 // Called when navigating away / closing chat

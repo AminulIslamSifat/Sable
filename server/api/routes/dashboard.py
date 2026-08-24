@@ -158,16 +158,21 @@ def dashboard_status() -> dict[str, Any]:
         total_todo_items += len(items)
         done_todo_items += sum(1 for i in items if i.get("done"))
 
-    # Notes (note_type='note')
-    notes = list_notes(note_type="note")
+    # Notes (scan sable_output/notes directory)
+    notes_count = 0
+    try:
+        from engine.config import NOTES_DIR
+        if NOTES_DIR.is_dir():
+            notes_count = sum(1 for f in NOTES_DIR.iterdir() if f.suffix == ".md")
+    except Exception:
+        pass
 
-    # Research sessions (scan directory)
+    # Research sessions (scan sable_output/research directory)
     research_count = 0
     try:
-        from engine.config import _SYSTEM
-        research_dir = _SYSTEM / "research"
-        if research_dir.is_dir():
-            research_count = sum(1 for f in research_dir.iterdir() if f.suffix == ".md")
+        from engine.config import RESEARCH_DIR
+        if RESEARCH_DIR.is_dir():
+            research_count = sum(1 for f in RESEARCH_DIR.iterdir() if f.suffix == ".md")
     except Exception:
         pass
 
@@ -209,7 +214,7 @@ def dashboard_status() -> dict[str, Any]:
             "pending_items": total_todo_items - done_todo_items,
         },
         "notes": {
-            "count": len(notes),
+            "count": notes_count,
         },
         "research": {
             "sessions": research_count,
