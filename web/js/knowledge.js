@@ -14,7 +14,7 @@
   let currentMode = 'graph'; // graph | cards | search
   let entries = [];           // all memory entries (flattened)
   let protectedEntries = [];
-  let activeCategories = new Set(['semantic', 'episodic', 'ephemeral', 'protected']);
+  let activeCategories = new Set(['semantic', 'episodic', 'procedural', 'ephemeral', 'protected']);
   let cy = null;              // Cytoscape instance
   let selectedNodeId = null;
   let toastTimer = null;
@@ -86,6 +86,7 @@
     switch (cat) {
       case 'semantic': return style.getPropertyValue('--accent').trim() || '#9a7d4a';
       case 'episodic': return style.getPropertyValue('--ok').trim() || '#6fcf97';
+      case 'procedural': return style.getPropertyValue('--info').trim() || '#56b6c2';
       case 'ephemeral': return '#e5a84a';
       case 'protected': return style.getPropertyValue('--accent-text').trim() || '#c4a66b';
       default: return style.getPropertyValue('--muted').trim() || '#85858c';
@@ -96,6 +97,7 @@
     switch (cat) {
       case 'semantic': return '📌';
       case 'episodic': return '🎓';
+      case 'procedural': return '⚙️';
       case 'ephemeral': return '⏳';
       case 'protected': return '🔒';
       default: return '💭';
@@ -116,13 +118,15 @@
       const mem = memData.memory || {};
       entries = [];
 
-      for (const cat of ['semantic', 'episodic', 'ephemeral']) {
+      for (const cat of ['semantic', 'episodic', 'procedural', 'ephemeral']) {
         const list = mem[cat] || [];
         for (const e of list) {
           entries.push({
             key: e.key || '',
             value: e.value || '',
             category: cat,
+            trigger: e.trigger || null,
+            keywords: e.keywords || [],
             expires_at: e.expires_at || null,
             created_at: e.created_at || null,
             updated_at: e.updated_at || null,
@@ -172,13 +176,14 @@
 
   function updateStats() {
     const all = getAllEntries();
-    const counts = { semantic: 0, episodic: 0, ephemeral: 0, protected: 0 };
+    const counts = { semantic: 0, episodic: 0, procedural: 0, ephemeral: 0, protected: 0 };
     for (const e of all) {
       if (counts[e.category] !== undefined) counts[e.category]++;
     }
 
     $('kbCountSemantic').textContent = counts.semantic;
     $('kbCountEpisodic').textContent = counts.episodic;
+    $('kbCountProcedural').textContent = counts.procedural;
     $('kbCountEphemeral').textContent = counts.ephemeral;
     $('kbCountProtected').textContent = counts.protected;
     $('kbStatTotal').textContent = all.length;
@@ -685,6 +690,20 @@
     badge.className = `kb-detail-badge ${entry.category || 'semantic'}`;
     $('kbDetailTime').textContent = timeAgo(entry.updated_at || entry.created_at);
     $('kbDetailValue').textContent = entry.value || '';
+
+    // Show procedural-specific fields
+    const procFields = $('kbDetailProcFields');
+    if (procFields) {
+      if (entry.category === 'procedural' && (entry.trigger || (entry.keywords && entry.keywords.length))) {
+        let html = '';
+        if (entry.trigger) html += `<div class="kb-proc-field"><span class="kb-proc-label">Trigger:</span> ${escHtml(entry.trigger)}</div>`;
+        if (entry.keywords && entry.keywords.length) html += `<div class="kb-proc-field"><span class="kb-proc-label">Keywords:</span> ${entry.keywords.map(k => `<span class="kb-proc-kw">${escHtml(k)}</span>`).join(' ')}</div>`;
+        procFields.innerHTML = html;
+        procFields.style.display = '';
+      } else {
+        procFields.style.display = 'none';
+      }
+    }
 
     // Connected memories (find entries sharing keywords)
     const chips = $('kbDetailChips');

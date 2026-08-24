@@ -293,7 +293,7 @@
     <!-- Dashboard view (replaces chat area when active) -->
     <div id="dashboardView" class="dashboard-view hidden">
       <div class="dash-header">
-        <h2 class="dash-title">📊 Dashboard</h2>
+        <h2 class="dash-title"><i data-lucide="layout-dashboard" class="icon-lucide"></i> Dashboard</h2>
         <button class="dash-refresh-btn" id="dashRefreshBtn" title="Refresh">↻</button>
       </div>
       <div class="dash-grid" id="dashGrid">
@@ -315,7 +315,7 @@
     <div id="knowledgeView" class="knowledge-view hidden">
       <!-- Header -->
       <div class="kb-header">
-        <h2 class="kb-title">🧠 Knowledge Base</h2>
+        <h2 class="kb-title"><i data-lucide="brain" class="icon-lucide"></i> Knowledge Base</h2>
         <div class="kb-header-actions">
           <div class="kb-mode-tabs">
             <button class="kb-mode-tab active" data-kb-mode="graph">Graph</button>
@@ -362,6 +362,12 @@
               <span class="kb-cat-dot episodic"></span>
               <span class="kb-filter-label">Episodic</span>
               <span class="kb-filter-count" id="kbCountEpisodic">0</span>
+            </div>
+            <div class="kb-filter-item checked" data-kb-cat="procedural">
+              <div class="kb-filter-checkbox"></div>
+              <span class="kb-cat-dot procedural"></span>
+              <span class="kb-filter-label">Procedural</span>
+              <span class="kb-filter-count" id="kbCountProcedural">0</span>
             </div>
             <div class="kb-filter-item checked" data-kb-cat="ephemeral">
               <div class="kb-filter-checkbox"></div>
@@ -458,6 +464,7 @@
               </div>
             </div>
             <div class="kb-detail-value" id="kbDetailValue"></div>
+            <div id="kbDetailProcFields" style="display:none;"></div>
             <div class="kb-detail-connections" id="kbDetailConnections">
               <div class="kb-detail-connections-title">Connected Memories</div>
               <div class="kb-detail-chips" id="kbDetailChips"></div>
@@ -1980,7 +1987,7 @@
   <script src="/static/js/terminal.js?v=9"></script>
   <script src="/static/js/cookbook.js?v=4"></script>
   <script src="/static/js/search-panel.js?v=5"></script>
-  <script src="/static/js/dashboard.js?v=1"></script>
+  <script src="/static/js/dashboard.js?v=7"></script>
   <script src="/static/js/calendar.js?v=1"></script>
   <script src="/static/js/knowledge.js?v=1"></script>
 <!-- Persona Quick Popup (portal — positioned via JS) -->
