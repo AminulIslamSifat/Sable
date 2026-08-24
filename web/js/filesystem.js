@@ -1086,7 +1086,7 @@
 
     const backItem = document.createElement("div");
     backItem.className = "fs-item fs-back";
-    backItem.innerHTML = `${icon("arrow-left", 12)} <span class="fs-name">← Roots</span>`;
+    backItem.innerHTML = `${icon("arrow-left", 12)} <span class="fs-name">Roots</span>`;
     backItem.addEventListener("click", () => showSidebarPicker());
     sidebarTree.appendChild(backItem);
 
@@ -1571,7 +1571,7 @@
 
     const backItem = document.createElement("div");
     backItem.className = "fs-item fs-back";
-    backItem.innerHTML = `${icon("arrow-left", 12)} <span class="fs-name">← Roots</span>`;
+    backItem.innerHTML = `${icon("arrow-left", 12)} <span class="fs-name">Roots</span>`;
     backItem.addEventListener("click", () => showLeftPicker());
     leftTree.appendChild(backItem);
 

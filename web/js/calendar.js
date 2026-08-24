@@ -176,7 +176,7 @@
     // ── Quick-add card (schedules only) ──
     html += `<div class="cal-add-card">
       <div class="cal-add-header">
-        <span class="cal-add-icon">📅</span>
+        <span class="cal-add-icon"><i data-lucide="calendar-days" class="icon-lucide"></i></span>
         <span class="cal-add-title">New Schedule</span>
       </div>
       <input id="calAddTitle" class="cal-add-input" type="text" placeholder="What's scheduled?" />
@@ -204,7 +204,7 @@
         html += `<div class="cal-evt-item" data-id="${evt.id}">
           <div class="cal-evt-time">${timeStr}</div>
           <div class="cal-evt-body">
-            <div class="cal-evt-title">📅 ${escHtml(evt.title)}</div>
+            <div class="cal-evt-title"><i data-lucide="calendar-days" class="icon-lucide"></i> ${escHtml(evt.title)}</div>
             <div class="cal-evt-meta">${typeLabel}${descHtml ? ' · ' + escHtml(evt.description) : ''}</div>
           </div>
           <div class="cal-evt-actions">
@@ -217,6 +217,7 @@
     }
 
     container.innerHTML = html;
+    if (window.lucide) lucide.createIcons({ nodes: container.querySelectorAll('[data-lucide]') });
 
     // ── Wire up add button (schedules only) ──
     const addBtn = $('calAddBtn');

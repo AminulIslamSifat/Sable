@@ -60,6 +60,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE messages ADD COLUMN skill_events TEXT")
         if "memory_used" not in existing_cols:
             conn.execute("ALTER TABLE messages ADD COLUMN memory_used TEXT")
+        if "prompt_tokens" not in existing_cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN prompt_tokens INTEGER DEFAULT 0")
+        if "completion_tokens" not in existing_cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN completion_tokens INTEGER DEFAULT 0")
         chat_cols = {row["name"] for row in conn.execute("PRAGMA table_info(chats)")}
         if "memory_keys" not in chat_cols:
             conn.execute("ALTER TABLE chats ADD COLUMN memory_keys TEXT DEFAULT '[]'")

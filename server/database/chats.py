@@ -207,14 +207,18 @@ def add_message(
     parent_id: str | None = None,
     skill_events: list[dict[str, Any]] | None = None,
     memory_used: list[dict[str, Any]] | None = None,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
 ) -> int:
     now = utcnow()
     memory_used_json = json.dumps(memory_used, ensure_ascii=False) if memory_used else None
     with get_db() as conn:
         cur = conn.execute(
-            "INSERT INTO messages (chat_id, role, content, thinking, memory_used, parent_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (chat_id, role, content, thinking, memory_used_json, parent_id, now),
+            "INSERT INTO messages (chat_id, role, content, thinking, memory_used, parent_id, created_at, "
+            "prompt_tokens, completion_tokens) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, role, content, thinking, memory_used_json, parent_id, now,
+             prompt_tokens, completion_tokens),
         )
         msg_id = int(cur.lastrowid)
         _write_skill_events(conn, msg_id, skill_events)
@@ -228,12 +232,23 @@ def update_message(
     parent_id: str | None = None,
     skill_events: list[dict[str, Any]] | None = None,
     memory_used: list[dict[str, Any]] | None = None,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
 ) -> None:
     memory_used_json = json.dumps(memory_used, ensure_ascii=False) if memory_used else None
+    sets = ["content = ?", "thinking = ?", "parent_id = ?", "memory_used = ?"]
+    vals: list[Any] = [content, thinking, parent_id, memory_used_json]
+    if prompt_tokens is not None:
+        sets.append("prompt_tokens = ?")
+        vals.append(prompt_tokens)
+    if completion_tokens is not None:
+        sets.append("completion_tokens = ?")
+        vals.append(completion_tokens)
+    vals.append(message_id)
     with get_db() as conn:
         conn.execute(
-            "UPDATE messages SET content = ?, thinking = ?, parent_id = ?, memory_used = ? WHERE id = ?",
-            (content, thinking, parent_id, memory_used_json, message_id),
+            f"UPDATE messages SET {', '.join(sets)} WHERE id = ?",
+            vals,
         )
         _write_skill_events(conn, message_id, skill_events)
 
