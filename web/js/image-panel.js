@@ -144,7 +144,7 @@
     widget.className = 'ig-sidebar-widget hidden';
     widget.innerHTML = `
       <div class="ig-sidebar-header">
-        <span class="ig-sidebar-title">🎨 Recent Images</span>
+        <span class="ig-sidebar-title"><i data-lucide="image" class="icon-lucide"></i> Recent Images</span>
         <button class="ig-sidebar-refresh" id="igSidebarRefresh" title="Refresh"><i data-lucide="refresh-cw"></i></button>
       </div>
       <div class="ig-sidebar-content" id="igSidebarContent"></div>

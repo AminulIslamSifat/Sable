@@ -491,7 +491,7 @@
       wrap.className = "promptgen-launch";
       wrap.innerHTML = `
         <div class="promptgen-launch-head">
-          <div class="promptgen-launch-title">🎨 AI Image Generator</div>
+          <div class="promptgen-launch-title"><i data-lucide="image" class="icon-lucide"></i> AI Image Generator</div>
           <div class="promptgen-launch-sub">Free · No login · Multiple providers</div>
         </div>
         <textarea id="igPrompt" class="promptgen-query" rows="3" placeholder="Describe what you want to generate…"></textarea>
@@ -741,6 +741,7 @@
         </div>
       `;
       container.appendChild(wrap);
+      if (window.lucide) lucide.createIcons({ nodes: wrap.querySelectorAll('[data-lucide]') });
 
       const genBtn = wrap.querySelector("#igGenBtn");
       const promptEl = wrap.querySelector("#igPrompt");

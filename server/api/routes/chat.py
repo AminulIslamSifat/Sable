@@ -46,6 +46,7 @@ from server.database import (
     add_message, update_message, get_messages, list_chats, delete_chat, get_parent_id, get_db,
 )
 from server.utils import retry_async, retry_stream, make_title, _is_deepseek_api_model, _resolve_api_backend, _is_api_model, logger
+from engine.token_counter import count_prompt_tokens, count_completion_tokens
 from server.models import ChatRequest
 from ..dependencies import service, sse
 
@@ -635,7 +636,10 @@ async def chat(request: ChatRequest):
         scraper_chat_url = result.get("chat_url")
         if scraper_chat_url:
             save_chat_url(active_chat_id, scraper_chat_url)
-        add_message(active_chat_id, "assistant", answer or error or "", thinking, final_parent)
+        _scraper_pt = count_prompt_tokens(system_instruction=_system_instruction_for_tokens, user_message=api_message, memory_context=_memory_context or "")
+        _scraper_ct = count_completion_tokens(answer or error or "", thinking)
+        add_message(active_chat_id, "assistant", answer or error or "", thinking, final_parent,
+                    prompt_tokens=_scraper_pt, completion_tokens=_scraper_ct)
         touch_chat(active_chat_id, final_parent)
         result["memory_used"] = _memory_used
         return result
@@ -644,6 +648,13 @@ async def chat(request: ChatRequest):
     try:
         from server.database import get_chat_project_id
         _project_id = get_chat_project_id(active_chat_id)
+    except Exception:
+        pass
+    # Build system instruction for token counting (includes persona + tools schema)
+    _system_instruction_for_tokens = ""
+    try:
+        from connectors.common.instruction_builder import build_instructions
+        _system_instruction_for_tokens = build_instructions(project_id=_project_id)
     except Exception:
         pass
     if not request.stream and _is_api_model(request.model):
@@ -688,7 +699,14 @@ async def chat(request: ChatRequest):
         thinking = str(result.get("thinking", ""))
         final_parent = result.get("parent_id") or parent_id
         error = result.get("error")
-        add_message(active_chat_id, "assistant", answer or error or "", thinking, final_parent)
+        _api_pt = count_prompt_tokens(
+            system_instruction=_system_instruction_for_tokens,
+            history=_db_history or [], tools=_chat_kwargs.get('tools'),
+            user_message=api_message, memory_context=_memory_context or "",
+        )
+        _api_ct = count_completion_tokens(answer or error or "", thinking)
+        add_message(active_chat_id, "assistant", answer or error or "", thinking, final_parent,
+                    prompt_tokens=_api_pt, completion_tokens=_api_ct)
         touch_chat(active_chat_id, final_parent)
         result["memory_used"] = _memory_used
         return result
@@ -708,7 +726,10 @@ async def chat(request: ChatRequest):
         thinking = str(result.get("thinking", ""))
         final_parent = result.get("parent_id") or parent_id
         error = result.get("error")
-        add_message(active_chat_id, "assistant", answer or error or "", thinking, final_parent)
+        _qwen_pt = count_prompt_tokens(system_instruction=_system_instruction_for_tokens, user_message=api_message, memory_context=_memory_context or "")
+        _qwen_ct = count_completion_tokens(answer or error or "", thinking)
+        add_message(active_chat_id, "assistant", answer or error or "", thinking, final_parent,
+                    prompt_tokens=_qwen_pt, completion_tokens=_qwen_ct)
         touch_chat(active_chat_id, final_parent)
         result["memory_used"] = _memory_used
         return result
@@ -948,6 +969,7 @@ async def chat(request: ChatRequest):
                     pass
                 stream_error = False
                 _cmd_history_start = len(_guard._command_history)
+                _round_prompt_tokens = 0  # initialized before branching; set in each path
                 # Log user message to file
                 if round_index == 0:
                     _log_conversation(active_chat_id, request.model, "user", current_message)
@@ -1017,8 +1039,30 @@ async def chat(request: ChatRequest):
                             _stream_kwargs['tools'] = _tool_schemas
                     except Exception:
                         pass  # Tools optional — fall back to text-based tool_call blocks
+                    # --- Token counting: prompt side ---
+                    try:
+                        _pt_history = _db_history_s or []
+                        _pt_tools = _stream_kwargs.get('tools')
+                        _round_prompt_tokens = count_prompt_tokens(
+                            system_instruction=_system_instruction_for_tokens,
+                            history=_pt_history,
+                            tools=_pt_tools,
+                            user_message=current_message,
+                            memory_context=_memory_context if round_index == 0 else "",
+                        )
+                    except Exception:
+                        _round_prompt_tokens = 0
                     round_event_source = _connector.stream_chat(**_stream_kwargs)
                 elif scraper_enabled:
+                    # --- Token counting: prompt side (scraper) ---
+                    try:
+                        _round_prompt_tokens = count_prompt_tokens(
+                            system_instruction=_system_instruction_for_tokens,
+                            user_message=current_message,
+                            memory_context=_memory_context if round_index == 0 else "",
+                        )
+                    except Exception:
+                        _round_prompt_tokens = 0
                     round_event_source = scraper_service.stream_events(
                         message=current_message,
                         chat_id=active_chat_id,
@@ -1031,6 +1075,20 @@ async def chat(request: ChatRequest):
                     # Qwen uses upstream_session_id for the server-side session;
                     # active_chat_id is the local Sable UUID.
                     _qwen_chat_id = _upstream_session_id or active_chat_id
+                    # --- Token counting: prompt side (Qwen) ---
+                    try:
+                        _qwen_history = []
+                        if round_index == 0 and active_chat_id:
+                            _qwen_msgs = get_messages(active_chat_id)
+                            _qwen_history = [{"role": m["role"], "content": m["content"]} for m in _qwen_msgs if m["role"] in ("user", "assistant") and m["content"]]
+                        _round_prompt_tokens = count_prompt_tokens(
+                            system_instruction=_system_instruction_for_tokens,
+                            history=_qwen_history,
+                            user_message=current_message,
+                            memory_context=_memory_context if round_index == 0 else "",
+                        )
+                    except Exception:
+                        _round_prompt_tokens = 0
                     round_event_source = retry_stream(
                         lambda: service.stream_events(
                             message=current_message,
@@ -1390,14 +1448,20 @@ async def chat(request: ChatRequest):
                 # Log assistant response to file
                 if stored:
                     _log_conversation(active_chat_id, request.model, "assistant", stored)
+                # --- Token counting: completion side ---
+                _round_completion_tokens = count_completion_tokens(stored, round_thinking)
                 if saved_message_id is None:
                     saved_message_id = add_message(
                         active_chat_id, "assistant", stored, round_thinking, final_parent, skill_events,
                         memory_used=_all_tool_mem_used or None,
+                        prompt_tokens=_round_prompt_tokens,
+                        completion_tokens=_round_completion_tokens,
                     )
                 else:
                     update_message(saved_message_id, stored, round_thinking, final_parent, skill_events,
-                                   memory_used=_all_tool_mem_used or None)
+                                   memory_used=_all_tool_mem_used or None,
+                                   prompt_tokens=_round_prompt_tokens,
+                                   completion_tokens=_round_completion_tokens)
                 # --- Collect mode: await agents spawned with collect="true" ---
                 _collect_ids: list[str] = []
                 for _sev in round_skill_events:
