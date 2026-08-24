@@ -177,6 +177,66 @@ def _truncate_tool_output(text: str, max_chars: int = _TG_TOOL_OUTPUT_MAX) -> st
     return text[:head] + f"\n… [{len(text)} chars truncated] …\n" + text[-tail:]
 
 
+def _extract_image_paths(result: dict | None) -> list[str]:
+    """Extract local image file paths from a skill_end result dict.
+
+    Handles both single-image (result.path) and multi-image (result.images[].path)
+    formats produced by generate_image handler.
+    """
+    if not result or not isinstance(result, dict):
+        return []
+    paths: list[str] = []
+    # Multi-image: result.images is a list of dicts with 'path' keys
+    images = result.get("images")
+    if isinstance(images, list):
+        for img in images:
+            if isinstance(img, dict):
+                p = img.get("path", "")
+                if p and Path(p).is_file():
+                    paths.append(p)
+    # Single/fallback: result.path
+    single = result.get("path", "")
+    if single and Path(single).is_file() and single not in paths:
+        paths.insert(0, single)
+    return paths
+
+
+async def _send_generated_images(
+    message: Any,
+    result: dict | None,
+) -> None:
+    """Send generated images as Telegram photos after a tool_end event.
+
+    Reads local files directly and sends via reply_photo.
+    Falls back to reply_document for non-photo extensions.
+    """
+    paths = _extract_image_paths(result)
+    if not paths:
+        return
+    photo_exts = {".png", ".jpg", ".jpeg", ".webp"}
+    for img_path in paths:
+        try:
+            p = Path(img_path)
+            data = p.read_bytes()
+            ext = p.suffix.lower()
+            caption = f"🖼 `{p.name}`"
+            if ext in photo_exts:
+                await message.reply_photo(
+                    photo=io.BytesIO(data),
+                    caption=caption,
+                    parse_mode="Markdown",
+                )
+            else:
+                await message.reply_document(
+                    document=io.BytesIO(data),
+                    filename=p.name,
+                    caption=caption,
+                    parse_mode="Markdown",
+                )
+        except Exception as exc:
+            logger.warning("Failed to send image %s: %s", img_path, exc)
+
+
 # ── User preferences (model, persona, thinking mode per user) ───────────────
 _PREFS_PATH = _SYSTEM_DIR / ".telegram_bot_prefs.json"
 
@@ -425,12 +485,14 @@ async def stream_chat_events(
                         })
                         current_tool_output_parts = []
                         # Send tool result as separate message
+                        skill_result = event.get("result", {})
                         if on_tool_event:
                             await on_tool_event("end", {
                                 "name": name,
                                 "ok": ok,
                                 "duration_ms": duration_ms,
                                 "output": raw_output,
+                                "result": skill_result,
                             })
                         # Check for ask_user pause
                         res = event.get("result", {})
@@ -451,7 +513,9 @@ async def stream_chat_events(
                     elif etype == "status":
                         msg = event.get("message", "")
                         if on_status and msg:
-                            await on_status(f"📡 {msg}")
+                            # Clean up internal status identifiers for display
+                            display_msg = msg.replace("_", " ").title() if msg.islower() or "_" in msg else msg
+                            await on_status(f"📡 {display_msg}")
 
                     elif etype == "done":
                         break
@@ -865,6 +929,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await status_msg.edit_text(msg_text, parse_mode="Markdown", reply_markup=None)
             except Exception:
                 pass
+            # Send generated images as photos
+            skill_result = data.get("result")
+            if skill_result:
+                await _send_generated_images(update.message, skill_result)
             # Create a fresh status message for subsequent updates
             try:
                 status_msg = await update.message.reply_text("⏳ Processing...", reply_markup=stop_kb)
@@ -1173,13 +1241,19 @@ def _build_library_keyboard(
                 label = f"{label} ({str(sub)[:15]})"
         keyboard.append([InlineKeyboardButton(label, callback_data=cb_data)])
 
-    # Navigation row
+    # Navigation row — derive panel key from cb_prefix for pagination callbacks
+    _panel_key_map = {
+        _CB_FILE_GALLERY: "gal",
+        _CB_FILE_NOTE: "not",
+        _CB_FILE_RESEARCH: "res",
+    }
+    panel_key = _panel_key_map.get(cb_prefix, "")
     nav_row: list[InlineKeyboardButton] = []
     if page > 0:
-        nav_row.append(InlineKeyboardButton("◀ Prev", callback_data=f"noop"))
+        nav_row.append(InlineKeyboardButton("◀ Prev", callback_data=f"{_CB_PAGE}{panel_key}:{page - 1}"))
     nav_row.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
     if page < total_pages - 1:
-        nav_row.append(InlineKeyboardButton("Next ▶", callback_data=f"noop"))
+        nav_row.append(InlineKeyboardButton("Next ▶", callback_data=f"{_CB_PAGE}{panel_key}:{page + 1}"))
     if len(nav_row) > 1:
         keyboard.append(nav_row)
 
@@ -1528,6 +1602,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                         await status_msg.edit_text(msg_text, parse_mode="Markdown", reply_markup=None)
                     except Exception:
                         pass
+                    # Send generated images as photos
+                    skill_result = data.get("result")
+                    if skill_result:
+                        await _send_generated_images(query.message, skill_result)
                     try:
                         status_msg = await query.message.reply_text("⏳ Processing...", reply_markup=stop_kb)
                         last_status = "⏳ Processing..."
@@ -1664,6 +1742,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                         await status_msg.edit_text(msg_text, parse_mode="Markdown", reply_markup=None)
                     except Exception:
                         pass
+                    # Send generated images as photos
+                    skill_result = data.get("result")
+                    if skill_result:
+                        await _send_generated_images(query.message, skill_result)
                     try:
                         status_msg = await query.message.reply_text("⏳ Processing...", reply_markup=stop_kb)
                         last_status = "⏳ Processing..."
@@ -1767,6 +1849,42 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
         await query.answer()
         return
+
+    # ── Library panel pagination (gallery, notes, research) ──
+    _lib_panel_map = {
+        "gal": {"endpoint": "/api/library/gallery", "cb_prefix": _CB_FILE_GALLERY, "label_key": "filename", "sub_key": "type", "title": "🖼 *Gallery*", "hint": "Tap an image to download."},
+        "not": {"endpoint": "/api/library/notes", "cb_prefix": _CB_FILE_NOTE, "label_key": "title", "sub_key": None, "title": "📝 *Notes*", "hint": "Tap a note to download."},
+        "res": {"endpoint": "/api/library/research", "cb_prefix": _CB_FILE_RESEARCH, "label_key": "title", "sub_key": None, "title": "🔬 *Research*", "hint": "Tap a file to download."},
+    }
+    for pkey, pinfo in _lib_panel_map.items():
+        if panel_page.startswith(f"{pkey}:"):
+            try:
+                page_num = int(panel_page.split(":")[1])
+            except (ValueError, IndexError):
+                await query.answer("Invalid page number", show_alert=True)
+                return
+            status, body = await _sable_request("GET", pinfo["endpoint"], timeout=15)
+            if status != 200:
+                await query.answer(f"Failed to load ({status})", show_alert=True)
+                return
+            items = body if isinstance(body, list) else []
+            keyboard, total_pages = _build_library_keyboard(
+                items, pinfo["cb_prefix"], page=page_num,
+                label_key=pinfo["label_key"], sub_key=pinfo.get("sub_key"),
+            )
+            try:
+                await query.edit_message_text(
+                    f"{pinfo['title']} ({len(items)} items)\n_{pinfo['hint']}_",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                )
+            except Exception:
+                pass
+            await query.answer()
+            return
+
+    await query.answer()
+    return
 
     # ── File download callbacks ──
 
@@ -1961,7 +2079,7 @@ async def _send_stream_result(
 
 # ── Handler registration helper ──────────────────────────────────────────────
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle incoming photos — save to uploads directory."""
+    """Handle incoming photos — save and optionally send caption to model."""
     user = update.effective_user
     if not user or not is_user_allowed(user.id):
         return
@@ -1978,10 +2096,19 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await file.download_to_drive(str(filepath))
     size_kb = photo.file_size // 1024 if photo.file_size else "?"
 
-    await update.message.reply_text(
-        f"📸 Photo saved!\n`{filename}` ({size_kb}KB)\n_Size: {photo.width}×{photo.height}_",
-        parse_mode="Markdown",
-    )
+    caption = update.message.caption
+    if caption:
+        # Photo has caption — send to model with image reference
+        text = f"[Image: {filepath}]\n\n{caption}"
+        # Delegate to the normal message flow
+        update.message.text = text
+        await handle_message(update, context)
+    else:
+        # No caption — just confirm save
+        await update.message.reply_text(
+            f"📸 Photo saved!\n`{filename}` ({size_kb}KB)\n_Size: {photo.width}×{photo.height}_",
+            parse_mode="Markdown",
+        )
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2132,6 +2259,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 await chat_status_msg.edit_text(msg_text, parse_mode="Markdown", reply_markup=None)
             except Exception:
                 pass
+            # Send generated images as photos
+            skill_result = data.get("result")
+            if skill_result:
+                await _send_generated_images(update.message, skill_result)
             try:
                 chat_status_msg = await update.message.reply_text("⏳ Processing...", reply_markup=stop_kb)
                 last_status_text = "⏳ Processing..."
@@ -2167,7 +2298,13 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     finally:
         _active_streams.pop(user.id, None)
 
-    await _send_stream_result(chat_status_msg, result, context, chat_id)
+    # Delete the status message (remove stop button) before sending result
+    try:
+        await chat_status_msg.delete()
+    except Exception:
+        pass
+
+    await _send_stream_result(update.message, result, context, chat_id)
 
 
 def register_handlers(app: Application) -> None:
