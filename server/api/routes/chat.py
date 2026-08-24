@@ -966,7 +966,7 @@ async def chat(request: ChatRequest):
         round_index = 0
         saved_message_id: int | None = None
         _pending_skill_images: list[str] = []  # image paths from get_file to inject next round
-        _guard = MainChatGuard()
+        _guard = MainChatGuard(provider=_backend)
         _loop_detector = LoopDetector()  # Error-aware loop detection + no-progress + stubbing
         _turn_caps = TurnCapTracker()  # Per-turn caps on web searches and subagent spawns
         _round_tool_errors: dict[str, str] = {}  # tool_name → error_msg from previous round

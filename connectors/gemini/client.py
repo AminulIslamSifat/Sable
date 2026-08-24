@@ -116,7 +116,7 @@ def _load_instructions(project_id: str | None = None) -> str:
     if _instruction_cache is not None:
         return _instruction_cache
     from connectors.common.instruction_builder import build_instructions
-    _instruction_cache = build_instructions(project_id=project_id)
+    _instruction_cache = build_instructions(project_id=project_id, provider="none")
     return _instruction_cache
 
 
