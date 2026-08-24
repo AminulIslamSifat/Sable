@@ -16,7 +16,7 @@ from engine.config import get_model_config
 from engine.memory_search import get_searcher
 from engine.scraper import get_settings as get_scraper_settings, scraper as scraper_service
 from engine.skills import SkillEngine, SkillParser, build_tool_feedback
-from engine.agents.resilience import MainChatGuard
+from engine.agents.resilience import LoopDetector, MainChatGuard, TurnCapTracker
 from engine.skills.handlers import HANDLER_MAP
 from connectors import get_connector
 from connectors.deepseek.client import get_client as get_deepseek_client
@@ -46,6 +46,7 @@ from server.database import (
     add_message, update_message, get_messages, list_chats, delete_chat, get_parent_id, get_db,
 )
 from server.utils import retry_async, retry_stream, make_title, _is_deepseek_api_model, _resolve_api_backend, _is_api_model, logger
+from engine.token_counter import count_prompt_tokens, count_completion_tokens
 from server.models import ChatRequest
 from ..dependencies import service, sse
 
@@ -123,12 +124,138 @@ async def stop_generation(request: Request):
 
 _SUMMARIZER_CHUNK_LIMIT = 300_000   # max chars per summarizer call
 _TAIL_PRESERVE_LIMIT = 250_000      # max chars to keep verbatim at the end
+_TAIL_MIN_CHARS = 100_000           # minimum chars to preserve from the end (expand beyond tool call count)
 _SUMMARIZER_MIN_HEAD = 5_000        # skip summarization if head is smaller than this
 _SUMMARIZER_MAX_CONCURRENCY = 3     # max parallel summarizer API calls
 _SUMMARIZER_CACHE_TTL = 300         # seconds to cache summaries per chat_id
+_HEAD_TOOL_CALLS = 3                # first N tool_call/result pairs to preserve verbatim
+_TAIL_TOOL_CALLS = 5                # last N tool_call/result pairs to preserve verbatim
 
 _summarizer_semaphore: asyncio.Semaphore | None = None
 _summarizer_cache: dict[str, tuple[float, str]] = {}  # chat_id → (timestamp, result)
+
+import re as _re
+_tool_call_re = _re.compile(r'<tool_call[\s>]', _re.IGNORECASE)
+_tool_result_re = _re.compile(r'<tool_result[\s>]', _re.IGNORECASE)
+
+
+def _extract_head_tail(messages: list[dict]) -> tuple[str, str, list[dict]]:
+    """Extract verbatim head/tail from messages, return (head_text, tail_text, middle_messages).
+
+    Head: first user message + first N tool_call/result pairs.
+    Tail: last user message + last N tool_call/result pairs.
+    Middle: everything between head and tail (sent to summarizer).
+    """
+    if not messages:
+        return "", "", []
+
+    # --- Find first user message ---
+    first_user_idx = None
+    for i, m in enumerate(messages):
+        if m.get("role") == "user":
+            first_user_idx = i
+            break
+
+    # --- Find last user message ---
+    last_user_idx = None
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            last_user_idx = i
+            break
+
+    if first_user_idx is None or last_user_idx is None:
+        return "", "", messages
+
+    # --- Collect first N tool_call/result pairs after first user message ---
+    head_end_idx = first_user_idx + 1  # at minimum, include first user message
+    tc_count = 0
+    for i in range(first_user_idx + 1, len(messages)):
+        content = (messages[i].get("content") or "")
+        role = messages[i].get("role", "")
+        if _tool_call_re.search(content) or _tool_result_re.search(content) or role == "tool":
+            head_end_idx = i + 1
+            tc_count += 1
+            if tc_count >= _HEAD_TOOL_CALLS * 2:  # pairs = call + result
+                break
+        elif role == "assistant" and not _tool_call_re.search(content):
+            # Non-tool assistant message — still include in head if within range
+            head_end_idx = i + 1
+
+    # --- Collect last N tool_call/result pairs before/at last user message ---
+    tail_start_idx = last_user_idx
+    tc_count = 0
+    for i in range(len(messages) - 1, last_user_idx - 1, -1):
+        content = (messages[i].get("content") or "")
+        role = messages[i].get("role", "")
+        if _tool_call_re.search(content) or _tool_result_re.search(content) or role == "tool":
+            tail_start_idx = i
+            tc_count += 1
+            if tc_count >= _TAIL_TOOL_CALLS * 2:
+                break
+
+    # Ensure tail doesn't overlap head
+    if tail_start_idx < head_end_idx:
+        tail_start_idx = head_end_idx
+
+    # --- Expand tail to meet minimum char threshold ---
+    # If the current tail (by tool call count) is under _TAIL_MIN_CHARS,
+    # walk backward from tail_start_idx to include more messages.
+    tail_char_count = sum(
+        len((messages[i].get("content") or "").strip())
+        for i in range(tail_start_idx, len(messages))
+    )
+    while tail_char_count < _TAIL_MIN_CHARS and tail_start_idx > head_end_idx:
+        tail_start_idx -= 1
+        tail_char_count += len((messages[tail_start_idx].get("content") or "").strip())
+
+    # Cap at _TAIL_PRESERVE_LIMIT to avoid oversized tails
+    if tail_char_count > _TAIL_PRESERVE_LIMIT:
+        # Walk forward to trim excess
+        while tail_char_count > _TAIL_PRESERVE_LIMIT and tail_start_idx < len(messages) - 1:
+            tail_char_count -= len((messages[tail_start_idx].get("content") or "").strip())
+            tail_start_idx += 1
+
+    # --- Format head ---
+    head_msgs = messages[first_user_idx:head_end_idx]
+    head_lines = []
+    first_user_content = (messages[first_user_idx].get("content") or "").strip()
+    head_lines.append(f"## First User Message\n{first_user_content}")
+
+    # Remaining head messages are early tool calls
+    early_tc_parts = []
+    for m in head_msgs[1:]:
+        content = (m.get("content") or "").strip()
+        if content:
+            early_tc_parts.append(content)
+    if early_tc_parts:
+        head_lines.append("## Early Tool Calls\n" + "\n".join(early_tc_parts))
+
+    head_text = "\n\n".join(head_lines)
+
+    # --- Format tail ---
+    tail_msgs = messages[tail_start_idx:]
+    tail_lines = []
+
+    # Find last user message content in tail
+    last_user_content = (messages[last_user_idx].get("content") or "").strip()
+
+    # Messages after last user message are recent tool calls
+    recent_tc_parts = []
+    for m in messages[last_user_idx + 1:]:
+        content = (m.get("content") or "").strip()
+        if content:
+            recent_tc_parts.append(content)
+
+    tail_lines.append(f"## Last User Message\n{last_user_content}")
+    if recent_tc_parts:
+        tail_lines.append("## Recent Tool Calls\n" + "\n".join(recent_tc_parts))
+
+    tail_text = "\n\n".join(tail_lines)
+
+    # --- Middle messages (between head end and tail start) ---
+    middle = messages[head_end_idx:tail_start_idx]
+
+    return head_text, tail_text, middle
 
 
 def _chunk_text(text: str, limit: int) -> list[str]:
@@ -159,12 +286,14 @@ def _chunk_text(text: str, limit: int) -> list[str]:
 async def _build_switch_context(chat_id: str, model: str) -> str:
     """Build a formatted context string for passing to a new account after switch.
 
-    Rules:
-    - Total context <= 500k chars → return as-is (no summarization needed).
-    - Otherwise: preserve up to 250k chars of tail (including last user message),
-      summarize the head in ≤300k parallel chunks, stitch summaries sequentially.
+    Hermes-style format:
+    - Head (first user msg + first 3 tool calls) extracted verbatim in code
+    - Tail (last user msg + last 5 tool calls) extracted verbatim in code
+    - Only the middle portion is sent to the summarizer model
+    - Model produces ## Conversation Flow + optional ## Intermediary Summary
+    - Final output assembled: head + flow + intermediary + tail + 'continue'
 
-    Returns formatted string with [Context Summary] + [Ongoing conversation] sections.
+    Falls back to raw transcript if total <= 500k chars.
     """
     import asyncio as _asyncio
     import time as _time
@@ -177,64 +306,55 @@ async def _build_switch_context(chat_id: str, model: str) -> str:
     if not messages:
         return ""
 
-    # --- Calculate total length without materializing full string ---
-    # Build formatted lines but track cumulative length to find split point
-    lines: list[str] = []
-    line_lengths: list[int] = []  # cumulative length after each line (including \n)
-    cumulative = 0
-    for m in messages:
-        role = m.get("role", "unknown")
-        content = (m.get("content") or "").strip()
-        if not content:
-            continue
-        line = f"[{role}]: {content}"
-        lines.append(line)
-        cumulative += len(line) + 1  # +1 for \n join separator
-        line_lengths.append(cumulative)
+    # --- Calculate total length ---
+    total_chars = sum(len((m.get("content") or "").strip()) for m in messages)
 
-    total_len = cumulative - 1 if cumulative > 0 else 0  # remove trailing \n
-
-    # Under threshold — no summarization needed, materialize and return
-    if total_len <= 500_000:
+    # Under threshold — no summarization needed
+    if total_chars <= 500_000:
+        lines = []
+        for m in messages:
+            role = m.get("role", "unknown")
+            content = (m.get("content") or "").strip()
+            if content:
+                lines.append(f"[{role}]: {content}")
         return "\n".join(lines)
 
-    # --- Check cache before doing any work ---
+    # --- Check cache ---
     now = _time.monotonic()
     cached = _summarizer_cache.get(chat_id)
     if cached and (now - cached[0]) < _SUMMARIZER_CACHE_TTL:
         logger.info("[auto-switch] Using cached summary for %s", chat_id)
         return cached[1]
 
-    # --- Find tail boundary by line index (no full-string slicing) ---
-    tail_threshold = total_len - _TAIL_PRESERVE_LIMIT
-    # Binary search for the first line whose cumulative length >= tail_threshold
-    lo, hi = 0, len(line_lengths) - 1
-    tail_line_idx = len(lines)  # default: all lines are tail
-    while lo <= hi:
-        mid = (lo + hi) // 2
-        if line_lengths[mid] >= tail_threshold:
-            tail_line_idx = mid
-            hi = mid - 1
-        else:
-            lo = mid + 1
+    # --- Extract head/tail programmatically ---
+    head_text, tail_text, middle_messages = _extract_head_tail(messages)
 
-    head_lines = lines[:tail_line_idx]
-    tail_lines = lines[tail_line_idx:]
-    head_text = "\n".join(head_lines) if head_lines else ""
-    tail_text = "\n".join(tail_lines) if tail_lines else ""
+    # Format middle into transcript for summarizer
+    middle_lines = []
+    for m in middle_messages:
+        role = m.get("role", "unknown")
+        content = (m.get("content") or "").strip()
+        if content:
+            middle_lines.append(f"[{role}]: {content}")
+    middle_text = "\n".join(middle_lines)
 
-    # Head too small to justify an API call — include inline
-    if len(head_text) < _SUMMARIZER_MIN_HEAD:
-        result = f"[Context Summary]\n{head_text}\n\n[Ongoing conversation]\n{tail_text}" if head_text.strip() else tail_text
+    # Middle too small — skip summarization, include inline
+    if len(middle_text) < _SUMMARIZER_MIN_HEAD:
+        parts = [head_text]
+        if middle_text.strip():
+            parts.append(f"## Conversation Flow\n{middle_text}")
+        parts.append(tail_text)
+        parts.append("continue")
+        result = "\n\n".join(parts)
         _summarizer_cache[chat_id] = (now, result)
         return result
 
-    # --- Chunked parallel summarization with concurrency cap ---
-    chunks = _chunk_text(head_text, _SUMMARIZER_CHUNK_LIMIT)
+    # --- Chunked parallel summarization of MIDDLE only ---
+    chunks = _chunk_text(middle_text, _SUMMARIZER_CHUNK_LIMIT)
     total_chunks = len(chunks)
     logger.info(
-        "[auto-switch] Summarizing %d chars in %d chunk(s) (head=%d, tail=%d)",
-        total_len, total_chunks, len(head_text), len(tail_text),
+        "[auto-switch] Summarizing middle %d chars in %d chunk(s) (head=%d, tail=%d, total=%d)",
+        len(middle_text), total_chunks, len(head_text), len(tail_text), total_chars,
     )
 
     async def _guarded_summarize(chunk: str, idx: int) -> str:
@@ -243,15 +363,33 @@ async def _build_switch_context(chat_id: str, model: str) -> str:
             return await _run_summarizer(chunk, model, chunk_index=idx, total_chunks=total_chunks)
 
     tasks = [_guarded_summarize(chunk, i) for i, chunk in enumerate(chunks)]
-    summaries = await _asyncio.gather(*tasks)
+    flow_summaries = await _asyncio.gather(*tasks)
 
-    # Stitch sequentially — each summary is already structured
-    stitched = "\n\n".join(
-        f"### Part {i + 1}/{total_chunks}\n{s}"
-        for i, s in enumerate(summaries)
+    # Stitch conversation flow parts
+    if total_chunks > 1:
+        stitched_flow = "\n\n".join(
+            f"### Part {i + 1}/{total_chunks}\n{s}"
+            for i, s in enumerate(flow_summaries)
+        )
+    else:
+        stitched_flow = flow_summaries[0] if flow_summaries else ""
+
+    # --- Assemble final output ---
+    parts = [head_text, f"## Conversation Flow\n{stitched_flow}"]
+
+    # Count tool calls after last user message for intermediary summary decision
+    tail_tc_count = sum(
+        1 for m in messages
+        if (_tool_call_re.search(m.get("content") or "") or
+            _tool_result_re.search(m.get("content") or "") or
+            m.get("role") == "tool")
     )
+    # The summarizer handles intermediary summary in its output;
+    # if it produced one, it's already in stitched_flow
 
-    result = f"[Context Summary]\n{stitched}\n\n[Ongoing conversation]\n{tail_text}"
+    parts.append(tail_text)
+    parts.append("continue")
+    result = "\n\n".join(parts)
 
     # Cache the result
     _summarizer_cache[chat_id] = (now, result)
@@ -296,60 +434,100 @@ async def _run_summarizer(
         position_note = ""
 
     prompt = (
-        "You are a context handoff summarizer. Below is a conversation transcript from "
-        "a session being switched to a different account. Produce a STRUCTURED operational "
-        "briefing so the new session can continue with zero loss of state.\n\n"
+        "You are compressing the MIDDLE portion of a conversation transcript. "
+        "The first user message, early tool calls, last user message, and recent tool "
+        "calls are already extracted separately — DO NOT reproduce them.\n\n"
         f"{position_note}"
-        "OUTPUT FORMAT — use these exact section headers:\n\n"
-        "## Task\n"
-        "What the user is trying to accomplish (1-2 sentences).\n\n"
-        "## Intent\n"
-        "The user's underlying goal/motivation and any constraints they've stated.\n\n"
-        "## Plan\n"
-        "The approach being taken. List key decisions and rationale.\n\n"
-        "## Progress\n"
-        "Step-by-step record of what was done. For each significant step:\n"
-        "- Command/action taken\n"
-        "- Output/result summary\n"
-        "- Any errors encountered and how they were resolved\n\n"
-        "## Next Steps\n"
-        "What remains to be done. Be specific and actionable.\n\n"
+        "YOUR ONLY JOB: Compress this transcript into labeled turn pairs.\n\n"
+
+        "OUTPUT FORMAT:\n\n"
+        "## user\n"
+        "[1-2 sentence summary: what the user asked/requested]\n"
+        "## model\n"
+        "[Compressed actions: which files were viewed/edited/created, which tools were "
+        "called, compressed tool result, any errors or problems encountered]\n\n"
+        "Repeat ## user / ## model pairs as needed. Single-sided turns are allowed "
+        "(e.g., only ## model if the model acted without a new user prompt).\n"
+        "Be DENSE — name files, tools, and outcomes. Skip pleasantries and meta-talk.\n\n"
+
+        "If this transcript segment contains MORE THAN 5 tool calls, also add at the end:\n\n"
+        "## Intermediary Summary\n"
+        "[For each tool call beyond the last 5: what tool was called, compressed result, "
+        "any problems or improvements needed]\n\n"
+
         "HARD RULES:\n"
-        "- Never invent details not in the transcript. Write [unclear] if ambiguous.\n"
-        "- Preserve all code, paths, commands, errors VERBATIM in code blocks.\n"
-        "- Each section must be present even if brief. Use 'N/A' if not applicable.\n"
-        "- Keep prose concise. Verbatim code blocks are exempt from length limits.\n\n"
+        "- Output ONLY the ## user / ## model pairs (and optional ## Intermediary Summary).\n"
+        "- NEVER output ## First User Message, ## Early Tool Calls, ## Last User Message, "
+        "## Recent Tool Calls, or any other section headers.\n"
+        "- NEVER add high-level summaries, synthesis, overview, or commentary.\n"
+        "- Never invent details. Write [unclear] if ambiguous.\n"
+        "- Preserve code, paths, commands, errors VERBATIM in code blocks within turn pairs.\n"
+        "- BUG FIX REPORTING (MANDATORY): When a bug was found AND fixed in a specific file, "
+        "the ## model turn MUST include the actual code — not just a prose description. Format:\n"
+        "    File: path/to/file.py:L###\n"
+        "    PROBLEM: [2-5 line code snippet showing the broken code]\n"
+        "    FIX: [2-5 line code snippet showing the corrected code]\n"
+        "  If an issue was identified but NOT resolved, do NOT mention it at all.\n"
+        "  Only include fix details for bugs actually fixed in that turn.\n\n"
         f"---\n{transcript}"
     )
 
-    try:
-        api_backend = _resolve_api_backend(sum_model)
-        if api_backend:
-            connector = get_connector(api_backend)
-            result = await connector.chat(message=prompt, model=sum_model, thinking_mode="fast")
-        elif browser_acc:
-            from engine.service import ChatService
-            from engine.config import _SYSTEM
-            acc_dir = _SYSTEM / browser_acc
-            if acc_dir.exists():
-                temp_service = ChatService(user_data_dir=str(acc_dir))
-                try:
-                    result = await temp_service.chat(message=prompt, model=sum_model, thinking_mode="fast")
-                finally:
-                    await temp_service.close()
-            else:
-                result = await service.chat(message=prompt, model=sum_model, thinking_mode="fast")
-        else:
-            result = await service.chat(message=prompt, model=sum_model, thinking_mode="fast")
+    # Build fallback chain: primary → fallback_models → browser_profiles
+    fallback_models: list[str] = settings.get("fallback_models", [])
+    browser_profiles: list[str] = settings.get("browser_profiles", [])
 
-        answer = result.get("answer", "").strip()
+    async def _try_summarizer_call(mdl: str, browser_acc_name: str = "") -> str | None:
+        """Try a single summarizer call. Returns answer string or None on failure."""
+        try:
+            api_backend = _resolve_api_backend(mdl)
+            if api_backend:
+                connector = get_connector(api_backend)
+                result = await connector.chat(message=prompt, model=mdl, thinking_mode="fast")
+            elif browser_acc_name:
+                from engine.service import ChatService
+                from engine.config import _SYSTEM
+                acc_dir = _SYSTEM / browser_acc_name
+                if acc_dir.exists():
+                    temp_service = ChatService(user_data_dir=str(acc_dir))
+                    try:
+                        result = await temp_service.chat(message=prompt, model=mdl, thinking_mode="fast")
+                    finally:
+                        await temp_service.close()
+                else:
+                    logger.warning("[auto-switch] Browser profile dir not found: %s", acc_dir)
+                    return None
+            else:
+                result = await service.chat(message=prompt, model=mdl, thinking_mode="fast")
+
+            answer = result.get("answer", "").strip()
+            if answer:
+                return answer
+            logger.warning("[auto-switch] Summarizer %s returned empty: %s", mdl, result.get("error", ""))
+            return None
+        except Exception as exc:
+            logger.warning("[auto-switch] Summarizer %s failed: %s: %s", mdl, type(exc).__name__, exc)
+            return None
+
+    # Step 1: Primary model (with primary browser profile if Qwen)
+    answer = await _try_summarizer_call(sum_model, browser_acc)
+    if answer:
+        return answer
+
+    # Step 2: Fallback models (API or Qwen with default browser)
+    for fb_model in fallback_models[:2]:
+        answer = await _try_summarizer_call(fb_model)
         if answer:
+            logger.info("[auto-switch] Fallback model succeeded: %s", fb_model)
             return answer
-        logger.warning("[auto-switch] Summarizer returned empty: %s", result.get("error", ""))
-        return "[Summary unavailable — summarizer returned empty response]"
-    except Exception as exc:
-        logger.exception("[auto-switch] Summarizer failed")
-        return f"[Summary unavailable — {type(exc).__name__}: {exc}]"
+
+    # Step 3: Fallback browser profiles (using primary model)
+    for fb_profile in browser_profiles[:2]:
+        answer = await _try_summarizer_call(sum_model, fb_profile)
+        if answer:
+            logger.info("[auto-switch] Fallback browser profile succeeded: %s", fb_profile)
+            return answer
+
+    return "[Summary unavailable — all summarizer fallbacks exhausted]"
 
 
 @router.post("/api/chat")
@@ -635,7 +813,10 @@ async def chat(request: ChatRequest):
         scraper_chat_url = result.get("chat_url")
         if scraper_chat_url:
             save_chat_url(active_chat_id, scraper_chat_url)
-        add_message(active_chat_id, "assistant", answer or error or "", thinking, final_parent)
+        _scraper_pt = count_prompt_tokens(system_instruction=_system_instruction_for_tokens, user_message=api_message, memory_context=_memory_context or "")
+        _scraper_ct = count_completion_tokens(answer or error or "", thinking)
+        add_message(active_chat_id, "assistant", answer or error or "", thinking, final_parent,
+                    prompt_tokens=_scraper_pt, completion_tokens=_scraper_ct)
         touch_chat(active_chat_id, final_parent)
         result["memory_used"] = _memory_used
         return result
@@ -644,6 +825,13 @@ async def chat(request: ChatRequest):
     try:
         from server.database import get_chat_project_id
         _project_id = get_chat_project_id(active_chat_id)
+    except Exception:
+        pass
+    # Build system instruction for token counting (includes persona + tools schema)
+    _system_instruction_for_tokens = ""
+    try:
+        from connectors.common.instruction_builder import build_instructions
+        _system_instruction_for_tokens = build_instructions(project_id=_project_id)
     except Exception:
         pass
     if not request.stream and _is_api_model(request.model):
@@ -688,7 +876,14 @@ async def chat(request: ChatRequest):
         thinking = str(result.get("thinking", ""))
         final_parent = result.get("parent_id") or parent_id
         error = result.get("error")
-        add_message(active_chat_id, "assistant", answer or error or "", thinking, final_parent)
+        _api_pt = count_prompt_tokens(
+            system_instruction=_system_instruction_for_tokens,
+            history=_db_history or [], tools=_chat_kwargs.get('tools'),
+            user_message=api_message, memory_context=_memory_context or "",
+        )
+        _api_ct = count_completion_tokens(answer or error or "", thinking)
+        add_message(active_chat_id, "assistant", answer or error or "", thinking, final_parent,
+                    prompt_tokens=_api_pt, completion_tokens=_api_ct)
         touch_chat(active_chat_id, final_parent)
         result["memory_used"] = _memory_used
         return result
@@ -708,7 +903,10 @@ async def chat(request: ChatRequest):
         thinking = str(result.get("thinking", ""))
         final_parent = result.get("parent_id") or parent_id
         error = result.get("error")
-        add_message(active_chat_id, "assistant", answer or error or "", thinking, final_parent)
+        _qwen_pt = count_prompt_tokens(system_instruction=_system_instruction_for_tokens, user_message=api_message, memory_context=_memory_context or "")
+        _qwen_ct = count_completion_tokens(answer or error or "", thinking)
+        add_message(active_chat_id, "assistant", answer or error or "", thinking, final_parent,
+                    prompt_tokens=_qwen_pt, completion_tokens=_qwen_ct)
         touch_chat(active_chat_id, final_parent)
         result["memory_used"] = _memory_used
         return result
@@ -769,6 +967,9 @@ async def chat(request: ChatRequest):
         saved_message_id: int | None = None
         _pending_skill_images: list[str] = []  # image paths from get_file to inject next round
         _guard = MainChatGuard()
+        _loop_detector = LoopDetector()  # Error-aware loop detection + no-progress + stubbing
+        _turn_caps = TurnCapTracker()  # Per-turn caps on web searches and subagent spawns
+        _round_tool_errors: dict[str, str] = {}  # tool_name → error_msg from previous round
         _all_tool_mem_used: list[dict[str, Any]] = []
         # Always send local chat_id to frontend (authoritative for new + existing chats)
         yield sse({"type": "meta", "chat_id": active_chat_id, "parent_id": parent_id})
@@ -796,7 +997,7 @@ async def chat(request: ChatRequest):
                 _TITLE_RE = re.compile(r"<chat_title>(.*?)</chat_title>", re.S | re.I)
                 def _dispatch_events(items) -> Generator[str, None, None]:
                     """Shared logic: route parser events, execute tags via engine."""
-                    nonlocal _title_buf
+                    nonlocal _title_buf, current_parent, final_parent
                     engine = _get_skill_engine()
                     for item in items:
                         itype = item.get("type")
@@ -843,8 +1044,53 @@ async def chat(request: ChatRequest):
                                 round_skill_events.append({"type": "skill_end", "name": "chat_title", "ok": True, "id": _ct_id, "duration_ms": 0})
                                 continue
 
-                            # Track command for loop detection
+                            # Track command for loop detection (legacy MainChatGuard)
                             _guard.record_command(item["name"], item.get("content", ""))
+                            # LoopDetector: error-aware check with recovery support
+                            _tool_args_str = item.get("content", "")
+                            _prev_error = _round_tool_errors.get(item["name"])
+                            _decision = _loop_detector.check_decision(
+                                item["name"], _tool_args_str, error_msg=_prev_error or "",
+                            )
+                            if _decision.action == "block":
+                                _stop_msg = _decision.message or f"[HARD STOP] '{item['name']}' blocked."
+                                _lp_id = str(uuid.uuid4())[:12]
+                                round_skill_events.append({"type": "skill_start", "name": item["name"], "id": _lp_id})
+                                round_skill_events.append({"type": "skill_end", "name": item["name"], "ok": False, "error": _stop_msg, "id": _lp_id})
+                                yield sse({"type": "skill_end", "name": item["name"], "ok": False, "error": _stop_msg, "id": _lp_id})
+                                continue
+                            elif _decision.action == "recover":
+                                # Recovery: reset session, inject recovery prompt
+                                logger.info("[main-chat] Guardrail recovery triggered for '%s'", item["name"])
+                                yield sse({"type": "guardrail_recovery", "tool": item["name"]})
+                                current_parent = None  # Fresh upstream session
+                                final_parent = None
+                                _recovery_prompt = _loop_detector.get_recovery_prompt(
+                                    _decision.recovery_key,
+                                    original_task=api_message or "",
+                                )
+                                # Block this tool and all remaining tools this round
+                                _lp_id = str(uuid.uuid4())[:12]
+                                round_skill_events.append({"type": "skill_start", "name": item["name"], "id": _lp_id})
+                                round_skill_events.append({"type": "skill_end", "name": item["name"], "ok": False, "error": _recovery_prompt, "id": _lp_id})
+                                yield sse({"type": "skill_end", "name": item["name"], "ok": False, "error": _recovery_prompt, "id": _lp_id})
+                                # Skip remaining tools this round — force re-think
+                                break
+                            elif _decision.action == "warn":
+                                _lw_id = str(uuid.uuid4())[:12]
+                                _warn_text = _decision.message or ""
+                                round_skill_events.append({"type": "skill_start", "name": "_loop_warning", "id": _lw_id})
+                                round_skill_events.append({"type": "skill_output", "text": _warn_text, "id": _lw_id})
+                                round_skill_events.append({"type": "skill_end", "name": "_loop_warning", "ok": True, "id": _lw_id})
+                                yield sse({"type": "skill_output", "text": _warn_text, "id": _lw_id})
+                            # Per-turn cap check
+                            _cap_warn = _turn_caps.check_and_record(item["name"])
+                            if _cap_warn:
+                                _cap_id = str(uuid.uuid4())[:12]
+                                round_skill_events.append({"type": "skill_start", "name": item["name"], "id": _cap_id})
+                                round_skill_events.append({"type": "skill_end", "name": item["name"], "ok": False, "error": _cap_warn, "id": _cap_id})
+                                yield sse({"type": "skill_end", "name": item["name"], "ok": False, "error": _cap_warn, "id": _cap_id})
+                                continue
                             # Execute the tag through the middleware pipeline
                             for ev in engine.process_tag(
                                 item["name"], item.get("attrs", {}), item.get("content", ""),
@@ -948,6 +1194,7 @@ async def chat(request: ChatRequest):
                     pass
                 stream_error = False
                 _cmd_history_start = len(_guard._command_history)
+                _round_prompt_tokens = 0  # initialized before branching; set in each path
                 # Log user message to file
                 if round_index == 0:
                     _log_conversation(active_chat_id, request.model, "user", current_message)
@@ -1017,8 +1264,36 @@ async def chat(request: ChatRequest):
                             _stream_kwargs['tools'] = _tool_schemas
                     except Exception:
                         pass  # Tools optional — fall back to text-based tool_call blocks
+                    # --- Token counting: prompt side ---
+                    try:
+                        # On round > 0, use the connector's live session history
+                        # (which includes all previous rounds) instead of the stale
+                        # DB snapshot that's only loaded on round 0.
+                        if round_index > 0 and active_chat_id:
+                            _pt_history = getattr(_connector, '_sessions', {}).get(active_chat_id, []) or []
+                        else:
+                            _pt_history = _db_history_s or []
+                        _pt_tools = _stream_kwargs.get('tools')
+                        _round_prompt_tokens = count_prompt_tokens(
+                            system_instruction=_system_instruction_for_tokens,
+                            history=_pt_history,
+                            tools=_pt_tools,
+                            user_message=current_message,
+                            memory_context=_memory_context if round_index == 0 else "",
+                        )
+                    except Exception:
+                        _round_prompt_tokens = 0
                     round_event_source = _connector.stream_chat(**_stream_kwargs)
                 elif scraper_enabled:
+                    # --- Token counting: prompt side (scraper) ---
+                    try:
+                        _round_prompt_tokens = count_prompt_tokens(
+                            system_instruction=_system_instruction_for_tokens,
+                            user_message=current_message,
+                            memory_context=_memory_context if round_index == 0 else "",
+                        )
+                    except Exception:
+                        _round_prompt_tokens = 0
                     round_event_source = scraper_service.stream_events(
                         message=current_message,
                         chat_id=active_chat_id,
@@ -1031,6 +1306,20 @@ async def chat(request: ChatRequest):
                     # Qwen uses upstream_session_id for the server-side session;
                     # active_chat_id is the local Sable UUID.
                     _qwen_chat_id = _upstream_session_id or active_chat_id
+                    # --- Token counting: prompt side (Qwen) ---
+                    try:
+                        _qwen_history = []
+                        if round_index == 0 and active_chat_id:
+                            _qwen_msgs = get_messages(active_chat_id)
+                            _qwen_history = [{"role": m["role"], "content": m["content"]} for m in _qwen_msgs if m["role"] in ("user", "assistant") and m["content"]]
+                        _round_prompt_tokens = count_prompt_tokens(
+                            system_instruction=_system_instruction_for_tokens,
+                            history=_qwen_history,
+                            user_message=current_message,
+                            memory_context=_memory_context if round_index == 0 else "",
+                        )
+                    except Exception:
+                        _round_prompt_tokens = 0
                     round_event_source = retry_stream(
                         lambda: service.stream_events(
                             message=current_message,
@@ -1224,10 +1513,10 @@ async def chat(request: ChatRequest):
                         pending_thinking.clear()
                         async for _sse_line in _drain_sync_gen(emit_flush()):
                             yield _sse_line
-                        # --- Auto-switch to next available account ---
+                        # --- Auto-switch to next available account (with retry loop) ---
                         _switch_reason = "rate_limit" if event_type == "rate_limited" else "waf_block"
                         logger.info("[auto-switch] Triggered by %s for chat %s", _switch_reason, active_chat_id)
-                        yield sse({"type": "status", "message": "switching_account", "reason": _switch_reason})
+                        yield sse({"type": "account_switch", "step": "triggered", "reason": _switch_reason})
 
                         from engine.config import (
                             get_next_available_account,
@@ -1241,21 +1530,31 @@ async def chat(request: ChatRequest):
                             mark_account_captcha_blocked(_current_acc)
 
                         _tried_accounts: set[str] = {_current_acc}
-                        _next_acc = get_next_available_account(exclude=_tried_accounts)
+                        _switch_max_retries = 5
+                        _switch_attempt = 0
+                        _switch_success = False
 
-                        if not _next_acc:
-                            # No accounts left — fall back to original error behavior
-                            if event_type == "rate_limited":
-                                hours = event.get("hours", "?")
-                                details = event.get("message", "Daily usage limit reached.")
-                                error_message = f"⏳ Rate Limited — {details} (retry in {hours}h)"
-                            else:
-                                error_message = "🚫 WAF/captcha block — no available accounts to switch to"
-                            stream_error = True
-                            yield sse(event)
-                        else:
+                        while _switch_attempt < _switch_max_retries and not _switch_success:
+                            _switch_attempt += 1
+                            yield sse({"type": "account_switch", "step": "searching", "current": _current_acc, "attempt": _switch_attempt})
+                            _next_acc = get_next_available_account(exclude=_tried_accounts)
+
+                            if not _next_acc:
+                                # No accounts left — fall back to original error behavior
+                                yield sse({"type": "account_switch", "step": "failed", "error": "no_accounts_available"})
+                                if event_type == "rate_limited":
+                                    hours = event.get("hours", "?")
+                                    details = event.get("message", "Daily usage limit reached.")
+                                    error_message = f"⏳ Rate Limited — {details} (retry in {hours}h)"
+                                else:
+                                    error_message = "🚫 WAF/captcha block — no available accounts to switch to"
+                                stream_error = True
+                                yield sse(event)
+                                break  # exit retry loop
+
                             # Perform account switch
-                            logger.info("[auto-switch] Switching from %s → %s", _current_acc, _next_acc)
+                            logger.info("[auto-switch] Attempt %d: Switching from %s → %s", _switch_attempt, _current_acc, _next_acc)
+                            yield sse({"type": "account_switch", "step": "switching", "from": _current_acc, "to": _next_acc, "attempt": _switch_attempt})
                             try:
                                 from pathlib import Path as _Path
                                 from engine.config import _SYSTEM as _SYS
@@ -1270,12 +1569,14 @@ async def chat(request: ChatRequest):
                                 logger.info("[auto-switch] Symlink updated to %s", _next_acc)
                             except Exception as _sw_exc:
                                 logger.error("[auto-switch] Symlink switch failed: %s", _sw_exc)
+                                yield sse({"type": "account_switch", "step": "failed", "error": str(_sw_exc)})
                                 error_message = f"Account switch failed: {_sw_exc}"
                                 stream_error = True
                                 yield sse(event)
                                 continue
 
                             # Sync system instructions to new account before first message
+                            yield sse({"type": "account_switch", "step": "syncing", "account": _next_acc})
                             try:
                                 await service.sync_context()
                                 logger.info("[auto-switch] sync_context completed for %s", _next_acc)
@@ -1283,6 +1584,7 @@ async def chat(request: ChatRequest):
                                 logger.warning("[auto-switch] sync_context failed for %s: %s", _next_acc, _sync_exc)
 
                             # Build context for new account (with summarization if >500k)
+                            yield sse({"type": "account_switch", "step": "summarizing", "account": _next_acc})
                             try:
                                 _switch_ctx = await _build_switch_context(active_chat_id, request.model)
                             except Exception as _ctx_exc:
@@ -1290,6 +1592,7 @@ async def chat(request: ChatRequest):
                                 _switch_ctx = current_message  # fallback to raw message
 
                             # Create new upstream session on switched account
+                            yield sse({"type": "account_switch", "step": "creating_session", "account": _next_acc})
                             try:
                                 _new_upstream = await retry_async(
                                     lambda: service.create_chat(model=request.model),
@@ -1304,18 +1607,20 @@ async def chat(request: ChatRequest):
                                     raise RuntimeError("create_chat returned None")
                             except Exception as _sess_exc:
                                 logger.error("[auto-switch] New session creation failed: %s", _sess_exc)
+                                yield sse({"type": "account_switch", "step": "failed", "error": f"session_creation_failed: {_sess_exc}"})
                                 error_message = f"Account switched to {_next_acc} but session creation failed: {_sess_exc}"
                                 stream_error = True
                                 yield sse(event)
                                 continue
 
                             # Warm up WAF tokens for new account (non-blocking best-effort)
+                            yield sse({"type": "account_switch", "step": "warming_up", "account": _next_acc})
                             try:
                                 await service.force_refresh_waf(account=_next_acc)
                             except Exception as _waf_exc:
                                 logger.warning("[auto-switch] WAF warmup failed for %s: %s", _next_acc, _waf_exc)
 
-                            yield sse({"type": "status", "message": "account_switched", "account": _next_acc})
+                            yield sse({"type": "account_switch", "step": "complete", "account": _next_acc, "reason": _switch_reason})
 
                             # Re-stream with context + new session
                             _switch_msg = _switch_ctx if _switch_ctx else current_message
@@ -1359,19 +1664,31 @@ async def chat(request: ChatRequest):
                                     error_message = str(_sw_event.get("message", "Unknown error after switch"))
                                     stream_error = True
                                 elif _sw_type in ("rate_limited", "waf_blocked"):
-                                    # New account also blocked — mark appropriately
+                                    # New account also blocked — mark and retry with next account
                                     _tried_accounts.add(_next_acc)
                                     if _sw_type == "waf_blocked":
                                         mark_account_captcha_blocked(_next_acc)
-                                    logger.warning("[auto-switch] New account %s also blocked (%s), marking", _next_acc, _sw_type)
+                                    logger.warning("[auto-switch] New account %s also blocked (%s), will retry", _next_acc, _sw_type)
                                     pending_thinking.clear()
                                     async for _sse_line in _drain_sync_gen(emit_flush()):
                                         yield _sse_line
-                                    error_message = f"Account {_next_acc} also exhausted. All tried accounts failed."
-                                    stream_error = True
+                                    yield sse({"type": "account_switch", "step": "retrying", "account": _next_acc, "reason": _sw_type, "attempt": _switch_attempt})
+                                    _current_acc = _next_acc
+                                    continue  # continue while loop to try next account
                                 yield sse(_sw_event)
-                            break  # Exit outer event loop after switch re-stream
-                    yield sse(event)
+                            # Re-stream completed without fatal error
+                            if not stream_error:
+                                _switch_success = True
+                            break  # Exit while loop (success or non-recoverable error)
+
+                        # All retries exhausted without success
+                        if not _switch_success and not stream_error:
+                            yield sse({"type": "account_switch", "step": "failed", "error": f"all_{_switch_attempt}_attempts_failed"})
+                            error_message = f"All {_switch_attempt} account switch attempts failed."
+                            stream_error = True
+                            yield sse(event)
+                    else:
+                        yield sse(event)
                 round_thinking_text = "".join(round_thinking_parts)
                 if round_thinking_text:
                     skill_events.append({"type": "round_thinking", "text": round_thinking_text})
@@ -1380,24 +1697,53 @@ async def chat(request: ChatRequest):
                     skill_events.append({"type": "round_text", "text": round_text})
                 if round_skill_events:
                     skill_events.extend(round_skill_events)
-                # --- MainChatGuard: track failures from this round ---
+                # --- Guardrails: track failures + no-progress + stubbing ---
+                _new_round_errors: dict[str, str] = {}
+                # Collect skill_output text per tool for record_result()
+                _tool_outputs: dict[str, list[str]] = {}  # tag_id → output chunks
                 for _sev in round_skill_events:
-                    if _sev.get("type") == "skill_end":
+                    _sev_type = _sev.get("type")
+                    if _sev_type == "skill_output":
+                        _tid = str(_sev.get("id", ""))
+                        _tool_outputs.setdefault(_tid, []).append(str(_sev.get("text", "")))
+                    elif _sev_type == "skill_end":
                         _guard.record_result(_sev.get("ok", False))
+                        _tname = _sev.get("name", "")
+                        if not _sev.get("ok", False):
+                            _err_msg = _sev.get("error", "unknown error")
+                            _new_round_errors[_tname] = str(_err_msg)
+                        # Feed result to LoopDetector for no-progress + stubbing
+                        _tid = str(_sev.get("id", ""))
+                        _output_text = "".join(_tool_outputs.get(_tid, []))
+                        if _output_text or _sev.get("ok") is not None:
+                            _stubbed = _loop_detector.record_result(
+                                _tname,
+                                _sev.get("attrs_content", ""),  # args preview
+                                _output_text,
+                            )
+                            # If stubbed, we could replace the output in feedback later
+                            # (feedback is built after this, so stubbing is advisory)
+                _round_tool_errors = _new_round_errors  # Carry errors to next round's check()
                 round_answer = "".join(answer_parts)
                 round_thinking = "".join(thinking_parts)
                 stored = round_answer or error_message or ""
                 # Log assistant response to file
                 if stored:
                     _log_conversation(active_chat_id, request.model, "assistant", stored)
+                # --- Token counting: completion side ---
+                _round_completion_tokens = count_completion_tokens(stored, round_thinking)
                 if saved_message_id is None:
                     saved_message_id = add_message(
                         active_chat_id, "assistant", stored, round_thinking, final_parent, skill_events,
                         memory_used=_all_tool_mem_used or None,
+                        prompt_tokens=_round_prompt_tokens,
+                        completion_tokens=_round_completion_tokens,
                     )
                 else:
                     update_message(saved_message_id, stored, round_thinking, final_parent, skill_events,
-                                   memory_used=_all_tool_mem_used or None)
+                                   memory_used=_all_tool_mem_used or None,
+                                   prompt_tokens=_round_prompt_tokens,
+                                   completion_tokens=_round_completion_tokens)
                 # --- Collect mode: await agents spawned with collect="true" ---
                 _collect_ids: list[str] = []
                 for _sev in round_skill_events:
@@ -1459,9 +1805,11 @@ async def chat(request: ChatRequest):
                     ev.get("type") == "permission_request"
                     for ev in round_skill_events
                 )
-                # --- MainChatGuard: inject warnings into feedback ---
+                # --- Guardrail warnings: LoopDetector (primary) + MainChatGuard (malformed only) ---
                 _guard_warnings: list[str] = []
                 _guard_warnings_injected = False
+                # LoopDetector already injected warnings inline during dispatch.
+                # MainChatGuard legacy loop/failure checks kept as secondary safety net.
                 _loop_warn = _guard.check_loop()
                 if _loop_warn:
                     _guard_warnings.append(_loop_warn)
@@ -1574,6 +1922,7 @@ async def chat(request: ChatRequest):
                     )
                     yield sse({"type": "status", "message": "high_skill_round_count", "round": round_index})
                 round_index += 1
+                _turn_caps.reset()  # Reset per-turn caps each round
                 if _guard_warnings and not _guard_warnings_injected:
                     # Only prepend warnings if they weren't already used as feedback
                     _warn_block = "\n\n".join(_guard_warnings)
@@ -1619,6 +1968,29 @@ async def chat(request: ChatRequest):
             try:
                 from engine.agents.auto_turn import auto_turn as _at_done
                 _at_done.mark_stream_done(active_chat_id)
+            except Exception:
+                pass
+            # Desktop notification: fire when 3+ tool calls were executed this turn
+            try:
+                from server.api.routes.settings import _read_system_settings as _rs
+                _dn_enabled = _rs().get("desktop_notifications", True)
+                if _dn_enabled:
+                    _tool_call_count = sum(
+                        1 for _ev in skill_events
+                        if _ev.get("type") == "skill_end"
+                        and _ev.get("name") not in ("chat_title", "_loop_warning", "action_parse")
+                    )
+                    if _tool_call_count >= 3:
+                        from engine.notifications.desktop import notify_desktop
+                        _ok_count = sum(
+                            1 for _ev in skill_events
+                            if _ev.get("type") == "skill_end" and _ev.get("ok")
+                            and _ev.get("name") not in ("chat_title", "_loop_warning", "action_parse")
+                        )
+                        asyncio.ensure_future(notify_desktop(
+                            "Sable · Turn Complete",
+                            f"{_tool_call_count} tools used ({_ok_count} succeeded)",
+                        ))
             except Exception:
                 pass
     return StreamingResponse(

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from engine.agents.agent import Agent
-from engine.agents.resilience import CircuitBreaker, LoopDetector
+from engine.agents.resilience import CircuitBreaker, LoopDetector, TurnCapTracker
 from engine.agents.registry import get_role_config, get_account_pool
 
 logger = logging.getLogger("sable")
@@ -250,6 +250,7 @@ async def run_agent_llm_loop(
         max_consecutive=lim.get("max_consecutive_tool_calls", 15),
         max_total=lim.get("max_total_tool_calls", 50),
     )
+    turn_caps = TurnCapTracker()  # Caps reset per run_agent_llm_loop invocation
 
     # Initial breaker check (fallback chain handles mid-loop failures)
     initial_breaker = _resolve_breaker(agent, breakers)
@@ -342,6 +343,7 @@ async def run_agent_llm_loop(
     # Main loop
     current_message = first_message
     _pending_agent_images: list[str] = []  # image paths from get_file to inject next round
+    _round_tool_errors: dict[str, str] = {}  # persists across iterations for exact-failure detection
 
     for iteration in range(max_iterations):
         agent.push_stream_event({"type": "iteration", "iteration": iteration + 1})
@@ -420,29 +422,74 @@ async def run_agent_llm_loop(
 
             return response_text  # Accept even if still malformed (degraded)
 
-        # Loop detection — warning-based (mirrors MainChatGuard, never hard-kills)
-        for tag in tags:
-            loop_detector.check(tag["name"], str(tag.get("attrs", "")))
+        # Loop detection + per-turn caps
+        _loop_blocked_tools: set[int] = set()  # tool indices blocked by guards
+        for _tag_idx, tag in enumerate(tags):
+            _tag_name = tag["name"]
+            _tag_args = str(tag.get("attrs", ""))
 
-        loop_warning = loop_detector.get_warning()
-        if loop_warning:
-            # Try teacher escalation before generic warning
-            teacher_guidance = await _try_teacher_escalation(
-                agent, "Agent is repeating the same tool calls with identical arguments."
-            )
-            if teacher_guidance:
-                warning_msg = f"[MENTOR INTERVENTION]\n{teacher_guidance}"
-            else:
-                warning_msg = loop_warning
-            agent.messages.append({"role": "user", "content": warning_msg})
-            await _persist_message(agent.id, "user", warning_msg)
-            # Don't skip execution — let the agent see the warning AND execute its tools
-            # The warning is injected as context for the NEXT iteration
+            # Per-turn cap check (before execution)
+            _cap_warn = turn_caps.check_and_record(_tag_name)
+            if _cap_warn:
+                tool_results.append(_cap_warn)
+                _loop_blocked_tools.add(_tag_idx)
+                continue
+
+            # Loop detection with error context + recovery support
+            _prev_err = _round_tool_errors.get(_tag_name, "")
+            _decision = loop_detector.check_decision(_tag_name, _tag_args, error_msg=_prev_err)
+
+            if _decision.action == "block":
+                tool_results.append(_decision.message or f"[HARD STOP] {_tag_name} blocked.")
+                _loop_blocked_tools.add(_tag_idx)
+
+            elif _decision.action == "recover":
+                # Recovery session: reset LLM state, inject recovery prompt
+                logger.info("[agent %s] Guardrail recovery triggered for '%s'", agent.id, _tag_name)
+                agent.push_stream_event({"type": "guardrail_recovery", "tool": _tag_name})
+                # Reset session state
+                agent.qwen_session_id = None
+                parent_id = None
+                is_first_turn = True
+                # Build recovery prompt with original task context
+                _recovery_prompt = loop_detector.get_recovery_prompt(
+                    _decision.recovery_key,
+                    original_task=agent.task or "",
+                )
+                # Reset messages to system + task only (fresh context)
+                agent.messages = [
+                    {"role": "system", "content": agent.messages[0]["content"]},
+                    {"role": "user", "content": agent.messages[1]["content"]},
+                ]
+                # Inject recovery prompt as new user message
+                agent.messages.append({"role": "user", "content": _recovery_prompt})
+                await _persist_message(agent.id, "user", _recovery_prompt)
+                current_message = _recovery_prompt
+                # Block ALL tools this round — force model to re-think first
+                for _blk_idx in range(len(tags)):
+                    _loop_blocked_tools.add(_blk_idx)
+                break  # Skip remaining tag checks; go straight to feedback
+
+            elif _decision.action == "warn":
+                # Warning: try teacher escalation, then inject as context
+                teacher_guidance = await _try_teacher_escalation(
+                    agent, "Agent is repeating the same tool calls with identical arguments."
+                )
+                if teacher_guidance:
+                    warning_msg = f"[MENTOR INTERVENTION]\n{teacher_guidance}"
+                else:
+                    warning_msg = _decision.message or ""
+                agent.messages.append({"role": "user", "content": warning_msg})
+                await _persist_message(agent.id, "user", warning_msg)
 
         # Execute skills
         tool_results = []
         _round_image_paths: list[str] = []
-        for tag in tags:
+        for _exec_idx, tag in enumerate(tags):
+            # Skip tools blocked by loop guard / turn caps
+            if _exec_idx in _loop_blocked_tools:
+                continue
+
             # Check cancellation between tool calls
             if agent.cancelled:
                 raise asyncio.CancelledError("Agent killed by orchestrator")
@@ -488,6 +535,10 @@ async def run_agent_llm_loop(
                             _round_image_paths.append(_res["path"])
 
                 feedback = build_tool_feedback(events)
+                # Result stubbing + no-progress detection via LoopDetector
+                feedback = loop_detector.record_result(
+                    tag_name, str(tag.get("attrs", "")), feedback or ""
+                )
                 # Truncate oversized tool output to protect context window
                 max_chars = _get_max_tool_output_chars()
                 if feedback and len(feedback) > max_chars:
@@ -511,6 +562,8 @@ async def run_agent_llm_loop(
                          if isinstance(_e, dict) and _e.get("type") == "skill_end" and not _e.get("ok", True)),
                         "unknown",
                     )
+                    # Track error for exact-failure loop detection next iteration
+                    _round_tool_errors[tag_name] = str(_last_err)
                     if consecutive_failures >= failure_threshold:
                         guidance = await _try_teacher_escalation(
                             agent,
@@ -529,6 +582,7 @@ async def run_agent_llm_loop(
             except Exception as exc:
                 agent.push_stream_event({"type": "skill_end", "name": tag_name, "ok": False, "error": str(exc)})
                 tool_results.append(f"SKILL ERROR ({tag_name}): {type(exc).__name__}: {exc}")
+                _round_tool_errors[tag_name] = f"{type(exc).__name__}: {exc}"
                 agent.error_recoveries += 1
                 consecutive_failures += 1
                 if consecutive_failures >= failure_threshold:

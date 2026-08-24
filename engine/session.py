@@ -10,6 +10,13 @@ from pathlib import Path
 import httpx
 from engine.config import COOKIES, BX_UA, BX_UMIDTOKEN, NEW_CHAT_URL, get_model_config
 
+
+def _get_user_name() -> str:
+    """Get display name from config (env-overridable)."""
+    from engine.config import USER_NAME
+    return USER_NAME
+
+
 # Persistent Playwright launch counter — survives restarts.
 _LAUNCH_COUNTER_PATH = Path(__file__).resolve().parent.parent / "system" / ".playwright_launches"
 
@@ -384,7 +391,7 @@ class BrowserManager:
                 # Step 2: Update personalization instruction
                 instr_payload = {
                     "personalization": {
-                        "name": "Sifat",
+                        "name": _get_user_name(),
                         "description": "",
                         "style": "Default",
                         "instruction": instructions,

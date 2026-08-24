@@ -18,12 +18,21 @@
     function closeLibrary() {
       stopTgPoll();
       libraryOverlay.classList.add("hidden");
+      // Sync activity rail button state
+      const railBtn = document.getElementById("railLibraryBtn") || document.getElementById("libraryBtn");
+      if (railBtn) railBtn.classList.remove('active');
     }
 
     libraryBtn.addEventListener("click", openLibrary);
     libraryClose.addEventListener("click", closeLibrary);
     libraryOverlay.addEventListener("click", (e) => {
       if (e.target === libraryOverlay) closeLibrary();
+    });
+    // Close when rail deselects (e.g. clicking another rail button or toggling off)
+    window.addEventListener('rail-switch', (e) => {
+      if (!e.detail?.target || e.detail.target === 'chat') {
+        if (!libraryOverlay.classList.contains('hidden')) closeLibrary();
+      }
     });
 
     // Library tab switching
@@ -491,7 +500,7 @@
       wrap.className = "promptgen-launch";
       wrap.innerHTML = `
         <div class="promptgen-launch-head">
-          <div class="promptgen-launch-title">🎨 AI Image Generator</div>
+          <div class="promptgen-launch-title"><i data-lucide="image" class="icon-lucide"></i> AI Image Generator</div>
           <div class="promptgen-launch-sub">Free · No login · Multiple providers</div>
         </div>
         <textarea id="igPrompt" class="promptgen-query" rows="3" placeholder="Describe what you want to generate…"></textarea>
@@ -741,6 +750,7 @@
         </div>
       `;
       container.appendChild(wrap);
+      if (window.lucide) lucide.createIcons({ nodes: wrap.querySelectorAll('[data-lucide]') });
 
       const genBtn = wrap.querySelector("#igGenBtn");
       const promptEl = wrap.querySelector("#igPrompt");
@@ -1105,7 +1115,8 @@ ${task}`;
             const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
             const slug = task.slice(0, 40).replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_|_$/g, "").toLowerCase();
             const filename = `${ts}_${slug || "prompt"}.md`;
-            const savePath = `/home/sifat/sable_output/prompts/${filename}`;
+            const homeBase = window.__sable_home || ("/home/" + (window.__sable_user || "user"));
+            const savePath = `${homeBase}/sable_output/prompts/${filename}`;
             const meta = `---\ngenerated: ${new Date().toISOString()}\nmodel: ${primaryModel}\ntask: ${task.slice(0, 200)}\n---\n\n`;
             await fetch("/api/filesystem/write", {
               method: "POST",

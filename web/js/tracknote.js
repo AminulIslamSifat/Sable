@@ -29,31 +29,45 @@
         const opening = !document.body.classList.contains("diff-open");
         document.body.classList.toggle("diff-open");
         if (opening) {
-          // Close todo/tasks panels if open in sidebar
+          // Close notes/todo/tasks panels if open in sidebar
           if (window.sidebarHost) {
             const cur = window.sidebarHost.getCurrent();
-            if (cur === 'todo' || cur === 'tasks') window.sidebarHost.closePanel(cur);
+            if (cur === 'notes' || cur === 'todo' || cur === 'tasks') window.sidebarHost.closePanel(cur);
           }
           if (typeof AgentPanel !== "undefined") AgentPanel.close();
         }
       }
     });
 
-    // ---------- Todo & Tasks: register as left-sidebar hostable panels ----------
+    // ---------- Notes, Todo & Tasks: register as left-sidebar hostable panels ----------
     const trackNoteBtn = document.getElementById("trackNoteBtn");
 
-    // Register todo panel with sidebar host — always left sidebar
+    function closeOtherPanels() {
+      document.body.classList.remove("diff-open");
+      document.body.classList.remove("calendar-open");
+      const calView = document.getElementById("calendarView");
+      if (calView) calView.classList.add("hidden");
+      if (typeof AgentPanel !== "undefined") AgentPanel.close();
+    }
+
+    // Register notes panel with sidebar host — always left sidebar
     if (window.sidebarHost) {
+      window.sidebarHost.savePosition('notes', 'left');
+      window.sidebarHost.register('notes', {
+        panelId: 'notesPanel',
+        onOpen: (el) => {
+          closeOtherPanels();
+          loadNotesOnly();
+        },
+        onClose: () => {},
+      });
+
       window.sidebarHost.savePosition('todo', 'left');
       window.sidebarHost.register('todo', {
         panelId: 'todoPanel',
         onOpen: (el) => {
-          document.body.classList.remove("diff-open");
-          document.body.classList.remove("calendar-open");
-          const calView = document.getElementById("calendarView");
-          if (calView) calView.classList.add("hidden");
-          if (typeof AgentPanel !== "undefined") AgentPanel.close();
-          loadAllPanels();
+          closeOtherPanels();
+          loadTodos();
         },
         onClose: () => {},
       });
@@ -62,12 +76,8 @@
       window.sidebarHost.register('tasks', {
         panelId: 'tasksPanel',
         onOpen: (el) => {
-          document.body.classList.remove("diff-open");
-          document.body.classList.remove("calendar-open");
-          const calView = document.getElementById("calendarView");
-          if (calView) calView.classList.add("hidden");
-          if (typeof AgentPanel !== "undefined") AgentPanel.close();
-          loadAllPanels();
+          closeOtherPanels();
+          loadAgentOps();
         },
         onClose: () => {},
       });
@@ -110,11 +120,99 @@
       return r.json();
     }
 
-    // ---------- Notes/Todos panel ----------
-    const tnNoteList = document.getElementById("tnNoteList");
-    const tnNoteEmpty = document.getElementById("tnNoteEmpty");
+    // ---------- Notes panel (filesystem: sable_output/notes/) ----------
+    const NOTES_DIR = "/home/sifat/sable_output/notes";
+    const notesListEl = document.getElementById("notesList");
+    const notesEmptyEl = document.getElementById("notesEmpty");
 
-    function renderNoteItem(n) {
+    function noteNameFromPath(p) {
+      const name = p.split("/").pop() || "Untitled";
+      return name.replace(/\.md$/, "");
+    }
+
+    function renderNoteFileCard(item) {
+      const div = document.createElement("div");
+      div.className = "tn-item tn-note-card";
+      const title = item.title || noteNameFromPath(item.filename || "Untitled");
+      const preview = item.preview || "";
+      const dateStr = item.date || "";
+      let html = `<div class="tn-item-title">${esc(title)}</div>`;
+      if (preview) html += `<div class="tn-item-preview">${esc(preview)}</div>`;
+      html += `<div class="tn-item-meta">${dateStr}</div>`;
+      html += `<div class="tn-item-actions">`;
+      const filePath = NOTES_DIR + "/" + (item.filename || "");
+      html += `<button class="tn-item-action" data-fedit="${esc(filePath)}" title="Edit"><i data-lucide="pencil" class="icon-lucide"></i></button>`;
+      html += `<button class="tn-item-action danger" data-fdel="${esc(filePath)}" title="Delete"><i data-lucide="x" class="icon-lucide"></i></button>`;
+      html += `</div>`;
+      div.innerHTML = html;
+      // Click card to open library reader popup (same as library notes)
+      div.addEventListener("click", (e) => {
+        if (e.target.closest(".tn-item-action")) return;
+        if (typeof window.openLibraryReader === "function") {
+          window.openLibraryReader("notes", item.filename, title);
+        }
+      });
+      div.querySelector("[data-fdel]").addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (!confirm(`Delete "${title}"?`)) return;
+        await fetch("/api/filesystem/delete", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: filePath }) });
+        loadNotesOnly();
+      });
+      div.querySelector("[data-fedit]").addEventListener("click", (e) => {
+        e.stopPropagation();
+        openFileNoteEditModal(filePath, title);
+      });
+      return div;
+    }
+
+    async function loadNotesOnly() {
+      try {
+        const r = await fetch("/api/library/notes");
+        const items = await r.json();
+        if (!notesListEl) return;
+        notesListEl.innerHTML = "";
+        const notes = Array.isArray(items) ? items : [];
+        notes.forEach(item => notesListEl.appendChild(renderNoteFileCard(item)));
+        if (notesEmptyEl) notesEmptyEl.style.display = notes.length ? "none" : "block";
+        if (window.lucide) lucide.createIcons({ nodes: notesListEl.querySelectorAll("[data-lucide]") });
+      } catch(e) { console.warn("loadNotesOnly failed", e); }
+    }
+
+    async function openFileNoteEditModal(filePath, title) {
+      const overlay = ensureTnEditModal();
+      const body = overlay.querySelector(".tn-edit-body");
+      const titleEl = overlay.querySelector(".tn-edit-title");
+      const saveBtn = overlay.querySelector(".tn-edit-save");
+      body.innerHTML = "";
+      overlay.style.display = "flex";
+      titleEl.textContent = "Edit Note: " + title;
+      let content = "";
+      try {
+        const r = await fetch(`/api/filesystem/read?path=${encodeURIComponent(filePath)}`);
+        const d = await r.json();
+        content = d.content || "";
+      } catch(e) { content = ""; }
+      body.innerHTML = `<label>Filename<input type="text" id="tnEditFileName" value="${esc(filePath.split('/').pop())}" /></label><label>Content<textarea id="tnEditFileContent" rows="12" style="font-family:monospace;font-size:13px;">${esc(content)}</textarea></label>`;
+      saveBtn.onclick = async () => {
+        const newFileName = document.getElementById("tnEditFileName").value.trim();
+        const newContent = document.getElementById("tnEditFileContent").value;
+        if (!newFileName) return;
+        const dir = filePath.substring(0, filePath.lastIndexOf("/"));
+        const newPath = dir + "/" + newFileName;
+        await fetch("/api/filesystem/write", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: newPath, content: newContent }) });
+        if (newPath !== filePath) {
+          await fetch("/api/filesystem/delete", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: filePath }) });
+        }
+        closeTnEditModal();
+        loadNotesOnly();
+      };
+    }
+
+    // ---------- Todo panel (note_type=checklist only) ----------
+    const tnTodoList = document.getElementById("tnTodoList");
+    const tnTodoEmpty = document.getElementById("tnTodoEmpty");
+
+    function renderTodoItem(n) {
       const div = document.createElement("div");
       div.className = "tn-item";
       let html = `<div class="tn-item-title">${esc(n.title || "Untitled")}</div>`;
@@ -133,7 +231,7 @@
       div.innerHTML = html;
       div.querySelector("[data-del]").addEventListener("click", async () => {
         await tnDelete("/notes/" + n.id);
-        loadNotes();
+        loadTodos();
       });
       div.querySelector("[data-edit]").addEventListener("click", () => {
         openTnEditModal("note", n);
@@ -141,21 +239,22 @@
       div.querySelectorAll("input[type=checkbox][data-note]").forEach(cb => {
         cb.addEventListener("change", async () => {
           await tnPost("/notes/" + cb.dataset.note + "/toggle-item?index=" + cb.dataset.idx);
-          loadNotes();
+          loadTodos();
         });
       });
       return div;
     }
 
-    async function loadNotes() {
+    async function loadTodos() {
       try {
-        const data = await tnFetch("/notes");
-        tnNoteList.innerHTML = "";
+        const data = await tnFetch("/notes?note_type=checklist");
+        if (!tnTodoList) return;
+        tnTodoList.innerHTML = "";
         const items = data.notes || [];
-        items.forEach(n => tnNoteList.appendChild(renderNoteItem(n)));
-        tnNoteEmpty.style.display = items.length ? "none" : "block";
-        if (window.lucide) lucide.createIcons({ nodes: tnNoteList.querySelectorAll("[data-lucide]") });
-      } catch(e) { console.warn("loadNotes failed", e); }
+        items.forEach(n => tnTodoList.appendChild(renderTodoItem(n)));
+        if (tnTodoEmpty) tnTodoEmpty.style.display = items.length ? "none" : "block";
+        if (window.lucide) lucide.createIcons({ nodes: tnTodoList.querySelectorAll("[data-lucide]") });
+      } catch(e) { console.warn("loadTodos failed", e); }
     }
 
     // ---------- Add form toggle (+ button) ----------
@@ -168,12 +267,12 @@
         form.classList.toggle("hidden", !isHidden);
         toggle.classList.toggle("active", isHidden);
         if (isHidden) {
-          // Focus first input when opening
           const firstInput = form.querySelector("input, textarea");
           if (firstInput) requestAnimationFrame(() => firstInput.focus());
         }
       });
     }
+    setupAddToggle("notesAddToggle", "notesAddForm");
     setupAddToggle("tnAddToggle", "tnAddForm");
     setupAddToggle("tnAgentAddToggle", "tnAgentForm");
 
@@ -185,17 +284,25 @@
       if (toggle) toggle.classList.remove("active");
     }
 
-    document.getElementById("tnNoteAdd")?.addEventListener("click", async () => {
-      const title = document.getElementById("tnNoteTitle").value.trim();
-      const content = document.getElementById("tnNoteContent").value.trim();
+    // Notes panel add handler (filesystem)
+    document.getElementById("notesAddBtn")?.addEventListener("click", async () => {
+      const title = document.getElementById("notesTitle").value.trim();
+      const content = document.getElementById("notesContent").value.trim();
       if (!title && !content) return;
-      await tnPost("/notes", { title: title || "Untitled", content, note_type: "note" });
-      document.getElementById("tnNoteTitle").value = "";
-      document.getElementById("tnNoteContent").value = "";
-      collapseAddForm("tnAddToggle", "tnAddForm");
-      loadNotes();
+      const fileName = (title || "untitled").replace(/[^a-zA-Z0-9_\-. ]/g, "_") + ".md";
+      const filePath = NOTES_DIR + "/" + fileName;
+      await fetch("/api/filesystem/write", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: filePath, content: content || "" })
+      });
+      document.getElementById("notesTitle").value = "";
+      document.getElementById("notesContent").value = "";
+      collapseAddForm("notesAddToggle", "notesAddForm");
+      loadNotesOnly();
     });
 
+    // Todo panel add handler
     document.getElementById("tnTodoAdd")?.addEventListener("click", async () => {
       const title = document.getElementById("tnNoteTitle").value.trim();
       const content = document.getElementById("tnNoteContent").value.trim();
@@ -205,7 +312,7 @@
       document.getElementById("tnNoteTitle").value = "";
       document.getElementById("tnNoteContent").value = "";
       collapseAddForm("tnAddToggle", "tnAddForm");
-      loadNotes();
+      loadTodos();
     });
 
     // ---------- TrackNote: Agent Ops panel ----------
@@ -334,7 +441,8 @@
             });
           }
           await tnPut("/notes/" + item.id, updates);
-          closeTnEditModal(); loadNotes();
+          closeTnEditModal();
+          if (isChecklist) { loadTodos(); } else { loadNotesOnly(); }
         };
       } else if (type === "agent-op") {
         titleEl.textContent = "Edit Agent Op";
@@ -361,7 +469,8 @@
 
     // Load all panels when sidebar opens
     function loadAllPanels() {
-      loadNotes();
+      loadNotesOnly();
+      loadTodos();
       loadAgentOps();
     }
 

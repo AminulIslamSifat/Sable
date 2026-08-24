@@ -35,7 +35,7 @@ BASE_URL = "https://image-generation.perchance.org/api"
 CHANNEL = "advanced-sdxl-generator"
 AD_ACCESS_CODE = "09c1642ec4202067172b320731ede6afa83b3d77917498fd8b92add6a9915180"
 KEY_CACHE_FILE = Path(__file__).resolve().parent.parent.parent.parent / "system" / ".advanced_sdxl_key"
-OUTPUT_DIR = Path("/home/sifat/sable_output/assets")
+OUTPUT_DIR = Path.home() / "sable_output" / "assets"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",

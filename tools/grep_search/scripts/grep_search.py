@@ -10,8 +10,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Resolve project root: env var → relative to this script → home fallback
+_SCRIPT_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 ALLOWED_ROOTS = [
-    Path(os.environ.get("PROJECT_ROOT", "/home/sifat/hdd/projects/Sable")).resolve(),
+    Path(os.environ.get("PROJECT_ROOT", str(_SCRIPT_PROJECT_ROOT))).resolve(),
     Path.home().resolve(),
     Path("/tmp").resolve(),
 ]

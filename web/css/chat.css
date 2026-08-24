@@ -11,6 +11,7 @@
       display: flex;
       flex-direction: column;
       min-width: 0;
+      min-height: 0;
       position: relative;
     }
 
@@ -619,6 +620,82 @@
     }
 
     .skill-output.error { border-color: var(--danger); color: #f3b4b7; }
+
+    /* ── Account Switch Card ─────────────────────────────────────── */
+    .account-switch-card .asc-steps {
+      margin-top: 8px;
+      padding: 6px 0 2px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .asc-step {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 10px;
+      border-radius: 8px;
+      font-size: var(--font-size-system);
+      font-family: var(--font-mono);
+      color: var(--muted);
+      opacity: 0.45;
+      transition: opacity 0.25s, background 0.25s, color 0.25s;
+    }
+
+    .asc-step-active {
+      opacity: 1;
+      color: var(--accent-text);
+      background: color-mix(in srgb, var(--accent) 8%, transparent);
+    }
+
+    .asc-step-active .asc-step-icon {
+      animation: asc-pulse 1.4s ease-in-out infinite;
+    }
+
+    .asc-step-done {
+      opacity: 0.7;
+      color: var(--text-dim);
+    }
+
+    .asc-step-failed {
+      opacity: 1;
+      color: #f3b4b7;
+      background: color-mix(in srgb, var(--danger) 10%, transparent);
+    }
+
+    .asc-step-icon {
+      width: 18px;
+      text-align: center;
+      flex-shrink: 0;
+      font-size: 13px;
+    }
+
+    .asc-step-label {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .asc-step-detail {
+      font-size: 11px;
+      color: var(--muted-2);
+      margin-left: auto;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 200px;
+    }
+
+    .asc-complete .skill-name { color: #4ade80; }
+    .asc-failed .skill-name { color: #f3b4b7; }
+
+    .account-switch-card.collapsed .asc-steps { display: none; }
+
+    @keyframes asc-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.92); }
+    }
+
 
     .skill-image {
       margin-top: 8px;
