@@ -1,11 +1,65 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from collections import defaultdict
+from dataclasses import dataclass
+from typing import Literal
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class GuardrailDecision:
+    """Result of a guardrail check with optional recovery support.
+
+    Actions:
+        allow   — proceed normally
+        warn    — proceed but inject warning message
+        recover — reset session, inject recovery prompt, give one more attempt
+        block   — hard block, do not execute
+    """
+    action: Literal["allow", "warn", "recover", "block"]
+    message: str | None = None
+    recovery_key: str | None = None
+    tool_name: str | None = None
+
+
+def build_recovery_prompt(
+    tool_name: str,
+    args_preview: str,
+    error_summary: str,
+    attempt_count: int,
+    original_task: str = "",
+) -> str:
+    """Build a recovery prompt for when a guardrail triggers recovery.
+
+    This replaces the need for an external summarizer — the prompt itself
+    carries the error context and instructs the model to try differently.
+    """
+    task_section = ""
+    if original_task:
+        task_section = f"\n\nOriginal task:\n{original_task[:1000]}"
+
+    return (
+        f"[GUARDRAIL RECOVERY — ATTEMPT {attempt_count}]\n\n"
+        f"A tool-loop guardrail was triggered. The previous attempts got stuck "
+        f"repeating a failing or no-progress action.\n\n"
+        f"Failure details:\n"
+        f"- Tool: {tool_name}\n"
+        f"- Args preview: {args_preview[:200]}\n"
+        f"- Error/result summary: {error_summary[:500]}\n"
+        f"- Total attempts before recovery: {attempt_count}\n\n"
+        f"Your task:\n"
+        f"1. Briefly explain what went wrong.\n"
+        f"2. Identify why repeating the same action will NOT help.\n"
+        f"3. Choose a DIFFERENT tool or strategy to make progress.\n"
+        f"4. Continue the original task, but do NOT repeat `{tool_name}` "
+        f"with the same arguments unless you have a clear new reason."
+        f"{task_section}"
+    )
 
 
 class CircuitBreaker:
@@ -48,20 +102,36 @@ class LoopDetector:
     """Detects repeated identical tool calls. Mirrors MainChatGuard's
     warning-based approach — never hard-kills, only returns warnings.
 
-    Uses signature-based detection (tool_name + args) so that legitimate
-    repeated use of the same tool with different arguments (e.g. viewing
-    different sections of a large file) is NOT flagged.
+    Three independent detectors:
+    1. Exact failure: same tool + args + error → warn@2, hard-stop@5
+    2. Same-tool failure: same tool, any failure → warn@3, halt@8
+    3. Idempotent no-progress: read-only tool, same args, same result → warn@2, block@5
+
+    Plus structural loop detection (repeating tool-name patterns).
+
+    Per-turn caps enforced via TurnCapTracker (separate class).
     """
 
-    CONSECUTIVE_THRESHOLD = 5  # Match MainChatGuard
+    # --- Thresholds ---
+    EXACT_FAIL_WARN = 2       # Warn at 2 exact failures (tool+args+error)
+    EXACT_FAIL_STOP = 5       # Hard-stop at 5
+    SAME_TOOL_FAIL_WARN = 3   # Warn at 3 failures on same tool (any error)
+    SAME_TOOL_FAIL_HALT = 8   # Halt at 8
+    NO_PROGRESS_WARN = 2      # Warn at 2 identical read-only results
+    NO_PROGRESS_BLOCK = 5     # Block at 5
+    CONSECUTIVE_THRESHOLD = 5 # Legacy: consecutive identical calls (any result)
     STRUCTURE_THRESHOLD = 5
 
-    # Read-only tools that are legitimately called many times with different args.
-    # Excluded from structural loop detection (still tracked for consecutive-identical).
+    # Read-only tools eligible for no-progress detection.
     _READ_ONLY_TOOLS = frozenset({
         "view_file", "get_file", "grep", "glob", "list_dir",
         "read_file", "search", "web_search", "fetch_url",
+        "list_checkpoints", "agent_status",
     })
+
+    # Tools exempt from ALL stall/no-progress guards (legitimate polling).
+    _POLLING_EXEMPT_SUFFIXES = ("_get_result", "_poll")
+    _POLLING_EXEMPT_EXACT = frozenset({"process", "bfl_flux3_get_result"})
 
     STUCK_WARNING = (
         "[LOOP WARNING] You have run the same command 5 times in a row. "
@@ -77,42 +147,341 @@ class LoopDetector:
         "Do NOT repeat the same command again."
     )
 
+    EXACT_FAIL_WARNING = (
+        "[EXACT FAILURE WARNING] The same tool call with identical arguments "
+        "has failed {count} times with the same error. This will not succeed "
+        "by retrying. Change your approach entirely."
+    )
+
+    EXACT_FAIL_STOP_MSG = (
+        "[HARD STOP] Tool call '{tool}' with these arguments has failed "
+        "{count} times with the same error. Execution blocked. "
+        "You MUST use a different tool or strategy."
+    )
+
+    SAME_TOOL_FAIL_WARNING = (
+        "[TOOL FAILURE WARNING] '{tool}' has failed {count} times total. "
+        "Consider using an alternative tool or approach."
+    )
+
+    NO_PROGRESS_WARNING = (
+        "[NO PROGRESS WARNING] Read-only tool '{tool}' returned identical "
+        "results {count} times. The data hasn't changed — stop re-reading "
+        "and use what you already have."
+    )
+
+    NO_PROGRESS_BLOCK_MSG = (
+        "[BLOCKED] Read-only tool '{tool}' has returned identical results "
+        "{count} times. Further identical calls are suppressed. "
+        "Use the data you already have or try a different approach."
+    )
+
     def __init__(self, max_consecutive: int = 5, max_total: int = 50):
         self.history: list[str] = []
         self.per_tool_counts: dict[str, int] = defaultdict(int)
         self.structure_history: list[str] = []  # tag names only (no args)
         self.max_consecutive = max_consecutive
-        self.max_total = max_total  # Very high — only catches true runaway loops
+        self.max_total = max_total
         self._stuck_warned: bool = False
         self._structure_warned: bool = False
+        self._last_tool_name: str = ""  # for legacy consecutive warning message
 
-    def check(self, tool_name: str, tool_args: str) -> bool:
-        """Record a tool call. Always returns True (never hard-kills).
-        
+        # --- Detector 1: Exact failure tracking ---
+        # Key: hash(tool_name:args:error_msg) → count
+        self._exact_fail_counts: dict[str, int] = defaultdict(int)
+        self._exact_fail_tool_names: dict[str, str] = {}  # err_sig → tool_name (for messages)
+        self._exact_fail_warned: set[str] = set()  # signatures that already warned
+        self._exact_fail_stopped: set[str] = set()  # signatures hard-stopped
+
+        # --- Detector 2: Same-tool failure tracking ---
+        # Key: tool_name → consecutive failure count
+        self._tool_fail_counts: dict[str, int] = defaultdict(int)
+        self._tool_fail_warned: set[str] = set()
+
+        # --- Detector 3: No-progress tracking ---
+        # Key: hash(tool_name:args:result_hash) → consecutive count
+        self._no_progress_counts: dict[str, int] = defaultdict(int)
+        self._no_progress_tool_names: dict[str, str] = {}  # np_key → tool_name
+        self._no_progress_warned: set[str] = set()
+        self._no_progress_blocked: set[str] = set()
+        # Last result hash per (tool, args) for comparison
+        self._last_result_hashes: dict[str, str] = {}
+
+        # --- Result stubbing state ---
+        self._last_results: dict[str, str] = {}  # sig → last full result text
+        self._stub_count: dict[str, int] = defaultdict(int)  # sig → consecutive stubs
+
+        # --- Recovery session tracking ---
+        # Key: err_sig or np_key → number of recovery attempts used
+        self._recovery_attempts: dict[str, int] = defaultdict(int)
+        # Last error info for building recovery prompts
+        self._last_error_info: dict[str, dict] = {}  # key → {tool, args, error}
+
+    @classmethod
+    def _is_polling_exempt(cls, tool_name: str) -> bool:
+        """Check if tool is exempt from stall/no-progress guards."""
+        if tool_name in cls._POLLING_EXEMPT_EXACT:
+            return True
+        return tool_name.endswith(cls._POLLING_EXEMPT_SUFFIXES)
+
+    @staticmethod
+    def _hash_str(s: str) -> str:
+        """Fast short hash for signature keys."""
+        return hashlib.md5(s.encode(), usedforsecurity=False).hexdigest()[:16]
+
+    def check(self, tool_name: str, tool_args: str, error_msg: str = "") -> bool:
+        """Record a tool call. Returns False if hard-stopped (caller must respect).
+
+        Args:
+            tool_name: Name of the tool being called.
+            tool_args: Serialized arguments string.
+            error_msg: Error message from previous call (empty = success).
+
         Use get_warning() after check() to retrieve any warning message.
         """
         sig = f"{tool_name}:{tool_args}"
         self.history.append(sig)
+        self.per_tool_counts[tool_name] += 1
+
+        self._last_tool_name = tool_name
         # Only track non-read-only tools for structural loop detection
         if tool_name not in self._READ_ONLY_TOOLS:
             self.structure_history.append(tool_name)
-        self.per_tool_counts[tool_name] += 1
-        return True  # Never block — warnings only
+
+        # --- Detector 1: Exact failure ---
+        if error_msg:
+            err_sig = self._hash_str(f"{sig}:{error_msg}")
+            self._exact_fail_counts[err_sig] += 1
+            self._exact_fail_tool_names[err_sig] = tool_name
+            # Track per-tool failures too
+            self._tool_fail_counts[tool_name] += 1
+        else:
+            # Success resets per-tool consecutive failure counter
+            self._tool_fail_counts[tool_name] = 0
+
+        # Check hard-stop for exact failures
+        if error_msg:
+            err_sig = self._hash_str(f"{sig}:{error_msg}")
+            if err_sig in self._exact_fail_stopped:
+                return False  # Already hard-stopped
+            if self._exact_fail_counts[err_sig] >= self.EXACT_FAIL_STOP:
+                self._exact_fail_stopped.add(err_sig)
+                return False  # Signal hard-stop
+
+        return True
+
+    def check_decision(
+        self, tool_name: str, tool_args: str, error_msg: str = "",
+    ) -> GuardrailDecision:
+        """Like check() but returns a GuardrailDecision with recovery support.
+
+        On first hard-stop threshold → returns 'recover' (caller should reset
+        session and inject recovery prompt). On second hard-stop after recovery
+        → returns 'block'. Warnings return 'warn'. Normal operation returns 'allow'.
+        """
+        allowed = self.check(tool_name, tool_args, error_msg=error_msg)
+        warning = self.get_warning()
+
+        if not allowed:
+            # Hard-stop triggered — check if recovery is available
+            # Find the signature that caused the stop
+            sig = f"{tool_name}:{tool_args}"
+            recovery_key = None
+
+            # Check exact failure signatures
+            if error_msg:
+                err_sig = self._hash_str(f"{sig}:{error_msg}")
+                if err_sig in self._exact_fail_stopped:
+                    recovery_key = err_sig
+
+            # Check no-progress blocks
+            if not recovery_key:
+                for np_key in self._no_progress_blocked:
+                    np_tn = self._no_progress_tool_names.get(np_key, "")
+                    if np_tn == tool_name:
+                        recovery_key = np_key
+                        break
+
+            if recovery_key:
+                attempts = self._recovery_attempts.get(recovery_key, 0)
+                if attempts == 0:
+                    # First hard-stop → offer recovery
+                    self._recovery_attempts[recovery_key] = 1
+                    self._last_error_info[recovery_key] = {
+                        "tool": tool_name,
+                        "args": tool_args,
+                        "error": error_msg or "no-progress (identical results)",
+                        "count": self._exact_fail_counts.get(
+                            recovery_key,
+                            self._no_progress_counts.get(recovery_key, 0),
+                        ),
+                    }
+                    # Undo the hard-stop so the tool can execute once more after recovery
+                    self._exact_fail_stopped.discard(recovery_key)
+                    self._no_progress_blocked.discard(recovery_key)
+                    return GuardrailDecision(
+                        action="recover",
+                        message=warning or f"Recovery triggered for '{tool_name}'",
+                        recovery_key=recovery_key,
+                        tool_name=tool_name,
+                    )
+                # Already recovered once → true hard block
+                return GuardrailDecision(
+                    action="block",
+                    message=warning or f"[HARD STOP] '{tool_name}' blocked after failed recovery.",
+                    recovery_key=recovery_key,
+                    tool_name=tool_name,
+                )
+
+            # No recovery key found (shouldn't happen) → block
+            return GuardrailDecision(
+                action="block",
+                message=warning or f"[HARD STOP] '{tool_name}' blocked by loop guard.",
+                tool_name=tool_name,
+            )
+
+        # Check for no-progress blocks (these don't make check() return False,
+        # but they should trigger recovery/block in check_decision)
+        sig = f"{tool_name}:{tool_args}"
+        for np_key in self._no_progress_blocked:
+            np_tn = self._no_progress_tool_names.get(np_key, "")
+            if np_tn == tool_name:
+                attempts = self._recovery_attempts.get(np_key, 0)
+                if attempts == 0:
+                    self._recovery_attempts[np_key] = 1
+                    self._last_error_info[np_key] = {
+                        "tool": tool_name,
+                        "args": tool_args,
+                        "error": "no-progress (identical results)",
+                        "count": self._no_progress_counts.get(np_key, 0),
+                    }
+                    self._no_progress_blocked.discard(np_key)
+                    return GuardrailDecision(
+                        action="recover",
+                        message=warning or f"Recovery triggered for '{tool_name}' (no-progress)",
+                        recovery_key=np_key,
+                        tool_name=tool_name,
+                    )
+                return GuardrailDecision(
+                    action="block",
+                    message=warning or f"[HARD STOP] '{tool_name}' blocked after failed recovery.",
+                    recovery_key=np_key,
+                    tool_name=tool_name,
+                )
+
+        if warning:
+            return GuardrailDecision(
+                action="warn",
+                message=warning,
+                tool_name=tool_name,
+            )
+
+        return GuardrailDecision(action="allow", tool_name=tool_name)
+
+    def get_recovery_prompt(self, recovery_key: str, original_task: str = "") -> str:
+        """Build a recovery prompt for the given recovery key."""
+        info = self._last_error_info.get(recovery_key, {})
+        tool_name = info.get("tool", "unknown")
+        args_preview = info.get("args", "")
+        error_summary = info.get("error", "unknown")
+        attempt_count = info.get("count", 0)
+        return build_recovery_prompt(
+            tool_name=tool_name,
+            args_preview=args_preview,
+            error_summary=error_summary,
+            attempt_count=attempt_count,
+            original_task=original_task,
+        )
+
+    def record_result(self, tool_name: str, tool_args: str, result: str) -> str:
+        """Record a tool result for no-progress detection and stubbing.
+
+        Returns the result text, possibly replaced with a stub if duplicate.
+        """
+        if self._is_polling_exempt(tool_name):
+            return result
+
+        sig = f"{tool_name}:{tool_args}"
+        result_hash = self._hash_str(result) if result else ""
+
+        # --- Detector 3: No-progress detection (read-only tools only) ---
+        if tool_name in self._READ_ONLY_TOOLS and result_hash:
+            prev_hash = self._last_result_hashes.get(sig)
+            if prev_hash == result_hash:
+                np_key = self._hash_str(f"{sig}:{result_hash}")
+                self._no_progress_counts[np_key] += 1
+                self._no_progress_tool_names[np_key] = tool_name
+            else:
+                # Different result — reset counter for this sig
+                for k in list(self._no_progress_counts):
+                    if k.startswith(self._hash_str(sig)):
+                        self._no_progress_counts[k] = 0
+            self._last_result_hashes[sig] = result_hash
+
+        # --- Result stubbing (all tools, >512 chars, byte-identical) ---
+        if len(result) > 512:
+            prev = self._last_results.get(sig)
+            if prev == result:
+                self._stub_count[sig] += 1
+                if self._stub_count[sig] >= 2:  # From 2nd consecutive identical
+                    args_preview = tool_args[:120]
+                    stub = f"[STUB] Same result as previous call ({len(result)} chars). Args: {args_preview}"
+                    self._last_results[sig] = result  # Keep tracking
+                    return stub
+            else:
+                self._stub_count[sig] = 0
+            self._last_results[sig] = result
+        else:
+            self._stub_count[sig] = 0
+
+        return result
 
     def get_warning(self) -> str | None:
         """Return a warning message if a loop pattern is detected, else None.
-        
-        Each warning fires only once per detector lifetime to avoid
-        self-referential loops.
+
+        Priority: exact-fail-stop > exact-fail-warn > same-tool-warn >
+                  no-progress-block > no-progress-warn > stuck > structure.
+        Each warning fires only once per unique signature to avoid spam.
         """
-        # Consecutive identical calls (exact same tool + args)
+        # --- Exact failure warnings/stops ---
+        for err_sig, count in self._exact_fail_counts.items():
+            if err_sig in self._exact_fail_stopped:
+                _tn = self._exact_fail_tool_names.get(err_sig, "unknown")
+                return self.EXACT_FAIL_STOP_MSG.format(
+                    tool=_tn, count=count
+                )
+            if count >= self.EXACT_FAIL_WARN and err_sig not in self._exact_fail_warned:
+                self._exact_fail_warned.add(err_sig)
+                return self.EXACT_FAIL_WARNING.format(count=count)
+
+        # --- Same-tool failure warnings ---
+        for tool, count in self._tool_fail_counts.items():
+            if count >= self.SAME_TOOL_FAIL_WARN and tool not in self._tool_fail_warned:
+                self._tool_fail_warned.add(tool)
+                return self.SAME_TOOL_FAIL_WARNING.format(tool=tool, count=count)
+
+        # --- No-progress warnings/blocks ---
+        for np_key, count in self._no_progress_counts.items():
+            _np_tn = self._no_progress_tool_names.get(np_key, "unknown")
+            if count >= self.NO_PROGRESS_BLOCK and np_key not in self._no_progress_blocked:
+                self._no_progress_blocked.add(np_key)
+                return self.NO_PROGRESS_BLOCK_MSG.format(
+                    tool=_np_tn, count=count
+                )
+            if count >= self.NO_PROGRESS_WARN and np_key not in self._no_progress_warned:
+                self._no_progress_warned.add(np_key)
+                return self.NO_PROGRESS_WARNING.format(
+                    tool=_np_tn, count=count
+                )
+
+        # --- Legacy: Consecutive identical calls (exact same tool + args) ---
         if not self._stuck_warned and len(self.history) >= self.CONSECUTIVE_THRESHOLD:
             recent = self.history[-self.CONSECUTIVE_THRESHOLD:]
             if len(set(recent)) == 1:
                 self._stuck_warned = True
-                return self.STUCK_WARNING
+                return f"[LOOP WARNING] You have run '{self._last_tool_name}' {self.CONSECUTIVE_THRESHOLD} times in a row with identical arguments. This approach is not working. Try a different strategy, search online, or summarize what you have so far."
 
-        # Structural looping (same tool names in same order)
+        # --- Structural looping (same tool names in same order) ---
         if not self._structure_warned and self.is_structure_looping():
             self._structure_warned = True
             return self.STRUCTURE_WARNING
@@ -145,6 +514,58 @@ class LoopDetector:
                 return True
         
         return False
+
+
+class TurnCapTracker:
+    """Per-turn caps on expensive operations. Resets at start of each turn.
+
+    Inspired by Claude Code v2.1.212 per-turn limits. Hard ceiling regardless
+    of hard_stop_enabled flag — prevents runaway context bloat and API costs.
+    """
+
+    # Per-turn caps
+    MAX_WEB_SEARCHES = 50
+    MAX_SUBAGENT_SPAWNS = 50
+
+    # Tool names that count toward each cap
+    _WEB_SEARCH_TOOLS = frozenset({"web_search", "web_fetch", "search"})
+    _SPAWN_TOOLS = frozenset({"spawn_agent"})
+
+    CAP_WARNING = (
+        "[PER-TURN CAP] You have reached the maximum of {cap} {operation} "
+        "calls this turn. No more {operation} calls are allowed until the "
+        "next user message. Summarize what you have so far."
+    )
+
+    def __init__(self):
+        self.web_search_count: int = 0
+        self.spawn_count: int = 0
+
+    def reset(self) -> None:
+        """Reset all counters. Call at start of each run_conversation / turn."""
+        self.web_search_count = 0
+        self.spawn_count = 0
+
+    def check_and_record(self, tool_name: str) -> str | None:
+        """Check if tool is within caps. Records the call if allowed.
+
+        Returns a warning string if cap exceeded (caller should inject as
+        feedback and skip execution), or None if allowed.
+        """
+        if tool_name in self._WEB_SEARCH_TOOLS:
+            self.web_search_count += 1
+            if self.web_search_count > self.MAX_WEB_SEARCHES:
+                return self.CAP_WARNING.format(
+                    cap=self.MAX_WEB_SEARCHES, operation="web search"
+                )
+        elif tool_name in self._SPAWN_TOOLS:
+            self.spawn_count += 1
+            if self.spawn_count > self.MAX_SUBAGENT_SPAWNS:
+                return self.CAP_WARNING.format(
+                    cap=self.MAX_SUBAGENT_SPAWNS, operation="subagent spawn"
+                )
+        return None
+
 
 class MainChatGuard:
     """Guards for the main chat loop — mirrors subagent LoopDetector but

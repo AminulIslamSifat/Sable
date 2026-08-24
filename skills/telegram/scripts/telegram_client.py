@@ -25,8 +25,6 @@ from typing import Any
 _CONFIG_PATHS = [
     Path(__file__).resolve().parents[3] / "system" / ".telegram_config.json",
     Path.cwd() / "system" / ".telegram_config.json",
-    Path.home() / "hdd/projects/Sable/system/.telegram_config.json",
-    Path("/home/sifat/hdd/projects/Sable/system/.telegram_config.json"),
 ]
 
 _SESSION_DIR = None  # resolved at runtime

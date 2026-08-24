@@ -205,6 +205,7 @@ body.knowledge-open #knowledgeView { display: flex !important; }
 }
 .kb-cat-dot.semantic { background: var(--accent); }
 .kb-cat-dot.episodic { background: var(--ok); }
+.kb-cat-dot.procedural { background: var(--info, #56b6c2); }
 .kb-cat-dot.ephemeral { background: #e5a84a; }
 .kb-cat-dot.protected { background: var(--accent-text); }
 
@@ -425,8 +426,37 @@ body.knowledge-open #knowledgeView { display: flex !important; }
 }
 .kb-detail-badge.semantic { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent-text); }
 .kb-detail-badge.episodic { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); }
+.kb-detail-badge.procedural { background: color-mix(in srgb, var(--info, #56b6c2) 20%, transparent); color: var(--info, #56b6c2); }
 .kb-detail-badge.ephemeral { background: color-mix(in srgb, #e5a84a 20%, transparent); color: #e5a84a; }
 .kb-detail-badge.protected { background: color-mix(in srgb, var(--accent-text) 20%, transparent); color: var(--accent-text); }
+
+#kbDetailProcFields {
+  margin-top: var(--sp-2);
+  padding: var(--sp-2);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--info, #56b6c2) 8%, transparent);
+  border-left: 2px solid var(--info, #56b6c2);
+}
+.kb-proc-field {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.kb-proc-field:last-child { margin-bottom: 0; }
+.kb-proc-label {
+  font-weight: 600;
+  color: var(--info, #56b6c2);
+  margin-right: 4px;
+}
+.kb-proc-kw {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--info, #56b6c2) 15%, transparent);
+  color: var(--info, #56b6c2);
+  margin-right: 3px;
+}
 
 .kb-detail-time {
   font-size: 11px;

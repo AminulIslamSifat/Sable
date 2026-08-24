@@ -192,6 +192,33 @@ class DeepResearcher:
         self.sources: list[dict[str, str]] = []
         # Simple fetch summary log: [{site, url, success, status_code}]
         self._fetch_log: list[dict[str, Any]] = []
+        # Account/model health tracker: key -> consecutive failure count.
+        # Keys are "model:account" for Qwen or "backend:model" for API models.
+        # After _HEALTH_FAIL_THRESHOLD consecutive failures, skip that combo.
+        self._health_failures: dict[str, int] = {}
+        self._HEALTH_FAIL_THRESHOLD = 3
+
+    def _health_key(self, model: Optional[str], account: Optional[str]) -> str:
+        backend = resolve_backend(model) if model else None
+        if backend:
+            return f"{backend}:{model}"
+        return f"qwen:{account or 'default'}"
+
+    def _is_healthy(self, model: Optional[str], account: Optional[str]) -> bool:
+        return self._health_failures.get(self._health_key(model, account), 0) < self._HEALTH_FAIL_THRESHOLD
+
+    def _record_success(self, model: Optional[str], account: Optional[str]) -> None:
+        key = self._health_key(model, account)
+        if key in self._health_failures:
+            logger.info("health reset | %s was at %d failures", key, self._health_failures[key])
+        self._health_failures[key] = 0
+
+    def _record_failure(self, model: Optional[str], account: Optional[str]) -> None:
+        key = self._health_key(model, account)
+        self._health_failures[key] = self._health_failures.get(key, 0) + 1
+        if self._health_failures[key] >= self._HEALTH_FAIL_THRESHOLD:
+            logger.warning("health circuit-breaker OPEN | %s after %d consecutive failures",
+                           key, self._health_failures[key])
 
     def cancel(self) -> None:
         self._cancelled = True
@@ -278,18 +305,26 @@ class DeepResearcher:
                     attempts.append((model, account))
         if not attempts:
             attempts = [(None, None)]
+        # Filter out circuit-broken combos, but keep at least one attempt.
+        healthy = [(m, a) for m, a in attempts if self._is_healthy(m, a)]
+        pool = healthy if healthy else attempts  # if ALL are broken, try anyway
         # Start from the last-working attempt so we don't re-try dead combos.
-        k = self._attempt_idx % len(attempts)
-        ordered = attempts[k:] + attempts[:k]
+        k = self._attempt_idx % len(pool)
+        ordered = pool[k:] + pool[:k]
+        skipped = len(attempts) - len(pool)
+        if skipped:
+            logger.info("_complete | skipping %d circuit-broken combos", skipped)
+            await self._emit_progress(status=f"skipping {skipped} unhealthy model/account combo(s)")
         last_err: Optional[Exception] = None
         total = len(ordered)
         for i, (model, account) in enumerate(ordered):
             try:
                 logger.debug("dispatching attempt %d/%d model=%s account=%s", i + 1, total, model, account)
                 text = await self._dispatch(model, account, prompt, timeout, system_prefix)
-                self._attempt_idx = (k + i) % len(attempts)
+                self._attempt_idx = (k + i) % len(pool)
                 self._active_model = model or "default"
                 self._active_account = account or (resolve_backend(model) or "default")
+                self._record_success(model, account)
                 logger.info("_complete success | model=%s account=%s attempt=%d/%d response_len=%d",
                             model, account, i + 1, total, len(text))
                 await self._trace("llm_complete", model=model, account=account, attempt=f"{i+1}/{total}",
@@ -297,6 +332,7 @@ class DeepResearcher:
                 return text
             except Exception as e:
                 last_err = e
+                self._record_failure(model, account)
                 logger.warning("research llm attempt %d/%d failed (model=%s account=%s): %s",
                                i + 1, total, model, account, e)
                 if i + 1 < total:
@@ -306,13 +342,24 @@ class DeepResearcher:
 
     async def _dispatch(self, model: Optional[str], account: Optional[str],
                         prompt: str, timeout: int, system_prefix: str) -> str:
-        """Route one completion call by backend, mirroring Context Pass."""
+        """Route one completion call by backend, mirroring Context Pass.
+
+        All paths enforce a wall-clock timeout so no single call can hang
+        the entire research run.
+        """
         backend = resolve_backend(model) if model else None
         logger.debug("_dispatch | model=%s backend=%s account=%s timeout=%d", model, backend, account, timeout)
         if backend:
             connector = get_connector(backend, model_id=model)
-            logger.info("routing to %s connector for model=%s", backend, model)
-            result = await connector.chat(message=prompt, model=model, thinking_mode="fast")
+            logger.info("routing to %s connector for model=%s (timeout=%ds)", backend, model, timeout)
+            try:
+                result = await asyncio.wait_for(
+                    connector.chat(message=prompt, model=model, thinking_mode="fast"),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.error("%s connector timed out after %ds for model=%s", backend, timeout, model)
+                raise RuntimeError(f"{backend} connector timed out ({timeout}s)")
             answer = (result or {}).get("answer", "").strip()
             if not answer:
                 err = (result or {}).get("error") or "empty response"
@@ -429,15 +476,27 @@ class DeepResearcher:
 
     # ── LLM helpers ──────────────────────────────────────────────────────────
     async def _llm_json(self, prompt: str, timeout: int = 120) -> Any:
+        """LLM call that returns parsed JSON. Retries once with extended timeout
+        on failure before giving up, so transient errors don't silently degrade
+        the research tree."""
         logger.debug("_llm_json | prompt_len=%d timeout=%d", len(prompt), timeout)
-        try:
-            text = await self._complete(_date_context() + prompt, timeout=timeout)
-            parsed = extract_json(text)
-            logger.debug("_llm_json ok | parsed_type=%s", type(parsed).__name__)
-            return parsed
-        except Exception as e:
-            logger.warning("_llm_json failed: %s", e)
-            return None
+        full_prompt = _date_context() + prompt
+        for attempt in range(2):
+            try:
+                t = timeout if attempt == 0 else min(timeout * 2, 300)
+                text = await self._complete(full_prompt, timeout=t)
+                parsed = extract_json(text)
+                if parsed is not None:
+                    logger.debug("_llm_json ok | attempt=%d parsed_type=%s", attempt + 1, type(parsed).__name__)
+                    return parsed
+                # Got a response but couldn't parse JSON — retry once
+                logger.warning("_llm_json | attempt=%d got unparseable response (len=%d)", attempt + 1, len(text))
+            except Exception as e:
+                logger.warning("_llm_json | attempt=%d failed: %s", attempt + 1, e)
+                if attempt == 0:
+                    await self._emit_progress(status=f"llm_json retry after failure: {str(e)[:40]}")
+        logger.warning("_llm_json | all attempts exhausted, returning None")
+        return None
 
     async def _expand_root(self) -> list[str]:
         logger.info("_expand_root | question=%r", self.question)
@@ -484,6 +543,27 @@ class DeepResearcher:
         logger.warning("_gen_queries | parse failed, using topic as query")
         await self._trace("gen_queries_fail", topic=topic, raw_response=str(parsed)[:500])
         return [topic]
+
+    async def _reformulate_queries(self, topic: str, original_queries: list[str]) -> list[str]:
+        """Reformulate search queries when the original set returned zero results.
+        Asks the LLM to try different angles, synonyms, or broader/narrower terms."""
+        logger.info("_reformulate_queries | topic=%r original=%d", topic, len(original_queries))
+        prompt = (
+            f"The following search queries returned ZERO results for research topic:\n"
+            f"Topic: {topic}\n"
+            f"Original queries: {original_queries}\n\n"
+            f"Generate {self.queries_per_topic} NEW alternative search queries that approach "
+            f"this topic from different angles. Use synonyms, broader terms, related concepts, "
+            f"or rephrased questions. Return a JSON array of strings only."
+        )
+        parsed = await self._llm_json(prompt, timeout=60)
+        if isinstance(parsed, list):
+            queries = [q for q in parsed if isinstance(q, str) and q.strip()][: self.queries_per_topic]
+            if queries:
+                logger.info("_reformulate_queries | got %d reformulated queries", len(queries))
+                return queries
+        logger.warning("_reformulate_queries | failed, returning originals")
+        return original_queries
 
     async def _suggest_alternatives(self, failed_urls: list[str], topic: str) -> list[str]:
         """Ask the LLM to suggest replacement URLs for ones that failed to fetch."""
@@ -616,9 +696,17 @@ class DeepResearcher:
         queries = await self._gen_queries(node["label"])
         results = await self._search(queries, node["label"])
         if not results:
-            logger.warning("_research_pages | no search results for %r", node["label"])
-            await self._set_status(node, "failed")
-            return
+            # Search returned empty — reformulate queries and retry once before giving up
+            logger.warning("_research_pages | no search results for %r, reformulating queries", node["label"])
+            await self._emit_progress(status=f"no results, reformulating: {node['label'][:40]}")
+            reformulated = await self._reformulate_queries(node["label"], queries)
+            if reformulated and reformulated != queries:
+                logger.info("_research_pages | retrying with reformulated queries: %s", reformulated)
+                results = await self._search(reformulated, node["label"])
+            if not results:
+                logger.warning("_research_pages | still no results after reformulation for %r", node["label"])
+                await self._set_status(node, "failed")
+                return
         pool = results[: max(15, self.pages_per_topic)]
         logger.info("_research_pages | got %d results, LLM selecting from %d", len(results), len(pool))
         await self._emit_progress(status=f"selecting pages: {node['label'][:40]}")
@@ -651,10 +739,12 @@ class DeepResearcher:
                 failed_urls.append(r["url"])  # fetched but useless = failure for retry purposes
             await self._emit_progress(status=f"reading: {r.get('title','')[:40]}")
 
-        # Fallback: if >=50% of pages failed (fetch error OR no findings), retry (max 2 rounds)
+        # Fallback: if >=30% of pages failed (fetch error OR no findings), retry (max 2 rounds)
+        # Also retry if absolute failure count >= 2, even if percentage is low
         max_retries = 2
         for retry_round in range(1, max_retries + 1):
-            if self._stop() or not failed_urls or len(failed_urls) < max(1, len(top) / 2):
+            fail_threshold = max(2, int(len(top) * 0.3)) if top else 2
+            if self._stop() or not failed_urls or len(failed_urls) < fail_threshold:
                 break
             logger.info("_research_pages | retry %d/%d: %d/%d pages failed, requesting alternatives",
                         retry_round, max_retries, len(failed_urls), len(top))
@@ -722,22 +812,72 @@ class DeepResearcher:
         return node["synthesis"]
 
     async def _final_report(self, root: dict[str, Any]) -> str:
+        """Generate the final research report with multi-stage fallback.
+
+        1. Full prompt with synthesis + findings (timeout 240s)
+        2. Shorter prompt with just synthesis (timeout 180s)
+        3. Raw synthesis material as last resort — never returns empty
+        """
         logger.info("_final_report | starting | findings=%d sources=%d", len(self.findings), len(self.sources))
         await self._emit_progress(status="writing final report", phase="writing")
         findings_txt = "\n".join(
             f"- {f['finding']} [src: {f.get('source_url','')}]" for f in self.findings[:120]) or "(none)"
+        synthesis_text = root.get("synthesis", "") or ""
+
+        # Attempt 1: full prompt
         prompt = FINAL_PROMPT.format(
             question=self.question,
-            synthesis=root.get("synthesis", "")[:8000],
+            synthesis=synthesis_text[:8000],
             findings=findings_txt[:8000],
         )
         try:
-            report = await self._complete(prompt, timeout=240)
-            logger.info("_final_report | done | report_len=%d", len(report))
-            return report
+            report = await self._complete(prompt, timeout=180)
+            if report and len(report.strip()) > 100:
+                logger.info("_final_report | full prompt ok | report_len=%d", len(report))
+                return report
+            logger.warning("_final_report | full prompt returned short response (len=%d)", len(report.strip()))
         except Exception as e:
-            logger.error("_final_report failed: %s", e)
-            return root.get("synthesis", "")
+            logger.warning("_final_report | full prompt failed: %s", e)
+            await self._emit_progress(status="report retry: simplifying prompt")
+
+        # Attempt 2: shorter prompt — just synthesize what we have
+        short_prompt = (
+            f"Write a comprehensive research report answering: {self.question}\n\n"
+            f"Use this material:\n{synthesis_text[:6000]}\n\n"
+            f"Key findings:\n{findings_txt[:4000]}\n\n"
+            f"Requirements: Use ## headings, cite sources as [title](url), minimum 800 words."
+        )
+        try:
+            report = await self._complete(short_prompt, timeout=180)
+            if report and len(report.strip()) > 50:
+                logger.info("_final_report | short prompt ok | report_len=%d", len(report))
+                return report
+            logger.warning("_final_report | short prompt returned short response (len=%d)", len(report.strip()))
+        except Exception as e:
+            logger.warning("_final_report | short prompt failed: %s", e)
+
+        # Attempt 3: assemble from raw material — NEVER return empty
+        logger.warning("_final_report | all LLM attempts failed, assembling from raw material")
+        await self._emit_progress(status="assembling report from collected material")
+        sections = []
+        sections.append(f"# {self.question}\n")
+        sections.append("## Research Summary\n")
+        if synthesis_text:
+            sections.append(synthesis_text)
+        else:
+            sections.append("*(Synthesis could not be generated due to model errors.)*\n")
+        if self.findings:
+            sections.append("\n## Key Findings\n")
+            for f in self.findings[:80]:
+                src = f.get("source_title", "") or f.get("source_url", "")
+                sections.append(f"- {f['finding']} ({src})")
+        if self.sources:
+            sections.append("\n## Sources\n")
+            for s in self.sources[:50]:
+                sections.append(f"- [{s.get('title', 'Untitled')}]({s.get('url', '')})")
+        assembled = "\n".join(sections)
+        logger.info("_final_report | assembled fallback | len=%d", len(assembled))
+        return assembled
 
     # ── main ─────────────────────────────────────────────────────────────────
     async def research(self) -> str:

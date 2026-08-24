@@ -66,7 +66,8 @@ def handle_edit_file(
     path = os.path.expandvars(os.path.expanduser(path))
 
     if is_ssd_tree_write(path):
-        yield _output_event(tag_id, "[BLOCKED] Cannot edit files in /home/sifat/Projects/Sable directly.\nEdit in /home/sifat/hdd/projects/Sable first, dont touch ssd Sable.\n", "stderr")
+        from engine.config import SSD_TREE, HDD_TREE
+        yield _output_event(tag_id, f"[BLOCKED] Cannot edit files in {SSD_TREE} directly.\nEdit in {HDD_TREE} first, dont touch ssd Sable.\n", "stderr")
         yield _end_event(tag_id, name, False, started, error="Blocked: SSD tree write guard")
         return
 
@@ -109,7 +110,8 @@ def handle_create_file(
     path = os.path.expandvars(os.path.expanduser(path))
 
     if is_ssd_tree_write(path):
-        yield _output_event(tag_id, "[BLOCKED] Cannot edit files in /home/sifat/Projects/Sable directly.\nEdit in /home/sifat/hdd/projects/Sable first, dont touch ssd Sable.\n", "stderr")
+        from engine.config import SSD_TREE, HDD_TREE
+        yield _output_event(tag_id, f"[BLOCKED] Cannot edit files in {SSD_TREE} directly.\nEdit in {HDD_TREE} first, dont touch ssd Sable.\n", "stderr")
         yield _end_event(tag_id, name, False, started, error="Blocked: SSD tree write guard")
         return
     overwrite = attrs.get("overwrite", "").lower() in ("true", "1", "yes")
@@ -144,7 +146,8 @@ def handle_insert_file(
     path = os.path.expandvars(os.path.expanduser(path))
 
     if is_ssd_tree_write(path):
-        yield _output_event(tag_id, "[BLOCKED] Cannot edit files in /home/sifat/Projects/Sable directly.\nEdit in /home/sifat/hdd/projects/Sable first, dont touch ssd Sable.\n", "stderr")
+        from engine.config import SSD_TREE, HDD_TREE
+        yield _output_event(tag_id, f"[BLOCKED] Cannot edit files in {SSD_TREE} directly.\nEdit in {HDD_TREE} first, dont touch ssd Sable.\n", "stderr")
         yield _end_event(tag_id, name, False, started, error="Blocked: SSD tree write guard")
         return
 

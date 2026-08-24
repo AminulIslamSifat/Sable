@@ -1,7 +1,68 @@
-    /* ---------- mobile sidebar tint (≤860px, matches sidebar overlay breakpoint) ---------- */
+    /* ---------- mobile menu button (≤860px) ---------- */
+    .mobile-menu-btn,
+    .mobile-new-chat-btn {
+      display: none; /* hidden on desktop */
+      position: fixed;
+      top: 10px;
+      z-index: 110;
+      width: 29px;
+      height: 29px;
+      border-radius: 9px;
+      border: 1px solid var(--border);
+      background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      color: var(--accent-text);
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+      transition: background 0.15s, transform 0.15s;
+    }
+    .mobile-menu-btn { left: 10px; }
+    .mobile-new-chat-btn { right: 10px; }
+    .mobile-menu-btn:hover,
+    .mobile-new-chat-btn:hover { background: color-mix(in srgb, var(--accent) 25%, var(--panel)); }
+    .mobile-menu-btn:active,
+    .mobile-new-chat-btn:active { transform: scale(0.92); }
+    .mobile-menu-btn .icon-lucide,
+    .mobile-new-chat-btn .icon-lucide { width: 15px; height: 15px; }
+
+    /* When mobile menu is open, show activity rail + sidebar side by side */
+    body.mobile-menu-open .activity-rail {
+      display: flex !important;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 48px;
+      height: 100dvh;
+      margin: 0;
+      z-index: 110;
+      border-radius: 0;
+      padding-top: 56px; /* space for the menu button */
+    }
+    body.mobile-menu-open .sidebar-overlay { display: block; z-index: 100; }
+    body.mobile-menu-open .sidebar {
+      transform: translateX(0);
+      position: fixed;
+      left: 48px; /* right next to the rail */
+      top: 0;
+      height: 100dvh;
+      margin: 0;
+      z-index: 105;
+      width: min(280px, calc(100vw - 58px));
+    }
+
+/* ---------- mobile sidebar tint (≤860px, matches sidebar overlay breakpoint) ---------- */
     @media (max-width: 860px) {
-      /* Hide activity rail on mobile — no room */
+      /* Show mobile top buttons */
+      .mobile-menu-btn,
+      .mobile-new-chat-btn { display: flex; }
+
+      /* Hide activity rail by default on mobile — shown via .mobile-menu-open */
       .activity-rail { display: none !important; }
+      body.mobile-menu-open .activity-rail { display: flex !important; }
+
       .sidebar-section { background: color-mix(in srgb, var(--panel) 91%, transparent); }
       .diff-sidebar { background: color-mix(in srgb, var(--panel) 91%, transparent); }
       .agent-panel { background: color-mix(in srgb, var(--panel) 82%, transparent); }
@@ -19,6 +80,57 @@
       /* Re-center model dropdown — right-pair auto-margin breaks when terminal is hidden */
       .header-row > .header-right-pair:first-of-type { margin-left: unset !important; }
       .header-row > .header-right-pair:last-child { margin-left: auto !important; }
+
+      /* ── Status bar mobile: single row, no overflow ── */
+      .status-bar {
+        grid-template-columns: auto auto 1fr auto;
+        padding: 3px 8px 2px;
+        overflow: hidden;
+      }
+      .sb-left      { justify-self: start; }
+      .sb-mid-left  { justify-self: start; }
+      .sb-center    { display: none; }   /* hide CWD */
+      .sb-mid-right { justify-self: end; }
+      .sb-right     { justify-self: end; }
+      /* Truncate labels to prevent overflow */
+      .status-dropdown-label {
+        max-width: 70px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* ── Input row mobile: prevent send/live buttons from being pushed out ── */
+      .input-row {
+        flex-wrap: nowrap;
+        overflow: hidden;
+      }
+      .text-cell {
+        min-width: 0; /* allow textarea to shrink */
+        flex: 1;
+      }
+      .text-cell textarea {
+        min-width: 0;
+        width: 100%;
+      }
+      /* Ensure right-side buttons never shrink below their content */
+      .live-chat-cell,
+      .send-cell {
+        flex-shrink: 0;
+      }
+      /* Mic button: smaller padding on mobile to fit */
+      .mic-cell {
+        padding: 4px 2px 4px 0;
+      }
+      .mic-cell .stt-mic-btn {
+        padding: 5px;
+        min-width: 18px;
+        min-height: 18px;
+      }
+
+      /* Input area tighter padding on mobile */
+      .input-area { padding: 6px 10px 6px; }
+      .input-composite { padding: 4px 5px; }
     }
 
     /* ---------- small phones (≤480px) ---------- */

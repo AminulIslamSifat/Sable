@@ -35,7 +35,7 @@ BASE_URL = "https://image-generation.perchance.org/api"
 CHANNEL = "5yf90s8rdo"
 AD_ACCESS_CODE = "3edfca68e17690650f599c6ba1a71476b2bab44e27f4fc3907c76dbad206413f"
 KEY_CACHE_FILE = Path(__file__).resolve().parent.parent.parent.parent / "system" / ".dreamforge_key"
-OUTPUT_DIR = Path("/home/sifat/sable_output/assets")
+OUTPUT_DIR = Path.home() / "sable_output" / "assets"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",

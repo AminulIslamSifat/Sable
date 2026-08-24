@@ -133,12 +133,12 @@
     }
 
 
-    // New Chat button — delegate to main newChatFloat handler
+    // New Chat button in compact header — delegate to sidebar new chat button
     const compactNewChat = document.getElementById('compactNewChat');
     if (compactNewChat) {
       compactNewChat.addEventListener('click', () => {
-        const mainNewChat = document.getElementById('newChatFloat');
-        if (mainNewChat) mainNewChat.click();
+        const sidebarBtn = document.getElementById('sidebarNewChatBtn');
+        if (sidebarBtn) sidebarBtn.click();
       });
     }
 
@@ -645,12 +645,57 @@
 
   // ─── Init ───
 
+  // ─── Mobile Menu Toggle ───
+
+  function setupMobileMenu() {
+    const btn = document.getElementById('mobileMenuBtn');
+    const newChatBtn = document.getElementById('mobileNewChatBtn');
+    if (!btn) return;
+
+    const overlay = document.querySelector('.sidebar-overlay');
+
+    const toggle = () => {
+      const isOpen = body.classList.toggle('mobile-menu-open');
+      if (!isOpen) {
+        body.classList.remove('sidebar-open');
+      }
+    };
+
+    btn.addEventListener('click', toggle);
+
+    // Close menu when overlay is tapped
+    if (overlay) {
+      overlay.addEventListener('click', () => {
+        body.classList.remove('mobile-menu-open');
+        body.classList.remove('sidebar-open');
+      });
+    }
+
+    // Close menu when a rail button is clicked (user selected something)
+    window.addEventListener('rail-switch', () => {
+      if (body.classList.contains('mobile-menu-open')) {
+        body.classList.remove('mobile-menu-open');
+        body.classList.remove('sidebar-open');
+      }
+    });
+
+    // Mobile new chat button — delegates to sidebar new chat button
+    if (newChatBtn) {
+      newChatBtn.addEventListener('click', () => {
+        const sidebarBtn = document.getElementById('sidebarNewChatBtn');
+        if (sidebarBtn) sidebarBtn.click();
+      });
+    }
+  }
+
+
   function init() {
     const saved = getLayoutMode();
     setLayoutMode(saved);
     setupSwitcherButtons();
     setupActivityRail();
     setupRailSidebarToggle();
+    setupMobileMenu();
     patchSidebarToggle();
     setupCompactInput();
     setupCompactCopyDelegation();

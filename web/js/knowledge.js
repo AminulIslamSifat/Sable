@@ -14,7 +14,7 @@
   let currentMode = 'graph'; // graph | cards | search
   let entries = [];           // all memory entries (flattened)
   let protectedEntries = [];
-  let activeCategories = new Set(['semantic', 'episodic', 'ephemeral', 'protected']);
+  let activeCategories = new Set(['semantic', 'episodic', 'procedural', 'ephemeral', 'protected']);
   let cy = null;              // Cytoscape instance
   let selectedNodeId = null;
   let toastTimer = null;
@@ -86,6 +86,7 @@
     switch (cat) {
       case 'semantic': return style.getPropertyValue('--accent').trim() || '#9a7d4a';
       case 'episodic': return style.getPropertyValue('--ok').trim() || '#6fcf97';
+      case 'procedural': return style.getPropertyValue('--info').trim() || '#56b6c2';
       case 'ephemeral': return '#e5a84a';
       case 'protected': return style.getPropertyValue('--accent-text').trim() || '#c4a66b';
       default: return style.getPropertyValue('--muted').trim() || '#85858c';
@@ -96,6 +97,7 @@
     switch (cat) {
       case 'semantic': return '📌';
       case 'episodic': return '🎓';
+      case 'procedural': return '⚙️';
       case 'ephemeral': return '⏳';
       case 'protected': return '🔒';
       default: return '💭';
@@ -116,13 +118,15 @@
       const mem = memData.memory || {};
       entries = [];
 
-      for (const cat of ['semantic', 'episodic', 'ephemeral']) {
+      for (const cat of ['semantic', 'episodic', 'procedural', 'ephemeral']) {
         const list = mem[cat] || [];
         for (const e of list) {
           entries.push({
             key: e.key || '',
             value: e.value || '',
             category: cat,
+            trigger: e.trigger || null,
+            keywords: e.keywords || [],
             expires_at: e.expires_at || null,
             created_at: e.created_at || null,
             updated_at: e.updated_at || null,
@@ -172,13 +176,14 @@
 
   function updateStats() {
     const all = getAllEntries();
-    const counts = { semantic: 0, episodic: 0, ephemeral: 0, protected: 0 };
+    const counts = { semantic: 0, episodic: 0, procedural: 0, ephemeral: 0, protected: 0 };
     for (const e of all) {
       if (counts[e.category] !== undefined) counts[e.category]++;
     }
 
     $('kbCountSemantic').textContent = counts.semantic;
     $('kbCountEpisodic').textContent = counts.episodic;
+    $('kbCountProcedural').textContent = counts.procedural;
     $('kbCountEphemeral').textContent = counts.ephemeral;
     $('kbCountProtected').textContent = counts.protected;
     $('kbStatTotal').textContent = all.length;
@@ -415,32 +420,47 @@
           }
         },
       ],
-      layout: {
-        name: 'cose-bilkent',
-        quality: 'default',
-        animate: 'end',
-        animationDuration: 600,
-        fit: true,
-        padding: 50,
-        randomize: true,
-        // Obsidian-like: strong repulsion keeps small dots well separated
-        // node=8px, 5× radius = 20px minimum gap enforced by repulsion
-        nodeRepulsion: 15000,
-        idealEdgeLength: 120,
-        edgeElasticity: 0.45,
-        gravity: 0.15,
-        gravityRange: 3.8,
-        numIter: 3000,
-        tile: true,
-        tilingPaddingVertical: 10,
-        tilingPaddingHorizontal: 10,
-        nodeDimensionsIncludeLabels: false,
-      },
+      layout: { name: 'preset' },
       minZoom: 0.1,
       maxZoom: 8,
       wheelSensitivity: 0.5,
       boxSelectionEnabled: false,
     });
+
+    // ── CiSE circular layout with automatic Markov Clustering ──
+    const clusters = cy.elements().markovClustering({
+      attributes: [],       // topology-only clustering
+      inflation: 2.0,
+      expansion: 2,
+      maxIterations: 30,
+    });
+
+    // Build cluster arrays for CiSE (each array = node IDs in that cluster)
+    const clusterArrays = clusters.map(cluster => cluster.map(node => node.id()));
+
+    // Assign clusterID to each node for CiSE
+    clusters.forEach((cluster, i) => {
+      cluster.forEach(node => { node.data('clusterID', i); });
+    });
+
+    const ciseLayout = cy.layout({
+      name: 'cise',
+      clusters: clusterArrays,
+      animate: 'end',
+      animationDuration: 600,
+      fit: true,
+      padding: 80,
+      randomize: true,
+      nodeSeparation: 12.5,
+      idealInterClusterEdgeLengthCoefficient: 1.4,
+      allowNodesInsideCircle: false,
+      springCoeff: () => 0.45,
+      nodeRepulsion: () => 4500,
+      gravity: 0.25,
+      gravityRange: 3.8,
+    });
+
+    ciseLayout.run();
 
     // ── Interactions ──
     cy.on('tap', 'node', (evt) => {
@@ -473,32 +493,45 @@
       node.data('entry', filtered[i]);
     });
 
-    // ── Zoom-based label visibility & dot brightness ──
+    // ── Zoom-based label visibility, dot brightness & screen-space sizing ──
     const LABEL_ZOOM_THRESHOLD = 3.0;
+    const MIN_SCREEN_PX = 4;   // minimum node size in screen pixels (Obsidian-like)
+    const BASE_NODE_PX = 8;    // natural node size at zoom=1
     let _lastShowLabels = null;
+    let _lastZoomBucket = -1;
+
     function updateZoomEffects() {
       const z = cy.zoom();
       const showLabels = z >= LABEL_ZOOM_THRESHOLD;
-      if (showLabels === _lastShowLabels) return; // no change, skip
+      // Bucket zoom to avoid per-frame style updates
+      const zoomBucket = Math.round(z * 20);
+      if (showLabels === _lastShowLabels && zoomBucket === _lastZoomBucket) return;
       _lastShowLabels = showLabels;
+      _lastZoomBucket = zoomBucket;
+
+      // Screen-space compensation: keep nodes at least MIN_SCREEN_PX on screen
+      // At zoom z, a graph-space size of s renders as s*z screen pixels.
+      // We want max(BASE_NODE_PX, MIN_SCREEN_PX / z) so dots never vanish.
+      const compensatedSize = Math.max(BASE_NODE_PX, MIN_SCREEN_PX / z);
       const t = Math.min(Math.max((z - 0.1) / (LABEL_ZOOM_THRESHOLD - 0.1), 0), 1);
       const opacity = 1.0 - t * 0.15;
+
       cy.batch(() => {
         cy.nodes().forEach(n => {
           if (n.hasClass('hover') || n.selected()) return;
+          const base = { 'background-opacity': opacity, 'width': compensatedSize, 'height': compensatedSize };
           if (showLabels) {
-            n.style({
+            n.style(Object.assign(base, {
               'label': n.data('label'),
               'font-size': '4px',
               'color': '#ffffff',
               'text-opacity': 1,
               'text-outline-width': 1,
               'text-outline-color': '#0f0e17',
-              'background-opacity': opacity,
-            });
+            }));
           } else {
             n.removeStyle();
-            n.style({ 'label': '', 'background-opacity': opacity });
+            n.style(Object.assign(base, { 'label': '' }));
           }
         });
       });
@@ -685,6 +718,20 @@
     badge.className = `kb-detail-badge ${entry.category || 'semantic'}`;
     $('kbDetailTime').textContent = timeAgo(entry.updated_at || entry.created_at);
     $('kbDetailValue').textContent = entry.value || '';
+
+    // Show procedural-specific fields
+    const procFields = $('kbDetailProcFields');
+    if (procFields) {
+      if (entry.category === 'procedural' && (entry.trigger || (entry.keywords && entry.keywords.length))) {
+        let html = '';
+        if (entry.trigger) html += `<div class="kb-proc-field"><span class="kb-proc-label">Trigger:</span> ${escHtml(entry.trigger)}</div>`;
+        if (entry.keywords && entry.keywords.length) html += `<div class="kb-proc-field"><span class="kb-proc-label">Keywords:</span> ${entry.keywords.map(k => `<span class="kb-proc-kw">${escHtml(k)}</span>`).join(' ')}</div>`;
+        procFields.innerHTML = html;
+        procFields.style.display = '';
+      } else {
+        procFields.style.display = 'none';
+      }
+    }
 
     // Connected memories (find entries sharing keywords)
     const chips = $('kbDetailChips');
