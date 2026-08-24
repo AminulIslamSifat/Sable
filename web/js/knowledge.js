@@ -20,6 +20,7 @@
   let toastTimer = null;
   let searchDebounce = null;
   let nodeFilterText = '';
+  let _cachedGraphData = null; // { nodes, edges, filterKey } — skip rebuild when unchanged
 
   /* ── Stopwords for keyword extraction ── */
   const STOPWORDS = new Set([
@@ -117,6 +118,7 @@
 
       const mem = memData.memory || {};
       entries = [];
+      _cachedGraphData = null; // invalidate graph cache on data reload
 
       for (const cat of ['semantic', 'episodic', 'procedural', 'ephemeral']) {
         const list = mem[cat] || [];
@@ -244,57 +246,68 @@
     empty.classList.add('hidden');
     loading.classList.remove('hidden');
 
-    // Build nodes and edges
-    const nodes = filtered.map((e, i) => ({
-      data: {
-        id: `n${i}`,
-        label: (e.key || '').slice(0, 30),
-        category: e.category,
-        fullKey: e.key,
-        fullValue: e.value,
-        keywords: extractKeywords(`${e.key} ${e.value}`),
-        color: getCategoryColor(e.category),
-        isProtected: e.category === 'protected',
-        isEphemeral: e.category === 'ephemeral',
-        entryIndex: i,
-      }
-    }));
+    // ── Build graph data (cached to avoid O(n²) rebuild on every render) ──
+    const filterKey = filtered.map(e => `${e.category}:${e.key}`).join('\x00');
+    let nodes, edges;
 
-    // Build edges based on shared keywords
-    const edges = [];
-    const edgeSet = new Set();
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const kwA = nodes[i].data.keywords;
-        const kwB = nodes[j].data.keywords;
-        const shared = kwA.filter(k => kwB.includes(k));
-        if (shared.length >= 2) {
-          const edgeId = `${nodes[i].data.id}-${nodes[j].data.id}`;
-          if (!edgeSet.has(edgeId)) {
-            edgeSet.add(edgeId);
-            edges.push({
-              data: {
-                source: nodes[i].data.id,
-                target: nodes[j].data.id,
-                weight: Math.min(shared.length, 3),
-                sharedKeywords: shared.slice(0, 3).join(', '),
-              }
-            });
+    if (_cachedGraphData && _cachedGraphData.filterKey === filterKey) {
+      nodes = _cachedGraphData.nodes;
+      edges = _cachedGraphData.edges;
+    } else {
+      nodes = filtered.map((e, i) => ({
+        data: {
+          id: `n${i}`,
+          label: (e.key || '').slice(0, 30),
+          category: e.category,
+          fullKey: e.key,
+          fullValue: e.value,
+          keywords: extractKeywords(`${e.key} ${e.value}`),
+          color: getCategoryColor(e.category),
+          isProtected: e.category === 'protected',
+          isEphemeral: e.category === 'ephemeral',
+          entryIndex: i,
+        }
+      }));
+
+      // Build edges using inverted keyword index — O(n*k) instead of O(n²*k)
+      const kwIndex = new Map(); // keyword -> [nodeIndex]
+      for (let i = 0; i < nodes.length; i++) {
+        for (const kw of nodes[i].data.keywords) {
+          if (!kwIndex.has(kw)) kwIndex.set(kw, []);
+          kwIndex.get(kw).push(i);
+        }
+      }
+
+      // Count shared keywords per pair via co-occurrence
+      const pairCounts = new Map(); // "i-j" -> count
+      for (const indices of kwIndex.values()) {
+        for (let a = 0; a < indices.length; a++) {
+          for (let b = a + 1; b < indices.length; b++) {
+            const lo = indices[a], hi = indices[b];
+            const key = `${lo}-${hi}`;
+            pairCounts.set(key, (pairCounts.get(key) || 0) + 1);
           }
         }
       }
-    }
 
-    // Compute degree for sizing
-    const degreeMap = {};
-    for (const n of nodes) degreeMap[n.data.id] = 0;
-    for (const e of edges) {
-      degreeMap[e.data.source] = (degreeMap[e.data.source] || 0) + 1;
-      degreeMap[e.data.target] = (degreeMap[e.data.target] || 0) + 1;
-    }
-    // Uniform small circles — Obsidian-style
-    for (const n of nodes) {
-      n.data.size = 8;
+      edges = [];
+      for (const [key, count] of pairCounts) {
+        if (count >= 2) {
+          const [si, ti] = key.split('-').map(Number);
+          edges.push({
+            data: {
+              source: nodes[si].data.id,
+              target: nodes[ti].data.id,
+              weight: Math.min(count, 3),
+            }
+          });
+        }
+      }
+
+      // Uniform small circles — Obsidian-style
+      for (const n of nodes) n.data.size = 8;
+
+      _cachedGraphData = { nodes, edges, filterKey };
     }
 
     // Load Cytoscape dynamically if not loaded
@@ -427,40 +440,27 @@
       boxSelectionEnabled: false,
     });
 
-    // ── CiSE circular layout with automatic Markov Clustering ──
-    const clusters = cy.elements().markovClustering({
-      attributes: [],       // topology-only clustering
-      inflation: 2.0,
-      expansion: 2,
-      maxIterations: 30,
-    });
-
-    // Build cluster arrays for CiSE (each array = node IDs in that cluster)
-    const clusterArrays = clusters.map(cluster => cluster.map(node => node.id()));
-
-    // Assign clusterID to each node for CiSE
-    clusters.forEach((cluster, i) => {
-      cluster.forEach(node => { node.data('clusterID', i); });
-    });
-
-    const ciseLayout = cy.layout({
-      name: 'cise',
-      clusters: clusterArrays,
+    // ── cose-bilkent layout — fast force-directed, no clustering overhead ──
+    const layout = cy.layout({
+      name: 'cose-bilkent',
       animate: 'end',
-      animationDuration: 600,
+      animationDuration: 400,
       fit: true,
-      padding: 80,
-      randomize: true,
-      nodeSeparation: 12.5,
-      idealInterClusterEdgeLengthCoefficient: 1.4,
-      allowNodesInsideCircle: false,
-      springCoeff: () => 0.45,
-      nodeRepulsion: () => 4500,
-      gravity: 0.25,
+      padding: 60,
+      randomize: false,
+      nodeRepulsion: 1500,
+      idealEdgeLength: 30,
+      edgeElasticity: 0.1,
+      numIter: 100,
+      tile: true,
+      tilingPaddingVertical: 10,
+      tilingPaddingHorizontal: 10,
+      gravityRangeCompound: 1.5,
+      gravityCompound: 1.0,
       gravityRange: 3.8,
     });
 
-    ciseLayout.run();
+    layout.run();
 
     // ── Interactions ──
     cy.on('tap', 'node', (evt) => {
