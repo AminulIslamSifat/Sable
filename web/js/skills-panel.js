@@ -1206,6 +1206,8 @@
     // ── General Settings (tool output cap) ──
     const maxToolOutputInput = document.getElementById("maxToolOutputInput");
 
+    const desktopNotifToggle = document.getElementById("desktopNotifToggle");
+
     async function loadGeneralSettings() {
       try {
         const res = await fetch("/api/settings/general");
@@ -1213,6 +1215,9 @@
           const d = await res.json();
           if (maxToolOutputInput && d.max_tool_output_chars) {
             maxToolOutputInput.value = d.max_tool_output_chars;
+          }
+          if (desktopNotifToggle) {
+            desktopNotifToggle.checked = d.desktop_notifications !== false;
           }
         }
       } catch {}
@@ -1227,6 +1232,18 @@
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ max_tool_output_chars: val }),
+          });
+        } catch {}
+      });
+    }
+
+    if (desktopNotifToggle) {
+      desktopNotifToggle.addEventListener("change", async () => {
+        try {
+          await fetch("/api/settings/general", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ desktop_notifications: desktopNotifToggle.checked }),
           });
         } catch {}
       });

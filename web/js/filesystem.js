@@ -985,7 +985,7 @@
   // Dynamically detect home dir from first loaded tree path or fallback
   const _homeDir = (typeof window.__sable_home === 'string') ? window.__sable_home : null;
   function shorten(p) {
-    if (_homeDir) return p.replace(new RegExp('^' + _homeDir.replace(/[.*+?^${}()|[\]\]/g, '\$&')), "~");
+    if (_homeDir) return p.replace(new RegExp('^' + _homeDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), "~");
     // Fallback: generic /home/<user> pattern
     return p.replace(/^\/home\/[^/]+/, "~");
   }

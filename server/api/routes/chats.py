@@ -611,22 +611,11 @@ async def new_chat(request: NewChatRequest = NewChatRequest()) -> dict[str, str 
         ensure_chat(chat_id, "New chat", None, project_id=request.project_id)
         return {"chat_id": chat_id}
     # Always use a local Sable UUID as the chat_id.
-    # For Qwen models, create upstream session separately and store in DB.
-    from server.utils import _is_api_model
+    # Upstream Qwen session is created lazily on first message send
+    # (session recovery in /api/chat handles it). This avoids blocking
+    # chat creation on slow/unreachable upstream servers.
     local_chat_id = uuid.uuid4().hex
-    upstream_session_id = None
-    if not _is_api_model(request.model):
-        # Qwen model — create upstream session
-        try:
-            upstream_session_id = await retry_async(
-                lambda: service.create_chat(model=request.model),
-                label="create_chat",
-            )
-        except Exception as exc:
-            return {"error": f"Session startup failed: {type(exc).__name__}: {exc}"}
-        if not upstream_session_id:
-            return {"error": "Could not create chat session"}
-    ensure_chat(local_chat_id, "New chat", None, project_id=request.project_id, upstream_session_id=upstream_session_id)
+    ensure_chat(local_chat_id, "New chat", None, project_id=request.project_id)
     return {"chat_id": local_chat_id}
 
 @router.get("/api/chats/{chat_id}/messages")
@@ -799,6 +788,23 @@ async def context_pass(req: ContextPassRequest) -> dict[str, Any]:
     if tail_start_idx < head_end_idx:
         tail_start_idx = head_end_idx
 
+    # --- Expand tail to meet minimum 100k char threshold ---
+    _TAIL_MIN_CHARS = 100_000
+    _TAIL_PRESERVE_LIMIT = 250_000
+    tail_char_count = sum(
+        len((messages[i].get("content") or "").strip())
+        for i in range(tail_start_idx, len(messages))
+    )
+    while tail_char_count < _TAIL_MIN_CHARS and tail_start_idx > head_end_idx:
+        tail_start_idx -= 1
+        tail_char_count += len((messages[tail_start_idx].get("content") or "").strip())
+
+    # Cap at preserve limit
+    if tail_char_count > _TAIL_PRESERVE_LIMIT:
+        while tail_char_count > _TAIL_PRESERVE_LIMIT and tail_start_idx < len(messages) - 1:
+            tail_char_count -= len((messages[tail_start_idx].get("content") or "").strip())
+            tail_start_idx += 1
+
     # --- Format head verbatim ---
     first_user_content = (messages[first_user_idx].get("content") or "").strip()
     head_parts = [f"## First User Message\n{first_user_content}"]
@@ -872,7 +878,14 @@ async def context_pass(req: ContextPassRequest) -> dict[str, Any]:
         "## Recent Tool Calls, or any other section headers.\n"
         "- NEVER add high-level summaries, synthesis, overview, or commentary.\n"
         "- Never invent details. Write [unclear] if ambiguous.\n"
-        "- Preserve code, paths, commands, errors VERBATIM in code blocks within turn pairs.\n\n"
+        "- Preserve code, paths, commands, errors VERBATIM in code blocks within turn pairs.\n"
+        "- BUG FIX REPORTING (MANDATORY): When a bug was found AND fixed in a specific file, "
+        "the ## model turn MUST include the actual code — not just a prose description. Format:\n"
+        "    File: path/to/file.py:L###\n"
+        "    PROBLEM: [2-5 line code snippet showing the broken code]\n"
+        "    FIX: [2-5 line code snippet showing the corrected code]\n"
+        "  If an issue was identified but NOT resolved, do NOT mention it at all.\n"
+        "  Only include fix details for bugs actually fixed in that turn.\n\n"
         f"---\n{middle_text}"
     )
 
@@ -885,7 +898,7 @@ async def context_pass(req: ContextPassRequest) -> dict[str, Any]:
 
     logger.info(
         "[context-pass] chat_id=%s | model=%r | browser_acc=%r | fallbacks=%s/%s | transcript_len=%d",
-        req.chat_id, model, browser_acc, fallback_models, browser_profiles, len(transcript),
+        req.chat_id, model, browser_acc, fallback_models, browser_profiles, len(messages),
     )
 
     async def _try_ctx_pass_call(mdl: str, browser_acc_name: str = "") -> dict[str, Any] | None:

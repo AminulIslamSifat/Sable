@@ -16,7 +16,7 @@ from engine.config import get_model_config
 from engine.memory_search import get_searcher
 from engine.scraper import get_settings as get_scraper_settings, scraper as scraper_service
 from engine.skills import SkillEngine, SkillParser, build_tool_feedback
-from engine.agents.resilience import MainChatGuard
+from engine.agents.resilience import LoopDetector, MainChatGuard, TurnCapTracker
 from engine.skills.handlers import HANDLER_MAP
 from connectors import get_connector
 from connectors.deepseek.client import get_client as get_deepseek_client
@@ -124,6 +124,7 @@ async def stop_generation(request: Request):
 
 _SUMMARIZER_CHUNK_LIMIT = 300_000   # max chars per summarizer call
 _TAIL_PRESERVE_LIMIT = 250_000      # max chars to keep verbatim at the end
+_TAIL_MIN_CHARS = 100_000           # minimum chars to preserve from the end (expand beyond tool call count)
 _SUMMARIZER_MIN_HEAD = 5_000        # skip summarization if head is smaller than this
 _SUMMARIZER_MAX_CONCURRENCY = 3     # max parallel summarizer API calls
 _SUMMARIZER_CACHE_TTL = 300         # seconds to cache summaries per chat_id
@@ -195,6 +196,24 @@ def _extract_head_tail(messages: list[dict]) -> tuple[str, str, list[dict]]:
     # Ensure tail doesn't overlap head
     if tail_start_idx < head_end_idx:
         tail_start_idx = head_end_idx
+
+    # --- Expand tail to meet minimum char threshold ---
+    # If the current tail (by tool call count) is under _TAIL_MIN_CHARS,
+    # walk backward from tail_start_idx to include more messages.
+    tail_char_count = sum(
+        len((messages[i].get("content") or "").strip())
+        for i in range(tail_start_idx, len(messages))
+    )
+    while tail_char_count < _TAIL_MIN_CHARS and tail_start_idx > head_end_idx:
+        tail_start_idx -= 1
+        tail_char_count += len((messages[tail_start_idx].get("content") or "").strip())
+
+    # Cap at _TAIL_PRESERVE_LIMIT to avoid oversized tails
+    if tail_char_count > _TAIL_PRESERVE_LIMIT:
+        # Walk forward to trim excess
+        while tail_char_count > _TAIL_PRESERVE_LIMIT and tail_start_idx < len(messages) - 1:
+            tail_char_count -= len((messages[tail_start_idx].get("content") or "").strip())
+            tail_start_idx += 1
 
     # --- Format head ---
     head_msgs = messages[first_user_idx:head_end_idx]
@@ -442,7 +461,14 @@ async def _run_summarizer(
         "## Recent Tool Calls, or any other section headers.\n"
         "- NEVER add high-level summaries, synthesis, overview, or commentary.\n"
         "- Never invent details. Write [unclear] if ambiguous.\n"
-        "- Preserve code, paths, commands, errors VERBATIM in code blocks within turn pairs.\n\n"
+        "- Preserve code, paths, commands, errors VERBATIM in code blocks within turn pairs.\n"
+        "- BUG FIX REPORTING (MANDATORY): When a bug was found AND fixed in a specific file, "
+        "the ## model turn MUST include the actual code — not just a prose description. Format:\n"
+        "    File: path/to/file.py:L###\n"
+        "    PROBLEM: [2-5 line code snippet showing the broken code]\n"
+        "    FIX: [2-5 line code snippet showing the corrected code]\n"
+        "  If an issue was identified but NOT resolved, do NOT mention it at all.\n"
+        "  Only include fix details for bugs actually fixed in that turn.\n\n"
         f"---\n{transcript}"
     )
 
@@ -941,6 +967,9 @@ async def chat(request: ChatRequest):
         saved_message_id: int | None = None
         _pending_skill_images: list[str] = []  # image paths from get_file to inject next round
         _guard = MainChatGuard()
+        _loop_detector = LoopDetector()  # Error-aware loop detection + no-progress + stubbing
+        _turn_caps = TurnCapTracker()  # Per-turn caps on web searches and subagent spawns
+        _round_tool_errors: dict[str, str] = {}  # tool_name → error_msg from previous round
         _all_tool_mem_used: list[dict[str, Any]] = []
         # Always send local chat_id to frontend (authoritative for new + existing chats)
         yield sse({"type": "meta", "chat_id": active_chat_id, "parent_id": parent_id})
@@ -968,7 +997,7 @@ async def chat(request: ChatRequest):
                 _TITLE_RE = re.compile(r"<chat_title>(.*?)</chat_title>", re.S | re.I)
                 def _dispatch_events(items) -> Generator[str, None, None]:
                     """Shared logic: route parser events, execute tags via engine."""
-                    nonlocal _title_buf
+                    nonlocal _title_buf, current_parent, final_parent
                     engine = _get_skill_engine()
                     for item in items:
                         itype = item.get("type")
@@ -1015,8 +1044,53 @@ async def chat(request: ChatRequest):
                                 round_skill_events.append({"type": "skill_end", "name": "chat_title", "ok": True, "id": _ct_id, "duration_ms": 0})
                                 continue
 
-                            # Track command for loop detection
+                            # Track command for loop detection (legacy MainChatGuard)
                             _guard.record_command(item["name"], item.get("content", ""))
+                            # LoopDetector: error-aware check with recovery support
+                            _tool_args_str = item.get("content", "")
+                            _prev_error = _round_tool_errors.get(item["name"])
+                            _decision = _loop_detector.check_decision(
+                                item["name"], _tool_args_str, error_msg=_prev_error or "",
+                            )
+                            if _decision.action == "block":
+                                _stop_msg = _decision.message or f"[HARD STOP] '{item['name']}' blocked."
+                                _lp_id = str(uuid.uuid4())[:12]
+                                round_skill_events.append({"type": "skill_start", "name": item["name"], "id": _lp_id})
+                                round_skill_events.append({"type": "skill_end", "name": item["name"], "ok": False, "error": _stop_msg, "id": _lp_id})
+                                yield sse({"type": "skill_end", "name": item["name"], "ok": False, "error": _stop_msg, "id": _lp_id})
+                                continue
+                            elif _decision.action == "recover":
+                                # Recovery: reset session, inject recovery prompt
+                                logger.info("[main-chat] Guardrail recovery triggered for '%s'", item["name"])
+                                yield sse({"type": "guardrail_recovery", "tool": item["name"]})
+                                current_parent = None  # Fresh upstream session
+                                final_parent = None
+                                _recovery_prompt = _loop_detector.get_recovery_prompt(
+                                    _decision.recovery_key,
+                                    original_task=api_message or "",
+                                )
+                                # Block this tool and all remaining tools this round
+                                _lp_id = str(uuid.uuid4())[:12]
+                                round_skill_events.append({"type": "skill_start", "name": item["name"], "id": _lp_id})
+                                round_skill_events.append({"type": "skill_end", "name": item["name"], "ok": False, "error": _recovery_prompt, "id": _lp_id})
+                                yield sse({"type": "skill_end", "name": item["name"], "ok": False, "error": _recovery_prompt, "id": _lp_id})
+                                # Skip remaining tools this round — force re-think
+                                break
+                            elif _decision.action == "warn":
+                                _lw_id = str(uuid.uuid4())[:12]
+                                _warn_text = _decision.message or ""
+                                round_skill_events.append({"type": "skill_start", "name": "_loop_warning", "id": _lw_id})
+                                round_skill_events.append({"type": "skill_output", "text": _warn_text, "id": _lw_id})
+                                round_skill_events.append({"type": "skill_end", "name": "_loop_warning", "ok": True, "id": _lw_id})
+                                yield sse({"type": "skill_output", "text": _warn_text, "id": _lw_id})
+                            # Per-turn cap check
+                            _cap_warn = _turn_caps.check_and_record(item["name"])
+                            if _cap_warn:
+                                _cap_id = str(uuid.uuid4())[:12]
+                                round_skill_events.append({"type": "skill_start", "name": item["name"], "id": _cap_id})
+                                round_skill_events.append({"type": "skill_end", "name": item["name"], "ok": False, "error": _cap_warn, "id": _cap_id})
+                                yield sse({"type": "skill_end", "name": item["name"], "ok": False, "error": _cap_warn, "id": _cap_id})
+                                continue
                             # Execute the tag through the middleware pipeline
                             for ev in engine.process_tag(
                                 item["name"], item.get("attrs", {}), item.get("content", ""),
@@ -1192,7 +1266,13 @@ async def chat(request: ChatRequest):
                         pass  # Tools optional — fall back to text-based tool_call blocks
                     # --- Token counting: prompt side ---
                     try:
-                        _pt_history = _db_history_s or []
+                        # On round > 0, use the connector's live session history
+                        # (which includes all previous rounds) instead of the stale
+                        # DB snapshot that's only loaded on round 0.
+                        if round_index > 0 and active_chat_id:
+                            _pt_history = getattr(_connector, '_sessions', {}).get(active_chat_id, []) or []
+                        else:
+                            _pt_history = _db_history_s or []
                         _pt_tools = _stream_kwargs.get('tools')
                         _round_prompt_tokens = count_prompt_tokens(
                             system_instruction=_system_instruction_for_tokens,
@@ -1433,10 +1513,10 @@ async def chat(request: ChatRequest):
                         pending_thinking.clear()
                         async for _sse_line in _drain_sync_gen(emit_flush()):
                             yield _sse_line
-                        # --- Auto-switch to next available account ---
+                        # --- Auto-switch to next available account (with retry loop) ---
                         _switch_reason = "rate_limit" if event_type == "rate_limited" else "waf_block"
                         logger.info("[auto-switch] Triggered by %s for chat %s", _switch_reason, active_chat_id)
-                        yield sse({"type": "status", "message": "switching_account", "reason": _switch_reason})
+                        yield sse({"type": "account_switch", "step": "triggered", "reason": _switch_reason})
 
                         from engine.config import (
                             get_next_available_account,
@@ -1450,21 +1530,31 @@ async def chat(request: ChatRequest):
                             mark_account_captcha_blocked(_current_acc)
 
                         _tried_accounts: set[str] = {_current_acc}
-                        _next_acc = get_next_available_account(exclude=_tried_accounts)
+                        _switch_max_retries = 5
+                        _switch_attempt = 0
+                        _switch_success = False
 
-                        if not _next_acc:
-                            # No accounts left — fall back to original error behavior
-                            if event_type == "rate_limited":
-                                hours = event.get("hours", "?")
-                                details = event.get("message", "Daily usage limit reached.")
-                                error_message = f"⏳ Rate Limited — {details} (retry in {hours}h)"
-                            else:
-                                error_message = "🚫 WAF/captcha block — no available accounts to switch to"
-                            stream_error = True
-                            yield sse(event)
-                        else:
+                        while _switch_attempt < _switch_max_retries and not _switch_success:
+                            _switch_attempt += 1
+                            yield sse({"type": "account_switch", "step": "searching", "current": _current_acc, "attempt": _switch_attempt})
+                            _next_acc = get_next_available_account(exclude=_tried_accounts)
+
+                            if not _next_acc:
+                                # No accounts left — fall back to original error behavior
+                                yield sse({"type": "account_switch", "step": "failed", "error": "no_accounts_available"})
+                                if event_type == "rate_limited":
+                                    hours = event.get("hours", "?")
+                                    details = event.get("message", "Daily usage limit reached.")
+                                    error_message = f"⏳ Rate Limited — {details} (retry in {hours}h)"
+                                else:
+                                    error_message = "🚫 WAF/captcha block — no available accounts to switch to"
+                                stream_error = True
+                                yield sse(event)
+                                break  # exit retry loop
+
                             # Perform account switch
-                            logger.info("[auto-switch] Switching from %s → %s", _current_acc, _next_acc)
+                            logger.info("[auto-switch] Attempt %d: Switching from %s → %s", _switch_attempt, _current_acc, _next_acc)
+                            yield sse({"type": "account_switch", "step": "switching", "from": _current_acc, "to": _next_acc, "attempt": _switch_attempt})
                             try:
                                 from pathlib import Path as _Path
                                 from engine.config import _SYSTEM as _SYS
@@ -1479,12 +1569,14 @@ async def chat(request: ChatRequest):
                                 logger.info("[auto-switch] Symlink updated to %s", _next_acc)
                             except Exception as _sw_exc:
                                 logger.error("[auto-switch] Symlink switch failed: %s", _sw_exc)
+                                yield sse({"type": "account_switch", "step": "failed", "error": str(_sw_exc)})
                                 error_message = f"Account switch failed: {_sw_exc}"
                                 stream_error = True
                                 yield sse(event)
                                 continue
 
                             # Sync system instructions to new account before first message
+                            yield sse({"type": "account_switch", "step": "syncing", "account": _next_acc})
                             try:
                                 await service.sync_context()
                                 logger.info("[auto-switch] sync_context completed for %s", _next_acc)
@@ -1492,6 +1584,7 @@ async def chat(request: ChatRequest):
                                 logger.warning("[auto-switch] sync_context failed for %s: %s", _next_acc, _sync_exc)
 
                             # Build context for new account (with summarization if >500k)
+                            yield sse({"type": "account_switch", "step": "summarizing", "account": _next_acc})
                             try:
                                 _switch_ctx = await _build_switch_context(active_chat_id, request.model)
                             except Exception as _ctx_exc:
@@ -1499,6 +1592,7 @@ async def chat(request: ChatRequest):
                                 _switch_ctx = current_message  # fallback to raw message
 
                             # Create new upstream session on switched account
+                            yield sse({"type": "account_switch", "step": "creating_session", "account": _next_acc})
                             try:
                                 _new_upstream = await retry_async(
                                     lambda: service.create_chat(model=request.model),
@@ -1513,18 +1607,20 @@ async def chat(request: ChatRequest):
                                     raise RuntimeError("create_chat returned None")
                             except Exception as _sess_exc:
                                 logger.error("[auto-switch] New session creation failed: %s", _sess_exc)
+                                yield sse({"type": "account_switch", "step": "failed", "error": f"session_creation_failed: {_sess_exc}"})
                                 error_message = f"Account switched to {_next_acc} but session creation failed: {_sess_exc}"
                                 stream_error = True
                                 yield sse(event)
                                 continue
 
                             # Warm up WAF tokens for new account (non-blocking best-effort)
+                            yield sse({"type": "account_switch", "step": "warming_up", "account": _next_acc})
                             try:
                                 await service.force_refresh_waf(account=_next_acc)
                             except Exception as _waf_exc:
                                 logger.warning("[auto-switch] WAF warmup failed for %s: %s", _next_acc, _waf_exc)
 
-                            yield sse({"type": "status", "message": "account_switched", "account": _next_acc})
+                            yield sse({"type": "account_switch", "step": "complete", "account": _next_acc, "reason": _switch_reason})
 
                             # Re-stream with context + new session
                             _switch_msg = _switch_ctx if _switch_ctx else current_message
@@ -1568,19 +1664,31 @@ async def chat(request: ChatRequest):
                                     error_message = str(_sw_event.get("message", "Unknown error after switch"))
                                     stream_error = True
                                 elif _sw_type in ("rate_limited", "waf_blocked"):
-                                    # New account also blocked — mark appropriately
+                                    # New account also blocked — mark and retry with next account
                                     _tried_accounts.add(_next_acc)
                                     if _sw_type == "waf_blocked":
                                         mark_account_captcha_blocked(_next_acc)
-                                    logger.warning("[auto-switch] New account %s also blocked (%s), marking", _next_acc, _sw_type)
+                                    logger.warning("[auto-switch] New account %s also blocked (%s), will retry", _next_acc, _sw_type)
                                     pending_thinking.clear()
                                     async for _sse_line in _drain_sync_gen(emit_flush()):
                                         yield _sse_line
-                                    error_message = f"Account {_next_acc} also exhausted. All tried accounts failed."
-                                    stream_error = True
+                                    yield sse({"type": "account_switch", "step": "retrying", "account": _next_acc, "reason": _sw_type, "attempt": _switch_attempt})
+                                    _current_acc = _next_acc
+                                    continue  # continue while loop to try next account
                                 yield sse(_sw_event)
-                            break  # Exit outer event loop after switch re-stream
-                    yield sse(event)
+                            # Re-stream completed without fatal error
+                            if not stream_error:
+                                _switch_success = True
+                            break  # Exit while loop (success or non-recoverable error)
+
+                        # All retries exhausted without success
+                        if not _switch_success and not stream_error:
+                            yield sse({"type": "account_switch", "step": "failed", "error": f"all_{_switch_attempt}_attempts_failed"})
+                            error_message = f"All {_switch_attempt} account switch attempts failed."
+                            stream_error = True
+                            yield sse(event)
+                    else:
+                        yield sse(event)
                 round_thinking_text = "".join(round_thinking_parts)
                 if round_thinking_text:
                     skill_events.append({"type": "round_thinking", "text": round_thinking_text})
@@ -1589,10 +1697,33 @@ async def chat(request: ChatRequest):
                     skill_events.append({"type": "round_text", "text": round_text})
                 if round_skill_events:
                     skill_events.extend(round_skill_events)
-                # --- MainChatGuard: track failures from this round ---
+                # --- Guardrails: track failures + no-progress + stubbing ---
+                _new_round_errors: dict[str, str] = {}
+                # Collect skill_output text per tool for record_result()
+                _tool_outputs: dict[str, list[str]] = {}  # tag_id → output chunks
                 for _sev in round_skill_events:
-                    if _sev.get("type") == "skill_end":
+                    _sev_type = _sev.get("type")
+                    if _sev_type == "skill_output":
+                        _tid = str(_sev.get("id", ""))
+                        _tool_outputs.setdefault(_tid, []).append(str(_sev.get("text", "")))
+                    elif _sev_type == "skill_end":
                         _guard.record_result(_sev.get("ok", False))
+                        _tname = _sev.get("name", "")
+                        if not _sev.get("ok", False):
+                            _err_msg = _sev.get("error", "unknown error")
+                            _new_round_errors[_tname] = str(_err_msg)
+                        # Feed result to LoopDetector for no-progress + stubbing
+                        _tid = str(_sev.get("id", ""))
+                        _output_text = "".join(_tool_outputs.get(_tid, []))
+                        if _output_text or _sev.get("ok") is not None:
+                            _stubbed = _loop_detector.record_result(
+                                _tname,
+                                _sev.get("attrs_content", ""),  # args preview
+                                _output_text,
+                            )
+                            # If stubbed, we could replace the output in feedback later
+                            # (feedback is built after this, so stubbing is advisory)
+                _round_tool_errors = _new_round_errors  # Carry errors to next round's check()
                 round_answer = "".join(answer_parts)
                 round_thinking = "".join(thinking_parts)
                 stored = round_answer or error_message or ""
@@ -1674,9 +1805,11 @@ async def chat(request: ChatRequest):
                     ev.get("type") == "permission_request"
                     for ev in round_skill_events
                 )
-                # --- MainChatGuard: inject warnings into feedback ---
+                # --- Guardrail warnings: LoopDetector (primary) + MainChatGuard (malformed only) ---
                 _guard_warnings: list[str] = []
                 _guard_warnings_injected = False
+                # LoopDetector already injected warnings inline during dispatch.
+                # MainChatGuard legacy loop/failure checks kept as secondary safety net.
                 _loop_warn = _guard.check_loop()
                 if _loop_warn:
                     _guard_warnings.append(_loop_warn)
@@ -1789,6 +1922,7 @@ async def chat(request: ChatRequest):
                     )
                     yield sse({"type": "status", "message": "high_skill_round_count", "round": round_index})
                 round_index += 1
+                _turn_caps.reset()  # Reset per-turn caps each round
                 if _guard_warnings and not _guard_warnings_injected:
                     # Only prepend warnings if they weren't already used as feedback
                     _warn_block = "\n\n".join(_guard_warnings)
@@ -1834,6 +1968,29 @@ async def chat(request: ChatRequest):
             try:
                 from engine.agents.auto_turn import auto_turn as _at_done
                 _at_done.mark_stream_done(active_chat_id)
+            except Exception:
+                pass
+            # Desktop notification: fire when 3+ tool calls were executed this turn
+            try:
+                from server.api.routes.settings import _read_system_settings as _rs
+                _dn_enabled = _rs().get("desktop_notifications", True)
+                if _dn_enabled:
+                    _tool_call_count = sum(
+                        1 for _ev in skill_events
+                        if _ev.get("type") == "skill_end"
+                        and _ev.get("name") not in ("chat_title", "_loop_warning", "action_parse")
+                    )
+                    if _tool_call_count >= 3:
+                        from engine.notifications.desktop import notify_desktop
+                        _ok_count = sum(
+                            1 for _ev in skill_events
+                            if _ev.get("type") == "skill_end" and _ev.get("ok")
+                            and _ev.get("name") not in ("chat_title", "_loop_warning", "action_parse")
+                        )
+                        asyncio.ensure_future(notify_desktop(
+                            "Sable · Turn Complete",
+                            f"{_tool_call_count} tools used ({_ok_count} succeeded)",
+                        ))
             except Exception:
                 pass
     return StreamingResponse(

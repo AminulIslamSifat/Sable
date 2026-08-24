@@ -420,32 +420,47 @@
           }
         },
       ],
-      layout: {
-        name: 'cose-bilkent',
-        quality: 'default',
-        animate: 'end',
-        animationDuration: 600,
-        fit: true,
-        padding: 50,
-        randomize: true,
-        // Obsidian-like: strong repulsion keeps small dots well separated
-        // node=8px, 5× radius = 20px minimum gap enforced by repulsion
-        nodeRepulsion: 15000,
-        idealEdgeLength: 120,
-        edgeElasticity: 0.45,
-        gravity: 0.15,
-        gravityRange: 3.8,
-        numIter: 3000,
-        tile: true,
-        tilingPaddingVertical: 10,
-        tilingPaddingHorizontal: 10,
-        nodeDimensionsIncludeLabels: false,
-      },
+      layout: { name: 'preset' },
       minZoom: 0.1,
       maxZoom: 8,
       wheelSensitivity: 0.5,
       boxSelectionEnabled: false,
     });
+
+    // ── CiSE circular layout with automatic Markov Clustering ──
+    const clusters = cy.elements().markovClustering({
+      attributes: [],       // topology-only clustering
+      inflation: 2.0,
+      expansion: 2,
+      maxIterations: 30,
+    });
+
+    // Build cluster arrays for CiSE (each array = node IDs in that cluster)
+    const clusterArrays = clusters.map(cluster => cluster.map(node => node.id()));
+
+    // Assign clusterID to each node for CiSE
+    clusters.forEach((cluster, i) => {
+      cluster.forEach(node => { node.data('clusterID', i); });
+    });
+
+    const ciseLayout = cy.layout({
+      name: 'cise',
+      clusters: clusterArrays,
+      animate: 'end',
+      animationDuration: 600,
+      fit: true,
+      padding: 80,
+      randomize: true,
+      nodeSeparation: 12.5,
+      idealInterClusterEdgeLengthCoefficient: 1.4,
+      allowNodesInsideCircle: false,
+      springCoeff: () => 0.45,
+      nodeRepulsion: () => 4500,
+      gravity: 0.25,
+      gravityRange: 3.8,
+    });
+
+    ciseLayout.run();
 
     // ── Interactions ──
     cy.on('tap', 'node', (evt) => {
@@ -478,32 +493,45 @@
       node.data('entry', filtered[i]);
     });
 
-    // ── Zoom-based label visibility & dot brightness ──
+    // ── Zoom-based label visibility, dot brightness & screen-space sizing ──
     const LABEL_ZOOM_THRESHOLD = 3.0;
+    const MIN_SCREEN_PX = 4;   // minimum node size in screen pixels (Obsidian-like)
+    const BASE_NODE_PX = 8;    // natural node size at zoom=1
     let _lastShowLabels = null;
+    let _lastZoomBucket = -1;
+
     function updateZoomEffects() {
       const z = cy.zoom();
       const showLabels = z >= LABEL_ZOOM_THRESHOLD;
-      if (showLabels === _lastShowLabels) return; // no change, skip
+      // Bucket zoom to avoid per-frame style updates
+      const zoomBucket = Math.round(z * 20);
+      if (showLabels === _lastShowLabels && zoomBucket === _lastZoomBucket) return;
       _lastShowLabels = showLabels;
+      _lastZoomBucket = zoomBucket;
+
+      // Screen-space compensation: keep nodes at least MIN_SCREEN_PX on screen
+      // At zoom z, a graph-space size of s renders as s*z screen pixels.
+      // We want max(BASE_NODE_PX, MIN_SCREEN_PX / z) so dots never vanish.
+      const compensatedSize = Math.max(BASE_NODE_PX, MIN_SCREEN_PX / z);
       const t = Math.min(Math.max((z - 0.1) / (LABEL_ZOOM_THRESHOLD - 0.1), 0), 1);
       const opacity = 1.0 - t * 0.15;
+
       cy.batch(() => {
         cy.nodes().forEach(n => {
           if (n.hasClass('hover') || n.selected()) return;
+          const base = { 'background-opacity': opacity, 'width': compensatedSize, 'height': compensatedSize };
           if (showLabels) {
-            n.style({
+            n.style(Object.assign(base, {
               'label': n.data('label'),
               'font-size': '4px',
               'color': '#ffffff',
               'text-opacity': 1,
               'text-outline-width': 1,
               'text-outline-color': '#0f0e17',
-              'background-opacity': opacity,
-            });
+            }));
           } else {
             n.removeStyle();
-            n.style({ 'label': '', 'background-opacity': opacity });
+            n.style(Object.assign(base, { 'label': '' }));
           }
         });
       });

@@ -16,7 +16,13 @@ from engine.agents.decomposer import needs_decomposition
 from engine.agents.notifications import notification_queue
 from engine.agents.protocol import AgentEvent, AgentResult, AgentStatus, TaskAssignment
 from engine.agents.registry import RoleConfig, get_role_config
-from engine.agents.resilience import CircuitBreaker, LoopDetector
+from engine.agents.resilience import (
+    CircuitBreaker,
+    GuardrailDecision,
+    LoopDetector,
+    TurnCapTracker,
+    build_recovery_prompt,
+)
 from engine.agents.runtime import AgentRuntime, get_runtime
 
 __all__ = [
@@ -28,6 +34,7 @@ __all__ = [
     "AgentStatus",
     "CircuitBreaker",
     "LoopDetector",
+    "TurnCapTracker",
     "RoleConfig",
     "TaskAssignment",
     "get_role_config",

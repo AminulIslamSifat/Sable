@@ -10,8 +10,8 @@
   <link rel="stylesheet" href="/static/css/base.css?v=5">
   <link rel="stylesheet" href="/static/css/layout.css?v=60">
   <link rel="stylesheet" href="/static/css/ide.css?v=5">
-  <link rel="stylesheet" href="/static/css/chat.css?v=34">
-  <link rel="stylesheet" href="/static/css/panels.css?v=54">
+  <link rel="stylesheet" href="/static/css/chat.css?v=35">
+  <link rel="stylesheet" href="/static/css/panels.css?v=55">
   <link rel="stylesheet" href="/static/css/components.css?v=20">
   <link rel="stylesheet" href="/static/css/responsive.css?v=6">
   <link rel="stylesheet" href="/static/css/agents.css?v=36">
@@ -163,6 +163,9 @@
       </button>
       <div class="rail-sep"></div>
       <!-- Planning -->
+      <button class="rail-btn" data-rail="notes" title="Notes">
+        <span class="icon-emoji">📝</span><i data-lucide="file-text" class="icon-lucide"></i>
+      </button>
       <button class="rail-btn" data-rail="todo" title="Todo">
         <span class="icon-emoji">✅</span><i data-lucide="check-square" class="icon-lucide"></i>
       </button>
@@ -651,6 +654,8 @@
   <script src="/static/vendor/layout-base.js"></script>
   <script src="/static/vendor/cose-base.js"></script>
   <script src="/static/vendor/cytoscape-cose-bilkent.js"></script>
+  <script src="/static/vendor/avsdf-base.js"></script>
+  <script src="/static/vendor/cytoscape-cise.js"></script>
   <script>
     /* Lazy-load Mermaid & MathJax — only fetched when first needed */
     window._lazyLoadMermaid = () => {
@@ -683,26 +688,49 @@
   </script>
 
   <!-- Todo panel (left-sidebar hostable) -->
+  <!-- Notes panel (left-sidebar hostable) -->
+  <div id="notesPanel" class="tracknote-standalone hidden" aria-label="Notes">
+    <div class="tracknote-standalone-header">
+      <span class="tracknote-standalone-title"><i data-lucide="file-text" class="icon-lucide"></i> Notes</span>
+      <button id="notesAddToggle" class="tn-add-toggle" title="Add new note"><i data-lucide="plus" class="icon-lucide"></i></button>
+    </div>
+    <div class="tracknote-body">
+      <div class="tn-card tn-add-form hidden" id="notesAddForm">
+        <div class="tn-card-header">
+          <span class="tn-card-icon"><i data-lucide="pen-line" class="icon-lucide"></i></span>
+          <span class="tn-card-title">New Note</span>
+        </div>
+        <input id="notesTitle" class="tn-card-input" type="text" placeholder="Title" />
+        <textarea id="notesContent" class="tn-card-input" placeholder="Write something..." rows="3" style="resize:vertical;min-height:60px;margin-top:6px;font-family:inherit;font-size:inherit;"></textarea>
+        <div class="tn-card-controls">
+          <button id="notesAddBtn" class="tn-card-btn" title="Add note">+ Note</button>
+        </div>
+      </div>
+      <div id="notesList" class="tn-list"></div>
+      <div id="notesEmpty" class="tracknote-empty">No notes yet</div>
+    </div>
+  </div>
+
+  <!-- Todo panel (left-sidebar hostable) -->
   <div id="todoPanel" class="tracknote-standalone hidden" aria-label="Todo">
     <div class="tracknote-standalone-header">
       <span class="tracknote-standalone-title"><i data-lucide="circle-check" class="icon-lucide"></i> Todo</span>
-      <button id="tnAddToggle" class="tn-add-toggle" title="Add new"><i data-lucide="plus" class="icon-lucide"></i></button>
+      <button id="tnAddToggle" class="tn-add-toggle" title="Add new todo"><i data-lucide="plus" class="icon-lucide"></i></button>
     </div>
     <div class="tracknote-body">
       <div class="tn-card tn-add-form hidden" id="tnAddForm">
         <div class="tn-card-header">
-          <span class="tn-card-icon"><i data-lucide="pen-line" class="icon-lucide"></i></span>
-          <span class="tn-card-title">New Note / Todo</span>
+          <span class="tn-card-icon"><i data-lucide="check-square" class="icon-lucide"></i></span>
+          <span class="tn-card-title">New Todo</span>
         </div>
         <input id="tnNoteTitle" class="tn-card-input" type="text" placeholder="Title" />
-        <textarea id="tnNoteContent" class="tn-card-input" placeholder="Write something..." rows="3" style="resize:vertical;min-height:60px;margin-top:6px;font-family:inherit;font-size:inherit;"></textarea>
+        <textarea id="tnNoteContent" class="tn-card-input" placeholder="First item..." rows="2" style="resize:vertical;min-height:40px;margin-top:6px;font-family:inherit;font-size:inherit;"></textarea>
         <div class="tn-card-controls">
-          <button id="tnNoteAdd" class="tn-card-btn tn-card-btn-secondary" title="Add note">+ Note</button>
-          <button id="tnTodoAdd" class="tn-card-btn" title="Add todo checklist">☑ Todo</button>
+          <button id="tnTodoAdd" class="tn-card-btn" title="Add todo checklist">☑ Add Todo</button>
         </div>
       </div>
-      <div id="tnNoteList" class="tn-list"></div>
-      <div id="tnNoteEmpty" class="tracknote-empty">No notes or todos yet</div>
+      <div id="tnTodoList" class="tn-list"></div>
+      <div id="tnTodoEmpty" class="tracknote-empty">No todos yet</div>
     </div>
   </div>
 
@@ -875,6 +903,11 @@
             <label for="maxToolOutputInput" style="font-size:13px;color:var(--text-dim);">Max Tool Output (chars)</label>
             <input id="maxToolOutputInput" type="number" min="1000" step="10000" value="100000"
               style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;width:110px;" />
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+            <label for="desktopNotifToggle" style="font-size:13px;color:var(--text-dim);">Desktop Notifications (3+ tools)</label>
+            <input id="desktopNotifToggle" type="checkbox" checked
+              style="width:18px;height:18px;cursor:pointer;accent-color:var(--accent);" />
           </div>
           <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
             <label style="font-size:13px;color:var(--text-dim);display:block;margin-bottom:8px;">Theme</label>
@@ -1995,29 +2028,29 @@
   </script>
   <!-- app.js split into domain modules (load order matters) -->
   <script src="/static/js/core.js?v=1"></script>
-  <script src="/static/js/tts.js?v=1"></script>
+  <script src="/static/js/tts.js?v=3"></script>
   <script src="/static/js/markdown.js?v=1"></script>
   <script src="/static/js/chat.js?v=2"></script>
   <script src="/static/js/sidebar-host.js?v=10"></script>
-  <script src="/static/js/tracknote.js?v=7"></script>
-  <script src="/static/js/sse.js?v=1"></script>
+  <script src="/static/js/tracknote.js?v=8"></script>
+  <script src="/static/js/sse.js?v=6"></script>
   <script src="/static/js/sidebar.js?v=1"></script>
   <script src="/static/js/statusbar.js?v=1"></script>
   <script src="/static/js/settings-projects.js?v=1"></script>
   <script src="/static/js/projects-panel.js?v=1"></script>
-  <script src="/static/js/settings-init.js?v=1"></script>
+  <script src="/static/js/settings-init.js?v=3"></script>
   <script src="/static/js/settings-ui.js?v=2"></script>
   <script src="/static/js/settings-bot.js?v=1"></script>
   <script src="/static/js/library.js?v=2"></script>
-  <script src="/static/js/telegram.js?v=3"></script>
+  <script src="/static/js/telegram.js?v=4"></script>
   <script src="/static/js/memory-panel.js?v=1"></script>
-  <script src="/static/js/skills-panel.js?v=11"></script>
+  <script src="/static/js/skills-panel.js?v=12"></script>
   <script src="/static/js/appearance.js?v=2"></script>
   <script src="/static/src/research.js?v=10"></script>
   <script src="/static/js/research-panel.js?v=3"></script>
   <script src="/static/js/image-panel.js?v=1"></script>
   <script src="/static/js/prompt-panel.js?v=1"></script>
-  <script src="/static/js/agents.js?v=30"></script>
+  <script src="/static/js/agents.js?v=32"></script>
   <script src="/static/js/filesystem.js?v=32"></script>
   <script src="/static/js/mode.js?v=20"></script>
   <script src="/static/js/resize-panels.js?v=3"></script>
