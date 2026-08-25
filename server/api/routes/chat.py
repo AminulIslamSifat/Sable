@@ -966,7 +966,7 @@ async def chat(request: ChatRequest):
         round_index = 0
         saved_message_id: int | None = None
         _pending_skill_images: list[str] = []  # image paths from get_file to inject next round
-        _guard = MainChatGuard()
+        _guard = MainChatGuard(provider=_backend)
         _loop_detector = LoopDetector()  # Error-aware loop detection + no-progress + stubbing
         _turn_caps = TurnCapTracker()  # Per-turn caps on web searches and subagent spawns
         _round_tool_errors: dict[str, str] = {}  # tool_name → error_msg from previous round
@@ -1556,17 +1556,10 @@ async def chat(request: ChatRequest):
                             logger.info("[auto-switch] Attempt %d: Switching from %s → %s", _switch_attempt, _current_acc, _next_acc)
                             yield sse({"type": "account_switch", "step": "switching", "from": _current_acc, "to": _next_acc, "attempt": _switch_attempt})
                             try:
-                                from pathlib import Path as _Path
-                                from engine.config import _SYSTEM as _SYS
-                                _link = _SYS / "browser-data"
-                                _target = _SYS / _next_acc
+                                from engine.config import set_active_account
                                 await service.close()
-                                if _link.is_symlink():
-                                    _link.unlink()
-                                elif _link.is_dir() and not _link.is_symlink():
-                                    pass  # legacy non-symlink, skip unlink
-                                _link.symlink_to(_target)
-                                logger.info("[auto-switch] Symlink updated to %s", _next_acc)
+                                set_active_account(_next_acc)
+                                logger.info("[auto-switch] Active account updated to %s", _next_acc)
                             except Exception as _sw_exc:
                                 logger.error("[auto-switch] Symlink switch failed: %s", _sw_exc)
                                 yield sse({"type": "account_switch", "step": "failed", "error": str(_sw_exc)})

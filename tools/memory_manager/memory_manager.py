@@ -146,7 +146,7 @@ def action_get(args) -> None:
         for c in CATEGORIES_ALL:
             entry, source = _find_entry(c, args.key)
             if entry is not None:
-                print(f"Found in: {source}/{c}")
+                print(f"Found in: {os.path.join(source, c)}")
                 print(json.dumps(entry, indent=2, ensure_ascii=False))
                 return
         print(f"Not found: key='{args.key}'")

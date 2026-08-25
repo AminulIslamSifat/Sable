@@ -64,7 +64,7 @@ _CHROME_BINARIES = [
 ]
 
 # Fallback: Playwright-bundled Chromium (check newest version first)
-_PLAYWRIGHT_CHROME_GLOB = os.path.expanduser("~/hdd/cache/ms-playwright/chromium-*/chrome-linux64/chrome")
+from engine.platform_paths import find_playwright_chrome as _find_pw_chrome
 
 _INPUT_SELECTORS = [
     PLATFORM["selectors"]["input"],
@@ -275,12 +275,33 @@ class GhostChat:
             except Exception:
                 pass
 
+        # ── WSL2: launch Windows-side Chrome instead of local headed browser ──
+        from engine.wsl_browser import is_wsl2, launch_windows_chrome, wsl_to_win_path
+        if is_wsl2():
+            console.print("[bold cyan]WSL2 detected — launching Windows Chrome via CDP...[/bold cyan] 🪟")
+            wsl_session = launch_windows_chrome(
+                self.user_data_dir, port=self.port, headless=not self.viewer,
+                extra_args=["--force-dark-mode", "--enable-features=WebUIDarkMode"],
+            )
+            if wsl_session is not None:
+                console.print(f"[bold green]✅ Windows Chrome ready at {wsl_session.cdp_url}[/bold green]")
+                self.chrome_process = wsl_session.process  # may be None if reused
+                await self._wait_for_cdp_ready()
+                return
+            console.print("[yellow]⚠️ Windows Chrome launch failed, falling back to local Chromium[/yellow]")
+
+        # ── Native Linux path (unchanged) ──
+        from engine.platform_paths import system_chrome_candidates, find_playwright_chrome
         chrome_path = next((shutil.which(b) for b in _CHROME_BINARIES if shutil.which(b)), None)
         if not chrome_path:
+            # Try platform-aware system Chrome candidates
+            for cand in system_chrome_candidates():
+                if os.path.isfile(cand):
+                    chrome_path = cand
+                    break
+        if not chrome_path:
             # Fallback to Playwright-bundled Chromium (newest version)
-            import glob as _glob
-            candidates = sorted(_glob.glob(_PLAYWRIGHT_CHROME_GLOB), reverse=True)
-            chrome_path = candidates[0] if candidates else None
+            chrome_path = find_playwright_chrome()
         if not chrome_path:
             console.print("[bold red]❌ No Thorium/Chrome/Playwright-Chromium found![/bold red]")
             sys.exit(1)
@@ -309,8 +330,9 @@ class GhostChat:
             f"browser_startup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log",
         )
         log_file = open(browser_log, "a", encoding="utf-8")
+        from engine.process_utils import popen_kwargs
         self.chrome_process = subprocess.Popen(
-            cmd, stdout=log_file, stderr=subprocess.STDOUT, preexec_fn=os.setsid
+            cmd, stdout=log_file, stderr=subprocess.STDOUT, **popen_kwargs()
         )
         self.chrome_log_file = browser_log
         await self._wait_for_cdp_ready()
@@ -2228,7 +2250,8 @@ class GhostChat:
                 
         if self.chrome_process:
             try:
-                os.killpg(os.getpgid(self.chrome_process.pid), signal.SIGTERM)
+                from engine.process_utils import kill_process_tree
+                kill_process_tree(self.chrome_process.pid, sig=signal.SIGTERM)
             except Exception:
                 pass
 

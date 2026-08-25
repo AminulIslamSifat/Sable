@@ -201,7 +201,7 @@ class DOCXSchemaValidator(BaseSchemaValidator):
                     zip_ref.extractall(temp_dir)
 
                 # Parse document.xml
-                doc_xml_path = temp_dir + "/word/document.xml"
+                doc_xml_path = os.path.join(temp_dir, "word", "document.xml")
                 root = lxml.etree.parse(doc_xml_path).getroot()
 
                 # Count all w:p elements
