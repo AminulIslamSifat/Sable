@@ -11,6 +11,8 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
+from engine.platform_paths import home_dir, tmp_path
+from engine.process_utils import popen_kwargs
 from engine.skills.handlers.common import (
     DEFAULT_TIMEOUT,
     MAX_TIMEOUT,
@@ -116,8 +118,8 @@ def handle_execute_command(
         stdin=subprocess.PIPE if use_sudo else subprocess.DEVNULL,
         text=True,
         errors="replace",
-        cwd=str(Path.home()),
-        start_new_session=True,
+        cwd=home_dir(),
+        **popen_kwargs(),
     )
 
     if use_sudo and proc.stdin:
@@ -170,7 +172,7 @@ def handle_execute_background_command(
         yield _end_event(tag_id, name, False, started, error="Empty command")
         return
 
-    log_path = Path("/tmp") / f"ghost_bg_{uuid.uuid4().hex}.log"
+    log_path = tmp_path(f"ghost_bg_{uuid.uuid4().hex}.log")
     log_file = log_path.open("w", encoding="utf-8")
     try:
         proc = subprocess.Popen(
@@ -179,8 +181,8 @@ def handle_execute_background_command(
             stdout=log_file,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
-            cwd=str(Path.home()),
-            start_new_session=True,
+            cwd=home_dir(),
+            **popen_kwargs(),
         )
     finally:
         log_file.close()

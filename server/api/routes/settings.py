@@ -1094,7 +1094,14 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
 
 @router.post("/api/settings/accounts/create")
 async def create_account() -> dict[str, Any]:
-    """Find next available acc integer and launch browser_opener headed."""
+    """Find next available acc integer, create profile dir, and open headed browser.
+
+    Uses in-process Playwright (same as /accounts/open) instead of spawning
+    a subprocess — errors are properly returned to the frontend.
+    """
+    import sys
+    _is_windows = sys.platform == "win32"
+
     def _next_acc() -> int:
         existing: set[int] = set()
         for d in _SYSTEM_DIR.iterdir():
@@ -1108,20 +1115,90 @@ async def create_account() -> dict[str, Any]:
 
     acc_num = await asyncio.to_thread(_next_acc)
     profile_name = f"browser-data-acc{acc_num}"
+    target_path = _SYSTEM_DIR / profile_name
+    target_path.mkdir(parents=True, exist_ok=True)
 
-    def _launch() -> None:
-        subprocess.Popen(
-            ["uv", "run", "python", "engine/account_login.py", profile_name],
-            cwd=str(BASE_DIR),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+    url = "https://chat.qwen.ai"
 
     try:
-        await asyncio.to_thread(_launch)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to launch browser_opener: {exc}")
-    return {"status": "ok", "profile": profile_name}
+        from playwright.async_api import async_playwright
+    except ImportError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Playwright import failed: {e}\n\n"
+                f"This is a known Windows issue — greenlet's DLL needs the Visual C++ runtime.\n\n"
+                f"Fix (pick one):\n"
+                f"  A) Install VC++ Redistributable: https://aka.ms/vs/17/release/vc_redist.x64.exe\n"
+                f"  B) Pin older greenlet: uv pip install \"greenlet==1.1.3\"\n\n"
+                f"Then restart Sable."
+            ),
+        )
+
+    # WSL2 → launch Windows-side Chrome via CDP
+    wsl_session = None
+    try:
+        from engine.wsl_browser import launch_windows_chrome
+        wsl_session = launch_windows_chrome(
+            str(target_path), port=9301, headless=False,
+            extra_args=[
+                "--disk-cache-size=2097152",
+                "--disable-gpu-shader-cache",
+                "--disable-component-update",
+            ],
+        )
+    except Exception:
+        pass
+
+    if wsl_session is not None:
+        logger.info("WSL2: connected to Windows Chrome at %s for new %s", wsl_session.cdp_url, profile_name)
+        try:
+            pw = await async_playwright().start()
+            browser = await pw.chromium.connect_over_cdp(wsl_session.cdp_url)
+            context = browser.contexts[0] if browser.contexts else await browser.new_context()
+            page = context.pages[0] if context.pages else await context.new_page()
+            await page.goto(url, timeout=30000)
+            _open_account_contexts[profile_name] = context
+            return {"status": "ok", "profile": profile_name}
+        except Exception as e:
+            logger.error("WSL2 browser create failed for %s: %s", profile_name, e)
+            raise HTTPException(status_code=500, detail=f"WSL2 browser launch failed: {e}")
+
+    # Native launch (Linux or Windows)
+    launch_args = [
+        "--disable-blink-features=AutomationControlled",
+        "--disk-cache-size=2097152",
+        "--disable-gpu-shader-cache",
+        "--disable-component-update",
+    ]
+    if not _is_windows:
+        launch_args.insert(0, "--no-sandbox")
+
+    try:
+        pw = await async_playwright().start()
+        context = await pw.chromium.launch_persistent_context(
+            user_data_dir=str(target_path),
+            headless=False,
+            timeout=30000,
+            args=launch_args,
+        )
+        page = context.pages[0] if context.pages else await context.new_page()
+        await page.goto(url, timeout=30000)
+        _open_account_contexts[profile_name] = context
+        logger.info("Created and opened new account %s", profile_name)
+        return {"status": "ok", "profile": profile_name}
+    except Exception as e:
+        logger.error("Browser create FAILED for %s: %s", profile_name, e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Failed to open browser for {profile_name}: {e}\n\n"
+                f"Troubleshooting:\n"
+                f"1. Run 'uv run playwright install chromium'\n"
+                f"2. On Windows, install VC++ Redistributable: winget install Microsoft.VCRedist.2015+.x64\n"
+                f"3. Check no other process locks: {target_path}"
+            ),
+        )
 
 
 @router.delete("/api/settings/accounts/delete")
