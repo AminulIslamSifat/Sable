@@ -116,18 +116,35 @@ loginctl enable-linger $USER
 | **[uv](https://docs.astral.sh/uv/)** | ✅ Yes | `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 \| iex"` |
 | **git** | ✅ Yes | [git-scm.com](https://git-scm.com/download/win) or `winget install Git.Git` |
 | **PowerShell 5.1+** | ✅ Yes | Pre-installed on Windows 10/11 |
+| **VC++ Redistributable** | ✅ Yes | `winget install Microsoft.VCRedist.2015+.x64` or [download](https://aka.ms/vs/17/release/vc_redist.x64.exe) |
 | **Go** | Optional | Only if rebuilding the DeepSeek PoW solver |
 
+> [!warning] VC++ Redistributable is required
+> Playwright depends on `greenlet`, a C extension that needs the Visual C++ runtime DLLs. Without it, you'll get `ImportError: DLL load failed while importing _greenlet`. This is a one-time install — run:
+> ```powershell
+> winget install Microsoft.VCRedist.2015+.x64
+> ```
+> Or download from https://aka.ms/vs/17/release/vc_redist.x64.exe
+
+> [!note] PowerShell execution policy
+> Fresh Windows installs block script execution by default. Before running `start.ps1`, enable it for your user:
+> ```powershell
+> Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+> ```
+> This only affects your user account and allows locally-created scripts to run. It does **not** require admin.
+
 > [!note] No admin required
-> Everything installs per-user. Task Scheduler task, BurntToast module, and all Python deps are user-scoped.
+> Everything installs per-user. Task Scheduler task, BurntToast module, and all Python deps are user-scoped. The VC++ Redistributable is the only system-wide install.
 
 #### Install & Run
 
 ```powershell
+# One-time setup (if not already done):
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+winget install Microsoft.VCRedist.2015+.x64
+
 git clone https://github.com/AminulIslamSifat/Sable.git
 cd Sable
-# If scripts are disabled (default on fresh Windows installs):
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 .\start.ps1
 ```
 
