@@ -57,6 +57,31 @@ async def browser_login() -> dict[str, Any]:
     async def _run_browser() -> None:
         from playwright.async_api import async_playwright
         try:
+            # WSL2 → launch Windows-side Chrome via CDP
+            from engine.wsl_browser import launch_windows_chrome
+            wsl_session = launch_windows_chrome(
+                str(profile_path), port=9301, headless=False,
+                extra_args=[
+                    "--disk-cache-size=2097152",
+                    "--disable-gpu-shader-cache",
+                    "--disable-component-update",
+                ],
+            )
+            if wsl_session is not None:
+                logger.info("WSL2: connected to Windows Chrome at %s", wsl_session.cdp_url)
+                async with async_playwright() as p:
+                    browser = await p.chromium.connect_over_cdp(wsl_session.cdp_url)
+                    context = browser.contexts[0] if browser.contexts else await browser.new_context()
+                    page = context.pages[0] if context.pages else await context.new_page()
+                    await page.goto("https://chat.qwen.ai")
+                    # Keep alive until user closes the window
+                    try:
+                        await page.wait_for_event("close", timeout=0)
+                    except Exception:
+                        pass
+                return
+
+            # Native Linux — original Playwright headed launch
             async with async_playwright() as p:
                 context = await p.chromium.launch_persistent_context(
                     user_data_dir=str(profile_path),

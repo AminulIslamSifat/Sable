@@ -275,6 +275,22 @@ class GhostChat:
             except Exception:
                 pass
 
+        # ── WSL2: launch Windows-side Chrome instead of local headed browser ──
+        from engine.wsl_browser import is_wsl2, launch_windows_chrome, wsl_to_win_path
+        if is_wsl2():
+            console.print("[bold cyan]WSL2 detected — launching Windows Chrome via CDP...[/bold cyan] 🪟")
+            wsl_session = launch_windows_chrome(
+                self.user_data_dir, port=self.port, headless=not self.viewer,
+                extra_args=["--force-dark-mode", "--enable-features=WebUIDarkMode"],
+            )
+            if wsl_session is not None:
+                console.print(f"[bold green]✅ Windows Chrome ready at {wsl_session.cdp_url}[/bold green]")
+                self.chrome_process = wsl_session.process  # may be None if reused
+                await self._wait_for_cdp_ready()
+                return
+            console.print("[yellow]⚠️ Windows Chrome launch failed, falling back to local Chromium[/yellow]")
+
+        # ── Native Linux path (unchanged) ──
         chrome_path = next((shutil.which(b) for b in _CHROME_BINARIES if shutil.which(b)), None)
         if not chrome_path:
             # Fallback to Playwright-bundled Chromium (newest version)

@@ -34,6 +34,27 @@ def main() -> None:
     profile_dir = resolve_profile(sys.argv[1])
     profile_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── WSL2: launch Windows-side Chrome via CDP ──
+    from engine.wsl_browser import is_wsl2, launch_windows_chrome
+    if is_wsl2():
+        print("WSL2 detected — launching Windows Chrome...")
+        wsl_session = launch_windows_chrome(str(profile_dir), port=9301, headless=False)
+        if wsl_session is not None:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as p:
+                browser = p.chromium.connect_over_cdp(wsl_session.cdp_url)
+                context = browser.contexts[0] if browser.contexts else browser.new_context()
+                page = context.pages[0] if context.pages else context.new_page()
+                page.goto("https://chat.qwen.ai")
+                try:
+                    page.wait_for_event("close", timeout=0)
+                except Exception:
+                    pass
+            print(f"Session saved to {profile_dir}")
+            return
+        print("⚠️ Windows Chrome launch failed, falling back to local Chromium")
+
+    # ── Native Linux path (unchanged) ──
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
