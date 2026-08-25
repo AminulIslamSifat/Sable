@@ -443,14 +443,14 @@ def filesystem_pick_folder() -> dict[str, Any]:
 @router.get("/api/filesystem/roots")
 def filesystem_roots() -> list[dict[str, Any]]:
     """Return quick-access browse roots."""
-    _h = str(_Path.home())
+    _h = _Path.home()
     quick_paths = [
-        f"{_h}/Projects/Sable",
-        f"{_h}/hdd/projects/Sable",
-        f"{_h}/hdd",
-        f"{_h}/Projects",
-        _h,
-        "/tmp",
+        str(_h / "Projects" / "Sable"),
+        str(_h / "hdd" / "projects" / "Sable"),
+        str(_h / "hdd"),
+        str(_h / "Projects"),
+        str(_h),
+        _tempfile.gettempdir(),
     ]
     roots = []
     for r in quick_paths:

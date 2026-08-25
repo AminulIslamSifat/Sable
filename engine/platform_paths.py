@@ -11,6 +11,17 @@ from pathlib import Path
 
 IS_WINDOWS = sys.platform == "win32"
 
+# ─── Home directory ──────────────────────────────────────────────────────────
+def home_dir() -> str:
+    """Return the user's home directory with OS-native path separators.
+
+    Path.home() can return forward slashes on Windows when the HOME env var
+    is set by Git Bash / MSYS2 / Cygwin.  os.path.normpath() guarantees
+    native separators (backslash on Windows, forward slash on POSIX).
+    """
+    return os.path.normpath(str(Path.home()))
+
+
 # ─── Temp directory ──────────────────────────────────────────────────────────
 # On POSIX: /tmp  |  On Windows: %TEMP% (usually C:\Users\<user>\AppData\Local\Temp)
 TMP_DIR = Path(tempfile.gettempdir())

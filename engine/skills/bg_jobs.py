@@ -40,7 +40,8 @@ class BackgroundJobManager:
             yield end_event(tag_id, name, False, started, error="Empty command")
             return
 
-        from engine.platform_paths import tmp_path
+        from engine.platform_paths import home_dir, tmp_path
+        from engine.process_utils import popen_kwargs
         log_path = tmp_path(f"ghost_bg_{uuid.uuid4().hex}.log")
         log_file = log_path.open("w", encoding="utf-8")
         try:
@@ -50,8 +51,8 @@ class BackgroundJobManager:
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
-                cwd=str(Path.home()),
-                start_new_session=True,
+                cwd=home_dir(),
+                **popen_kwargs(),
             )
         finally:
             log_file.close()
