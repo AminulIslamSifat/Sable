@@ -68,7 +68,20 @@ async def browser_login() -> dict[str, Any]:
     profile_path = _SYSTEM_DIR / "browser-data-acc1"
     profile_path.mkdir(parents=True, exist_ok=True)
 
-    from playwright.async_api import async_playwright
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Playwright import failed: {e}\n\n"
+                f"This usually means a dependency DLL is missing or broken.\n"
+                f"Fix: run these commands in your terminal:\n"
+                f"  uv pip install --force-reinstall greenlet\n"
+                f"  uv run playwright install chromium\n"
+                f"Then restart Sable."
+            ),
+        )
 
     # WSL2 → launch Windows-side Chrome via CDP
     try:
