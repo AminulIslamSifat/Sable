@@ -1177,10 +1177,10 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
             status_code=500,
             detail=(
                 f"Playwright import failed: {e}\n\n"
-                f"This usually means a dependency DLL is missing or broken.\n"
-                f"Fix: run these commands in your terminal:\n"
-                f"  uv pip install --force-reinstall greenlet\n"
-                f"  uv run playwright install chromium\n"
+                f"This is a known Windows issue — greenlet's DLL needs the Visual C++ runtime.\n\n"
+                f"Fix (pick one):\n"
+                f"  A) Install VC++ Redistributable: https://aka.ms/vs/17/release/vc_redist.x64.exe\n"
+                f"  B) Pin older greenlet: uv pip install \"greenlet==1.1.3\"\n\n"
                 f"Then restart Sable."
             ),
         )
