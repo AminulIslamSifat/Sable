@@ -83,12 +83,13 @@ class BrowserDaemon:
         self._capturing_console = False
 
     # Stealth init script — patches automation fingerprints
-    _STEALTH_JS = """
-    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-    Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-    window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}};
-    Object.defineProperty(navigator, 'platform', {get: () => 'Linux x86_64'});
+    _STEALTH_PLATFORM = "Win32" if IS_WINDOWS else "Linux x86_64"
+    _STEALTH_JS = f"""
+    Object.defineProperty(navigator, 'webdriver', {{get: () => undefined}});
+    Object.defineProperty(navigator, 'plugins', {{get: () => [1, 2, 3, 4, 5]}});
+    Object.defineProperty(navigator, 'languages', {{get: () => ['en-US', 'en']}});
+    window.chrome = {{runtime: {{}}, loadTimes: function(){{}}, csi: function(){{}}}};
+    Object.defineProperty(navigator, 'platform', {{get: () => '{_STEALTH_PLATFORM}'}});
     """
 
     async def start_browser(self):
@@ -112,13 +113,16 @@ class BrowserDaemon:
         if self.executable_path:
             launch_opts["executable_path"] = self.executable_path
 
+        # Sandbox causes silent launch failures on Windows — disable there
+        use_sandbox = not IS_WINDOWS
+
         # Select browser engine
         if self.browser_type == "firefox":
             self.browser = await self.pw.firefox.launch(**launch_opts)
         elif self.browser_type == "webkit":
             self.browser = await self.pw.webkit.launch(**launch_opts)
         else:
-            self.browser = await self.pw.chromium.launch(chromium_sandbox=True, **launch_opts)
+            self.browser = await self.pw.chromium.launch(chromium_sandbox=use_sandbox, **launch_opts)
 
         # Persistent context if user_data_dir specified, else fresh context
         if self.user_data_dir:
@@ -127,15 +131,18 @@ class BrowserDaemon:
                 headless=self.headless,
                 args=launch_args,
                 executable_path=self.executable_path,
-                chromium_sandbox=True,
+                chromium_sandbox=use_sandbox,
             )
             self.browser = None  # persistent context owns the browser
             pages = self.context.pages
             self.page = pages[0] if pages else await self.context.new_page()
         else:
-            self.context = await self.browser.new_context(
-                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+            _ua = (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+                if IS_WINDOWS else
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
             )
+            self.context = await self.browser.new_context(user_agent=_ua)
             self.page = await self.context.new_page()
 
         self._attach_listeners(self.page)
