@@ -96,7 +96,11 @@ class BrowserDaemon:
         """Launch Playwright's bundled browser directly (no subprocess, no CDP)."""
         from playwright.async_api import async_playwright
 
-        self.pw = await async_playwright().start()
+        print("[browser] Starting Playwright...", flush=True)
+        try:
+            self.pw = await async_playwright().start()
+        except Exception as e:
+            raise RuntimeError(f"Failed to start Playwright: {e}") from e
 
         # Use Playwright's native browser launch — clean, fast, no sandbox hammering
         launch_args = [
@@ -117,22 +121,39 @@ class BrowserDaemon:
         use_sandbox = not IS_WINDOWS
 
         # Select browser engine
-        if self.browser_type == "firefox":
-            self.browser = await self.pw.firefox.launch(**launch_opts)
-        elif self.browser_type == "webkit":
-            self.browser = await self.pw.webkit.launch(**launch_opts)
-        else:
-            self.browser = await self.pw.chromium.launch(chromium_sandbox=use_sandbox, **launch_opts)
+        print(f"[browser] Launching {self.browser_type} (headless={self.headless}, sandbox={use_sandbox})...", flush=True)
+        try:
+            if self.browser_type == "firefox":
+                self.browser = await self.pw.firefox.launch(**launch_opts)
+            elif self.browser_type == "webkit":
+                self.browser = await self.pw.webkit.launch(**launch_opts)
+            else:
+                self.browser = await self.pw.chromium.launch(chromium_sandbox=use_sandbox, **launch_opts)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to launch {self.browser_type}: {e}\n"
+                f"  executable_path={self.executable_path}\n"
+                f"  headless={self.headless}, sandbox={use_sandbox}\n"
+                f"  args={launch_args}\n"
+                f"Hint: run 'uv run playwright install chromium' to ensure browsers are installed."
+            ) from e
 
         # Persistent context if user_data_dir specified, else fresh context
         if self.user_data_dir:
-            self.context = await self.pw.chromium.launch_persistent_context(
-                self.user_data_dir,
-                headless=self.headless,
-                args=launch_args,
-                executable_path=self.executable_path,
-                chromium_sandbox=use_sandbox,
-            )
+            print(f"[browser] Opening persistent context: {self.user_data_dir}", flush=True)
+            try:
+                self.context = await self.pw.chromium.launch_persistent_context(
+                    self.user_data_dir,
+                    headless=self.headless,
+                    args=launch_args,
+                    executable_path=self.executable_path,
+                    chromium_sandbox=use_sandbox,
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to open persistent context at '{self.user_data_dir}': {e}\n"
+                    f"Hint: the profile directory may be locked by another process."
+                ) from e
             self.browser = None  # persistent context owns the browser
             pages = self.context.pages
             self.page = pages[0] if pages else await self.context.new_page()
@@ -850,37 +871,54 @@ def main():
             cmd.append(f"--executable={executable_path}")
         if user_data_dir:
             cmd.append(f"--user-data-dir={user_data_dir}")
-        with open(log_path, "a") as log_f:
+        # Clear stale error file from previous runs
+        err_file = str(_tmp("browser_daemon_error.log"))
+        if os.path.exists(err_file):
+            os.unlink(err_file)
+
+        with open(log_path, "w") as log_f:
             proc = _sp.Popen(cmd, stdout=log_f, stderr=log_f,
                              start_new_session=True)
         Path(PID_FILE).write_text(str(proc.pid))
-        print(f"Browser daemon started (pid={proc.pid}, headless={headless})")
+        print(f"Browser daemon starting (pid={proc.pid}, headless={headless})...")
+
+        # Wait for daemon to actually come up (max 15s)
+        ipc_file = PORT_FILE if IS_WINDOWS else SOCKET_PATH
+        for i in range(30):  # 30 × 0.5s = 15s
+            time.sleep(0.5)
+            # Check if daemon crashed early
+            if os.path.exists(err_file):
+                err = Path(err_file).read_text()
+                print(f"\n❌ Browser daemon FAILED TO START:\n{err}", file=sys.stderr)
+                print(f"Full log: {log_path}")
+                sys.exit(1)
+            # Check if IPC endpoint appeared (= daemon is ready)
+            if os.path.exists(ipc_file):
+                break
+            # Check if process died
+            if proc.poll() is not None:
+                # Process exited — read whatever we can
+                tail = ""
+                try:
+                    tail = Path(log_path).read_text()[-2000:]
+                except Exception:
+                    pass
+                print(f"\n❌ Browser daemon process exited (code={proc.returncode}).")
+                if tail:
+                    print(f"Last output:\n{tail}")
+                print(f"Full log: {log_path}")
+                sys.exit(1)
+        else:
+            print(f"\n❌ Browser daemon did not start within 15s.")
+            print(f"Check log: {log_path}")
+            if os.path.exists(err_file):
+                print(f"Error: {Path(err_file).read_text()}")
+            sys.exit(1)
+
+        print(f"✅ Browser daemon ready (pid={proc.pid}, headless={headless})")
         ipc_label = PORT_FILE if IS_WINDOWS else SOCKET_PATH
         print(f"IPC: {ipc_label}")
         return
-
-        # Grandchild: redirect stdio and run daemon
-        sys.stdin = open(os.devnull, "r")
-        log_path = str(_tmp("browser_daemon.log"))
-        log_fd = open(log_path, "a")
-        sys.stdout = log_fd
-        sys.stderr = log_fd
-
-        Path(PID_FILE).write_text(str(os.getpid()))
-
-        daemon = BrowserDaemon(headless=headless, browser_type=browser_type,
-                               executable_path=executable_path,
-                               user_data_dir=user_data_dir)
-        try:
-            asyncio.run(daemon.run())
-        except Exception as e:
-            print(f"Daemon crashed: {e}", file=log_fd)
-        finally:
-            ipc_file = PORT_FILE if IS_WINDOWS else SOCKET_PATH
-            for f in [ipc_file, PID_FILE]:
-                if os.path.exists(f):
-                    os.unlink(f)
-        os._exit(0)
 
     if action == "stop":
         if not daemon_alive():
@@ -936,7 +974,13 @@ def main():
         try:
             asyncio.run(daemon.run())
         except Exception as e:
-            print(f"Daemon crashed: {e}")
+            import traceback
+            err_msg = f"Daemon crashed: {e}\n{traceback.format_exc()}"
+            print(err_msg, flush=True)
+            print(err_msg, file=sys.stderr, flush=True)
+            # Write error marker so 'start' can detect and report it
+            err_file = str(_tmp("browser_daemon_error.log"))
+            Path(err_file).write_text(err_msg)
         finally:
             ipc_file = PORT_FILE if IS_WINDOWS else SOCKET_PATH
             for f in [ipc_file, PID_FILE]:
