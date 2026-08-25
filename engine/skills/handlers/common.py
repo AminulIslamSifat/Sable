@@ -78,13 +78,8 @@ def strip_html(text: str) -> str:
 
 def kill_process_group(proc: subprocess.Popen[str]) -> None:
     """Kill a process and its entire process group."""
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except Exception:
-        try:
-            proc.kill()
-        except Exception:
-            pass
+    from engine.process_utils import kill_process_tree
+    kill_process_tree(proc.pid, sig=signal.SIGKILL)
 
 
 def make_backup(path: str) -> str | None:

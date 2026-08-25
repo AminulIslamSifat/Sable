@@ -41,7 +41,14 @@ dependencies = [
     "rank-bm25>=0.2.2",
     "python-telegram-bot>=22.8",
     "aiohttp>=3.14.3",
+    # Windows ConPTY backend for the in-browser terminal (no-op on Linux/macOS)
+    "pywinpty>=2.0; sys_platform == 'win32'",
 ]
+
+[project.optional-dependencies]
+# Kept for backward compatibility — pywinpty is now auto-installed on Windows
+# via the platform marker above. `uv sync --extra windows` still works.
+windows = ["pywinpty>=2.0"]
 
 [tool.uv]
 package = false

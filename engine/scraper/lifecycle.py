@@ -346,15 +346,15 @@ class ScraperLifecycle:
             chrome_proc = getattr(engine, "chrome_process", None)
             if chrome_proc is not None:
                 try:
+                    from engine.process_utils import kill_process_tree
                     pid = chrome_proc.pid
-                    pgid = os.getpgid(pid)
-                    os.kill(pid, 0)
-                    os.killpg(pgid, signal.SIGTERM)
+                    os.kill(pid, 0)  # check alive
+                    kill_process_tree(pid, sig=signal.SIGTERM)
                     killed_pid = pid
                     await asyncio.sleep(3.0)
                     try:
                         os.kill(pid, 0)
-                        os.killpg(pgid, signal.SIGKILL)
+                        kill_process_tree(pid, sig=signal.SIGKILL)
                     except (ProcessLookupError, OSError):
                         pass
                 except (ProcessLookupError, PermissionError, OSError):

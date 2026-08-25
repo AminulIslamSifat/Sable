@@ -63,13 +63,9 @@ _LEGACY_MIGRATED = False  # guard so migration only runs once
 # --------------------------------------------------------------------------
 
 def _resolve_active_account() -> str:
-    """Get the active account name from the browser-data symlink target."""
-    symlink = _SYSTEM_DIR / "browser-data"
-    try:
-        target = symlink.resolve()
-        return target.name  # e.g. "browser-data-acc15"
-    except OSError:
-        return "browser-data"
+    """Get the active account name. Delegates to engine.config.get_active_account()."""
+    from engine.config import get_active_account
+    return get_active_account()
 
 
 def _load_token_store() -> dict[str, list[str]]:
@@ -253,7 +249,7 @@ def _load_instructions(project_id: str | None = None) -> str:
     if _instruction_cache is not None:
         return _instruction_cache
     from connectors.common.instruction_builder import build_instructions
-    _instruction_cache = build_instructions(project_id=project_id)
+    _instruction_cache = build_instructions(project_id=project_id, provider="deepseek")
     return _instruction_cache
 
 
@@ -685,9 +681,27 @@ class DeepSeekClient:
             self._sessions[chat_id] = history
         return history
 
-    @staticmethod
-    def _serialize_history(history: list[dict[str, Any]], current_message: str) -> str:
-        """Serialize client-side history + current message into a single prompt string."""
+    # Warning injected before the final user message to prevent DeepSeek from
+    # emitting legacy XML tool-call tags (<invoke>, <parameter>) instead of
+    # the expected format.  Keep this as a class-level constant so it's easy
+    # to tweak or disable.
+    _DEEPSEEK_TAG_WARNING = (
+        "[SYSTEM WARNING: Do NOT use <invoke>, <parameter>, <tool_calls>, "
+        "or ANY XML/custom tags for tool calls. Output tool calls as a "
+        "plain JSON array at the end of your message. Example: "
+        '[{"name": "grep", "arguments": {"pattern": "foo"}}] — '
+        "no tags, no wrappers, just clean JSON. "
+        "Any response containing XML tags will be rejected.]"
+    )
+
+    @classmethod
+    def _serialize_history(cls, history: list[dict[str, Any]], current_message: str) -> str:
+        """Serialize client-side history + current message into a single prompt string.
+
+        A tag-format warning is prepended to the *last* user message so that
+        DeepSeek sees it immediately before generating its response, reducing
+        the chance of it falling back to legacy <invoke>/<parameter> XML.
+        """
         parts: list[str] = []
         for msg in history:
             role = msg.get("role", "user")
@@ -698,7 +712,9 @@ class DeepSeekClient:
                 parts.append(f"User: {content}")
             elif role == "assistant":
                 parts.append(f"Assistant: {content}")
-        parts.append(f"User: {current_message}")
+        # Prepend warning to the current (last) user message
+        warned_message = f"{cls._DEEPSEEK_TAG_WARNING}\n\n{current_message}"
+        parts.append(f"User: {warned_message}")
         return "\n\n".join(parts)
 
     # ------------------------------------------------------------------

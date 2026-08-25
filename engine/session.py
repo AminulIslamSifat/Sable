@@ -60,8 +60,8 @@ class BrowserManager:
 
     def __init__(self, user_data_dir: str | None = None, headless: bool = True):
         if user_data_dir is None:
-            from engine.config import BROWSER_DATA_DIR
-            user_data_dir = str(BROWSER_DATA_DIR)
+            from engine.config import get_browser_data_dir
+            user_data_dir = str(get_browser_data_dir())
         self.user_data_dir = user_data_dir
         self.headless = headless
         self.playwright = None
@@ -98,16 +98,29 @@ class BrowserManager:
             print(f"[DEBUG] Launching persistent browser context #{launch_num} (headless={self.headless})...")
             from playwright.async_api import async_playwright
             self.playwright = await async_playwright().start()
-            self.context = await self.playwright.chromium.launch_persistent_context(
-                user_data_dir=self.user_data_dir,
-                headless=self.headless,
-                args=[
-                    "--no-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-infobars",
-                    "--disable-gpu",
-                ],
+
+            # WSL2 → connect to Windows Chrome via CDP instead of local headed launch
+            from engine.wsl_browser import launch_windows_chrome
+            wsl_session = launch_windows_chrome(
+                self.user_data_dir, port=9302, headless=self.headless,
+                extra_args=["--disable-infobars", "--disable-gpu"],
             )
+            if wsl_session is not None:
+                print(f"[DEBUG] WSL2: connected to Windows Chrome at {wsl_session.cdp_url}")
+                self.browser = await self.playwright.chromium.connect_over_cdp(wsl_session.cdp_url)
+                self.context = self.browser.contexts[0] if self.browser.contexts else await self.browser.new_context()
+            else:
+                # Native Linux — original persistent context launch
+                self.context = await self.playwright.chromium.launch_persistent_context(
+                    user_data_dir=self.user_data_dir,
+                    headless=self.headless,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-infobars",
+                        "--disable-gpu",
+                    ],
+                )
             self.page = await self.context.new_page()
             await self.page.goto("https://chat.qwen.ai", wait_until="domcontentloaded", timeout=15000)
 

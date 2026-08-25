@@ -104,34 +104,51 @@ def get_all_tool_schemas(disabled: list[str] | None = None, allowed: list[str] |
     return schemas
 
 
-def get_tools_prompt_section(disabled: list[str] | None = None) -> str:
-    """Generate tools reference in Hermes format.
+def get_tools_prompt_section(
+    disabled: list[str] | None = None,
+    provider: str | None = None,
+) -> str:
+    """Generate tools reference section.
 
     Tools are declared inside <tools></tools> XML tags with one JSON object
-    per line. Models trained on this format (Qwen3, etc.) recognize it natively.
+    per line. The tool call format instructions vary by provider:
+    - "deepseek": Pure JSON array, no tags.
+    - "native"/None: Tag-wrapped Hermes format.
+    - "none": Schemas only, no format instructions (native API function calling).
     """
     disabled = disabled or []
     schemas = get_all_tool_schemas(disabled)
     if not schemas:
         return ""
 
-    TC_OPEN = "<" + "tool_call" + ">"
-    TC_CLOSE = "</" + "tool_call" + ">"
-
     lines = ["<tools>"]
     for s in schemas:
         lines.append(json.dumps(s, ensure_ascii=False))
     lines.append("</tools>")
     lines.append("")
-    lines.append("CRITICAL: You MUST use exactly ONE opening tag and ONE closing tag per response.")
-    lines.append("Single or multiple calls — always a JSON array inside one wrapper:")
-    lines.append(TC_OPEN)
-    lines.append('[{"name": "<function-name>", "arguments": <args-json-object>}]')
-    lines.append(TC_CLOSE)
-    lines.append("")
-    lines.append(TC_OPEN)
-    lines.append('[{"name": "tool_a", "arguments": {...}}, {"name": "tool_b", "arguments": {...}}]')
-    lines.append(TC_CLOSE)
-    lines.append("NEVER output multiple separate blocks. One wrapper only. Always.")
+
+    if provider == "deepseek":
+        # DeepSeek: pure JSON array, absolutely no tag references
+        lines.append("CRITICAL: Output tool calls as a plain JSON array at the END of your response.")
+        lines.append('Single: [{"name": "<function-name>", "arguments": <args-json-object>}]')
+        lines.append('Multiple: [{"name": "tool_a", "arguments": {...}}, {"name": "tool_b", "arguments": {...}}]')
+        lines.append("ONE array per response. No XML tags, no wrappers, no custom markup. Just clean JSON.")
+    elif provider == "none":
+        # Native API function calling — schemas are sufficient
+        lines.append("Use the function schemas above via native API function calling.")
+    else:
+        # Default: Hermes tag format
+        TC_OPEN = "<" + "tool_call" + ">"
+        TC_CLOSE = "</" + "tool_call" + ">"
+        lines.append("CRITICAL: You MUST use exactly ONE opening tag and ONE closing tag per response.")
+        lines.append("Single or multiple calls — always a JSON array inside one wrapper:")
+        lines.append(TC_OPEN)
+        lines.append('[{"name": "<function-name>", "arguments": <args-json-object>}]')
+        lines.append(TC_CLOSE)
+        lines.append("")
+        lines.append(TC_OPEN)
+        lines.append('[{"name": "tool_a", "arguments": {...}}, {"name": "tool_b", "arguments": {...}}]')
+        lines.append(TC_CLOSE)
+        lines.append("NEVER output multiple separate blocks. One wrapper only. Always.")
 
     return "\n".join(lines)
