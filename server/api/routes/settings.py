@@ -56,7 +56,9 @@ def _strip_one_profile(profile: Path) -> tuple[str, float, float]:
     # Safety: never strip the currently-active profile. Matters when invoked as
     # a background task after a switch — the user may have switched back since.
     try:
-        if _ACTIVE_PROFILE_LINK.exists() and Path(profile).resolve() == _ACTIVE_PROFILE_LINK.resolve():
+        from engine.config import get_active_account, _SYSTEM as _SYS
+        active_dir = _SYS / get_active_account()
+        if active_dir.exists() and Path(profile).resolve() == active_dir.resolve():
             raise RuntimeError(f"refusing to strip active profile {profile.name}")
     except OSError:
         pass
@@ -1022,12 +1024,8 @@ async def list_accounts() -> dict[str, Any]:
         accounts.sort(key=lambda a: a["num"])
         return accounts
     accounts = await asyncio.to_thread(_scan)
-    active: str | None = None
-    if _ACTIVE_PROFILE_LINK.is_symlink():
-        target = _ACTIVE_PROFILE_LINK.resolve().name
-        active = target
-    elif _ACTIVE_PROFILE_LINK.is_dir():
-        active = "browser-data (not yet migrated)"
+    from engine.config import get_active_account as _get_active
+    active = _get_active()
     return {"accounts": accounts, "active": active}
 
 @router.post("/api/settings/accounts/switch")
@@ -1039,25 +1037,16 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
     if not target_path.is_dir():
         raise HTTPException(status_code=404, detail=f"Profile directory '{target_name}' not found")
     # Resolve old profile before switching (for post-switch strip)
+    from engine.config import get_active_account as _get_act, set_active_account as _set_act, _SYSTEM as _SYS
     old_profile: Path | None = None
-    if _ACTIVE_PROFILE_LINK.is_symlink():
-        resolved = _ACTIVE_PROFILE_LINK.resolve()
-        if resolved != target_path and resolved.is_dir():
-            old_profile = resolved
-    def _do_switch() -> None:
-        if _ACTIVE_PROFILE_LINK.is_dir() and not _ACTIVE_PROFILE_LINK.is_symlink():
-            migration_name = "browser-data-acc1"
-            migration_path = _SYSTEM_DIR / migration_name
-            if migration_path.exists():
-                shutil.rmtree(_ACTIVE_PROFILE_LINK)
-            else:
-                _ACTIVE_PROFILE_LINK.rename(migration_path)
-        elif _ACTIVE_PROFILE_LINK.is_symlink():
-            _ACTIVE_PROFILE_LINK.unlink()
-        _ACTIVE_PROFILE_LINK.symlink_to(target_path)
+    current_active = _get_act()
+    current_path = _SYS / current_active
+    if current_path != target_path and current_path.is_dir():
+        old_profile = current_path
+
     await service.close()
     try:
-        await asyncio.to_thread(_do_switch)
+        _set_act(target_name)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Switch failed: {exc}")
 
@@ -1113,7 +1102,14 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
 
 @router.post("/api/settings/accounts/create")
 async def create_account() -> dict[str, Any]:
-    """Find next available acc integer and launch browser_opener headed."""
+    """Find next available acc integer, create profile dir, and open headed browser.
+
+    Uses in-process Playwright (same as /accounts/open) instead of spawning
+    a subprocess — errors are properly returned to the frontend.
+    """
+    import sys
+    _is_windows = sys.platform == "win32"
+
     def _next_acc() -> int:
         existing: set[int] = set()
         for d in _SYSTEM_DIR.iterdir():
@@ -1127,20 +1123,90 @@ async def create_account() -> dict[str, Any]:
 
     acc_num = await asyncio.to_thread(_next_acc)
     profile_name = f"browser-data-acc{acc_num}"
+    target_path = _SYSTEM_DIR / profile_name
+    target_path.mkdir(parents=True, exist_ok=True)
 
-    def _launch() -> None:
-        subprocess.Popen(
-            ["uv", "run", "python", "engine/account_login.py", profile_name],
-            cwd=str(BASE_DIR),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+    url = "https://chat.qwen.ai"
 
     try:
-        await asyncio.to_thread(_launch)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to launch browser_opener: {exc}")
-    return {"status": "ok", "profile": profile_name}
+        from playwright.async_api import async_playwright
+    except ImportError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Playwright import failed: {e}\n\n"
+                f"This is a known Windows issue — greenlet's DLL needs the Visual C++ runtime.\n\n"
+                f"Fix (pick one):\n"
+                f"  A) Install VC++ Redistributable: https://aka.ms/vs/17/release/vc_redist.x64.exe\n"
+                f"  B) Pin older greenlet: uv pip install \"greenlet==1.1.3\"\n\n"
+                f"Then restart Sable."
+            ),
+        )
+
+    # WSL2 → launch Windows-side Chrome via CDP
+    wsl_session = None
+    try:
+        from engine.wsl_browser import launch_windows_chrome
+        wsl_session = launch_windows_chrome(
+            str(target_path), port=9301, headless=False,
+            extra_args=[
+                "--disk-cache-size=2097152",
+                "--disable-gpu-shader-cache",
+                "--disable-component-update",
+            ],
+        )
+    except Exception:
+        pass
+
+    if wsl_session is not None:
+        logger.info("WSL2: connected to Windows Chrome at %s for new %s", wsl_session.cdp_url, profile_name)
+        try:
+            pw = await async_playwright().start()
+            browser = await pw.chromium.connect_over_cdp(wsl_session.cdp_url)
+            context = browser.contexts[0] if browser.contexts else await browser.new_context()
+            page = context.pages[0] if context.pages else await context.new_page()
+            await page.goto(url, timeout=30000)
+            _open_account_contexts[profile_name] = context
+            return {"status": "ok", "profile": profile_name}
+        except Exception as e:
+            logger.error("WSL2 browser create failed for %s: %s", profile_name, e)
+            raise HTTPException(status_code=500, detail=f"WSL2 browser launch failed: {e}")
+
+    # Native launch (Linux or Windows)
+    launch_args = [
+        "--disable-blink-features=AutomationControlled",
+        "--disk-cache-size=2097152",
+        "--disable-gpu-shader-cache",
+        "--disable-component-update",
+    ]
+    if not _is_windows:
+        launch_args.insert(0, "--no-sandbox")
+
+    try:
+        pw = await async_playwright().start()
+        context = await pw.chromium.launch_persistent_context(
+            user_data_dir=str(target_path),
+            headless=False,
+            timeout=30000,
+            args=launch_args,
+        )
+        page = context.pages[0] if context.pages else await context.new_page()
+        await page.goto(url, timeout=30000)
+        _open_account_contexts[profile_name] = context
+        logger.info("Created and opened new account %s", profile_name)
+        return {"status": "ok", "profile": profile_name}
+    except Exception as e:
+        logger.error("Browser create FAILED for %s: %s", profile_name, e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Failed to open browser for {profile_name}: {e}\n\n"
+                f"Troubleshooting:\n"
+                f"1. Run 'uv run playwright install chromium'\n"
+                f"2. On Windows, install VC++ Redistributable: winget install Microsoft.VCRedist.2015+.x64\n"
+                f"3. Check no other process locks: {target_path}"
+            ),
+        )
 
 
 @router.delete("/api/settings/accounts/delete")
@@ -1152,9 +1218,19 @@ async def delete_account(payload: dict[str, str]) -> dict[str, Any]:
     target_path = _SYSTEM_DIR / target_name
     if not target_path.is_dir():
         raise HTTPException(status_code=404, detail=f"'{target_name}' not found")
-    # Block deleting the active profile
-    if _ACTIVE_PROFILE_LINK.is_symlink() and _ACTIVE_PROFILE_LINK.resolve() == target_path.resolve():
-        raise HTTPException(status_code=400, detail="Cannot delete the active profile. Switch first.")
+    # Block deleting the active profile.
+    # Use get_active_account() (file-based) rather than is_symlink(), because on
+    # Windows the "browser-data" pointer is a directory junction which returns
+    # False for Path.is_symlink(), making the old guard a silent no-op.
+    from engine.config import get_active_account, _SYSTEM as _ENGINE_SYSTEM
+    try:
+        active_dir = _ENGINE_SYSTEM / get_active_account()
+        if active_dir.resolve() == target_path.resolve():
+            raise HTTPException(status_code=400, detail="Cannot delete the active profile. Switch first.")
+    except HTTPException:
+        raise
+    except OSError:
+        pass
 
     def _remove() -> None:
         shutil.rmtree(target_path)
@@ -1188,7 +1264,14 @@ async def rename_account(payload: dict[str, str]) -> dict[str, Any]:
 
 @router.post("/api/settings/accounts/open")
 async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
-    """Launch a headful browser with the specified profile (like browser_opener.py)."""
+    """Launch a headed browser with the specified account profile.
+
+    Waits for the browser to actually open before returning success.
+    Errors are returned to the frontend instead of being silently swallowed.
+    """
+    import sys
+    _is_windows = sys.platform == "win32"
+
     target_name = payload.get("profile", "")
     if not re.match(r"^browser-data-acc\d+$", target_name):
         raise HTTPException(status_code=400, detail="Invalid profile name")
@@ -1198,45 +1281,101 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
 
     url = payload.get("url", "https://chat.qwen.ai")
 
-    async def _run_browser() -> None:
+    try:
         from playwright.async_api import async_playwright
-        try:
-            async with async_playwright() as p:
-                context = await p.chromium.launch_persistent_context(
-                    user_data_dir=str(target_path),
-                    headless=False,
-                    timeout=0,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-blink-features=AutomationControlled",
-                        "--disk-cache-size=2097152",
-                        "--disable-gpu-shader-cache",
-                        "--disable-component-update",
-                    ],
-                )
-                page = context.pages[0] if context.pages else await context.new_page()
-                await page.goto(url, timeout=120000)
-                # Wait until user closes the browser window
-                await context.wait_for_event("close", timeout=0)
-        except Exception as e:
-            logger.warning(f"Browser for {target_name} exited: {e}")
+    except ImportError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Playwright import failed: {e}\n\n"
+                f"This is a known Windows issue — greenlet's DLL needs the Visual C++ runtime.\n\n"
+                f"Fix (pick one):\n"
+                f"  A) Install VC++ Redistributable: https://aka.ms/vs/17/release/vc_redist.x64.exe\n"
+                f"  B) Pin older greenlet: uv pip install \"greenlet==1.1.3\"\n\n"
+                f"Then restart Sable."
+            ),
+        )
 
-    asyncio.create_task(_run_browser())
-    return {"status": "opened", "profile": target_name, "url": url}
+    # WSL2 → launch Windows-side Chrome via CDP
+    wsl_session = None
+    try:
+        from engine.wsl_browser import launch_windows_chrome
+        wsl_session = launch_windows_chrome(
+            str(target_path), port=9301, headless=False,
+            extra_args=[
+                "--disk-cache-size=2097152",
+                "--disable-gpu-shader-cache",
+                "--disable-component-update",
+            ],
+        )
+    except Exception:
+        pass
+
+    if wsl_session is not None:
+        logger.info("WSL2: connected to Windows Chrome at %s for %s", wsl_session.cdp_url, target_name)
+        try:
+            pw = await async_playwright().start()
+            browser = await pw.chromium.connect_over_cdp(wsl_session.cdp_url)
+            context = browser.contexts[0] if browser.contexts else await browser.new_context()
+            page = context.pages[0] if context.pages else await context.new_page()
+            await page.goto(url, timeout=30000)
+            _open_account_contexts[target_name] = context
+            return {"status": "opened", "profile": target_name, "url": url}
+        except Exception as e:
+            logger.error("WSL2 browser open failed for %s: %s", target_name, e)
+            raise HTTPException(status_code=500, detail=f"WSL2 browser launch failed: {e}")
+
+    # Native launch (Linux or Windows)
+    launch_args = [
+        "--disable-blink-features=AutomationControlled",
+        "--disk-cache-size=2097152",
+        "--disable-gpu-shader-cache",
+        "--disable-component-update",
+    ]
+    if not _is_windows:
+        launch_args.insert(0, "--no-sandbox")
+
+    try:
+        pw = await async_playwright().start()
+        context = await pw.chromium.launch_persistent_context(
+            user_data_dir=str(target_path),
+            headless=False,
+            timeout=30000,
+            args=launch_args,
+        )
+        page = context.pages[0] if context.pages else await context.new_page()
+        await page.goto(url, timeout=30000)
+        _open_account_contexts[target_name] = context
+        logger.info("Opened browser for %s at %s", target_name, url)
+        return {"status": "opened", "profile": target_name, "url": url}
+    except Exception as e:
+        logger.error("Browser open FAILED for %s: %s", target_name, e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Failed to open browser for {target_name}: {e}\n\n"
+                f"Troubleshooting:\n"
+                f"1. Run 'uv run playwright install chromium'\n"
+                f"2. Check no other process locks: {target_path}\n"
+                f"3. On Windows, ensure Playwright is in the same Python env"
+            ),
+        )
 
 
 _SERVICE_NAME = "sable.service"
 
 
 @router.post("/api/settings/service/stop")
-async def stop_service() -> dict[str, str]:
-    subprocess.Popen(["systemctl", "--user", "stop", _SERVICE_NAME])
+async def stop_service_endpoint() -> dict[str, str]:
+    from engine.service_manager import stop_service as _stop
+    _stop()
     return {"status": "stopping"}
 
 
 @router.post("/api/settings/service/restart")
-async def restart_service() -> dict[str, str]:
-    subprocess.Popen(["systemctl", "--user", "restart", _SERVICE_NAME])
+async def restart_service_endpoint() -> dict[str, str]:
+    from engine.service_manager import restart_service as _restart
+    _restart()
     return {"status": "restarting"}
 
 

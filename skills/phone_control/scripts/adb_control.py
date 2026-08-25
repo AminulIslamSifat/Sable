@@ -37,10 +37,12 @@ Commands:
     seq <json_file>              Execute a JSON sequence file (see docs)
 """
 
+import os
 import re
 import sys
 import json
 import time
+import tempfile
 import subprocess
 import xml.etree.ElementTree as ET
 from typing import Optional
@@ -90,7 +92,7 @@ def check_device() -> bool:
 # ---------------------------------------------------------------------------
 
 _DUMP_REMOTE = "/sdcard/window_dump.xml"
-_DUMP_LOCAL  = "/tmp/adb_window_dump.xml"
+_DUMP_LOCAL  = os.path.join(tempfile.gettempdir(), "adb_window_dump.xml")
 
 # The lock-screen PIN is NOT stored here. It must be passed at runtime as
 # `unlock <pin>` so no secret lives in this file.
@@ -287,7 +289,10 @@ def do_key(keycode: str) -> str:
     return f"Key sent: {keycode}" if rc == 0 else f"ERROR sending key {keycode}: {err}"
 
 
-def do_screenshot(local_path: str = "/tmp/phone_screen.png") -> str:
+_DEFAULT_SCREENSHOT_PATH = os.path.join(tempfile.gettempdir(), "phone_screen.png")
+
+
+def do_screenshot(local_path: str = _DEFAULT_SCREENSHOT_PATH) -> str:
     remote = "/sdcard/ghost_screen.png"
     adb_shell(f"screencap -p {remote}")
     rc, out, err = adb(["pull", remote, local_path])

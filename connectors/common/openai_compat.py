@@ -248,7 +248,7 @@ class OpenAICompatClient:
             if self._instruction_cache is not None:
                 return self._instruction_cache
             from connectors.common.instruction_builder import build_instructions
-            self._instruction_cache = build_instructions(project_id=project_id)
+            self._instruction_cache = build_instructions(project_id=project_id, provider="native")
             return self._instruction_cache
         if mode == "minimal":
             return _minimal_instructions()

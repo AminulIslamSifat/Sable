@@ -4,11 +4,11 @@
 Sable Browser Control — Persistent Playwright Daemon + CLI Client.
 
 Architecture:
-  - Daemon: asyncio server on Unix socket (/tmp/sable_browser.sock)
+  - Daemon: asyncio server on Unix socket (POSIX) or TCP loopback (Windows).
             Holds a persistent Chromium instance between calls.
   - Client: Thin CLI that connects, sends one JSON command, prints response.
 
-Protocol: JSON-lines over Unix domain socket.
+Protocol: JSON-lines over Unix domain socket (POSIX) or TCP 127.0.0.1 (Windows).
   Request:  {"cmd": "open", "args": ["https://example.com"], "kwargs": {}}
   Response: {"ok": true, "result": {...}} or {"ok": false, "error": "..."}
 
@@ -31,40 +31,32 @@ import time
 import base64
 from pathlib import Path
 
-SOCKET_PATH = "/tmp/sable_browser.sock"
-PID_FILE = "/tmp/sable_browser.pid"
-SCREENSHOT_DIR = "/tmp/sable_browser_screenshots"
-CDP_PORT_FILE = "/tmp/sable_browser_cdp_port"
+IS_WINDOWS = sys.platform == "win32"
+
+from engine.platform_paths import tmp_path as _tmp
+
+# IPC transport: Unix socket on POSIX, TCP loopback on Windows
+SOCKET_PATH = str(_tmp("sable_browser.sock"))   # POSIX only
+PORT_FILE = str(_tmp("sable_browser.port"))     # Windows only
+TCP_HOST = "127.0.0.1"
+TCP_PORT = 0  # 0 = let OS assign; daemon writes actual port to PORT_FILE
+
+PID_FILE = str(_tmp("sable_browser.pid"))
+SCREENSHOT_DIR = str(_tmp("sable_browser_screenshots"))
+CDP_PORT_FILE = str(_tmp("sable_browser_cdp_port"))
 
 
 def _find_system_chrome() -> str | None:
-    """Locate a real Chrome/Chromium binary on this system."""
-    import glob as _glob
+    """Locate a real Chrome/Chromium binary on this system (cross-platform)."""
+    from engine.platform_paths import system_chrome_candidates, find_playwright_chrome
 
-    candidates = [
-        "google-chrome-stable",
-        "google-chrome",
-        "chromium-browser",
-        "chromium",
-        "/opt/helium-browser-bin/chrome",   # Helium (Chromium-based)
-        "/opt/google/chrome/chrome",
-        "/usr/bin/google-chrome-stable",
-        "/usr/bin/google-chrome",
-        "/usr/bin/chromium",
-        "/snap/bin/chromium",
-    ]
-    for c in candidates:
-        found = shutil.which(c) if "/" not in c else (c if os.path.isfile(c) else None)
+    for c in system_chrome_candidates():
+        has_sep = os.sep in c
+        found = shutil.which(c) if not has_sep else (c if os.path.isfile(c) else None)
         if found:
             return found
     # Last resort: Playwright-bundled Chromium (newest first)
-    pw_globs = sorted(
-        _glob.glob(os.path.expanduser("~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome")),
-        reverse=True,
-    )
-    if pw_globs:
-        return pw_globs[0]
-    return None
+    return find_playwright_chrome()
 
 
 # ─── Daemon ───────────────────────────────────────────────────────────────────
@@ -91,19 +83,24 @@ class BrowserDaemon:
         self._capturing_console = False
 
     # Stealth init script — patches automation fingerprints
-    _STEALTH_JS = """
-    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-    Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-    window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}};
-    Object.defineProperty(navigator, 'platform', {get: () => 'Linux x86_64'});
+    _STEALTH_PLATFORM = "Win32" if IS_WINDOWS else "Linux x86_64"
+    _STEALTH_JS = f"""
+    Object.defineProperty(navigator, 'webdriver', {{get: () => undefined}});
+    Object.defineProperty(navigator, 'plugins', {{get: () => [1, 2, 3, 4, 5]}});
+    Object.defineProperty(navigator, 'languages', {{get: () => ['en-US', 'en']}});
+    window.chrome = {{runtime: {{}}, loadTimes: function(){{}}, csi: function(){{}}}};
+    Object.defineProperty(navigator, 'platform', {{get: () => '{_STEALTH_PLATFORM}'}});
     """
 
     async def start_browser(self):
         """Launch Playwright's bundled browser directly (no subprocess, no CDP)."""
         from playwright.async_api import async_playwright
 
-        self.pw = await async_playwright().start()
+        print("[browser] Starting Playwright...", flush=True)
+        try:
+            self.pw = await async_playwright().start()
+        except Exception as e:
+            raise RuntimeError(f"Failed to start Playwright: {e}") from e
 
         # Use Playwright's native browser launch — clean, fast, no sandbox hammering
         launch_args = [
@@ -120,30 +117,53 @@ class BrowserDaemon:
         if self.executable_path:
             launch_opts["executable_path"] = self.executable_path
 
+        # Sandbox causes silent launch failures on Windows — disable there
+        use_sandbox = not IS_WINDOWS
+
         # Select browser engine
-        if self.browser_type == "firefox":
-            self.browser = await self.pw.firefox.launch(**launch_opts)
-        elif self.browser_type == "webkit":
-            self.browser = await self.pw.webkit.launch(**launch_opts)
-        else:
-            self.browser = await self.pw.chromium.launch(chromium_sandbox=True, **launch_opts)
+        print(f"[browser] Launching {self.browser_type} (headless={self.headless}, sandbox={use_sandbox})...", flush=True)
+        try:
+            if self.browser_type == "firefox":
+                self.browser = await self.pw.firefox.launch(**launch_opts)
+            elif self.browser_type == "webkit":
+                self.browser = await self.pw.webkit.launch(**launch_opts)
+            else:
+                self.browser = await self.pw.chromium.launch(chromium_sandbox=use_sandbox, **launch_opts)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to launch {self.browser_type}: {e}\n"
+                f"  executable_path={self.executable_path}\n"
+                f"  headless={self.headless}, sandbox={use_sandbox}\n"
+                f"  args={launch_args}\n"
+                f"Hint: run 'uv run playwright install chromium' to ensure browsers are installed."
+            ) from e
 
         # Persistent context if user_data_dir specified, else fresh context
         if self.user_data_dir:
-            self.context = await self.pw.chromium.launch_persistent_context(
-                self.user_data_dir,
-                headless=self.headless,
-                args=launch_args,
-                executable_path=self.executable_path,
-                chromium_sandbox=True,
-            )
+            print(f"[browser] Opening persistent context: {self.user_data_dir}", flush=True)
+            try:
+                self.context = await self.pw.chromium.launch_persistent_context(
+                    self.user_data_dir,
+                    headless=self.headless,
+                    args=launch_args,
+                    executable_path=self.executable_path,
+                    chromium_sandbox=use_sandbox,
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to open persistent context at '{self.user_data_dir}': {e}\n"
+                    f"Hint: the profile directory may be locked by another process."
+                ) from e
             self.browser = None  # persistent context owns the browser
             pages = self.context.pages
             self.page = pages[0] if pages else await self.context.new_page()
         else:
-            self.context = await self.browser.new_context(
-                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+            _ua = (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+                if IS_WINDOWS else
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
             )
+            self.context = await self.browser.new_context(user_agent=_ua)
             self.page = await self.context.new_page()
 
         self._attach_listeners(self.page)
@@ -696,8 +716,9 @@ class BrowserDaemon:
         await self.stop_browser()
         if self.server:
             self.server.close()
-        if os.path.exists(SOCKET_PATH):
-            os.unlink(SOCKET_PATH)
+        ipc_file = PORT_FILE if IS_WINDOWS else SOCKET_PATH
+        if os.path.exists(ipc_file):
+            os.unlink(ipc_file)
         if os.path.exists(PID_FILE):
             os.unlink(PID_FILE)
 
@@ -721,16 +742,33 @@ class BrowserDaemon:
             writer.close()
 
     async def run(self):
-        if os.path.exists(SOCKET_PATH):
-            os.unlink(SOCKET_PATH)
+        # Clean stale IPC endpoint
+        if IS_WINDOWS:
+            if os.path.exists(PORT_FILE):
+                os.unlink(PORT_FILE)
+        else:
+            if os.path.exists(SOCKET_PATH):
+                os.unlink(SOCKET_PATH)
 
         await self.start_browser()
-        self.server = await asyncio.start_unix_server(
-            self._handle_client, path=SOCKET_PATH
-        )
+
+        if IS_WINDOWS:
+            self.server = await asyncio.start_server(
+                self._handle_client, TCP_HOST, TCP_PORT
+            )
+            # Write actual port so client can discover it
+            port = self.server.sockets[0].getsockname()[1]
+            Path(PORT_FILE).write_text(str(port))
+            ipc_label = f"TCP {TCP_HOST}:{port}"
+        else:
+            self.server = await asyncio.start_unix_server(
+                self._handle_client, path=SOCKET_PATH
+            )
+            ipc_label = SOCKET_PATH
+
         Path(PID_FILE).write_text(str(os.getpid()))
         print(f"Browser daemon started (pid={os.getpid()}, headless={self.headless})")
-        print(f"Socket: {SOCKET_PATH}")
+        print(f"IPC: {ipc_label}")
         sys.stdout.flush()
 
         async with self.server:
@@ -740,16 +778,24 @@ class BrowserDaemon:
 # ─── CLI Client ───────────────────────────────────────────────────────────────
 
 def send_command(msg: dict, timeout: float = 35.0) -> dict:
-    """Connect to daemon socket, send command, return response."""
+    """Connect to daemon IPC endpoint, send command, return response."""
     import socket as sock_mod
 
-    if not os.path.exists(SOCKET_PATH):
-        return {"ok": False, "error": "Daemon not running. Start with: browser_control.py start"}
+    if IS_WINDOWS:
+        if not os.path.exists(PORT_FILE):
+            return {"ok": False, "error": "Daemon not running. Start with: browser_control.py start"}
+        port = int(Path(PORT_FILE).read_text().strip())
+        s = sock_mod.socket(sock_mod.AF_INET, sock_mod.SOCK_STREAM)
+        connect_target = (TCP_HOST, port)
+    else:
+        if not os.path.exists(SOCKET_PATH):
+            return {"ok": False, "error": "Daemon not running. Start with: browser_control.py start"}
+        s = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
+        connect_target = SOCKET_PATH
 
-    s = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
     s.settimeout(timeout)
     try:
-        s.connect(SOCKET_PATH)
+        s.connect(connect_target)
         s.sendall((json.dumps(msg) + "\n").encode())
         data = b""
         while b"\n" not in data:
@@ -761,7 +807,7 @@ def send_command(msg: dict, timeout: float = 35.0) -> dict:
     except sock_mod.timeout:
         return {"ok": False, "error": "Timeout waiting for daemon response"}
     except ConnectionRefusedError:
-        return {"ok": False, "error": "Daemon socket exists but refused connection. Try restarting."}
+        return {"ok": False, "error": "Daemon IPC endpoint exists but refused connection. Try restarting."}
     finally:
         s.close()
 
@@ -817,7 +863,7 @@ def main():
 
         # Launch daemon as background subprocess (reliable, no fork issues)
         import subprocess as _sp
-        log_path = "/tmp/browser_daemon.log"
+        log_path = str(_tmp("browser_daemon.log"))
         cmd = [sys.executable, __file__, "_run_daemon",
                "--headless" if headless else "--headed",
                f"--browser={browser_type}"]
@@ -825,35 +871,54 @@ def main():
             cmd.append(f"--executable={executable_path}")
         if user_data_dir:
             cmd.append(f"--user-data-dir={user_data_dir}")
-        with open(log_path, "a") as log_f:
+        # Clear stale error file from previous runs
+        err_file = str(_tmp("browser_daemon_error.log"))
+        if os.path.exists(err_file):
+            os.unlink(err_file)
+
+        with open(log_path, "w") as log_f:
             proc = _sp.Popen(cmd, stdout=log_f, stderr=log_f,
                              start_new_session=True)
         Path(PID_FILE).write_text(str(proc.pid))
-        print(f"Browser daemon started (pid={proc.pid}, headless={headless})")
-        print(f"Socket: {SOCKET_PATH}")
+        print(f"Browser daemon starting (pid={proc.pid}, headless={headless})...")
+
+        # Wait for daemon to actually come up (max 15s)
+        ipc_file = PORT_FILE if IS_WINDOWS else SOCKET_PATH
+        for i in range(30):  # 30 × 0.5s = 15s
+            time.sleep(0.5)
+            # Check if daemon crashed early
+            if os.path.exists(err_file):
+                err = Path(err_file).read_text()
+                print(f"\n❌ Browser daemon FAILED TO START:\n{err}", file=sys.stderr)
+                print(f"Full log: {log_path}")
+                sys.exit(1)
+            # Check if IPC endpoint appeared (= daemon is ready)
+            if os.path.exists(ipc_file):
+                break
+            # Check if process died
+            if proc.poll() is not None:
+                # Process exited — read whatever we can
+                tail = ""
+                try:
+                    tail = Path(log_path).read_text()[-2000:]
+                except Exception:
+                    pass
+                print(f"\n❌ Browser daemon process exited (code={proc.returncode}).")
+                if tail:
+                    print(f"Last output:\n{tail}")
+                print(f"Full log: {log_path}")
+                sys.exit(1)
+        else:
+            print(f"\n❌ Browser daemon did not start within 15s.")
+            print(f"Check log: {log_path}")
+            if os.path.exists(err_file):
+                print(f"Error: {Path(err_file).read_text()}")
+            sys.exit(1)
+
+        print(f"✅ Browser daemon ready (pid={proc.pid}, headless={headless})")
+        ipc_label = PORT_FILE if IS_WINDOWS else SOCKET_PATH
+        print(f"IPC: {ipc_label}")
         return
-
-        # Grandchild: redirect stdio and run daemon
-        sys.stdin = open(os.devnull, "r")
-        log_path = "/tmp/browser_daemon.log"
-        log_fd = open(log_path, "a")
-        sys.stdout = log_fd
-        sys.stderr = log_fd
-
-        Path(PID_FILE).write_text(str(os.getpid()))
-
-        daemon = BrowserDaemon(headless=headless, browser_type=browser_type,
-                               executable_path=executable_path,
-                               user_data_dir=user_data_dir)
-        try:
-            asyncio.run(daemon.run())
-        except Exception as e:
-            print(f"Daemon crashed: {e}", file=log_fd)
-        finally:
-            for f in [SOCKET_PATH, PID_FILE]:
-                if os.path.exists(f):
-                    os.unlink(f)
-        os._exit(0)
 
     if action == "stop":
         if not daemon_alive():
@@ -863,7 +928,8 @@ def main():
         print(json.dumps(resp, indent=2))
         time.sleep(0.5)
         # Cleanup stale files
-        for f in [SOCKET_PATH, PID_FILE]:
+        ipc_file = PORT_FILE if IS_WINDOWS else SOCKET_PATH
+        for f in [ipc_file, PID_FILE]:
             if os.path.exists(f):
                 os.unlink(f)
         return
@@ -908,9 +974,16 @@ def main():
         try:
             asyncio.run(daemon.run())
         except Exception as e:
-            print(f"Daemon crashed: {e}")
+            import traceback
+            err_msg = f"Daemon crashed: {e}\n{traceback.format_exc()}"
+            print(err_msg, flush=True)
+            print(err_msg, file=sys.stderr, flush=True)
+            # Write error marker so 'start' can detect and report it
+            err_file = str(_tmp("browser_daemon_error.log"))
+            Path(err_file).write_text(err_msg)
         finally:
-            for f in [SOCKET_PATH, PID_FILE]:
+            ipc_file = PORT_FILE if IS_WINDOWS else SOCKET_PATH
+            for f in [ipc_file, PID_FILE]:
                 if os.path.exists(f):
                     os.unlink(f)
         return

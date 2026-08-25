@@ -95,6 +95,8 @@ open_browser() {
         xdg-open "$SABLE_URL" 2>/dev/null &
     elif command -v open >/dev/null 2>&1; then
         open "$SABLE_URL" 2>/dev/null &
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c "import webbrowser; webbrowser.open('$SABLE_URL')" 2>/dev/null &
     fi
 }
 

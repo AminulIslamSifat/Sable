@@ -83,40 +83,71 @@ def detect_hardware() -> HardwareInfo:
     return info
 
 
+def _read_meminfo_windows() -> dict[str, int]:
+    """Read memory info on Windows via ctypes GlobalMemoryStatusEx."""
+    import ctypes
+    class MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+    stat = MEMORYSTATUSEX()
+    stat.dwLength = ctypes.sizeof(stat)
+    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+    return {
+        "MemTotal": stat.ullTotalPhys // 1024,       # kB
+        "MemAvailable": stat.ullAvailPhys // 1024,   # kB
+        "SwapTotal": stat.ullTotalPageFile // 1024,  # kB
+    }
+
+
+def _read_meminfo() -> dict[str, int]:
+    """Cross-platform memory info reader. Returns dict with kB values."""
+    import sys
+    if sys.platform == "win32":
+        try:
+            return _read_meminfo_windows()
+        except Exception:
+            return {"MemTotal": 8 * 1024**2, "MemAvailable": 4 * 1024**2, "SwapTotal": 0}
+    else:
+        result = {}
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    key = line.split(":")[0]
+                    if key in ("MemTotal", "MemAvailable", "SwapTotal"):
+                        result[key] = int(line.split()[1])
+        except (OSError, ValueError, IndexError):
+            pass
+        return result
+
+
 def _get_total_ram() -> float:
     """Total RAM in GB."""
-    try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith("MemTotal:"):
-                    return int(line.split()[1]) / (1024 ** 2)
-    except (OSError, ValueError, IndexError):
-        pass
-    return 8.0  # fallback
+    info = _read_meminfo()
+    kb = info.get("MemTotal", 0)
+    return kb / (1024 ** 2) if kb else 8.0
 
 
 def _get_available_ram() -> float:
     """Available RAM in GB."""
-    try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith("MemAvailable:"):
-                    return int(line.split()[1]) / (1024 ** 2)
-    except (OSError, ValueError, IndexError):
-        pass
-    return 4.0
+    info = _read_meminfo()
+    kb = info.get("MemAvailable", 0)
+    return kb / (1024 ** 2) if kb else 4.0
 
 
 def _get_swap_total() -> float:
     """Total swap in GB."""
-    try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith("SwapTotal:"):
-                    return int(line.split()[1]) / (1024 ** 2)
-    except (OSError, ValueError, IndexError):
-        pass
-    return 0.0
+    info = _read_meminfo()
+    kb = info.get("SwapTotal", 0)
+    return kb / (1024 ** 2) if kb else 0.0
 
 
 def _detect_gpu() -> tuple[str | None, float, str]:

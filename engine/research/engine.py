@@ -882,7 +882,8 @@ class DeepResearcher:
     # ── main ─────────────────────────────────────────────────────────────────
     async def research(self) -> str:
         self._start = time.time()
-        self._log_path = Path(f"/tmp/sable_research_{int(time.time())}.json")
+        from engine.platform_paths import tmp_path
+        self._log_path = tmp_path(f"sable_research_{int(time.time())}.json")
         # Live trace log — JSON-lines, appended in real-time so you can tail it mid-run.
         slug = "".join(c if c.isalnum() or c in "-_" else "_" for c in self.question.lower())[:40]
         self._trace_path = OUTPUT_ROOT / "research" / f"trace_{slug}_{int(time.time())}.jsonl"

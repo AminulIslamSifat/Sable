@@ -286,7 +286,8 @@ class DownloadManager:
 
         # Build env for subprocess
         token = hf_token or state.settings.hf_token or ""
-        progress_file = f"/tmp/dl_progress_{task_id}.json"
+        from engine.platform_paths import tmp_path
+        progress_file = str(tmp_path(f"dl_progress_{task_id}.json"))
         env = {
             **os.environ,
             "_DL_REPO": repo_id,
@@ -300,13 +301,13 @@ class DownloadManager:
         self._progress_files = getattr(self, "_progress_files", {})
         self._progress_files[task_id] = progress_file
 
+        from engine.process_utils import popen_kwargs
         proc = subprocess.Popen(
             [sys.executable, "-c", _DL_SCRIPT],
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            # New process group so we can kill the whole tree
-            preexec_fn=os.setsid,
+            **popen_kwargs(),
         )
         self._processes[task_id] = proc
         logger.info("Download subprocess started: %s (pid=%d)", repo_id, proc.pid)
@@ -413,7 +414,8 @@ class DownloadManager:
         proc = self._processes.get(task_id)
         if proc and proc.poll() is None:
             try:
-                os.killpg(os.getpgid(proc.pid), 9)  # SIGKILL the whole group
+                from engine.process_utils import kill_process_tree
+                kill_process_tree(proc.pid, sig=9)
                 proc.wait(timeout=5)
                 logger.info("Killed download process for %s (pid=%d)", task.repo_id, proc.pid)
             except (ProcessLookupError, OSError):

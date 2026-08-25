@@ -1474,7 +1474,11 @@
         const res = await fetch(SB_BASE + "/pick-folder");
         const data = await res.json();
         if (data.path) pickSidebarRoot(data.path);
-      } catch {}
+        else if (data.error && window.showToast) window.showToast(data.error, "error");
+      } catch (err) {
+        console.error("[SidebarFS] pick-folder failed:", err);
+        if (window.showToast) window.showToast("Folder picker request failed", "error");
+      }
       sbHeaderOpenBtn.disabled = false;
     });
   }
@@ -1716,11 +1720,16 @@
   if (leftOpenFolderBtn) {
     leftOpenFolderBtn.addEventListener("click", async () => {
       try {
+        leftOpenFolderBtn.style.opacity = "0.5";
         const res = await fetch("/api/filesystem/pick-folder");
         const data = await res.json();
         if (data.path) pickLeftRoot(data.path);
+        else if (data.error && window.showToast) window.showToast(data.error, "error");
       } catch (err) {
         console.error("[FilesPanel] pick-folder failed:", err);
+        if (window.showToast) window.showToast("Folder picker request failed", "error");
+      } finally {
+        leftOpenFolderBtn.style.opacity = "";
       }
     });
   }

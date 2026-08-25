@@ -16,9 +16,21 @@ router = APIRouter()
 from pathlib import Path as _Path
 
 # Allowed browse roots (read-only from UI)
+def _detect_wsl2() -> bool:
+    """Detect WSL2 at module load time for browse roots."""
+    import sys
+    if sys.platform == "win32":
+        return False
+    try:
+        return "microsoft" in open("/proc/version", "r").read().lower()
+    except Exception:
+        return False
+
+import tempfile as _tempfile
 _BROWSE_ROOTS = (
     str(_Path.home()),
-    "/tmp",
+    _tempfile.gettempdir(),
+    *( ("/mnt",) if _detect_wsl2() else () ),
 )
 
 # Directories to always hide
@@ -193,14 +205,142 @@ async def filesystem_delete(request: Request) -> dict[str, Any]:
         return {"error": f"Delete failed: {e}"}
 
 
+def _get_display_env() -> dict[str, str]:
+    """Build env dict with display vars for GUI dialogs.
+    
+    Server may be started without display env (systemd, autostart).
+    Detect the active Hyprland/Wayland session and inject the vars.
+    On Windows, returns os.environ as-is (no Wayland/X11 concept).
+    """
+    import sys
+    if sys.platform == "win32":
+        return os.environ.copy()
+    env = os.environ.copy()
+    needed = ["WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "DISPLAY", "XDG_RUNTIME_DIR"]
+    missing = [k for k in needed if not env.get(k)]
+    if not missing:
+        return env
+    # Try to find active wayland/x11 session from loginctl
+    try:
+        sessions = subprocess.run(
+            ["loginctl", "list-sessions", "--no-legend"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in sessions.stdout.strip().splitlines():
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            sid = parts[0]
+            sess_info = subprocess.run(
+                ["loginctl", "show-session", sid, "-p", "Type", "-p", "Display", "-p", "Remote"],
+                capture_output=True, text=True, timeout=5,
+            )
+            info = dict(l.split("=", 1) for l in sess_info.stdout.strip().splitlines() if "=" in l)
+            if info.get("Remote") == "yes":
+                continue
+            stype = info.get("Type", "")
+            if stype in ("wayland", "x11", "tty"):
+                # Get env vars from this session's leader process
+                leader = subprocess.run(
+                    ["loginctl", "show-session", sid, "-p", "Leader"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                leader_pid = leader.stdout.strip().split("=")[-1].strip()
+                if leader_pid.isdigit():
+                    env_path = f"/proc/{leader_pid}/environ"
+                    try:
+                        with open(env_path, "rb") as f:
+                            for entry in f.read().split(b"\x00"):
+                                if b"=" in entry:
+                                    k, v = entry.decode(errors="replace").split("=", 1)
+                                    if k in missing and k not in env:
+                                        env[k] = v
+                    except (FileNotFoundError, PermissionError):
+                        pass
+                # Also check XDG_RUNTIME_DIR from uid
+                if "XDG_RUNTIME_DIR" in missing and "XDG_RUNTIME_DIR" not in env:
+                    uid_res = subprocess.run(
+                        ["loginctl", "show-session", sid, "-p", "User"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    uid = uid_res.stdout.strip().split("=")[-1].strip()
+                    if uid.isdigit():
+                        env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+                break
+    except Exception:
+        pass
+    # Fallback guesses
+    env.setdefault("XDG_CURRENT_DESKTOP", "Hyprland")
+    if not env.get("WAYLAND_DISPLAY"):
+        import glob as _glob
+        wl_socks = _glob.glob("/run/user/*/wayland-*")
+        if wl_socks:
+            env["WAYLAND_DISPLAY"] = os.path.basename(wl_socks[0])
+    return env
+
+
+def _is_wsl2() -> bool:
+    """Detect if running inside WSL2."""
+    try:
+        version = open("/proc/version", "r").read().lower()
+        return "microsoft" in version and "wsl2" in version or "microsoft-standard" in version
+    except Exception:
+        return False
+
+
+def _win_path_to_wsl(win_path: str) -> str:
+    r"""Convert Windows path (C:\Users\...) to WSL path (/mnt/c/Users/...)."""
+    if not win_path or len(win_path) < 3:
+        return win_path
+    drive = win_path[0].lower()
+    rest = win_path[2:].replace(chr(92), "/")
+    return f"/mnt/{drive}{rest}"
+
+
 @router.get("/api/filesystem/pick-folder")
 def filesystem_pick_folder() -> dict[str, Any]:
-    """Open native OS folder picker. Uses xdg-desktop-portal → zenity/yad/kdialog → tkinter."""
+    """Open native OS folder picker. WSL2 → Windows picker; Linux → xdg-desktop-portal → zenity/yad/kdialog → tkinter."""
     import logging
     log = logging.getLogger("sable.fs")
-    log.info("[pick-folder] Request received, DISPLAY=%s WAYLAND=%s",
-             os.environ.get("DISPLAY", "(unset)"),
-             os.environ.get("WAYLAND_DISPLAY", "(unset)"))
+    display_env = _get_display_env()
+    log.info("[pick-folder] Request received, DISPLAY=%s WAYLAND=%s XDG_DESKTOP=%s WSL2=%s",
+             display_env.get("DISPLAY", "(unset)"),
+             display_env.get("WAYLAND_DISPLAY", "(unset)"),
+             display_env.get("XDG_CURRENT_DESKTOP", "(unset)"),
+             _is_wsl2())
+
+    # ── 0. WSL2 → Windows native folder picker ──
+    if _is_wsl2():
+        try:
+            log.info("[pick-folder] WSL2 detected, trying Windows native picker")
+            ps_cmd = [
+                "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                "$shell = New-Object -ComObject Shell.Application; "
+                "$folder = $shell.BrowseForFolder(0, 'Open Folder', 0); "
+                "if ($folder) { $folder.Self.Path } else { exit 1 }"
+            ]
+            result = subprocess.run(ps_cmd, capture_output=True, text=True, timeout=120)
+            log.info("[pick-folder] Windows picker rc=%d stdout=%r stderr=%r",
+                     result.returncode, result.stdout.strip()[:200], result.stderr.strip()[:200])
+            if result.returncode == 0 and result.stdout.strip():
+                win_path = result.stdout.strip()
+                wsl_path = _win_path_to_wsl(win_path)
+                if os.path.isdir(wsl_path):
+                    log.info("[pick-folder] Windows selected: %s → %s", win_path, wsl_path)
+                    return {"path": wsl_path}
+                else:
+                    log.warning("[pick-folder] Converted path not accessible: %s", wsl_path)
+            elif result.returncode == 1:
+                log.info("[pick-folder] Windows picker cancelled")
+                return {"path": None, "cancelled": True}
+        except FileNotFoundError:
+            log.warning("[pick-folder] powershell.exe not found in PATH")
+        except subprocess.TimeoutExpired:
+            log.error("[pick-folder] Windows picker timed out after 120s")
+            return {"path": None, "error": "Windows folder picker timed out"}
+        except Exception as e:
+            log.warning("[pick-folder] Windows picker failed: %s", e)
+        # Fall through to Linux methods if Windows picker fails
 
     # ── 1. xdg-desktop-portal via gdbus (modern Linux, works on Wayland + X11) ──
     try:
@@ -212,7 +352,7 @@ def filesystem_pick_folder() -> dict[str, Any]:
              "--object-path", "/org/freedesktop/DBus",
              "--method", "org.freedesktop.DBus.GetNameOwner",
              "org.freedesktop.portal.Desktop"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, env=display_env,
         )
         if sender_name.returncode == 0:
             log.info("[pick-folder] Trying xdg-desktop-portal")
@@ -223,7 +363,7 @@ def filesystem_pick_folder() -> dict[str, Any]:
                  "--object-path", "/org/freedesktop/portal/desktop",
                  "--method", "org.freedesktop.portal.FileChooser.OpenDirectory",
                  "", "Open Folder", options],
-                capture_output=True, text=True, timeout=120,
+                capture_output=True, text=True, timeout=120, env=display_env,
             )
             if call_res.returncode == 0 and "(/org/freedesktop/portal/desktop/request/" in call_res.stdout:
                 request_path = call_res.stdout.strip().strip("()'\"").split("'")[1] \
@@ -235,7 +375,7 @@ def filesystem_pick_folder() -> dict[str, Any]:
                          "--dest", "org.freedesktop.portal.Desktop",
                          "--object-path", request_path,
                          "--timeout", "120"],
-                        capture_output=True, text=True, timeout=125,
+                        capture_output=True, text=True, timeout=125, env=display_env,
                     )
                     for line in signal_res.stdout.splitlines():
                         if "Response" in line and "results" in line:
@@ -260,7 +400,7 @@ def filesystem_pick_folder() -> dict[str, Any]:
     ]:
         log.info("[pick-folder] Trying: %s", " ".join(cmd))
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=display_env)
             log.info("[pick-folder] rc=%d stdout=%r stderr=%r",
                      result.returncode, result.stdout.strip()[:200], result.stderr.strip()[:200])
             if result.returncode == 0:
@@ -303,14 +443,14 @@ def filesystem_pick_folder() -> dict[str, Any]:
 @router.get("/api/filesystem/roots")
 def filesystem_roots() -> list[dict[str, Any]]:
     """Return quick-access browse roots."""
-    _h = str(_Path.home())
+    _h = _Path.home()
     quick_paths = [
-        f"{_h}/Projects/Sable",
-        f"{_h}/hdd/projects/Sable",
-        f"{_h}/hdd",
-        f"{_h}/Projects",
-        _h,
-        "/tmp",
+        str(_h / "Projects" / "Sable"),
+        str(_h / "hdd" / "projects" / "Sable"),
+        str(_h / "hdd"),
+        str(_h / "Projects"),
+        str(_h),
+        _tempfile.gettempdir(),
     ]
     roots = []
     for r in quick_paths:

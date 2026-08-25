@@ -64,6 +64,7 @@ def _scan_md_dir(directory: Path, exclude_suffix: str | None = None) -> list[dic
         except Exception:
             continue
         fm = _parse_frontmatter(text)
+        mtime = f.stat().st_mtime
         items.append({
             "id": f.stem,
             "filename": f.name,
@@ -71,8 +72,9 @@ def _scan_md_dir(directory: Path, exclude_suffix: str | None = None) -> list[dic
             "date": fm.get("date", ""),
             "tags": fm.get("tags", ""),
             "preview": _preview(text),
+            "mtime": mtime,
         })
-    items.sort(key=lambda x: x["date"], reverse=True)
+    items.sort(key=lambda x: x["mtime"])
     return items
 
 

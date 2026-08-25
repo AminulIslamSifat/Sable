@@ -177,6 +177,66 @@ def _truncate_tool_output(text: str, max_chars: int = _TG_TOOL_OUTPUT_MAX) -> st
     return text[:head] + f"\n… [{len(text)} chars truncated] …\n" + text[-tail:]
 
 
+def _extract_image_paths(result: dict | None) -> list[str]:
+    """Extract local image file paths from a skill_end result dict.
+
+    Handles both single-image (result.path) and multi-image (result.images[].path)
+    formats produced by generate_image handler.
+    """
+    if not result or not isinstance(result, dict):
+        return []
+    paths: list[str] = []
+    # Multi-image: result.images is a list of dicts with 'path' keys
+    images = result.get("images")
+    if isinstance(images, list):
+        for img in images:
+            if isinstance(img, dict):
+                p = img.get("path", "")
+                if p and Path(p).is_file():
+                    paths.append(p)
+    # Single/fallback: result.path
+    single = result.get("path", "")
+    if single and Path(single).is_file() and single not in paths:
+        paths.insert(0, single)
+    return paths
+
+
+async def _send_generated_images(
+    message: Any,
+    result: dict | None,
+) -> None:
+    """Send generated images as Telegram photos after a tool_end event.
+
+    Reads local files directly and sends via reply_photo.
+    Falls back to reply_document for non-photo extensions.
+    """
+    paths = _extract_image_paths(result)
+    if not paths:
+        return
+    photo_exts = {".png", ".jpg", ".jpeg", ".webp"}
+    for img_path in paths:
+        try:
+            p = Path(img_path)
+            data = p.read_bytes()
+            ext = p.suffix.lower()
+            caption = f"🖼 `{p.name}`"
+            if ext in photo_exts:
+                await message.reply_photo(
+                    photo=io.BytesIO(data),
+                    caption=caption,
+                    parse_mode="Markdown",
+                )
+            else:
+                await message.reply_document(
+                    document=io.BytesIO(data),
+                    filename=p.name,
+                    caption=caption,
+                    parse_mode="Markdown",
+                )
+        except Exception as exc:
+            logger.warning("Failed to send image %s: %s", img_path, exc)
+
+
 # ── User preferences (model, persona, thinking mode per user) ───────────────
 _PREFS_PATH = _SYSTEM_DIR / ".telegram_bot_prefs.json"
 
@@ -307,6 +367,124 @@ class StreamResult:
         self.tool_activities: list[dict[str, Any]] = []  # [{name, output, ok, duration_ms}]
 
 
+class StreamDisplay:
+    """Manages streaming display across chained Telegram messages.
+
+    When the current message approaches Telegram's 4096-char limit,
+    finalizes it (removes stop button) and spawns a new message with
+    the stop button attached. No content is ever truncated.
+    """
+
+    MIN_EDIT_INTERVAL = 0.8  # seconds between edits
+    CHAIN_THRESHOLD = 3500  # spawn new message when current exceeds this
+
+    def __init__(self, message: Any, stop_kb: InlineKeyboardMarkup | None = None, thinking_enabled: bool = True):
+        self._message = message
+        self._stop_kb = stop_kb
+        self._thinking_enabled = thinking_enabled
+        self._thinking = ""
+        self._answer = ""
+        self._last_edit_time: float = 0
+        self._msg: Any = None  # current live message being edited
+        self._chain: list[Any] = []  # all messages in the chain (including _msg)
+        self._dirty = False
+        self._finalized = False
+
+    async def start(self) -> None:
+        """Create the initial streaming message."""
+        if self._thinking_enabled:
+            init_text = "💭 _Thinking..._"
+            fallback = "💭 Thinking..."
+        else:
+            init_text = "⏳ _Processing..._"
+            fallback = "⏳ Processing..."
+        try:
+            self._msg = await self._message.reply_text(init_text, parse_mode="Markdown", reply_markup=self._stop_kb)
+        except Exception:
+            self._msg = await self._message.reply_text(fallback, reply_markup=self._stop_kb)
+        self._chain.append(self._msg)
+
+    async def append_thinking(self, text: str) -> None:
+        if not text or self._finalized:
+            return
+        self._thinking += text
+        self._dirty = True
+        await self._maybe_edit()
+
+    async def append_answer(self, text: str) -> None:
+        if not text or self._finalized:
+            return
+        self._answer += text
+        self._dirty = True
+        await self._maybe_edit()
+
+    async def _maybe_edit(self) -> None:
+        import time
+        now = time.monotonic()
+        if now - self._last_edit_time < self.MIN_EDIT_INTERVAL:
+            return
+        if not self._dirty or not self._msg:
+            return
+        self._dirty = False
+        self._last_edit_time = now
+        display = self._build_display()
+        # If current message is getting too long, chain a new one
+        if len(display) > self.CHAIN_THRESHOLD:
+            await self._chain_new_message()
+            return
+        try:
+            await self._msg.edit_text(display, parse_mode="Markdown", reply_markup=self._stop_kb)
+        except Exception:
+            pass
+
+    async def _chain_new_message(self) -> None:
+        """Finalize current message and spawn a new one for continued streaming."""
+        # Lock current message: remove stop button, show full content
+        current_display = self._build_display()
+        try:
+            await self._msg.edit_text(current_display, parse_mode="Markdown", reply_markup=None)
+        except Exception:
+            pass
+        # Reset accumulated content for the new message
+        self._thinking = ""
+        self._answer = ""
+        # Spawn new message with stop button
+        try:
+            self._msg = await self._message.reply_text("⏳ _…continuing…_", parse_mode="Markdown", reply_markup=self._stop_kb)
+        except Exception:
+            self._msg = await self._message.reply_text("⏳ …continuing…", reply_markup=self._stop_kb)
+        self._chain.append(self._msg)
+
+    def _build_display(self) -> str:
+        parts: list[str] = []
+        if self._thinking and self._thinking_enabled:
+            t = self._thinking
+            if len(t) > 2000:
+                t = t[:2000] + "…"
+            parts.append(f"💭 _{t}_")
+        if self._answer:
+            parts.append(self._answer)
+        if not parts:
+            if self._thinking_enabled:
+                return "💭 _Thinking..._"
+            return "⏳ _Processing..._"
+        return "\n\n".join(parts)
+
+    async def finalize(self) -> None:
+        """Flush any pending edits and mark as done."""
+        self._finalized = True
+        if self._dirty and self._msg:
+            display = self._build_display()
+            try:
+                await self._msg.edit_text(display, parse_mode="Markdown", reply_markup=None)
+            except Exception:
+                pass
+
+    @property
+    def msg(self) -> Any:
+        return self._msg
+
+
 async def stream_chat_events(
     chat_id: str,
     message: str,
@@ -315,6 +493,8 @@ async def stream_chat_events(
     thinking_mode: str | None = None,
     on_status: Any = None,
     on_tool_event: Any = None,
+    on_thinking: Any = None,
+    on_answer: Any = None,
 ) -> StreamResult:
     """Send message to Sable and consume SSE stream with full event handling.
 
@@ -325,6 +505,8 @@ async def stream_chat_events(
         on_status: Async callback(status_text: str) for live status updates.
         on_tool_event: Async callback(event_type: str, data: dict) for tool events.
             Called with "start" or "end" and the event payload.
+        on_thinking: Async callback(text: str) called per thinking token.
+        on_answer: Async callback(text: str) called per answer/token chunk.
 
     Returns:
         StreamResult with accumulated response and any interactive events.
@@ -365,6 +547,25 @@ async def stream_chat_events(
                 result.error = f"Server error ({resp.status}): {err[:500]}"
                 return result
 
+            # Detect non-SSE JSON error responses (e.g. provider/model lock)
+            content_type = resp.headers.get("content-type", "")
+            if "text/event-stream" not in content_type:
+                raw = await resp.text()
+                logger.warning("Non-SSE response (content-type=%s): %s", content_type, raw[:300])
+                try:
+                    body = json.loads(raw)
+                    if isinstance(body, dict) and body.get("error"):
+                        result.error = body["error"]
+                        return result
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                # Not JSON either — treat as empty/error
+                if raw.strip():
+                    result.error = f"Unexpected response format: {raw[:300]}"
+                else:
+                    result.error = "Empty response from server (possible model/provider lock). Try switching models or starting a new chat."
+                return result
+
             buffer = ""
             async for chunk in resp.content.iter_chunked(1024):
                 buffer += chunk.decode("utf-8", errors="replace")
@@ -381,12 +582,16 @@ async def stream_chat_events(
                     etype = event.get("type", "")
 
                     if etype in ("answer", "token"):
-                        answer_parts.append(event.get("text", ""))
+                        token_text = event.get("text", "")
+                        answer_parts.append(token_text)
+                        if on_answer and token_text:
+                            await on_answer(token_text)
 
                     elif etype == "thinking":
-                        thinking_parts.append(event.get("text", ""))
-                        if on_status:
-                            await on_status("🧠 Thinking...")
+                        think_text = event.get("text", "")
+                        thinking_parts.append(think_text)
+                        if on_thinking and think_text:
+                            await on_thinking(think_text)
 
                     elif etype == "skill_start":
                         name = event.get("name", "unknown")
@@ -425,12 +630,14 @@ async def stream_chat_events(
                         })
                         current_tool_output_parts = []
                         # Send tool result as separate message
+                        skill_result = event.get("result", {})
                         if on_tool_event:
                             await on_tool_event("end", {
                                 "name": name,
                                 "ok": ok,
                                 "duration_ms": duration_ms,
                                 "output": raw_output,
+                                "result": skill_result,
                             })
                         # Check for ask_user pause
                         res = event.get("result", {})
@@ -451,7 +658,9 @@ async def stream_chat_events(
                     elif etype == "status":
                         msg = event.get("message", "")
                         if on_status and msg:
-                            await on_status(f"📡 {msg}")
+                            # Clean up internal status identifiers for display
+                            display_msg = msg.replace("_", " ").title() if msg.islower() or "_" in msg else msg
+                            await on_status(f"📡 {display_msg}")
 
                     elif etype == "done":
                         break
@@ -787,6 +996,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await handler(update, context)
         return
 
+    # ── Pending image caption flow ──
+    pending_image = context.user_data.pop("pending_image", None)
+    if pending_image:
+        # User sent text after a photo without caption — combine them
+        text = f"[Image: {pending_image}]\n\n{text_stripped}"
+        logger.info("Combining pending image %s with caption for user %s", pending_image, user.id)
+
     # Get or create chat session
     chat_id = get_chat_id_for_user(user.id)
     if not chat_id:
@@ -809,29 +1025,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_model = get_user_pref(user.id, "model")
     user_thinking = get_user_pref(user.id, "thinking_mode")
 
-    # Create a status message with stop button and contextual placeholder
+    # Create streaming display with stop button
     stop_kb = _build_stop_keyboard(chat_id)
-    initial_placeholder = "⏳ Connecting to Sable..."
-    status_msg = await update.message.reply_text(initial_placeholder, reply_markup=stop_kb)
+    stream_display = StreamDisplay(update.message, stop_kb, thinking_enabled=bool(user_thinking))
+    await stream_display.start()
+    status_msg = stream_display.msg  # For compatibility with post-stream code
 
-    # Contextual status update callback (thinking/generic status only)
-    last_status_text = initial_placeholder
+    # Contextual status update callback (generic status only — thinking streams separately)
     async def update_status(new_text: str) -> None:
-        nonlocal last_status_text
-        if new_text != last_status_text:
-            last_status_text = new_text
-            try:
-                await status_msg.edit_text(new_text, reply_markup=stop_kb)
-            except Exception:
-                pass  # Message may have been deleted or unchanged
+        # Status updates go to a separate ephemeral edit only if no streaming is active
+        pass  # Thinking/answer now stream via on_thinking/on_answer
 
-    # Tool event callback — edits status msg for tool call, then recreates status msg
+    # Tool event callback — finalizes stream display, shows tool, then resumes
     current_tool_args = ""
 
     async def send_tool_event(event_type: str, data: dict) -> None:
-        nonlocal status_msg, last_status_text, current_tool_args
+        nonlocal status_msg, current_tool_args, stream_display
         name = data.get("name", "unknown")
         if event_type == "start":
+            # Finalize current stream display before showing tool
+            await stream_display.finalize()
             # Extract args from event (dict attrs or string attrs)
             attrs = data.get("data", {}).get("attrs") or data.get("attrs", "")
             if isinstance(attrs, dict):
@@ -842,9 +1055,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             display = f"⚡ `{name}`"
             if args_str:
                 display += f"\n`{args_str[:500]}`"
-            last_status_text = display
             try:
-                await status_msg.edit_text(display, parse_mode="Markdown", reply_markup=stop_kb)
+                status_msg = await update.message.reply_text(display, parse_mode="Markdown", reply_markup=stop_kb)
             except Exception:
                 pass
         elif event_type == "end":
@@ -865,18 +1077,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await status_msg.edit_text(msg_text, parse_mode="Markdown", reply_markup=None)
             except Exception:
                 pass
-            # Create a fresh status message for subsequent updates
-            try:
-                status_msg = await update.message.reply_text("⏳ Processing...", reply_markup=stop_kb)
-                last_status_text = "⏳ Processing..."
-            except Exception:
-                pass
+            # Send generated images as photos
+            skill_result = data.get("result")
+            if skill_result:
+                await _send_generated_images(update.message, skill_result)
+            # Create fresh stream display for resumed streaming
+            stream_display = StreamDisplay(update.message, stop_kb, thinking_enabled=bool(user_thinking))
+            await stream_display.start()
+            status_msg = stream_display.msg
             current_tool_args = ""
 
     # Track active stream for stop button
     stream_task = asyncio.current_task()
     if stream_task:
         _active_streams[user.id] = stream_task
+
+    # Use closures so callbacks always target the CURRENT stream_display
+    # (send_tool_event replaces stream_display after each tool run)
+    async def _forward_thinking(text: str) -> None:
+        await stream_display.append_thinking(text)
+
+    async def _forward_answer(text: str) -> None:
+        await stream_display.append_answer(text)
 
     # Stream response from Sable with user preferences
     try:
@@ -886,6 +1108,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             thinking_mode=user_thinking,
             on_status=update_status,
             on_tool_event=send_tool_event,
+            on_thinking=_forward_thinking,
+            on_answer=_forward_answer,
         )
     except asyncio.CancelledError:
         # Stop button was pressed
@@ -973,37 +1197,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         return
 
-    # Normal response — delete status message and send answer with tool log
-    response = result.answer
-    if not response:
-        if result.thinking:
-            response = f"💭 _(thinking only, no final response)_"
+    # Finalize the stream display (flush any pending tokens, remove stop button)
+    await stream_display.finalize()
+
+    # If nothing was streamed, show a helpful fallback message
+    if not result.answer and not result.thinking:
+        fallback = "⚠️ No response received."
+        if result.error:
+            fallback = f"❌ {result.error}"
         else:
-            response = "_(no response)_"
-
-    # Prepend thinking summary if present
-    if result.thinking and len(result.thinking) < 500:
-        response = f"💭 _{result.thinking[:300]}_\n\n{response}"
-
-    # Tool activities are now sent as individual messages during streaming
-
-    # Delete status message (remove stop button)
-    try:
-        await status_msg.delete()
-    except Exception:
-        pass
-
-    # Send response (chunked if needed)
-    chunks = chunk_message(response)
-    for i, chunk_text in enumerate(chunks):
+            fallback += " The model may be locked to a different provider. Try switching models or starting a new chat."
         try:
-            await update.message.reply_text(chunk_text, parse_mode="Markdown")
+            await status_msg.edit_text(fallback, reply_markup=None)
         except Exception:
-            # Fallback without markdown
-            try:
-                await update.message.reply_text(chunk_text)
-            except Exception as e:
-                logger.warning("Failed to send chunk %d/%d: %s", i + 1, len(chunks), e)
+            pass
 
 
 # ── Panel Handlers (persistent keyboard buttons) ────────────────────────────
@@ -1173,13 +1380,19 @@ def _build_library_keyboard(
                 label = f"{label} ({str(sub)[:15]})"
         keyboard.append([InlineKeyboardButton(label, callback_data=cb_data)])
 
-    # Navigation row
+    # Navigation row — derive panel key from cb_prefix for pagination callbacks
+    _panel_key_map = {
+        _CB_FILE_GALLERY: "gal",
+        _CB_FILE_NOTE: "not",
+        _CB_FILE_RESEARCH: "res",
+    }
+    panel_key = _panel_key_map.get(cb_prefix, "")
     nav_row: list[InlineKeyboardButton] = []
     if page > 0:
-        nav_row.append(InlineKeyboardButton("◀ Prev", callback_data=f"noop"))
+        nav_row.append(InlineKeyboardButton("◀ Prev", callback_data=f"{_CB_PAGE}{panel_key}:{page - 1}"))
     nav_row.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
     if page < total_pages - 1:
-        nav_row.append(InlineKeyboardButton("Next ▶", callback_data=f"noop"))
+        nav_row.append(InlineKeyboardButton("Next ▶", callback_data=f"{_CB_PAGE}{panel_key}:{page + 1}"))
     if len(nav_row) > 1:
         keyboard.append(nav_row)
 
@@ -1478,25 +1691,24 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         chat_id = get_chat_id_for_user(user.id)
         if chat_id:
             stop_kb = _build_stop_keyboard(chat_id)
-            status_msg = await query.message.reply_text("💭 Processing selection...", reply_markup=stop_kb)
+            _cb_thinking = get_user_pref(user.id, "thinking_mode")
 
-            last_status = "💭 Processing selection..."
+            # Streaming display for thinking + answer
+            stream_display = StreamDisplay(query.message, stop_kb, thinking_enabled=bool(_cb_thinking))
+            await stream_display.start()
+            status_msg = stream_display.msg
+
             async def update_status(new_text: str) -> None:
-                nonlocal last_status
-                if new_text != last_status:
-                    last_status = new_text
-                    try:
-                        await status_msg.edit_text(new_text, reply_markup=stop_kb)
-                    except Exception:
-                        pass
+                pass  # Thinking/answer now stream via on_thinking/on_answer
 
-            # Tool event callback — edits status msg for tool call, then recreates status msg
+            # Tool event callback — finalizes stream, shows tool, recreates stream
             current_tool_args = ""
 
             async def send_tool_event(event_type: str, data: dict) -> None:
-                nonlocal status_msg, last_status, current_tool_args
+                nonlocal status_msg, current_tool_args, stream_display
                 name = data.get("name", "unknown")
                 if event_type == "start":
+                    await stream_display.finalize()
                     attrs = data.get("data", {}).get("attrs") or data.get("attrs", "")
                     if isinstance(attrs, dict):
                         args_str = ", ".join(f"{k}={v}" for k, v in attrs.items() if v)
@@ -1506,9 +1718,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                     display = f"⚡ `{name}`"
                     if args_str:
                         display += f"\n`{args_str[:500]}`"
-                    last_status = display
                     try:
-                        await status_msg.edit_text(display, parse_mode="Markdown", reply_markup=stop_kb)
+                        status_msg = await query.message.reply_text(display, parse_mode="Markdown", reply_markup=stop_kb)
                     except Exception:
                         pass
                 elif event_type == "end":
@@ -1528,11 +1739,14 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                         await status_msg.edit_text(msg_text, parse_mode="Markdown", reply_markup=None)
                     except Exception:
                         pass
-                    try:
-                        status_msg = await query.message.reply_text("⏳ Processing...", reply_markup=stop_kb)
-                        last_status = "⏳ Processing..."
-                    except Exception:
-                        pass
+                    # Send generated images as photos
+                    skill_result = data.get("result")
+                    if skill_result:
+                        await _send_generated_images(query.message, skill_result)
+                    # Create fresh stream display for resumed streaming
+                    stream_display = StreamDisplay(query.message, stop_kb, thinking_enabled=bool(_cb_thinking))
+                    await stream_display.start()
+                    status_msg = stream_display.msg
                     current_tool_args = ""
 
             # Track stream for stop button
@@ -1541,7 +1755,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 _active_streams[user.id] = stream_task
 
             try:
-                # Pass user preferences to maintain model/thinking consistency
                 u_model = get_user_pref(user.id, "model")
                 u_thinking = get_user_pref(user.id, "thinking_mode")
                 result = await stream_chat_events(
@@ -1550,6 +1763,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                     thinking_mode=u_thinking,
                     on_status=update_status,
                     on_tool_event=send_tool_event,
+                    on_thinking=lambda t: stream_display.append_thinking(t),
+                    on_answer=lambda a: stream_display.append_answer(a),
                 )
             except asyncio.CancelledError:
                 try:
@@ -1563,8 +1778,23 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             finally:
                 _active_streams.pop(user.id, None)
 
-            # Process result same as handle_message
-            await _send_stream_result(query.message, result, context, chat_id)
+            # Handle interactive results (permissions, ask_user)
+            if result.error:
+                await status_msg.edit_text(f"❌ {result.error}")
+                return
+            if result.permission_request or result.ask_user_payload:
+                await stream_display.finalize()
+                await _send_stream_result(query.message, result, context, chat_id)
+                return
+
+            # Finalize the stream display
+            await stream_display.finalize()
+            if not result.answer and not result.thinking:
+                err_msg = f"❌ {result.error}" if result.error else "⚠️ No response received. The model may be locked or unavailable. Try switching models."
+                try:
+                    await status_msg.edit_text(err_msg, reply_markup=None)
+                except Exception:
+                    pass
 
         return
 
@@ -1614,25 +1844,24 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         # We need to send a follow-up message to continue the conversation.
         if chat_id:
             stop_kb = _build_stop_keyboard(chat_id)
-            status_msg = await query.message.reply_text("💭 Continuing...", reply_markup=stop_kb)
+            _perm_thinking = get_user_pref(user.id, "thinking_mode")
 
-            last_status = "💭 Continuing..."
+            # Streaming display for thinking + answer
+            stream_display = StreamDisplay(query.message, stop_kb, thinking_enabled=bool(_perm_thinking))
+            await stream_display.start()
+            status_msg = stream_display.msg
+
             async def update_status(new_text: str) -> None:
-                nonlocal last_status
-                if new_text != last_status:
-                    last_status = new_text
-                    try:
-                        await status_msg.edit_text(new_text, reply_markup=stop_kb)
-                    except Exception:
-                        pass
+                pass  # Thinking/answer now stream via on_thinking/on_answer
 
-            # Tool event callback — edits status msg for tool call, then recreates status msg
+            # Tool event callback — finalizes stream, shows tool, recreates stream
             current_tool_args = ""
 
             async def send_tool_event(event_type: str, data: dict) -> None:
-                nonlocal status_msg, last_status, current_tool_args
+                nonlocal status_msg, current_tool_args, stream_display
                 name = data.get("name", "unknown")
                 if event_type == "start":
+                    await stream_display.finalize()
                     attrs = data.get("data", {}).get("attrs") or data.get("attrs", "")
                     if isinstance(attrs, dict):
                         args_str = ", ".join(f"{k}={v}" for k, v in attrs.items() if v)
@@ -1642,9 +1871,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                     display = f"⚡ `{name}`"
                     if args_str:
                         display += f"\n`{args_str[:500]}`"
-                    last_status = display
                     try:
-                        await status_msg.edit_text(display, parse_mode="Markdown", reply_markup=stop_kb)
+                        status_msg = await query.message.reply_text(display, parse_mode="Markdown", reply_markup=stop_kb)
                     except Exception:
                         pass
                 elif event_type == "end":
@@ -1664,11 +1892,14 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                         await status_msg.edit_text(msg_text, parse_mode="Markdown", reply_markup=None)
                     except Exception:
                         pass
-                    try:
-                        status_msg = await query.message.reply_text("⏳ Processing...", reply_markup=stop_kb)
-                        last_status = "⏳ Processing..."
-                    except Exception:
-                        pass
+                    # Send generated images as photos
+                    skill_result = data.get("result")
+                    if skill_result:
+                        await _send_generated_images(query.message, skill_result)
+                    # Create fresh stream display for resumed streaming
+                    stream_display = StreamDisplay(query.message, stop_kb, thinking_enabled=bool(_perm_thinking))
+                    await stream_display.start()
+                    status_msg = stream_display.msg
                     current_tool_args = ""
 
             # Track stream for stop button
@@ -1677,7 +1908,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 _active_streams[user.id] = stream_task
 
             try:
-                # Pass user preferences for continuation
                 u_model = get_user_pref(user.id, "model")
                 u_thinking = get_user_pref(user.id, "thinking_mode")
                 result = await stream_chat_events(
@@ -1686,6 +1916,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                     thinking_mode=u_thinking,
                     on_status=update_status,
                     on_tool_event=send_tool_event,
+                    on_thinking=lambda t: stream_display.append_thinking(t),
+                    on_answer=lambda a: stream_display.append_answer(a),
                 )
             except asyncio.CancelledError:
                 try:
@@ -1699,7 +1931,23 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             finally:
                 _active_streams.pop(user.id, None)
 
-            await _send_stream_result(query.message, result, context, chat_id)
+            # Handle interactive results
+            if result.error:
+                await status_msg.edit_text(f"❌ {result.error}")
+                return
+            if result.permission_request or result.ask_user_payload:
+                await stream_display.finalize()
+                await _send_stream_result(query.message, result, context, chat_id)
+                return
+
+            # Finalize the stream display
+            await stream_display.finalize()
+            if not result.answer and not result.thinking:
+                err_msg = f"❌ {result.error}" if result.error else "⚠️ No response received. The model may be locked or unavailable. Try switching models."
+                try:
+                    await status_msg.edit_text(err_msg, reply_markup=None)
+                except Exception:
+                    pass
 
         return
 
@@ -1765,7 +2013,42 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await query.answer()
             return
 
-        await query.answer()
+        # Fall through to library panel pagination below
+
+        # ── Library panel pagination (gallery, notes, research) ──
+        _lib_panel_map = {
+            "gal": {"endpoint": "/api/library/gallery", "cb_prefix": _CB_FILE_GALLERY, "label_key": "filename", "sub_key": "type", "title": "🖼 *Gallery*", "hint": "Tap an image to download."},
+            "not": {"endpoint": "/api/library/notes", "cb_prefix": _CB_FILE_NOTE, "label_key": "title", "sub_key": None, "title": "📝 *Notes*", "hint": "Tap a note to download."},
+            "res": {"endpoint": "/api/library/research", "cb_prefix": _CB_FILE_RESEARCH, "label_key": "title", "sub_key": None, "title": "🔬 *Research*", "hint": "Tap a file to download."},
+        }
+        for pkey, pinfo in _lib_panel_map.items():
+            if panel_page.startswith(f"{pkey}:"):
+                try:
+                    page_num = int(panel_page.split(":")[1])
+                except (ValueError, IndexError):
+                    await query.answer("Invalid page number", show_alert=True)
+                    return
+                status, body = await _sable_request("GET", pinfo["endpoint"], timeout=15)
+                if status != 200:
+                    await query.answer(f"Failed to load ({status})", show_alert=True)
+                    return
+                items = body if isinstance(body, list) else []
+                keyboard, total_pages = _build_library_keyboard(
+                    items, pinfo["cb_prefix"], page=page_num,
+                    label_key=pinfo["label_key"], sub_key=pinfo.get("sub_key"),
+                )
+                try:
+                    await query.edit_message_text(
+                        f"{pinfo['title']} ({len(items)} items)\n_{pinfo['hint']}_",
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                    )
+                except Exception as e:
+                    logger.warning("Library pagination edit failed: %s", e)
+                await query.answer()
+                return
+
+        await query.answer("Unknown panel", show_alert=True)
         return
 
     # ── File download callbacks ──
@@ -1941,7 +2224,7 @@ async def _send_stream_result(
     # Normal response
     response = result.answer
     if not response:
-        response = "_(no response)_"
+        response = f"❌ {result.error}" if result.error else "⚠️ No response received. Try switching models or starting a new chat."
 
     if result.thinking and len(result.thinking) < 500:
         response = f"💭 _{result.thinking[:300]}_\n\n{response}"
@@ -1960,10 +2243,46 @@ async def _send_stream_result(
 
 
 # ── Handler registration helper ──────────────────────────────────────────────
+async def _check_model_image_support(user_id: int) -> tuple[bool, str]:
+    """Check if the user's current model supports image input.
+
+    Returns (supported, model_label).
+    """
+    user_model = get_user_pref(user_id, "model")
+    try:
+        status, body = await _sable_request("GET", "/api/models", timeout=10)
+        if status == 200 and isinstance(body, dict):
+            models = body.get("models", [])
+            for m in models:
+                mid = m.get("id", "")
+                # Match by exact ID or if no model set (default)
+                if mid == user_model or (not user_model and m.get("_default")):
+                    caps = m.get("capabilities", {})
+                    label = m.get("label", mid)
+                    return caps.get("image", False), label
+            # Model not found in list — assume no image support if explicitly set
+            if user_model:
+                return False, user_model
+    except Exception as e:
+        logger.warning("Failed to check model capabilities: %s", e)
+    # Default: assume supported if we can't verify
+    return True, user_model or "default"
+
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle incoming photos — save to uploads directory."""
+    """Handle incoming photos — check model support, save, and send to model."""
     user = update.effective_user
     if not user or not is_user_allowed(user.id):
+        return
+
+    # Check if current model supports image input
+    supported, model_label = await _check_model_image_support(user.id)
+    if not supported:
+        await update.message.reply_text(
+            f"⚠️ *{model_label}* doesn't support image input.\n"
+            f"Switch to a vision-capable model to send photos.",
+            parse_mode="Markdown",
+        )
         return
 
     photo = update.message.photo[-1]  # Highest resolution
@@ -1978,10 +2297,20 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await file.download_to_drive(str(filepath))
     size_kb = photo.file_size // 1024 if photo.file_size else "?"
 
-    await update.message.reply_text(
-        f"📸 Photo saved!\n`{filename}` ({size_kb}KB)\n_Size: {photo.width}×{photo.height}_",
-        parse_mode="Markdown",
-    )
+    caption = update.message.caption
+    if caption:
+        # Photo has caption — send to model with image reference
+        text = f"[Image: {filepath}]\n\n{caption}"
+        update.message.text = text
+        await handle_message(update, context)
+    else:
+        # No caption — store pending image and ask for caption
+        context.user_data["pending_image"] = str(filepath)
+        await update.message.reply_text(
+            f"📸 Photo received! (`{size_kb}KB`, {photo.width}×{photo.height})\n\n"
+            f"Send a caption/message to describe what you'd like me to do with this image.",
+            parse_mode="Markdown",
+        )
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2084,23 +2413,21 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user_thinking = get_user_pref(user.id, "thinking_mode")
 
     stop_kb = _build_stop_keyboard(chat_id)
-    chat_status_msg = await update.message.reply_text("⏳ Processing transcribed message...", reply_markup=stop_kb)
 
-    last_status_text = "⏳ Processing transcribed message..."
+    # Streaming display for thinking + answer
+    stream_display = StreamDisplay(update.message, stop_kb, thinking_enabled=bool(user_thinking))
+    await stream_display.start()
+    chat_status_msg = stream_display.msg
+
     async def update_status(new_text: str) -> None:
-        nonlocal last_status_text
-        if new_text != last_status_text:
-            last_status_text = new_text
-            try:
-                await chat_status_msg.edit_text(new_text, reply_markup=stop_kb)
-            except Exception:
-                pass
+        pass  # Thinking/answer now stream via on_thinking/on_answer
 
     current_tool_args = ""
     async def send_tool_event(event_type: str, data: dict) -> None:
-        nonlocal chat_status_msg, last_status_text, current_tool_args
+        nonlocal chat_status_msg, current_tool_args, stream_display
         name = data.get("name", "unknown")
         if event_type == "start":
+            await stream_display.finalize()
             attrs = data.get("data", {}).get("attrs") or data.get("attrs", "")
             if isinstance(attrs, dict):
                 args_str = ", ".join(f"{k}={v}" for k, v in attrs.items() if v)
@@ -2110,9 +2437,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             display = f"⚡ `{name}`"
             if args_str:
                 display += f"\n`{args_str[:500]}`"
-            last_status_text = display
             try:
-                await chat_status_msg.edit_text(display, parse_mode="Markdown", reply_markup=stop_kb)
+                chat_status_msg = await update.message.reply_text(display, parse_mode="Markdown", reply_markup=stop_kb)
             except Exception:
                 pass
         elif event_type == "end":
@@ -2132,11 +2458,14 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 await chat_status_msg.edit_text(msg_text, parse_mode="Markdown", reply_markup=None)
             except Exception:
                 pass
-            try:
-                chat_status_msg = await update.message.reply_text("⏳ Processing...", reply_markup=stop_kb)
-                last_status_text = "⏳ Processing..."
-            except Exception:
-                pass
+            # Send generated images as photos
+            skill_result = data.get("result")
+            if skill_result:
+                await _send_generated_images(update.message, skill_result)
+            # Create fresh stream display for resumed streaming
+            stream_display = StreamDisplay(update.message, stop_kb, thinking_enabled=bool(user_thinking))
+            await stream_display.start()
+            chat_status_msg = stream_display.msg
             current_tool_args = ""
 
     stream_task = asyncio.current_task()
@@ -2150,6 +2479,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             thinking_mode=user_thinking,
             on_status=update_status,
             on_tool_event=send_tool_event,
+            on_thinking=lambda t: stream_display.append_thinking(t),
+            on_answer=lambda a: stream_display.append_answer(a),
         )
     except asyncio.CancelledError:
         try:
@@ -2167,7 +2498,23 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     finally:
         _active_streams.pop(user.id, None)
 
-    await _send_stream_result(chat_status_msg, result, context, chat_id)
+    # Handle interactive results
+    if result.error:
+        await chat_status_msg.edit_text(f"❌ {result.error}")
+        return
+    if result.permission_request or result.ask_user_payload:
+        await stream_display.finalize()
+        await _send_stream_result(update.message, result, context, chat_id)
+        return
+
+    # Finalize the stream display
+    await stream_display.finalize()
+    if not result.answer and not result.thinking:
+        err_msg = f"❌ {result.error}" if result.error else "⚠️ No response received. The model may be locked or unavailable. Try switching models."
+        try:
+            await chat_status_msg.edit_text(err_msg, reply_markup=None)
+        except Exception:
+            pass
 
 
 def register_handlers(app: Application) -> None:

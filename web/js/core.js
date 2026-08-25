@@ -180,14 +180,22 @@
                     });
                     if (res.ok) {
                       setupBrowserStatus.textContent = "Browser opened! Complete login there, then close it.";
+                      setupBrowserStatus.style.color = "";
                       setTimeout(resolve, 3000);
                     } else {
-                      setupBrowserStatus.textContent = "Failed to open browser. You can do this later from Settings.";
-                      setTimeout(resolve, 2000);
+                      let errMsg = "Failed to open browser.";
+                      try {
+                        const body = await res.json();
+                        if (body.detail) errMsg = body.detail.split("\n")[0];
+                      } catch {}
+                      setupBrowserStatus.textContent = "❌ " + errMsg;
+                      setupBrowserStatus.style.color = "#ff6b6b";
+                      console.error("Browser login failed:", errMsg);
                     }
-                  } catch {
-                    setupBrowserStatus.textContent = "Connection error. You can set up browser login later.";
-                    setTimeout(resolve, 2000);
+                  } catch (e) {
+                    setupBrowserStatus.textContent = "❌ Connection error: " + (e.message || e);
+                    setupBrowserStatus.style.color = "#ff6b6b";
+                    console.error("Browser login error:", e);
                   } finally {
                     setupBrowserBtn.disabled = false;
                   }
