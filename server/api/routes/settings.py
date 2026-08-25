@@ -1147,9 +1147,20 @@ async def delete_account(payload: dict[str, str]) -> dict[str, Any]:
     return {"status": "ok", "deleted": target_name}
 
 
+# Keep opened account browsers alive (keyed by profile name)
+_open_account_contexts: dict[str, Any] = {}
+
+
 @router.post("/api/settings/accounts/open")
 async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
-    """Launch a headful browser with the specified profile (like browser_opener.py)."""
+    """Launch a headed browser with the specified account profile.
+
+    Waits for the browser to actually open before returning success.
+    Errors are returned to the frontend instead of being silently swallowed.
+    """
+    import sys
+    _is_windows = sys.platform == "win32"
+
     target_name = payload.get("profile", "")
     if not re.match(r"^browser-data-acc\d+$", target_name):
         raise HTTPException(status_code=400, detail="Invalid profile name")
@@ -1159,55 +1170,72 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
 
     url = payload.get("url", "https://chat.qwen.ai")
 
-    async def _run_browser() -> None:
-        from playwright.async_api import async_playwright
+    from playwright.async_api import async_playwright
+
+    # WSL2 → launch Windows-side Chrome via CDP
+    wsl_session = None
+    try:
+        from engine.wsl_browser import launch_windows_chrome
+        wsl_session = launch_windows_chrome(
+            str(target_path), port=9301, headless=False,
+            extra_args=[
+                "--disk-cache-size=2097152",
+                "--disable-gpu-shader-cache",
+                "--disable-component-update",
+            ],
+        )
+    except Exception:
+        pass
+
+    if wsl_session is not None:
+        logger.info("WSL2: connected to Windows Chrome at %s for %s", wsl_session.cdp_url, target_name)
         try:
-            # WSL2 → launch Windows-side Chrome via CDP
-            from engine.wsl_browser import launch_windows_chrome
-            wsl_session = launch_windows_chrome(
-                str(target_path), port=9301, headless=False,
-                extra_args=[
-                    "--disk-cache-size=2097152",
-                    "--disable-gpu-shader-cache",
-                    "--disable-component-update",
-                ],
-            )
-            if wsl_session is not None:
-                logger.info("WSL2: connected to Windows Chrome at %s for %s", wsl_session.cdp_url, target_name)
-                async with async_playwright() as p:
-                    browser = await p.chromium.connect_over_cdp(wsl_session.cdp_url)
-                    context = browser.contexts[0] if browser.contexts else await browser.new_context()
-                    page = context.pages[0] if context.pages else await context.new_page()
-                    await page.goto(url, timeout=120000)
-                    try:
-                        await page.wait_for_event("close", timeout=0)
-                    except Exception:
-                        pass
-                return
-
-            # Native Linux — original Playwright headed launch
-            async with async_playwright() as p:
-                context = await p.chromium.launch_persistent_context(
-                    user_data_dir=str(target_path),
-                    headless=False,
-                    timeout=0,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-blink-features=AutomationControlled",
-                        "--disk-cache-size=2097152",
-                        "--disable-gpu-shader-cache",
-                        "--disable-component-update",
-                    ],
-                )
-                page = context.pages[0] if context.pages else await context.new_page()
-                await page.goto(url, timeout=120000)
-                # Wait until user closes the browser window
-                await context.wait_for_event("close", timeout=0)
+            pw = await async_playwright().start()
+            browser = await pw.chromium.connect_over_cdp(wsl_session.cdp_url)
+            context = browser.contexts[0] if browser.contexts else await browser.new_context()
+            page = context.pages[0] if context.pages else await context.new_page()
+            await page.goto(url, timeout=30000)
+            _open_account_contexts[target_name] = context
+            return {"status": "opened", "profile": target_name, "url": url}
         except Exception as e:
-            logger.warning(f"Browser for {target_name} exited: {e}")
+            logger.error("WSL2 browser open failed for %s: %s", target_name, e)
+            raise HTTPException(status_code=500, detail=f"WSL2 browser launch failed: {e}")
 
-    asyncio.create_task(_run_browser())
-    return {"status": "opened", "profile": target_name, "url": url}
+    # Native launch (Linux or Windows)
+    launch_args = [
+        "--disable-blink-features=AutomationControlled",
+        "--disk-cache-size=2097152",
+        "--disable-gpu-shader-cache",
+        "--disable-component-update",
+    ]
+    if not _is_windows:
+        launch_args.insert(0, "--no-sandbox")
+
+    try:
+        pw = await async_playwright().start()
+        context = await pw.chromium.launch_persistent_context(
+            user_data_dir=str(target_path),
+            headless=False,
+            timeout=30000,
+            args=launch_args,
+        )
+        page = context.pages[0] if context.pages else await context.new_page()
+        await page.goto(url, timeout=30000)
+        _open_account_contexts[target_name] = context
+        logger.info("Opened browser for %s at %s", target_name, url)
+        return {"status": "opened", "profile": target_name, "url": url}
+    except Exception as e:
+        logger.error("Browser open FAILED for %s: %s", target_name, e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Failed to open browser for {target_name}: {e}\n\n"
+                f"Troubleshooting:\n"
+                f"1. Run 'uv run playwright install chromium'\n"
+                f"2. Check no other process locks: {target_path}\n"
+                f"3. On Windows, ensure Playwright is in the same Python env"
+            ),
+        )
 
 
 _SERVICE_NAME = "sable.service"
