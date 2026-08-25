@@ -81,13 +81,21 @@
       statusCwdEl.style.cursor = "pointer";
       statusCwdEl.addEventListener("click", async () => {
         try {
+          statusCwdEl.style.opacity = "0.5";
           const res = await fetch("/api/filesystem/pick-folder");
           const data = await res.json();
           if (data.path && window.pickFsRoot) {
             window.pickFsRoot(data.path);
+          } else if (data.error) {
+            console.error("[StatusBar] pick-folder error:", data.error);
+            if (window.showToast) window.showToast(data.error, "error");
           }
+          // cancelled is fine — user just closed the dialog
         } catch (err) {
           console.error("[StatusBar] pick-folder failed:", err);
+          if (window.showToast) window.showToast("Folder picker request failed", "error");
+        } finally {
+          statusCwdEl.style.opacity = "";
         }
       });
     }
