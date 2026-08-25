@@ -63,9 +63,9 @@ class CheckpointManager:
     """Manages shadow git checkpoints for a single project root."""
 
     def __init__(self, project_root: str):
-        self.project_root = str(Path(project_root).resolve())
+        self.project_root = Path(project_root).resolve().as_posix()
         self._hash = hashlib.sha256(self.project_root.encode()).hexdigest()[:12]
-        self.git_dir = str(CHECKPOINT_BASE / self._hash / ".git")
+        self.git_dir = (CHECKPOINT_BASE / self._hash / ".git").as_posix()
         self._ensure_shadow_repo()
 
     def _git(self, *args: str, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -82,17 +82,20 @@ class CheckpointManager:
     def _ensure_shadow_repo(self) -> None:
         if not os.path.exists(self.git_dir):
             os.makedirs(os.path.dirname(self.git_dir), exist_ok=True)
-            # Init bare repo directly at the git_dir path
-            subprocess.run(
+            # Init bare repo — use posix path so git doesn't choke on backslashes
+            result = subprocess.run(
                 ["git", "init", "--bare", self.git_dir],
                 capture_output=True, text=True, timeout=10,
             )
+            if result.returncode != 0:
+                logger.error("Failed to init shadow repo at %s: %s", self.git_dir, result.stderr[:300])
             # Set up excludes
             self._write_excludes()
 
     def _write_excludes(self) -> None:
         """Write a git exclude file (like .gitignore but internal to shadow repo)."""
-        excludes_path = Path(self.git_dir) / "info" / "exclude"
+        # self.git_dir is already posix; use os.path.join for filesystem ops
+        excludes_path = Path(os.path.join(self.git_dir, "info", "exclude"))
         excludes_path.parent.mkdir(parents=True, exist_ok=True)
         excludes_path.write_text("\n".join(EXCLUDE_PATTERNS) + "\n")
 
