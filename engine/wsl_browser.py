@@ -1,18 +1,29 @@
-"""WSL2 ↔ Windows Chrome bridge.
+"""WSL2 <-> Windows Chrome bridge.
 
 On WSL2, headed Playwright can't open a GUI (no display server).
 Instead we launch Windows-side Chrome with --remote-debugging-port
-and connect via CDP.  Linux is never affected — every public function
+and connect via CDP.  Linux is never affected -- every public function
 returns None / passes through when not on WSL2.
+
+If no Chrome/Edge is installed on Windows, automatically downloads
+a portable Chromium for Windows from Playwright's CDN.
 """
 
 from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import time
+import zipfile
 from pathlib import Path
 from typing import NamedTuple
+
+_BS = chr(92)  # backslash, avoids escape issues in string literals
+
+# Where bundled Windows Chromium lives (inside WSL filesystem)
+_BUNDLED_DIR = Path(__file__).resolve().parent.parent / "system" / "chromium-win"
+_BUNDLED_EXE = _BUNDLED_DIR / "chrome-win64" / "chrome.exe"
 
 
 class WSLChromeSession(NamedTuple):
@@ -20,6 +31,10 @@ class WSLChromeSession(NamedTuple):
     process: subprocess.Popen | None  # None if reusing existing
     user_data_dir_win: str             # Windows-style path
 
+
+# ---------------------------------------------------------------------------
+# WSL2 detection
+# ---------------------------------------------------------------------------
 
 def is_wsl2() -> bool:
     """Return True only inside WSL2."""
@@ -33,7 +48,7 @@ def is_wsl2() -> bool:
 
 
 def wsl_to_win_path(posix_path: str) -> str:
-    r"""Convert /home/sifat/... -> C:\Users\sifat\... via wslpath."""
+    r"""Convert /home/user/... -> C:\Users\user\... via wslpath."""
     try:
         result = subprocess.run(
             ["wslpath", "-w", posix_path],
@@ -43,22 +58,102 @@ def wsl_to_win_path(posix_path: str) -> str:
             return result.stdout.strip()
     except Exception:
         pass
-    # Manual fallback for /mnt/c/… style paths
+    # Manual fallback for /mnt/c/... style paths
     p = posix_path
     if p.startswith("/mnt/"):
         drive = p[5].upper()
-        rest = p[6:].replace("/", chr(92))
+        rest = p[6:].replace("/", _BS)
         return f"{drive}:{rest}"
     return posix_path
 
 
+# ---------------------------------------------------------------------------
+# Portable Chromium download (Windows build from Playwright CDN)
+# ---------------------------------------------------------------------------
+
+def _get_playwright_chromium_info() -> tuple[str, int] | None:
+    """Return (version, revision) that the installed Playwright expects."""
+    try:
+        from playwright._impl._driver import compute_driver_executable
+        driver = compute_driver_executable()
+        r = subprocess.run(
+            [driver[0], driver[1], "install", "--dry-run"],
+            capture_output=True, text=True, timeout=15,
+        )
+        # Parse first line: "Chrome for Testing 149.0.7827.55 (playwright chromium v1228)"
+        for line in r.stdout.splitlines():
+            if "Chrome for Testing" in line and "chromium v" in line:
+                parts = line.split()
+                version = parts[3]  # e.g. "149.0.7827.55"
+                rev_str = line.split("chromium v")[-1].rstrip(")")
+                revision = int(rev_str)
+                return version, revision
+    except Exception:
+        pass
+    return None
+
+
+def _ensure_windows_chromium() -> Path | None:
+    """Download + extract Windows Chromium if not already present.
+
+    Returns path to chrome.exe or None on failure.
+    Prints progress to stderr so the user sees what's happening.
+    """
+    if _BUNDLED_EXE.exists():
+        return _BUNDLED_EXE
+
+    info = _get_playwright_chromium_info()
+    if not info:
+        print("[wsl_browser] Could not determine Playwright Chromium version", file=sys.stderr)
+        return None
+
+    version, revision = info
+    url = f"https://cdn.playwright.dev/builds/cft/{version}/win64/chrome-win64.zip"
+    dest_zip = _BUNDLED_DIR / "chrome-win64.zip"
+
+    _BUNDLED_DIR.mkdir(parents=True, exist_ok=True)
+
+    print(f"[wsl_browser] No Windows Chrome found. Downloading Chromium {version} for Windows...", file=sys.stderr)
+    print(f"[wsl_browser] URL: {url}", file=sys.stderr)
+
+    # Download with curl (available on all WSL installs)
+    dl = subprocess.run(
+        ["curl", "-fSL", "--progress-bar", "-o", str(dest_zip), url],
+        timeout=300,
+    )
+    if dl.returncode != 0:
+        print(f"[wsl_browser] Download failed (exit {dl.returncode})", file=sys.stderr)
+        return None
+
+    print(f"[wsl_browser] Extracting...", file=sys.stderr)
+    try:
+        with zipfile.ZipFile(dest_zip, "r") as zf:
+            zf.extractall(_BUNDLED_DIR)
+    except Exception as exc:
+        print(f"[wsl_browser] Extraction failed: {exc}", file=sys.stderr)
+        return None
+    finally:
+        dest_zip.unlink(missing_ok=True)
+
+    if _BUNDLED_EXE.exists():
+        print(f"[wsl_browser] Chromium ready at {_BUNDLED_EXE}", file=sys.stderr)
+        return _BUNDLED_EXE
+
+    print("[wsl_browser] chrome.exe not found after extraction", file=sys.stderr)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Chrome discovery
+# ---------------------------------------------------------------------------
+
 def _find_windows_chrome() -> str | None:
-    """Locate Chrome/Edge on the Windows side."""
+    """Locate Chrome/Edge on Windows, or fall back to bundled Chromium."""
     candidates = [
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        f"C:{_BS}Program Files{_BS}Google{_BS}Chrome{_BS}Application{_BS}chrome.exe",
+        f"C:{_BS}Program Files (x86){_BS}Google{_BS}Chrome{_BS}Application{_BS}chrome.exe",
+        f"C:{_BS}Program Files (x86){_BS}Microsoft{_BS}Edge{_BS}Application{_BS}msedge.exe",
+        f"C:{_BS}Program Files{_BS}Microsoft{_BS}Edge{_BS}Application{_BS}msedge.exe",
     ]
     # Also check LOCALAPPDATA via cmd.exe
     try:
@@ -68,13 +163,12 @@ def _find_windows_chrome() -> str | None:
         )
         local_appdata = result.stdout.strip()
         if local_appdata:
-            candidates.insert(0, local_appdata + chr(92) + "Google" + chr(92) + "Chrome" + chr(92) + "Application" + chr(92) + "chrome.exe")
-            candidates.insert(1, local_appdata + chr(92) + "Microsoft" + chr(92) + "Edge" + chr(92) + "Application" + chr(92) + "msedge.exe")
+            candidates.insert(0, f"{local_appdata}{_BS}Google{_BS}Chrome{_BS}Application{_BS}chrome.exe")
+            candidates.insert(1, f"{local_appdata}{_BS}Microsoft{_BS}Edge{_BS}Application{_BS}msedge.exe")
     except Exception:
         pass
 
     for win_path in candidates:
-        # Check existence via cmd.exe (Windows paths aren't directly stat-able)
         try:
             r = subprocess.run(
                 ["cmd.exe", "/c", f'if exist "{win_path}" echo YES'],
@@ -84,8 +178,18 @@ def _find_windows_chrome() -> str | None:
                 return win_path
         except Exception:
             continue
+
+    # Last resort: bundled portable Chromium
+    bundled = _ensure_windows_chromium()
+    if bundled:
+        return wsl_to_win_path(str(bundled))
+
     return None
 
+
+# ---------------------------------------------------------------------------
+# CDP helpers
+# ---------------------------------------------------------------------------
 
 def _is_cdp_alive(port: int) -> bool:
     import socket
@@ -107,8 +211,12 @@ def _find_free_port(start: int = 9301, end: int = 9399) -> int:
                 return port
         except OSError:
             continue
-    return start  # fallback
+    return start
 
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def launch_windows_chrome(
     user_data_dir: str,
@@ -119,7 +227,7 @@ def launch_windows_chrome(
 ) -> WSLChromeSession | None:
     """Launch Windows Chrome with CDP on *port*.
 
-    Returns ``None`` when not on WSL2 or no Windows Chrome found.
+    Returns ``None`` when not on WSL2 or no Windows Chrome could be obtained.
     The caller should then fall back to normal Playwright launch.
     """
     if not is_wsl2():
@@ -127,6 +235,7 @@ def launch_windows_chrome(
 
     chrome_exe = _find_windows_chrome()
     if not chrome_exe:
+        print("[wsl_browser] No Windows Chrome/Edge/bundled Chromium available", file=sys.stderr)
         return None
 
     # Reuse if CDP already alive on this port (same profile assumed)
@@ -162,8 +271,6 @@ def launch_windows_chrome(
         cmd.extend(extra_args)
 
     # Launch via cmd.exe /c start so the Windows process detaches from WSL.
-    # Direct .exe execution from WSL works but ties the process to this Python
-    # session; `start /b` makes it independent.
     win_cmd = " ".join(f'"{c}"' for c in cmd)
     proc = subprocess.Popen(
         ["cmd.exe", "/c", "start", "/b", win_cmd],
@@ -178,7 +285,10 @@ def launch_windows_chrome(
         time.sleep(0.2)
     else:
         # CDP never came up
-        proc.kill()
+        try:
+            proc.kill()
+        except Exception:
+            pass
         return None
 
     return WSLChromeSession(
