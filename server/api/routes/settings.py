@@ -1003,10 +1003,18 @@ async def list_accounts() -> dict[str, Any]:
         for entry in _SYSTEM_DIR.iterdir():
             m = re.match(r"browser-data-acc(\d+)$", entry.name)
             if entry.is_dir() and m:
+                label_file = entry / ".label"
+                custom_label: str | None = None
+                if label_file.exists():
+                    try:
+                        custom_label = label_file.read_text(encoding="utf-8").strip() or None
+                    except Exception:
+                        pass
                 accounts.append({
                     "name": entry.name,
                     "num": int(m.group(1)),
                     "email": _read_profile_email(entry),
+                    "label": custom_label,
                     "size_mb": _dir_size_mb(entry),
                     "has_waf": entry.name in waf_tokens,
                     "has_ds": entry.name in ds_tokens,
@@ -1234,8 +1242,24 @@ async def delete_account(payload: dict[str, str]) -> dict[str, Any]:
     return {"status": "ok", "deleted": target_name}
 
 
-# Keep opened account browsers alive (keyed by profile name)
-_open_account_contexts: dict[str, Any] = {}
+@router.post("/api/settings/accounts/rename")
+async def rename_account(payload: dict[str, str]) -> dict[str, Any]:
+    """Set a custom display label for a browser-data-accN profile."""
+    target_name = payload.get("profile", "")
+    label = payload.get("label", "").strip()
+    if not re.match(r"^browser-data-acc\d+$", target_name):
+        raise HTTPException(status_code=400, detail="Invalid profile name")
+    target_path = _SYSTEM_DIR / target_name
+    if not target_path.is_dir():
+        raise HTTPException(status_code=404, detail=f"'{target_name}' not found")
+    label_file = target_path / ".label"
+    if label:
+        label_file.write_text(label, encoding="utf-8")
+    else:
+        # Empty label clears the custom name
+        if label_file.exists():
+            label_file.unlink()
+    return {"status": "ok", "profile": target_name, "label": label or None}
 
 
 @router.post("/api/settings/accounts/open")
