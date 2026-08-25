@@ -18,11 +18,11 @@ try {
 # Template files
 if ((Test-Path "instruction\Maria.md.example") -and -not (Test-Path "instruction\Maria.md")) {
     Copy-Item "instruction\Maria.md.example" "instruction\Maria.md"
-    Write-Host " Created instruction\Maria.md from template"
+    Write-Output " Created instruction\Maria.md from template"
 }
 if ((Test-Path "Brain\Memory.json.example") -and -not (Test-Path "Brain\Memory.json")) {
     Copy-Item "Brain\Memory.json.example" "Brain\Memory.json"
-    Write-Host " Created Brain\Memory.json from template"
+    Write-Output " Created Brain\Memory.json from template"
 }
 
 # Browser profile directory (no symlinks needed on Windows)
@@ -46,12 +46,12 @@ if (-not (Test-Path "system\browser-data")) {
 try {
     $btInstalled = Get-Module -ListAvailable -Name BurntToast -ErrorAction SilentlyContinue
     if (-not $btInstalled) {
-        Write-Host " Installing BurntToast for native notifications..."
+        Write-Output " Installing BurntToast for native notifications..."
         Install-Module BurntToast -Scope CurrentUser -Force -ErrorAction Stop
-        Write-Host " BurntToast installed"
+        Write-Output " BurntToast installed"
     }
 } catch {
-    Write-Host "  BurntToast install skipped: $_"
+    Write-Output "  BurntToast install skipped: $_"
 }
 
 #  Auto-start via Task Scheduler (first-run, idempotent) 
@@ -79,33 +79,33 @@ try {
             -Settings $settings `
             -Description "Auto-start Sable agentic chat server on login" `
             | Out-Null
-        Write-Host "  Installed auto-start task: $TASK_NAME (runs on login)"
+        Write-Output "  Installed auto-start task: $TASK_NAME (runs on login)"
     }
 } catch {
-    Write-Host "  Could not install auto-start task: $_"
+    Write-Output "  Could not install auto-start task: $_"
 }
 
 #  Sync dependencies 
 
-Write-Host " Synchronizing dependencies..."
+Write-Output " Synchronizing dependencies..."
 & uv sync --extra windows
-Write-Host ""
+Write-Output ""
 
 #  Info box 
 
 function Show-InfoBox {
     param($Url, $Port)
     $line = "-" * 54
-    Write-Host ""
-    Write-Host "+$line+"
-    Write-Host "| Sable is running!                                    |"
-    Write-Host "|                                                      |"
-    Write-Host ("| URL:     {0,-41} |" -f $Url)
-    Write-Host ("| Port:    {0,-41} |" -f $Port)
-    Write-Host "|                                                      |"
-    Write-Host "| Stop:    Ctrl+C                                      |"
-    Write-Host "+$line+"
-    Write-Host ""
+    Write-Output ""
+    Write-Output "+$line+"
+    Write-Output "| Sable is running!                                    |"
+    Write-Output "|                                                      |"
+    Write-Output ("| URL:     {0,-41} |" -f $Url)
+    Write-Output ("| Port:    {0,-41} |" -f $Port)
+    Write-Output "|                                                      |"
+    Write-Output "| Stop:    Ctrl+C                                      |"
+    Write-Output "+$line+"
+    Write-Output ""
 }
 
 #  Auto-open browser 
