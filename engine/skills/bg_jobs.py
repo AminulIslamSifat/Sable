@@ -40,7 +40,8 @@ class BackgroundJobManager:
             yield end_event(tag_id, name, False, started, error="Empty command")
             return
 
-        log_path = Path("/tmp") / f"ghost_bg_{uuid.uuid4().hex}.log"
+        from engine.platform_paths import tmp_path
+        log_path = tmp_path(f"ghost_bg_{uuid.uuid4().hex}.log")
         log_file = log_path.open("w", encoding="utf-8")
         try:
             proc = subprocess.Popen(
@@ -82,8 +83,9 @@ class BackgroundJobManager:
 
         if pid is not None:
             info = ns.get(pid, {})
-            log_path = Path(info.get("log", f"/tmp/ghost_bg_{pid}.log"))
-            running = Path(f"/proc/{pid}").exists()
+            from engine.platform_paths import tmp_path, pid_exists
+            log_path = Path(info.get("log", str(tmp_path(f"ghost_bg_{pid}.log"))))
+            running = pid_exists(pid)
 
             tail = ""
             if log_path.exists():
@@ -112,7 +114,8 @@ class BackgroundJobManager:
 
         jobs = []
         for job_pid, info in ns.items():
-            running = Path(f"/proc/{job_pid}").exists()
+            from engine.platform_paths import pid_exists
+            running = pid_exists(job_pid)
             info["status"] = "running" if running else "exited"
             jobs.append(info)
             yield output_event(tag_id, f"{job_pid} [{info['status']}] {info.get('command', '')} -> {info.get('log', '')}\n")
@@ -123,5 +126,6 @@ class BackgroundJobManager:
         """Return all tracked jobs for a namespace (for API listing)."""
         ns = self._jobs.get(namespace, {})
         for info in ns.values():
-            info["status"] = "running" if Path(f"/proc/{info['pid']}").exists() else "exited"
+            from engine.platform_paths import pid_exists
+            info["status"] = "running" if pid_exists(info['pid']) else "exited"
         return list(ns.values())

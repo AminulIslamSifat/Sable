@@ -53,13 +53,15 @@ from .routes.telegram_bot import router as telegram_bot_router
 
 def _raise_nofile_limit() -> None:
     """Raise open file limit for agentic workloads (browsers, agents, streams)."""
-    import resource
     try:
+        import resource
         soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
         target = min(65536, hard)
         if soft < target:
             resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
             logger.info("Raised RLIMIT_NOFILE: %d → %d (hard=%d)", soft, target, hard)
+    except ImportError:
+        pass  # Windows: no resource module
     except Exception as exc:
         logger.warning("Could not raise RLIMIT_NOFILE: %s", exc)
 

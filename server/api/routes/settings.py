@@ -56,7 +56,9 @@ def _strip_one_profile(profile: Path) -> tuple[str, float, float]:
     # Safety: never strip the currently-active profile. Matters when invoked as
     # a background task after a switch — the user may have switched back since.
     try:
-        if _ACTIVE_PROFILE_LINK.exists() and Path(profile).resolve() == _ACTIVE_PROFILE_LINK.resolve():
+        from engine.config import get_active_account, _SYSTEM as _SYS
+        active_dir = _SYS / get_active_account()
+        if active_dir.exists() and Path(profile).resolve() == active_dir.resolve():
             raise RuntimeError(f"refusing to strip active profile {profile.name}")
     except OSError:
         pass
@@ -1014,12 +1016,8 @@ async def list_accounts() -> dict[str, Any]:
         accounts.sort(key=lambda a: a["num"])
         return accounts
     accounts = await asyncio.to_thread(_scan)
-    active: str | None = None
-    if _ACTIVE_PROFILE_LINK.is_symlink():
-        target = _ACTIVE_PROFILE_LINK.resolve().name
-        active = target
-    elif _ACTIVE_PROFILE_LINK.is_dir():
-        active = "browser-data (not yet migrated)"
+    from engine.config import get_active_account as _get_active
+    active = _get_active()
     return {"accounts": accounts, "active": active}
 
 @router.post("/api/settings/accounts/switch")
@@ -1031,25 +1029,16 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
     if not target_path.is_dir():
         raise HTTPException(status_code=404, detail=f"Profile directory '{target_name}' not found")
     # Resolve old profile before switching (for post-switch strip)
+    from engine.config import get_active_account as _get_act, set_active_account as _set_act, _SYSTEM as _SYS
     old_profile: Path | None = None
-    if _ACTIVE_PROFILE_LINK.is_symlink():
-        resolved = _ACTIVE_PROFILE_LINK.resolve()
-        if resolved != target_path and resolved.is_dir():
-            old_profile = resolved
-    def _do_switch() -> None:
-        if _ACTIVE_PROFILE_LINK.is_dir() and not _ACTIVE_PROFILE_LINK.is_symlink():
-            migration_name = "browser-data-acc1"
-            migration_path = _SYSTEM_DIR / migration_name
-            if migration_path.exists():
-                shutil.rmtree(_ACTIVE_PROFILE_LINK)
-            else:
-                _ACTIVE_PROFILE_LINK.rename(migration_path)
-        elif _ACTIVE_PROFILE_LINK.is_symlink():
-            _ACTIVE_PROFILE_LINK.unlink()
-        _ACTIVE_PROFILE_LINK.symlink_to(target_path)
+    current_active = _get_act()
+    current_path = _SYS / current_active
+    if current_path != target_path and current_path.is_dir():
+        old_profile = current_path
+
     await service.close()
     try:
-        await asyncio.to_thread(_do_switch)
+        _set_act(target_name)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Switch failed: {exc}")
 
@@ -1225,14 +1214,16 @@ _SERVICE_NAME = "sable.service"
 
 
 @router.post("/api/settings/service/stop")
-async def stop_service() -> dict[str, str]:
-    subprocess.Popen(["systemctl", "--user", "stop", _SERVICE_NAME])
+async def stop_service_endpoint() -> dict[str, str]:
+    from engine.service_manager import stop_service as _stop
+    _stop()
     return {"status": "stopping"}
 
 
 @router.post("/api/settings/service/restart")
-async def restart_service() -> dict[str, str]:
-    subprocess.Popen(["systemctl", "--user", "restart", _SERVICE_NAME])
+async def restart_service_endpoint() -> dict[str, str]:
+    from engine.service_manager import restart_service as _restart
+    _restart()
     return {"status": "restarting"}
 
 

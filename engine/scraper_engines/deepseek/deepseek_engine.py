@@ -27,7 +27,8 @@ _CHROME_BINARIES = [
 ]
 
 # Fallback: Playwright-bundled Chromium (check newest version first)
-_PLAYWRIGHT_CHROME_GLOB = os.path.expanduser("~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome")
+from engine.platform_paths import find_playwright_chrome as _find_pw_chrome
+_PLAYWRIGHT_CHROME_GLOB = None  # resolved lazily via find_playwright_chrome()
 
 _INPUT_SELECTORS = [
     PLATFORM["selectors"]["input"],
@@ -197,19 +198,19 @@ class GhostChat:
             except Exception:
                 pass
 
+        from engine.platform_paths import system_chrome_candidates, find_playwright_chrome
         chrome_path = next((shutil.which(b) for b in _CHROME_BINARIES if shutil.which(b)), None)
         if not chrome_path:
+            # Try platform-aware system Chrome candidates
+            for cand in system_chrome_candidates():
+                if os.path.isfile(cand):
+                    chrome_path = cand
+                    break
+        if not chrome_path:
             # Fallback to Playwright-bundled Chromium (newest version)
-            import glob as _glob
-            candidates = sorted(_glob.glob(_PLAYWRIGHT_CHROME_GLOB), reverse=True)
-            chrome_path = candidates[0] if candidates else None
+            chrome_path = find_playwright_chrome()
         if not chrome_path:
-            # Hardcoded last-resort fallback
-            _fallback = os.path.expanduser("~/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome")
-            if os.path.isfile(_fallback):
-                chrome_path = _fallback
-        if not chrome_path:
-            console.print(f"[bold red]❌ No Chrome found! Glob: {_PLAYWRIGHT_CHROME_GLOB}[/bold red]")
+            console.print("[bold red]❌ No Chrome found![/bold red]")
             sys.exit(1)
 
         console.print("[bold purple]Launching Ghost Engine...[/bold purple] 🚀")
@@ -237,8 +238,9 @@ class GhostChat:
             f"browser_startup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log",
         )
         log_file = open(browser_log, "a", encoding="utf-8")
+        from engine.process_utils import popen_kwargs
         self.chrome_process = subprocess.Popen(
-            cmd, stdout=log_file, stderr=subprocess.STDOUT, preexec_fn=os.setsid
+            cmd, stdout=log_file, stderr=subprocess.STDOUT, **popen_kwargs()
         )
         self.chrome_log_file = browser_log
         await self._wait_for_cdp_ready()
@@ -1156,7 +1158,8 @@ class GhostChat:
             
         if self.chrome_process:
             try:
-                os.killpg(os.getpgid(self.chrome_process.pid), signal.SIGTERM)
+                from engine.process_utils import kill_process_tree
+                kill_process_tree(self.chrome_process.pid, sig=signal.SIGTERM)
             except Exception:
                 pass
 
