@@ -1170,7 +1170,20 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
 
     url = payload.get("url", "https://chat.qwen.ai")
 
-    from playwright.async_api import async_playwright
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Playwright import failed: {e}\n\n"
+                f"This usually means a dependency DLL is missing or broken.\n"
+                f"Fix: run these commands in your terminal:\n"
+                f"  uv pip install --force-reinstall greenlet\n"
+                f"  uv run playwright install chromium\n"
+                f"Then restart Sable."
+            ),
+        )
 
     # WSL2 → launch Windows-side Chrome via CDP
     wsl_session = None
