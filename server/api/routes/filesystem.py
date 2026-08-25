@@ -18,14 +18,18 @@ from pathlib import Path as _Path
 # Allowed browse roots (read-only from UI)
 def _detect_wsl2() -> bool:
     """Detect WSL2 at module load time for browse roots."""
+    import sys
+    if sys.platform == "win32":
+        return False
     try:
         return "microsoft" in open("/proc/version", "r").read().lower()
     except Exception:
         return False
 
+import tempfile as _tempfile
 _BROWSE_ROOTS = (
     str(_Path.home()),
-    "/tmp",
+    _tempfile.gettempdir(),
     *( ("/mnt",) if _detect_wsl2() else () ),
 )
 
@@ -206,7 +210,11 @@ def _get_display_env() -> dict[str, str]:
     
     Server may be started without display env (systemd, autostart).
     Detect the active Hyprland/Wayland session and inject the vars.
+    On Windows, returns os.environ as-is (no Wayland/X11 concept).
     """
+    import sys
+    if sys.platform == "win32":
+        return os.environ.copy()
     env = os.environ.copy()
     needed = ["WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "DISPLAY", "XDG_RUNTIME_DIR"]
     missing = [k for k in needed if not env.get(k)]

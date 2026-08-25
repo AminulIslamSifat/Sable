@@ -60,8 +60,8 @@ class BrowserManager:
 
     def __init__(self, user_data_dir: str | None = None, headless: bool = True):
         if user_data_dir is None:
-            from engine.config import BROWSER_DATA_DIR
-            user_data_dir = str(BROWSER_DATA_DIR)
+            from engine.config import get_browser_data_dir
+            user_data_dir = str(get_browser_data_dir())
         self.user_data_dir = user_data_dir
         self.headless = headless
         self.playwright = None

@@ -46,7 +46,8 @@ def resolve_profile(profile: str | None) -> Path:
     - "/abs/path/profile"   → used as-is
     """
     if not profile:
-        return Path(str(BROWSER_DATA_DIR))
+        from engine.config import get_browser_data_dir
+        return get_browser_data_dir()
 
     if profile.isdigit():
         return _SYSTEM / f"browser-data-acc{profile}"

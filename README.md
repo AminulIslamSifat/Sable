@@ -40,7 +40,38 @@ It remembers. It learns. It roasts your code. It *grows*.
 
 ***
 
-## quick start
+## setup
+
+### Linux
+
+#### Prerequisites
+
+| Dependency | Required | Install |
+|:--|:--|:--|
+| **Python 3.12** | ✅ Yes | `sudo pacman -S python312` / `sudo apt install python3.12` |
+| **[uv](https://docs.astral.sh/uv/)** | ✅ Yes | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| **git** | ✅ Yes | Comes with most distros |
+| **systemd** | Optional | Most distros have it; without it, Sable runs as a foreground process |
+| **libnotify** (`notify-send`) | Optional | `sudo pacman -S libnotify` / `sudo apt install libnotify-bin` — for desktop notifications |
+| **xdg-utils** (`xdg-open`) | Optional | Almost always pre-installed — auto-opens browser on launch |
+| **Go** | Optional | Only if rebuilding the DeepSeek PoW solver |
+
+> [!note] Playwright system libraries
+> Playwright bundles its own Chromium, but it needs system shared libraries (NSS, ATK, CUPS, DRM, etc.). On first run, if Chromium fails to launch, install them:
+> ```bash
+> # Arch
+> uv run playwright install-deps chromium
+>
+> # Debian/Ubuntu
+> sudo apt install libnss3 libatk1.0-0 libcups2 libdbus-1-3 libdrm2 \
+>   libxkbcommon0 libatspi2.0-0 libpango-1.0-0 libcairo2 libasound2
+>
+> # Fedora
+> sudo dnf install nss atk cups-libs dbus-libs libdrm libxkbcommon \
+>   at-spi2-atk pango cairo alsa-lib
+> ```
+
+#### Install & Run
 
 ```bash
 git clone https://github.com/AminulIslamSifat/Sable.git
@@ -49,10 +80,103 @@ chmod +x start
 ./start
 ```
 
-that's it. that's the whole thing. opens `http://127.0.0.1:61770` in your browser.
+That's it. `./start` handles everything:
+- Syncs Python dependencies via `uv`
+- Installs Playwright Chromium
+- Creates template config files (`Maria.md`, `Memory.json`)
+- Sets up a **systemd user service** (`sable.service`) that auto-starts on login
+- Opens `http://127.0.0.1:61770` in your browser
 
-> [!note] first run?
-> `./start` handles everything — deps, Playwright browsers, systemd service setup. Just run it.
+#### Managing the Service
+
+```bash
+# Check status
+systemctl --user status sable.service
+
+# View live logs
+journalctl --user -u sable.service -f
+
+# Stop / restart
+systemctl --user stop sable.service
+systemctl --user restart sable.service
+
+# Survive logout (optional, recommended)
+loginctl enable-linger $USER
+```
+
+---
+
+### Windows
+
+#### Prerequisites
+
+| Dependency | Required | Install |
+|:--|:--|:--|
+| **Python 3.12** | ✅ Yes | [python.org](https://www.python.org/downloads/) or `winget install Python.Python.3.12` |
+| **[uv](https://docs.astral.sh/uv/)** | ✅ Yes | `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 \| iex"` |
+| **git** | ✅ Yes | [git-scm.com](https://git-scm.com/download/win) or `winget install Git.Git` |
+| **PowerShell 5.1+** | ✅ Yes | Pre-installed on Windows 10/11 |
+| **Go** | Optional | Only if rebuilding the DeepSeek PoW solver |
+
+> [!note] No admin required
+> Everything installs per-user. Task Scheduler task, BurntToast module, and all Python deps are user-scoped.
+
+#### Install & Run
+
+```powershell
+git clone https://github.com/AminulIslamSifat/Sable.git
+cd Sable
+.\start.ps1
+```
+
+`start.ps1` handles everything:
+- Syncs Python dependencies via `uv` (including `pywinpty` for terminal support)
+- Installs Playwright Chromium
+- Creates template config files
+- Installs **BurntToast** PowerShell module for native toast notifications
+- Registers a **Task Scheduler** task ("Sable Server") that auto-starts on login
+- Opens `http://127.0.0.1:61770` in your browser
+
+#### Auto-Start Details
+
+The scheduled task is created automatically on first run:
+- **Trigger:** At user logon
+- **Window style:** Hidden (no PowerShell popup)
+- **Restart policy:** Up to 3 retries on failure
+- **Battery:** Runs on battery power
+
+To manage it manually:
+```powershell
+# Check if task exists
+Get-ScheduledTask -TaskName "Sable Server"
+
+# Disable / enable
+Disable-ScheduledTask -TaskName "Sable Server"
+Enable-ScheduledTask -TaskName "Sable Server"
+
+# Remove
+Unregister-ScheduledTask -TaskName "Sable Server" -Confirm:$false
+```
+
+#### Notifications
+
+Native Windows toast notifications work automatically via the **BurntToast** PowerShell module (auto-installed by `start.ps1`). If BurntToast is unavailable, Sable falls back to a MessageBox dialog.
+
+To reinstall manually:
+```powershell
+Install-Module BurntToast -Scope CurrentUser -Force
+```
+
+---
+
+### First Run Notes
+
+Both platforms create these files on first run:
+- `instruction/Maria.md` — persona prompt (from `.example` template)
+- `Brain/Memory.json` — persistent memory store (from `.example` template)
+- `system/browser-data-acc1/` — Playwright browser profile
+
+Edit `Maria.md` to customize the AI's personality. Edit `Memory.json` to seed initial memories.
 
 ***
 
@@ -87,18 +211,6 @@ code --install-extension sable-chat-*.vsix
 > Make sure Sable is running (`./start`) before using the extension.
 
 **Repo:** [github.com/AminulIslamSifat/sable-vscode](https://github.com/AminulIslamSifat/sable-vscode)
-
-***
-
-## prerequisites
-
-| Thing | Why |
-|:--|:--|
-| **Python 3.12** | pinned exact (`3.12.13`), not sorry |
-| **[uv](https://docs.astral.sh/uv/)** | package manager, fast af |
-| **systemd** | optional — falls back to direct `uv run` |
-| **Go** | only if rebuilding DeepSeek PoW solver |
-| **Chromium** | Playwright installs it for you via `./start` |
 
 ***
 
@@ -157,9 +269,10 @@ Sable/
 
 ## commands
 
-| Command | Does |
-|:--|:--|
-| `./start` | Setup (first run) + launch Sable. That's it. One script. |
+| Command | Platform | Does |
+|:--|:--|:--|
+| `./start` | Linux/macOS | Bootstrap + launch via systemd (or foreground fallback) |
+| `.\start.ps1` | Windows | Bootstrap + launch with Task Scheduler auto-start |
 
 ***
 

@@ -63,13 +63,9 @@ _LEGACY_MIGRATED = False  # guard so migration only runs once
 # --------------------------------------------------------------------------
 
 def _resolve_active_account() -> str:
-    """Get the active account name from the browser-data symlink target."""
-    symlink = _SYSTEM_DIR / "browser-data"
-    try:
-        target = symlink.resolve()
-        return target.name  # e.g. "browser-data-acc15"
-    except OSError:
-        return "browser-data"
+    """Get the active account name. Delegates to engine.config.get_active_account()."""
+    from engine.config import get_active_account
+    return get_active_account()
 
 
 def _load_token_store() -> dict[str, list[str]]:

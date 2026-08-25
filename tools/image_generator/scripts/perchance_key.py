@@ -146,11 +146,12 @@ def refresh_key_via_browser(tag: str = "perchance") -> str | None:
                 break
     print(f"[{tag}][browser] CDP port: {cdp_port}", file=sys.stderr)
 
-    user_data_dir = f"/tmp/perchance_key_refresh_{os.getpid()}"
+    import tempfile
+    user_data_dir = os.path.join(tempfile.gettempdir(), f"perchance_key_refresh_{os.getpid()}")
 
-    # ── Display env (Wayland) ──
+    # ── Display env (Wayland, POSIX only) ──
     browser_env = os.environ.copy()
-    if not browser_env.get("WAYLAND_DISPLAY"):
+    if sys.platform != "win32" and not browser_env.get("WAYLAND_DISPLAY"):
         import glob as _glob
         uid = os.getuid()
         sockets = sorted(_glob.glob(f"/run/user/{uid}/wayland-[0-9]*"))
