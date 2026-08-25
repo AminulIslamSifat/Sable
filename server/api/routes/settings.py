@@ -1133,9 +1133,19 @@ async def delete_account(payload: dict[str, str]) -> dict[str, Any]:
     target_path = _SYSTEM_DIR / target_name
     if not target_path.is_dir():
         raise HTTPException(status_code=404, detail=f"'{target_name}' not found")
-    # Block deleting the active profile
-    if _ACTIVE_PROFILE_LINK.is_symlink() and _ACTIVE_PROFILE_LINK.resolve() == target_path.resolve():
-        raise HTTPException(status_code=400, detail="Cannot delete the active profile. Switch first.")
+    # Block deleting the active profile.
+    # Use get_active_account() (file-based) rather than is_symlink(), because on
+    # Windows the "browser-data" pointer is a directory junction which returns
+    # False for Path.is_symlink(), making the old guard a silent no-op.
+    from engine.config import get_active_account, _SYSTEM as _ENGINE_SYSTEM
+    try:
+        active_dir = _ENGINE_SYSTEM / get_active_account()
+        if active_dir.resolve() == target_path.resolve():
+            raise HTTPException(status_code=400, detail="Cannot delete the active profile. Switch first.")
+    except HTTPException:
+        raise
+    except OSError:
+        pass
 
     def _remove() -> None:
         shutil.rmtree(target_path)

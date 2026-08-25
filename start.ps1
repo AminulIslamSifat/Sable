@@ -25,21 +25,14 @@ if ((Test-Path "Brain\Memory.json.example") -and -not (Test-Path "Brain\Memory.j
     Write-Host " Created Brain\Memory.json from template"
 }
 
-# Browser profile directory (no symlinks needed on Windows)
+# Browser profile directory
 if (-not (Test-Path "system")) { New-Item -ItemType Directory -Path "system" | Out-Null }
 if (-not (Test-Path "system\browser-data-acc1")) {
     New-Item -ItemType Directory -Path "system\browser-data-acc1" | Out-Null
 }
-if (-not (Test-Path "system\browser-data")) {
-    # On Windows, use a junction or just point directly
-    # For simplicity, create a directory junction
-    try {
-        cmd /c mklink /J "system\browser-data" "system\browser-data-acc1" 2>$null
-    } catch {
-        # Fallback: just copy the reference
-        New-Item -ItemType Directory -Path "system\browser-data" | Out-Null
-    }
-}
+# Note: the legacy "system\browser-data" symlink/junction is no longer needed.
+# Account switching now uses the system\.active_account file (set_active_account / get_active_account).
+# If an old junction exists it will keep working; new installs skip it entirely.
 
 #  BurntToast notifications (auto-install, idempotent) 
 
@@ -111,16 +104,26 @@ function Show-InfoBox {
 #  Auto-open browser 
 
 function Open-Browser {
-    Start-Sleep -Seconds 5
+    param($Url)
+    # Poll until the server is accepting connections (up to 30 s), then open browser.
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $null = Invoke-WebRequest -Uri "$Url/api/health" -UseBasicParsing -TimeoutSec 1 -ErrorAction Stop
+            break
+        } catch {
+            Start-Sleep -Milliseconds 500
+        }
+    }
     try {
-        Start-Process $SABLE_URL
+        Start-Process $Url
     } catch {}
 }
 
 #  Start server directly 
 
 Show-InfoBox $SABLE_URL $SABLE_PORT
-Open-Browser
+Start-Job -ScriptBlock { param($u) Open-Browser $u } -ArgumentList $SABLE_URL | Out-Null
 
 $env:TERM = "xterm-256color"
 & uv run python server.py

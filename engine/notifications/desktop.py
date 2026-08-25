@@ -17,14 +17,20 @@ IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
 
 _NOTIFY_SEND = None if IS_WINDOWS else shutil.which("notify-send")
-_BURNTOAST_CHECKED = False
+# Three-state flag: None = never tried, True = available, False = unavailable.
+_BURNTOAST_AVAILABLE: bool | None = None
 
 
 async def _ensure_burnttoast() -> bool:
-    """Auto-install BurntToast module if missing. Returns True if available."""
-    global _BURNTOAST_CHECKED
-    if _BURNTOAST_CHECKED:
-        return True
+    """Auto-install BurntToast module if missing. Returns True if available.
+
+    The install is attempted at most once per process lifetime regardless of
+    outcome — prevents spawning a 60-second PowerShell process on every
+    notification when BurntToast is genuinely unavailable (e.g. corp policy).
+    """
+    global _BURNTOAST_AVAILABLE
+    if _BURNTOAST_AVAILABLE is not None:
+        return _BURNTOAST_AVAILABLE
 
     check_cmd = (
         "if (Get-Module -ListAvailable -Name BurntToast) { exit 0 } "
@@ -41,7 +47,7 @@ async def _ensure_burnttoast() -> bool:
         )
         _, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
         if proc.returncode == 0:
-            _BURNTOAST_CHECKED = True
+            _BURNTOAST_AVAILABLE = True
             logger.info("[desktop-notify] BurntToast ready")
             return True
         logger.warning(
@@ -52,6 +58,8 @@ async def _ensure_burnttoast() -> bool:
         logger.warning("[desktop-notify] BurntToast install timed out")
     except FileNotFoundError:
         logger.warning("[desktop-notify] powershell not found")
+    # Mark as unavailable so we never retry this session
+    _BURNTOAST_AVAILABLE = False
     return False
 
 
