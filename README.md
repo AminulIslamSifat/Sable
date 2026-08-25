@@ -126,6 +126,8 @@ loginctl enable-linger $USER
 ```powershell
 git clone https://github.com/AminulIslamSifat/Sable.git
 cd Sable
+# If scripts are disabled (default on fresh Windows installs):
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 .\start.ps1
 ```
 
