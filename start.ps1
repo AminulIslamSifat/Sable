@@ -95,16 +95,16 @@ Write-Host ""
 
 function Show-InfoBox {
     param($Url, $Port)
-    $line = "─" * 54
+    $line = "-" * 54
     Write-Host ""
-    Write-Host "╭$line╮"
-    Write-Host "│ 🚀 Sable is running!                                 │"
-    Write-Host "│                                                      │"
-    Write-Host ("│ 🌐 URL:    {0,-41} │" -f $Url)
-    Write-Host ("│ 📡 Port:   {0,-41} │" -f $Port)
-    Write-Host "│                                                      │"
-    Write-Host "│ 📋 Stop:   Ctrl+C                                    │"
-    Write-Host "╰$line╯"
+    Write-Host "+$line+"
+    Write-Host "| Sable is running!                                    |"
+    Write-Host "|                                                      |"
+    Write-Host ("| URL:     {0,-41} |" -f $Url)
+    Write-Host ("| Port:    {0,-41} |" -f $Port)
+    Write-Host "|                                                      |"
+    Write-Host "| Stop:    Ctrl+C                                      |"
+    Write-Host "+$line+"
     Write-Host ""
 }
 
