@@ -8,7 +8,7 @@ $SCRIPT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 Set-Location $SCRIPT_DIR
 
-# ── First-run bootstrap ────────────────────────────────────────────────
+#  First-run bootstrap 
 
 # Playwright chromium (idempotent)
 try {
@@ -18,11 +18,11 @@ try {
 # Template files
 if ((Test-Path "instruction\Maria.md.example") -and -not (Test-Path "instruction\Maria.md")) {
     Copy-Item "instruction\Maria.md.example" "instruction\Maria.md"
-    Write-Host "📝 Created instruction\Maria.md from template"
+    Write-Host " Created instruction\Maria.md from template"
 }
 if ((Test-Path "Brain\Memory.json.example") -and -not (Test-Path "Brain\Memory.json")) {
     Copy-Item "Brain\Memory.json.example" "Brain\Memory.json"
-    Write-Host "🧠 Created Brain\Memory.json from template"
+    Write-Host " Created Brain\Memory.json from template"
 }
 
 # Browser profile directory (no symlinks needed on Windows)
@@ -41,20 +41,20 @@ if (-not (Test-Path "system\browser-data")) {
     }
 }
 
-# ── BurntToast notifications (auto-install, idempotent) ───────────────
+#  BurntToast notifications (auto-install, idempotent) 
 
 try {
     $btInstalled = Get-Module -ListAvailable -Name BurntToast -ErrorAction SilentlyContinue
     if (-not $btInstalled) {
-        Write-Host "🔔 Installing BurntToast for native notifications..."
+        Write-Host " Installing BurntToast for native notifications..."
         Install-Module BurntToast -Scope CurrentUser -Force -ErrorAction Stop
-        Write-Host "✅ BurntToast installed"
+        Write-Host " BurntToast installed"
     }
 } catch {
-    Write-Host "⚠️  BurntToast install skipped: $_"
+    Write-Host "  BurntToast install skipped: $_"
 }
 
-# ── Auto-start via Task Scheduler (first-run, idempotent) ─────────────
+#  Auto-start via Task Scheduler (first-run, idempotent) 
 
 $TASK_NAME = "Sable Server"
 $START_SCRIPT = Join-Path $SCRIPT_DIR "start.ps1"
@@ -79,19 +79,19 @@ try {
             -Settings $settings `
             -Description "Auto-start Sable agentic chat server on login" `
             | Out-Null
-        Write-Host "⚙️  Installed auto-start task: $TASK_NAME (runs on login)"
+        Write-Host "  Installed auto-start task: $TASK_NAME (runs on login)"
     }
 } catch {
-    Write-Host "⚠️  Could not install auto-start task: $_"
+    Write-Host "  Could not install auto-start task: $_"
 }
 
-# ── Sync dependencies ─────────────────────────────────────────────────
+#  Sync dependencies 
 
-Write-Host "🔄 Synchronizing dependencies..."
+Write-Host " Synchronizing dependencies..."
 & uv sync --extra windows
 Write-Host ""
 
-# ── Info box ───────────────────────────────────────────────────────────
+#  Info box 
 
 function Show-InfoBox {
     param($Url, $Port)
@@ -108,7 +108,7 @@ function Show-InfoBox {
     Write-Host ""
 }
 
-# ── Auto-open browser ─────────────────────────────────────────────────
+#  Auto-open browser 
 
 function Open-Browser {
     Start-Sleep -Seconds 5
@@ -117,7 +117,7 @@ function Open-Browser {
     } catch {}
 }
 
-# ── Start server directly ─────────────────────────────────────────────
+#  Start server directly 
 
 Show-InfoBox $SABLE_URL $SABLE_PORT
 Open-Browser
