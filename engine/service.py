@@ -36,8 +36,8 @@ class ChatService:
 
     def __init__(self, user_data_dir: str | None = None) -> None:
         if user_data_dir is None:
-            from engine.config import BROWSER_DATA_DIR
-            user_data_dir = str(BROWSER_DATA_DIR)
+            from engine.config import get_browser_data_dir
+            user_data_dir = str(get_browser_data_dir())
         self._browser = BrowserManager(user_data_dir=user_data_dir)
         self._headers: dict[str, str] | None = None
         # Which account self._headers belong to (guards against fast double-switch

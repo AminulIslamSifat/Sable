@@ -206,12 +206,9 @@ async def apply_update() -> StreamingResponse:
         yield sse({"type": "progress", "step": "restart", "message": "Restarting service… (page will reload)"})
         await asyncio.sleep(0.5)
 
-        # Fire-and-forget restart
-        subprocess.Popen(
-            ["systemctl", "--user", "restart", "sable.service"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        # Fire-and-forget restart (cross-platform)
+        from engine.service_manager import restart_service as _restart
+        _restart()
 
         yield sse({"type": "done", "message": "Update complete. Restarting…"})
 

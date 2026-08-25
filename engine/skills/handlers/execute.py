@@ -219,8 +219,9 @@ def handle_check_command(
 
     if pid_raw and pid is not None:
         info = BG_JOBS.get(pid, {})
-        log_path = Path(info.get("log", f"/tmp/ghost_bg_{pid}.log"))
-        running = Path(f"/proc/{pid}").exists()
+        from engine.platform_paths import tmp_path, pid_exists
+        log_path = Path(info.get("log", str(tmp_path(f"ghost_bg_{pid}.log"))))
+        running = pid_exists(pid)
         tail = ""
         if log_path.exists():
             try:
@@ -253,7 +254,8 @@ def handle_check_command(
 
     jobs = []
     for job_pid, info in BG_JOBS.items():
-        running = Path(f"/proc/{job_pid}").exists()
+        from engine.platform_paths import pid_exists
+        running = pid_exists(job_pid)
         info["status"] = "running" if running else "exited"
         jobs.append(info)
         yield _output_event(

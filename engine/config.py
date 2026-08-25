@@ -73,6 +73,51 @@ MEMORY_SEARCH_MAX_PROMPT_CHARS = 20000
 # Browser profile directories — single source of truth for all browser data paths.
 # All profiles live under system/ to keep the project root clean.
 _SYSTEM = _ROOT / "system"
+_ACTIVE_ACCOUNT_FILE = _SYSTEM / ".active_account"
+
+
+def get_active_account() -> str:
+    """Get the active browser account name from the config file.
+
+    Falls back to symlink resolution for backward compatibility, then to 'browser-data'.
+    """
+    # 1. Try config file first
+    try:
+        name = _ACTIVE_ACCOUNT_FILE.read_text(encoding="utf-8").strip()
+        if name:
+            return name
+    except OSError:
+        pass
+
+    # 2. Migrate from legacy symlink
+    symlink = _SYSTEM / "browser-data"
+    try:
+        if symlink.is_symlink():
+            target = symlink.resolve()
+            name = target.name
+            set_active_account(name)
+            return name
+    except OSError:
+        pass
+
+    return "browser-data"
+
+
+def set_active_account(name: str) -> None:
+    """Persist the active browser account name to a config file."""
+    try:
+        _ACTIVE_ACCOUNT_FILE.write_text(name + "\n", encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Failed to write active account file: %s", exc)
+
+
+def get_browser_data_dir() -> Path:
+    """Return the browser data directory for the currently active account."""
+    return _SYSTEM / get_active_account()
+
+
+# Backward-compatible constant — resolves at import time.
+# Code that needs the *current* active account should call get_browser_data_dir().
 BROWSER_DATA_DIR = _SYSTEM / "browser-data"
 BROWSER_SCRAPER_DATA_DIR = _SYSTEM / "browser-scraper-data"
 BROWSER_AUTOMATION_DATA_DIR = _SYSTEM / "automation-browser-data"
@@ -421,13 +466,8 @@ _QWEN_LEGACY_MIGRATED = False  # guard so migration only runs once
 
 
 def _resolve_active_account() -> str:
-    """Get the active account name from the browser-data symlink target."""
-    symlink = _SYSTEM / "browser-data"
-    try:
-        target = symlink.resolve()
-        return target.name
-    except OSError:
-        return "browser-data"
+    """Get the active account name. Delegates to get_active_account()."""
+    return get_active_account()
 
 
 def load_qwen_token_store() -> dict[str, list[dict[str, str]]]:
