@@ -718,7 +718,7 @@ def delete_chat_route(chat_id: str) -> dict[str, Any]:
 _CONTEXT_PASS_SETTINGS_PATH = Path(__file__).resolve().parents[3] / "system" / "context_pass_settings.json"
 
 def _load_ctx_pass_settings() -> dict[str, str]:
-    defaults = {"summarizer_model": "", "browser_data_acc": ""}
+    defaults = {"summarizer_model": ""}
     if _CONTEXT_PASS_SETTINGS_PATH.exists():
         try:
             stored = json.loads(_CONTEXT_PASS_SETTINGS_PATH.read_text(encoding="utf-8"))
@@ -892,13 +892,11 @@ async def context_pass(req: ContextPassRequest) -> dict[str, Any]:
     # Load settings: primary model + fallback chain
     settings = _load_ctx_pass_settings()
     model = settings.get("summarizer_model") or req.model  # fallback to current
-    browser_acc = settings.get("browser_data_acc", "").strip()
     fallback_models: list[str] = settings.get("fallback_models", [])
-    browser_profiles: list[str] = settings.get("browser_profiles", [])
 
     logger.info(
-        "[context-pass] chat_id=%s | model=%r | browser_acc=%r | fallbacks=%s/%s | transcript_len=%d",
-        req.chat_id, model, browser_acc, fallback_models, browser_profiles, len(messages),
+        "[context-pass] chat_id=%s | model=%r | fallbacks=%s | transcript_len=%d",
+        req.chat_id, model, fallback_models, len(messages),
     )
 
     async def _try_ctx_pass_call(mdl: str, browser_acc_name: str = "") -> dict[str, Any] | None:
@@ -941,23 +939,24 @@ async def context_pass(req: ContextPassRequest) -> dict[str, Any]:
         parts.append("continue")
         return "\n\n".join(parts)
 
-    # Step 1: Primary model (with primary browser profile if Qwen)
-    result = await _try_ctx_pass_call(model, browser_acc)
+    # Step 1: Primary model (uses active account)
+    result = await _try_ctx_pass_call(model)
     if result:
         return {"summary": _assemble_summary(result.get("answer", "").strip())}
 
-    # Step 2: Fallback models
+    # Step 2: Fallback models (API-based)
     for fb_model in fallback_models[:2]:
         result = await _try_ctx_pass_call(fb_model)
         if result:
             logger.info("[context-pass] Fallback model succeeded: %s", fb_model)
             return {"summary": _assemble_summary(result.get("answer", "").strip())}
 
-    # Step 3: Fallback browser profiles (using primary model)
-    for fb_profile in browser_profiles[:2]:
-        result = await _try_ctx_pass_call(model, fb_profile)
+    # Step 3: Dynamic browser pool — search from back (highest number first)
+    from engine.config import get_available_accounts_reverse
+    for acc_name in get_available_accounts_reverse(limit=5):
+        result = await _try_ctx_pass_call(model, acc_name)
         if result:
-            logger.info("[context-pass] Fallback browser profile succeeded: %s", fb_profile)
+            logger.info("[context-pass] Browser pool account succeeded: %s", acc_name)
             return {"summary": _assemble_summary(result.get("answer", "").strip())}
 
     return {"error": "All summarizer fallbacks exhausted — no model/browser combination succeeded"}

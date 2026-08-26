@@ -506,10 +506,10 @@
         <textarea id="igPrompt" class="promptgen-query" rows="3" placeholder="Describe what you want to generate…"></textarea>
         <div class="promptgen-controls">
           <select id="igProvider" class="promptgen-select" style="width:auto;min-width:130px;">
+            <option value="pollinations">Pollinations</option>
             <option value="dreamforge">🔮 DreamForge (advanced)</option>
             <option value="advanced-sdxl">⚡ Advanced SDXL</option>
             <option value="cloudflare">Cloudflare AI (free ~260/day)</option>
-            <option value="pollinations">Pollinations</option>
             <option value="perchance">Perchance</option>
             <option value="puter">Puter (free)</option>
           </select>
@@ -977,12 +977,7 @@
             <select id="pgModel2" class="promptgen-select"></select>
             <select id="pgModel3" class="promptgen-select"></select>
           </div>
-          <div class="promptgen-fallback-col">
-            <div class="promptgen-fallback-label"><i data-lucide="globe" class="icon-lucide"></i> Browser Data <span class="promptgen-hint">top = 1st choice, then fallbacks</span></div>
-            <select id="pgAccount1" class="promptgen-select"></select>
-            <select id="pgAccount2" class="promptgen-select"></select>
-            <select id="pgAccount3" class="promptgen-select"></select>
-          </div>
+
         </div>
         <div id="pgOutputWrap" class="promptgen-output-wrap" style="display:none;">
           <div class="promptgen-output-head">
@@ -1006,18 +1001,7 @@
       _fillPgSlot(launch.querySelector("#pgModel2"), allModels, "— no 2nd model —", allModels[1]?.value || "");
       _fillPgSlot(launch.querySelector("#pgModel3"), allModels, "— no 3rd model —", allModels[2]?.value || "");
 
-      let accounts = [], active = "";
-      try {
-        const data = await fetch("/api/settings/accounts").then((r) => r.json());
-        accounts = ((data && data.accounts) || []).map((a) => ({
-          value: a.name, label: a.email ? a.name + " (" + a.email + ")" : a.name,
-        }));
-        active = (data && data.active) || "";
-      } catch {}
-      const primary = accounts.some((a) => a.value === active) ? active : (accounts[0]?.value || "");
-      _fillPgSlot(launch.querySelector("#pgAccount1"), accounts, accounts.length ? null : "Default (active account)", primary);
-      _fillPgSlot(launch.querySelector("#pgAccount2"), accounts, "— no 2nd account —", "");
-      _fillPgSlot(launch.querySelector("#pgAccount3"), accounts, "— no 3rd account —", "");
+
 
       // ── Wire up ──
       const startBtn = launch.querySelector("#pgStartBtn");
@@ -1040,11 +1024,6 @@
           launch.querySelector("#pgModel1")?.value,
           launch.querySelector("#pgModel2")?.value,
           launch.querySelector("#pgModel3")?.value,
-        );
-        const browserAccounts = _ordered(
-          launch.querySelector("#pgAccount1")?.value,
-          launch.querySelector("#pgAccount2")?.value,
-          launch.querySelector("#pgAccount3")?.value,
         );
         const primaryModel = models[0] || (allModels[0]?.value || "qwen3.8-max-preview");
 
@@ -1069,7 +1048,6 @@
 
 Configuration context (for awareness only, never mention in output):
 - Models: ${models.join(", ") || "default"}
-- Browser Data: ${browserAccounts.join(", ") || "default"}
 
 Generate the specification prompt for this task:
 ${task}`;

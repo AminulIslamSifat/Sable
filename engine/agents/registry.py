@@ -226,26 +226,26 @@ def apply_account_assignments(assignments: dict[str, list[str]]) -> None:
 def get_next_account(role: str, in_use: set[str] | None = None) -> str | None:
     """Get the next available browser account for a role.
 
-    Always respects round-robin ordering. Skips accounts in `in_use` set.
-    If all accounts are busy, returns the round-robin pick anyway (caller decides).
-    Returns None if no chain is configured.
+    Searches from the back (highest number first) to avoid competing with
+    main chat auto-switch which searches forward. Falls back to the global
+    reverse pool if the role-specific chain is empty or exhausted.
+    Skips accounts in `in_use` set.
+    Returns None if nothing is available.
     """
     chain = _account_fallback_chains.get(role)
-    if not chain:
-        return None
-    idx = _account_counters.get(role, 0)
-    n = len(chain)
-    # Walk from current counter position, wrapping around, skipping in-use
-    for offset in range(n):
-        candidate = chain[(idx + offset) % n]
-        if not in_use or candidate not in in_use:
-            # Advance counter past this pick so next call continues rotation
-            _account_counters[role] = (idx + offset + 1) % n
-            return candidate
-    # All accounts in use — still advance counter and return round-robin pick
-    account = chain[idx % n]
-    _account_counters[role] = (idx + 1) % n
-    return account
+    if chain:
+        # Search role-specific chain in reverse order, skipping in-use
+        for candidate in reversed(chain):
+            if not in_use or candidate not in in_use:
+                return candidate
+
+    # Fall back to global reverse pool (highest number first)
+    from engine.config import get_available_accounts_reverse
+    exclude = set(in_use) if in_use else set()
+    for acc_name in get_available_accounts_reverse(exclude=exclude, limit=5):
+        return acc_name
+
+    return None
 
 
 def get_account_pool(role: str) -> list[str]:

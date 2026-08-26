@@ -65,6 +65,26 @@ class ChatService:
             self._headers = None
             self._headers_account = None
 
+    async def switch_account(self, account_name: str) -> None:
+        """Switch to a different browser account.
+
+        Closes the current browser, updates the active account file,
+        re-points the BrowserManager at the new profile directory,
+        and clears cached headers so _ensure_headers fetches fresh ones.
+        """
+        from engine.config import set_active_account, get_browser_data_dir
+        async with self._lock:
+            await self._browser.close()
+            self._headers = None
+            self._headers_account = None
+            # Persist + update in-memory override
+            set_active_account(account_name)
+            self._account_override = account_name
+            # Re-point browser manager at new profile
+            new_data_dir = str(get_browser_data_dir())
+            self._browser.user_data_dir = new_data_dir
+            logger.info("[service] Switched to account %s (data_dir=%s)", account_name, new_data_dir)
+
     async def restart_browser(self, headless: bool | None = None) -> None:
         async with self._lock:
             await self._browser.restart(headless=headless)
@@ -668,7 +688,16 @@ class ChatService:
                 await asyncio.sleep(1 * attempt)
                 continue
 
-        yield {"type": "error", "message": f"Failed after {max_attempts} attempts: {last_error_msg}"}
+        # Defense-in-depth: detect rate-limit/captcha patterns in generic failure messages
+        # so auto-switch can trigger even when the upstream response didn't match our schema
+        _fail_lower = (last_error_msg or "").lower()
+        if any(kw in _fail_lower for kw in ("ratelimit", "rate_limit", "rate limit", "quota", "daily usage", "exceeded", "429")):
+            self._mark_exhausted()
+            yield {"type": "rate_limited", "message": last_error_msg, "hours": "?"}
+        elif any(kw in _fail_lower for kw in ("captcha", "waf", "validate", "rgv587", "blocked", "forbidden")):
+            yield {"type": "waf_blocked", "message": last_error_msg}
+        else:
+            yield {"type": "error", "message": f"Failed after {max_attempts} attempts: {last_error_msg}"}
 
     async def chat(
         self,

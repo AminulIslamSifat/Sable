@@ -82,7 +82,7 @@
       'open-deep-research': { keys: 'Alt+Shift+R', label: 'Open Deep Research', action: () => openLibraryTab('lib-research') },
       'open-gallery': { keys: 'Alt+Shift+G', label: 'Open Gallery', action: () => openLibraryTab('lib-gallery') },
       'open-library': { keys: 'Alt+L', label: 'Open Library', action: () => openLibrary() },
-      'open-memory': { keys: 'Alt+Shift+M', label: 'Open Memory', action: () => openSettingsTab('brain') },
+      'open-memory': { keys: 'Alt+Shift+M', label: 'Open Personalization', action: () => openSettingsTab('personalization') },
       'open-notes': { keys: 'Alt+Shift+N', label: 'Open Notes', action: () => openLibraryTab('lib-notes') },
       'open-prompts': { keys: 'Alt+Shift+P', label: 'Open Prompts', action: () => openLibraryTab('lib-prompts') },
       'open-tasks': { keys: 'Alt+Shift+T', label: 'Open Todo', action: () => openTodoPanel('todo') },
@@ -273,7 +273,7 @@
         else if (tabName === 'account') loadAccountProfiles();
         else if (tabName === 'mcp') loadMcpServers();
         else if (tabName === 'cookbook') { if (window._cbInit) window._cbInit(); }
-        else if (tabName === 'personas') { if (window._personaInit) window._personaInit(); }
+        else if (tabName === 'personalization') { if (window._personaInit) window._personaInit(); }
         else if (tabName === 'bot') { if (window._botSettingsInit) window._botSettingsInit(); }
         else if (tabName === 'shortcuts') renderShortcutsTab();
         else if (tabName === 'updates') loadUpdatesTab();

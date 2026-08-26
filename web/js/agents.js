@@ -1048,18 +1048,6 @@ const AgentSettings = {
         `<option value="${escAttr(m.id)}" ${m.id === data.default_model ? "selected" : ""}>${escHtml(m.label)}${m.api_backend ? ` (${m.api_backend})` : ""}</option>`
       ).join("");
 
-      // Account select options (for all three pool dropdowns)
-      const accounts = this._accounts || [];
-      const acctOptions = accounts.map((a) =>
-        `<option value="${escAttr(a.name)}">${a.has_waf ? "🟢 " : "⚪ "}${escHtml(a.name)}</option>`
-      ).join("");
-
-      // Account pool chips
-      const pool = data.browser_fallback_chain || [];
-      const poolHtml = pool.map((acc) =>
-        `<span class="arc-acct-chip">${escHtml(acc)}<button class="arc-chip-x" title="Remove">×</button></span>`
-      ).join("");
-
       // Model chain chips
       const chain = data.model_chain || [];
       const chainHtml = chain.map((m) =>
@@ -1103,14 +1091,6 @@ const AgentSettings = {
               `<button class="arc-pool-add-btn" title="Add to chain">+</button>` +
             `</div>` +
           `</div>` +
-          `<div class="arc-field">` +
-            `<label>Browser Account Fallback Chain <span class="arc-hint">(tried in order on failure, qwen only)</span></label>` +
-            `<div class="arc-acct-pool">${poolHtml}</div>` +
-            `<div class="arc-pool-add-row">` +
-              `<select class="arc-acct-select mem-input"><option value="" disabled selected>Add account…</option>${acctOptions}</select>` +
-              `<button class="arc-pool-add-btn" title="Add to pool">+</button>` +
-            `</div>` +
-          `</div>` +
         `</div>`;
 
       // Render tool and skill chips
@@ -1150,11 +1130,8 @@ const AgentSettings = {
       const addBtns = card.querySelectorAll(".arc-pool-add-btn");
       const selects = card.querySelectorAll(".arc-pool-add-row select");
 
-      // Model chain (max 3) — first row
+      // Model chain (max 3)
       wirePoolAdd(card.querySelector(".arc-chain-pool"), selects[0], addBtns[0], 3);
-
-      // Account pool — second row
-      wirePoolAdd(card.querySelector(".arc-acct-pool"), selects[1], addBtns[1], null);
 
       // Toggle collapse
       card.querySelector(".arc-header").onclick = () => {
@@ -1299,9 +1276,8 @@ const AgentSettings = {
   async save() {
     const status = document.getElementById("agentConfigStatus");
 
-    // Collect role overrides + account pools from DOM
+    // Collect role overrides from DOM
     const roles = {};
-    const accountAssignments = {};
     document.querySelectorAll(".agent-role-card[data-role]").forEach((card) => {
       const role = card.dataset.role;
       const modelSel = card.querySelector(".arc-model");
@@ -1313,11 +1289,6 @@ const AgentSettings = {
         default_timeout: parseInt(card.querySelector(".arc-timeout").value) || 90,
         max_parallel: parseInt(card.querySelector(".arc-parallel").value) || 1,
       };
-      // Collect browser fallback chain chips
-      const chips = card.querySelectorAll(".arc-acct-pool .arc-acct-chip");
-      if (chips.length) {
-        accountAssignments[role] = [...chips].map((c) => c.textContent.replace("×", "").trim());
-      }
       // Collect model fallback chain
       const chainChips = card.querySelectorAll(".arc-chain-pool .arc-acct-chip");
       if (chainChips.length) {
@@ -1349,7 +1320,6 @@ const AgentSettings = {
         browser_data_dir: document.getElementById("teacherBrowserData").value.trim(),
       },
       roles,
-      account_assignments: accountAssignments,
     };
 
     try {
@@ -1704,12 +1674,13 @@ const TTSSettings = {
   },
 };
 
-// Wire up TTS tab
+// Wire up Voice tab (merged TTS + STT)
 document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.settings-tab').forEach((tab) => {
-    if (tab.dataset.tab === 'tts') {
+    if (tab.dataset.tab === 'voice') {
       tab.addEventListener('click', () => {
         if (!TTSSettings.loaded) TTSSettings.init();
+        if (!STTSettings.loaded) STTSettings.init();
       });
     }
   });
@@ -2100,16 +2071,8 @@ STTSettings.transcribeLive = async function(file) {
   }
 };
 
-// Wire up STT tab
+// STT controls (init now handled by Voice tab click above)
 document.addEventListener('DOMContentLoaded', () => {
-  document.querySelectorAll('.settings-tab').forEach((tab) => {
-    if (tab.dataset.tab === 'stt') {
-      tab.addEventListener('click', () => {
-        if (!STTSettings.loaded) STTSettings.init();
-      });
-    }
-  });
-
   const sttDlBtn = document.getElementById('sttDownloadBtn');
   if (sttDlBtn) sttDlBtn.addEventListener('click', () => STTSettings.download());
 
