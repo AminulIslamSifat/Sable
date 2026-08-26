@@ -107,7 +107,8 @@ try {
 $REG_KEY = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $REG_NAME = "Sable Server"
 $START_BAT = Join-Path $SCRIPT_DIR "start.bat"
-$REG_VALUE = "cmd /c `"$START_BAT`""
+# Run minimized + pass --background flag so start.bat skips browser/info box
+$REG_VALUE = "cmd /c start /min `"`" `"$START_BAT`" --background"
 
 try {
     $currentVal = Get-ItemProperty -Path $REG_KEY -Name $REG_NAME -ErrorAction SilentlyContinue
