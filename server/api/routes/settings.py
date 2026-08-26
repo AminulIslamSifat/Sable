@@ -19,7 +19,7 @@ from engine.scraper import (
 from connectors.deepseek.client import get_client as get_deepseek_client
 
 from server.config import (
-    BASE_DIR, _SYSTEM_DIR, _ACTIVE_PROFILE_LINK, _BROWSER_PROFILES,
+    BASE_DIR, _SYSTEM_DIR, _BROWSER_PROFILES,
 )
 from server.utils import _dir_size_mb, _read_profile_email, logger
 from ..dependencies import service

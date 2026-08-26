@@ -89,12 +89,14 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     stale = recover_stale_agents()
     if stale:
         logger.info("Recovered %d stale agent(s) from previous session", stale)
-    # Load saved role overrides + account assignments into registry
+    # Load saved agent config and apply to runtime + registry
     try:
         from engine.config import AGENT_CONFIG_PATH
         from engine.agents.registry import apply_role_overrides, apply_account_assignments
         if AGENT_CONFIG_PATH.exists():
             _acfg = json.loads(AGENT_CONFIG_PATH.read_text(encoding="utf-8"))
+            # Apply concurrency/resilience/limits to runtime (fixes hardcoded defaults on restart)
+            _get_rt_startup().update_config(_acfg)
             if _acfg.get("roles"):
                 apply_role_overrides(_acfg["roles"])
             if _acfg.get("account_assignments"):

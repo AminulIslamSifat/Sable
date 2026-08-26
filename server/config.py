@@ -52,7 +52,6 @@ DEEPSEEK_MODELS = [
 ]
 
 _SYSTEM_DIR = BROWSER_DATA_DIR.parent
-_ACTIVE_PROFILE_LINK = _SYSTEM_DIR / "browser-data"
 
 _BROWSER_PROFILES: dict[str, tuple[Path, Path]] = {
     "api": (BROWSER_DATA_DIR, BROWSER_DATA_DIR.parent / (BROWSER_DATA_DIR.name + ".bak")),
