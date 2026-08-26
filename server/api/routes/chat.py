@@ -1097,13 +1097,17 @@ async def chat(request: ChatRequest):
                             for ev in engine.process_tag(
                                 item["name"], item.get("attrs", {}), item.get("content", ""),
                                 chat_id=active_chat_id,
+                                cwd=request.cwd,
                             ):
-                                if ev.get("type") in ("skill_start", "skill_output", "skill_end", "file_edit", "permission_request"):
+                                if ev.get("type") in ("skill_start", "skill_output", "skill_end", "file_edit", "permission_request", "cwd_warning"):
                                     round_skill_events.append(ev)
                                 yield sse(ev)
                                 # When permission is requested, emit a transient status (not saved as answer)
                                 if ev.get("type") == "permission_request":
                                     yield sse({"type": "approval_pending", "text": "⏳ Waiting for your approval on that command."})
+                                # When CWD warning is emitted, emit a transient status
+                                if ev.get("type") == "cwd_warning":
+                                    yield sse({"type": "cwd_warning_pending", "text": "⚠️ File operation outside project folder detected."})
                                 # Detect simulacra completion → emit sim_ready card
                                 if (ev.get("type") == "skill_end"
                                         and ev.get("name") == "run_simulacra"
@@ -1969,6 +1973,11 @@ async def chat(request: ChatRequest):
                     ev.get("type") == "permission_request"
                     for ev in round_skill_events
                 )
+                # cwd_warning pause: stop the stream so the user can approve/change folder
+                _cwd_pause = any(
+                    ev.get("type") == "cwd_warning"
+                    for ev in round_skill_events
+                )
                 # --- Guardrail warnings: LoopDetector (primary) + MainChatGuard (malformed only) ---
                 _guard_warnings: list[str] = []
                 _guard_warnings_injected = False
@@ -1982,17 +1991,21 @@ async def chat(request: ChatRequest):
                     _guard_warnings.append(_fail_warn)
                 # Check malformed/incomplete using RAW text (before parser strips tags)
                 _raw_round_text = "".join(_round_raw_parts)
-                _malform_warn = _guard.check_malformed_action(_raw_round_text)
-                if _malform_warn:
-                    _guard_warnings.append(_malform_warn)
-                # Only check incomplete if malformed didn't already catch it
-                if not _malform_warn:
-                    _incomplete_warn = _guard.check_incomplete_action(
-                        _raw_round_text,
-                        any(ev.get("type") == "skill_end" for ev in round_skill_events),
-                    )
-                    if _incomplete_warn:
-                        _guard_warnings.append(_incomplete_warn)
+                # Skip guard checks when waiting for user approval (permission or CWD)
+                # — the tool call is valid but paused; flagging it as malformed/incomplete
+                # causes the model to see an error and retry the same operation.
+                if not _permission_pause and not _cwd_pause:
+                    _malform_warn = _guard.check_malformed_action(_raw_round_text)
+                    if _malform_warn:
+                        _guard_warnings.append(_malform_warn)
+                    # Only check incomplete if malformed didn't already catch it
+                    if not _malform_warn:
+                        _incomplete_warn = _guard.check_incomplete_action(
+                            _raw_round_text,
+                            any(ev.get("type") == "skill_end" for ev in round_skill_events),
+                        )
+                        if _incomplete_warn:
+                            _guard_warnings.append(_incomplete_warn)
                 feedback = build_tool_feedback(round_skill_events)
                 # Extract image paths from skill results for multimodal injection next round
                 for _ev in round_skill_events:
@@ -2011,7 +2024,7 @@ async def chat(request: ChatRequest):
                 if not feedback and _guard_warnings:
                     feedback = "\n\n".join(_guard_warnings)
                     _guard_warnings_injected = True
-                if stream_error or error_message or not feedback or _ask_user_pause or _permission_pause:
+                if stream_error or error_message or not feedback or _ask_user_pause or _permission_pause or _cwd_pause:
                     break
 
 
@@ -2238,5 +2251,50 @@ async def deny_command(tag_id: str, request: Request):
             "type": "skill_end", "id": tag_id, "name": pending.name,
             "ok": False, "error": "User denied this command",
         })
+
+    return {"ok": True, "feedback": feedback}
+
+
+@router.post("/api/skills/cwd-approve/{tag_id}")
+async def cwd_approve_command(tag_id: str, request: Request):
+    """User approved a CWD warning — execute the tool with cwd_approved flag."""
+    from engine.security.middleware import consume_pending_cwd_warning, cache_session_permission
+
+    body = await request.json() if request else {}
+    chat_id = body.get("chat_id")
+    session = body.get("session", False)
+
+    # Cache session permission before consuming (so subsequent tools skip warning)
+    if session and chat_id:
+        cache_session_permission(chat_id, "cwd")
+
+    pending = consume_pending_cwd_warning(tag_id)
+    if pending is None:
+        return {"ok": False, "error": "CWD warning expired or not found"}
+
+    engine = _get_skill_engine()
+    attrs = {**pending.attrs, "cwd_approved": "true"}
+
+    loop = asyncio.get_event_loop()
+    def _run():
+        return list(engine.process_tag(
+            pending.name, attrs, pending.content,
+            chat_id=chat_id, cwd=pending.cwd,
+        ))
+    try:
+        events = await loop.run_in_executor(None, _run)
+    except Exception as exc:
+        events = [{"type": "skill_end", "id": tag_id, "name": pending.name, "ok": False, "error": str(exc)}]
+
+    from engine.skills.events import build_tool_feedback
+    has_start = any(ev.get("type") == "skill_start" for ev in events)
+    if not has_start:
+        events = [{"type": "skill_start", "id": tag_id, "name": pending.name}] + events
+    feedback = build_tool_feedback(events) or f"[{pending.name}] OK"
+
+    from server.database import append_skill_event
+    if chat_id:
+        for ev in events:
+            append_skill_event(chat_id, ev)
 
     return {"ok": True, "feedback": feedback}
