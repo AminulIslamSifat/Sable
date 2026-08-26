@@ -101,35 +101,26 @@ try {
     Write-Host "  BurntToast install skipped: $_"
 }
 
-#  Auto-start via Task Scheduler (first-run, idempotent) 
+#  Auto-start via Registry Run key (first-run, idempotent)
+# Uses start.bat which resolves its own directory via %~dp0 — works for any user/path
 
-$TASK_NAME = "Sable Server"
-$START_SCRIPT = Join-Path $SCRIPT_DIR "start.ps1"
+$REG_KEY = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$REG_NAME = "Sable Server"
+$START_BAT = Join-Path $SCRIPT_DIR "start.bat"
+$REG_VALUE = "cmd /c `"$START_BAT`""
 
 try {
-    $existingTask = Get-ScheduledTask -TaskName $TASK_NAME -ErrorAction SilentlyContinue
-    if (-not $existingTask) {
-        $action = New-ScheduledTaskAction `
-            -Execute "powershell.exe" `
-            -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$START_SCRIPT`""
-        $trigger = New-ScheduledTaskTrigger -AtLogOn
-        $settings = New-ScheduledTaskSettingsSet `
-            -AllowStartIfOnBatteries `
-            -DontStopIfGoingOnBatteries `
-            -ExecutionTimeLimit ([TimeSpan]::Zero) `
-            -RestartCount 3 `
-            -RestartInterval (New-TimeSpan -Minutes 1)
-        Register-ScheduledTask `
-            -TaskName $TASK_NAME `
-            -Action $action `
-            -Trigger $trigger `
-            -Settings $settings `
-            -Description "Auto-start Sable agentic chat server on login" `
-            | Out-Null
-        Write-Host "  Installed auto-start task: $TASK_NAME (runs on login)"
+    $currentVal = Get-ItemProperty -Path $REG_KEY -Name $REG_NAME -ErrorAction SilentlyContinue
+    if (-not $currentVal) {
+        Set-ItemProperty -Path $REG_KEY -Name $REG_NAME -Value $REG_VALUE
+        Write-Host "  Installed auto-start: $REG_NAME (runs on login)"
+    } elseif ($currentVal.$REG_NAME -ne $REG_VALUE) {
+        # Path changed (e.g. moved install) — update
+        Set-ItemProperty -Path $REG_KEY -Name $REG_NAME -Value $REG_VALUE
+        Write-Host "  Updated auto-start path: $REG_NAME"
     }
 } catch {
-    Write-Host "  Could not install auto-start task: $_"
+    Write-Host "  Could not install auto-start: $_"
 }
 
 #  Sync dependencies 
