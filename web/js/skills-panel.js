@@ -159,8 +159,10 @@
       } catch (e) { console.error("loadTools failed", e); }
     }
 
-    document.querySelector('[data-tab="tools"]').addEventListener("click", loadTools);
-    document.querySelector('[data-tab="skills"]').addEventListener("click", loadSkills);
+    document.querySelector('[data-tab="personalization"]').addEventListener("click", () => {
+      loadTools();
+      loadSkills();
+    });
     document.querySelector('[data-tab="account"]')?.addEventListener("click", () => { if (typeof loadAccountProfiles === 'function') loadAccountProfiles(); });
 
     // --- Providers tab: Unified API key manager ---
@@ -562,9 +564,10 @@
       }
       loadCustomModels();
       loadCustomEndpoints();
+      if (typeof loadSearchSettings === "function") loadSearchSettings();
     });
 
-    // --- Search Engine tab ---
+    // --- Search Engine section (inside Providers tab) ---
     const _searchEls = {
       provider: () => document.getElementById("searchProviderSelect"),
       searxngSection: () => document.getElementById("searchSearxngSection"),
@@ -992,7 +995,7 @@
       }
     });
 
-    document.querySelector('[data-tab="search"]')?.addEventListener("click", loadSearchSettings);
+
 
     // --- Model management (all models: static + custom) ---
     async function loadCustomModels() {
@@ -1249,15 +1252,11 @@
       });
     }
 
-    // ── Context Pass Settings (3-step fallback chain) ──
+    // ── Context Pass Settings (model fallback chain; browser pool is auto-selected) ──
     const ctxPassModel = document.getElementById("ctxPassModel");
     const ctxPassFb1 = document.getElementById("ctxPassFb1");
     const ctxPassFb2 = document.getElementById("ctxPassFb2");
-    const ctxPassBrowserAcc = document.getElementById("ctxPassBrowserAcc");
-    const ctxPassBp1 = document.getElementById("ctxPassBp1");
-    const ctxPassBp2 = document.getElementById("ctxPassBp2");
     const _ctxPassModelSelects = [ctxPassModel, ctxPassFb1, ctxPassFb2];
-    const _ctxPassBrowserSelects = [ctxPassBrowserAcc, ctxPassBp1, ctxPassBp2];
 
     function populateCtxPassModels() {
       for (const sel of _ctxPassModelSelects) {
@@ -1275,45 +1274,16 @@
       }
     }
 
-    async function populateCtxPassProfiles() {
-      let accounts = [];
-      try {
-        const res = await fetch("/api/settings/accounts");
-        if (res.ok) {
-          const data = await res.json();
-          accounts = data.accounts || [];
-        }
-      } catch {}
-      for (const sel of _ctxPassBrowserSelects) {
-        if (!sel) continue;
-        const current = sel.value;
-        const isPrimary = sel === ctxPassBrowserAcc;
-        sel.innerHTML = `<option value="">${isPrimary ? "Default (current)" : "— none —"}</option>`;
-        for (const acc of accounts) {
-          const opt = document.createElement("option");
-          opt.value = acc.name;
-          opt.textContent = acc.email ? `${acc.name} (${acc.email})` : acc.name;
-          sel.appendChild(opt);
-        }
-        sel.value = current;
-      }
-    }
-
     async function loadContextPassSettings() {
       populateCtxPassModels();
-      await populateCtxPassProfiles();
       try {
         const res = await fetch("/api/settings/context-pass");
         if (res.ok) {
           const d = await res.json();
           if (ctxPassModel) ctxPassModel.value = d.summarizer_model || "";
-          if (ctxPassBrowserAcc) ctxPassBrowserAcc.value = d.browser_data_acc || "";
           const fbm = d.fallback_models || [];
           if (ctxPassFb1) ctxPassFb1.value = fbm[0] || "";
           if (ctxPassFb2) ctxPassFb2.value = fbm[1] || "";
-          const fbp = d.browser_profiles || [];
-          if (ctxPassBp1) ctxPassBp1.value = fbp[0] || "";
-          if (ctxPassBp2) ctxPassBp2.value = fbp[1] || "";
         }
       } catch {}
     }
@@ -1323,15 +1293,9 @@
         ctxPassFb1?.value,
         ctxPassFb2?.value,
       ].filter(v => v && v.trim());
-      const fb_profiles = [
-        ctxPassBp1?.value,
-        ctxPassBp2?.value,
-      ].filter(v => v && v.trim());
       return {
         summarizer_model: ctxPassModel ? ctxPassModel.value : "",
         fallback_models: fb_models,
-        browser_data_acc: ctxPassBrowserAcc ? ctxPassBrowserAcc.value : "",
-        browser_profiles: fb_profiles,
       };
     }
 

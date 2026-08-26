@@ -794,3 +794,55 @@ def get_next_available_account(
 
     return None
 
+
+def get_available_accounts_reverse(
+    exclude: set[str] | None = None,
+    limit: int = 5,
+) -> list[str]:
+    """Return up to `limit` available accounts sorted highest-number first.
+
+    Used by background tasks (summarizer, consolidation, subagents) so they
+    don't compete with the main chat auto-switch which searches forward.
+
+    Skips rate-limit exhausted accounts. Includes captcha-blocked accounts
+    (they may have recovered) but sorts them after fresh ones.
+
+    Args:
+        exclude: Account names to skip.
+        limit: Max accounts to return (default 5).
+
+    Returns:
+        List of account names, highest number first.
+    """
+    import re as _re
+    exclude = exclude or set()
+    fresh: list[tuple[int, str]] = []
+    captcha_blocked: list[tuple[int, str]] = []
+    try:
+        captcha_store = _load_captcha_block_store()
+        for entry in _SYSTEM.iterdir():
+            m = _re.match(r"browser-data-acc(\d+)$", entry.name)
+            if entry.is_dir() and m:
+                name = entry.name
+                if name in exclude:
+                    continue
+                if is_account_exhausted(name):
+                    continue
+                num = int(m.group(1))
+                ts = captcha_store.get(name)
+                if ts and is_account_captcha_blocked(name):
+                    captcha_blocked.append((num, name))
+                else:
+                    fresh.append((num, name))
+    except OSError:
+        return []
+
+    # Sort descending (highest number first)
+    fresh.sort(key=lambda t: t[0], reverse=True)
+    captcha_blocked.sort(key=lambda t: t[0], reverse=True)
+
+    result = [name for _, name in fresh]
+    result.extend(name for _, name in captcha_blocked)
+    return result[:limit]
+
+

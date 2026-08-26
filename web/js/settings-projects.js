@@ -617,9 +617,10 @@
         inputEl.focus();
     }
 
-    // Expose for cross-module navigation (e.g. fork button)
+    // Expose for cross-module navigation (e.g. fork button, projects panel)
     window._sableSelectChat = selectChat;
     window._sableLoadChats = loadChats;
+    window._sableDeleteChat = deleteChat;
 
     async function deleteChat(chatId) {
       if (!await sableConfirm("Delete this chat?", { danger: true })) return;

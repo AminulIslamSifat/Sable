@@ -38,6 +38,40 @@ if [ ! -e "system/browser-data" ]; then
     ln -s browser-data-acc1 system/browser-data 2>/dev/null || true
 fi
 
+# SearXNG search backend (Docker, idempotent)
+if command -v docker >/dev/null 2>&1; then
+    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^searxng$'; then
+        # Remove stopped container if it exists
+        docker rm -f searxng >/dev/null 2>&1 || true
+        echo "🔍 Starting SearXNG search backend..."
+        if ! docker image inspect searxng/searxng:latest >/dev/null 2>&1; then
+            echo "   Pulling searxng/searxng:latest (first time only)..."
+            docker pull searxng/searxng:latest
+        fi
+        docker run -d --name searxng \
+            -p 8080:8080 \
+            -e SEARXNG_BASE_URL=http://localhost:8080/ \
+            --restart unless-stopped \
+            searxng/searxng:latest >/dev/null 2>&1
+        # Enable JSON API format
+        sleep 2
+        docker exec searxng sh -c 'grep -q "formats:" /etc/searxng/settings.yml || cat >> /etc/searxng/settings.yml << SEOF
+
+search:
+  formats:
+    - html
+    - json
+SEOF
+' 2>/dev/null
+        docker restart searxng >/dev/null 2>&1
+        echo "✅ SearXNG ready on http://localhost:8080"
+    else
+        echo "✅ SearXNG already running"
+    fi
+else
+    echo "⚠️  Docker not found — SearXNG search backend skipped"
+fi
+
 # Systemd user service (one-time install)
 if ! systemctl --user cat "$SERVICE" >/dev/null 2>&1; then
     mkdir -p "${HOME}/.config/systemd/user"
