@@ -322,28 +322,37 @@ class ChatService:
         model: str | None = None,
         thinking_mode: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        print(f"[STREAM] ▶ stream_events START account={self.account} chat_id={chat_id} msg_len={len(message)}")
         try:
+            print(f"[STREAM]   ↳ _ensure_headers()...")
             headers = await self._ensure_headers()
+            print(f"[STREAM]   ✓ headers ready (keys={list(headers.keys())[:3]}...)")
             active_chat_id = chat_id
 
             if not active_chat_id:
+                print(f"[STREAM]   ↳ create_new_chat() (no chat_id provided)...")
                 active_chat_id = await create_new_chat(headers, model=model)
                 if not active_chat_id:
+                    print(f"[STREAM]   ↳ create_new_chat() failed, refreshing headers...")
                     headers = await self._refresh_headers()
                     active_chat_id = await create_new_chat(headers, model=model)
 
             if not active_chat_id:
+                print(f"[STREAM] ✗ Could not create chat session")
                 yield {"type": "error", "message": "Could not create chat session"}
                 return
         except Exception as exc:
+            print(f"[STREAM] ✗ Session startup failed: {type(exc).__name__}: {exc}")
             yield {"type": "error", "message": f"Session startup failed: {type(exc).__name__}: {exc}"}
             return
 
+        print(f"[STREAM] ✓ active_chat_id={active_chat_id}, building body...")
         yield {"type": "meta", "chat_id": active_chat_id, "parent_id": parent_id}
         yield {"type": "status", "message": "calling_upstream"}
 
         body = build_body(message, active_chat_id, parent_id, files=files, model=model, thinking_mode=thinking_mode)
         params = {"chat_id": active_chat_id}
+        print(f"[STREAM] ↳ entering _stream_request() attempt loop...")
 
         try:
             async for event in self._stream_request(
@@ -377,6 +386,7 @@ class ChatService:
         last_error_msg: str | None = None
 
         for attempt in range(1, max_attempts + 1):
+            print(f"[STREAM]   ↳ _stream_request attempt {attempt}/{max_attempts}")
             new_parent_id = parent_id
             chosen_response_id: str | None = None
             got_content = False
@@ -386,8 +396,10 @@ class ChatService:
 
             try:
                 async with httpx.AsyncClient(timeout=120) as client:
+                    print(f"[STREAM]     ↳ HTTP POST {URL[:60]}...")
                     async with client.stream("POST", URL, headers=headers, json=body, params=params) as res:
                         status_code = res.status_code
+                        print(f"[STREAM]     ✓ HTTP {res.status_code} (attempt {attempt}/{max_attempts})")
                         logger.debug("Upstream HTTP %s (attempt %d/%d)", res.status_code, attempt, max_attempts)
                         yield {"type": "debug", "message": f"HTTP {res.status_code} (attempt {attempt}/{max_attempts})"}
 
@@ -680,6 +692,21 @@ class ChatService:
                         pass
                 last_error_msg = f"Upstream returned HTTP {status_code} with zero content — WAF tokens may be stale or the session expired"
 
+            # Fast-fail: don't waste retries on rate-limit/captcha — escalate immediately
+            _fail_lower = (last_error_msg or "").lower()
+            print(f"[STREAM]     ↳ post-attempt check: last_error={last_error_msg[:100] if last_error_msg else 'None'}")
+            if any(kw in _fail_lower for kw in ("ratelimit", "rate_limit", "rate limit", "quota", "daily usage", "exceeded", "429")):
+                print(f"[STREAM]     ⚡ FAST-FAIL rate_limit on attempt {attempt} — skipping retries")
+                self._mark_exhausted()
+                logger.warning("Rate-limit detected on attempt %d — skipping remaining retries", attempt)
+                yield {"type": "rate_limited", "message": last_error_msg, "hours": "?"}
+                return
+            if any(kw in _fail_lower for kw in ("captcha", "waf", "validate", "rgv587", "blocked", "forbidden")):
+                print(f"[STREAM]     ⚡ FAST-FAIL captcha/waf on attempt {attempt} — skipping retries")
+                logger.warning("WAF/captcha detected on attempt %d — skipping remaining retries", attempt)
+                yield {"type": "waf_blocked", "message": last_error_msg}
+                return
+
             if attempt < max_attempts:
                 logger.warning("Attempt %d failed: %s. Refreshing headers and retrying...", attempt, last_error_msg)
                 yield {"type": "status", "message": f"retrying_attempt_{attempt + 1}"}
@@ -689,14 +716,17 @@ class ChatService:
                 continue
 
         # Defense-in-depth: detect rate-limit/captcha patterns in generic failure messages
-        # so auto-switch can trigger even when the upstream response didn't match our schema
+        print(f"[STREAM]   ↳ all {max_attempts} attempts exhausted, defense-in-depth check...")
         _fail_lower = (last_error_msg or "").lower()
         if any(kw in _fail_lower for kw in ("ratelimit", "rate_limit", "rate limit", "quota", "daily usage", "exceeded", "429")):
+            print(f"[STREAM]   ⚡ DEFENSE-IN-DEPTH rate_limit detected")
             self._mark_exhausted()
             yield {"type": "rate_limited", "message": last_error_msg, "hours": "?"}
         elif any(kw in _fail_lower for kw in ("captcha", "waf", "validate", "rgv587", "blocked", "forbidden")):
+            print(f"[STREAM]   ⚡ DEFENSE-IN-DEPTH captcha/waf detected")
             yield {"type": "waf_blocked", "message": last_error_msg}
         else:
+            print(f"[STREAM]   ✗ generic error after {max_attempts} attempts: {last_error_msg[:100] if last_error_msg else 'unknown'}")
             yield {"type": "error", "message": f"Failed after {max_attempts} attempts: {last_error_msg}"}
 
     async def chat(
