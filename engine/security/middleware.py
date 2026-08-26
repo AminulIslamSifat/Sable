@@ -13,7 +13,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Generator
 
-from engine.skills.events import end_event, permission_request_event
+import os
+
+from engine.skills.events import cwd_warning_event, end_event, permission_request_event
 from engine.skills.middleware import TagContext
 from engine.security.prompt_guard import PromptGuard, Severity
 
@@ -92,6 +94,9 @@ _PERMISSION_REQUIRED: list[tuple[re.Pattern, str, str]] = [
 # Tags whose content is a shell command
 _COMMAND_TAGS = frozenset({"execute_command"})
 
+# Tags that write/modify files — subject to CWD guard
+_FILE_WRITE_TAGS = frozenset({"edit_file", "create_file", "insert_file"})
+
 
 # ─── Pending approvals store ──────────────────────────────────────────────────
 @dataclass
@@ -105,9 +110,24 @@ class PendingApproval:
     created: float = field(default_factory=time.time)
 
 
+@dataclass
+class PendingCwdWarning:
+    """Stored CWD warning awaiting user decision."""
+    tag_id: str
+    name: str
+    attrs: dict[str, str]
+    content: str
+    path: str
+    cwd: str
+    created: float = field(default_factory=time.time)
+
+
 # In-memory store: tag_id → PendingApproval (expires after 5 min)
 _pending_approvals: dict[str, PendingApproval] = {}
 _APPROVAL_TTL = 300  # seconds
+
+# In-memory store: tag_id → PendingCwdWarning (expires after 5 min)
+_pending_cwd_warnings: dict[str, PendingCwdWarning] = {}
 
 # ─── Session permission cache ─────────────────────────────────────────────────
 # chat_id → set of approved categories (persists for server lifetime)
@@ -166,6 +186,35 @@ def check_permission_required(content: str) -> tuple[str, str] | None:
         if pattern.search(content):
             return category, reason
     return None
+
+
+def _is_path_outside_cwd(path: str, cwd: str) -> bool:
+    """Check if a resolved file path is outside the CWD directory."""
+    try:
+        real_path = os.path.realpath(os.path.expanduser(path))
+        real_cwd = os.path.realpath(cwd)
+        return not real_path.startswith(real_cwd + os.sep) and real_path != real_cwd
+    except (OSError, ValueError):
+        return True  # If we can't resolve, treat as outside
+
+
+def get_pending_cwd_warning(tag_id: str) -> PendingCwdWarning | None:
+    """Retrieve a pending CWD warning by tag_id. Returns None if expired."""
+    entry = _pending_cwd_warnings.get(tag_id)
+    if entry is None:
+        return None
+    if time.time() - entry.created > _APPROVAL_TTL:
+        _pending_cwd_warnings.pop(tag_id, None)
+        return None
+    return entry
+
+
+def consume_pending_cwd_warning(tag_id: str) -> PendingCwdWarning | None:
+    """Retrieve and remove a pending CWD warning (for execution after user approves)."""
+    entry = get_pending_cwd_warning(tag_id)
+    if entry:
+        _pending_cwd_warnings.pop(tag_id, None)
+    return entry
 
 
 class SecurityMiddleware:
@@ -247,7 +296,40 @@ class SecurityMiddleware:
                         # Stop pipeline — do NOT execute
                         return
 
-        # --- 4. Scan attrs for injection (e.g. URLs in browser tags) ---
+        # --- 4. CWD guard — warn on file writes outside project folder ---
+        if (
+            ctx.name in _FILE_WRITE_TAGS
+            and ctx.cwd
+            and ctx.attrs.get("cwd_approved") != "true"
+        ):
+            target_path = ctx.attrs.get("path", "")
+            if target_path and _is_path_outside_cwd(target_path, ctx.cwd):
+                # Check session cache — skip warning if already approved for this chat
+                if is_session_permitted(ctx.chat_id, "cwd"):
+                    logger.info(
+                        "CWD SESSION PERM HIT: tag=%s path=%s chat=%s",
+                        ctx.name, target_path, ctx.chat_id,
+                    )
+                else:
+                    _pending_cwd_warnings[ctx.tag_id] = PendingCwdWarning(
+                        tag_id=ctx.tag_id,
+                        name=ctx.name,
+                        attrs=ctx.attrs,
+                        content=ctx.content,
+                        path=target_path,
+                        cwd=ctx.cwd,
+                    )
+                    logger.info(
+                        "CWD WARNING: tag=%s path=%s cwd=%s",
+                        ctx.name, target_path, ctx.cwd,
+                    )
+                    yield cwd_warning_event(
+                        ctx.tag_id, ctx.name, target_path, ctx.cwd,
+                    )
+                    # Stop pipeline — do NOT execute
+                    return
+
+        # --- 5. Scan attrs for injection (e.g. URLs in browser tags) ---
         for key, value in ctx.attrs.items():
             if value and len(value) > 20:
                 verdict = self._guard.scan(value)
