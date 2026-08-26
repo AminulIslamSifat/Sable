@@ -33,6 +33,7 @@ class TagContext:
     error: str | None = None
     namespace: str = "default"
     chat_id: str | None = None
+    cwd: str | None = None
 
     def emit(self, event: dict[str, Any]) -> None:
         self.events.append(event)

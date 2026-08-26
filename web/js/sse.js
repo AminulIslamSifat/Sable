@@ -345,6 +345,15 @@
             const turn = activePane.querySelector('.turn:last-child');
             (turn || activePane).appendChild(note);
           }
+        } else if (evt.type === "cwd_warning") {
+          // History replay: decision already made — show static note
+          const note = document.createElement('div');
+          note.className = 'cwd-warning-pending-note';
+          note.textContent = '⚠️ CWD warning: ' + (evt.data?.path || '').slice(0, 80);
+          if (activePane) {
+            const turn = activePane.querySelector('.turn:last-child');
+            (turn || activePane).appendChild(note);
+          }
         } else if (evt.type === "agent_result") {
           if (typeof addAgentResultCard === "function") {
             addAgentResultCard({
@@ -642,6 +651,159 @@
           setTimeout(() => sendAutoTurnMessage('[System: Command was denied by user.]'), 300);
         }
         setTimeout(() => banner.classList.add('hidden'), 3000);
+      });
+
+      activateLucideIcons(banner);
+    }
+
+    function renderCwdWarningCard(evt, container) {
+      const { id, name, data } = evt;
+      const { path, cwd } = data;
+      const banner = document.getElementById('approvalBanner');
+      if (!banner) return;
+
+      const shortPath = path.length > 80 ? '…' + path.slice(-77) : path;
+
+      banner.className = 'approval-banner cwd-warning-banner';
+      banner.dataset.tagId = id;
+      banner.innerHTML = `
+        <div class="ab-icon"><i data-lucide="folder-alert"></i></div>
+        <div class="ab-body">
+          <div class="ab-title">File operation outside project folder</div>
+          <div class="ab-sub">${shortPath.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
+          <div class="ab-detail">Without making it the project folder, you can't recover in case of accidental damage.</div>
+        </div>
+        <div class="ab-actions">
+          <button class="ab-cwd-session"><i data-lucide="shield-check"></i> Allow for Session</button>
+          <button class="ab-cwd-continue"><i data-lucide="arrow-right"></i> Continue</button>
+          <button class="ab-cwd-open"><i data-lucide="folder-open"></i> Open Folder</button>
+        </div>
+      `;
+
+      const sessionBtn = banner.querySelector('.ab-cwd-session');
+      const continueBtn = banner.querySelector('.ab-cwd-continue');
+      const openBtn = banner.querySelector('.ab-cwd-open');
+
+      function disableAllCwdBtns() {
+        if (sessionBtn) sessionBtn.disabled = true;
+        continueBtn.disabled = true;
+        openBtn.disabled = true;
+      }
+
+      sessionBtn?.addEventListener('click', async () => {
+        disableAllCwdBtns();
+        activePane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
+        try {
+          const resp = await fetch('/api/skills/cwd-approve/' + id, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({chat_id: activeChatId, session: true}),
+          });
+          banner.classList.add('ab-resolved');
+          if (resp.ok && activePane) {
+            const card = createSkillCard({ name: name, data: { attrs: { path: path } } });
+            const status = card.querySelector('.skill-status');
+            status.textContent = 'allowed for session ✓';
+            status.style.color = 'var(--ok)';
+            const turn = activePane.querySelector('.turn:last-child');
+            const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
+            if (target) { target.appendChild(card); activateLucideIcons(card); }
+            activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
+          }
+          const result = await resp.json();
+          const st = document.createElement('span');
+          st.className = 'ab-status ok';
+          st.textContent = 'session allowed';
+          banner.querySelector('.ab-actions').replaceWith(st);
+          if (result.feedback) {
+            setTimeout(() => sendAutoTurnMessage(result.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
+          }
+        } catch(e) {
+          banner.classList.add('ab-resolved');
+          const st = document.createElement('span');
+          st.className = 'ab-status no';
+          st.textContent = 'error';
+          banner.querySelector('.ab-actions')?.replaceWith(st);
+        }
+        setTimeout(() => banner.classList.add('hidden'), 4000);
+      });
+
+      continueBtn.addEventListener('click', async () => {
+        disableAllCwdBtns();
+        activePane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
+        try {
+          const resp = await fetch('/api/skills/cwd-approve/' + id, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({chat_id: activeChatId}),
+          });
+          banner.classList.add('ab-resolved');
+          if (resp.ok && activePane) {
+            const card = createSkillCard({ name: name, data: { attrs: { path: path } } });
+            const status = card.querySelector('.skill-status');
+            status.textContent = 'approved ✓';
+            status.style.color = 'var(--ok)';
+            const turn = activePane.querySelector('.turn:last-child');
+            const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
+            if (target) { target.appendChild(card); activateLucideIcons(card); }
+            activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
+          }
+          const result = await resp.json();
+          const st = document.createElement('span');
+          st.className = 'ab-status ok';
+          st.textContent = 'done';
+          banner.querySelector('.ab-actions').replaceWith(st);
+          if (result.feedback) {
+            setTimeout(() => sendAutoTurnMessage(result.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
+          }
+        } catch(e) {
+          banner.classList.add('ab-resolved');
+          const st = document.createElement('span');
+          st.className = 'ab-status no';
+          st.textContent = 'error';
+          banner.querySelector('.ab-actions')?.replaceWith(st);
+        }
+        setTimeout(() => banner.classList.add('hidden'), 4000);
+      });
+
+      openBtn.addEventListener('click', async () => {
+        continueBtn.disabled = true;
+        openBtn.disabled = true;
+        activePane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
+        try {
+          const res = await fetch('/api/filesystem/pick-folder');
+          const pickData = await res.json();
+          if (pickData.path && window.pickFsRoot) {
+            window.pickFsRoot(pickData.path);
+            // After changing CWD, approve the operation with new context
+            const resp = await fetch('/api/skills/cwd-approve/' + id, {
+              method: 'POST',
+              headers: {'Content-Type':'application/json'},
+              body: JSON.stringify({chat_id: activeChatId}),
+            });
+            banner.classList.add('ab-resolved');
+            const result = await resp.json();
+            const st = document.createElement('span');
+            st.className = 'ab-status ok';
+            st.textContent = 'folder changed ✓';
+            banner.querySelector('.ab-actions').replaceWith(st);
+            if (result.feedback) {
+              setTimeout(() => sendAutoTurnMessage(result.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
+            }
+          } else {
+            // User cancelled folder picker — re-enable buttons
+            continueBtn.disabled = false;
+            openBtn.disabled = false;
+            return;
+          }
+        } catch(e) {
+          banner.classList.add('ab-resolved');
+          const st = document.createElement('span');
+          st.className = 'ab-status no';
+          st.textContent = 'error';
+          banner.querySelector('.ab-actions')?.replaceWith(st);
+        }
+        setTimeout(() => banner.classList.add('hidden'), 4000);
       });
 
       activateLucideIcons(banner);
@@ -1459,6 +1621,18 @@
             const pending = document.createElement('div');
             pending.className = 'approval-pending-note';
             pending.textContent = evt.text || '⏳ Waiting for your approval…';
+            if (activePane) {
+              const turn = activePane.querySelector('.turn:last-child');
+              (turn || activePane.querySelector('.messages')).appendChild(pending);
+            }
+          } else if (evt.type === "cwd_warning") {
+            if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
+            renderCwdWarningCard(evt, activePane);
+          } else if (evt.type === "cwd_warning_pending") {
+            if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
+            const pending = document.createElement('div');
+            pending.className = 'cwd-warning-pending-note';
+            pending.textContent = evt.text || '⚠️ File operation outside project folder detected.';
             if (activePane) {
               const turn = activePane.querySelector('.turn:last-child');
               (turn || activePane.querySelector('.messages')).appendChild(pending);
