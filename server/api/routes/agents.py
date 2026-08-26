@@ -93,7 +93,7 @@ DEFAULT_AGENT_CONFIG: dict[str, Any] = {
     "concurrency": {
         "global_max": 5,
         "deepseek_max": 5,
-        "qwen_max": 1,
+        "qwen_max": 4,
     },
     "resilience": {
         "circuit_breaker_threshold": 5,
