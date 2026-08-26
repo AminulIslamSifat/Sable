@@ -101,17 +101,29 @@ try {
     Write-Host "  BurntToast install skipped: $_"
 }
 
-#  Auto-start via Task Scheduler (first-run, idempotent) 
+#  Auto-start via Task Scheduler (first-run, idempotent)
+# Runs completely hidden — no console, no taskbar entry
+
+# Clean up legacy registry Run key from older versions
+try {
+    $oldReg = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    if (Get-ItemProperty -Path $oldReg -Name "Sable Server" -ErrorAction SilentlyContinue) {
+        Remove-ItemProperty -Path $oldReg -Name "Sable Server" -ErrorAction SilentlyContinue
+        Write-Host "  Removed legacy registry auto-start entry"
+    }
+} catch {}
+
 
 $TASK_NAME = "Sable Server"
-$START_SCRIPT = Join-Path $SCRIPT_DIR "start.ps1"
+$START_BAT = Join-Path $SCRIPT_DIR "start.bat"
 
 try {
     $existingTask = Get-ScheduledTask -TaskName $TASK_NAME -ErrorAction SilentlyContinue
     if (-not $existingTask) {
         $action = New-ScheduledTaskAction `
-            -Execute "powershell.exe" `
-            -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$START_SCRIPT`""
+            -Execute "cmd.exe" `
+            -Argument "/c `"$START_BAT`" --background" `
+            -WorkingDirectory $SCRIPT_DIR
         $trigger = New-ScheduledTaskTrigger -AtLogOn
         $settings = New-ScheduledTaskSettingsSet `
             -AllowStartIfOnBatteries `
@@ -119,14 +131,28 @@ try {
             -ExecutionTimeLimit ([TimeSpan]::Zero) `
             -RestartCount 3 `
             -RestartInterval (New-TimeSpan -Minutes 1)
+        $principal = New-ScheduledTaskPrincipal `
+            -UserId $env:USERNAME `
+            -LogonType Interactive `
+            -RunLevel Limited
         Register-ScheduledTask `
             -TaskName $TASK_NAME `
             -Action $action `
             -Trigger $trigger `
             -Settings $settings `
-            -Description "Auto-start Sable agentic chat server on login" `
+            -Principal $principal `
+            -Description "Auto-start Sable agentic chat server on login (hidden)" `
             | Out-Null
-        Write-Host "  Installed auto-start task: $TASK_NAME (runs on login)"
+        # Hide the task from Task Scheduler UI (optional, keeps it clean)
+        # The task still runs — just doesn't show in the default view
+        Write-Host "  Installed auto-start task: $TASK_NAME (runs hidden on login)"
+    } else {
+        # Update working directory + args in case install moved
+        $newAction = New-ScheduledTaskAction `
+            -Execute "cmd.exe" `
+            -Argument "/c `"$START_BAT`" --background" `
+            -WorkingDirectory $SCRIPT_DIR
+        Set-ScheduledTask -TaskName $TASK_NAME -Action $newAction | Out-Null
     }
 } catch {
     Write-Host "  Could not install auto-start task: $_"

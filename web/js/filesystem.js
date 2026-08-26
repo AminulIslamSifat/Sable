@@ -5,6 +5,23 @@
 (function () {
   "use strict";
 
+  /** Cross-platform basename: handles both / and \ separators (Windows + Unix) */
+  function pathBasename(p) {
+    if (!p) return "";
+    var sep = p.indexOf('\\') !== -1 ? '\\' : '/';
+    var parts = p.split(sep);
+    return parts[parts.length - 1] || p;
+  }
+
+  /** Cross-platform dirname: handles both / and \ separators */
+  function pathDirname(p) {
+    if (!p) return "";
+    var fwd = p.lastIndexOf('/');
+    var bck = p.lastIndexOf('\\');
+    var idx = fwd > bck ? fwd : bck;
+    return idx > 0 ? p.substring(0, idx) : "";
+  }
+
   // Fetch home dir + username from backend for dynamic path resolution
   fetch("/api/env").then(r => r.json()).then(d => {
     window.__sable_home = d.home;
@@ -972,7 +989,7 @@
   }
 
   async function doDelete(path) {
-    if (!confirm(`Delete "${path.split("/").pop()}"? This cannot be undone.`)) return;
+    if (!confirm(`Delete "${pathBasename(path)}"? This cannot be undone.`)) return;
     try {
       const res = await fetch("/api/filesystem/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
       const data = await res.json();
@@ -1103,7 +1120,7 @@
 
     const rootItem = document.createElement("div");
     rootItem.className = "fs-item fs-root";
-    rootItem.innerHTML = `<span class="fs-icon">${icon("folder-open", 14)}</span><span class="fs-name">${esc(sidebarRoot.split("/").pop() || "/")}</span>`;
+    rootItem.innerHTML = `<span class="fs-icon">${icon("folder-open", 14)}</span><span class="fs-name">${esc(pathBasename(sidebarRoot) || "/")}</span>`;
     sidebarTree.appendChild(rootItem);
 
     const inner = document.createElement("div");
@@ -1166,7 +1183,7 @@
       if (container) container.remove();
       // Update folder icon
       const row = sidebarTree.querySelector(`.fs-item[data-path="${path}"]`);
-      if (row) row.innerHTML = `<span class="fs-icon">${icon("folder", 14)}</span><span class="fs-name">${esc(path.split("/").pop())}</span>`;
+      if (row) row.innerHTML = `<span class="fs-icon">${icon("folder", 14)}</span><span class="fs-name">${esc(pathBasename(path))}</span>`;
       refreshIcons();
       return;
     }
@@ -1179,7 +1196,7 @@
     const row = sidebarTree.querySelector(`.fs-item[data-path="${path}"]`);
     if (!row) return;
     // Update icon to open
-    row.innerHTML = `<span class="fs-icon">${icon("folder-open", 14)}</span><span class="fs-name">${esc(path.split("/").pop())}</span>`;
+    row.innerHTML = `<span class="fs-icon">${icon("folder-open", 14)}</span><span class="fs-name">${esc(pathBasename(path))}</span>`;
 
     const container = document.createElement("div");
     container.dataset.children = path;
@@ -1292,11 +1309,11 @@
       const fp = currentFilePath;
       if (!fp) return;
       const ext = fp.split(".").pop().toLowerCase();
-      const name = fp.split("/").pop();
+      const name = pathBasename(fp);
 
       // HTML → read content, inject <base> for relative asset resolution, open as blob
       if (ext === "html" || ext === "htm") {
-        const dir = fp.substring(0, fp.lastIndexOf("/"));
+        const dir = pathDirname(fp);
         fetch(`/api/filesystem/read?path=${encodeURIComponent(fp)}`)
           .then(r => r.json())
           .then(data => {
@@ -1374,7 +1391,7 @@
     }
     try {
       if (filePath && filePath !== currentFilePath) {
-        await openSidebarFile(filePath, filePath.split("/").pop());
+        await openSidebarFile(filePath, pathBasename(filePath));
       }
       if (monacoEditor && line) {
         const pos = { lineNumber: line, column: col || 1 };
@@ -1434,11 +1451,11 @@
 
     // Expand all parent dirs leading to the last opened file
     if (lastFile) {
-      const fileDir = lastFile.substring(0, lastFile.lastIndexOf("/"));
+      const fileDir = pathDirname(lastFile);
       let dir = fileDir;
       while (dir.length > lastFolder.length && dir.startsWith(lastFolder)) {
         sidebarExpanded.add(dir);
-        dir = dir.substring(0, dir.lastIndexOf("/"));
+        dir = pathDirname(dir);
       }
     }
 
@@ -1451,7 +1468,7 @@
         const data = await sbApi("/read?path=" + encodeURIComponent(lastFile));
         if (data && !data.error && !data.binary) {
           const ext = (data.ext || "").replace(".", "");
-          addOrUpdateTab(lastFile, lastFile.split("/").pop(), data.content, ext);
+          addOrUpdateTab(lastFile, pathBasename(lastFile), data.content, ext);
           const editorContainer = document.getElementById("editorContainer");
           const editorEmpty = document.getElementById("editorEmptyState");
           if (editorEmpty) editorEmpty.classList.add("hidden");
@@ -1541,7 +1558,7 @@
 
     viewerEl.innerHTML = `
       <div class="fs-viewer-header">
-        <span class="fs-viewer-name">${icon("git-compare", 14)} <span>${esc(fileName || path.split("/").pop())}</span> <span style="color:var(--text-dim);font-size:11px;">(diff)</span></span>
+        <span class="fs-viewer-name">${icon("git-compare", 14)} <span>${esc(fileName || pathBasename(path))}</span> <span style="color:var(--text-dim);font-size:11px;">(diff)</span></span>
         <span class="fs-viewer-meta">before \u2194 after</span>
       </div>
       <div class="fs-monaco-wrap" id="fsDiffWrap"></div>
@@ -1592,7 +1609,7 @@
 
     const rootItem = document.createElement("div");
     rootItem.className = "fs-item fs-root";
-    rootItem.innerHTML = `<span class="fs-icon">${icon("folder-open", 14)}</span><span class="fs-name">${esc(leftRoot.split("/").pop() || "/")}</span>`;
+    rootItem.innerHTML = `<span class="fs-icon">${icon("folder-open", 14)}</span><span class="fs-name">${esc(pathBasename(leftRoot) || "/")}</span>`;
     leftTree.appendChild(rootItem);
 
     const inner = document.createElement("div");
@@ -1647,7 +1664,7 @@
       const container = leftTree.querySelector(`[data-children="${path}"]`);
       if (container) container.remove();
       const row = leftTree.querySelector(`.fs-item[data-path="${path}"]`);
-      if (row) row.innerHTML = `<span class="fs-icon">${icon("folder", 14)}</span><span class="fs-name">${esc(path.split("/").pop())}</span>`;
+      if (row) row.innerHTML = `<span class="fs-icon">${icon("folder", 14)}</span><span class="fs-name">${esc(pathBasename(path))}</span>`;
       refreshIcons();
       return;
     }
@@ -1657,7 +1674,7 @@
     if (!items.length) return;
     const row = leftTree.querySelector(`.fs-item[data-path="${path}"]`);
     if (!row) return;
-    row.innerHTML = `<span class="fs-icon">${icon("folder-open", 14)}</span><span class="fs-name">${esc(path.split("/").pop())}</span>`;
+    row.innerHTML = `<span class="fs-icon">${icon("folder-open", 14)}</span><span class="fs-name">${esc(pathBasename(path))}</span>`;
     const container = document.createElement("div");
     container.dataset.children = path;
     for (const it of items) container.appendChild(buildLeftNode(it, depth + 1));
