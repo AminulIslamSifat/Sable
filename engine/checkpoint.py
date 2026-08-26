@@ -91,6 +91,13 @@ class CheckpointManager:
                 logger.error("Failed to init shadow repo at %s: %s", self.git_dir, result.stderr[:300])
             # Set up excludes
             self._write_excludes()
+        # Ensure identity is set (bare repos don't always inherit global config)
+        email = self._git("config", "user.email")
+        if email.returncode != 0 or not email.stdout.strip():
+            self._git("config", "user.email", "sable@checkpoint.local")
+        name = self._git("config", "user.name")
+        if name.returncode != 0 or not name.stdout.strip():
+            self._git("config", "user.name", "Sable Checkpoint")
 
     def _write_excludes(self) -> None:
         """Write a git exclude file (like .gitignore but internal to shadow repo)."""

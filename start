@@ -7,6 +7,13 @@ SABLE_URL="http://127.0.0.1:${SABLE_PORT}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UV_BIN="$(command -v uv || true)"
 
+_log() { echo "[START $(date +%H:%M:%S)] $*"; }
+
+_log "▶ Sable start script initialized"
+_log "  SCRIPT_DIR=$SCRIPT_DIR"
+_log "  UV_BIN=${UV_BIN:-'(not found)'}"
+_log "  SABLE_PORT=$SABLE_PORT"
+
 # Parse --background flag (skip browser, info box; used by update restart)
 BACKGROUND=0
 for arg in "$@"; do
@@ -14,44 +21,61 @@ for arg in "$@"; do
         --background) BACKGROUND=1 ;;
     esac
 done
+_log "  BACKGROUND=$BACKGROUND"
 
 cd "$SCRIPT_DIR"
+_log "✓ cd to $SCRIPT_DIR"
 
 # ── First-run bootstrap (skipped if already done) ──────────────────────
 
 # Playwright chromium (idempotent — skips if already installed)
-uv run playwright install chromium 2>/dev/null || true
+_log "↳ Checking Playwright browsers..."
+uv run playwright install chromium || true
+_log "✓ Playwright check done"
 
 # Template files
+_log "↳ Checking template files..."
 if [ -f "instruction/Maria.md.example" ] && [ ! -f "instruction/Maria.md" ]; then
     cp instruction/Maria.md.example instruction/Maria.md
-    echo "📝 Created instruction/Maria.md from template"
+    _log "  ✓ Created instruction/Maria.md from template"
+else
+    _log "  · Maria.md already exists or no template"
 fi
 if [ -f "Brain/Memory.json.example" ] && [ ! -f "Brain/Memory.json" ]; then
     cp Brain/Memory.json.example Brain/Memory.json
-    echo "🧠 Created Brain/Memory.json from template"
+    _log "  ✓ Created Brain/Memory.json from template"
+else
+    _log "  · Memory.json already exists or no template"
 fi
 
 # Browser profile symlink
+_log "↳ Checking browser profile symlink..."
 mkdir -p system
 if [ -d "system/browser-data" ] && [ ! -L "system/browser-data" ]; then
-    # Migrate legacy non-symlink dir
+    _log "  · Migrating legacy non-symlink browser-data dir..."
     if [ ! -d "system/browser-data-acc1" ]; then
         mv system/browser-data system/browser-data-acc1
+        _log "  ✓ Moved to browser-data-acc1"
     else
         rm -rf system/browser-data
+        _log "  ✓ Removed stale browser-data (acc1 exists)"
     fi
 fi
 if [ ! -e "system/browser-data" ]; then
     ln -s browser-data-acc1 system/browser-data 2>/dev/null || true
+    _log "  ✓ Created symlink browser-data → browser-data-acc1"
+else
+    _log "  · browser-data symlink/dir already exists"
 fi
 
 # SearXNG search backend (Docker, idempotent)
+_log "↳ Checking SearXNG search backend..."
 if command -v docker >/dev/null 2>&1; then
+    _log "  · Docker available"
     if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^searxng$'; then
+        _log "  · SearXNG not running, starting..."
         # Remove stopped container if it exists
         docker rm -f searxng >/dev/null 2>&1 || true
-        echo "🔍 Starting SearXNG search backend..."
         if ! docker image inspect searxng/searxng:latest >/dev/null 2>&1; then
             echo "   Pulling searxng/searxng:latest (first time only)..."
             docker pull searxng/searxng:latest
@@ -72,16 +96,18 @@ search:
 SEOF
 ' 2>/dev/null
         docker restart searxng >/dev/null 2>&1
-        echo "✅ SearXNG ready on http://localhost:8080"
+        _log "✓ SearXNG ready on http://localhost:8080"
     else
-        echo "✅ SearXNG already running"
+        _log "✓ SearXNG already running"
     fi
 else
-    echo "⚠️  Docker not found — SearXNG search backend skipped"
+    _log "⚠ Docker not found — SearXNG search backend skipped"
 fi
 
 # Systemd user service (one-time install)
+_log "↳ Checking systemd user service..."
 if ! systemctl --user cat "$SERVICE" >/dev/null 2>&1; then
+    _log "  · Service not installed, creating..."
     mkdir -p "${HOME}/.config/systemd/user"
     cat > "${HOME}/.config/systemd/user/${SERVICE}" <<EOF
 [Unit]
@@ -102,14 +128,16 @@ WantedBy=default.target
 EOF
     systemctl --user daemon-reload 2>/dev/null || true
     systemctl --user enable "$SERVICE" >/dev/null 2>&1 || true
-    echo "⚙️  Installed systemd user service: $SERVICE"
+    _log "✓ Installed systemd user service: $SERVICE"
+else
+    _log "  · Service already installed"
 fi
 
 # ── Start ───────────────────────────────────────────────────────────────
-
-echo "🔄 Synchronizing dependencies..."
+_log "▶ Starting Sable..."
+_log "↳ Synchronizing dependencies (uv sync)..."
 uv sync
-echo ""
+_log "✓ Dependencies synced"
 
 print_info_box() {
     local url="$1" port="$2" service="$3"
@@ -143,37 +171,40 @@ open_browser() {
 }
 
 if systemctl --user cat "$SERVICE" >/dev/null 2>&1; then
-    if [ "$BACKGROUND" -eq 0 ]; then
-        echo "Starting Sable via systemd..."
-    fi
+    _log "↳ Starting via systemd ($SERVICE)..."
     systemctl --user start "$SERVICE"
+    _log "  · Waiting for service to become active..."
     sleep 1
     if systemctl --user is-active --quiet "$SERVICE"; then
+        _log "✓ Service is active!"
         if [ "$BACKGROUND" -eq 0 ]; then
             print_info_box "$SABLE_URL" "$SABLE_PORT" "$SERVICE"
             open_browser
         fi
     else
-        echo "⚠️  Service failed to start. Clearing stale browser profile and retrying..."
+        _log "⚠ Service failed to start! Clearing stale browser profile and retrying..."
         rm -rf "$SCRIPT_DIR/system/browser-data"
+        _log "  ↳ Restarting service after profile reset..."
         systemctl --user restart "$SERVICE"
         sleep 1
         if systemctl --user is-active --quiet "$SERVICE"; then
+            _log "✓ Service active after profile reset!"
             if [ "$BACKGROUND" -eq 0 ]; then
                 print_info_box "$SABLE_URL" "$SABLE_PORT" "$SERVICE"
                 open_browser
             fi
         else
-            echo "❌ Still failing after profile reset. Check logs:"
-            echo "   journalctl --user -u $SERVICE -n 30 --no-pager"
+            _log "✗ STILL FAILING after profile reset!"
+            _log "  Check logs: journalctl --user -u $SERVICE -n 30 --no-pager"
             exit 1
         fi
     fi
 else
+    _log "⚠ systemd user service not found — starting directly with uv..."
     if [ "$BACKGROUND" -eq 0 ]; then
-        echo "systemd user service not found — starting the server directly with uv..."
         print_info_box "$SABLE_URL" "$SABLE_PORT" "(direct)"
         open_browser &
     fi
+    _log "↳ exec uv run python server.py"
     exec uv run python server.py
 fi
