@@ -19,7 +19,7 @@
 
         accountProfileCards.innerHTML = accounts.map((acc) => {
           const isActive = acc.name === active;
-          const email = acc.email || "unknown account";
+          const email = acc.label || acc.email || "unknown account";
           const size = acc.size_mb ? acc.size_mb + " MB" : "";
           return `<div style="display:flex;align-items:center;justify-content:space-between;background:var(--panel);border:1px solid ${isActive ? 'var(--accent)' : 'var(--border)'};border-radius:10px;padding:10px 14px;">
             <div style="min-width:0;">
@@ -31,6 +31,7 @@
               </div>
             </div>
             <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
+              <button class="icon-btn account-rename-btn" data-profile="${acc.name}" data-current-label="${(acc.label || acc.email || '').replace(/"/g, '&quot;')}" style="width:auto;padding:5px 10px;font-size:11px;white-space:nowrap;">Rename</button>
               <button class="icon-btn account-open-btn" data-profile="${acc.name}" style="width:auto;padding:5px 12px;font-size:11px;white-space:nowrap;">Open</button>
               ${isActive ? '' : `<button class="icon-btn account-switch-btn" data-profile="${acc.name}" style="width:auto;padding:5px 12px;font-size:11px;white-space:nowrap;">Switch</button>`}
               ${isActive ? '' : `<button class="icon-btn account-delete-btn" data-profile="${acc.name}" style="width:auto;padding:5px 10px;font-size:11px;white-space:nowrap;color:var(--danger);border-color:var(--danger);">Delete</button>`}
@@ -92,6 +93,36 @@
               showToast("Delete error: " + e.message, "error");
               btn.disabled = false;
               btn.textContent = "Delete";
+            }
+          });
+        });
+        accountProfileCards.querySelectorAll(".account-rename-btn").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const profile = btn.dataset.profile;
+            const currentLabel = btn.dataset.currentLabel || "";
+            const newLabel = await sablePrompt("Display name for " + profile + ":", currentLabel);
+            if (newLabel === null) return; // cancelled
+            btn.disabled = true;
+            btn.textContent = "Saving…";
+            try {
+              const res = await fetch("/api/settings/accounts/rename", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ profile, label: newLabel }),
+              });
+              const data = await res.json().catch(() => ({}));
+              if (res.ok) {
+                showToast(newLabel ? `✅ Renamed to "${newLabel}"` : `✅ Cleared custom name`, "success");
+                await loadAccountProfiles();
+              } else {
+                showToast("Rename failed: " + (data.detail || "unknown"), "error");
+                btn.disabled = false;
+                btn.textContent = "Rename";
+              }
+            } catch (e) {
+              showToast("Rename error: " + e.message, "error");
+              btn.disabled = false;
+              btn.textContent = "Rename";
             }
           });
         });
