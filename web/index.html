@@ -11,7 +11,7 @@
   <link rel="stylesheet" href="/static/css/layout.css?v=60">
   <link rel="stylesheet" href="/static/css/ide.css?v=5">
   <link rel="stylesheet" href="/static/css/chat.css?v=35">
-  <link rel="stylesheet" href="/static/css/panels.css?v=55">
+  <link rel="stylesheet" href="/static/css/panels.css?v=56">
   <link rel="stylesheet" href="/static/css/components.css?v=20">
   <link rel="stylesheet" href="/static/css/responsive.css?v=6">
   <link rel="stylesheet" href="/static/css/agents.css?v=36">
@@ -140,6 +140,17 @@
         <span class="icon-emoji">🔍</span><i data-lucide="search" class="icon-lucide"></i>
       </button>
       <div class="rail-sep"></div>
+      <!-- Workspace -->
+      <button class="rail-btn" data-rail="files" title="Files">
+        <span class="icon-emoji">📂</span><i data-lucide="folder-tree" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="projects" title="Projects">
+        <span class="icon-emoji">📁</span><i data-lucide="folder-open" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="terminal" title="Terminal">
+        <span class="icon-emoji">🖥</span><i data-lucide="terminal" class="icon-lucide"></i>
+      </button>
+      <div class="rail-sep"></div>
       <!-- Creative & Research -->
       <button class="rail-btn" data-rail="research" title="Deep Research">
         <span class="icon-emoji">🔬</span><i data-lucide="flask-conical" class="icon-lucide"></i>
@@ -149,17 +160,6 @@
       </button>
       <button class="rail-btn" data-rail="prompt" title="Prompt Generator">
         <span class="icon-emoji">✨</span><i data-lucide="sparkles" class="icon-lucide"></i>
-      </button>
-      <div class="rail-sep"></div>
-      <!-- Workspace -->
-      <button class="rail-btn" data-rail="terminal" title="Terminal">
-        <span class="icon-emoji">🖥</span><i data-lucide="terminal" class="icon-lucide"></i>
-      </button>
-      <button class="rail-btn" data-rail="files" title="Files">
-        <span class="icon-emoji">📂</span><i data-lucide="folder-tree" class="icon-lucide"></i>
-      </button>
-      <button class="rail-btn" data-rail="projects" title="Projects">
-        <span class="icon-emoji">📁</span><i data-lucide="folder-open" class="icon-lucide"></i>
       </button>
       <div class="rail-sep"></div>
       <!-- Planning -->
@@ -755,6 +755,16 @@
       </div>
       <div id="projList" class="tn-list"></div>
       <div id="projEmpty" class="tracknote-empty">No projects yet</div>
+
+      <!-- Active project chats section -->
+      <div id="projChatsSection" class="hidden" style="margin-top:12px; border-top:1px solid var(--border); padding-top:10px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; padding:0 8px 6px;">
+          <span style="font-size:11px; font-weight:600; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">Chats</span>
+          <button id="projNewChatBtn" class="tn-add-toggle" title="New Chat" style="width:22px;height:22px;font-size:14px;"><i data-lucide="plus" class="icon-lucide" style="width:12px;height:12px;"></i></button>
+        </div>
+        <div id="projChatsList" class="tn-list"></div>
+        <div id="projChatsEmpty" class="tracknote-empty" style="padding:12px;">No chats in this project</div>
+      </div>
     </div>
   </div>
 
@@ -823,24 +833,22 @@
       <div class="settings-content-row">
       <div class="settings-sidebar">
       <div class="settings-tabs">
+        <!-- Core -->
         <button class="settings-tab active" data-tab="general">General</button>
+        <button class="settings-tab" data-tab="personalization">Personalization</button>
+        <button class="settings-tab" data-tab="account">Account</button>
+        <!-- AI -->
         <button class="settings-tab" data-tab="providers">Providers</button>
-        <button class="settings-tab" data-tab="search">Search Engine</button>
-        <button class="settings-tab" data-tab="brain">Brain</button>
-        <button class="settings-tab" data-tab="tools">Tools</button>
-        <button class="settings-tab" data-tab="skills">Skills</button>
+        <button class="settings-tab" data-tab="memory">Memory</button>
         <button class="settings-tab" data-tab="agents">Agents</button>
+        <!-- Integrations -->
         <button class="settings-tab" data-tab="mcp">MCP</button>
         <button class="settings-tab" data-tab="ide">IDE</button>
-        <button class="settings-tab" data-tab="tts">TTS</button>
-        <button class="settings-tab" data-tab="stt">STT</button>
-        <button class="settings-tab" data-tab="backup">Backup</button>
-        <button class="settings-tab" data-tab="account">Account</button>
-        <button class="settings-tab" data-tab="cookbook">Cookbook</button>
-        <button class="settings-tab" data-tab="personas">Personas</button>
-        <button class="settings-tab" data-tab="logs">Live Logs</button>
+        <button class="settings-tab" data-tab="voice">Voice</button>
         <button class="settings-tab" data-tab="bot"><span class="icon-emoji">🤖</span> Bot</button>
-
+        <button class="settings-tab" data-tab="cookbook">Cookbook</button>
+        <!-- System -->
+        <button class="settings-tab" data-tab="logs">Live Logs</button>
         <button class="settings-tab" data-tab="shortcuts"><span class="icon-emoji">⌨️</span> Shortcuts</button>
         <button class="settings-tab" data-tab="updates"><span class="icon-emoji">🔄</span> Updates</button>
       </div>
@@ -983,28 +991,7 @@
                 <option value="">— none —</option>
               </select>
             </div>
-            <!-- Primary browser -->
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;margin-top:4px;">
-              <label for="ctxPassBrowserAcc" style="font-size:12px;color:var(--text-dim);">① Primary Browser</label>
-              <select id="ctxPassBrowserAcc" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;width:200px;">
-                <option value="">Default (current)</option>
-              </select>
-            </div>
-            <!-- Fallback browser 1 -->
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;">
-              <label for="ctxPassBp1" style="font-size:12px;color:var(--text-dim);">② Fallback Browser</label>
-              <select id="ctxPassBp1" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;width:200px;">
-                <option value="">— none —</option>
-              </select>
-            </div>
-            <!-- Fallback browser 2 -->
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;">
-              <label for="ctxPassBp2" style="font-size:12px;color:var(--text-dim);">③ Fallback Browser</label>
-              <select id="ctxPassBp2" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;width:200px;">
-                <option value="">— none —</option>
-              </select>
-            </div>
-            <p class="muted" style="font-size:11px;margin-top:6px;">Tries primary → fallback models → fallback browsers in order. First success wins.</p>
+            <p class="muted" style="font-size:11px;margin-top:6px;">Tries primary model → fallback models → auto-selects from available browser pool. First success wins.</p>
           </div>
 
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
@@ -1139,11 +1126,8 @@
             <div id="customModelList" style="display:flex;flex-direction:column;gap:6px;margin-top:12px;"></div>
             <div id="customModelStatus" style="font-size:11px;color:var(--text-dim);margin-top:8px;"></div>
           </div>
-        </div>
-
-        <!-- Search Engine Tab -->
-        <div id="tab-search" class="settings-tab-content">
-          <h3 class="mem-title"><span class="icon-emoji">🔍</span><i data-lucide="search" class="icon-lucide"></i> Search Engine</h3>
+          <!-- ═══ Search Engine ═══ -->
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🔍</span><i data-lucide="search" class="icon-lucide"></i> Search Engine</h3>
           <p class="muted mem-desc">Configure web search provider, fallback chain, and caching. Used by Online Search skill and Deep Research.</p>
 
           <!-- Active Provider -->
@@ -1324,21 +1308,8 @@
           </div>
           <p class="muted" style="font-size:11px;margin-top:10px;">Switches the API browser profile symlink. Browser restarts automatically after switch.<br>Profiles live in <code>system/browser-data-acc*</code> — each one is a full Chromium profile logged into a different account.</p>
         </div>
-        <div id="tab-backup" class="settings-tab-content">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-            <label style="font-size:14px;color:var(--text);font-weight:600;">Account Backups</label>
-            <span style="display:flex;gap:6px;">
-              <button id="backupAllBtn" style="background:var(--panel);color:var(--accent);border:1px solid var(--accent);border-radius:6px;padding:4px 12px;font-size:11px;cursor:pointer;font-weight:600;">⬆ Backup All</button>
-              <button id="restoreAllBtn" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:11px;cursor:pointer;font-weight:600;">⬇ Restore All</button>
-              <button id="refreshProfilesBtn" class="icon-btn" title="Refresh profile info" style="width:auto;padding:4px 10px;font-size:11px;">↻ Refresh</button>
-            </span>
-          </div>
-          <div id="browserProfileCards" style="display:flex;flex-direction:column;gap:10px;">
-            <p class="muted" style="font-size:12px;margin:0;">Loading profiles…</p>
-          </div>
-          <p class="muted" style="font-size:11px;margin-top:10px;">Restores from the .bak snapshot (clean login state). Deletes current data first. Stop the browser before restoring.</p>
-        </div>
-        <div id="tab-brain" class="settings-tab-content">
+        <div id="tab-personalization" class="settings-tab-content">
+          <!-- ═══ Section 1: Personal Context (who you are) ═══ -->
           <h3 class="mem-title"><span class="icon-emoji">👤</span><i data-lucide="user" class="icon-lucide"></i> Personal Context</h3>
           <p class="muted mem-desc">Your name, preferences, hobbies, and context. Saved to instruction/personal.md and loaded into every conversation.</p>
           <textarea id="personalContextArea" class="mem-input" style="width:100%;min-height:120px;font-family:var(--font-mono);font-size:12px;line-height:1.5;resize:vertical;padding:10px;border-radius:8px;background:var(--bg-secondary);color:var(--text);border:1px solid var(--border);" placeholder="Name, preferences, hobbies, context..."></textarea>
@@ -1347,7 +1318,44 @@
             <span id="personalStatus" class="muted mem-status"></span>
           </div>
 
-          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🧠</span><i data-lucide="brain" class="icon-lucide"></i> Memory Consolidation</h3>
+          <!-- ═══ Section 2: Personas (identity) ═══ -->
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🎭</span><i data-lucide="masks" class="icon-lucide"></i> Personas &amp; Output Format</h3>
+          <p class="muted mem-desc">Choose who the AI becomes. Select one active character or none at all. Edit, create, or disable entries below.</p>
+          <div id="personaGrid" class="persona-grid"></div>
+          <div class="persona-actions-bar">
+            <button id="personaAddBtn" class="persona-action-btn">+ New Entry</button>
+            <button id="personaEditFormatBtn" class="persona-action-btn">✏️ Edit Output Format</button>
+            <label class="persona-toggle-label">
+              <input type="checkbox" id="personaFormatToggle" checked>
+              <span>Output Format</span>
+            </label>
+          </div>
+          <div id="personaEditorBackdrop" class="persona-editor-backdrop hidden"></div>
+          <div id="personaEditor" class="persona-editor hidden">
+            <div class="persona-editor-header">
+              <input id="personaEditorName" class="mem-input" placeholder="Name" style="width:200px;">
+              <div style="display:flex;gap:8px;">
+                <button id="personaEditorSave" class="persona-action-btn">Save</button>
+                <button id="personaEditorClose" class="persona-action-btn">✕</button>
+              </div>
+            </div>
+            <textarea id="personaEditorContent" class="persona-editor-textarea" placeholder="Write the instruction here..."></textarea>
+          </div>
+
+          <!-- ═══ Tools ═══ -->
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🔧</span><i data-lucide="wrench" class="icon-lucide"></i> Tools</h3>
+          <p class="muted mem-desc">Toggle tools on/off. Tools are always-active capabilities injected into every conversation.</p>
+          <div id="toolsToggleList" style="display:flex;flex-direction:column;gap:6px;margin-top:10px;"></div>
+
+          <!-- ═══ Skills ═══ -->
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">⚡</span><i data-lucide="zap" class="icon-lucide"></i> Skills</h3>
+          <p class="muted mem-desc">Toggle skills on/off. View details and instructions in Library > Skills.</p>
+          <div id="skillsToggleList" style="display:flex;flex-direction:column;gap:6px;margin-top:10px;"></div>
+
+        </div>
+
+        <div id="tab-memory" class="settings-tab-content">
+          <h3 class="mem-title"><span class="icon-emoji">🧠</span><i data-lucide="brain" class="icon-lucide"></i> Memory Consolidation</h3>
           <p class="muted mem-desc">Settings for automatic memory extraction when creating a new chat.</p>
 
           <div style="display:flex;flex-direction:column;gap:14px;margin-top:10px;">
@@ -1373,19 +1381,7 @@
               <p class="muted" style="font-size:11px;margin:3px 0 0;">If the primary model fails, these are tried in order (up to 3).</p>
             </div>
 
-            <div>
-              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Qwen Browser Profile Fallbacks</label>
-              <select id="consolidationProfile1" class="mem-input" style="width:100%;max-width:320px;margin-bottom:4px;">
-                <option value="">— None —</option>
-              </select>
-              <select id="consolidationProfile2" class="mem-input" style="width:100%;max-width:320px;margin-bottom:4px;">
-                <option value="">— None —</option>
-              </select>
-              <select id="consolidationProfile3" class="mem-input" style="width:100%;max-width:320px;">
-                <option value="">— None —</option>
-              </select>
-              <p class="muted" style="font-size:11px;margin:3px 0 0;">If Qwen fails, retry with these browser profiles before trying fallback models.</p>
-            </div>
+
 
 
           </div>
@@ -1440,17 +1436,6 @@
             <p class="muted" style="font-size:11px;margin:0;">Force-reindex all memories. Only needed after editing Memory.json manually or changing the embedding model.</p>
           </div>
 
-        </div>
-        <div id="tab-tools" class="settings-tab-content">
-          <h3 class="mem-title">🔧 Tools</h3>
-          <p class="muted mem-desc">Toggle tools on/off. Tools are always-active capabilities injected into every conversation.</p>
-          <div id="toolsToggleList" style="display:flex;flex-direction:column;gap:6px;margin-top:10px;"></div>
-        </div>
-
-        <div id="tab-skills" class="settings-tab-content">
-          <h3 class="mem-title">Skills</h3>
-          <p class="muted mem-desc">Toggle skills on/off. View details and instructions in Library > Skills.</p>
-          <div id="skillsToggleList" style="display:flex;flex-direction:column;gap:6px;margin-top:10px;"></div>
         </div>
         
         <div id="tab-ide" class="settings-tab-content">
@@ -1510,7 +1495,8 @@
           </div>
         </div>
 
-        <div id="tab-tts" class="settings-tab-content">
+        <div id="tab-voice" class="settings-tab-content">
+          <!-- ═══ TTS Section ═══ -->
           <h3 class="mem-title"><span class="icon-emoji">🔊</span><i data-lucide="volume-2" class="icon-lucide"></i> Text-to-Speech</h3>
           <p class="muted mem-desc">Choose between offline Kokoro models or online Edge TTS (Microsoft neural voices).</p>
 
@@ -1568,11 +1554,9 @@
               </div>
             </div>
           </div>
-        </div>
 
-        <!-- STT Tab -->
-        <div id="tab-stt" class="settings-tab-content">
-          <h3 class="mem-title"><span class="icon-emoji">🎙️</span><i data-lucide="mic" class="icon-lucide"></i> Speech-to-Text</h3>
+          <!-- ═══ STT Section ═══ -->
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🎙️</span><i data-lucide="mic" class="icon-lucide"></i> Speech-to-Text</h3>
           <p class="muted mem-desc">Local Whisper model (small.en) for offline audio transcription. Runs on CPU with int8 quantization.</p>
 
           <!-- Model Status -->
@@ -1752,30 +1736,6 @@
           <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
             <h4 class="muted" style="font-size:12px;font-weight:600;margin-bottom:8px;">Recommended Models <span class="muted" style="font-weight:400;">(ranked for your hardware)</span></h4>
             <div id="cbPresetsGrid" class="cb-presets-grid"></div>
-          </div>
-        </div>
-        <div id="tab-personas" class="settings-tab-content">
-          <h3 class="mem-title"><span class="icon-emoji">🎭</span><i data-lucide="masks" class="icon-lucide"></i> Personas &amp; Output Format</h3>
-          <p class="muted mem-desc">Choose who the AI becomes. Select one active character or none at all. Edit, create, or disable entries below.</p>
-          <div id="personaGrid" class="persona-grid"></div>
-          <div class="persona-actions-bar">
-            <button id="personaAddBtn" class="persona-action-btn">+ New Entry</button>
-            <button id="personaEditFormatBtn" class="persona-action-btn">✏️ Edit Output Format</button>
-            <label class="persona-toggle-label">
-              <input type="checkbox" id="personaFormatToggle" checked>
-              <span>Output Format</span>
-            </label>
-          </div>
-          <div id="personaEditorBackdrop" class="persona-editor-backdrop hidden"></div>
-          <div id="personaEditor" class="persona-editor hidden">
-            <div class="persona-editor-header">
-              <input id="personaEditorName" class="mem-input" placeholder="Name" style="width:200px;">
-              <div style="display:flex;gap:8px;">
-                <button id="personaEditorSave" class="persona-action-btn">Save</button>
-                <button id="personaEditorClose" class="persona-action-btn">✕</button>
-              </div>
-            </div>
-            <textarea id="personaEditorContent" class="persona-editor-textarea" placeholder="Write the instruction here..."></textarea>
           </div>
         </div>
         <div id="tab-agents" class="settings-tab-content">
@@ -2036,9 +1996,9 @@
   <script src="/static/js/sse.js?v=6"></script>
   <script src="/static/js/sidebar.js?v=1"></script>
   <script src="/static/js/statusbar.js?v=1"></script>
-  <script src="/static/js/settings-projects.js?v=1"></script>
-  <script src="/static/js/projects-panel.js?v=1"></script>
-  <script src="/static/js/settings-init.js?v=3"></script>
+  <script src="/static/js/settings-projects.js?v=2"></script>
+  <script src="/static/js/projects-panel.js?v=6"></script>
+  <script src="/static/js/settings-init.js?v=4"></script>
   <script src="/static/js/settings-ui.js?v=2"></script>
   <script src="/static/js/settings-bot.js?v=1"></script>
   <script src="/static/js/library.js?v=2"></script>

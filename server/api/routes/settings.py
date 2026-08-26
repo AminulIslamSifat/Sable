@@ -1092,12 +1092,32 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
     return {"status": "ok", "active": target_name, "email": email}
 
 
+_chrome_executable_cache: str | None = None
+
+
+async def _get_chrome_executable() -> str:
+    """Resolve Playwright's bundled Chromium binary path (cached after first call)."""
+    global _chrome_executable_cache
+    if _chrome_executable_cache is not None:
+        return _chrome_executable_cache
+
+    # Start a throwaway Playwright instance just to get the binary path,
+    # then stop it immediately. The actual browser launch uses subprocess.
+    from playwright.async_api import async_playwright
+    pw = await async_playwright().start()
+    path = pw.chromium.executable_path
+    await pw.stop()
+
+    _chrome_executable_cache = path
+    return path
+
+
 @router.post("/api/settings/accounts/create")
 async def create_account() -> dict[str, Any]:
     """Find next available acc integer, create profile dir, and open headed browser.
 
-    Uses in-process Playwright (same as /accounts/open) instead of spawning
-    a subprocess — errors are properly returned to the frontend.
+    Launches Chromium as a detached subprocess — no Playwright connection held.
+    The browser runs independently and survives Sable restarts.
     """
     import sys
     _is_windows = sys.platform == "win32"
@@ -1120,72 +1140,27 @@ async def create_account() -> dict[str, Any]:
 
     url = "https://chat.qwen.ai"
 
-    try:
-        from playwright.async_api import async_playwright
-    except ImportError as e:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"Playwright import failed: {e}\n\n"
-                f"This is a known Windows issue — greenlet's DLL needs the Visual C++ runtime.\n\n"
-                f"Fix (pick one):\n"
-                f"  A) Install VC++ Redistributable: https://aka.ms/vs/17/release/vc_redist.x64.exe\n"
-                f"  B) Pin older greenlet: uv pip install \"greenlet==1.1.3\"\n\n"
-                f"Then restart Sable."
-            ),
-        )
-
-    # WSL2 → launch Windows-side Chrome via CDP
-    wsl_session = None
-    try:
-        from engine.wsl_browser import launch_windows_chrome
-        wsl_session = launch_windows_chrome(
-            str(target_path), port=9301, headless=False,
-            extra_args=[
-                "--disk-cache-size=2097152",
-                "--disable-gpu-shader-cache",
-                "--disable-component-update",
-            ],
-        )
-    except Exception:
-        pass
-
-    if wsl_session is not None:
-        logger.info("WSL2: connected to Windows Chrome at %s for new %s", wsl_session.cdp_url, profile_name)
-        try:
-            pw = await async_playwright().start()
-            browser = await pw.chromium.connect_over_cdp(wsl_session.cdp_url)
-            context = browser.contexts[0] if browser.contexts else await browser.new_context()
-            page = context.pages[0] if context.pages else await context.new_page()
-            await page.goto(url, timeout=30000)
-            _open_account_contexts[profile_name] = context
-            return {"status": "ok", "profile": profile_name}
-        except Exception as e:
-            logger.error("WSL2 browser create failed for %s: %s", profile_name, e)
-            raise HTTPException(status_code=500, detail=f"WSL2 browser launch failed: {e}")
-
-    # Native launch (Linux or Windows)
+    # Launch Chromium as a detached subprocess — no Playwright connection held.
     launch_args = [
         "--disable-blink-features=AutomationControlled",
         "--disk-cache-size=2097152",
         "--disable-gpu-shader-cache",
         "--disable-component-update",
+        f"--user-data-dir={target_path}",
+        url,
     ]
     if not _is_windows:
         launch_args.insert(0, "--no-sandbox")
 
     try:
-        pw = await async_playwright().start()
-        context = await pw.chromium.launch_persistent_context(
-            user_data_dir=str(target_path),
-            headless=False,
-            timeout=30000,
-            args=launch_args,
+        chrome_path = await _get_chrome_executable()
+        proc = await asyncio.create_subprocess_exec(
+            chrome_path, *launch_args,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
         )
-        page = context.pages[0] if context.pages else await context.new_page()
-        await page.goto(url, timeout=30000)
-        _open_account_contexts[profile_name] = context
-        logger.info("Created and opened new account %s", profile_name)
+        logger.info("Created and opened new account %s (pid=%d)", profile_name, proc.pid)
         return {"status": "ok", "profile": profile_name}
     except Exception as e:
         logger.error("Browser create FAILED for %s: %s", profile_name, e, exc_info=True)
@@ -1234,16 +1209,16 @@ async def delete_account(payload: dict[str, str]) -> dict[str, Any]:
     return {"status": "ok", "deleted": target_name}
 
 
-# Keep opened account browsers alive (keyed by profile name)
-_open_account_contexts: dict[str, Any] = {}
+# Detached browser launches — no persistent Playwright connection needed.
+# Browsers run independently via subprocess and survive Sable restarts.
 
 
 @router.post("/api/settings/accounts/open")
 async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
     """Launch a headed browser with the specified account profile.
 
-    Waits for the browser to actually open before returning success.
-    Errors are returned to the frontend instead of being silently swallowed.
+    Launches Chromium as a detached subprocess — no Playwright connection held.
+    The browser runs independently and survives Sable restarts.
     """
     import sys
     _is_windows = sys.platform == "win32"
@@ -1257,72 +1232,27 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
 
     url = payload.get("url", "https://chat.qwen.ai")
 
-    try:
-        from playwright.async_api import async_playwright
-    except ImportError as e:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"Playwright import failed: {e}\n\n"
-                f"This is a known Windows issue — greenlet's DLL needs the Visual C++ runtime.\n\n"
-                f"Fix (pick one):\n"
-                f"  A) Install VC++ Redistributable: https://aka.ms/vs/17/release/vc_redist.x64.exe\n"
-                f"  B) Pin older greenlet: uv pip install \"greenlet==1.1.3\"\n\n"
-                f"Then restart Sable."
-            ),
-        )
-
-    # WSL2 → launch Windows-side Chrome via CDP
-    wsl_session = None
-    try:
-        from engine.wsl_browser import launch_windows_chrome
-        wsl_session = launch_windows_chrome(
-            str(target_path), port=9301, headless=False,
-            extra_args=[
-                "--disk-cache-size=2097152",
-                "--disable-gpu-shader-cache",
-                "--disable-component-update",
-            ],
-        )
-    except Exception:
-        pass
-
-    if wsl_session is not None:
-        logger.info("WSL2: connected to Windows Chrome at %s for %s", wsl_session.cdp_url, target_name)
-        try:
-            pw = await async_playwright().start()
-            browser = await pw.chromium.connect_over_cdp(wsl_session.cdp_url)
-            context = browser.contexts[0] if browser.contexts else await browser.new_context()
-            page = context.pages[0] if context.pages else await context.new_page()
-            await page.goto(url, timeout=30000)
-            _open_account_contexts[target_name] = context
-            return {"status": "opened", "profile": target_name, "url": url}
-        except Exception as e:
-            logger.error("WSL2 browser open failed for %s: %s", target_name, e)
-            raise HTTPException(status_code=500, detail=f"WSL2 browser launch failed: {e}")
-
-    # Native launch (Linux or Windows)
+    # Launch Chromium as a detached subprocess — no Playwright connection held.
     launch_args = [
         "--disable-blink-features=AutomationControlled",
         "--disk-cache-size=2097152",
         "--disable-gpu-shader-cache",
         "--disable-component-update",
+        f"--user-data-dir={target_path}",
+        url,
     ]
     if not _is_windows:
         launch_args.insert(0, "--no-sandbox")
 
     try:
-        pw = await async_playwright().start()
-        context = await pw.chromium.launch_persistent_context(
-            user_data_dir=str(target_path),
-            headless=False,
-            timeout=30000,
-            args=launch_args,
+        chrome_path = await _get_chrome_executable()
+        proc = await asyncio.create_subprocess_exec(
+            chrome_path, *launch_args,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
         )
-        page = context.pages[0] if context.pages else await context.new_page()
-        await page.goto(url, timeout=30000)
-        _open_account_contexts[target_name] = context
-        logger.info("Opened browser for %s at %s", target_name, url)
+        logger.info("Opened browser for %s at %s (pid=%d)", target_name, url, proc.pid)
         return {"status": "opened", "profile": target_name, "url": url}
     except Exception as e:
         logger.error("Browser open FAILED for %s: %s", target_name, e, exc_info=True)
@@ -1617,8 +1547,6 @@ _CONTEXT_PASS_SETTINGS_PATH = BASE_DIR / "system/context_pass_settings.json"
 _CONTEXT_PASS_DEFAULTS: dict[str, Any] = {
     "summarizer_model": "",   # primary model (empty = use current model)
     "fallback_models": [],    # ordered list of fallback model IDs (max 2)
-    "browser_data_acc": "",   # primary browser profile (empty = default)
-    "browser_profiles": [],   # ordered list of fallback browser profiles (max 2)
 }
 
 def _load_context_pass_settings() -> dict[str, Any]:
@@ -1649,11 +1577,6 @@ async def set_context_pass_settings(request: Request) -> dict[str, Any]:
     if "fallback_models" in body:
         fm = body["fallback_models"]
         settings["fallback_models"] = [str(m).strip() for m in fm if isinstance(fm, list)] if isinstance(fm, list) else []
-    if "browser_data_acc" in body:
-        settings["browser_data_acc"] = str(body["browser_data_acc"]).strip()
-    if "browser_profiles" in body:
-        bp = body["browser_profiles"]
-        settings["browser_profiles"] = [str(p).strip() for p in bp if isinstance(bp, list)] if isinstance(bp, list) else []
     _save_context_pass_settings(settings)
     return {"status": "ok", **settings}
 # ── /Context Pass Settings ─────────────────────────────────────────
@@ -1663,7 +1586,6 @@ _CONSOLIDATION_SETTINGS_PATH = BASE_DIR / "system/consolidation_settings.json"
 _CONSOLIDATION_DEFAULTS: dict[str, Any] = {
     "model": "",                    # empty = use current chat model
     "fallback_models": [],          # ordered list of fallback model IDs
-    "browser_profiles": [],         # ordered list of browser profile names for Qwen fallback
 }
 
 def _load_consolidation_settings() -> dict[str, Any]:
@@ -1694,9 +1616,6 @@ async def set_consolidation_settings(request: Request) -> dict[str, Any]:
     if "fallback_models" in body:
         fm = body["fallback_models"]
         settings["fallback_models"] = [str(m).strip() for m in fm if isinstance(fm, list)] if isinstance(fm, list) else []
-    if "browser_profiles" in body:
-        bp = body["browser_profiles"]
-        settings["browser_profiles"] = [str(p).strip() for p in bp if isinstance(bp, list)] if isinstance(bp, list) else []
     _save_consolidation_settings(settings)
     return {"status": "ok", **settings}
 # ── /Memory Consolidation Settings ────────────────────────────────────

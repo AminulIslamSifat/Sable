@@ -328,9 +328,6 @@
     const consolidationFB1 = document.getElementById("consolidationFallback1");
     const consolidationFB2 = document.getElementById("consolidationFallback2");
     const consolidationFB3 = document.getElementById("consolidationFallback3");
-    const consolidationP1 = document.getElementById("consolidationProfile1");
-    const consolidationP2 = document.getElementById("consolidationProfile2");
-    const consolidationP3 = document.getElementById("consolidationProfile3");
 
 
     function populateConsolidationModels() {
@@ -350,35 +347,8 @@
       }
     }
 
-    async function populateConsolidationProfiles() {
-      const selects = [consolidationP1, consolidationP2, consolidationP3];
-      const profiles = [];
-      try {
-        const res = await fetch("/api/settings/accounts");
-        if (res.ok) {
-          const data = await res.json();
-          for (const acc of (data.accounts || [])) {
-            profiles.push({ name: acc.name, label: acc.email ? `${acc.name} (${acc.email})` : acc.name });
-          }
-        }
-      } catch {}
-      for (const sel of selects) {
-        if (!sel) continue;
-        const current = sel.value;
-        sel.innerHTML = '<option value="">— None —</option>';
-        for (const p of profiles) {
-          const opt = document.createElement("option");
-          opt.value = p.name;
-          opt.textContent = p.label;
-          sel.appendChild(opt);
-        }
-        sel.value = current;
-      }
-    }
-
     async function loadConsolidationSettings() {
       populateConsolidationModels();
-      await populateConsolidationProfiles();
       try {
         const res = await fetch("/api/settings/consolidation");
         if (res.ok) {
@@ -388,10 +358,6 @@
           if (consolidationFB1) consolidationFB1.value = fbs[0] || "";
           if (consolidationFB2) consolidationFB2.value = fbs[1] || "";
           if (consolidationFB3) consolidationFB3.value = fbs[2] || "";
-          const bps = d.browser_profiles || [];
-          if (consolidationP1) consolidationP1.value = bps[0] || "";
-          if (consolidationP2) consolidationP2.value = bps[1] || "";
-          if (consolidationP3) consolidationP3.value = bps[2] || "";
         }
       } catch {}
     }
@@ -555,16 +521,19 @@
       }
     });
 
-    // Load personal + search + consolidation settings when Brain tab is clicked
-    document.querySelector('[data-tab="brain"]').addEventListener("click", () => {
+    // Load personal context when Personalization tab is clicked
+    document.querySelector('[data-tab="personalization"]').addEventListener("click", () => {
       loadPersonal();
+    });
+
+    // Load memory settings when Memory tab is clicked
+    document.querySelector('[data-tab="memory"]').addEventListener("click", () => {
       loadMemorySearchSettings();
       loadConsolidationSettings();
     });
 
-    // Register Brain tab with universal save
-    _universalSave.register("brain", async () => {
-      // Save personal context
+    // Register Personalization tab with universal save (personal context only)
+    _universalSave.register("personalization", async () => {
       if (personalArea) {
         await fetch("/api/settings/personal", {
           method: "POST",
@@ -572,6 +541,10 @@
           body: JSON.stringify({ content: personalArea.value }),
         });
       }
+    });
+
+    // Register Memory tab with universal save
+    _universalSave.register("memory", async () => {
       // Save memory search settings
       const modelThresholds = {};
       msThresholdEditor.querySelectorAll("input[data-model]").forEach((inp) => {
@@ -595,13 +568,11 @@
       }
       // Save consolidation settings
       const fallbackModels = [consolidationFB1?.value, consolidationFB2?.value, consolidationFB3?.value].filter(Boolean);
-      const browserProfiles = [consolidationP1?.value, consolidationP2?.value, consolidationP3?.value].filter(Boolean);
       await fetch("/api/settings/consolidation", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: consolidationModel ? consolidationModel.value : "",
           fallback_models: fallbackModels,
-          browser_profiles: browserProfiles,
         }),
       });
     });

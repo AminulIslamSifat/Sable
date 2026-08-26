@@ -88,12 +88,7 @@
             <select id="researchModel2" class="research-select"></select>
             <select id="researchModel3" class="research-select"></select>
           </div>
-          <div class="research-fallback-col">
-            <div class="research-fallback-label"><span class="icon-emoji">👤</span><i data-lucide="user" class="icon-lucide"></i> Account <span class="research-hint">top = 1st choice, then fallbacks</span></div>
-            <select id="researchAccount1" class="research-select"></select>
-            <select id="researchAccount2" class="research-select"></select>
-            <select id="researchAccount3" class="research-select"></select>
-          </div>
+
         </div>
         <div id="researchStatus" class="research-status hidden"></div>
       `;
@@ -391,11 +386,7 @@
           document.getElementById("researchModel2")?.value || "",
           document.getElementById("researchModel3")?.value || "",
         ],
-        accounts: [
-          document.getElementById("researchAccount1")?.value || "",
-          document.getElementById("researchAccount2")?.value || "",
-          document.getElementById("researchAccount3")?.value || "",
-        ],
+
         depth: document.getElementById("researchDepth")?.value || "3",
         time: document.getElementById("researchTime")?.value || "1500",
         pages: document.getElementById("researchPages")?.value || "3",
@@ -417,31 +408,13 @@
       _fillResearchSlot(scope.querySelector("#researchModel3"), allModels, "— no 3rd model —",
         (sm[2] && modelIds.has(sm[2])) ? sm[2] : "");
 
-      let accounts = [], active = "";
-      try {
-        const data = await fetch("/api/settings/accounts").then((r) => r.json());
-        accounts = ((data && data.accounts) || []).map((a) => ({
-          value: a.name, label: a.email ? a.name + " (" + a.email + ")" : a.name,
-        }));
-        active = (data && data.active) || "";
-      } catch (e) { /* leave accounts empty → default option */ }
-      const accountIds = new Set(accounts.map((a) => a.value));
-      const primary = accounts.some((a) => a.value === active) ? active : (accounts[0] ? accounts[0].value : "");
-      const sa = saved.accounts || [];
-      _fillResearchSlot(scope.querySelector("#researchAccount1"), accounts, accounts.length ? null : "Default (active account)",
-        (sa[0] && accountIds.has(sa[0])) ? sa[0] : primary);
-      _fillResearchSlot(scope.querySelector("#researchAccount2"), accounts, "— no 2nd account —",
-        (sa[1] && accountIds.has(sa[1])) ? sa[1] : "");
-      _fillResearchSlot(scope.querySelector("#researchAccount3"), accounts, "— no 3rd account —",
-        (sa[2] && accountIds.has(sa[2])) ? sa[2] : "");
-
       // Restore depth/time selectors too.
       if (saved.depth) { const el = scope.querySelector("#researchDepth"); if (el) el.value = saved.depth; }
       if (saved.time) { const el = scope.querySelector("#researchTime"); if (el) el.value = saved.time; }
       if (saved.pages) { const el = scope.querySelector("#researchPages"); if (el) el.value = saved.pages; }
 
       // Auto-save on any selector change.
-      scope.querySelectorAll("#researchModel1,#researchModel2,#researchModel3,#researchAccount1,#researchAccount2,#researchAccount3,#researchDepth,#researchTime,#researchPages")
+      scope.querySelectorAll("#researchModel1,#researchModel2,#researchModel3,#researchDepth,#researchTime,#researchPages")
         .forEach((el) => el.addEventListener("change", _saveResearchConfig));
     }
 
@@ -459,16 +432,11 @@
         document.getElementById("researchModel2")?.value,
         document.getElementById("researchModel3")?.value,
       );
-      const accounts = _ordered(
-        document.getElementById("researchAccount1")?.value,
-        document.getElementById("researchAccount2")?.value,
-        document.getElementById("researchAccount3")?.value,
-      );
       try {
         const res = await fetch("/api/research/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query, max_depth: depth, max_time: maxTime, pages_per_topic: pagesPerTopic, models, browser_data: accounts }),
+          body: JSON.stringify({ query, max_depth: depth, max_time: maxTime, pages_per_topic: pagesPerTopic, models }),
         });
         const data = await _researchParse(res);
         if (!res.ok) throw new Error((data && (data.detail || data.error)) || ("Request failed (" + res.status + ")"));

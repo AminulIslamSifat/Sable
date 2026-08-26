@@ -169,6 +169,9 @@ class DeepResearcher:
         # Ordered fallback lists. Legacy single `model` seeds the model list.
         self.models = [m for m in (models or []) if m] or ([model] if model else [])
         self.accounts = [a for a in (accounts or []) if a]
+        if not self.accounts:
+            from engine.config import get_available_accounts_reverse
+            self.accounts = get_available_accounts_reverse(limit=5)
         self._attempt_idx = 0
         self._active_model = self.models[0] if self.models else "default"
         self._active_account = self.accounts[0] if self.accounts else "default"

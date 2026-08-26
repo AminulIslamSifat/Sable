@@ -2795,6 +2795,7 @@ textarea:disabled {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
+#projChatsSection.hidden { display: none !important; }
 
 /* ---------- Project Folder Dropdown (sidebar button) ---------- */
 .project-folder-dropdown {

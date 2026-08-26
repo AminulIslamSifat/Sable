@@ -778,26 +778,35 @@ async def _try_fallback_model(agent: Agent, failed_model: str) -> str | None:
 def _try_browser_fallback(agent: Agent) -> str | None:
     """Try the next browser profile from the account pool (Qwen only).
 
+    Searches from the back (highest number first) to avoid competing with
+    main chat auto-switch which searches forward. Falls back to the global
+    reverse pool if the role-specific pool is empty or exhausted.
+
     Returns the full path to the next available profile or None if exhausted.
-    Pool entries are raw directory names; agent.browser_data_dir may be a full path.
     """
-    pool = get_account_pool(agent.role)
-    if not pool:
-        return None
-    # Extract just the directory name for comparison (agent.browser_data_dir may be full path)
+    from engine.config import _SYSTEM as _AGENT_SYSTEM_DIR, get_available_accounts_reverse
+
     current_name = Path(agent.browser_data_dir).name if agent.browser_data_dir else ""
-    try:
-        idx = pool.index(current_name) + 1
-    except ValueError:
-        idx = 0
-    if idx >= len(pool):
-        return None
-    # Resolve to full path under _SYSTEM
-    from engine.config import _SYSTEM as _AGENT_SYSTEM_DIR
-    acct_profile = _AGENT_SYSTEM_DIR / pool[idx]
-    if acct_profile.is_dir():
-        return str(acct_profile)
-    return pool[idx]  # fallback to raw name if dir missing
+
+    # Try role-specific pool first (reverse order)
+    pool = get_account_pool(agent.role)
+    if pool:
+        # Search pool in reverse, skipping current
+        for entry in reversed(pool):
+            if entry == current_name:
+                continue
+            acct_profile = _AGENT_SYSTEM_DIR / entry
+            if acct_profile.is_dir():
+                return str(acct_profile)
+
+    # Fall back to global reverse pool (highest number first, up to 5)
+    exclude = {current_name} if current_name else set()
+    for acc_name in get_available_accounts_reverse(exclude=exclude, limit=5):
+        acct_profile = _AGENT_SYSTEM_DIR / acc_name
+        if acct_profile.is_dir():
+            return str(acct_profile)
+
+    return None
 
 
 async def _clear_qwen_account_settings(headers: dict[str, str], agent_id: str) -> None:

@@ -420,7 +420,6 @@ async def _run_summarizer(
     from server.api.routes.chats import _load_ctx_pass_settings
     settings = _load_ctx_pass_settings()
     sum_model = settings.get("summarizer_model") or model
-    browser_acc = settings.get("browser_data_acc", "").strip()
 
     # Multi-chunk awareness for the prompt
     if total_chunks > 1:
@@ -472,9 +471,8 @@ async def _run_summarizer(
         f"---\n{transcript}"
     )
 
-    # Build fallback chain: primary → fallback_models → browser_profiles
+    # Build fallback chain: primary → fallback_models → dynamic browser pool (reverse)
     fallback_models: list[str] = settings.get("fallback_models", [])
-    browser_profiles: list[str] = settings.get("browser_profiles", [])
 
     async def _try_summarizer_call(mdl: str, browser_acc_name: str = "") -> str | None:
         """Try a single summarizer call. Returns answer string or None on failure."""
@@ -494,7 +492,7 @@ async def _run_summarizer(
                     finally:
                         await temp_service.close()
                 else:
-                    logger.warning("[auto-switch] Browser profile dir not found: %s", acc_dir)
+                    logger.warning("[summarizer] Browser profile dir not found: %s", acc_dir)
                     return None
             else:
                 result = await service.chat(message=prompt, model=mdl, thinking_mode="fast")
@@ -502,29 +500,33 @@ async def _run_summarizer(
             answer = result.get("answer", "").strip()
             if answer:
                 return answer
-            logger.warning("[auto-switch] Summarizer %s returned empty: %s", mdl, result.get("error", ""))
+            logger.warning("[summarizer] %s returned empty: %s", mdl, result.get("error", ""))
             return None
         except Exception as exc:
-            logger.warning("[auto-switch] Summarizer %s failed: %s: %s", mdl, type(exc).__name__, exc)
+            logger.warning("[summarizer] %s failed: %s: %s", mdl, type(exc).__name__, exc)
             return None
 
-    # Step 1: Primary model (with primary browser profile if Qwen)
-    answer = await _try_summarizer_call(sum_model, browser_acc)
+    # Step 1: Primary model (no specific browser acc — uses active account)
+    answer = await _try_summarizer_call(sum_model)
     if answer:
         return answer
 
-    # Step 2: Fallback models (API or Qwen with default browser)
+    # Step 2: Fallback models (API-based, no browser needed)
     for fb_model in fallback_models[:2]:
         answer = await _try_summarizer_call(fb_model)
         if answer:
-            logger.info("[auto-switch] Fallback model succeeded: %s", fb_model)
+            logger.info("[summarizer] Fallback model succeeded: %s", fb_model)
             return answer
 
-    # Step 3: Fallback browser profiles (using primary model)
-    for fb_profile in browser_profiles[:2]:
-        answer = await _try_summarizer_call(sum_model, fb_profile)
+    # Step 3: Dynamic browser pool — search from back (highest number first)
+    # This avoids competing with main chat auto-switch which searches forward
+    from engine.config import get_available_accounts_reverse
+    _tried: set[str] = set()
+    for acc_name in get_available_accounts_reverse(exclude=_tried, limit=5):
+        _tried.add(acc_name)
+        answer = await _try_summarizer_call(sum_model, acc_name)
         if answer:
-            logger.info("[auto-switch] Fallback browser profile succeeded: %s", fb_profile)
+            logger.info("[summarizer] Browser pool account succeeded: %s", acc_name)
             return answer
 
     return "[Summary unavailable — all summarizer fallbacks exhausted]"
@@ -1331,7 +1333,57 @@ async def chat(request: ChatRequest):
                         ),
                         label=f"stream_round_{round_index}",
                     )
-                async for event in round_event_source:
+                # --- First-chunk timeout for main stream ---
+                # If no event arrives within 15s, retry once. On 2nd timeout, trigger auto-switch.
+                _MAIN_FIRST_CHUNK_TIMEOUT = 15.0
+                _main_got_first = False
+                _main_timeout_retries = 0
+                _main_iter = round_event_source.__aiter__()
+
+                while True:
+                    try:
+                        if not _main_got_first:
+                            event = await asyncio.wait_for(
+                                _main_iter.__anext__(),
+                                timeout=_MAIN_FIRST_CHUNK_TIMEOUT,
+                            )
+                            _main_got_first = True
+                        else:
+                            event = await _main_iter.__anext__()
+                    except asyncio.TimeoutError:
+                        _main_timeout_retries += 1
+                        logger.warning("[main-stream] First-chunk timeout (%ds), attempt %d/2 for chat %s",
+                                       _MAIN_FIRST_CHUNK_TIMEOUT, _main_timeout_retries, active_chat_id)
+                        if _main_timeout_retries >= 2:
+                            # Synthesize waf_blocked to trigger auto-switch
+                            yield sse({"type": "status", "message": "first_chunk_timeout_triggering_switch"})
+                            event = {"type": "waf_blocked", "message": "No response within 15s after 2 attempts — connection hung"}
+                            # Fall through to normal event handling below
+                        else:
+                            # Retry: close current service, re-create stream
+                            yield sse({"type": "status", "message": f"retrying_timeout_{_main_timeout_retries + 1}"})
+                            try:
+                                await service.close()
+                                await service._ensure_headers()
+                            except Exception as _retry_exc:
+                                logger.warning("[main-stream] Retry refresh failed: %s", _retry_exc)
+                            round_event_source = retry_stream(
+                                lambda: service.stream_events(
+                                    message=current_message,
+                                    chat_id=_qwen_chat_id,
+                                    parent_id=current_parent,
+                                    files=files_for_round,
+                                    model=request.model,
+                                    thinking_mode=request.thinking_mode,
+                                ),
+                                label=f"stream_round_{round_index}_retry{_main_timeout_retries}",
+                            )
+                            _main_iter = round_event_source.__aiter__()
+                            _main_got_first = False
+                            continue
+                    except StopAsyncIteration:
+                        break
+
                     event_type = event.get("type")
                     # Suppress upstream meta events — local chat_id is authoritative
                     if event_type == "meta":
@@ -1530,7 +1582,7 @@ async def chat(request: ChatRequest):
                             mark_account_captcha_blocked(_current_acc)
 
                         _tried_accounts: set[str] = {_current_acc}
-                        _switch_max_retries = 5
+                        _switch_max_retries = 10
                         _switch_attempt = 0
                         _switch_success = False
 
@@ -1556,10 +1608,22 @@ async def chat(request: ChatRequest):
                             logger.info("[auto-switch] Attempt %d: Switching from %s → %s", _switch_attempt, _current_acc, _next_acc)
                             yield sse({"type": "account_switch", "step": "switching", "from": _current_acc, "to": _next_acc, "attempt": _switch_attempt})
                             try:
-                                from engine.config import set_active_account
-                                await service.close()
-                                set_active_account(_next_acc)
-                                logger.info("[auto-switch] Active account updated to %s", _next_acc)
+                                await service.switch_account(_next_acc)
+                                logger.info("[auto-switch] Service switched to %s", _next_acc)
+
+                                # Strip old profile in background (fire-and-forget, non-blocking)
+                                from pathlib import Path as _Path
+                                from engine.config import _SYSTEM as _SYS
+                                _old_profile = _SYS / _current_acc
+                                if _old_profile.is_dir():
+                                    from server.api.routes.settings import _spawn_bg, _strip_one_profile
+                                    async def _auto_strip_bg(profile: _Path) -> None:
+                                        try:
+                                            name, before, after = await asyncio.to_thread(_strip_one_profile, profile)
+                                            logger.info("[auto-switch] Stripped old profile %s: %.1fMB → %.1fMB", name, before, after)
+                                        except Exception as exc:
+                                            logger.warning("[auto-switch] Failed to strip old profile: %s", exc)
+                                    _spawn_bg(_auto_strip_bg(_old_profile))
                             except Exception as _sw_exc:
                                 logger.error("[auto-switch] Symlink switch failed: %s", _sw_exc)
                                 yield sse({"type": "account_switch", "step": "failed", "error": str(_sw_exc)})
@@ -1615,64 +1679,171 @@ async def chat(request: ChatRequest):
 
                             yield sse({"type": "account_switch", "step": "complete", "account": _next_acc, "reason": _switch_reason})
 
-                            # Re-stream with context + new session
-                            _switch_msg = _switch_ctx if _switch_ctx else current_message
-                            round_event_source = service.stream_events(
-                                message=_switch_msg,
-                                chat_id=_upstream_session_id,
-                                parent_id=None,
-                                files=files_for_round,
-                                model=request.model,
-                                thinking_mode=request.thinking_mode,
-                            )
-                            async for _sw_event in round_event_source:
-                                _sw_type = _sw_event.get("type")
-                                if _sw_type == "meta":
-                                    continue
-                                if _sw_type == "answer":
-                                    pending_thinking.clear()
-                                    _raw_chunk = str(_sw_event.get("text", ""))
-                                    _raw_answer_parts.append(_raw_chunk)
-                                    _round_raw_parts.append(_raw_chunk)
-                                    async for _sse_line in _drain_sync_gen(emit_parsed(_raw_chunk)):
-                                        yield _sse_line
-                                    continue
-                                if _sw_type == "thinking":
-                                    _chunk = str(_sw_event.get("text", ""))
-                                    thinking_parts.append(_chunk)
-                                    round_thinking_parts.append(_chunk)
-                                    pending_thinking.append(_chunk)
-                                    yield sse({"type": "thinking", "text": _chunk})
-                                    continue
-                                if _sw_type == "done":
-                                    pending_thinking.clear()
-                                    async for _sse_line in _drain_sync_gen(emit_flush()):
-                                        yield _sse_line
-                                    final_parent = _sw_event.get("parent_id") or final_parent
-                                    current_parent = final_parent
-                                elif _sw_type == "error":
-                                    pending_thinking.clear()
-                                    async for _sse_line in _drain_sync_gen(emit_flush()):
-                                        yield _sse_line
-                                    error_message = str(_sw_event.get("message", "Unknown error after switch"))
-                                    stream_error = True
-                                elif _sw_type in ("rate_limited", "waf_blocked"):
-                                    # New account also blocked — mark and retry with next account
-                                    _tried_accounts.add(_next_acc)
-                                    if _sw_type == "waf_blocked":
+                            # Per-account retry: try up to 3 times on this account before switching to next
+                            _PER_ACCOUNT_MAX_RETRIES = 3
+                            _per_account_attempt = 0
+                            _per_account_success = False
+
+                            while _per_account_attempt < _PER_ACCOUNT_MAX_RETRIES and not _per_account_success:
+                                _per_account_attempt += 1
+                                _switch_msg = _switch_ctx if _switch_ctx else current_message
+
+                                if _per_account_attempt > 1:
+                                    logger.info("[auto-switch] Per-account retry %d/%d for %s",
+                                                _per_account_attempt, _PER_ACCOUNT_MAX_RETRIES, _next_acc)
+                                    yield sse({"type": "account_switch", "step": "retrying",
+                                               "account": _next_acc, "reason": "empty_response",
+                                               "attempt": _switch_attempt,
+                                               "per_account_attempt": _per_account_attempt})
+                                    # Brief pause before retry to let transient issues clear
+                                    await asyncio.sleep(2)
+
+                                round_event_source = service.stream_events(
+                                    message=_switch_msg,
+                                    chat_id=_upstream_session_id,
+                                    parent_id=None,
+                                    files=files_for_round,
+                                    model=request.model,
+                                    thinking_mode=request.thinking_mode,
+                                )
+
+                                # First-chunk timeout: if no event arrives within 15s,
+                                # treat as hung connection → mark account + retry next
+                                _FIRST_CHUNK_TIMEOUT = 15.0
+                                _got_first_event = False
+                                _restream_iter = round_event_source.__aiter__()
+                                _restream_timed_out = False
+                                _got_any_answer = False
+                                _skip_to_next_account = False
+
+                                while True:
+                                    try:
+                                        if not _got_first_event:
+                                            _sw_event = await asyncio.wait_for(
+                                                _restream_iter.__anext__(),
+                                                timeout=_FIRST_CHUNK_TIMEOUT,
+                                            )
+                                            _got_first_event = True
+                                        else:
+                                            _sw_event = await _restream_iter.__anext__()
+                                    except asyncio.TimeoutError:
+                                        # No data within timeout — connection hung
+                                        logger.warning("[auto-switch] First-chunk timeout (%ds) for %s, marking captcha-blocked",
+                                                       _FIRST_CHUNK_TIMEOUT, _next_acc)
                                         mark_account_captcha_blocked(_next_acc)
-                                    logger.warning("[auto-switch] New account %s also blocked (%s), will retry", _next_acc, _sw_type)
-                                    pending_thinking.clear()
-                                    async for _sse_line in _drain_sync_gen(emit_flush()):
-                                        yield _sse_line
-                                    yield sse({"type": "account_switch", "step": "retrying", "account": _next_acc, "reason": _sw_type, "attempt": _switch_attempt})
+                                        _tried_accounts.add(_next_acc)
+                                        _restream_timed_out = True
+                                        _skip_to_next_account = True
+                                        yield sse({"type": "account_switch", "step": "retrying",
+                                                   "account": _next_acc, "reason": "timeout", "attempt": _switch_attempt})
+                                        _current_acc = _next_acc
+                                        break  # break inner while → skip to next account
+                                    except StopAsyncIteration:
+                                        break  # generator exhausted normally
+
+                                    _sw_type = _sw_event.get("type")
+                                    if _sw_type == "meta":
+                                        continue
+                                    if _sw_type == "answer":
+                                        _got_any_answer = True
+                                        pending_thinking.clear()
+                                        _raw_chunk = str(_sw_event.get("text", ""))
+                                        _raw_answer_parts.append(_raw_chunk)
+                                        _round_raw_parts.append(_raw_chunk)
+                                        async for _sse_line in _drain_sync_gen(emit_parsed(_raw_chunk)):
+                                            yield _sse_line
+                                        continue
+                                    if _sw_type == "thinking":
+                                        _chunk = str(_sw_event.get("text", ""))
+                                        thinking_parts.append(_chunk)
+                                        round_thinking_parts.append(_chunk)
+                                        pending_thinking.append(_chunk)
+                                        yield sse({"type": "thinking", "text": _chunk})
+                                        continue
+                                    if _sw_type == "done":
+                                        pending_thinking.clear()
+                                        async for _sse_line in _drain_sync_gen(emit_flush()):
+                                            yield _sse_line
+                                        final_parent = _sw_event.get("parent_id") or final_parent
+                                        current_parent = final_parent
+                                    elif _sw_type == "error":
+                                        pending_thinking.clear()
+                                        async for _sse_line in _drain_sync_gen(emit_flush()):
+                                            yield _sse_line
+                                        _err_msg = str(_sw_event.get("message", ""))
+                                        # Defense-in-depth: detect rate-limit/captcha in generic errors
+                                        _err_lower = _err_msg.lower()
+                                        if any(kw in _err_lower for kw in ("ratelimit", "rate_limit", "rate limit", "quota", "daily usage", "exceeded")):
+                                            logger.warning("[auto-switch] Generic error looks like rate-limit for %s: %s", _next_acc, _err_msg[:200])
+                                            from engine.config import mark_account_exhausted as _mark_exh
+                                            _mark_exh(_next_acc)
+                                            _tried_accounts.add(_next_acc)
+                                            _skip_to_next_account = True
+                                            yield sse({"type": "account_switch", "step": "retrying",
+                                                       "account": _next_acc, "reason": "rate_limited", "attempt": _switch_attempt})
+                                            _current_acc = _next_acc
+                                            break  # skip to next account
+                                        if any(kw in _err_lower for kw in ("captcha", "waf", "validate", "rgv587", "blocked")):
+                                            logger.warning("[auto-switch] Generic error looks like captcha/WAF for %s: %s", _next_acc, _err_msg[:200])
+                                            mark_account_captcha_blocked(_next_acc)
+                                            _tried_accounts.add(_next_acc)
+                                            _skip_to_next_account = True
+                                            yield sse({"type": "account_switch", "step": "retrying",
+                                                       "account": _next_acc, "reason": "waf_blocked", "attempt": _switch_attempt})
+                                            _current_acc = _next_acc
+                                            break  # skip to next account
+                                        # Non-fatal error: treat as retryable on same account
+                                        logger.warning("[auto-switch] Non-fatal error on %s (per-account attempt %d): %s",
+                                                       _next_acc, _per_account_attempt, _err_msg[:200])
+                                        error_message = _err_msg or "Unknown error after switch"
+                                        stream_error = True
+                                    elif _sw_type in ("rate_limited", "waf_blocked"):
+                                        # New account also blocked — mark and skip to next account
+                                        _tried_accounts.add(_next_acc)
+                                        if _sw_type == "waf_blocked":
+                                            mark_account_captcha_blocked(_next_acc)
+                                        else:
+                                            from engine.config import mark_account_exhausted as _mark_exh
+                                            _mark_exh(_next_acc)
+                                        logger.warning("[auto-switch] New account %s also blocked (%s), will retry", _next_acc, _sw_type)
+                                        pending_thinking.clear()
+                                        async for _sse_line in _drain_sync_gen(emit_flush()):
+                                            yield _sse_line
+                                        _skip_to_next_account = True
+                                        yield sse({"type": "account_switch", "step": "retrying", "account": _next_acc, "reason": _sw_type, "attempt": _switch_attempt})
+                                        _current_acc = _next_acc
+                                        break  # break inner while → skip to next account
+                                    yield sse(_sw_event)
+
+                                # Decide what to do after this per-account attempt
+                                if _skip_to_next_account:
+                                    # Fatal issue (timeout/rate-limit/captcha) → go to next account immediately
+                                    break  # break per-account loop → continue outer account loop
+
+                                if _got_any_answer and not stream_error:
+                                    # Got actual content — success!
+                                    _per_account_success = True
+                                    _switch_success = True
+                                    break  # break per-account loop → exit outer loop
+
+                                # Empty response or non-fatal error → retry on same account (if attempts remain)
+                                if _per_account_attempt < _PER_ACCOUNT_MAX_RETRIES:
+                                    logger.warning("[auto-switch] Empty/error response on %s (attempt %d/%d), retrying same account",
+                                                   _next_acc, _per_account_attempt, _PER_ACCOUNT_MAX_RETRIES)
+                                    # Reset stream_error for retry — only keep it if final attempt fails
+                                    stream_error = False
+                                    continue  # retry same account
+                                else:
+                                    # Exhausted per-account retries → move to next account
+                                    logger.warning("[auto-switch] All %d per-account retries exhausted for %s, moving to next account",
+                                                   _PER_ACCOUNT_MAX_RETRIES, _next_acc)
+                                    _tried_accounts.add(_next_acc)
                                     _current_acc = _next_acc
-                                    continue  # continue while loop to try next account
-                                yield sse(_sw_event)
-                            # Re-stream completed without fatal error
-                            if not stream_error:
-                                _switch_success = True
-                            break  # Exit while loop (success or non-recoverable error)
+                                    break  # break per-account loop → continue outer account loop
+
+                            if _per_account_success:
+                                break  # Exit outer while loop — we got a response
+                            # Otherwise continue outer while to try next account
 
                         # All retries exhausted without success
                         if not _switch_success and not stream_error:

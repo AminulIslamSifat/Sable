@@ -448,7 +448,7 @@ def _dedup_and_resolve_adds(
 
 def _load_consolidation_settings() -> dict[str, Any]:
     """Load consolidation settings from system/consolidation_settings.json."""
-    defaults: dict[str, Any] = {"model": "", "fallback_models": [], "browser_profiles": []}
+    defaults: dict[str, Any] = {"model": "", "fallback_models": []}
     path = Path(__file__).resolve().parent.parent.parent.parent / "system" / "consolidation_settings.json"
     if path.exists():
         try:

@@ -309,8 +309,17 @@ async def _resolve_candidates_against_memory(
             if result:
                 break
 
+    # Browser pool fallback: try up to 5 accounts from the back (highest number first)
     if not result:
-        _log_consolidation("MERGE RESOLUTION — LLM FAILED", f"All models failed (primary={model}, fallbacks={fallback_models[:2]})")
+        from engine.config import get_available_accounts_reverse
+        for acc_name in get_available_accounts_reverse(limit=5):
+            result = await _try_consolidation_call(model, prompt, browser_acc_name=acc_name)
+            if result:
+                logger.info("[consolidation] Browser pool account succeeded for merge: %s", acc_name)
+                break
+
+    if not result:
+        _log_consolidation("MERGE RESOLUTION — LLM FAILED", f"All models + browser pool failed (primary={model}, fallbacks={fallback_models[:2]})")
         logger.warning("[memory_trigger] Merge resolution LLM call failed — using original consolidation")
         return parsed
 
@@ -550,8 +559,17 @@ def _apply_memory_changes(result: dict[str, Any]) -> dict[str, int]:
     return {"added": added_count, "deleted": deleted_count}
 
 
-async def _try_consolidation_call(model: str, prompt: str) -> dict[str, Any] | None:
-    """Try a single consolidation LLM call. Returns result dict or None."""
+async def _try_consolidation_call(
+    model: str, prompt: str, *, browser_acc_name: str = ""
+) -> dict[str, Any] | None:
+    """Try a single consolidation LLM call. Returns result dict or None.
+
+    Args:
+        model: Model name to use.
+        prompt: The prompt to send.
+        browser_acc_name: Optional browser-data account dir name for Qwen.
+                          If empty, uses the shared active-account service.
+    """
     try:
         from server.utils import retry_async, _is_deepseek_api_model, _resolve_api_backend
         from connectors import get_connector
@@ -597,8 +615,29 @@ async def _try_consolidation_call(model: str, prompt: str) -> dict[str, Any] | N
                     ),
                     label="agent_memory_consolidate_api",
                 )
+        elif browser_acc_name:
+            # Qwen with specific browser account
+            from engine.service import ChatService
+            from engine.config import _SYSTEM
+            acc_dir = _SYSTEM / browser_acc_name
+            if not acc_dir.exists():
+                logger.debug("[consolidation] Browser profile dir not found: %s", acc_dir)
+                return None
+            temp_service = ChatService(user_data_dir=str(acc_dir))
+            try:
+                result = await retry_async(
+                    lambda: temp_service.chat(
+                        message=prompt,
+                        chat_id=None,
+                        parent_id=None,
+                        model=model,
+                    ),
+                    label=f"agent_memory_consolidate_{browser_acc_name}",
+                )
+            finally:
+                await temp_service.close()
         else:
-            # Qwen / default service
+            # Qwen / default service (active account)
             from server.api.dependencies import service
             result = await retry_async(
                 lambda: service.chat(
@@ -615,7 +654,7 @@ async def _try_consolidation_call(model: str, prompt: str) -> dict[str, Any] | N
             return result
         return None
     except Exception as exc:
-        logger.debug("Consolidation call failed for %s: %s", model, exc)
+        logger.debug("Consolidation call failed for %s (acc=%s): %s", model, browser_acc_name or "active", exc)
         return None
 
 
@@ -687,8 +726,17 @@ async def trigger_agent_memory(agent) -> dict[str, Any] | None:
             if result:
                 break
 
+    # Browser pool fallback: try up to 5 accounts from the back (highest number first)
     if not result:
-        _log_consolidation(f"STEP 1 — LLM FAILED (agent={agent.id})", f"All models failed (primary={model}, fallbacks={fallback_models[:2]})")
+        from engine.config import get_available_accounts_reverse
+        for acc_name in get_available_accounts_reverse(limit=5):
+            result = await _try_consolidation_call(model, prompt, browser_acc_name=acc_name)
+            if result:
+                logger.info("[consolidation] Browser pool account succeeded for agent %s: %s", agent.id, acc_name)
+                break
+
+    if not result:
+        _log_consolidation(f"STEP 1 — LLM FAILED (agent={agent.id})", f"All models + browser pool failed (primary={model}, fallbacks={fallback_models[:2]})")
         logger.warning("[memory_trigger] All consolidation attempts failed for agent %s", agent.id)
         return {"status": "failed", "agent_id": agent.id}
 

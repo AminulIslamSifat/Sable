@@ -34,6 +34,60 @@ if (-not (Test-Path "system\browser-data-acc1")) {
 # Account switching now uses the system\.active_account file (set_active_account / get_active_account).
 # If an old junction exists it will keep working; new installs skip it entirely.
 
+# SearXNG search backend (Docker, idempotent)
+try {
+    $dockerAvailable = Get-Command docker -ErrorAction SilentlyContinue
+    if ($dockerAvailable) {
+        $containerRunning = $false
+        try {
+            $status = docker inspect -f '{{.State.Running}}' searxng 2>$null
+            if ($status -eq 'true') { $containerRunning = $true }
+        } catch {}
+
+        if (-not $containerRunning) {
+            docker rm -f searxng 2>$null | Out-Null
+            Write-Host " Starting SearXNG search backend..."
+            $imageExists = $false
+            try {
+                docker image inspect searxng/searxng:latest 2>$null | Out-Null
+                if ($LASTEXITCODE -eq 0) { $imageExists = $true }
+            } catch {}
+            if (-not $imageExists) {
+                Write-Host "   Pulling searxng/searxng:latest (first time only)..."
+                docker pull searxng/searxng:latest
+            }
+            docker run -d --name searxng `
+                -p 8080:8080 `
+                -e SEARXNG_BASE_URL=http://localhost:8080/ `
+                --restart unless-stopped `
+                searxng/searxng:latest | Out-Null
+            # Enable JSON API format (write config snippet into container)
+            Start-Sleep -Seconds 3
+            $configSnippet = @"
+
+search:
+  formats:
+    - html
+    - json
+"@
+            $tmpFile = Join-Path $env:TEMP "searxng_formats.yml"
+            Set-Content -Path $tmpFile -Value $configSnippet -NoNewline -Encoding UTF8
+            docker cp $tmpFile "/tmp/searxng_formats.yml" 2>$null | Out-Null
+            docker exec searxng sh -c "grep -q 'formats:' /etc/searxng/settings.yml || cat /tmp/searxng_formats.yml >> /etc/searxng/settings.yml" 2>$null
+            Remove-Item $tmpFile -ErrorAction SilentlyContinue
+            docker restart searxng | Out-Null
+            Start-Sleep -Seconds 2
+            Write-Host " SearXNG ready on http://localhost:8080"
+        } else {
+            Write-Host " SearXNG already running"
+        }
+    } else {
+        Write-Host " Docker not found - SearXNG search backend skipped"
+    }
+} catch {
+    Write-Host " SearXNG setup failed: $_"
+}
+
 #  BurntToast notifications (auto-install, idempotent) 
 
 try {
