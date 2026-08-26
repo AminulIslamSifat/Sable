@@ -178,15 +178,27 @@ async def apply_update() -> StreamingResponse:
                 return
             yield sse({"type": "progress", "step": "pull", "message": "Changes stashed. Pulling…"})
 
-        # Step 2: Git pull
+        # Step 2: Git pull via HTTPS (works for all users, no SSH key needed)
+        _https_url = f"https://github.com/{_GITHUB_REPO}.git"
         proc = await asyncio.to_thread(
             subprocess.run,
-            ["git", "pull", "origin", "main"],
+            ["git", "fetch", _https_url, "main"],
             capture_output=True, text=True, cwd=str(_PROJECT_ROOT),
             timeout=120,
         )
         if proc.returncode != 0:
-            yield sse({"type": "error", "message": f"Git pull failed: {proc.stderr.strip()}"})
+            yield sse({"type": "error", "message": f"Git fetch failed: {proc.stderr.strip()}"})
+            return
+
+        # Merge fetched main into current branch
+        merge = await asyncio.to_thread(
+            subprocess.run,
+            ["git", "merge", "FETCH_HEAD", "--no-edit"],
+            capture_output=True, text=True, cwd=str(_PROJECT_ROOT),
+            timeout=60,
+        )
+        if merge.returncode != 0:
+            yield sse({"type": "error", "message": f"Git merge failed: {merge.stderr.strip()}"})
             return
         yield sse({"type": "progress", "step": "pull", "message": "Code updated ✓"})
 
