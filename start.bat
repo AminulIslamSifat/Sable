@@ -1,7 +1,11 @@
 @echo off
 :: Sable Start Script for Windows — double-click to launch
 :: Uses %~dp0 (script directory) so it works for any user/install path
+:: Pass --background to run silently (no browser, no info box)
 cd /d "%~dp0"
+
+set SABLE_BACKGROUND=0
+if "%~1"=="--background" set SABLE_BACKGROUND=1
 
 if not defined SABLE_PORT set SABLE_PORT=61770
 
@@ -33,19 +37,20 @@ echo Synchronizing dependencies...
 call uv sync --extra windows
 echo.
 
-:: Info
-echo +------------------------------------------------------+
-echo ^| Sable is running!                                    ^|
-echo ^|                                                      ^|
-echo ^| URL:     http://127.0.0.1:%SABLE_PORT%                ^|
-echo ^| Port:    %SABLE_PORT%                                ^|
-echo ^|                                                      ^|
-echo ^| Stop:    Ctrl+C                                      ^|
-echo +------------------------------------------------------+
-echo.
-
-:: Auto-open browser after server starts (non-blocking)
-start "" cmd /c "timeout /t 8 /nobreak >nul && start http://127.0.0.1:%SABLE_PORT%"
+:: Info + browser (skip in background mode)
+if "%SABLE_BACKGROUND%"=="0" (
+    echo +------------------------------------------------------+
+    echo ^| Sable is running!                                    ^|
+    echo ^|                                                      ^|
+    echo ^| URL:     http://127.0.0.1:%SABLE_PORT%                ^|
+    echo ^| Port:    %SABLE_PORT%                                ^|
+    echo ^|                                                      ^|
+    echo ^| Stop:    Ctrl+C                                      ^|
+    echo +------------------------------------------------------+
+    echo.
+    :: Auto-open browser after server starts (non-blocking)
+    start "" cmd /c "timeout /t 8 /nobreak >nul && start http://127.0.0.1:%SABLE_PORT%"
+)
 
 :: Start server
 set TERM=xterm-256color
