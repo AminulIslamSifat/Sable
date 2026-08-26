@@ -106,9 +106,9 @@ try {
 
 $REG_KEY = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $REG_NAME = "Sable Server"
-$START_BAT = Join-Path $SCRIPT_DIR "start.bat"
-# Run minimized + pass --background flag so start.bat skips browser/info box
-$REG_VALUE = "cmd /c start /min `"`" `"$START_BAT`" --background"
+$SILENT_VBS = Join-Path $SCRIPT_DIR "start-silent.vbs"
+# VBS wrapper runs start.bat completely hidden (no taskbar entry)
+$REG_VALUE = "wscript.exe `"$SILENT_VBS`""
 
 try {
     $currentVal = Get-ItemProperty -Path $REG_KEY -Name $REG_NAME -ErrorAction SilentlyContinue
