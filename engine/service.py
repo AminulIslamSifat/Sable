@@ -44,6 +44,15 @@ class ChatService:
         # races where a stale in-memory header set outlives the active symlink).
         self._headers_account: str | None = None
         self._lock = asyncio.Lock()
+        # FIX #1: Cross-request auto-switch serialization lock.
+        # Prevents concurrent requests from entering the auto-switch block
+        # simultaneously, which would cause them to select the same next account
+        # and create duplicate sessions on it.
+        self._auto_switch_lock = asyncio.Lock()
+        # FIX #5: In-flight profile reference counter.
+        # Tracks how many active streams are using each account's profile.
+        # Background tasks must not destroy a profile while it's in use.
+        self._in_flight_profiles: dict[str, int] = {}
         # Derive account name from user_data_dir for token lookup
         # e.g. ".../system/browser-data-acc3" → "browser-data-acc3"
         import re
@@ -52,6 +61,28 @@ class ChatService:
             self._account_override: str | None = basename
         else:
             self._account_override = None
+
+    def _sync_browser_data_dir(self) -> None:
+        """Re-sync BrowserManager's user_data_dir with the current active account.
+
+        Called before header resolution to catch external .active_account changes
+        (e.g. settings UI update) without requiring a server restart.
+        Skipped when an explicit _account_override is pinned via switch_account().
+        """
+        if self._account_override is not None:
+            return  # pinned account — don't drift
+        from engine.config import get_browser_data_dir
+        current_dir = str(get_browser_data_dir())
+        if current_dir != self._browser.user_data_dir:
+            logger.info(
+                "[service] Active account changed externally: %s → %s",
+                Path(self._browser.user_data_dir).name,
+                Path(current_dir).name,
+            )
+            self._browser.user_data_dir = current_dir
+            # Invalidate cached headers so they're re-fetched for the new account
+            self._headers = None
+            self._headers_account = None
 
     def _mark_exhausted(self) -> None:
         """Mark the current account as quota-exhausted."""
@@ -96,6 +127,7 @@ class ChatService:
         return self._browser.headless
 
     async def _ensure_headers(self) -> dict[str, str]:
+        self._sync_browser_data_dir()
         from engine.config import _resolve_active_account
         account = self._account_override or _resolve_active_account()
         # Fast path: headers for THIS account already in memory
@@ -163,6 +195,7 @@ class ChatService:
         Pass account= to pin the target — background callers MUST, since the
         active-profile symlink can move between scheduling and execution.
         """
+        self._sync_browser_data_dir()
         from engine.config import _resolve_active_account
         account = account or self._account_override or _resolve_active_account()
         # Fast path: headers for this account already in memory
@@ -215,6 +248,7 @@ class ChatService:
         Designed for post-switch background warmup — never blocks the main
         request path. Updates in-memory headers AND persists to disk cache.
         """
+        self._sync_browser_data_dir()
         from engine.config import _resolve_active_account
         account = account or self._account_override or _resolve_active_account()
         async with self._lock:
@@ -334,7 +368,13 @@ class ChatService:
         model: str | None = None,
         thinking_mode: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        print(f"[STREAM] ▶ stream_events START account={self._account_override} chat_id={chat_id} msg_len={len(message)}")
+        # FIX #5: Track in-flight profile usage so background strip doesn't
+        # destroy a profile while a stream is actively using it.
+        _profile_key = getattr(self, '_account_override', None) or "__default__"
+        _in_flight = getattr(self, '_in_flight_profiles', None)
+        if _in_flight is not None:
+            _in_flight[_profile_key] = _in_flight.get(_profile_key, 0) + 1
+        print(f"[STREAM] ▶ stream_events START account={_profile_key} chat_id={chat_id} msg_len={len(message)} (in_flight={_in_flight.get(_profile_key, '?') if _in_flight else 'n/a'})")
         try:
             print(f"[STREAM]   ↳ _ensure_headers()...")
             headers = await self._ensure_headers()
@@ -387,6 +427,13 @@ class ChatService:
             yield {"type": "error", "message": "Timed out waiting for response"}
         except Exception as exc:
             yield {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
+        finally:
+            # FIX #5: Decrement in-flight counter when stream ends (normal or error).
+            _in_flight = getattr(self, '_in_flight_profiles', None)
+            if _in_flight is not None:
+                _in_flight[_profile_key] = max(0, _in_flight.get(_profile_key, 1) - 1)
+                if _in_flight[_profile_key] == 0:
+                    del _in_flight[_profile_key]
 
     async def _stream_request(
         self,
