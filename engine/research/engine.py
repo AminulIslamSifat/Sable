@@ -164,6 +164,11 @@ class DeepResearcher:
         queries_per_topic: int = 3,
         concurrency: int = 3,
         progress_callback: Optional[ProgressCallback] = None,
+        # ── Resume state injection ────────────────────────────────────────────
+        resume_findings: Optional[list[dict[str, Any]]] = None,
+        resume_sources: Optional[list[dict[str, str]]] = None,
+        resume_nodes: Optional[list[dict[str, Any]]] = None,
+        resume_completed_topics: Optional[list[str]] = None,
     ) -> None:
         self.question = question
         # Ordered fallback lists. Legacy single `model` seeds the model list.
@@ -191,8 +196,15 @@ class DeepResearcher:
         self._log_path: Optional[Path] = None
         self._trace_path: Optional[Path] = None
         self._trace_lock = asyncio.Lock()
-        self.findings: list[dict[str, Any]] = []
-        self.sources: list[dict[str, str]] = []
+        self.findings: list[dict[str, Any]] = list(resume_findings or [])
+        self.sources: list[dict[str, str]] = list(resume_sources or [])
+        # ── Resume bookkeeping ────────────────────────────────────────────────
+        self._resume_completed_topics: set[str] = set(
+            t.lower().strip() for t in (resume_completed_topics or [])
+        )
+        self._resumed_from_checkpoint = bool(
+            resume_findings or resume_sources or resume_nodes
+        )
         # Simple fetch summary log: [{site, url, success, status_code}]
         self._fetch_log: list[dict[str, Any]] = []
         # Account/model health tracker: key -> consecutive failure count.
@@ -659,8 +671,18 @@ class DeepResearcher:
         return []
 
     # ── recursion ────────────────────────────────────────────────────────────
+    def _is_topic_completed(self, label: str) -> bool:
+        """Check if a topic was already fully researched in a previous run."""
+        return label.lower().strip() in self._resume_completed_topics
+
     async def _process_topic(self, node: dict[str, Any]) -> None:
         logger.info("_process_topic | id=%s label=%r depth=%d", node["id"], node["label"], node["depth"])
+        # ── Resume skip: if this topic was completed in a prior run, mark done ──
+        if self._is_topic_completed(node["label"]):
+            logger.info("_process_topic | SKIP (resumed) | id=%s label=%r", node["id"], node["label"])
+            await self._set_status(node, "done")
+            await self._emit_progress(status=f"skipped (already done): {node['label'][:40]}")
+            return
         # Acquire semaphore ONLY for the split-check phase. Children must be
         # able to acquire their own slots independently — holding the sem
         # across gather() causes deadlock when concurrency slots are exhausted.
@@ -891,10 +913,18 @@ class DeepResearcher:
         slug = "".join(c if c.isalnum() or c in "-_" else "_" for c in self.question.lower())[:40]
         self._trace_path = OUTPUT_ROOT / "research" / f"trace_{slug}_{int(time.time())}.jsonl"
         self._trace_path.parent.mkdir(parents=True, exist_ok=True)
-        logger.info("=== RESEARCH START === | question=%r models=%s accounts=%s max_depth=%d max_time=%d trace=%s",
-                     self.question, self.models, self.accounts, self.max_depth, self.max_time, self._trace_path)
+        resumed = self._resumed_from_checkpoint
+        logger.info("=== RESEARCH %s === | question=%r models=%s accounts=%s max_depth=%d max_time=%d trace=%s pre_seeded_findings=%d pre_seeded_sources=%d completed_topics=%d",
+                     "RESUME" if resumed else "START", self.question, self.models, self.accounts,
+                     self.max_depth, self.max_time, self._trace_path,
+                     len(self.findings), len(self.sources), len(self._resume_completed_topics))
         await self._trace("research_start", question=self.question, models=self.models, accounts=self.accounts,
-                          max_depth=self.max_depth, max_time=self.max_time)
+                          max_depth=self.max_depth, max_time=self.max_time,
+                          resumed=resumed, pre_seeded_findings=len(self.findings),
+                          pre_seeded_sources=len(self.sources),
+                          completed_topics=list(self._resume_completed_topics))
+        if resumed:
+            await self._emit_progress(status=f"resuming with {len(self.findings)} findings, {len(self.sources)} sources, {len(self._resume_completed_topics)} completed topics")
 
         root = self.add_node(None, 0, "root", self.question, "expanding")
         await self._emit_node(root)

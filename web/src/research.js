@@ -102,6 +102,18 @@
       activeWrap.id = "researchActiveRuns";
       container.appendChild(activeWrap);
 
+      // ── Incomplete research (resume / delete) ──
+      const incompleteWrap = document.createElement("div");
+      incompleteWrap.className = "research-incomplete";
+      incompleteWrap.id = "researchIncomplete";
+      incompleteWrap.innerHTML = `
+        <div class="research-incomplete-head">
+          <span><i data-lucide="rotate-ccw" style="width:14px;height:14px;display:inline;vertical-align:middle;margin-right:4px;"></i> Incomplete Research</span>
+        </div>
+        <div id="researchIncompleteList" class="research-incomplete-list"></div>
+      `;
+      container.appendChild(incompleteWrap);
+
       // ── Bottom: past research library ──
       const libWrap = document.createElement("div");
       libWrap.className = "research-library";
@@ -116,6 +128,7 @@
         if ((e.ctrlKey || e.metaKey) && e.key === "Enter") startResearch();
       });
 
+      loadIncompleteResearch();
       loadResearchLibrary();
 
       // Restore active runs: first from in-memory Map (tab re-render), then
@@ -658,6 +671,117 @@
       if (!statusEl) return;
       statusEl.classList.remove("hidden");
       statusEl.innerHTML = `<div class="research-status-text ${isError ? "err" : ""}">${escHtml(msg)}</div>`;
+    }
+
+    // ── Incomplete Research ───────────────────────────────────────────────────
+    const _STATUS_ICON = { cancelled: "⏹", error: "❌", interrupted: "⚡" };
+    const _STATUS_LABEL = { cancelled: "Cancelled", error: "Error", interrupted: "Interrupted" };
+
+    async function loadIncompleteResearch() {
+      const list = document.getElementById("researchIncompleteList");
+      if (!list) return;
+      try {
+        const res = await fetch("/api/research/incomplete");
+        const data = await res.json();
+        const items = data.incomplete || [];
+        if (!items.length) {
+          list.innerHTML = '<div class="research-incomplete-empty">No incomplete sessions.</div>';
+          return;
+        }
+        list.innerHTML = "";
+        items.forEach((item) => {
+          const card = document.createElement("div");
+          card.className = "research-incomplete-card";
+          const icon = _STATUS_ICON[item.status] || "❓";
+          const label = _STATUS_LABEL[item.status] || item.status;
+          const progress = item.progress || {};
+          const findings = progress.findings || 0;
+          const sources = progress.sources || 0;
+          const topics = progress.topics || 0;
+          const startedAt = item.started_at ? new Date(item.started_at * 1000).toLocaleString() : "unknown";
+          card.innerHTML = `
+            <div class="ric-header">
+              <span class="ric-status">${icon} ${escHtml(label)}</span>
+              <span class="ric-date">${escHtml(startedAt)}</span>
+            </div>
+            <div class="ric-query">${escHtml(item.query)}</div>
+            <div class="ric-stats">
+              <span>📊 ${topics} topics</span>
+              <span>📄 ${sources} sources</span>
+              <span>💡 ${findings} findings</span>
+            </div>
+            ${item.error ? '<div class="ric-error">' + escHtml(item.error) + '</div>' : ''}
+            <div class="ric-actions">
+              <button class="ric-btn ric-resume" data-sid="${escHtml(item.session_id)}">▶ Resume</button>
+              <button class="ric-btn ric-delete" data-sid="${escHtml(item.session_id)}">🗑 Delete</button>
+            </div>
+          `;
+          list.appendChild(card);
+        });
+
+        // Attach event listeners
+        list.querySelectorAll(".ric-resume").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const sid = btn.dataset.sid;
+            btn.disabled = true;
+            btn.textContent = "Resuming…";
+            try {
+              const res = await fetch(`/api/research/resume/${sid}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({}),
+              });
+              const result = await res.json();
+              if (result.session_id) {
+                showToast("Research resumed!", "success");
+                // Start tracking the new session in active runs
+                createRunCard(result.session_id, result.query || "Resumed research");
+                renderRunProgress(_researchRuns.get(result.session_id), result.progress || { phase: "starting", status: "resuming" });
+                attachResearchStream(result.session_id);
+                // Refresh incomplete list
+                loadIncompleteResearch();
+              } else {
+                showToast(result.detail || "Failed to resume", "error");
+                btn.disabled = false;
+                btn.textContent = "▶ Resume";
+              }
+            } catch (e) {
+              showToast("Resume failed: " + e.message, "error");
+              btn.disabled = false;
+              btn.textContent = "▶ Resume";
+            }
+          });
+        });
+
+        list.querySelectorAll(".ric-delete").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const sid = btn.dataset.sid;
+            if (!confirm("Delete this incomplete research session?")) return;
+            btn.disabled = true;
+            btn.textContent = "Deleting…";
+            try {
+              const res = await fetch(`/api/research/${sid}`, { method: "DELETE" });
+              const result = await res.json();
+              if (result.deleted) {
+                showToast("Deleted", "success");
+                loadIncompleteResearch();
+              } else {
+                showToast(result.error || "Delete failed", "error");
+                btn.disabled = false;
+                btn.textContent = "🗑 Delete";
+              }
+            } catch (e) {
+              showToast("Delete failed: " + e.message, "error");
+              btn.disabled = false;
+              btn.textContent = "🗑 Delete";
+            }
+          });
+        });
+
+        if (typeof lucide !== "undefined") lucide.createIcons({ nodes: list.querySelectorAll("[data-lucide]") });
+      } catch {
+        list.innerHTML = '<div class="research-incomplete-empty">Failed to load incomplete sessions.</div>';
+      }
     }
 
     async function loadResearchLibrary() {
