@@ -114,6 +114,20 @@ class ChatService:
             self._headers_account = account
             logger.info("Loaded cached Qwen WAF tokens for %s (jwt=%s)", account, bool(cached.get("jwt_token")))
             return self._headers
+        # Guard: never launch a browser if the profile directory doesn't exist.
+        # A missing profile means no login has happened yet — launching would
+        # create an empty browser-data dir and fail to get any tokens.
+        from pathlib import Path as _Path
+        profile_dir = _Path(self._browser.user_data_dir)
+        if not profile_dir.exists() or not any(profile_dir.iterdir()):
+            logger.warning(
+                "No browser profile at %s — skipping header fetch. "
+                "Log in via browser_opener.py first.", profile_dir,
+            )
+            from engine.session import build_headers
+            self._headers = build_headers()
+            self._headers_account = account
+            return self._headers
         # Slow path: launch browser to fetch fresh headers
         async with self._lock:
             if not self._headers or self._headers_account != account:
@@ -134,6 +148,16 @@ class ChatService:
             return self._headers
 
     async def _refresh_headers(self) -> dict[str, str]:
+        # Guard: no profile dir → return existing or fallback headers
+        from pathlib import Path as _Path
+        profile_dir = _Path(self._browser.user_data_dir)
+        if not profile_dir.exists() or not any(profile_dir.iterdir()):
+            logger.warning("_refresh_headers: no browser profile at %s — skipping", profile_dir)
+            if self._headers:
+                return self._headers
+            from engine.session import build_headers
+            self._headers = build_headers()
+            return self._headers
         async with self._lock:
             await self._browser.start()
             try:
@@ -180,6 +204,12 @@ class ChatService:
             self._headers_account = account
             logger.info("Warmup: loaded cached Qwen WAF tokens for %s (no browser launch, jwt=%s)", account, bool(cached.get("jwt_token")))
             return
+        # Guard: no profile dir → skip browser launch entirely
+        from pathlib import Path as _Path
+        profile_dir = _Path(self._browser.user_data_dir)
+        if not profile_dir.exists() or not any(profile_dir.iterdir()):
+            logger.info("Warmup: no browser profile at %s — skipping", profile_dir)
+            return
         # Slow path: launch browser to fetch fresh headers
         async with self._lock:
             try:
@@ -212,6 +242,12 @@ class ChatService:
         """
         from engine.config import _resolve_active_account
         account = account or self._account_override or _resolve_active_account()
+        # Guard: no profile dir → skip browser launch entirely
+        from pathlib import Path as _Path
+        profile_dir = _Path(self._browser.user_data_dir)
+        if not profile_dir.exists() or not any(profile_dir.iterdir()):
+            logger.info("Force WAF refresh: no browser profile at %s — skipping", profile_dir)
+            return
         async with self._lock:
             try:
                 await self._browser.start()
