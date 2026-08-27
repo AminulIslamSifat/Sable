@@ -44,6 +44,15 @@ class ChatService:
         # races where a stale in-memory header set outlives the active symlink).
         self._headers_account: str | None = None
         self._lock = asyncio.Lock()
+        # FIX #1: Cross-request auto-switch serialization lock.
+        # Prevents concurrent requests from entering the auto-switch block
+        # simultaneously, which would cause them to select the same next account
+        # and create duplicate sessions on it.
+        self._auto_switch_lock = asyncio.Lock()
+        # FIX #5: In-flight profile reference counter.
+        # Tracks how many active streams are using each account's profile.
+        # Background tasks must not destroy a profile while it's in use.
+        self._in_flight_profiles: dict[str, int] = {}
         # Derive account name from user_data_dir for token lookup
         # e.g. ".../system/browser-data-acc3" → "browser-data-acc3"
         import re
@@ -52,6 +61,28 @@ class ChatService:
             self._account_override: str | None = basename
         else:
             self._account_override = None
+
+    def _sync_browser_data_dir(self) -> None:
+        """Re-sync BrowserManager's user_data_dir with the current active account.
+
+        Called before header resolution to catch external .active_account changes
+        (e.g. settings UI update) without requiring a server restart.
+        Skipped when an explicit _account_override is pinned via switch_account().
+        """
+        if self._account_override is not None:
+            return  # pinned account — don't drift
+        from engine.config import get_browser_data_dir
+        current_dir = str(get_browser_data_dir())
+        if current_dir != self._browser.user_data_dir:
+            logger.info(
+                "[service] Active account changed externally: %s → %s",
+                Path(self._browser.user_data_dir).name,
+                Path(current_dir).name,
+            )
+            self._browser.user_data_dir = current_dir
+            # Invalidate cached headers so they're re-fetched for the new account
+            self._headers = None
+            self._headers_account = None
 
     def _mark_exhausted(self) -> None:
         """Mark the current account as quota-exhausted."""
@@ -96,24 +127,29 @@ class ChatService:
         return self._browser.headless
 
     async def _ensure_headers(self) -> dict[str, str]:
+        self._sync_browser_data_dir()
         from engine.config import _resolve_active_account
         account = self._account_override or _resolve_active_account()
         # Fast path: headers for THIS account already in memory
         if self._headers and self._headers_account == account:
             return self._headers
-        # Medium path: check per-account token cache before launching browser
+        # Medium path: check per-account token cache before launching browser.
+        # ALL critical fields must be present — partial cache (e.g. cookies
+        # without JWT) means we must refresh via browser.
         cached = get_qwen_tokens_for_account(account)
-        if cached and cached.get("cookies"):
+        if cached and cached.get("cookies") and cached.get("jwt_token"):
             from engine.session import build_headers
             self._headers = build_headers(
                 cookies=cached["cookies"],
                 bx_ua=cached.get("bx_ua"),
                 bx_umidtoken=cached.get("bx_umidtoken"),
+                jwt_token=cached.get("jwt_token"),
             )
             self._headers_account = account
-            logger.info("Loaded cached Qwen WAF tokens for %s", account)
+            logger.info("Loaded cached Qwen WAF tokens for %s (jwt=%s)", account, bool(cached.get("jwt_token")))
             return self._headers
         # Slow path: launch browser to fetch fresh headers
+        # (BrowserManager.start() guards against missing profiles)
         async with self._lock:
             if not self._headers or self._headers_account != account:
                 await self._browser.start()
@@ -126,6 +162,7 @@ class ChatService:
                         bx_ua=self._headers.get("bx-ua", ""),
                         bx_umidtoken=self._headers.get("bx-umidtoken", ""),
                         account=account,
+                        jwt_token=self._headers.get("Authorization", "").removeprefix("Bearer ") or None,
                     )
                 finally:
                     await self._browser.close()
@@ -136,7 +173,7 @@ class ChatService:
             await self._browser.start()
             try:
                 self._headers = await self._browser.get_fresh_headers()
-                # Save refreshed tokens to per-account cache
+                # Save refreshed tokens + JWT to per-account cache
                 from engine.config import _resolve_active_account
                 account = self._account_override or _resolve_active_account()
                 self._headers_account = account
@@ -145,6 +182,7 @@ class ChatService:
                     bx_ua=self._headers.get("bx-ua", ""),
                     bx_umidtoken=self._headers.get("bx-umidtoken", ""),
                     account=account,
+                    jwt_token=self._headers.get("Authorization", "").removeprefix("Bearer ") or None,
                 )
             finally:
                 await self._browser.close()
@@ -157,38 +195,43 @@ class ChatService:
         Pass account= to pin the target — background callers MUST, since the
         active-profile symlink can move between scheduling and execution.
         """
+        self._sync_browser_data_dir()
         from engine.config import _resolve_active_account
         account = account or self._account_override or _resolve_active_account()
         # Fast path: headers for this account already in memory
         if self._headers and self._headers_account == account:
             return
         # Medium path: per-account token cache on disk — no browser launch needed.
-        # Mirrors _ensure_headers(); if cached tokens turn out stale,
-        # _refresh_headers() self-heals on first chat.
+        # ALL critical fields must be present (cookies + JWT); partial cache
+        # triggers a browser refresh to collect the missing pieces.
         cached = get_qwen_tokens_for_account(account)
-        if cached and cached.get("cookies"):
+        if cached and cached.get("cookies") and cached.get("jwt_token"):
             from engine.session import build_headers
             self._headers = build_headers(
                 cookies=cached["cookies"],
                 bx_ua=cached.get("bx_ua"),
                 bx_umidtoken=cached.get("bx_umidtoken"),
+                jwt_token=cached.get("jwt_token"),
             )
             self._headers_account = account
-            logger.info("Warmup: loaded cached Qwen WAF tokens for %s (no browser launch)", account)
+            logger.info("Warmup: loaded cached Qwen WAF tokens for %s (no browser launch, jwt=%s)", account, bool(cached.get("jwt_token")))
             return
+        # Guard: no valid profile → skip browser launch entirely
         # Slow path: launch browser to fetch fresh headers
+        # (BrowserManager.start() guards against missing profiles)
         async with self._lock:
             try:
                 await self._browser.start()
                 if not self._headers or self._headers_account != account:
                     self._headers = await self._browser.get_fresh_headers()
                     self._headers_account = account
-                    # Persist WAF tokens to per-account cache
+                    # Persist WAF tokens + JWT to per-account cache
                     save_qwen_tokens_for_account(
                         cookies=self._headers.get("Cookie", ""),
                         bx_ua=self._headers.get("bx-ua", ""),
                         bx_umidtoken=self._headers.get("bx-umidtoken", ""),
                         account=account,
+                        jwt_token=self._headers.get("Authorization", "").removeprefix("Bearer ") or None,
                     )
             except Exception as exc:
                 logger.warning("Warmup failed: %s: %s", type(exc).__name__, exc)
@@ -205,6 +248,7 @@ class ChatService:
         Designed for post-switch background warmup — never blocks the main
         request path. Updates in-memory headers AND persists to disk cache.
         """
+        self._sync_browser_data_dir()
         from engine.config import _resolve_active_account
         account = account or self._account_override or _resolve_active_account()
         async with self._lock:
@@ -217,6 +261,7 @@ class ChatService:
                     bx_ua=self._headers.get("bx-ua", ""),
                     bx_umidtoken=self._headers.get("bx-umidtoken", ""),
                     account=account,
+                    jwt_token=self._headers.get("Authorization", "").removeprefix("Bearer ") or None,
                 )
                 logger.info("Force-refreshed WAF tokens for %s via browser", account)
             except Exception as exc:
@@ -229,6 +274,7 @@ class ChatService:
                         cookies=cached["cookies"],
                         bx_ua=cached.get("bx_ua"),
                         bx_umidtoken=cached.get("bx_umidtoken"),
+                        jwt_token=cached.get("jwt_token"),
                     )
                     self._headers_account = account
                     logger.info("Fell back to cached WAF tokens for %s", account)
@@ -284,10 +330,10 @@ class ChatService:
         )
 
     async def sync_context(self, project_id: str | None = None) -> bool:
-        # Reuse cached headers from warmup to avoid a redundant browser launch
-        if self._headers:
-            return await self._browser.sync_context(headers=self._headers, project_id=project_id)
-        return await self._browser.sync_context(project_id=project_id)
+        # Always resolve headers from cache first — never let sync_context
+        # trigger a browser launch on its own.
+        headers = await self._ensure_headers()
+        return await self._browser.sync_context(headers=headers, project_id=project_id)
 
     async def _stop_upstream_generation(self, chat_id: str, response_id: str | None = None) -> bool:
         """Call Qwen's stop API to halt server-side token generation.
@@ -322,28 +368,47 @@ class ChatService:
         model: str | None = None,
         thinking_mode: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        # FIX #5: Track in-flight profile usage so background strip doesn't
+        # destroy a profile while a stream is actively using it.
+        _profile_key = getattr(self, '_account_override', None) or "__default__"
+        _in_flight = getattr(self, '_in_flight_profiles', None)
+        if _in_flight is not None:
+            _in_flight[_profile_key] = _in_flight.get(_profile_key, 0) + 1
+        print(f"[STREAM] ▶ stream_events START account={_profile_key} chat_id={chat_id} msg_len={len(message)} (in_flight={_in_flight.get(_profile_key, '?') if _in_flight else 'n/a'})")
         try:
+            print(f"[STREAM]   ↳ _ensure_headers()...")
             headers = await self._ensure_headers()
+            print(f"[STREAM]   ✓ headers ready (keys={list(headers.keys())[:3]}...)")
             active_chat_id = chat_id
 
             if not active_chat_id:
+                print(f"[STREAM]   ↳ create_new_chat() (no chat_id provided)...")
                 active_chat_id = await create_new_chat(headers, model=model)
                 if not active_chat_id:
+                    print(f"[STREAM]   ↳ create_new_chat() failed, refreshing headers...")
                     headers = await self._refresh_headers()
                     active_chat_id = await create_new_chat(headers, model=model)
 
             if not active_chat_id:
+                print(f"[STREAM] ✗ Could not create chat session")
                 yield {"type": "error", "message": "Could not create chat session"}
                 return
         except Exception as exc:
+            print(f"[STREAM] ✗ Session startup failed: {type(exc).__name__}: {exc}")
             yield {"type": "error", "message": f"Session startup failed: {type(exc).__name__}: {exc}"}
             return
 
+        print(f"[STREAM] ✓ active_chat_id={active_chat_id}, building body...")
         yield {"type": "meta", "chat_id": active_chat_id, "parent_id": parent_id}
         yield {"type": "status", "message": "calling_upstream"}
 
         body = build_body(message, active_chat_id, parent_id, files=files, model=model, thinking_mode=thinking_mode)
         params = {"chat_id": active_chat_id}
+        print(f"[STREAM] ↳ entering _stream_request() attempt loop...")
+
+        # Sentinel: all setup complete, HTTP request is about to be sent.
+        # Consumers can use this to start first-chunk timeouts accurately.
+        yield {"type": "request_sent"}
 
         try:
             async for event in self._stream_request(
@@ -362,6 +427,13 @@ class ChatService:
             yield {"type": "error", "message": "Timed out waiting for response"}
         except Exception as exc:
             yield {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
+        finally:
+            # FIX #5: Decrement in-flight counter when stream ends (normal or error).
+            _in_flight = getattr(self, '_in_flight_profiles', None)
+            if _in_flight is not None:
+                _in_flight[_profile_key] = max(0, _in_flight.get(_profile_key, 1) - 1)
+                if _in_flight[_profile_key] == 0:
+                    del _in_flight[_profile_key]
 
     async def _stream_request(
         self,
@@ -377,6 +449,7 @@ class ChatService:
         last_error_msg: str | None = None
 
         for attempt in range(1, max_attempts + 1):
+            print(f"[STREAM]   ↳ _stream_request attempt {attempt}/{max_attempts}")
             new_parent_id = parent_id
             chosen_response_id: str | None = None
             got_content = False
@@ -386,8 +459,10 @@ class ChatService:
 
             try:
                 async with httpx.AsyncClient(timeout=120) as client:
+                    print(f"[STREAM]     ↳ HTTP POST {URL[:60]}...")
                     async with client.stream("POST", URL, headers=headers, json=body, params=params) as res:
                         status_code = res.status_code
+                        print(f"[STREAM]     ✓ HTTP {res.status_code} (attempt {attempt}/{max_attempts})")
                         logger.debug("Upstream HTTP %s (attempt %d/%d)", res.status_code, attempt, max_attempts)
                         yield {"type": "debug", "message": f"HTTP {res.status_code} (attempt {attempt}/{max_attempts})"}
 
@@ -680,6 +755,21 @@ class ChatService:
                         pass
                 last_error_msg = f"Upstream returned HTTP {status_code} with zero content — WAF tokens may be stale or the session expired"
 
+            # Fast-fail: don't waste retries on rate-limit/captcha — escalate immediately
+            _fail_lower = (last_error_msg or "").lower()
+            print(f"[STREAM]     ↳ post-attempt check: last_error={last_error_msg[:100] if last_error_msg else 'None'}")
+            if any(kw in _fail_lower for kw in ("ratelimit", "rate_limit", "rate limit", "quota", "daily usage", "exceeded", "429")):
+                print(f"[STREAM]     ⚡ FAST-FAIL rate_limit on attempt {attempt} — skipping retries")
+                self._mark_exhausted()
+                logger.warning("Rate-limit detected on attempt %d — skipping remaining retries", attempt)
+                yield {"type": "rate_limited", "message": last_error_msg, "hours": "?"}
+                return
+            if any(kw in _fail_lower for kw in ("captcha", "waf", "validate", "rgv587", "blocked", "forbidden")):
+                print(f"[STREAM]     ⚡ FAST-FAIL captcha/waf on attempt {attempt} — skipping retries")
+                logger.warning("WAF/captcha detected on attempt %d — skipping remaining retries", attempt)
+                yield {"type": "waf_blocked", "message": last_error_msg}
+                return
+
             if attempt < max_attempts:
                 logger.warning("Attempt %d failed: %s. Refreshing headers and retrying...", attempt, last_error_msg)
                 yield {"type": "status", "message": f"retrying_attempt_{attempt + 1}"}
@@ -689,14 +779,17 @@ class ChatService:
                 continue
 
         # Defense-in-depth: detect rate-limit/captcha patterns in generic failure messages
-        # so auto-switch can trigger even when the upstream response didn't match our schema
+        print(f"[STREAM]   ↳ all {max_attempts} attempts exhausted, defense-in-depth check...")
         _fail_lower = (last_error_msg or "").lower()
         if any(kw in _fail_lower for kw in ("ratelimit", "rate_limit", "rate limit", "quota", "daily usage", "exceeded", "429")):
+            print(f"[STREAM]   ⚡ DEFENSE-IN-DEPTH rate_limit detected")
             self._mark_exhausted()
             yield {"type": "rate_limited", "message": last_error_msg, "hours": "?"}
         elif any(kw in _fail_lower for kw in ("captcha", "waf", "validate", "rgv587", "blocked", "forbidden")):
+            print(f"[STREAM]   ⚡ DEFENSE-IN-DEPTH captcha/waf detected")
             yield {"type": "waf_blocked", "message": last_error_msg}
         else:
+            print(f"[STREAM]   ✗ generic error after {max_attempts} attempts: {last_error_msg[:100] if last_error_msg else 'unknown'}")
             yield {"type": "error", "message": f"Failed after {max_attempts} attempts: {last_error_msg}"}
 
     async def chat(

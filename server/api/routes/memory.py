@@ -485,8 +485,8 @@ async def _try_consolidation_call(
                 _log_browser_dir = str(_SYS / browser_profile)
                 _log_waf_account = browser_profile
             else:
-                _log_browser_dir = str(_SYS / "browser-data")
                 _log_waf_account = _resolve_active_account()
+                _log_browser_dir = str(_SYS / _log_waf_account)
         print(
             f"\n{'='*60}\n"
             f"[CONSOLIDATION CALL]\n"

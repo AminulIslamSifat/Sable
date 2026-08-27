@@ -27,6 +27,7 @@ Solution selection rule (both categories): **simplest working solution wins**. F
 - If yes: spawn those subagents with clear, scoped instructions. Act as orchestrator — review and integrate their output rather than doing the work directly.
 - If no clean split exists (or no matching subagent): execute directly.
 - Categories 1–2: skip delegation entirely unless the user explicitly asks for it.
+- When you assign task to subagent, Never touch the thing again yourself and never repeatedly check for status. You will get the notification when an agnets finished its job.
 
 ### 3. Execute
 - Code style, non-negotiable: early returns, explicit types (typed languages only), clean error handling, no nested conditionals beyond depth 4.

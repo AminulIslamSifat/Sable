@@ -79,9 +79,10 @@ _ACTIVE_ACCOUNT_FILE = _SYSTEM / ".active_account"
 def get_active_account() -> str:
     """Get the active browser account name from the config file.
 
-    Falls back to symlink resolution for backward compatibility, then to 'browser-data'.
+    When the file is empty or missing, auto-selects the best available account
+    using priority: fresh (lowest number) > captcha-blocked (oldest) and persists
+    the selection so subsequent calls are stable.
     """
-    # 1. Try config file first
     try:
         name = _ACTIVE_ACCOUNT_FILE.read_text(encoding="utf-8").strip()
         if name:
@@ -89,17 +90,14 @@ def get_active_account() -> str:
     except OSError:
         pass
 
-    # 2. Migrate from legacy symlink
-    symlink = _SYSTEM / "browser-data"
-    try:
-        if symlink.is_symlink():
-            target = symlink.resolve()
-            name = target.name
-            set_active_account(name)
-            return name
-    except OSError:
-        pass
+    # Auto-select best available account instead of falling back to legacy name
+    selected = get_next_available_account()
+    if selected:
+        set_active_account(selected)
+        logger.info("Auto-selected active account: %s (was unset)", selected)
+        return selected
 
+    # No accounts exist at all — fall back to legacy name as last resort
     return "browser-data"
 
 
@@ -568,13 +566,17 @@ def save_qwen_tokens_for_account(
     bx_ua: str,
     bx_umidtoken: str,
     account: str | None = None,
+    jwt_token: str | None = None,
 ) -> None:
-    """Save Qwen WAF tokens for an account. Replaces any existing entry (1 per account)."""
+    """Save Qwen WAF tokens + JWT for an account. Replaces any existing entry (1 per account)."""
     if not cookies:
         return
     acct = account or _resolve_active_account()
+    entry: dict[str, str] = {"cookies": cookies, "bx_ua": bx_ua, "bx_umidtoken": bx_umidtoken}
+    if jwt_token:
+        entry["jwt_token"] = jwt_token
     store = load_qwen_token_store()
-    store[acct] = [{"cookies": cookies, "bx_ua": bx_ua, "bx_umidtoken": bx_umidtoken}]
+    store[acct] = [entry]
     save_qwen_token_store(store)
 
 
@@ -630,20 +632,25 @@ def mark_account_exhausted(account: str) -> None:
 
 
 def is_account_exhausted(account: str) -> bool:
-    """Check if account is exhausted. Auto-resets if exhausted_at is before today's UTC midnight."""
-    from datetime import datetime, timezone
+    """Check if account is exhausted. Auto-resets if exhausted_at is before today's UTC midnight
+    plus a per-account jitter (0-60 min) to prevent thundering herd at reset boundary."""
+    from datetime import datetime, timezone, timedelta
     store = _load_exhaustion_store()
     entry = store.get(account)
     if not entry or not entry.get("exhausted"):
         return False
-    # Check if quota has reset (new UTC day)
+    # Check if quota has reset (new UTC day + jitter)
     exhausted_at = entry.get("exhausted_at")
     if exhausted_at:
         try:
             dt = datetime.fromisoformat(exhausted_at)
             now = datetime.now(timezone.utc)
-            # If exhausted before today's UTC midnight, quota has reset
-            if dt.date() < now.date():
+            # FIX #6: Per-account jitter (0-60 min) based on account name hash.
+            # Prevents all accounts from resetting at exactly UTC midnight,
+            # which causes concurrent requests to select the same freshly-reset account.
+            _jitter_minutes = hash(account) % 60
+            _reset_time = datetime.combine(now.date(), datetime.min.time(), tzinfo=timezone.utc) + timedelta(minutes=_jitter_minutes)
+            if dt < _reset_time:
                 store[account] = {"exhausted": False, "exhausted_at": None}
                 _save_exhaustion_store(store)
                 return False
