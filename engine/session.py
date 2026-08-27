@@ -35,9 +35,9 @@ def _increment_playwright_counter() -> int:
     return count
 
 
-def build_headers(cookies: str | None = None, bx_ua: str | None = None, bx_umidtoken: str | None = None) -> dict[str, str]:
-    """Construct HTTP headers with given or fallback cookies and security tokens."""
-    return {
+def build_headers(cookies: str | None = None, bx_ua: str | None = None, bx_umidtoken: str | None = None, jwt_token: str | None = None) -> dict[str, str]:
+    """Construct HTTP headers with given or fallback cookies, security tokens, and optional JWT bearer."""
+    h: dict[str, str] = {
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:153.0) Gecko/20100101 Firefox/153.0",
         "Accept": "application/json",
         "Accept-Language": "en-US,en;q=0.9",
@@ -53,6 +53,9 @@ def build_headers(cookies: str | None = None, bx_ua: str | None = None, bx_umidt
         "bx-umidtoken": bx_umidtoken or BX_UMIDTOKEN,
         "bx-v": "2.5.37",
     }
+    if jwt_token:
+        h["Authorization"] = f"Bearer {jwt_token}"
+    return h
 
 
 class BrowserManager:
@@ -188,8 +191,17 @@ class BrowserManager:
         finally:
             self.page.remove_listener("request", on_request)
 
-        cookies = await self.context.cookies()
-        cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies]) if cookies else None
+        # Only include qwen.ai cookies — avoids sending 400+ ad-tracking cookies
+        all_cookies = await self.context.cookies()
+        qwen_cookies = [c for c in all_cookies if "qwen.ai" in c.get("domain", "")]
+        cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in qwen_cookies]) if qwen_cookies else None
+
+        # Read JWT from localStorage — required for settings/update and other auth endpoints
+        jwt_token = None
+        try:
+            jwt_token = await self.page.evaluate("() => localStorage.getItem('token')")
+        except Exception:
+            pass
 
         missing = [key for key in ("bx-ua", "bx-umidtoken") if not captured.get(key)]
         if missing:
@@ -197,17 +209,19 @@ class BrowserManager:
             print(
                 "[WARN] Header capture incomplete: missing " + ", ".join(missing) +
                 "; cookies=" + ("yes" if cookie_str else "no") +
+                "; jwt=" + ("yes" if jwt_token else "no") +
                 "; status=" + status_info +
                 "; falling back to configured session tokens"
             )
 
         fresh = "fresh" if not missing else "fallback"
-        print(f"[DEBUG] Using {fresh} WAF headers (bx-ua={'yes' if captured.get('bx-ua') else 'no'}, bx-umidtoken={'yes' if captured.get('bx-umidtoken') else 'no'})")
+        print(f"[DEBUG] Using {fresh} WAF headers (bx-ua={'yes' if captured.get('bx-ua') else 'no'}, bx-umidtoken={'yes' if captured.get('bx-umidtoken') else 'no'}, jwt={'yes' if jwt_token else 'no'})")
 
         return build_headers(
             cookies=cookie_str,
             bx_ua=captured.get("bx-ua"),
-            bx_umidtoken=captured.get("bx-umidtoken")
+            bx_umidtoken=captured.get("bx-umidtoken"),
+            jwt_token=jwt_token,
         )
 
     async def extract_deepseek_token(self) -> str:
@@ -352,9 +366,14 @@ class BrowserManager:
         return file_obj
 
     async def sync_context(self, headers: dict[str, str] | None = None, project_id: str | None = None) -> bool:
-        """Sync persona instructions to Qwen via settings/update API (no Playwright DOM)."""
+        """Sync persona instructions to Qwen via settings/update API (no Playwright DOM).
+        
+        Requires pre-built headers. Never launches a browser — callers must
+        resolve headers via service._ensure_headers() or warmup first.
+        """
         if headers is None:
-            await self.start()
+            print("[WARN] sync_context called without headers — skipping (no browser launch)")
+            return False
 
         SETTINGS_URL = "https://chat.qwen.ai/api/v2/users/user/settings/update"
 

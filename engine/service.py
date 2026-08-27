@@ -109,9 +109,10 @@ class ChatService:
                 cookies=cached["cookies"],
                 bx_ua=cached.get("bx_ua"),
                 bx_umidtoken=cached.get("bx_umidtoken"),
+                jwt_token=cached.get("jwt_token"),
             )
             self._headers_account = account
-            logger.info("Loaded cached Qwen WAF tokens for %s", account)
+            logger.info("Loaded cached Qwen WAF tokens for %s (jwt=%s)", account, bool(cached.get("jwt_token")))
             return self._headers
         # Slow path: launch browser to fetch fresh headers
         async with self._lock:
@@ -126,6 +127,7 @@ class ChatService:
                         bx_ua=self._headers.get("bx-ua", ""),
                         bx_umidtoken=self._headers.get("bx-umidtoken", ""),
                         account=account,
+                        jwt_token=self._headers.get("Authorization", "").removeprefix("Bearer ") or None,
                     )
                 finally:
                     await self._browser.close()
@@ -136,7 +138,7 @@ class ChatService:
             await self._browser.start()
             try:
                 self._headers = await self._browser.get_fresh_headers()
-                # Save refreshed tokens to per-account cache
+                # Save refreshed tokens + JWT to per-account cache
                 from engine.config import _resolve_active_account
                 account = self._account_override or _resolve_active_account()
                 self._headers_account = account
@@ -145,6 +147,7 @@ class ChatService:
                     bx_ua=self._headers.get("bx-ua", ""),
                     bx_umidtoken=self._headers.get("bx-umidtoken", ""),
                     account=account,
+                    jwt_token=self._headers.get("Authorization", "").removeprefix("Bearer ") or None,
                 )
             finally:
                 await self._browser.close()
@@ -172,9 +175,10 @@ class ChatService:
                 cookies=cached["cookies"],
                 bx_ua=cached.get("bx_ua"),
                 bx_umidtoken=cached.get("bx_umidtoken"),
+                jwt_token=cached.get("jwt_token"),
             )
             self._headers_account = account
-            logger.info("Warmup: loaded cached Qwen WAF tokens for %s (no browser launch)", account)
+            logger.info("Warmup: loaded cached Qwen WAF tokens for %s (no browser launch, jwt=%s)", account, bool(cached.get("jwt_token")))
             return
         # Slow path: launch browser to fetch fresh headers
         async with self._lock:
@@ -183,12 +187,13 @@ class ChatService:
                 if not self._headers or self._headers_account != account:
                     self._headers = await self._browser.get_fresh_headers()
                     self._headers_account = account
-                    # Persist WAF tokens to per-account cache
+                    # Persist WAF tokens + JWT to per-account cache
                     save_qwen_tokens_for_account(
                         cookies=self._headers.get("Cookie", ""),
                         bx_ua=self._headers.get("bx-ua", ""),
                         bx_umidtoken=self._headers.get("bx-umidtoken", ""),
                         account=account,
+                        jwt_token=self._headers.get("Authorization", "").removeprefix("Bearer ") or None,
                     )
             except Exception as exc:
                 logger.warning("Warmup failed: %s: %s", type(exc).__name__, exc)
@@ -217,6 +222,7 @@ class ChatService:
                     bx_ua=self._headers.get("bx-ua", ""),
                     bx_umidtoken=self._headers.get("bx-umidtoken", ""),
                     account=account,
+                    jwt_token=self._headers.get("Authorization", "").removeprefix("Bearer ") or None,
                 )
                 logger.info("Force-refreshed WAF tokens for %s via browser", account)
             except Exception as exc:
@@ -229,6 +235,7 @@ class ChatService:
                         cookies=cached["cookies"],
                         bx_ua=cached.get("bx_ua"),
                         bx_umidtoken=cached.get("bx_umidtoken"),
+                        jwt_token=cached.get("jwt_token"),
                     )
                     self._headers_account = account
                     logger.info("Fell back to cached WAF tokens for %s", account)
@@ -284,10 +291,10 @@ class ChatService:
         )
 
     async def sync_context(self, project_id: str | None = None) -> bool:
-        # Reuse cached headers from warmup to avoid a redundant browser launch
-        if self._headers:
-            return await self._browser.sync_context(headers=self._headers, project_id=project_id)
-        return await self._browser.sync_context(project_id=project_id)
+        # Always resolve headers from cache first — never let sync_context
+        # trigger a browser launch on its own.
+        headers = await self._ensure_headers()
+        return await self._browser.sync_context(headers=headers, project_id=project_id)
 
     async def _stop_upstream_generation(self, chat_id: str, response_id: str | None = None) -> bool:
         """Call Qwen's stop API to halt server-side token generation.
