@@ -370,6 +370,13 @@ class BrowserManager:
         if headers is None:
             headers = await self.get_fresh_headers()
         headers = dict(headers)  # copy to avoid mutating the cached dict
+
+        # Early exit if no auth credentials available (fresh install / not logged in)
+        cookie_val = headers.get("Cookie", "")
+        if not cookie_val or cookie_val.strip() == "":
+            print("[WARN] sync_context skipped: no authentication cookies (user not logged in to Qwen)")
+            return False
+
         headers.update({
             "Content-Type": "application/json",
             "Version": "0.2.80",
@@ -397,6 +404,9 @@ class BrowserManager:
                 }
                 r1 = await client.post(SETTINGS_URL, json=tools_payload, headers=headers)
                 d1 = r1.json()
+                if r1.status_code == 401 or d1.get("data", {}).get("code") == "Unauthorized":
+                    print("[WARN] sync_context: 401 Unauthorized — session expired or not logged in")
+                    return False
                 if not d1.get("success"):
                     raise Exception(f"Disable tools failed: {d1}")
                 print("[DEBUG] Qwen default tools disabled")
