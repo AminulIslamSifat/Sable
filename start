@@ -68,10 +68,74 @@ else
     _log "  · browser-data symlink/dir already exists"
 fi
 
+# ── Ensure Docker is installed and running ─────────────────────────────
+ensure_docker() {
+    # Already working?
+    if docker info >/dev/null 2>&1; then
+        _log "  · Docker installed and daemon running"
+        return 0
+    fi
+
+    # CLI exists but daemon not running — try to start it
+    if command -v docker >/dev/null 2>&1; then
+        _log "  · Docker CLI found but daemon not running"
+        _log "  ↳ Attempting to start Docker daemon via systemd..."
+        if sudo systemctl start docker 2>/dev/null && sudo systemctl enable docker 2>/dev/null; then
+            # Wait for socket
+            for i in 1 2 3 4 5; do
+                if docker info >/dev/null 2>&1; then
+                    _log "✓ Docker daemon started and enabled"
+                    return 0
+                fi
+                sleep 1
+            done
+            _log "✗ Docker daemon failed to start after systemctl start"
+            return 1
+        else
+            _log "✗ Could not start Docker daemon (systemctl failed)"
+            return 1
+        fi
+    fi
+
+    # Docker not installed at all — detect distro and install
+    _log "  · Docker not installed, attempting auto-install..."
+    local install_cmd=""
+    if command -v apt-get >/dev/null 2>&1; then
+        install_cmd="apt-get update && apt-get install -y docker.io docker-compose-plugin"
+    elif command -v dnf >/dev/null 2>&1; then
+        install_cmd="dnf install -y docker docker-compose-plugin"
+    elif command -v pacman >/dev/null 2>&1; then
+        install_cmd="pacman -Sy --noconfirm docker docker-compose"
+    elif command -v zypper >/dev/null 2>&1; then
+        install_cmd="zypper install -y docker docker-compose"
+    else
+        _log "✗ Unsupported package manager — please install Docker manually"
+        return 1
+    fi
+
+    _log "  ↳ Running: sudo sh -c '$install_cmd'"
+    if ! sudo sh -c "$install_cmd"; then
+        _log "✗ Docker installation failed"
+        return 1
+    fi
+
+    # Enable and start
+    sudo systemctl enable docker 2>/dev/null || true
+    sudo systemctl start docker 2>/dev/null || true
+    for i in 1 2 3 4 5; do
+        if docker info >/dev/null 2>&1; then
+            _log "✓ Docker installed, started, and enabled"
+            return 0
+        fi
+        sleep 1
+    done
+    _log "✗ Docker installed but daemon failed to start"
+    return 1
+}
+
 # SearXNG search backend (Docker, idempotent)
 _log "↳ Checking SearXNG search backend..."
-if command -v docker >/dev/null 2>&1; then
-    _log "  · Docker available"
+if ensure_docker; then
     if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^searxng$'; then
         _log "  · SearXNG not running, starting..."
         # Remove stopped container if it exists
@@ -101,7 +165,7 @@ SEOF
         _log "✓ SearXNG already running"
     fi
 else
-    _log "⚠ Docker not found — SearXNG search backend skipped"
+    _log "⚠ Docker unavailable (install/start failed) — SearXNG search backend skipped"
 fi
 
 # Systemd user service (one-time install)
