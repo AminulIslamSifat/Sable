@@ -1640,6 +1640,123 @@ textarea:disabled {
 
 .research-view-btn:hover { background: var(--accent-dim, rgba(124,91,191,0.1)); }
 
+/* ── Incomplete Research Section ─────────────────────────────────────────── */
+.research-incomplete { margin-top: 16px; margin-bottom: 8px; }
+
+.research-incomplete-head {
+  font-size: var(--font-size-system);
+  font-weight: 600;
+  color: var(--text-dim, #999);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+}
+
+.research-incomplete-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.research-incomplete-empty {
+  font-size: 0.85em;
+  color: var(--text-dim, #666);
+  padding: 8px 0;
+  font-style: italic;
+}
+
+.research-incomplete-card {
+  background: var(--bg-card, rgba(255,255,255,0.03));
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  border-left: 3px solid var(--accent, #7c5bbf);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.ric-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.ric-status {
+  font-size: 0.8em;
+  font-weight: 600;
+  color: var(--accent, #7c5bbf);
+}
+
+.ric-date {
+  font-size: 0.75em;
+  color: var(--text-dim, #888);
+}
+
+.ric-query {
+  font-size: 0.9em;
+  font-weight: 500;
+  color: var(--text-main, #eee);
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+
+.ric-stats {
+  display: flex;
+  gap: 12px;
+  font-size: 0.75em;
+  color: var(--text-dim, #999);
+  margin-bottom: 8px;
+}
+
+.ric-error {
+  font-size: 0.75em;
+  color: #e05a5a;
+  margin-bottom: 8px;
+  padding: 4px 8px;
+  background: rgba(224,90,90,0.08);
+  border-radius: 4px;
+}
+
+.ric-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.ric-btn {
+  font-size: 0.78em;
+  padding: 5px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border, rgba(255,255,255,0.1));
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-weight: 500;
+}
+
+.ric-resume {
+  background: var(--accent, #7c5bbf);
+  color: #fff;
+  border-color: var(--accent, #7c5bbf);
+}
+
+.ric-resume:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+
+.ric-delete {
+  background: transparent;
+  color: var(--text-dim, #999);
+}
+
+.ric-delete:hover:not(:disabled) {
+  background: rgba(224,90,90,0.1);
+  color: #e05a5a;
+  border-color: rgba(224,90,90,0.3);
+}
+
+.ric-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .research-library { margin-top: 4px; }
 
 .research-lib-head {

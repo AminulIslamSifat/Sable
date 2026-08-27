@@ -72,6 +72,50 @@ async def research_result(session_id: str) -> dict:
     return result
 
 
+@router.get("/api/research/incomplete")
+async def research_incomplete() -> dict:
+    """List all incomplete research sessions (cancelled, error, interrupted)."""
+    mgr = get_research_manager()
+    return {"incomplete": mgr.list_incomplete()}
+
+
+class ResearchResumeRequest(BaseModel):
+    model: str | None = None
+    models: list[str] = Field(default_factory=list)
+    browser_data: list[str] = Field(default_factory=list)
+    max_depth: int = Field(3, ge=1, le=5)
+    max_time: int = Field(1500, ge=60, le=3600)
+    pages_per_topic: int = Field(3, ge=1, le=20)
+
+
+@router.post("/api/research/resume/{session_id}")
+async def research_resume(session_id: str, body: ResearchResumeRequest) -> dict:
+    """Resume an incomplete research session from its saved checkpoint."""
+    mgr = get_research_manager()
+    result = mgr.resume_research(
+        session_id=session_id,
+        model=body.model,
+        models=[m for m in body.models if m],
+        browser_data=[b for b in body.browser_data if b],
+        max_depth=body.max_depth,
+        max_time=body.max_time,
+        pages_per_topic=body.pages_per_topic,
+    )
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+@router.delete("/api/research/{session_id}")
+async def research_delete(session_id: str) -> dict:
+    """Delete a research session (in-memory + on-disk)."""
+    mgr = get_research_manager()
+    result = mgr.delete_research(session_id)
+    if not result.get("deleted"):
+        raise HTTPException(404, result.get("error", "Session not found"))
+    return result
+
+
 @router.get("/api/research/events/{session_id}")
 async def research_events(session_id: str, request: Request):
     """SSE stream of research progress events."""
