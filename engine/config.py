@@ -553,13 +553,17 @@ def save_qwen_tokens_for_account(
     bx_ua: str,
     bx_umidtoken: str,
     account: str | None = None,
+    jwt_token: str | None = None,
 ) -> None:
-    """Save Qwen WAF tokens for an account. Replaces any existing entry (1 per account)."""
+    """Save Qwen WAF tokens + JWT for an account. Replaces any existing entry (1 per account)."""
     if not cookies:
         return
     acct = account or _resolve_active_account()
+    entry: dict[str, str] = {"cookies": cookies, "bx_ua": bx_ua, "bx_umidtoken": bx_umidtoken}
+    if jwt_token:
+        entry["jwt_token"] = jwt_token
     store = load_qwen_token_store()
-    store[acct] = [{"cookies": cookies, "bx_ua": bx_ua, "bx_umidtoken": bx_umidtoken}]
+    store[acct] = [entry]
     save_qwen_token_store(store)
 
 
