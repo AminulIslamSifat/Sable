@@ -96,6 +96,18 @@ class BrowserManager:
     async def start(self):
         """Lazy-starts the browser context and page if not already running."""
         if not self.playwright:
+            # Refuse to launch if no real browser profile exists.
+            default_dir = Path(self.user_data_dir) / "Default"
+            has_profile = (
+                default_dir.exists()
+                and (
+                    (default_dir / "Local Storage").exists()
+                    or (default_dir / "Cookies").exists()
+                )
+            )
+            if not has_profile:
+                print(f"[WARN] No valid browser profile at {self.user_data_dir} — skipping launch.")
+                return
             self._check_profile_lock()
             launch_num = _increment_playwright_counter()
             print(f"[DEBUG] Launching persistent browser context #{launch_num} (headless={self.headless})...")
@@ -390,8 +402,10 @@ class BrowserManager:
             headers = await self.get_fresh_headers()
         headers = dict(headers)  # copy to avoid mutating the cached dict
 
-        # Early exit if no auth credentials available (fresh install / not logged in)
+        # Debug: show what auth we're sending
         cookie_val = headers.get("Cookie", "")
+        auth_val = headers.get("Authorization", "")
+        print(f"[DEBUG] sync_context headers: cookies={'yes (' + str(len(cookie_val)) + ' chars)' if cookie_val else 'NO'}, auth={'yes' if auth_val else 'NO'}")
         if not cookie_val or cookie_val.strip() == "":
             print("[WARN] sync_context skipped: no authentication cookies (user not logged in to Qwen)")
             return False
@@ -424,7 +438,7 @@ class BrowserManager:
                 r1 = await client.post(SETTINGS_URL, json=tools_payload, headers=headers)
                 d1 = r1.json()
                 if r1.status_code == 401 or d1.get("data", {}).get("code") == "Unauthorized":
-                    print("[WARN] sync_context: 401 Unauthorized — session expired or not logged in")
+                    print(f"[WARN] sync_context: {r1.status_code} Unauthorized — response: {str(d1)[:300]}")
                     return False
                 if not d1.get("success"):
                     raise Exception(f"Disable tools failed: {d1}")

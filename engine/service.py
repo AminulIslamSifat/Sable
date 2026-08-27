@@ -101,9 +101,11 @@ class ChatService:
         # Fast path: headers for THIS account already in memory
         if self._headers and self._headers_account == account:
             return self._headers
-        # Medium path: check per-account token cache before launching browser
+        # Medium path: check per-account token cache before launching browser.
+        # ALL critical fields must be present — partial cache (e.g. cookies
+        # without JWT) means we must refresh via browser.
         cached = get_qwen_tokens_for_account(account)
-        if cached and cached.get("cookies"):
+        if cached and cached.get("cookies") and cached.get("jwt_token"):
             from engine.session import build_headers
             self._headers = build_headers(
                 cookies=cached["cookies"],
@@ -114,31 +116,8 @@ class ChatService:
             self._headers_account = account
             logger.info("Loaded cached Qwen WAF tokens for %s (jwt=%s)", account, bool(cached.get("jwt_token")))
             return self._headers
-        # Guard: never launch a browser if there's no real login profile.
-        # A valid Chromium profile has Default/Local Storage or Default/Cookies.
-        # Without this, Playwright creates an empty profile dir on launch and
-        # we waste time getting zero tokens.
-        from pathlib import Path as _Path
-        profile_dir = _Path(self._browser.user_data_dir)
-        default_dir = profile_dir / "Default"
-        has_real_profile = (
-            profile_dir.exists()
-            and default_dir.exists()
-            and (
-                (default_dir / "Local Storage").exists()
-                or (default_dir / "Cookies").exists()
-            )
-        )
-        if not has_real_profile:
-            logger.warning(
-                "No valid browser profile at %s — skipping header fetch. "
-                "Log in via browser_opener.py first.", profile_dir,
-            )
-            from engine.session import build_headers
-            self._headers = build_headers()
-            self._headers_account = account
-            return self._headers
         # Slow path: launch browser to fetch fresh headers
+        # (BrowserManager.start() guards against missing profiles)
         async with self._lock:
             if not self._headers or self._headers_account != account:
                 await self._browser.start()
@@ -158,21 +137,6 @@ class ChatService:
             return self._headers
 
     async def _refresh_headers(self) -> dict[str, str]:
-        # Guard: no valid profile → return existing or fallback headers
-        from pathlib import Path as _Path
-        profile_dir = _Path(self._browser.user_data_dir)
-        default_dir = profile_dir / "Default"
-        has_real_profile = (
-            profile_dir.exists() and default_dir.exists()
-            and ((default_dir / "Local Storage").exists() or (default_dir / "Cookies").exists())
-        )
-        if not has_real_profile:
-            logger.warning("_refresh_headers: no browser profile at %s — skipping", profile_dir)
-            if self._headers:
-                return self._headers
-            from engine.session import build_headers
-            self._headers = build_headers()
-            return self._headers
         async with self._lock:
             await self._browser.start()
             try:
@@ -205,10 +169,10 @@ class ChatService:
         if self._headers and self._headers_account == account:
             return
         # Medium path: per-account token cache on disk — no browser launch needed.
-        # Mirrors _ensure_headers(); if cached tokens turn out stale,
-        # _refresh_headers() self-heals on first chat.
+        # ALL critical fields must be present (cookies + JWT); partial cache
+        # triggers a browser refresh to collect the missing pieces.
         cached = get_qwen_tokens_for_account(account)
-        if cached and cached.get("cookies"):
+        if cached and cached.get("cookies") and cached.get("jwt_token"):
             from engine.session import build_headers
             self._headers = build_headers(
                 cookies=cached["cookies"],
@@ -220,17 +184,8 @@ class ChatService:
             logger.info("Warmup: loaded cached Qwen WAF tokens for %s (no browser launch, jwt=%s)", account, bool(cached.get("jwt_token")))
             return
         # Guard: no valid profile → skip browser launch entirely
-        from pathlib import Path as _Path
-        profile_dir = _Path(self._browser.user_data_dir)
-        default_dir = profile_dir / "Default"
-        has_real_profile = (
-            profile_dir.exists() and default_dir.exists()
-            and ((default_dir / "Local Storage").exists() or (default_dir / "Cookies").exists())
-        )
-        if not has_real_profile:
-            logger.info("Warmup: no valid browser profile at %s — skipping", profile_dir)
-            return
         # Slow path: launch browser to fetch fresh headers
+        # (BrowserManager.start() guards against missing profiles)
         async with self._lock:
             try:
                 await self._browser.start()
@@ -262,17 +217,6 @@ class ChatService:
         """
         from engine.config import _resolve_active_account
         account = account or self._account_override or _resolve_active_account()
-        # Guard: no valid profile → skip browser launch entirely
-        from pathlib import Path as _Path
-        profile_dir = _Path(self._browser.user_data_dir)
-        default_dir = profile_dir / "Default"
-        has_real_profile = (
-            profile_dir.exists() and default_dir.exists()
-            and ((default_dir / "Local Storage").exists() or (default_dir / "Cookies").exists())
-        )
-        if not has_real_profile:
-            logger.info("Force WAF refresh: no valid browser profile at %s — skipping", profile_dir)
-            return
         async with self._lock:
             try:
                 await self._browser.start()
