@@ -106,8 +106,10 @@ class BrowserManager:
                 )
             )
             if not has_profile:
-                print(f"[WARN] No valid browser profile at {self.user_data_dir} — skipping launch.")
-                return
+                raise RuntimeError(
+                    f"No valid browser profile at {self.user_data_dir}. "
+                    f"Run setup browser-login or use browser_opener.py to create one."
+                )
             self._check_profile_lock()
             launch_num = _increment_playwright_counter()
             print(f"[DEBUG] Launching persistent browser context #{launch_num} (headless={self.headless})...")
