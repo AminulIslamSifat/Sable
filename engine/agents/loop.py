@@ -1278,6 +1278,7 @@ async def _get_agent_qwen_headers(agent: Agent) -> dict[str, str]:
                         bx_ua=headers.get("bx-ua", ""),
                         bx_umidtoken=headers.get("bx-umidtoken", ""),
                         account=account,
+                        jwt_token=headers.get("Authorization", "").removeprefix("Bearer ") or None,
                     )
                     return headers
                 finally:

@@ -154,10 +154,15 @@ async def set_disabled_tools(request: Request) -> dict[str, str]:
 async def sync_context_route() -> dict[str, Any]:
     from connectors.common.instruction_builder import invalidate_cache
     invalidate_cache()
-    success = await service.sync_context()
+    try:
+        success = await service.sync_context()
+    except Exception as exc:
+        logger.warning("sync_context raised: %s: %s", type(exc).__name__, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
     if success:
         return {"status": "ok", "message": "Context synced successfully"}
-    raise HTTPException(status_code=500, detail="Failed to sync context")
+    # Not authenticated or skipped — not a server error
+    return {"status": "skipped", "message": "Sync skipped: not authenticated or no session"}
 
 @router.post("/api/file/revert")
 def revert_file(payload: RevertRequest) -> dict[str, str]:
