@@ -322,7 +322,7 @@ class ChatService:
         model: str | None = None,
         thinking_mode: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        print(f"[STREAM] ▶ stream_events START account={self.account} chat_id={chat_id} msg_len={len(message)}")
+        print(f"[STREAM] ▶ stream_events START account={self._account_override} chat_id={chat_id} msg_len={len(message)}")
         try:
             print(f"[STREAM]   ↳ _ensure_headers()...")
             headers = await self._ensure_headers()
@@ -353,6 +353,10 @@ class ChatService:
         body = build_body(message, active_chat_id, parent_id, files=files, model=model, thinking_mode=thinking_mode)
         params = {"chat_id": active_chat_id}
         print(f"[STREAM] ↳ entering _stream_request() attempt loop...")
+
+        # Sentinel: all setup complete, HTTP request is about to be sent.
+        # Consumers can use this to start first-chunk timeouts accurately.
+        yield {"type": "request_sent"}
 
         try:
             async for event in self._stream_request(

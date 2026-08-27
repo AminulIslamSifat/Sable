@@ -1338,16 +1338,27 @@ async def chat(request: ChatRequest):
                         label=f"stream_round_{round_index}",
                     )
                 # --- Chunk timeout for main stream ---
+                # NOTE: first-chunk timeout starts AFTER "request_sent" sentinel,
+                # so session setup time (_ensure_headers, create_new_chat) is excluded.
                 print(f"[MAIN-STREAM] ▶ Starting main stream loop (first_chunk_timeout=15s, stall_timeout=30s)")
                 _MAIN_FIRST_CHUNK_TIMEOUT = 15.0
                 _MAIN_STALL_TIMEOUT = 30.0
                 _main_got_first = False
+                _main_request_sent = False
                 _main_timeout_retries = 0
                 _main_iter = round_event_source.__aiter__()
 
                 while True:
                     try:
-                        if not _main_got_first:
+                        if not _main_request_sent:
+                            # Pre-request phase: consume setup events without timeout pressure
+                            event = await _main_iter.__anext__()
+                            if event.get("type") == "request_sent":
+                                _main_request_sent = True
+                                print(f"[MAIN-STREAM]   ✓ request_sent — starting first-chunk timer ({_MAIN_FIRST_CHUNK_TIMEOUT}s)")
+                                continue
+                            # meta/status events during setup pass through normally
+                        elif not _main_got_first:
                             print(f"[MAIN-STREAM]   ↳ waiting for first chunk (timeout={_MAIN_FIRST_CHUNK_TIMEOUT}s)...")
                             event = await asyncio.wait_for(
                                 _main_iter.__anext__(),
@@ -1392,6 +1403,7 @@ async def chat(request: ChatRequest):
                                 )
                                 _main_iter = round_event_source.__aiter__()
                                 _main_got_first = False
+                                _main_request_sent = False
                                 continue
                         else:
                             # Mid-stream stall — connection died after partial response
@@ -1404,8 +1416,8 @@ async def chat(request: ChatRequest):
                         break
 
                     event_type = event.get("type")
-                    # Suppress upstream meta events — local chat_id is authoritative
-                    if event_type == "meta":
+                    # Suppress internal/setup events
+                    if event_type in ("meta", "request_sent"):
                         continue
                     if event_type == "answer":
                         pending_thinking.clear()
@@ -1487,8 +1499,8 @@ async def chat(request: ChatRequest):
                             # No meta event needed — local chat_id hasn't changed
                             async for _recovery_event in round_event_source:
                                 _rec_type = _recovery_event.get("type")
-                                if _rec_type == "meta":
-                                    # Suppress upstream meta, we already sent ours
+                                if _rec_type in ("meta", "request_sent"):
+                                    # Suppress internal/setup events
                                     continue
                                 if _rec_type == "answer":
                                     pending_thinking.clear()
@@ -1543,7 +1555,7 @@ async def chat(request: ChatRequest):
                         )
                         async for _recovery_event in round_event_source:
                             _rec_type = _recovery_event.get("type")
-                            if _rec_type == "meta":
+                            if _rec_type in ("meta", "request_sent"):
                                 continue
                             if _rec_type == "answer":
                                 pending_thinking.clear()
@@ -1627,6 +1639,8 @@ async def chat(request: ChatRequest):
 
                         while _switch_attempt < _switch_max_retries and not _switch_success:
                             _switch_attempt += 1
+                            # Reset per-iteration state so previous failures don't poison new attempts
+                            stream_error = False
                             yield sse({"type": "account_switch", "step": "searching", "current": _current_acc, "attempt": _switch_attempt})
                             _next_acc = get_next_available_account(exclude=_tried_accounts)
 
@@ -1666,7 +1680,8 @@ async def chat(request: ChatRequest):
                                             logger.warning("[auto-switch] Failed to strip old profile: %s", exc)
                                     _spawn_bg(_auto_strip_bg(_old_profile))
                             except Exception as _sw_exc:
-                                logger.error("[auto-switch] Symlink switch failed: %s", _sw_exc)
+                                logger.error("[auto-switch] Account switch failed for %s: %s", _next_acc, _sw_exc)
+                                _tried_accounts.add(_next_acc)  # Prevent infinite loop re-selecting same account
                                 yield sse({"type": "account_switch", "step": "failed", "error": str(_sw_exc)})
                                 error_message = f"Account switch failed: {_sw_exc}"
                                 stream_error = True
@@ -1704,7 +1719,8 @@ async def chat(request: ChatRequest):
                                 else:
                                     raise RuntimeError("create_chat returned None")
                             except Exception as _sess_exc:
-                                logger.error("[auto-switch] New session creation failed: %s", _sess_exc)
+                                logger.error("[auto-switch] New session creation failed for %s: %s", _next_acc, _sess_exc)
+                                _tried_accounts.add(_next_acc)  # Prevent infinite loop re-selecting same account
                                 yield sse({"type": "account_switch", "step": "failed", "error": f"session_creation_failed: {_sess_exc}"})
                                 error_message = f"Account switched to {_next_acc} but session creation failed: {_sess_exc}"
                                 stream_error = True
@@ -1739,7 +1755,7 @@ async def chat(request: ChatRequest):
                                     # Brief pause before retry to let transient issues clear
                                     await asyncio.sleep(2)
 
-                                print(f"[AUTO-SWITCH]     ↳ starting stream on {_next_acc} (per_account_attempt={_per_account_attempt})")
+                                print(f"[AUTO-SWITCH]     ↳ starting stream on {_next_acc} (per_account_attempt={_per_account_attempt}/{_PER_ACCOUNT_MAX_RETRIES})")
                                 round_event_source = service.stream_events(
                                     message=_switch_msg,
                                     chat_id=_upstream_session_id,
@@ -1749,10 +1765,11 @@ async def chat(request: ChatRequest):
                                     thinking_mode=request.thinking_mode,
                                 )
 
-                                # First-chunk timeout: if no event arrives within 15s,
-                                # treat as hung connection → mark account + retry next
+                                # First-chunk timeout: starts AFTER "request_sent" sentinel,
+                                # so session setup time is excluded from the 15s window.
                                 _FIRST_CHUNK_TIMEOUT = 15.0
                                 _got_first_event = False
+                                _sw_request_sent = False
                                 _restream_iter = round_event_source.__aiter__()
                                 _restream_timed_out = False
                                 _got_any_answer = False
@@ -1760,7 +1777,15 @@ async def chat(request: ChatRequest):
 
                                 while True:
                                     try:
-                                        if not _got_first_event:
+                                        if not _sw_request_sent:
+                                            # Pre-request phase: consume setup events without timeout
+                                            _sw_event = await _restream_iter.__anext__()
+                                            if _sw_event.get("type") == "request_sent":
+                                                _sw_request_sent = True
+                                                print(f"[AUTO-SWITCH]   ✓ request_sent — starting first-chunk timer ({_FIRST_CHUNK_TIMEOUT}s)")
+                                                continue
+                                            # meta/status during setup pass through
+                                        elif not _got_first_event:
                                             _sw_event = await asyncio.wait_for(
                                                 _restream_iter.__anext__(),
                                                 timeout=_FIRST_CHUNK_TIMEOUT,
@@ -1769,22 +1794,31 @@ async def chat(request: ChatRequest):
                                         else:
                                             _sw_event = await _restream_iter.__anext__()
                                     except asyncio.TimeoutError:
-                                        # No data within timeout — connection hung
-                                        logger.warning("[auto-switch] First-chunk timeout (%ds) for %s, marking captcha-blocked",
-                                                       _FIRST_CHUNK_TIMEOUT, _next_acc)
-                                        mark_account_captcha_blocked(_next_acc)
-                                        _tried_accounts.add(_next_acc)
+                                        # No data within timeout — connection hung.
+                                        # Don't skip to next account immediately; allow per-account retries.
+                                        # Only mark captcha-blocked if ALL per-account retries also timeout.
+                                        logger.warning("[auto-switch] First-chunk timeout (%ds) for %s (per-account attempt %d/%d)",
+                                                       _FIRST_CHUNK_TIMEOUT, _next_acc, _per_account_attempt, _PER_ACCOUNT_MAX_RETRIES)
                                         _restream_timed_out = True
-                                        _skip_to_next_account = True
+                                        if _per_account_attempt >= _PER_ACCOUNT_MAX_RETRIES:
+                                            # All per-account retries exhausted with timeouts → mark as blocked & skip
+                                            mark_account_captcha_blocked(_next_acc)
+                                            _tried_accounts.add(_next_acc)
+                                            _skip_to_next_account = True
+                                            print(f"[AUTO-SWITCH]     ✗ All {_PER_ACCOUNT_MAX_RETRIES} per-account attempts timed out for {_next_acc} — skipping")
+                                        else:
+                                            print(f"[AUTO-SWITCH]     ⏱ Timeout on {_next_acc} (attempt {_per_account_attempt}/{_PER_ACCOUNT_MAX_RETRIES}) — will retry same account")
                                         yield sse({"type": "account_switch", "step": "retrying",
-                                                   "account": _next_acc, "reason": "timeout", "attempt": _switch_attempt})
+                                                   "account": _next_acc, "reason": "timeout",
+                                                   "attempt": _switch_attempt,
+                                                   "per_account_attempt": _per_account_attempt})
                                         _current_acc = _next_acc
-                                        break  # break inner while → skip to next account
+                                        break  # break inner while → fall through to per-account retry decision
                                     except StopAsyncIteration:
                                         break  # generator exhausted normally
 
                                     _sw_type = _sw_event.get("type")
-                                    if _sw_type == "meta":
+                                    if _sw_type in ("meta", "request_sent"):
                                         continue
                                     if _sw_type == "answer":
                                         _got_any_answer = True
