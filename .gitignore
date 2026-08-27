@@ -105,3 +105,4 @@ Brain/user_personality.json
 Brain/Procedural.json
 Brain/disabled_tools.json
 Brain/disabled_skills.json
+.sable_server.pid

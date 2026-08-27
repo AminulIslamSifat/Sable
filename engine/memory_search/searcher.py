@@ -26,8 +26,10 @@ from .embedder import _GeminiEmbedder
 
 logger = logging.getLogger("sable.memory_search")
 
-_BRAIN_DIR = Path(__file__).resolve().parent.parent.parent / "Brain"
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_BRAIN_DIR = _PROJECT_ROOT / "Brain"
 _MEMORY_PATH = _BRAIN_DIR / "Memory.json"
+_FASTEMBED_CACHE_DIR = _PROJECT_ROOT / "system" / "fastembed_cache"
 _PROTECTED_PATH = _BRAIN_DIR / "Protected.json"
 _PROCEDURAL_PATH = _BRAIN_DIR / "Procedural.json"
 
@@ -99,7 +101,11 @@ class MemorySearcher:
             self._model = _GeminiEmbedder(self._model_name)
         else:
             from fastembed import TextEmbedding
-            self._model = TextEmbedding(model_name=self._model_name, enable_cpu_mem_arena=False)
+            self._model = TextEmbedding(
+                model_name=self._model_name,
+                cache_dir=str(_FASTEMBED_CACHE_DIR),
+                enable_cpu_mem_arena=False,
+            )
 
     def _embed_texts(self, texts: list[str], *, is_query: bool = False) -> np.ndarray:
         """Embed texts, handling both FastEmbed and Gemini API models."""

@@ -90,6 +90,13 @@ class AgentRuntime:
         res = config.get("resilience", {})
         limits = config.get("limits", {})
         self._max_agents = conc.get("global_max", self._max_agents)
+        # Recreate semaphores with new limits (safe — asyncio.Semaphore has no running-state leak)
+        if "deepseek_max" in conc:
+            self._ds_sem = asyncio.Semaphore(conc["deepseek_max"])
+        if "qwen_max" in conc:
+            self._qwen_sem = asyncio.Semaphore(conc["qwen_max"])
+        if "global_max" in conc:
+            self._global_sem = asyncio.Semaphore(conc["global_max"])
         # Update breaker thresholds
         for breaker in self._breakers.values():
             breaker.threshold = res.get("circuit_breaker_threshold", breaker.threshold)
