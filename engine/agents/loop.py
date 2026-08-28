@@ -370,8 +370,12 @@ async def run_agent_llm_loop(
         agent.messages.append({"role": "assistant", "content": response_text})
         await _persist_message(agent.id, "assistant", response_text)
 
-        # Stream the response text to the panel (strip tool_call blocks + bare JSON calls)
+        # Stream the response text to the panel (strip tool_call + DSML blocks + bare JSON)
         _panel_text = re.sub(r"<tool_call>.*?</tool_call>", "", response_text, flags=re.DOTALL)
+        _panel_text = re.sub(
+            r'<\uff5c?DSML\uff5ctool_calls>.*?</\uff5c?DSML\uff5ctool_calls>',
+            "", _panel_text, flags=re.DOTALL,
+        )
         _panel_text = re.sub(
             r'\{\s*"name"\s*:\s*"[\w-]+"\s*,\s*"arguments"\s*:\s*\{.*?\}\s*\}',
             "", _panel_text, flags=re.DOTALL,
@@ -398,9 +402,10 @@ async def run_agent_llm_loop(
         # Parse skill tags
         tags = _parse_skill_tags(response_text)
 
-        # Strip tool_call blocks from display text so raw tags never reach the frontend.
+        # Strip tool_call + DSML blocks from display text so raw tags never reach the frontend.
         # Tags are already parsed above; the raw markup is just leftover garbage.
         response_text = _TAG_RE.sub("", response_text)
+        response_text = _DSML_BLOCK_RE.sub("", response_text)
         response_text = re.sub(r'\n{3,}', '\n\n', response_text).strip()
 
         if not tags:
@@ -1624,18 +1629,63 @@ def _check_action_wrapper_violations(text: str) -> str | None:
     return None
 
 
-def _parse_skill_tags(text: str) -> list[dict[str, Any]]:
-    """Extract tool calls from LLM response (Hermes format).
+# DSML regexes for DeepSeek V4 tool calling (optional leading ｜)
+_DSML_BLOCK_RE = re.compile(
+    r'<\uff5c?DSML\uff5ctool_calls>(.*?)</\uff5c?DSML\uff5ctool_calls>',
+    re.DOTALL,
+)
+_DSML_INVOKE_RE = re.compile(
+    r'<\uff5c?DSML\uff5cinvoke\s+name="([^"]+)">(.*?)</\uff5c?DSML\uff5cinvoke>',
+    re.DOTALL,
+)
+_DSML_PARAM_RE = re.compile(
+    r'<\uff5c?DSML\uff5cparameter\s+name="([^"]+)"\s+string="(true|false)">(.*?)</\uff5c?DSML\uff5cparameter>',
+    re.DOTALL,
+)
 
-    Parses JSON content from <tool_call>...</tool_call> blocks.
-    Falls back to legacy XML tag extraction if no JSON tool calls found.
+
+def _parse_dsml_block(block_text: str) -> list[dict[str, Any]]:
+    """Parse a DSML tool_calls block into canonical tag dicts."""
+    import json as _json
+    results = []
+    for inv_match in _DSML_INVOKE_RE.finditer(block_text):
+        fn_name = inv_match.group(1)
+        params_text = inv_match.group(2)
+        args: dict[str, Any] = {}
+        for p_match in _DSML_PARAM_RE.finditer(params_text):
+            pname = p_match.group(1)
+            is_string = p_match.group(2) == "true"
+            raw_val = p_match.group(3).strip()
+            if is_string:
+                args[pname] = raw_val
+            else:
+                try:
+                    args[pname] = _json.loads(raw_val)
+                except (_json.JSONDecodeError, TypeError):
+                    args[pname] = raw_val
+        results.append({
+            "name": fn_name,
+            "attrs": _json.dumps(args, ensure_ascii=False),
+            "content": "",
+            "raw": inv_match.group(0),
+        })
+    return results
+
+
+def _parse_skill_tags(text: str) -> list[dict[str, Any]]:
+    """Extract tool calls from LLM response.
+
+    Tries in order:
+    1. Hermes JSON format: <tool_call>{JSON}</tool_call>
+    2. DSML format: <｜DSML｜tool_calls><｜DSML｜invoke>...</｜DSML｜invoke></｜DSML｜tool_calls>
+    3. Legacy XML fallback: bare <tag attrs>content</tag>
     """
     import json as _json
     from engine.skills.parser import _parse_action_payload
 
     tags = []
 
-    # Parse JSON tool calls from <tool_call> blocks
+    # 1. Parse JSON tool calls from <tool_call> blocks
     for match in _TAG_RE.finditer(text):
         content = match.group(1).strip()
         if not content:
@@ -1649,7 +1699,13 @@ def _parse_skill_tags(text: str) -> list[dict[str, Any]]:
                 "raw": match.group(0),
             })
 
-    # Fallback: try legacy XML tag extraction if no JSON calls found
+    # 2. Try DSML format (DeepSeek V4)
+    if not tags:
+        for block_match in _DSML_BLOCK_RE.finditer(text):
+            dsml_tags = _parse_dsml_block(block_match.group(0))
+            tags.extend(dsml_tags)
+
+    # 3. Fallback: try legacy XML tag extraction if nothing found
     if not tags:
         def _extract(source: str) -> None:
             for m in _INNER_TAG_RE.finditer(source):

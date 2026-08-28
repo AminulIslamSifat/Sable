@@ -354,10 +354,35 @@ class SkillParser:
     _ACTION_CLOSE = re.compile(r"<\s*/\s*tool_call\s*>", re.I)
     _TOOL_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
 
+    # DSML (DeepSeek Markup Language) patterns — tolerates missing leading ｜,
+    # underscore variants (dsml_tool_calls), and mixed delimiters
+    _DSML_OPEN = re.compile(r"<[｜]?DSML[｜_]tool_calls>", re.I)
+    _DSML_CLOSE = re.compile(r"</[｜]?DSML[｜_]tool_calls>", re.I)
+    _DSML_INVOKE_RE = re.compile(
+        r'<[｜]?DSML[｜]invoke\s+name="([^"]+)">(.*?)</[｜]?DSML[｜]invoke>',
+        re.DOTALL,
+    )
+    _DSML_PARAM_RE = re.compile(
+        r'<[｜]?DSML[｜]parameter\s+name="([^"]+)"\s+string="(true|false)">(.*?)</[｜]?DSML[｜]parameter>',
+        re.DOTALL,
+    )
+    # Legacy XML invoke/parameter (Qwen3 XML fallback, older DeepSeek drift)
+    _LEGACY_INVOKE_RE = re.compile(
+        r'<invoke\s+name="([^"]+)">(.*?)</invoke>',
+        re.DOTALL,
+    )
+    _LEGACY_PARAM_RE = re.compile(
+        r'<parameter\s+name="([^"]+)"(?:\s+string="(?:true|false)")?\s*>(.*?)</parameter>',
+        re.DOTALL,
+    )
+    _LEGACY_BLOCK_OPEN = re.compile(r"<tool_calls>", re.I)
+    _LEGACY_BLOCK_CLOSE = re.compile(r"</tool_calls>", re.I)
+
     def __init__(self, known_tags: tuple[str, ...] | None = None) -> None:
         self._known_tags = set(known_tags or KNOWN_TAGS)
         self.buf = ""
         self._in_action = False
+        self._in_dsml = False
         self._pending_tag: str | None = None
         self._last_progress: tuple[int, int] = (0, 0)
 
@@ -397,6 +422,43 @@ class SkillParser:
                         self.buf = ""
                         break
 
+
+                # --- DSML / Legacy XML detection (DeepSeek, Qwen3 XML) ---
+                # Check for DSML or legacy XML blocks before Hermes/bare JSON.
+                # These use invoke/parameter XML instead of JSON.
+                _dsml_open_m = self._DSML_OPEN.search(self.buf)
+                _legacy_open_m = self._LEGACY_BLOCK_OPEN.search(self.buf) if not _dsml_open_m else None
+                _xml_open_m = _dsml_open_m or _legacy_open_m
+                if _xml_open_m is not None:
+                    _is_dsml = _dsml_open_m is not None
+                    _xml_close = self._DSML_CLOSE if _is_dsml else self._LEGACY_BLOCK_CLOSE
+                    _close_m = _xml_close.search(self.buf, _xml_open_m.end())
+                    if _close_m is not None:
+                        # Complete block found — extract and parse
+                        _before_xml = self.buf[:_xml_open_m.start()]
+                        _block_content = self.buf[_xml_open_m.start():_close_m.end()]
+                        _after_xml = self.buf[_close_m.end():]
+                        if _before_xml.strip():
+                            yield {"type": "text", "text": _before_xml}
+                        self.buf = _after_xml
+                        _plog(f"{'DSML' if _is_dsml else 'LEGACY_XML'}_BLOCK_FOUND: len={len(_block_content)}")
+                        yield from self._extract_dsml(_block_content)
+                        continue  # re-evaluate buffer
+                    else:
+                        # Open tag found but no close yet — hold buffer, wait for more
+                        _before_xml = self.buf[:_xml_open_m.start()]
+                        if _before_xml.strip():
+                            yield {"type": "text", "text": _before_xml}
+                            self.buf = self.buf[_xml_open_m.start():]
+                        # Emit pending indicator for first invoke if visible
+                        _inv_re = self._DSML_INVOKE_RE if _is_dsml else self._LEGACY_INVOKE_RE
+                        _inv_m = _inv_re.search(self.buf)
+                        if _inv_m:
+                            _tag_name = _inv_m.group(1).strip().lower()
+                            if _tag_name != self._pending_tag:
+                                self._pending_tag = _tag_name
+                                yield {"type": "tool_pending", "tag": _tag_name, "attrs": {}}
+                        break  # wait for closing tag
 
                 # --- Bare JSON detection (no <tool_call> wrapper) ---
                 # Models sometimes emit [{...}] or {...} directly without tags.
@@ -486,11 +548,25 @@ class SkillParser:
                     idx = self.buf.rfind("<")
                     if idx >= 0 and ">" not in self.buf[idx:]:
                         tail = self.buf[idx:].lstrip("<").strip().lower()
+                        # Strip optional leading fullwidth pipe or underscore for DSML matching
+                        _tail_norm = tail.lstrip("\uff5c_")
                         # Check for partial opening OR closing tag
-                        _open_match = (tail == "" or "tool_call".startswith(tail))
+                        # Covers: <tool_call, <DSML|tool_calls, <|DSML|tool_calls,
+                        #         <dsml_tool_calls, <DSML_tool_calls, etc.
+                        _dsml_prefixes = ("dsml", "dsml\uff5c", "\uff5cdsml", "dsml_", "_dsml")
+                        _open_match = (
+                            tail == ""
+                            or "tool_call".startswith(tail)
+                            or any(_tail_norm.startswith(p) or p.startswith(_tail_norm)
+                                   for p in _dsml_prefixes if _tail_norm)
+                        )
                         _close_tail = self.buf[idx:].lstrip("<").lstrip("/").strip().lower()
+                        _close_tail_norm = _close_tail.lstrip("\uff5c_")
                         _close_match = ("/" in self.buf[idx:idx+2] and
-                                        (_close_tail == "" or "tool_call".startswith(_close_tail)))
+                                        (_close_tail == ""
+                                         or "tool_call".startswith(_close_tail)
+                                         or any(_close_tail_norm.startswith(p) or p.startswith(_close_tail_norm)
+                                                for p in _dsml_prefixes if _close_tail_norm)))
                         if _open_match or _close_match:
                             if idx > 0:
                                 yield {"type": "text", "text": self.buf[:idx]}
@@ -580,6 +656,90 @@ class SkillParser:
                 self.buf = ""
                 self._in_action = False
             break
+
+    @classmethod
+    def _parse_dsml_params(cls, inner: str) -> dict[str, Any]:
+        """Parse DSML parameter tags into a dict. Handles string="true|false" typing."""
+        attrs: dict[str, Any] = {}
+        for m in cls._DSML_PARAM_RE.finditer(inner):
+            pname, is_str, pval = m.group(1), m.group(2), m.group(3).strip()
+            if is_str == "true":
+                attrs[pname] = pval
+            else:
+                try:
+                    attrs[pname] = json.loads(pval)
+                except (json.JSONDecodeError, ValueError):
+                    attrs[pname] = pval
+        return attrs
+
+    # Extended legacy param regex that captures optional string="true|false"
+    _LEGACY_PARAM_TYPED_RE = re.compile(
+        r'<parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>(.*?)</parameter>',
+        re.DOTALL,
+    )
+
+    @classmethod
+    def _parse_legacy_params(cls, inner: str) -> dict[str, Any]:
+        """Parse legacy XML <parameter> tags. Respects string="true|false" when present."""
+        attrs: dict[str, Any] = {}
+        for m in cls._LEGACY_PARAM_TYPED_RE.finditer(inner):
+            pname, is_str, pval = m.group(1), m.group(2), m.group(3).strip()
+            if is_str == "true":
+                attrs[pname] = pval
+            elif is_str == "false":
+                try:
+                    attrs[pname] = json.loads(pval)
+                except (json.JSONDecodeError, ValueError):
+                    attrs[pname] = pval
+            else:
+                # No type annotation — auto-detect
+                try:
+                    attrs[pname] = json.loads(pval)
+                except (json.JSONDecodeError, ValueError):
+                    attrs[pname] = pval
+        return attrs
+
+    def _extract_dsml(self, block: str) -> Generator[dict[str, Any], None, None]:
+        """Parse a complete DSML tool_calls block and yield tag_found events."""
+        found = False
+        for m in self._DSML_INVOKE_RE.finditer(block):
+            name = m.group(1).strip()
+            params = self._parse_dsml_params(m.group(2))
+            content = ""
+            for ck in _CONTENT_PARAM_KEYS:
+                if ck in params:
+                    content = str(params[ck])
+                    break
+            str_attrs = _stringify_params(params)
+            _plog(f"DSML_TAG_FOUND: {name} | attrs_keys={list(str_attrs.keys())}")
+            yield {
+                "type": "tag_found",
+                "name": name,
+                "attrs": str_attrs,
+                "content": content,
+            }
+            found = True
+        # Fallback: try legacy invoke/parameter format
+        if not found:
+            for m in self._LEGACY_INVOKE_RE.finditer(block):
+                name = m.group(1).strip()
+                params = self._parse_legacy_params(m.group(2))
+                content = ""
+                for ck in _CONTENT_PARAM_KEYS:
+                    if ck in params:
+                        content = str(params[ck])
+                        break
+                str_attrs = _stringify_params(params)
+                _plog(f"LEGACY_XML_TAG_FOUND: {name} | attrs_keys={list(str_attrs.keys())}")
+                yield {
+                    "type": "tag_found",
+                    "name": name,
+                    "attrs": str_attrs,
+                    "content": content,
+                }
+                found = True
+        if not found:
+            _plog(f"DSML_PARSE_FAIL: no invokes found in block len={len(block)}")
 
     def _extract_json(self, raw: str, partial: bool) -> Generator[dict[str, Any], None, None]:
         """Attempt to parse tool_call content as JSON tool calls."""
@@ -684,18 +844,44 @@ class SkillParser:
                 }
 
     def flush(self) -> Generator[dict[str, Any], None, None]:
-        """Flush remaining buffer. Extracts any complete tool_call blocks."""
+        """Flush remaining buffer. Extracts any complete tool_call or DSML blocks."""
         # Reset progress state so stale events don't emit after stream ends
         self._pending_tag = None
         self._last_progress = (0, 0)
         if self.buf:
+            # Try DSML/legacy extraction on remaining buffer
+            _dsml_m = self._DSML_OPEN.search(self.buf)
+            _legacy_m = self._LEGACY_BLOCK_OPEN.search(self.buf) if not _dsml_m else None
+            _xml_m = _dsml_m or _legacy_m
+            if _xml_m is not None:
+                _is_dsml = _dsml_m is not None
+                _xml_close = self._DSML_CLOSE if _is_dsml else self._LEGACY_BLOCK_CLOSE
+                _close_m = _xml_close.search(self.buf, _xml_m.end())
+                if _close_m is not None:
+                    _block = self.buf[_xml_m.start():_close_m.end()]
+                    _before = self.buf[:_xml_m.start()]
+                    _after = self.buf[_close_m.end():]
+                    if _before.strip():
+                        yield {"type": "text", "text": _before}
+                    yield from self._extract_dsml(_block)
+                    self.buf = _after
+                else:
+                    # Incomplete DSML block at flush — try to parse what we have
+                    _plog(f"FLUSH_INCOMPLETE_DSML: buf_len={len(self.buf)}")
+                    yield from self._extract_dsml(self.buf[_xml_m.start():])
+                    self.buf = self.buf[:_xml_m.start()]
+
             if self._in_action:
                 _plog(f"FLUSH_IN_ACTION: buf_len={len(self.buf)} | first_100={repr(self.buf[:100])}")
                 yield from self._extract_json(self.buf, partial=False)
-            # Strip any remaining tool_call remnants
+            # Strip any remaining tool_call / DSML remnants
             if self.buf:
                 cleaned = self._ACTION_OPEN.sub("", self.buf)
-                cleaned = self._ACTION_CLOSE.sub("", cleaned).strip()
+                cleaned = self._ACTION_CLOSE.sub("", cleaned)
+                cleaned = self._DSML_OPEN.sub("", cleaned)
+                cleaned = self._DSML_CLOSE.sub("", cleaned)
+                cleaned = self._LEGACY_BLOCK_OPEN.sub("", cleaned)
+                cleaned = self._LEGACY_BLOCK_CLOSE.sub("", cleaned).strip()
                 if cleaned:
                     _plog(f"FLUSH_TEXT_REMNANT: len={len(cleaned)} | preview={repr(cleaned[:150])}")
                     yield {"type": "text", "text": cleaned}

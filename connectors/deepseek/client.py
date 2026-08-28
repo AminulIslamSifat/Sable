@@ -681,18 +681,11 @@ class DeepSeekClient:
             self._sessions[chat_id] = history
         return history
 
-    # Warning injected before the final user message to prevent DeepSeek from
-    # emitting legacy XML tool-call tags (<invoke>, <parameter>) instead of
-    # the expected format.  Keep this as a class-level constant so it's easy
-    # to tweak or disable.
-    _DEEPSEEK_TAG_WARNING = (
-        "[SYSTEM WARNING: Do NOT use <invoke>, <parameter>, <tool_calls>, "
-        "or ANY XML/custom tags for tool calls. Output tool calls as a "
-        "plain JSON array at the end of your message. Example: "
-        '[{"name": "grep", "arguments": {"pattern": "foo"}}] — '
-        "no tags, no wrappers, just clean JSON. "
-        "Any response containing XML tags will be rejected.]"
-    )
+    # Tag warning disabled — system prompt (tools_loader) now handles format
+    # instruction per-provider (DSML for DeepSeek). This warning contradicted
+    # the DSML format instruction and caused the model to output bare JSON
+    # instead of DSML invoke/parameter blocks.
+    _DEEPSEEK_TAG_WARNING = ""
 
     @classmethod
     def _serialize_history(cls, history: list[dict[str, Any]], current_message: str) -> str:
@@ -712,8 +705,11 @@ class DeepSeekClient:
                 parts.append(f"User: {content}")
             elif role == "assistant":
                 parts.append(f"Assistant: {content}")
-        # Prepend warning to the current (last) user message
-        warned_message = f"{cls._DEEPSEEK_TAG_WARNING}\n\n{current_message}"
+        # Prepend warning to the current (last) user message (if any)
+        if cls._DEEPSEEK_TAG_WARNING:
+            warned_message = f"{cls._DEEPSEEK_TAG_WARNING}\n\n{current_message}"
+        else:
+            warned_message = current_message
         parts.append(f"User: {warned_message}")
         return "\n\n".join(parts)
 
