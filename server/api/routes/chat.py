@@ -1068,7 +1068,12 @@ async def chat(request: ChatRequest):
                             # Meta tags: intercept before skill dispatch
                             if item["name"] == "chat_title":
                                 _ct_id = str(uuid.uuid4())
-                                _title_text = str(item.get("content", "")).strip()
+                                _title_text = str(
+                                    item.get("content")
+                                    or item.get("attrs", {}).get("title")
+                                    or item.get("attrs", {}).get("text")
+                                    or ""
+                                ).strip()
                                 if _title_text:
                                     update_chat_title(active_chat_id, _title_text[:80])
                                     yield sse({"type": "chat_title", "title": _title_text[:80]})
@@ -1233,6 +1238,7 @@ async def chat(request: ChatRequest):
                 stream_error = False
                 _cmd_history_start = len(_guard._command_history)
                 _round_prompt_tokens = 0  # initialized before branching; set in each path
+                _qwen_chat_id = active_chat_id  # default; overridden in Qwen branch below
                 # Log user message to file
                 if round_index == 0:
                     _log_conversation(active_chat_id, request.model, "user", current_message)
@@ -1425,22 +1431,31 @@ async def chat(request: ChatRequest):
                             else:
                                 # Retry: close current service, re-create stream
                                 yield sse({"type": "status", "message": f"retrying_timeout_{_main_timeout_retries + 1}"})
-                                try:
-                                    await service.close()
-                                    await service._ensure_headers()
-                                except Exception as _retry_exc:
-                                    logger.warning("[main-stream] Retry refresh failed: %s", _retry_exc)
-                                round_event_source = retry_stream(
-                                    lambda: service.stream_events(
-                                        message=current_message,
-                                        chat_id=_qwen_chat_id,
-                                        parent_id=current_parent,
-                                        files=files_for_round,
-                                        model=request.model,
-                                        thinking_mode=request.thinking_mode,
-                                    ),
-                                    label=f"stream_round_{round_index}_retry{_main_timeout_retries}",
-                                )
+                                if _is_api_model(request.model):
+                                    # API backend (DeepSeek, Gemini, etc.) — retry via connector
+                                    try:
+                                        round_event_source = _connector.stream_chat(**_stream_kwargs)
+                                    except Exception as _retry_exc:
+                                        logger.warning("[main-stream] API retry failed: %s", _retry_exc)
+                                        event = {"type": "waf_blocked", "message": f"API retry failed: {_retry_exc}"}
+                                else:
+                                    # Qwen scraper path
+                                    try:
+                                        await service.close()
+                                        await service._ensure_headers()
+                                    except Exception as _retry_exc:
+                                        logger.warning("[main-stream] Retry refresh failed: %s", _retry_exc)
+                                    round_event_source = retry_stream(
+                                        lambda: service.stream_events(
+                                            message=current_message,
+                                            chat_id=_qwen_chat_id,
+                                            parent_id=current_parent,
+                                            files=files_for_round,
+                                            model=request.model,
+                                            thinking_mode=request.thinking_mode,
+                                        ),
+                                        label=f"stream_round_{round_index}_retry{_main_timeout_retries}",
+                                    )
                                 _main_iter = round_event_source.__aiter__()
                                 _main_got_first = False
                                 _main_request_sent = False
@@ -1464,22 +1479,31 @@ async def chat(request: ChatRequest):
                                                active_chat_id, _empty_response_retries, _EMPTY_RESPONSE_MAX_RETRIES)
                                 yield sse({"type": "status", "message": f"empty_response_retry_{_empty_response_retries}"})
                                 await asyncio.sleep(2)
-                                try:
-                                    await service.close()
-                                    await service._ensure_headers()
-                                except Exception as _retry_exc:
-                                    logger.warning("[main-stream] Empty-response retry refresh failed: %s", _retry_exc)
-                                round_event_source = retry_stream(
-                                    lambda: service.stream_events(
-                                        message=current_message,
-                                        chat_id=_qwen_chat_id,
-                                        parent_id=current_parent,
-                                        files=files_for_round,
-                                        model=request.model,
-                                        thinking_mode=request.thinking_mode,
-                                    ),
-                                    label=f"stream_round_{round_index}_empty_retry{_empty_response_retries}",
-                                )
+                                if _is_api_model(request.model):
+                                    # API backend — retry via connector
+                                    try:
+                                        round_event_source = _connector.stream_chat(**_stream_kwargs)
+                                    except Exception as _retry_exc:
+                                        logger.warning("[main-stream] API empty-retry failed: %s", _retry_exc)
+                                        event = {"type": "empty_exhausted", "message": f"API retry failed: {_retry_exc}"}
+                                else:
+                                    # Qwen scraper path
+                                    try:
+                                        await service.close()
+                                        await service._ensure_headers()
+                                    except Exception as _retry_exc:
+                                        logger.warning("[main-stream] Empty-response retry refresh failed: %s", _retry_exc)
+                                    round_event_source = retry_stream(
+                                        lambda: service.stream_events(
+                                            message=current_message,
+                                            chat_id=_qwen_chat_id,
+                                            parent_id=current_parent,
+                                            files=files_for_round,
+                                            model=request.model,
+                                            thinking_mode=request.thinking_mode,
+                                        ),
+                                        label=f"stream_round_{round_index}_empty_retry{_empty_response_retries}",
+                                    )
                                 _main_iter = round_event_source.__aiter__()
                                 _main_got_first = False
                                 _main_request_sent = False
@@ -1701,7 +1725,13 @@ async def chat(request: ChatRequest):
                             # Fall through to rate_limited/waf_blocked handler below
                         else:
                             stream_error = True
-                    if event_type in ("rate_limited", "waf_blocked", "empty_exhausted"):
+                    # Auto-switch is Qwen-only — browser account switching is meaningless
+                    # for native API backends (Gemini/Groq/DeepSeek) and scraper.
+                    _is_qwen_stream = not _is_api_model(request.model) and not scraper_enabled
+                    if event_type in ("rate_limited", "waf_blocked", "empty_exhausted") and not _is_qwen_stream:
+                        # Non-Qwen backend hit rate-limit/WAF — just report error, don't switch accounts
+                        stream_error = True
+                    elif event_type in ("rate_limited", "waf_blocked", "empty_exhausted") and _is_qwen_stream:
                         print(f"[AUTO-SWITCH] ▶ TRIGGERED by {event_type} — msg={str(event.get('message',''))[:100]}")
                         pending_thinking.clear()
                         async for _sse_line in _drain_sync_gen(emit_flush()):

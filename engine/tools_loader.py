@@ -112,7 +112,7 @@ def get_tools_prompt_section(
 
     Tools are declared inside <tools></tools> XML tags with one JSON object
     per line. The tool call format instructions vary by provider:
-    - "deepseek": Pure JSON array, no tags.
+    - "deepseek": DSML invoke/parameter blocks.
     - "native"/None: Tag-wrapped Hermes format.
     - "none": Schemas only, no format instructions (native API function calling).
     """
