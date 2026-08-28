@@ -787,26 +787,38 @@ def _try_browser_fallback(agent: Agent) -> str | None:
     main chat auto-switch which searches forward. Falls back to the global
     reverse pool if the role-specific pool is empty or exhausted.
 
+    Tracks failed profiles on the agent via `_fallback_tried` to prevent
+    ping-ponging between two accounts when both fail.
+
     Returns the full path to the next available profile or None if exhausted.
     """
     from engine.config import _SYSTEM as _AGENT_SYSTEM_DIR, get_available_accounts_reverse
 
     current_name = Path(agent.browser_data_dir).name if agent.browser_data_dir else ""
 
+    # Accumulate tried-and-failed profiles across recursive fallback attempts
+    if not hasattr(agent, "_fallback_tried"):
+        agent._fallback_tried: set[str] = set()
+    agent._fallback_tried.add(current_name)
+
     # Try role-specific pool first (reverse order)
     pool = get_account_pool(agent.role)
     if pool:
-        # Search pool in reverse, skipping current
+        from engine.config import is_account_exhausted, is_account_captcha_blocked
+        # Search pool in reverse, skipping tried/exhausted/captcha-blocked accounts
         for entry in reversed(pool):
-            if entry == current_name:
+            if entry in agent._fallback_tried:
+                continue
+            if is_account_exhausted(entry):
+                continue
+            if is_account_captcha_blocked(entry):
                 continue
             acct_profile = _AGENT_SYSTEM_DIR / entry
             if acct_profile.is_dir():
                 return str(acct_profile)
 
-    # Fall back to global reverse pool (highest number first, up to 5)
-    exclude = {current_name} if current_name else set()
-    for acc_name in get_available_accounts_reverse(exclude=exclude, limit=5):
+    # Fall back to global reverse pool (highest number first, up to 10)
+    for acc_name in get_available_accounts_reverse(exclude=agent._fallback_tried, limit=10):
         acct_profile = _AGENT_SYSTEM_DIR / acc_name
         if acct_profile.is_dir():
             return str(acct_profile)
@@ -880,6 +892,41 @@ async def _clear_qwen_account_settings(headers: dict[str, str], agent_id: str) -
     logger.info("Agent %s: Qwen account settings cleared (tools disabled + empty instruction)", agent_id)
 
 
+def _classify_and_mark_account_error(exc: Exception, account_name: str) -> None:
+    """Inspect an exception message and mark the account if WAF-blocked or rate-limited.
+
+    Mirrors the detection logic in engine/service.py so subagent failures
+    persist globally — preventing future agents from retrying blocked accounts.
+    """
+    msg = str(exc).lower()
+    if not account_name:
+        return
+
+    # Rate-limit patterns (same keywords as service.py defense-in-depth)
+    rate_kw = ("ratelimit", "rate_limit", "rate limit", "quota", "daily usage", "exceeded", "429")
+    if any(kw in msg for kw in rate_kw):
+        try:
+            from engine.config import mark_account_exhausted
+            mark_account_exhausted(account_name)
+            logger.warning("Subagent marked account %s as exhausted (rate-limited): %s",
+                           account_name, str(exc)[:200])
+        except Exception as e:
+            logger.error("Failed to mark account %s exhausted: %s", account_name, e)
+        return
+
+    # WAF/captcha patterns (same keywords as service.py defense-in-depth)
+    waf_kw = ("captcha", "waf", "validate", "rgv587", "blocked", "forbidden",
+              "fail_sys_user_validate", "403", "401")
+    if any(kw in msg for kw in waf_kw):
+        try:
+            from engine.config import mark_account_captcha_blocked
+            mark_account_captcha_blocked(account_name)
+            logger.warning("Subagent marked account %s as captcha/WAF-blocked: %s",
+                           account_name, str(exc)[:200])
+        except Exception as e:
+            logger.error("Failed to mark account %s captcha-blocked: %s", account_name, e)
+
+
 def _get_backend_key(model: str) -> str:
     """Map model name to its circuit breaker key."""
     from engine.config import get_model_config
@@ -939,6 +986,14 @@ async def _send_with_retry(
     backend_type = _get_backend_type(agent.model)
     logger.info("[FALLBACK-DEBUG] agent=%s retries exhausted. backend_type=%s, attempting fallback",
                 agent.id, backend_type)
+
+    # Mark the failed account globally so other agents/subagents skip it.
+    # Only for Qwen — non-Qwen backends (Gemini/Groq/DeepSeek) don't use browser accounts.
+    if backend_type == "qwen" and last_exc and agent.browser_data_dir:
+        from pathlib import Path as _Path
+        _failed_acct = _Path(agent.browser_data_dir).name
+        _classify_and_mark_account_error(last_exc, _failed_acct)
+
     # Qwen: exhaust ALL browser profiles first, THEN switch model.
     # Non-Qwen: go straight to model fallback.
     if _get_backend_type(agent.model) == "qwen":
@@ -975,6 +1030,8 @@ async def _send_with_retry(
                     text, new_pid = await _call_llm(agent, message, parent_id, is_first_turn)
                     breaker.record_success()
                     logger.info("[agent %s] Browser fallback to %s succeeded", agent.id, browser_profile)
+                    # Reset fallback tracking on success so next request starts fresh
+                    agent._fallback_tried = set()
                     return text, new_pid
                 except Exception as exc3:
                     last_exc = exc3

@@ -229,20 +229,33 @@ def get_next_account(role: str, in_use: set[str] | None = None) -> str | None:
     Searches from the back (highest number first) to avoid competing with
     main chat auto-switch which searches forward. Falls back to the global
     reverse pool if the role-specific chain is empty or exhausted.
-    Skips accounts in `in_use` set.
+    Skips accounts that are in-use, rate-limit exhausted, or captcha-blocked.
     Returns None if nothing is available.
     """
+    from engine.config import is_account_exhausted, is_account_captcha_blocked
+    from pathlib import PurePosixPath
+
+    # Normalize in_use to bare account names (callers may pass full paths)
+    _in_use_names: set[str] = set()
+    if in_use:
+        for entry in in_use:
+            _in_use_names.add(PurePosixPath(entry).name if "/" in str(entry) else entry)
+
     chain = _account_fallback_chains.get(role)
     if chain:
-        # Search role-specific chain in reverse order, skipping in-use
+        # Search role-specific chain in reverse order, skipping in-use/exhausted/blocked
         for candidate in reversed(chain):
-            if not in_use or candidate not in in_use:
-                return candidate
+            if candidate in _in_use_names:
+                continue
+            if is_account_exhausted(candidate):
+                continue
+            if is_account_captcha_blocked(candidate):
+                continue
+            return candidate
 
     # Fall back to global reverse pool (highest number first)
     from engine.config import get_available_accounts_reverse
-    exclude = set(in_use) if in_use else set()
-    for acc_name in get_available_accounts_reverse(exclude=exclude, limit=5):
+    for acc_name in get_available_accounts_reverse(exclude=_in_use_names, limit=5):
         return acc_name
 
     return None
