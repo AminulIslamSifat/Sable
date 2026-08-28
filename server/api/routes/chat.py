@@ -23,6 +23,39 @@ from connectors.deepseek.client import get_client as get_deepseek_client
 
 _skill_engine: SkillEngine | None = None
 
+
+def _reconstruct_message_content(msg: dict[str, Any]) -> str:
+    """Reconstruct full message content including skill event outputs.
+
+    For token counting, each assistant message's effective context includes
+    not just the text response but also all tool call results that were fed
+    back to the LLM. This rebuilds that full content from stored skill_events.
+    """
+    base_content = msg.get("content") or ""
+    events = msg.get("skill_events")
+    if not events:
+        return base_content
+
+    # Build tool feedback from skill events (same format as live feedback)
+    tool_text = build_tool_feedback(events)
+    if tool_text:
+        return f"{base_content}\n\n{tool_text}" if base_content else tool_text
+    return base_content
+
+
+def _load_history_with_skills(chat_id: str) -> list[dict[str, str]]:
+    """Load conversation history with skill event content for token counting."""
+    msgs = get_messages(chat_id, include_skill_events=True)
+    history = []
+    for m in msgs:
+        if m["role"] not in ("user", "assistant"):
+            continue
+        content = _reconstruct_message_content(m)
+        if content:
+            history.append({"role": m["role"], "content": content})
+    return history
+
+
 def _get_skill_engine() -> SkillEngine:
     """Lazy singleton — avoids re-discovering skills on every request."""
     global _skill_engine
@@ -853,8 +886,7 @@ async def chat(request: ChatRequest):
         _db_history = None
         if not _ephemeral and active_chat_id:
             try:
-                _db_msgs = get_messages(active_chat_id)
-                _db_history = [{"role": m["role"], "content": m["content"]} for m in _db_msgs if m["role"] in ("user", "assistant") and m["content"]]
+                _db_history = _load_history_with_skills(active_chat_id)
             except Exception:
                 pass
         _chat_kwargs: dict[str, Any] = dict(
@@ -1233,8 +1265,7 @@ async def chat(request: ChatRequest):
                     _db_history_s = None
                     if not _ephemeral and round_index == 0 and active_chat_id:
                         try:
-                            _db_msgs_s = get_messages(active_chat_id)
-                            _db_history_s = [{"role": m["role"], "content": m["content"]} for m in _db_msgs_s if m["role"] in ("user", "assistant") and m["content"]]
+                            _db_history_s = _load_history_with_skills(active_chat_id)
                         except Exception:
                             pass
                     _stream_kwargs: dict[str, Any] = dict(
@@ -1292,9 +1323,14 @@ async def chat(request: ChatRequest):
                     round_event_source = _connector.stream_chat(**_stream_kwargs)
                 elif scraper_enabled:
                     # --- Token counting: prompt side (scraper) ---
+                    # Load DB history on every round so cumulative context is counted.
                     try:
+                        _scraper_history = []
+                        if active_chat_id:
+                            _scraper_history = _load_history_with_skills(active_chat_id)
                         _round_prompt_tokens = count_prompt_tokens(
                             system_instruction=_system_instruction_for_tokens,
+                            history=_scraper_history,
                             user_message=current_message,
                             memory_context=_memory_context if round_index == 0 else "",
                         )
@@ -1313,11 +1349,13 @@ async def chat(request: ChatRequest):
                     # active_chat_id is the local Sable UUID.
                     _qwen_chat_id = _upstream_session_id or active_chat_id
                     # --- Token counting: prompt side (Qwen) ---
+                    # On round > 0, Qwen's server-side session accumulates context
+                    # but we can't inspect it directly. Reconstruct from DB history
+                    # so prompt_tokens reflects the actual growing context window.
                     try:
                         _qwen_history = []
-                        if round_index == 0 and active_chat_id:
-                            _qwen_msgs = get_messages(active_chat_id)
-                            _qwen_history = [{"role": m["role"], "content": m["content"]} for m in _qwen_msgs if m["role"] in ("user", "assistant") and m["content"]]
+                        if active_chat_id:
+                            _qwen_history = _load_history_with_skills(active_chat_id)
                         _round_prompt_tokens = count_prompt_tokens(
                             system_instruction=_system_instruction_for_tokens,
                             history=_qwen_history,
