@@ -128,11 +128,31 @@ def get_tools_prompt_section(
     lines.append("")
 
     if provider == "deepseek":
-        # DeepSeek: pure JSON array, absolutely no tag references
-        lines.append("CRITICAL: Output tool calls as a plain JSON array at the END of your response.")
-        lines.append('Single: [{"name": "<function-name>", "arguments": <args-json-object>}]')
-        lines.append('Multiple: [{"name": "tool_a", "arguments": {...}}, {"name": "tool_b", "arguments": {...}}]')
-        lines.append("ONE array per response. No XML tags, no wrappers, no custom markup. Just clean JSON.")
+        # DeepSeek V4 DSML format — native self-hosted tool calling
+        _O = "<\uff5cDSML\uff5ctool_calls>"
+        _C = "</\uff5cDSML\uff5ctool_calls>"
+        _I = "<\uff5cDSML\uff5cinvoke"
+        _P = "<\uff5cDSML\uff5cparameter"
+        lines.append("You can invoke tools by writing a DSML block like the following:")
+        lines.append(_O)
+        lines.append(f'  {_I} name="$TOOL_NAME">')
+        lines.append(f'    {_P} name="$PARAMETER_NAME" string="true|false">$VALUE</\uff5cDSML\uff5cparameter>')
+        lines.append(f"  </\uff5cDSML\uff5cinvoke>")
+        lines.append(_C)
+        lines.append("")
+        lines.append('String parameters: set string="true" and pass the raw text value.')
+        lines.append('Non-string parameters (numbers, booleans, arrays, objects): set string="false" and pass JSON.')
+        lines.append("")
+        lines.append("Example:")
+        lines.append(_O)
+        lines.append(f'  {_I} name="execute_command">')
+        lines.append(f'    {_P} name="command" string="true">ls -la</\uff5cDSML\uff5cparameter>')
+        lines.append(f'    {_P} name="timeout" string="false">30</\uff5cDSML\uff5cparameter>')
+        lines.append(f"  </\uff5cDSML\uff5cinvoke>")
+        lines.append(_C)
+        lines.append("")
+        lines.append("You MUST strictly follow the tool name and parameter schemas defined above.")
+        lines.append("Output ALL tool calls inside ONE DSML block. Multiple invokes are allowed inside one block.")
     elif provider == "none":
         # Native API function calling — schemas are sufficient
         lines.append("Use the function schemas above via native API function calling.")

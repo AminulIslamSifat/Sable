@@ -8,15 +8,18 @@ Input event types from connectors:
     raw_function_call                      — native API tool calls (Gemini, OpenAI, etc.)
 
 Output event types (universal):
-    {"type": "answer", "text": "..."}                          — clean text (<tool_call> tags stripped)
+    {"type": "answer", "text": "..."}                          — clean text (tool tags stripped)
     {"type": "thinking", "text": "..."}                        — reasoning (passed through)
     {"type": "function_call", "name": "...", "args": {...}}    — canonical tool call
     {"type": "done", ...}                                      — stream complete
     {"type": "error", ...}                                     — error
 
-The normalizer also extracts <tool_call>...</tool_call> tags from answer text streams,
-parses their JSON content, and emits function_call events instead of passing the
-raw tag text through. This replaces SkillParser for tool call extraction entirely.
+Supported tool call formats (selected by *provider* parameter):
+    - Default/Hermes:  <tool_call>{JSON}</tool_call>
+    - DeepSeek DSML:   <｜DSML｜tool_calls><｜DSML｜invoke name="...">...</｜DSML｜invoke></｜DSML｜tool_calls>
+    - Native API:      raw_function_call events from Gemini/OpenAI connectors
+
+All formats are converted to the same canonical function_call dict.
 """
 from __future__ import annotations
 
@@ -29,7 +32,8 @@ from typing import Any, AsyncGenerator
 
 logger = logging.getLogger(__name__)
 
-# Regex to find complete <tool_call>...</tool_call> tags in text
+# Regex to find complete <tool_call>...</tool_call> tags in text.
+# Covers both Sable custom and native Hermes format (same tags).
 _ACTION_RE = re.compile(r"<\s*tool_call\s*>(.*?)<\s*/\s*tool_call\s*>", re.DOTALL | re.IGNORECASE)
 
 # Fallback: catch bare JSON tool calls when models drop the <tool_call> wrapper.
@@ -71,7 +75,10 @@ def _parse_json_action(content: str) -> dict[str, Any] | None:
 
 
 def _extract_actions_from_text(text: str) -> tuple[str, list[dict[str, Any]]]:
-    """Extract <tool_call> tags from text, return cleaned text + function_call events."""
+    """Extract tool call tags from text, return cleaned text + function_call events.
+
+    Handles both Sable custom format and native Hermes format.
+    """
     calls: list[dict[str, Any]] = []
 
     def _replace(match: re.Match) -> str:
@@ -86,21 +93,191 @@ def _extract_actions_from_text(text: str) -> tuple[str, list[dict[str, Any]]]:
     return cleaned, calls
 
 
+# --- DSML (DeepSeek Markup Language) tool call parser ---
+# Handles V4 format (with or without leading ｜ before DSML):
+#   <｜DSML｜tool_calls>  OR  <DSML｜tool_calls>
+#     <｜DSML｜invoke name="fn">
+#       <｜DSML｜parameter name="p" string="true">val</｜DSML｜parameter>
+#     </｜DSML｜invoke>
+#   </｜DSML｜tool_calls>
+#
+# Models sometimes drop the leading ｜, so we make it optional.
+
+# Optional leading fullwidth bar: matches both <｜DSML｜ and <DSML｜
+_D = r'\uff5c?'  # optional ｜
+
+_DSML_OPEN_RE = re.compile(r'<\uff5c?DSML\uff5ctool_calls>')
+_DSML_CLOSE_RE = re.compile(r'</\uff5c?DSML\uff5ctool_calls>')
+
+# For streaming buffer detection — exact strings for both variants
+_DSML_OPEN_VARIANTS = ["<\uff5cDSML\uff5ctool_calls>", "<DSML\uff5ctool_calls>"]
+_DSML_CLOSE_VARIANTS = ["</\uff5cDSML\uff5ctool_calls>", "</DSML\uff5ctool_calls>"]
+
+_DSML_INVOKE_RE = re.compile(
+    r'<\uff5c?DSML\uff5cinvoke\s+name="([^"]+)">(.*?)</\uff5c?DSML\uff5cinvoke>',
+    re.DOTALL,
+)
+
+_DSML_PARAM_RE = re.compile(
+    r'<\uff5c?DSML\uff5cparameter\s+name="([^"]+)"\s+string="(true|false)">(.*?)</\uff5c?DSML\uff5cparameter>',
+    re.DOTALL,
+)
+
+
+def _parse_dsml_block(block_text: str) -> list[dict[str, Any]]:
+    """Parse a complete DSML tool_calls block into canonical function_call dicts."""
+    calls: list[dict[str, Any]] = []
+    for inv_match in _DSML_INVOKE_RE.finditer(block_text):
+        fn_name = inv_match.group(1)
+        params_text = inv_match.group(2)
+        args: dict[str, Any] = {}
+        for p_match in _DSML_PARAM_RE.finditer(params_text):
+            pname = p_match.group(1)
+            is_string = p_match.group(2) == "true"
+            raw_val = p_match.group(3).strip()
+            if is_string:
+                args[pname] = raw_val
+            else:
+                try:
+                    args[pname] = json.loads(raw_val)
+                except (json.JSONDecodeError, TypeError):
+                    args[pname] = raw_val
+        calls.append({"type": "function_call", "name": fn_name, "args": args})
+    return calls
+
+
+def _extract_dsml_from_text(text: str) -> tuple[str, list[dict[str, Any]]]:
+    """Extract all complete DSML tool_calls blocks from text.
+
+    Returns (cleaned_text_without_blocks, list_of_function_calls).
+    """
+    calls: list[dict[str, Any]] = []
+
+    def _replace(match: re.Match) -> str:
+        inner = match.group(0)
+        parsed = _parse_dsml_block(inner)
+        if parsed:
+            calls.extend(parsed)
+            return ""
+        return inner  # malformed — leave as-is
+
+    # Match both <｜DSML｜...> and <DSML｜...> variants
+    pattern = r'<\uff5c?DSML\uff5ctool_calls>.*?</\uff5c?DSML\uff5ctool_calls>'
+    cleaned = re.sub(pattern, _replace, text, flags=re.DOTALL)
+    return cleaned, calls
+
+
+# --- Legacy canonical XML invoke/parameter parser (fallback) ---
+# Catches models that drift from DSML to plain XML:
+#   <tool_calls>
+#     <invoke name="fn">
+#       <parameter name="p">value</parameter>
+#     </invoke>
+#   </tool_calls>
+# Also handles the bare <invoke>...</invoke> without outer wrapper.
+
+_LEGACY_TOOL_CALLS_RE = re.compile(
+    r"<\s*tool_calls\s*>(.*?)<\s*/\s*tool_calls\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+_LEGACY_INVOKE_RE = re.compile(
+    r'<\s*invoke\s+name="([^"]+)">(.*?)<\s*/\s*invoke\s*>',
+    re.DOTALL | re.IGNORECASE,
+)
+
+_LEGACY_PARAM_RE = re.compile(
+    r'<\s*parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?>(.*?)<\s*/\s*parameter\s*>',
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _parse_legacy_invoke(invoke_text: str) -> list[dict[str, Any]]:
+    """Parse legacy XML invoke/parameter blocks into canonical function_call dicts.
+
+    Handles both typed (string="true|false") and untyped parameter values.
+    Untyped values are attempted as JSON first, falling back to raw string.
+    """
+    calls: list[dict[str, Any]] = []
+    for inv_match in _LEGACY_INVOKE_RE.finditer(invoke_text):
+        fn_name = inv_match.group(1)
+        params_text = inv_match.group(2)
+        args: dict[str, Any] = {}
+        for p_match in _LEGACY_PARAM_RE.finditer(params_text):
+            pname = p_match.group(1)
+            type_hint = p_match.group(2)  # may be None
+            raw_val = p_match.group(3).strip()
+            if type_hint == "true":
+                args[pname] = raw_val
+            elif type_hint == "false":
+                try:
+                    args[pname] = json.loads(raw_val)
+                except (json.JSONDecodeError, TypeError):
+                    args[pname] = raw_val
+            else:
+                # No type hint — try JSON, fall back to string
+                try:
+                    args[pname] = json.loads(raw_val)
+                except (json.JSONDecodeError, TypeError):
+                    args[pname] = raw_val
+        calls.append({"type": "function_call", "name": fn_name, "args": args})
+    return calls
+
+
+def _extract_legacy_from_text(text: str) -> tuple[str, list[dict[str, Any]]]:
+    """Extract legacy XML tool_calls/invoke blocks from text.
+
+    Returns (cleaned_text, list_of_function_calls).
+    Used as a fallback when DSML parsing finds nothing.
+    """
+    calls: list[dict[str, Any]] = []
+
+    def _replace(match: re.Match) -> str:
+        inner = match.group(1)
+        parsed = _parse_legacy_invoke(inner)
+        if parsed:
+            calls.extend(parsed)
+            return ""
+        return match.group(0)
+
+    cleaned = _LEGACY_TOOL_CALLS_RE.sub(_replace, text)
+
+    # Also catch bare <invoke> blocks not wrapped in <tool_calls>
+    if not calls:
+        bare_calls = _parse_legacy_invoke(text)
+        if bare_calls:
+            calls.extend(bare_calls)
+            cleaned = _LEGACY_INVOKE_RE.sub("", cleaned)
+
+    return cleaned, calls
+
+
+
+
 async def normalize_stream(
     stream: AsyncGenerator[dict[str, Any], None],
+    provider: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Wrap ANY connector stream and produce universal output events.
+
+    Args:
+        stream: Raw event stream from a connector.
+        provider: Backend name ("deepseek", "gemini", etc.) to select
+                  tool call extraction strategy.  None = default Hermes format.
 
     Handles:
     - Native API function calls -> canonical function_call
     - <tool_call> tags in answer text -> extract, parse JSON, emit function_call
+    - DeepSeek DSML blocks -> extract invoke/parameter, emit function_call
     - OpenAI-compatible incremental tool_calls -> accumulate, flush on done
     - Everything else -> pass through unchanged
     """
+    _use_dsml = provider == "deepseek"
+
     # --- State for OpenAI-compatible incremental tool calls ---
     _tc_accum: dict[int, dict[str, Any]] = {}
 
-    # --- State for partial <tool_call> tag buffering across chunks ---
+    # --- State for partial tag buffering across chunks ---
     _action_buffer = ""
     _in_action = False
     _pending_prefix = ""
@@ -160,20 +337,41 @@ async def normalize_stream(
                 text = _pending_prefix + text
 
                 # After reassembly, strip orphaned closing tags that formed
-                # outside a tool_call block (e.g. Qwen splits closing tag across
-                # chunks and we're not currently inside a tool_call block)
+                # outside a tool block (e.g. Qwen splits closing tag across
+                # chunks and we're not currently inside a tool block)
                 if not _in_action:
-                    close_tag = "</" + "tool_call>"
-                    if close_tag in text:
-                        text = text.replace(close_tag, "")
+                    if _use_dsml:
+                        for _cv in _DSML_CLOSE_VARIANTS:
+                            if _cv in text:
+                                text = text.replace(_cv, "")
+                    else:
+                        close_tag = "</" + "tool_call>"
+                        if close_tag in text:
+                            text = text.replace(close_tag, "")
 
                 _pending_prefix = ""
 
-            # Handle partial <tool_call> tags spanning chunks
+            # Handle partial tool tags spanning chunks
             if _in_action:
                 _action_buffer += text
-                # Search for closing tag, but only accept if inner JSON is complete
-                _close_tag = "</" + "tool_call>"
+
+                # Select closing tag and extraction function based on provider
+                if _use_dsml:
+                    # Try both close tag variants
+                    _close_tag = None
+                    for _cv in _DSML_CLOSE_VARIANTS:
+                        if _cv in _action_buffer:
+                            _close_tag = _cv
+                            break
+                    if not _close_tag:
+                        _close_tag = _DSML_CLOSE_VARIANTS[0]  # default
+                    _extract_fn = _extract_dsml_from_text
+                    _check_complete = None  # DSML uses XML structure, not JSON completeness
+                else:
+                    _close_tag = "</" + "tool_call>"
+                    _extract_fn = _extract_actions_from_text
+                    _check_complete = json_structurally_complete
+
                 _search_from = 0
                 _accepted = False
                 while True:
@@ -181,19 +379,20 @@ async def normalize_stream(
                     if close_idx == -1:
                         break
                     inner = _action_buffer[:close_idx]
-                    if json_structurally_complete(inner):
+                    # For Hermes: validate JSON completeness; for DSML: accept on closing tag
+                    if _check_complete is None or _check_complete(inner):
                         full_tag = _action_buffer[:close_idx + len(_close_tag)]
                         remainder = _action_buffer[close_idx + len(_close_tag):]
                         _action_buffer = ""
                         _in_action = False
                         _accepted = True
 
-                        _, calls = _extract_actions_from_text(full_tag)
+                        _, calls = _extract_fn(full_tag)
                         for fc in calls:
                             yield fc
 
                         if remainder:
-                            cleaned, more_calls = _extract_actions_from_text(remainder)
+                            cleaned, more_calls = _extract_fn(remainder)
                             for fc in more_calls:
                                 yield fc
                             if cleaned.strip():
@@ -203,9 +402,10 @@ async def normalize_stream(
                     _search_from = close_idx + len(_close_tag)
                 continue
 
-            # Check if this chunk starts/contains a <tool_call> tag
-            if "<tool_call>" in text:
-                before, _, after = text.partition("<tool_call>")
+            # Check if this chunk starts/contains a    <tool_call>  tag
+            _open_tag = "<" + "tool_call>"
+            if _open_tag in text:
+                before, _, after = text.partition(_open_tag)
 
                 if before.strip():
                     yield {"type": "answer", "text": before}
@@ -238,15 +438,69 @@ async def normalize_stream(
                     _in_action = True
                 continue
 
-            # No <tool_call> tags — check for complete tags via regex
-            cleaned, calls = _extract_actions_from_text(text)
+            # --- DSML extraction (DeepSeek) ---
+            # Check for any DSML open tag variant
+            _dsml_open_found = None
+            if _use_dsml:
+                for _ov in _DSML_OPEN_VARIANTS:
+                    if _ov in text:
+                        _dsml_open_found = _ov
+                        break
+            if _dsml_open_found:
+                before_dsml, _, after_dsml = text.partition(_dsml_open_found)
+                if before_dsml.strip():
+                    yield {"type": "answer", "text": before_dsml}
+
+                # Buffer until we find the closing tag
+                full_block = _dsml_open_found + after_dsml
+                # Find matching close tag variant
+                _dsml_close_found = None
+                for _cv in _DSML_CLOSE_VARIANTS:
+                    if _cv in full_block:
+                        _dsml_close_found = _cv
+                        break
+                if _dsml_close_found:
+                    end_idx = full_block.find(_dsml_close_found) + len(_dsml_close_found)
+                    block = full_block[:end_idx]
+                    remainder = full_block[end_idx:]
+                    _, dsml_calls = _extract_dsml_from_text(block)
+                    for fc in dsml_calls:
+                        yield fc
+                    if remainder:
+                        cleaned_r, more_calls = _extract_dsml_from_text(remainder)
+                        for fc in more_calls:
+                            yield fc
+                        if cleaned_r.strip():
+                            yield {"type": "answer", "text": cleaned_r}
+                else:
+                    # Incomplete DSML block — buffer it
+                    _action_buffer = full_block
+                    _in_action = True
+                continue
+
+            # No tool tags found — check for complete tags via regex
+            if _use_dsml:
+                cleaned, calls = _extract_dsml_from_text(text)
+                # Fallback: try legacy XML invoke/parameter if DSML found nothing
+                if not calls:
+                    cleaned, calls = _extract_legacy_from_text(cleaned)
+            else:
+                cleaned, calls = _extract_actions_from_text(text)
             for fc in calls:
                 yield fc
 
             # Check if this chunk ends with a partial tag prefix
-            partial = _partial_tag_suffix(cleaned, "<tool_call>")
-            if not partial:
-                partial = _partial_tag_suffix(cleaned, "</tool_call>")
+            if _use_dsml:
+                partial = None
+                for _v in _DSML_OPEN_VARIANTS + _DSML_CLOSE_VARIANTS:
+                    p = _partial_tag_suffix(cleaned, _v)
+                    if p:
+                        partial = p
+                        break
+            else:
+                partial = _partial_tag_suffix(cleaned, "<" + "tool_call>")
+                if not partial:
+                    partial = _partial_tag_suffix(cleaned, "</" + "tool_call>")
             if partial:
                 _pending_prefix = partial
                 cleaned = cleaned[: -len(partial)]
@@ -258,7 +512,8 @@ async def normalize_stream(
         # -- Done: flush accumulated state --
         if etype == "done":
             if _in_action and _action_buffer:
-                logger.warning("Discarding incomplete <tool_call> buffer at stream end: %s", _action_buffer[:100])
+                fmt = "DSML" if _use_dsml else "tool_call"
+                logger.warning("Discarding incomplete %s buffer at stream end: %s", fmt, _action_buffer[:100])
                 _action_buffer = ""
                 _in_action = False
 
