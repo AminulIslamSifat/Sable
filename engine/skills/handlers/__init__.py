@@ -71,6 +71,7 @@ HANDLER_MAP: dict[str, object] = {
     "run_simulacra": handle_run_simulacra,
     "tracknote": handle_tracknote,
     "memory": handle_memory,
+    "memory_manager": handle_memory,
     "generate_image": handle_generate_image,
     "mcp_call": handle_mcp_call,
 }
