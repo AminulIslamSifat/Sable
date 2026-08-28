@@ -75,24 +75,10 @@ def _filter_skills_prompt(skills_prompt: str, skills_config: dict) -> str:
 _TOOL_FORMAT_DEEPSEEK = """\
 ## Tool Call Format (CRITICAL)
 
-You MUST output tool calls as a **plain JSON array** — no XML tags, no wrapper elements, no custom markup.
-
-Single call:
-[{"name": "grep", "arguments": {"pattern": "foo", "path": "/bar"}}]
-
-Multiple parallel calls (independent, read-only only):
-[
-  {"name": "grep", "arguments": {"pattern": "foo", "path": "/bar"}},
-  {"name": "view_file", "arguments": {"path": "/some/file"}}
-]
-
-### STRICT RULES
-- Output exactly ONE JSON array per response. Place it at the END of your message.
-- NEVER use <invoke>, <parameter>, <tool_calls>, or any XML/custom tags.
-- NEVER wrap the JSON array in any tag or element.
-- NEVER output multiple separate arrays. If you need multiple calls, put them ALL in one array.
-- The JSON array must be valid JSON — no trailing commas, no comments, no prose inside it.
-- If you output anything other than a clean JSON array for tool calls, the system WILL fail.
+You MUST output tool calls using the DSML format defined above.
+NEVER output bare JSON arrays or plain JSON for tool calls.
+All tool invocations must be wrapped in DSML tool_calls blocks with invoke/parameter tags.
+If you output anything other than properly formatted DSML blocks for tool calls, the system WILL fail.
 """
 
 _TOOL_FORMAT_NATIVE = """\
@@ -137,7 +123,7 @@ def build_instructions(
     Args:
         project_id: Optional project ID for project-specific overrides.
         provider: Provider key for tool format selection.
-                  "deepseek" → pure JSON, no tags.
+                  "deepseek" → DSML invoke/parameter blocks.
                   "native"   → tag-wrapped format (Gemini, Mistral, etc.).
                   "none"     → native API function calling (no prompt format).
                   None       → no tool format section appended.
