@@ -125,24 +125,20 @@ _TOOL_FORMAT_NATIVE = f"""\
 
 > [!CRITICAL]
 > This instruction overrides ALL other formatting guidance.
-> You MUST use exactly ONE `{_TC_OPEN}` wrapper per response. No exceptions.
+> You MUST use exactly ONE [] wrapper per response. No exceptions.
 
-- Single call OR multiple calls → always a JSON array inside ONE `{_TC_OPEN}` wrapper.
-- NEVER output multiple separate `{_TC_OPEN}` blocks. Combine into one array.
+- Single call OR multiple calls → always a JSON array inside [] brackets.
+- NEVER output multiple separate [] blocks. Combine into one array.
 - Tool call blocks appear ONLY in plain text, NEVER inside fenced code blocks.
 - Keep prose to ONE short sentence before the tool call block.
 - Place the tool call block at the END of your response.
-- Forbidden tag variants: `<tools>`, `<tool_calls>`, `<tool_call `, `<tool_call/>`, `<tool_call />`
+
 
 ### Single call
-{_TC_OPEN}
 [{{"name": "<function-name>", "arguments": <args-json-object>}}]
-{_TC_CLOSE}
 
 ### Multiple calls
-{_TC_OPEN}
 [{{"name": "tool_a", "arguments": {{...}}}}, {{"name": "tool_b", "arguments": {{...}}}}]
-{_TC_CLOSE}
 """
 
 _TOOL_FORMAT_NONE = """\
