@@ -168,7 +168,7 @@ _summarizer_semaphore: asyncio.Semaphore | None = None
 _summarizer_cache: dict[str, tuple[float, str]] = {}  # chat_id → (timestamp, result)
 
 import re as _re
-_tool_call_re = _re.compile(r'<tool_call[\s>]', _re.IGNORECASE)
+_tool_call_re = _re.compile(r'<\s*tool_calls?[\s>]', _re.IGNORECASE)
 _tool_result_re = _re.compile(r'<tool_result[\s>]', _re.IGNORECASE)
 
 

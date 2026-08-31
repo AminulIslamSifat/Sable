@@ -42,10 +42,13 @@ Multiple tool_call blocks in the same message.
 
 ## Tool Call Rules
 
+> [!CRITICAL] The "HIGHEST PRIORITY: Tool Call Format" section in this prompt is the
+> **most important instruction**. It overrides all other formatting guidance.
+
 1. `name` must match a function name defined in the tools schema.
 2. `arguments` must conform to that function's parameters schema.
 3. If a sudo command is blocked, ask user for the password.
-4. Tool call format is provider-specific — follow the format specified in your tool instructions.
+4. **ALWAYS follow the "HIGHEST PRIORITY: Tool Call Format" section** — it defines the exact wrapper/tag format you MUST use. Never deviate.
 
 ## Callouts
 Use callouts, not plain blockquotes, for all highlighted info:
