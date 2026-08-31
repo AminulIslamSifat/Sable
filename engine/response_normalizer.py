@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 # Regex to find complete <tool_call>...</tool_call> tags in text.
 # Covers both Sable custom and native Hermes format (same tags).
-_ACTION_RE = re.compile(r"<\s*tool_call\s*>(.*?)<\s*/\s*tool_call\s*>", re.DOTALL | re.IGNORECASE)
+_ACTION_RE = re.compile(r"<\s*tool_calls?\s*>(.*?)<\s*/\s*tool_calls?\s*>", re.DOTALL | re.IGNORECASE)
 
 # Fallback: catch bare JSON tool calls when models drop the <tool_call> wrapper.
 # Matches standalone JSON objects with a "name" key at the top level.

@@ -752,7 +752,7 @@ class MainChatGuard:
                 self._malformed_warned = True
                 return self._get_malformed_warning("json_outside")
         elif has_open and has_close:
-            stripped = _re.sub(r"<\s*tool_call\s*>.*?<\s*/\s*tool_call\s*>", "", raw_text, flags=_re.S | _re.I)
+            stripped = _re.sub(r"<\s*tool_calls?\s*>.*?<\s*/\s*tool_calls?\s*>", "", raw_text, flags=_re.S | _re.I)
             if tool_json_pat.search(stripped):
                 self._malformed_warned = True
                 return self._get_malformed_warning("json_outside")

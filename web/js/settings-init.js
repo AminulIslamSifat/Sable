@@ -380,7 +380,7 @@
           body: JSON.stringify({
             message,
             chat_id: streamChatId,
-            parent_id: parentId,
+            parent_id: parentId != null ? String(parentId) : undefined,
             files: filesPayload.length ? filesPayload : undefined,
             model: selectedModel,
             thinking_mode: selectedThinkingMode,
@@ -491,7 +491,7 @@
           body: JSON.stringify({
             message,
             chat_id: streamChatId,
-            parent_id: parentId,
+            parent_id: parentId != null ? String(parentId) : undefined,
             model: selectedModel,
             thinking_mode: selectedThinkingMode,
             stream: true,

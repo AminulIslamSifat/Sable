@@ -392,8 +392,10 @@ class BrowserManager:
         SETTINGS_URL = "https://chat.qwen.ai/api/v2/users/user/settings/update"
 
         # Build instructions using shared builder (same as DeepSeek/all API connectors)
+        # provider="native" ensures Qwen gets the tool call format primer + reinforcement.
+        # Without this, provider=None skips all format instructions entirely.
         from connectors.common.instruction_builder import build_instructions
-        instructions = build_instructions(project_id=project_id)
+        instructions = build_instructions(project_id=project_id, provider="native")
 
         MAX_CHARS = 40960
         if len(instructions) > MAX_CHARS:
