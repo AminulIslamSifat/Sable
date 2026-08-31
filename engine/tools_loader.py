@@ -108,13 +108,17 @@ def get_tools_prompt_section(
     disabled: list[str] | None = None,
     provider: str | None = None,
 ) -> str:
-    """Generate tools reference section.
+    """Generate tools schema section ONLY.
 
-    Tools are declared inside <tools></tools> XML tags with one JSON object
-    per line. The tool call format instructions vary by provider:
-    - "deepseek": DSML invoke/parameter blocks.
-    - "native"/None: Tag-wrapped Hermes format.
-    - "none": Schemas only, no format instructions (native API function calling).
+    Returns just the <tools>...</tools> block with function schemas.
+    Tool call FORMAT instructions are handled by instruction_builder.py
+    which injects them with proper dual-placement weighting (primer before
+    schemas + reinforcement at end of prompt). Do NOT add format instructions
+    here — they would land after schemas and dilute the weighted placement.
+
+    Args:
+        disabled: Tool keys to exclude.
+        provider: Kept for API compat but no longer affects output.
     """
     disabled = disabled or []
     schemas = get_all_tool_schemas(disabled)
@@ -125,50 +129,5 @@ def get_tools_prompt_section(
     for s in schemas:
         lines.append(json.dumps(s, ensure_ascii=False))
     lines.append("</tools>")
-    lines.append("")
-
-    if provider == "deepseek":
-        # DeepSeek V4 DSML format — native self-hosted tool calling
-        _O = "<\uff5cDSML\uff5ctool_calls>"
-        _C = "</\uff5cDSML\uff5ctool_calls>"
-        _I = "<\uff5cDSML\uff5cinvoke"
-        _P = "<\uff5cDSML\uff5cparameter"
-        lines.append("You can invoke tools by writing a DSML block like the following:")
-        lines.append(_O)
-        lines.append(f'  {_I} name="$TOOL_NAME">')
-        lines.append(f'    {_P} name="$PARAMETER_NAME" string="true|false">$VALUE</\uff5cDSML\uff5cparameter>')
-        lines.append(f"  </\uff5cDSML\uff5cinvoke>")
-        lines.append(_C)
-        lines.append("")
-        lines.append('String parameters: set string="true" and pass the raw text value.')
-        lines.append('Non-string parameters (numbers, booleans, arrays, objects): set string="false" and pass JSON.')
-        lines.append("")
-        lines.append("Example:")
-        lines.append(_O)
-        lines.append(f'  {_I} name="execute_command">')
-        lines.append(f'    {_P} name="command" string="true">ls -la</\uff5cDSML\uff5cparameter>')
-        lines.append(f'    {_P} name="timeout" string="false">30</\uff5cDSML\uff5cparameter>')
-        lines.append(f"  </\uff5cDSML\uff5cinvoke>")
-        lines.append(_C)
-        lines.append("")
-        lines.append("You MUST strictly follow the tool name and parameter schemas defined above.")
-        lines.append("Output ALL tool calls inside ONE DSML block. Multiple invokes are allowed inside one block.")
-    elif provider == "none":
-        # Native API function calling — schemas are sufficient
-        lines.append("Use the function schemas above via native API function calling.")
-    else:
-        # Default: Hermes tag format
-        TC_OPEN = "<" + "tool_call" + ">"
-        TC_CLOSE = "</" + "tool_call" + ">"
-        lines.append("CRITICAL: You MUST use exactly ONE opening tag and ONE closing tag per response.")
-        lines.append("Single or multiple calls — always a JSON array inside one wrapper:")
-        lines.append(TC_OPEN)
-        lines.append('[{"name": "<function-name>", "arguments": <args-json-object>}]')
-        lines.append(TC_CLOSE)
-        lines.append("")
-        lines.append(TC_OPEN)
-        lines.append('[{"name": "tool_a", "arguments": {...}}, {"name": "tool_b", "arguments": {...}}]')
-        lines.append(TC_CLOSE)
-        lines.append("NEVER output multiple separate blocks. One wrapper only. Always.")
 
     return "\n".join(lines)

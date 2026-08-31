@@ -350,33 +350,34 @@ class SkillParser:
     for the engine to dispatch through the middleware pipeline.
     """
 
-    _ACTION_OPEN = re.compile(r"<\s*tool_call\s*>", re.I)
-    _ACTION_CLOSE = re.compile(r"<\s*/\s*tool_call\s*>", re.I)
+    _ACTION_OPEN = re.compile(r"<\s*tool_calls?\s*>", re.I)
+    _ACTION_CLOSE = re.compile(r"<\s*/\s*tool_calls?\s*>", re.I)
     _TOOL_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
 
     # DSML (DeepSeek Markup Language) patterns — tolerates missing leading ｜,
-    # underscore variants (dsml_tool_calls), and mixed delimiters
-    _DSML_OPEN = re.compile(r"<[｜]?DSML[｜_]tool_calls>", re.I)
-    _DSML_CLOSE = re.compile(r"</[｜]?DSML[｜_]tool_calls>", re.I)
+    # underscore variants (dsml_tool_calls), ASCII pipe |, and mixed delimiters.
+    # DeepSeek sometimes uses ASCII | (U+007C) instead of fullwidth ｜ (U+FF5C).
+    _DSML_OPEN = re.compile(r"<[｜|_]?DSML[｜_|]tool_calls\s*>", re.I)
+    _DSML_CLOSE = re.compile(r"</[｜|_]?DSML[｜_|]tool_calls\s*>", re.I)
     _DSML_INVOKE_RE = re.compile(
-        r'<[｜]?DSML[｜]invoke\s+name="([^"]+)">(.*?)</[｜]?DSML[｜]invoke>',
+        r'<[｜|_]?DSML[｜|_]invoke\s+name="([^"]+)"\s*>(.*?)</[｜|_]?DSML[｜|_]invoke\s*>',
         re.DOTALL,
     )
     _DSML_PARAM_RE = re.compile(
-        r'<[｜]?DSML[｜]parameter\s+name="([^"]+)"\s+string="(true|false)">(.*?)</[｜]?DSML[｜]parameter>',
+        r'<[｜|_]?DSML[｜|_]parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>(.*?)</[｜|_]?DSML[｜|_]parameter\s*>',
         re.DOTALL,
     )
     # Legacy XML invoke/parameter (Qwen3 XML fallback, older DeepSeek drift)
     _LEGACY_INVOKE_RE = re.compile(
-        r'<invoke\s+name="([^"]+)">(.*?)</invoke>',
+        r'<invoke\s+name="([^"]+)"\s*>(.*?)</invoke\s*>',
         re.DOTALL,
     )
     _LEGACY_PARAM_RE = re.compile(
-        r'<parameter\s+name="([^"]+)"(?:\s+string="(?:true|false)")?\s*>(.*?)</parameter>',
+        r'<parameter\s+name="([^"]+)"(?:\s+string="(?:true|false)")?\s*>(.*?)</parameter\s*>',
         re.DOTALL,
     )
-    _LEGACY_BLOCK_OPEN = re.compile(r"<tool_calls>", re.I)
-    _LEGACY_BLOCK_CLOSE = re.compile(r"</tool_calls>", re.I)
+    _LEGACY_BLOCK_OPEN = re.compile(r"<tool_calls\s*>", re.I)
+    _LEGACY_BLOCK_CLOSE = re.compile(r"</tool_calls\s*>", re.I)
 
     def __init__(self, known_tags: tuple[str, ...] | None = None) -> None:
         self._known_tags = set(known_tags or KNOWN_TAGS)
@@ -412,11 +413,14 @@ class SkillParser:
                 _stripped_buf = self.buf.strip()
                 if _stripped_buf and "<" not in _stripped_buf:
                     # Could be a fragment like "_call>", "call>", ">"
-                    _suffix_of_close = "</" + "tool_call>"
+                    _suffix_variants = ["</" + "tool_call>", "</" + "tool_calls>"]
                     _is_fragment = False
-                    for _flen in range(1, len(_suffix_of_close)):
-                        if _stripped_buf == _suffix_of_close[-_flen:] or _stripped_buf == _suffix_of_close[_flen:]:
-                            _is_fragment = True
+                    for _suffix_of_close in _suffix_variants:
+                        for _flen in range(1, len(_suffix_of_close)):
+                            if _stripped_buf == _suffix_of_close[-_flen:] or _stripped_buf == _suffix_of_close[_flen:]:
+                                _is_fragment = True
+                                break
+                        if _is_fragment:
                             break
                     if _is_fragment:
                         self.buf = ""
@@ -433,17 +437,35 @@ class SkillParser:
                     _is_dsml = _dsml_open_m is not None
                     _xml_close = self._DSML_CLOSE if _is_dsml else self._LEGACY_BLOCK_CLOSE
                     _close_m = _xml_close.search(self.buf, _xml_open_m.end())
+                    # Hybrid fallback: DSML open + legacy close (or vice versa)
+                    # DeepSeek sometimes mixes <DSML|tool_calls> with </tool_calls>
+                    if _close_m is None:
+                        _alt_close = self._LEGACY_BLOCK_CLOSE if _is_dsml else self._DSML_CLOSE
+                        _close_m = _alt_close.search(self.buf, _xml_open_m.end())
                     if _close_m is not None:
                         # Complete block found — extract and parse
                         _before_xml = self.buf[:_xml_open_m.start()]
                         _block_content = self.buf[_xml_open_m.start():_close_m.end()]
                         _after_xml = self.buf[_close_m.end():]
-                        if _before_xml.strip():
-                            yield {"type": "text", "text": _before_xml}
-                        self.buf = _after_xml
-                        _plog(f"{'DSML' if _is_dsml else 'LEGACY_XML'}_BLOCK_FOUND: len={len(_block_content)}")
-                        yield from self._extract_dsml(_block_content)
-                        continue  # re-evaluate buffer
+                        # Guard: if legacy <tool_calls> wraps JSON (not XML invoke tags),
+                        # skip XML extraction — let the Hermes handler parse it as JSON.
+                        _inner = _block_content[_xml_open_m.end() - _xml_open_m.start():_close_m.start() - _xml_open_m.start()].strip() if len(_block_content) > (_xml_open_m.end() - _xml_open_m.start()) else ""
+                        _inner_stripped = _block_content[len(_xml_open_m.group()):].lstrip()
+                        _is_json_in_legacy = (not _is_dsml and _inner_stripped and _inner_stripped[0] in ('{', '['))
+                        if _is_json_in_legacy:
+                            _plog(f"LEGACY_BLOCK_WITH_JSON: skipping XML extraction, falling through to Hermes handler")
+                            # Don't consume — let the Hermes _ACTION_OPEN handler below pick it up
+                            # But we need to avoid infinite loop: the legacy regex matches same position.
+                            # Solution: strip the legacy open tag and replace with _ACTION_OPEN-compatible form
+                            # Actually simpler: just don't enter this branch. Remove legacy match so Hermes gets it.
+                            _xml_open_m = None  # force fallthrough
+                        else:
+                            if _before_xml.strip():
+                                yield {"type": "text", "text": _before_xml}
+                            self.buf = _after_xml
+                            _plog(f"{'DSML' if _is_dsml else 'LEGACY_XML'}_BLOCK_FOUND: len={len(_block_content)}")
+                            yield from self._extract_dsml(_block_content)
+                            continue  # re-evaluate buffer
                     else:
                         # Open tag found but no close yet — hold buffer, wait for more
                         _before_xml = self.buf[:_xml_open_m.start()]
@@ -451,8 +473,8 @@ class SkillParser:
                             yield {"type": "text", "text": _before_xml}
                             self.buf = self.buf[_xml_open_m.start():]
                         # Emit pending indicator for first invoke if visible
-                        _inv_re = self._DSML_INVOKE_RE if _is_dsml else self._LEGACY_INVOKE_RE
-                        _inv_m = _inv_re.search(self.buf)
+                        # Try both DSML and legacy invoke patterns (hybrid blocks)
+                        _inv_m = self._DSML_INVOKE_RE.search(self.buf) or self._LEGACY_INVOKE_RE.search(self.buf)
                         if _inv_m:
                             _tag_name = _inv_m.group(1).strip().lower()
                             if _tag_name != self._pending_tag:
@@ -548,23 +570,34 @@ class SkillParser:
                     idx = self.buf.rfind("<")
                     if idx >= 0 and ">" not in self.buf[idx:]:
                         tail = self.buf[idx:].lstrip("<").strip().lower()
-                        # Strip optional leading fullwidth pipe or underscore for DSML matching
-                        _tail_norm = tail.lstrip("\uff5c_")
+                        # Strip optional leading pipe (fullwidth ｜, ASCII |) or underscore
+                        _tail_norm = tail.lstrip("\uff5c|_")
                         # Check for partial opening OR closing tag
                         # Covers: <tool_call, <DSML|tool_calls, <|DSML|tool_calls,
-                        #         <dsml_tool_calls, <DSML_tool_calls, etc.
-                        _dsml_prefixes = ("dsml", "dsml\uff5c", "\uff5cdsml", "dsml_", "_dsml")
+                        #         <dsml_tool_calls, <DSML_tool_calls, <DSML|..., <|, <|
+                        _dsml_prefixes = (
+                            "dsml", "dsml\uff5c", "\uff5cdsml", "dsml_", "_dsml",
+                            "dsml|", "|dsml", "dsml\uff5c", "\uff5cdsml",
+                        )
+                        # If tail is ONLY delimiter chars (｜, |, _) after stripping <,
+                        # it's a partial DSML tag like "<｜" or "<|" — hold it.
+                        _is_dsml_delimiters_only = bool(tail) and not _tail_norm and all(
+                            c in "\uff5c|_" for c in tail
+                        )
+                        _legacy_prefixes = ("tool_call", "tool_calls", "invoke", "parameter")
                         _open_match = (
                             tail == ""
-                            or "tool_call".startswith(tail)
+                            or _is_dsml_delimiters_only
+                            or any(p.startswith(tail) or tail.startswith(p) for p in _legacy_prefixes if tail)
                             or any(_tail_norm.startswith(p) or p.startswith(_tail_norm)
                                    for p in _dsml_prefixes if _tail_norm)
                         )
                         _close_tail = self.buf[idx:].lstrip("<").lstrip("/").strip().lower()
-                        _close_tail_norm = _close_tail.lstrip("\uff5c_")
+                        _close_tail_norm = _close_tail.lstrip("\uff5c|_")
                         _close_match = ("/" in self.buf[idx:idx+2] and
                                         (_close_tail == ""
-                                         or "tool_call".startswith(_close_tail)
+                                         or any(p.startswith(_close_tail) or _close_tail.startswith(p)
+                                                for p in _legacy_prefixes if _close_tail)
                                          or any(_close_tail_norm.startswith(p) or p.startswith(_close_tail_norm)
                                                 for p in _dsml_prefixes if _close_tail_norm)))
                         if _open_match or _close_match:
@@ -590,6 +623,27 @@ class SkillParser:
                     # re-evaluated when more data arrives.
                     self.buf = m.group(0) + self.buf
                     break
+                # Strip markdown backtick wrappers models sometimes add around JSON
+                # Handles both single ` and triple ``` fences (with optional lang tag)
+                if stripped_ahead[0] == '`':
+                    _fence_len = 1
+                    while _fence_len < len(stripped_ahead) and stripped_ahead[_fence_len] == '`':
+                        _fence_len += 1
+                    # Find matching closing fence
+                    _close_fence = '`' * _fence_len
+                    _bt_end = stripped_ahead.find(_close_fence, _fence_len)
+                    if _bt_end > 0:
+                        _inner = stripped_ahead[_fence_len:_bt_end].strip()
+                        # Strip optional language tag like "json\n" from start of fence content
+                        if _inner and not _inner[0] in ('{', '['):
+                            _nl = _inner.find('\n')
+                            if _nl > 0 and _nl < 20:
+                                _inner = _inner[_nl+1:].strip()
+                        if _inner and _inner[0] in ('{', '['):
+                            # Reconstruct buffer with unwrapped JSON
+                            self.buf = _inner + stripped_ahead[_bt_end+_fence_len:].lstrip()
+                            stripped_ahead = self.buf
+                            _plog(f"STRIPPED_BACKTICK_WRAPPER: fence={_fence_len}, inner starts with {repr(_inner[:20])}")
                 if stripped_ahead[0] not in ('{', '['):
                     # Not JSON — preserve the ENTIRE sequence (tags + content) as visible text
                     # Use self.buf (not stripped_ahead) to preserve whitespace between tag and content
@@ -674,7 +728,7 @@ class SkillParser:
 
     # Extended legacy param regex that captures optional string="true|false"
     _LEGACY_PARAM_TYPED_RE = re.compile(
-        r'<parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>(.*?)</parameter>',
+        r'<parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>(.*?)</parameter\s*>',
         re.DOTALL,
     )
 
@@ -700,8 +754,13 @@ class SkillParser:
         return attrs
 
     def _extract_dsml(self, block: str) -> Generator[dict[str, Any], None, None]:
-        """Parse a complete DSML tool_calls block and yield tag_found events."""
+        """Parse a complete DSML/legacy tool_calls block and yield tag_found events.
+        
+        Always tries BOTH DSML and legacy invoke patterns since DeepSeek can produce
+        hybrid blocks (e.g. <DSML|tool_calls> with plain <invoke> inside).
+        """
         found = False
+        # Try DSML invoke pattern first
         for m in self._DSML_INVOKE_RE.finditer(block):
             name = m.group(1).strip()
             params = self._parse_dsml_params(m.group(2))
@@ -719,25 +778,24 @@ class SkillParser:
                 "content": content,
             }
             found = True
-        # Fallback: try legacy invoke/parameter format
-        if not found:
-            for m in self._LEGACY_INVOKE_RE.finditer(block):
-                name = m.group(1).strip()
-                params = self._parse_legacy_params(m.group(2))
-                content = ""
-                for ck in _CONTENT_PARAM_KEYS:
-                    if ck in params:
-                        content = str(params[ck])
-                        break
-                str_attrs = _stringify_params(params)
-                _plog(f"LEGACY_XML_TAG_FOUND: {name} | attrs_keys={list(str_attrs.keys())}")
-                yield {
-                    "type": "tag_found",
-                    "name": name,
-                    "attrs": str_attrs,
-                    "content": content,
-                }
-                found = True
+        # ALSO try legacy invoke/parameter format (handles hybrid blocks)
+        for m in self._LEGACY_INVOKE_RE.finditer(block):
+            name = m.group(1).strip()
+            params = self._parse_legacy_params(m.group(2))
+            content = ""
+            for ck in _CONTENT_PARAM_KEYS:
+                if ck in params:
+                    content = str(params[ck])
+                    break
+            str_attrs = _stringify_params(params)
+            _plog(f"LEGACY_XML_TAG_FOUND: {name} | attrs_keys={list(str_attrs.keys())}")
+            yield {
+                "type": "tag_found",
+                "name": name,
+                "attrs": str_attrs,
+                "content": content,
+            }
+            found = True
         if not found:
             _plog(f"DSML_PARSE_FAIL: no invokes found in block len={len(block)}")
 
@@ -857,6 +915,10 @@ class SkillParser:
                 _is_dsml = _dsml_m is not None
                 _xml_close = self._DSML_CLOSE if _is_dsml else self._LEGACY_BLOCK_CLOSE
                 _close_m = _xml_close.search(self.buf, _xml_m.end())
+                # Hybrid fallback: try alternate close tag
+                if _close_m is None:
+                    _alt_close = self._LEGACY_BLOCK_CLOSE if _is_dsml else self._DSML_CLOSE
+                    _close_m = _alt_close.search(self.buf, _xml_m.end())
                 if _close_m is not None:
                     _block = self.buf[_xml_m.start():_close_m.end()]
                     _before = self.buf[:_xml_m.start()]

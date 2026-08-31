@@ -13,6 +13,7 @@ from .config import (
     _get_search_settings,
     _get_search_instance,
     _get_provider_key,
+    get_provider_keys,
     _get_result_count,
     _safesearch_for,
 )
@@ -317,76 +318,99 @@ def google_pse_search(query: str, count: int = 5, time_filter: Optional[str] = N
 # ── Tavily ──
 
 def tavily_search(query: str, count: int = 5, time_filter: Optional[str] = None) -> List[dict]:
-    """Search using Tavily API."""
-    api_key = _get_provider_key("tavily")
-    if not api_key:
+    """Search using Tavily API with multi-key rotation on 429."""
+    keys = get_provider_keys("tavily")
+    if not keys:
         logger.warning("Tavily API key not configured")
         return []
     enhanced = build_enhanced_query(query, time_filter)
-    payload = {"api_key": api_key, "query": enhanced, "max_results": count, "include_answer": False}
+    topic = None
     if time_filter:
         topic_map = {"day": "news", "week": "news", "month": "general", "year": "general"}
-        payload["topic"] = topic_map.get(time_filter, "general")
-    try:
-        response = httpx.post(
-            "https://api.tavily.com/search",
-            json=payload, timeout=REQUEST_TIMEOUT,
-        )
-        if response.status_code == 429:
-            raise RateLimitError("Tavily rate limit exceeded")
-        response.raise_for_status()
-        data = response.json()
-        results = []
-        for item in data.get("results", [])[:count]:
-            results.append({
-                "title": item.get("title", ""),
-                "url": item.get("url", ""),
-                "snippet": item.get("content", ""),
-            })
-        logger.info("Tavily returned %d results for: %s", len(results), query)
-        return results
-    except RateLimitError:
-        raise
-    except Exception as e:
-        logger.warning("Tavily search failed: %s", e)
-        return []
+        topic = topic_map.get(time_filter, "general")
+
+    # Try each key with rotation on 429
+    for attempt, api_key in enumerate(keys):
+        payload = {"api_key": api_key, "query": enhanced, "max_results": count, "include_answer": False}
+        if topic:
+            payload["topic"] = topic
+        try:
+            response = httpx.post(
+                "https://api.tavily.com/search",
+                json=payload, timeout=REQUEST_TIMEOUT,
+            )
+            if response.status_code == 429:
+                if attempt < len(keys) - 1:
+                    logger.info("Tavily 429 on key %d/%d, rotating...", attempt + 1, len(keys))
+                    continue
+                raise RateLimitError("Tavily rate limit exceeded (all keys exhausted)")
+            response.raise_for_status()
+            data = response.json()
+            results = []
+            for item in data.get("results", [])[:count]:
+                results.append({
+                    "title": item.get("title", ""),
+                    "url": item.get("url", ""),
+                    "snippet": item.get("content", ""),
+                })
+            logger.info("Tavily returned %d results for: %s (key %d/%d)", len(results), query, attempt + 1, len(keys))
+            return results
+        except RateLimitError:
+            raise
+        except Exception as e:
+            logger.warning("Tavily search failed (key %d/%d): %s", attempt + 1, len(keys), e)
+            if attempt < len(keys) - 1:
+                continue
+            return []
+    return []
 
 # ── Serper ──
 
 def serper_search(query: str, count: int = 5, time_filter: Optional[str] = None) -> List[dict]:
-    """Search using Serper.dev API."""
-    api_key = _get_provider_key("serper")
-    if not api_key:
+    """Search using Serper.dev API with multi-key rotation on 429."""
+    keys = get_provider_keys("serper")
+    if not keys:
         logger.warning("Serper API key not configured")
         return []
     enhanced = build_enhanced_query(query, time_filter)
-    payload = {"q": enhanced, "num": count}
+    tbs = None
     if time_filter:
         tbs_map = {"day": "qdr:d", "week": "qdr:w", "month": "qdr:m", "year": "qdr:y"}
-        if time_filter in tbs_map:
-            payload["tbs"] = tbs_map[time_filter]
-    try:
-        response = httpx.post(
-            "https://google.serper.dev/search",
-            json=payload,
-            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
-            timeout=REQUEST_TIMEOUT,
-        )
-        if response.status_code == 429:
-            raise RateLimitError("Serper rate limit exceeded")
-        response.raise_for_status()
-        data = response.json()
-        results = []
-        for item in data.get("organic", [])[:count]:
-            results.append({
-                "title": item.get("title", ""),
-                "url": item.get("link", ""),
-                "snippet": item.get("snippet", ""),
-            })
-        logger.info("Serper returned %d results for: %s", len(results), query)
-        return results
-    except RateLimitError:
-        raise
-    except Exception as e:
-        logger.warning("Serper search failed: %s", e)
-        return []
+        tbs = tbs_map.get(time_filter)
+
+    # Try each key with rotation on 429
+    for attempt, api_key in enumerate(keys):
+        payload = {"q": enhanced, "num": count}
+        if tbs:
+            payload["tbs"] = tbs
+        try:
+            response = httpx.post(
+                "https://google.serper.dev/search",
+                json=payload,
+                headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+                timeout=REQUEST_TIMEOUT,
+            )
+            if response.status_code == 429:
+                if attempt < len(keys) - 1:
+                    logger.info("Serper 429 on key %d/%d, rotating...", attempt + 1, len(keys))
+                    continue
+                raise RateLimitError("Serper rate limit exceeded (all keys exhausted)")
+            response.raise_for_status()
+            data = response.json()
+            results = []
+            for item in data.get("organic", [])[:count]:
+                results.append({
+                    "title": item.get("title", ""),
+                    "url": item.get("link", ""),
+                    "snippet": item.get("snippet", ""),
+                })
+            logger.info("Serper returned %d results for: %s (key %d/%d)", len(results), query, attempt + 1, len(keys))
+            return results
+        except RateLimitError:
+            raise
+        except Exception as e:
+            logger.warning("Serper search failed (key %d/%d): %s", attempt + 1, len(keys), e)
+            if attempt < len(keys) - 1:
+                continue
+            return []
+    return []
