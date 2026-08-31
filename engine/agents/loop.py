@@ -65,7 +65,7 @@ FORMAT_REMINDERS: dict[str, str] = {
     "writer": "This is your FINAL response. Output ONLY a markdown document with these sections: ## Title, ## Document Path, ## Structure Overview, ## Word Count, ## Notes. No JSON. No tool_call block.",
 }
 
-_TAG_RE = re.compile(r"<\s*tool_call\s*>(.*?)<\s*/\s*tool_call\s*>", re.DOTALL | re.IGNORECASE)
+_TAG_RE = re.compile(r"<\s*tool_calls?\s*>(.*?)<\s*/\s*tool_calls?\s*>", re.DOTALL | re.IGNORECASE)
 # Matches both <tag attrs>content</tag> and <tag attrs />
 _INNER_TAG_RE = re.compile(
     r"<(\w+)\s*((?:[^>\"']|\"[^\"]*\"|'[^']*')*?)\s*(?:/>\s*$|>(.*?)</\1\s*>|>)",
@@ -371,7 +371,7 @@ async def run_agent_llm_loop(
         await _persist_message(agent.id, "assistant", response_text)
 
         # Stream the response text to the panel (strip tool_call + DSML blocks + bare JSON)
-        _panel_text = re.sub(r"<tool_call>.*?</tool_call>", "", response_text, flags=re.DOTALL)
+        _panel_text = re.sub(r"<\s*tool_calls?\s*>.*?<\s*/\s*tool_calls?\s*>", "", response_text, flags=re.DOTALL | re.IGNORECASE)
         _panel_text = re.sub(
             r'<\uff5c?DSML\uff5ctool_calls>.*?</\uff5c?DSML\uff5ctool_calls>',
             "", _panel_text, flags=re.DOTALL,

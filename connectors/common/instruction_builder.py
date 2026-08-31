@@ -72,28 +72,73 @@ def _filter_skills_prompt(skills_prompt: str, skills_config: dict) -> str:
 # Provider-specific tool call format instructions
 # ---------------------------------------------------------------------------
 
-_TOOL_FORMAT_DEEPSEEK = """\
-## Tool Call Format (CRITICAL)
+# ---------------------------------------------------------------------------
+# HIGH-PRIORITY tool call format instructions.
+# These are injected TWICE: once BEFORE tool schemas (primer) and once at the
+# very END of the system prompt (recency reinforcement). This dual placement
+# ensures the format instruction is the most weighted instruction in the prompt.
+# ---------------------------------------------------------------------------
 
-You MUST output tool calls using the DSML format defined above.
-NEVER output bare JSON arrays or plain JSON for tool calls.
-All tool invocations must be wrapped in DSML tool_calls blocks with invoke/parameter tags.
-If you output anything other than properly formatted DSML blocks for tool calls, the system WILL fail.
+# DeepSeek V4 DSML format — uses ASCII pipe | (U+007C), NOT fullwidth ｜
+_DSML_O = "<|DSML|tool_calls>"
+_DSML_C = "</|DSML|tool_calls>"
+_DSML_I = "<|DSML|invoke"
+_DSML_P = "<|DSML|parameter"
+_DSML_IC = "</|DSML|invoke>"
+_DSML_PC = "</|DSML|parameter>"
+
+_TOOL_FORMAT_DEEPSEEK = f"""\
+## ⚠️ HIGHEST PRIORITY: Tool Call Format (DSML)
+
+> [!CRITICAL]
+> This instruction overrides ALL other formatting guidance.
+> You MUST use DSML format for every tool call. No exceptions.
+
+- ALL tool invocations MUST be wrapped in `{_DSML_O}` blocks with `{_DSML_I}>` / `{_DSML_P}>` tags.
+- NEVER output bare JSON arrays, plain JSON objects, or any other format for tool calls.
+- If you output anything other than properly formatted DSML blocks for tool calls, the system WILL FAIL.
+- Multiple tool calls go inside ONE `{_DSML_O}` block as separate `{_DSML_I}>` elements.
+- String parameters: set `string="true"` and pass the raw text value.
+- Non-string parameters (numbers, booleans, arrays, objects): set `string="false"` and pass JSON.
+
+### Template
+{_DSML_O}
+  {_DSML_I} name="$TOOL_NAME">
+    {_DSML_P} name="$PARAMETER_NAME" string="true|false">$VALUE{_DSML_PC}
+  {_DSML_IC}
+{_DSML_C}
+
+### Example
+{_DSML_O}
+  {_DSML_I} name="execute_command">
+    {_DSML_P} name="command" string="true">ls -la{_DSML_PC}
+    {_DSML_P} name="timeout" string="false">30{_DSML_PC}
+  {_DSML_IC}
+{_DSML_C}
 """
 
-_TOOL_FORMAT_NATIVE = """\
-## Tool Call Format
+_TC_OPEN = "<" + "tool_call" + ">"
+_TC_CLOSE = "</" + "tool_call" + ">"
 
-All tool calls use exactly ONE format. Single call or multiple calls — always a JSON array inside one wrapper:
+_TOOL_FORMAT_NATIVE = f"""\
+## ⚠️ HIGHEST PRIORITY: Tool Call Format
 
-Single call: output a JSON array wrapped in the designated tool-call markers.
-Multiple parallel calls: output ALL calls in ONE JSON array inside ONE wrapper.
+> [!CRITICAL]
+> This instruction overrides ALL other formatting guidance.
+> You MUST use exactly ONE [] wrapper per response. No exceptions.
 
-### Rules
-- Exactly ONE wrapper per response, placed at the end. All calls go inside as a JSON array.
-- NEVER output multiple separate wrappers. Always combine into one array.
+- Single call OR multiple calls → always a JSON array inside [] brackets.
+- NEVER output multiple separate [] blocks. Combine into one array.
+- Tool call blocks appear ONLY in plain text, NEVER inside fenced code blocks.
 - Keep prose to ONE short sentence before the tool call block.
-- Tool call blocks appear only in plain text, never inside fenced code blocks.
+- Place the tool call block at the END of your response.
+
+
+### Single call
+[{{"name": "<function-name>", "arguments": <args-json-object>}}]
+
+### Multiple calls
+[{{"name": "tool_a", "arguments": {{...}}}}, {{"name": "tool_b", "arguments": {{...}}}}]
 """
 
 _TOOL_FORMAT_NONE = """\
@@ -219,6 +264,12 @@ def build_instructions(
     skills_prompt = _engine.get_registry_prompt()
     parts.append(skills_prompt)
 
+    # --- ⚠️ TOOL CALL FORMAT PRIMER (BEFORE tool schemas) ---
+    # Injected FIRST so the model knows HOW to call tools before seeing WHAT tools exist.
+    # This is the highest-weighted instruction via dual placement (primer + recency).
+    if provider and provider in _PROVIDER_TOOL_FORMATS:
+        parts.append(_PROVIDER_TOOL_FORMATS[provider])
+
     # --- Tool Schemas ---
     try:
         from engine.tools_loader import get_tools_prompt_section
@@ -254,7 +305,10 @@ def build_instructions(
         f"for text/docs, or the appropriate subdirectory otherwise."
     )
 
-    # --- Provider-specific tool call format ---
+    # --- ⚠️ TOOL CALL FORMAT REINFORCEMENT (END of prompt — recency weight) ---
+    # Second injection of the same format instruction. Models weight instructions at
+    # both the beginning and end of system prompts most heavily. Dual placement ensures
+    # this is the MOST WEIGHTED instruction in the entire prompt.
     if provider and provider in _PROVIDER_TOOL_FORMATS:
         parts.append(_PROVIDER_TOOL_FORMATS[provider])
 

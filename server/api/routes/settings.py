@@ -1957,7 +1957,9 @@ async def get_search_settings() -> dict[str, Any]:
         "has_google_pse_key": bool(settings.get("google_pse_key")),
         "has_google_pse_cx": bool(settings.get("google_pse_cx")),
         "has_tavily_key": bool(settings.get("tavily_api_key")),
+        "tavily_key_count": len(settings["tavily_api_key"]) if isinstance(settings.get("tavily_api_key"), list) else (1 if settings.get("tavily_api_key") else 0),
         "has_serper_key": bool(settings.get("serper_api_key")),
+        "serper_key_count": len(settings["serper_api_key"]) if isinstance(settings.get("serper_api_key"), list) else (1 if settings.get("serper_api_key") else 0),
     }
 
 @router.post("/api/settings/search")
@@ -2005,8 +2007,16 @@ async def update_search_settings(payload: dict[str, Any]) -> dict[str, Any]:
 
     for field in _SEARCH_KEY_FIELDS:
         val = payload.get(field)
-        if val is not None and str(val).strip():
-            settings[field] = str(val).strip()
+        if val is not None:
+            # Accept string (single key) or list of strings (multi-key)
+            if isinstance(val, list):
+                cleaned = [str(v).strip() for v in val if isinstance(v, str) and str(v).strip()]
+                if cleaned:
+                    settings[field] = cleaned if len(cleaned) > 1 else cleaned[0]
+                else:
+                    settings.pop(field, None)
+            elif isinstance(val, str) and val.strip():
+                settings[field] = val.strip()
 
     _write_system_settings(settings)
 
@@ -2122,6 +2132,105 @@ async def clear_search_cache() -> dict[str, Any]:
     invalidate_cache()
     logger.info("Search cache cleared via API")
     return {"cleared": True}
+
+
+# ---------------------------------------------------------------------------
+# Search Provider Multi-Key Management (Tavily, Serper, Brave, Google PSE)
+# ---------------------------------------------------------------------------
+
+_SEARCH_KEY_MAP = {
+    "tavily": "tavily_api_key",
+    "serper": "serper_api_key",
+    "brave": "brave_api_key",
+    "google_pse": "google_pse_key",
+}
+
+_SEARCH_KEY_PLACEHOLDERS = {
+    "tavily": "tvly-…",
+    "serper": "serper-…",
+    "brave": "BSA…",
+    "google_pse": "AIza…",
+}
+
+def _mask_search_key(key: str) -> str:
+    if len(key) <= 8:
+        return key[:2] + "•" * (len(key) - 2)
+    return key[:4] + "•" * (len(key) - 8) + key[-4:]
+
+def _get_search_keys_list(provider: str) -> list[str]:
+    """Get keys for a search provider as a list (handles legacy single-string)."""
+    settings = _read_system_settings()
+    field = _SEARCH_KEY_MAP.get(provider)
+    if not field:
+        return []
+    raw = settings.get(field, "")
+    if isinstance(raw, list):
+        return [k for k in raw if isinstance(k, str) and k.strip()]
+    elif isinstance(raw, str) and raw.strip():
+        return [raw.strip()]
+    return []
+
+def _save_search_keys_list(provider: str, keys: list[str]) -> None:
+    """Save keys for a search provider (single string if 1 key, list if >1)."""
+    settings = _read_system_settings()
+    field = _SEARCH_KEY_MAP.get(provider)
+    if not field:
+        return
+    cleaned = [k.strip() for k in keys if k.strip()]
+    if len(cleaned) == 0:
+        settings.pop(field, None)
+    elif len(cleaned) == 1:
+        settings[field] = cleaned[0]
+    else:
+        settings[field] = cleaned
+    _write_system_settings(settings)
+
+@router.get("/api/settings/search/{provider}/keys")
+async def list_search_provider_keys(provider: str) -> dict[str, Any]:
+    """List all configured keys for a search provider (masked)."""
+    if provider not in _SEARCH_KEY_MAP:
+        raise HTTPException(status_code=404, detail=f"Unknown search provider '{provider}'")
+    keys = _get_search_keys_list(provider)
+    masked = [
+        {"index": i, "masked": _mask_search_key(k), "active": i == 0}
+        for i, k in enumerate(keys)
+    ]
+    return {"keys": masked, "available": len(keys) > 0}
+
+@router.post("/api/settings/search/{provider}/api-key")
+async def add_search_provider_key(provider: str, request: Request) -> dict[str, Any]:
+    """Add a key to a search provider's pool."""
+    if provider not in _SEARCH_KEY_MAP:
+        raise HTTPException(status_code=404, detail=f"Unknown search provider '{provider}'")
+    body = await request.json()
+    key = body.get("api_key", "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="Missing 'api_key' field")
+    keys = _get_search_keys_list(provider)
+    if key in keys:
+        raise HTTPException(status_code=409, detail="Key already exists")
+    keys.append(key)
+    _save_search_keys_list(provider, keys)
+    # Invalidate search cache so new key is picked up
+    from engine.search import invalidate_cache
+    invalidate_cache()
+    logger.info("Added %s search key (total: %d)", provider, len(keys))
+    return {"status": "ok", "keys": [{"index": i, "masked": _mask_search_key(k), "active": i == 0} for i, k in enumerate(keys)], "available": True}
+
+@router.delete("/api/settings/search/{provider}/api-key/{index}")
+async def remove_search_provider_key(provider: str, index: int) -> dict[str, Any]:
+    """Remove a key from a search provider's pool by index."""
+    if provider not in _SEARCH_KEY_MAP:
+        raise HTTPException(status_code=404, detail=f"Unknown search provider '{provider}'")
+    keys = _get_search_keys_list(provider)
+    if index < 0 or index >= len(keys):
+        raise HTTPException(status_code=404, detail="Key not found at that index")
+    keys.pop(index)
+    _save_search_keys_list(provider, keys)
+    from engine.search import invalidate_cache
+    invalidate_cache()
+    logger.info("Removed %s search key at index %d (remaining: %d)", provider, index, len(keys))
+    return {"status": "ok", "keys": [{"index": i, "masked": _mask_search_key(k), "active": i == 0} for i, k in enumerate(keys)], "available": len(keys) > 0}
 
 
 # ─── General Settings (tool output limit, etc.) ─────────────────────────────
