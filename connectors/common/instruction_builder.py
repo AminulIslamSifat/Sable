@@ -120,6 +120,31 @@ _TOOL_FORMAT_DEEPSEEK = f"""\
 _TC_OPEN = "<" + "tool_call" + ">"
 _TC_CLOSE = "</" + "tool_call" + ">"
 
+_ACTION_OPEN = "<action>"
+_ACTION_CLOSE = "</action>"
+
+_TOOL_FORMAT_QWEN = f"""\
+## ⚠️ HIGHEST PRIORITY: Tool Call Format
+
+> [!CRITICAL]
+> This instruction overrides ALL other formatting guidance.
+> You MUST wrap every tool call in {_ACTION_OPEN}...{_ACTION_CLOSE} tags. No exceptions.
+
+- All tool calls MUST be a JSON array inside {_ACTION_OPEN}...{_ACTION_CLOSE} tags.
+- Single call OR multiple calls → always a JSON array inside ONE {_ACTION_OPEN} block.
+- NEVER output multiple separate {_ACTION_OPEN} blocks. Combine into one array.
+- Tool call blocks appear ONLY in plain text, NEVER inside fenced code blocks.
+- Keep prose to ONE short sentence before the tool call block.
+- Place the tool call block at the END of your response.
+
+
+### Single call
+{_ACTION_OPEN}[{{"name": "<function-name>", "arguments": <args-json-object>}}]{_ACTION_CLOSE}
+
+### Multiple calls
+{_ACTION_OPEN}[{{"name": "tool_a", "arguments": {{...}}}}, {{"name": "tool_b", "arguments": {{...}}}}]{_ACTION_CLOSE}
+"""
+
 _TOOL_FORMAT_NATIVE = f"""\
 ## ⚠️ HIGHEST PRIORITY: Tool Call Format
 
@@ -150,6 +175,7 @@ Follow the function schemas provided in the API request.
 
 _PROVIDER_TOOL_FORMATS: dict[str, str] = {
     "deepseek": _TOOL_FORMAT_DEEPSEEK,
+    "qwen": _TOOL_FORMAT_QWEN,
     "native": _TOOL_FORMAT_NATIVE,
     "none": _TOOL_FORMAT_NONE,
 }

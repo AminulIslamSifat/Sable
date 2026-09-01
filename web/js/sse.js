@@ -1187,6 +1187,33 @@
           raw = "\u200B"; // non-empty so closeAnswer() won't remove the card
           scrollBottom();
         },
+        replaceWithCaptchaBlock(message) {
+          hidePending();
+          if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
+          _thinkQueue = "";
+          if (_ansTimer) { clearTimeout(_ansTimer); _ansTimer = null; }
+          _ansQueue = "";
+          currentThinkWrap = null;
+          currentThinkBody = null;
+          currentThinkSummary = null;
+          if (answerEl) {
+            answerEl.remove();
+            answerEl = null;
+            answerContent = null;
+            raw = "";
+          }
+          ensureAnswer();
+          answerEl.classList.remove('streaming');
+          answerContent.innerHTML = `
+            <div class="captcha-block-card">
+              <span class="cb-icon">🛡️</span>
+              <span class="cb-title">Captcha / WAF Challenge Hit</span>
+              <span class="cb-detail">${message || 'Qwen rejected this request with a captcha or WAF validation challenge.'}</span>
+              <span class="cb-note">The request was stopped so you can switch/refresh the account or solve the challenge manually.</span>
+            </div>`;
+          raw = "\u200B";
+          scrollBottom();
+        },
         trackFileEdit(evt) {
           fileEditSummary.count++;
           fileEditSummary.added += evt.added || 0;
@@ -1571,6 +1598,10 @@
           } else if (evt.type === "rate_limited") {
             gotError = true;
             ui.replaceWithRateLimit(evt.message, evt.hours);
+            break;
+          } else if (evt.type === "waf_blocked") {
+            gotError = true;
+            ui.replaceWithCaptchaBlock(evt.message);
             break;
           } else if (evt.type === "error") {
             gotError = true;
