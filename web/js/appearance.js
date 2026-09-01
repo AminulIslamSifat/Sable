@@ -11,13 +11,27 @@
         const data = await res.json();
         const accounts = data.accounts || [];
         const active = data.active;
+        const autoSwitchEnabled = data.auto_switch_enabled !== false;
+
+        // Render auto-switch toggle above account cards
+        const toggleHtml = `<div style="display:flex;align-items:center;justify-content:space-between;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:10px;">
+          <div style="min-width:0;">
+            <div style="font-size:12px;font-weight:600;color:var(--text);">Auto-Switch on Rate Limit / Captcha</div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">Automatically switch to another account when Qwen blocks this one.</div>
+          </div>
+          <label style="position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0;cursor:pointer;">
+            <input type="checkbox" id="autoSwitchToggle" ${autoSwitchEnabled ? 'checked' : ''} style="opacity:0;width:0;height:0;">
+            <span style="position:absolute;inset:0;background:${autoSwitchEnabled ? 'var(--accent)' : 'var(--border)'};border-radius:20px;transition:0.2s;"></span>
+            <span style="position:absolute;left:${autoSwitchEnabled ? '18px' : '2px'};top:2px;width:16px;height:16px;background:#fff;border-radius:50%;transition:0.2s;"></span>
+          </label>
+        </div>`;
 
         if (!accounts.length) {
           accountProfileCards.innerHTML = '<p class="muted" style="font-size:12px;margin:0;">No account profiles found. Create dirs like <code>system/browser-data-acc1</code>, <code>system/browser-data-acc2</code>…</p>';
           return;
         }
 
-        accountProfileCards.innerHTML = accounts.map((acc) => {
+        accountProfileCards.innerHTML = toggleHtml + accounts.map((acc) => {
           const isActive = acc.name === active;
           const email = acc.label || acc.email || "unknown account";
           const size = acc.size_mb ? acc.size_mb + " MB" : "";
@@ -38,6 +52,40 @@
             </div>
           </div>`;
         }).join("");
+
+        // Auto-switch toggle handler
+        const autoSwitchToggle = document.getElementById("autoSwitchToggle");
+        if (autoSwitchToggle) {
+          autoSwitchToggle.addEventListener("change", async () => {
+            const enabled = autoSwitchToggle.checked;
+            // Update visual toggle state immediately
+            const label = autoSwitchToggle.closest("label");
+            if (label) {
+              const bg = label.children[1];
+              const knob = label.children[2];
+              if (bg) bg.style.background = enabled ? "var(--accent)" : "var(--border)";
+              if (knob) knob.style.left = enabled ? "18px" : "2px";
+            }
+            try {
+              await fetch("/api/settings/accounts/auto-switch-toggle", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ enabled }),
+              });
+              showToast(enabled ? "✅ Auto-switch enabled" : "⏸️ Auto-switch disabled", enabled ? "success" : "info");
+            } catch (e) {
+              showToast("Failed to save: " + e.message, "error");
+              autoSwitchToggle.checked = !enabled;
+              // Revert visual state on error
+              if (label) {
+                const bg = label.children[1];
+                const knob = label.children[2];
+                if (bg) bg.style.background = enabled ? "var(--border)" : "var(--accent)";
+                if (knob) knob.style.left = enabled ? "2px" : "18px";
+              }
+            }
+          });
+        }
 
         accountProfileCards.querySelectorAll(".account-switch-btn").forEach((btn) => {
           btn.addEventListener("click", async () => {
