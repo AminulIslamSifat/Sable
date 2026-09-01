@@ -1053,6 +1053,10 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
     try:
         await service.close()
         set_active_account(target_name)
+        # Update the singleton service's browser profile and account override
+        # so subsequent requests use the NEW account, not the stale one from init.
+        service._browser.user_data_dir = str(target_path)
+        service._account_override = target_name
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Switch failed: {exc}")
 

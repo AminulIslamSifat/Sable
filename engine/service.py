@@ -79,6 +79,27 @@ class ChatService:
         else:
             self._account_override = None
 
+    def _get_debug_account_info(self) -> dict:
+        """Return debug info about which account/browser profile is actually being used."""
+        from engine.config import _resolve_active_account
+        account = self._account_override or _resolve_active_account()
+        browser_dir = str(self._browser.user_data_dir) if self._browser else "unknown"
+        # Get cached token snippet (first 40 chars of cookies for identification)
+        from engine.config import get_qwen_tokens_for_account
+        tok = get_qwen_tokens_for_account(account)
+        cookie_snippet = (tok.get("cookies", "")[:60] + "...") if tok and tok.get("cookies") else "none"
+        has_bx_ua = bool(tok and tok.get("bx_ua"))
+        has_umid = bool(tok and tok.get("bx_umidtoken"))
+        return {
+            "account": account,
+            "account_override": self._account_override,
+            "active_account_file": _resolve_active_account(),
+            "browser_data_dir": browser_dir,
+            "cookie_snippet": cookie_snippet,
+            "has_bx_ua": has_bx_ua,
+            "has_bx_umidtoken": has_umid,
+        }
+
     def _mark_exhausted(self) -> None:
         """Mark the current account as quota-exhausted."""
         from engine.config import _resolve_active_account
@@ -425,6 +446,7 @@ class ChatService:
                                             "message": details,
                                             "hours": hours,
                                             "template": inner.get("template", ""),
+                                            **self._get_debug_account_info(),
                                         }
                                         return
                                     if code == "CHAT_NOT_FOUND":
@@ -498,6 +520,7 @@ class ChatService:
                                                             "message": details,
                                                             "hours": hours,
                                                             "template": inner.get("template", ""),
+                                                            **self._get_debug_account_info(),
                                                         }
                                                         return
                                                     if code == "CHAT_NOT_FOUND":
@@ -670,6 +693,7 @@ class ChatService:
                                     "message": details,
                                     "hours": hours,
                                     "template": inner.get("template", ""),
+                                    **self._get_debug_account_info(),
                                 }
                                 return
                             if code == "CHAT_NOT_FOUND":

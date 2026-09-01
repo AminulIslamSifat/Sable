@@ -1468,6 +1468,46 @@
       50% { border-color: color-mix(in srgb, var(--warning, #f59e0b) 35%, transparent); }
     }
 
+    /* ---------- Debug info inside error cards ---------- */
+
+    .card-debug-info {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 2px 8px;
+      margin-top: var(--sp-3);
+      padding-top: var(--sp-3);
+      border-top: 1px dashed color-mix(in srgb, var(--muted) 40%, transparent);
+      font-size: 11px;
+      line-height: 1.6;
+      opacity: 0.85;
+    }
+
+    .card-debug-info .cdi-label {
+      color: var(--muted);
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .card-debug-info .cdi-value {
+      color: var(--text-dim);
+      word-break: break-all;
+      font-family: var(--font-mono, monospace);
+    }
+
+    .card-debug-info .cdi-path {
+      font-size: 10px;
+      opacity: 0.75;
+    }
+
+    .card-debug-info .cdi-cookies {
+      font-size: 10px;
+      opacity: 0.7;
+    }
+
+    .card-debug-info .cdi-error {
+      color: var(--danger, #ef4444);
+    }
+
     /* --- Compact API/Scraper toggle (beside logo, thinking-switcher style) --- */
     .brand-row .mode-toggle-compact { margin-top: -3px; }
     .mode-toggle-compact {

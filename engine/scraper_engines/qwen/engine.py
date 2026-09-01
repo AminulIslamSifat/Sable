@@ -994,20 +994,69 @@ class QwenEngine(BaseScraperEngine):
     # Response capture
     # ------------------------------------------------------------------
 
+    # Fallback selectors for response content — tried in order when the
+    # primary selector from platforms.json finds nothing.
+    _RESPONSE_CONTENT_FALLBACKS = [
+        "div.response-message-content",
+        "div[class*='response-message']",
+        "div[class*='message-content']",
+        "div[class*='chat-response']",
+        "article[class*='message']",
+        "div[data-testid*='message']",
+    ]
+
+    _STOP_BUTTON_FALLBACKS = [
+        "div.chat-prompt-send-button button.stop-button",
+        "button[class*='stop']",
+        "div[class*='stop-button']",
+        "button[aria-label*='stop' i]",
+        "button[aria-label*='Stop' i]",
+    ]
+
+    async def _resolve_content_selector(self) -> str:
+        """Find the first response content selector that matches the current DOM."""
+        base = PLATFORM["selectors"].get("content", "div.response-message-content")
+        candidates = [base] + [s for s in self._RESPONSE_CONTENT_FALLBACKS if s != base]
+        for sel in candidates:
+            try:
+                count = await self.page.evaluate(f"document.querySelectorAll('{sel}').length")
+                if count > 0:
+                    return f"{sel}:not([data-ghost-old='true'])"
+            except Exception:
+                continue
+        # Nothing matched — return primary anyway so the polling loop can
+        # keep trying (Qwen may not have rendered yet).
+        self._log_debug("no_content_selector_matched", tried=len(candidates))
+        return f"{base}:not([data-ghost-old='true'])"
+
+    async def _resolve_stop_selector(self) -> str:
+        """Find the first stop button selector visible in the current DOM."""
+        primary = PLATFORM["selectors"].get("stop", "div.chat-prompt-send-button button.stop-button")
+        candidates = [primary] + [s for s in self._STOP_BUTTON_FALLBACKS if s != primary]
+        for sel in candidates:
+            try:
+                btn = self.page.locator(sel).first
+                if await btn.count() > 0:
+                    return sel
+            except Exception:
+                continue
+        return primary
+
     async def get_response(self, **kwargs: Any) -> str:
         """Capture Qwen response with path-based stop."""
         state = _CaptureState(start_time=time.time())
         self._log_debug("qwen_capture_started")
 
-        stop_sel = PLATFORM["selectors"].get("stop", "div.chat-prompt-send-button button.stop-button")
-        base_content_sel = PLATFORM["selectors"].get("content", "div.response-message-content")
-        content_sel = f"{base_content_sel}:not([data-ghost-old='true'])"
+        stop_sel = await self._resolve_stop_selector()
+        content_sel = await self._resolve_content_selector()
+        self._log_debug("selectors_resolved", content=content_sel, stop=stop_sel)
 
         live_display = kwargs.get("live_display")
 
         FROZEN_TIMEOUT = 4.5
         SILENCE_TIMEOUT = 10.0
         START_TIMEOUT = 120
+        _zero_element_warned = False
 
         while True:
             try:
@@ -1030,8 +1079,27 @@ class QwenEngine(BaseScraperEngine):
                 if len(elements) == 0:
                     if stop_active:
                         pass
-                    elif now - state.start_time > START_TIMEOUT:
-                        raise ResponseCaptureError(f"Qwen failed to start responding within {START_TIMEOUT}s")
+                    else:
+                        elapsed = now - state.start_time
+                        # Warn once after 15s of zero elements — likely a selector mismatch
+                        if elapsed > 15 and not _zero_element_warned:
+                            _zero_element_warned = True
+                            self._log_debug(
+                                "zero_elements_warning",
+                                elapsed=round(elapsed, 1),
+                                content_sel=content_sel,
+                                stop_sel=stop_sel,
+                            )
+                            logger.warning(
+                                "Scraper: no response elements found after %.1fs (selector=%s). "
+                                "Qwen may have changed their DOM.",
+                                elapsed, content_sel,
+                            )
+                        if elapsed > START_TIMEOUT:
+                            raise ResponseCaptureError(
+                                f"Qwen failed to start responding within {START_TIMEOUT}s "
+                                f"(selector={content_sel})"
+                            )
                     await asyncio.sleep(0.3)
                     continue
 
