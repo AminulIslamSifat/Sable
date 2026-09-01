@@ -1340,7 +1340,6 @@ async def _get_agent_qwen_headers(agent: Agent) -> dict[str, str]:
                         bx_ua=headers.get("bx-ua", ""),
                         bx_umidtoken=headers.get("bx-umidtoken", ""),
                         account=account,
-                        jwt_token=headers.get("Authorization", "").removeprefix("Bearer ") or None,
                     )
                     return headers
                 finally:
@@ -1603,51 +1602,75 @@ async def _call_qwen(
 
     body = build_body(message, chat_id, parent_id, model=agent.model)
     params = {"chat_id": chat_id}
-    accumulated = ""
-    new_parent_id: str | None = None
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15)) as client:
-        async with client.stream("POST", URL, headers=headers, json=body, params=params) as resp:
-            if resp.status_code in (401, 403):
-                raise RuntimeError(f"Qwen auth failed ({resp.status_code})")
-            if resp.status_code != 200:
-                raw = (await resp.aread()).decode(errors="replace")
-                raise RuntimeError(f"Qwen HTTP {resp.status_code}: {raw[:300]}")
+    max_attempts = 3
+    last_error: str | None = None
 
-            buffer = ""
-            async for chunk in resp.aiter_bytes():
-                if not chunk:
-                    continue
-                buffer += chunk.decode("utf-8", errors="replace")
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    line = line.strip()
-                    if not line.startswith("data: "):
-                        continue
-                    try:
-                        data = json.loads(line[6:])
-                    except json.JSONDecodeError:
-                        continue
+    for attempt in range(1, max_attempts + 1):
+        accumulated = ""
+        new_parent_id: str | None = None
 
-                    # Track parent_id from response
-                    created = data.get("response.created")
-                    if isinstance(created, dict):
-                        rid = created.get("response_id")
-                        if isinstance(rid, str):
-                            new_parent_id = rid
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15)) as client:
+                async with client.stream("POST", URL, headers=headers, json=body, params=params) as resp:
+                    if resp.status_code in (401, 403):
+                        raise RuntimeError(f"Qwen auth failed ({resp.status_code})")
+                    if resp.status_code != 200:
+                        raw = (await resp.aread()).decode(errors="replace")
+                        raise RuntimeError(f"Qwen HTTP {resp.status_code}: {raw[:300]}")
 
-                    choices = data.get("choices", [])
-                    if not choices:
-                        continue
-                    delta = choices[0].get("delta", {})
-                    content = delta.get("content", "")
-                    if content:
-                        accumulated += content
-                        agent.push_stream_event({"type": "chunk", "text": content})
+                    buffer = ""
+                    async for chunk in resp.aiter_bytes():
+                        if not chunk:
+                            continue
+                        buffer += chunk.decode("utf-8", errors="replace")
+                        while "\n" in buffer:
+                            line, buffer = buffer.split("\n", 1)
+                            line = line.strip()
+                            if not line.startswith("data: "):
+                                continue
+                            try:
+                                data = json.loads(line[6:])
+                            except json.JSONDecodeError:
+                                continue
 
-    if not accumulated.strip():
-        raise RuntimeError("Qwen returned empty response")
-    return accumulated, new_parent_id
+                            # Track parent_id from response
+                            created = data.get("response.created")
+                            if isinstance(created, dict):
+                                rid = created.get("response_id")
+                                if isinstance(rid, str):
+                                    new_parent_id = rid
+
+                            choices = data.get("choices", [])
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                accumulated += content
+                                agent.push_stream_event({"type": "chunk", "text": content})
+        except (httpx.ConnectError, httpx.ReadTimeout) as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            logger.warning("Agent %s Qwen call attempt %d/%d failed: %s", agent.id, attempt, max_attempts, last_error)
+            if attempt < max_attempts:
+                await asyncio.sleep(1 * attempt)
+                continue
+            raise RuntimeError(f"Qwen call failed after {max_attempts} attempts: {last_error}")
+
+        if accumulated.strip():
+            return accumulated, new_parent_id
+
+        # Empty response — retry
+        last_error = "empty response (HTTP 200 with zero content)"
+        logger.warning(
+            "Agent %s Qwen call attempt %d/%d returned empty response, retrying...",
+            agent.id, attempt, max_attempts,
+        )
+        if attempt < max_attempts:
+            await asyncio.sleep(1 * attempt)
+            continue
+
+    raise RuntimeError(f"Qwen returned empty response after {max_attempts} attempts")
 
 
 _SKIP_TAGS = frozenset(("action", "spawn_agent", "br", "hr", "json", "p", "div", "span"))
@@ -1664,8 +1687,9 @@ def _check_action_wrapper_violations(text: str) -> str | None:
     """
     from engine.skills.parser import KNOWN_TAGS
 
-    has_open = "<tool" + "_call>" in text
-    has_close = "</tool" + "_call>" in text
+    # Support both <tool_call (Hermes) and <action> (Qwen native) wrappers.
+    has_open = ("<tool" + "_call>" in text) or "<action>" in text
+    has_close = ("</tool" + "_call>" in text) or "</action>" in text
 
     # Check for orphan closing tag
     if has_close and not has_open:

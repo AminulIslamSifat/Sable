@@ -34,13 +34,27 @@ logger = logging.getLogger(__name__)
 
 # Regex to find complete <tool_call>...</tool_call> tags in text.
 # Covers both Sable custom and native Hermes format (same tags).
-_ACTION_RE = re.compile(r"<\s*tool_calls?\s*>(.*?)<\s*/\s*tool_calls?\s*>", re.DOTALL | re.IGNORECASE)
+# Covers <tool_call...> (Hermes) and <action> (Qwen native) wrappers.
+_ACTION_RE = re.compile(
+    r"(?:<\s*tool_calls?\s*>|<\s*action\s*>)(.*?)(?:<\s*/\s*tool_calls?\s*>|<\s*/\s*action\s*>)",
+    re.DOTALL | re.IGNORECASE,
+)
 
 # Fallback: catch bare JSON tool calls when models drop the <tool_call> wrapper.
 # Matches standalone JSON objects with a "name" key at the top level.
 _BARE_TOOL_RE = re.compile(
     r'(?<!\w)(\{\s*"(?:name|tool|tag)"\s*:.*?\})(?!\w)',
     re.DOTALL,
+)
+
+# Safety net: strip orphaned <action>/<tool_call tags that leaked through
+# chunk-boundary races or bare-JSON prefix emission. Only applied to final
+# text output, never inside code fences or active tool blocks.
+# Also catches bare fragments like "action>" or "tool_call>" that result
+# from </ being consumed by partial-tag detection in a prior chunk.
+_ORPHAN_TAG_RE = re.compile(
+    r'(?:</?\s*(?:action|tool_calls?)\s*>|(?:^|(?<=[\s</]))(?:action|tool_calls?)\s*>)',
+    re.IGNORECASE,
 )
 
 
@@ -297,6 +311,25 @@ async def normalize_stream(
                 return prefix
         return ""
 
+    # --- Debug: log raw chunks to file for leak diagnosis ---
+    import os as _os
+    _debug_log_path = _os.path.join(
+        _os.environ.get("SABLE_OUTPUT_DIR", "/home/sifat/sable_output"),
+        "logs", "raw_qwen_chunks.txt"
+    )
+    _os.makedirs(_os.path.dirname(_debug_log_path), exist_ok=True)
+    _debug_fh = open(_debug_log_path, "a", encoding="utf-8")
+    from datetime import datetime as _dt
+
+    def _dlog(msg: str):
+        ts = _dt.now().strftime("%H:%M:%S.%f")[:-3]
+        line = f"[{ts}] {msg}"
+        print(line, flush=True)
+        _debug_fh.write(line + "\n")
+        _debug_fh.flush()
+
+    _dlog("=== normalize_stream START (provider=%s) ===" % provider)
+
     async for event in stream:
         etype = event.get("type")
 
@@ -332,8 +365,11 @@ async def normalize_stream(
             if not text:
                 continue
 
+            _dlog(f"RAW_CHUNK | len={len(text)} | in_action={_in_action} | pending={repr(_pending_prefix)} | buf_len={len(_action_buffer)} | repr={repr(text[:120])}")
+
             # Prepend any partial tag carried from the previous chunk
             if _pending_prefix:
+                _dlog(f"REASSEMBLE | pending={repr(_pending_prefix)} + chunk={repr(text[:80])}")
                 text = _pending_prefix + text
 
                 # After reassembly, strip orphaned closing tags that formed
@@ -345,15 +381,48 @@ async def normalize_stream(
                             if _cv in text:
                                 text = text.replace(_cv, "")
                     else:
-                        close_tag = "</" + "tool_call>"
-                        if close_tag in text:
-                            text = text.replace(close_tag, "")
+                        for _ct_strip in ["</" + "tool_call>", "</action>"]:
+                            if _ct_strip in text:
+                                text = text.replace(_ct_strip, "")
 
                 _pending_prefix = ""
+
+                # After reassembly, the combined string may now contain a
+                # complete open tag that was split across chunks. Re-run
+                # open-tag detection so it doesn't leak as prose.
+                _reassembled_open = None
+                if not _use_dsml:
+                    for _ot_candidate in ["<" + "tool_call>", "<action>"]:
+                        if _ot_candidate in text:
+                            _reassembled_open = _ot_candidate
+                            break
+                if _reassembled_open:
+                    before, _, after = text.partition(_reassembled_open)
+                    if before.strip():
+                        yield {"type": "answer", "text": before}
+                    _ct = "</action>" if _reassembled_open == "<action>" else "</" + "tool_call>"
+                    close_idx = after.find(_ct)
+                    if close_idx != -1 and json_structurally_complete(after[:close_idx]):
+                        fc = _parse_json_action(after[:close_idx])
+                        if fc:
+                            yield fc
+                        remainder = after[close_idx + len(_ct):]
+                        if remainder:
+                            cleaned_r, more_calls = _extract_actions_from_text(remainder)
+                            for fc in more_calls:
+                                yield fc
+                            cleaned_r = _ORPHAN_TAG_RE.sub("", cleaned_r)
+                            if cleaned_r.strip():
+                                yield {"type": "answer", "text": cleaned_r}
+                    else:
+                        _action_buffer = after
+                        _in_action = True
+                    continue
 
             # Handle partial tool tags spanning chunks
             if _in_action:
                 _action_buffer += text
+                _dlog(f"BUFFER_APPEND | buf_len={len(_action_buffer)} | chunk={repr(text[:80])}")
 
                 # Select closing tag and extraction function based on provider
                 if _use_dsml:
@@ -368,7 +437,11 @@ async def normalize_stream(
                     _extract_fn = _extract_dsml_from_text
                     _check_complete = None  # DSML uses XML structure, not JSON completeness
                 else:
-                    _close_tag = "</" + "tool_call>"
+                    # Support both <tool_call and <action> close tags
+                    if "</action>" in _action_buffer:
+                        _close_tag = "</action>"
+                    else:
+                        _close_tag = "</" + "tool_call>"
                     _extract_fn = _extract_actions_from_text
                     _check_complete = json_structurally_complete
 
@@ -403,15 +476,20 @@ async def normalize_stream(
                 continue
 
             # Check if this chunk starts/contains a    <tool_call>  tag
-            _open_tag = "<" + "tool_call>"
-            if _open_tag in text:
+            # Supports both <tool_call (Hermes) and <action> (Qwen native).
+            _open_tag = None
+            for _ot_candidate in ["<" + "tool_call>", "<action>"]:
+                if _ot_candidate in text:
+                    _open_tag = _ot_candidate
+                    break
+            if _open_tag:
                 before, _, after = text.partition(_open_tag)
 
                 if before.strip():
                     yield {"type": "answer", "text": before}
 
-                # Search for closing tag, validate JSON completeness
-                _ct = "</" + "tool_call>"
+                # Select matching close tag
+                _ct = "</action>" if _open_tag == "<action>" else "</" + "tool_call>"
                 _sf = 0
                 _found_valid = False
                 while True:
@@ -498,24 +576,40 @@ async def normalize_stream(
                         partial = p
                         break
             else:
-                partial = _partial_tag_suffix(cleaned, "<" + "tool_call>")
-                if not partial:
-                    partial = _partial_tag_suffix(cleaned, "</" + "tool_call>")
+                # Check partial suffixes for both <tool_call and <action> tags
+                partial = None
+                for _pt in ["<" + "tool_call>", "</" + "tool_call>", "<action>", "</action>"]:
+                    p = _partial_tag_suffix(cleaned, _pt)
+                    if p:
+                        partial = p
+                        break
             if partial:
+                _dlog(f"PARTIAL_HOLD | partial={repr(partial)} | cleaned_tail={repr(cleaned[-30:])}")
                 _pending_prefix = partial
                 cleaned = cleaned[: -len(partial)]
+            else:
+                _dlog(f"NO_PARTIAL | cleaned_tail={repr(cleaned[-30:])}")
 
+            # Safety net: strip any orphaned action/tool_call tags that
+            # leaked through chunk-boundary races or prefix reassembly.
+            _pre_orphan = cleaned
+            cleaned = _ORPHAN_TAG_RE.sub("", cleaned)
+            if cleaned != _pre_orphan:
+                _dlog(f"ORPHAN_STRIP | before={repr(_pre_orphan[-50:])} | after={repr(cleaned[-50:])}")
             if cleaned.strip():
+                _dlog(f"YIELD_ANSWER | source=final | text={repr(cleaned[:80])}")
                 yield {"type": "answer", "text": cleaned}
             continue
 
         # -- Done: flush accumulated state --
         if etype == "done":
+            _dlog(f"STREAM_DONE | in_action={_in_action} | buf_len={len(_action_buffer)} | pending={repr(_pending_prefix)}")
             if _in_action and _action_buffer:
                 fmt = "DSML" if _use_dsml else "tool_call"
                 logger.warning("Discarding incomplete %s buffer at stream end: %s", fmt, _action_buffer[:100])
                 _action_buffer = ""
                 _in_action = False
+            _debug_fh.close()
 
             for _idx in sorted(_tc_accum):
                 acc = _tc_accum[_idx]

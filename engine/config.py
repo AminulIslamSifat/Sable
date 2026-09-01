@@ -545,17 +545,17 @@ def get_qwen_tokens_for_account(account: str | None = None) -> dict[str, str] | 
         valid = [e for e in entries if e.get("cookies")]
         return valid[-1] if valid else None
 
-    if account and account in store:
-        tok = _latest(store[account])
-        if tok:
-            return tok
+    # Explicit account: strict lookup only. No fallback.
+    if account is not None:
+        entries = store.get(account)
+        if not entries:
+            return None
+        return _latest(entries)
+
+    # No explicit account: fall back to active account only.
     active = _resolve_active_account()
     if active in store:
         tok = _latest(store[active])
-        if tok:
-            return tok
-    for entries in store.values():
-        tok = _latest(entries)
         if tok:
             return tok
     return None
@@ -566,17 +566,13 @@ def save_qwen_tokens_for_account(
     bx_ua: str,
     bx_umidtoken: str,
     account: str | None = None,
-    jwt_token: str | None = None,
 ) -> None:
-    """Save Qwen WAF tokens + JWT for an account. Replaces any existing entry (1 per account)."""
+    """Save Qwen WAF tokens for an account. Replaces any existing entry (1 per account)."""
     if not cookies:
         return
     acct = account or _resolve_active_account()
-    entry: dict[str, str] = {"cookies": cookies, "bx_ua": bx_ua, "bx_umidtoken": bx_umidtoken}
-    if jwt_token:
-        entry["jwt_token"] = jwt_token
     store = load_qwen_token_store()
-    store[acct] = [entry]
+    store[acct] = [{"cookies": cookies, "bx_ua": bx_ua, "bx_umidtoken": bx_umidtoken}]
     save_qwen_token_store(store)
 
 

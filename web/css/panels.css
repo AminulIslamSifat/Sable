@@ -1221,6 +1221,10 @@ textarea:disabled {
   transition: transform 0.3s ease, opacity 0.3s ease, visibility 0.3s ease;
   z-index: 999;
   pointer-events: none;
+  max-width: min(90vw, 600px);
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  white-space: normal;
 }
 #toast.show {
   transform: translateX(-50%) translateY(0);

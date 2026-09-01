@@ -69,6 +69,9 @@ def models() -> dict[str, list[dict[str, Any]]]:
     if scraper_cfg.get("enabled") and scraper_cfg.get("engine_type") == "deepseek":
         return {"models": DEEPSEEK_MODELS}
     all_models = get_all_models()
+    if scraper_cfg.get("enabled") and scraper_cfg.get("engine_type") == "qwen":
+        # In Qwen scraper mode, only show native Qwen models (no api_backend)
+        all_models = [m for m in all_models if not m.get("api_backend")]
     return {
         "models": [
             {

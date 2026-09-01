@@ -1018,7 +1018,21 @@ async def list_accounts() -> dict[str, Any]:
     accounts = await asyncio.to_thread(_scan)
     from engine.config import get_active_account as _get_active
     active = _get_active()
-    return {"accounts": accounts, "active": active}
+    _settings = _read_system_settings()
+    return {
+        "accounts": accounts,
+        "active": active,
+        "auto_switch_enabled": _settings.get("account_auto_switch_enabled", True),
+    }
+
+@router.post("/api/settings/accounts/auto-switch-toggle")
+async def toggle_auto_switch(payload: dict[str, Any]) -> dict[str, Any]:
+    """Toggle account auto-switch on/off."""
+    enabled = payload.get("enabled", True)
+    _settings = _read_system_settings()
+    _settings["account_auto_switch_enabled"] = bool(enabled)
+    _write_system_settings(_settings)
+    return {"auto_switch_enabled": bool(enabled)}
 
 @router.post("/api/settings/accounts/switch")
 async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
@@ -1029,16 +1043,16 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
     if not target_path.is_dir():
         raise HTTPException(status_code=404, detail=f"Profile directory '{target_name}' not found")
     # Resolve old profile before switching (for post-switch strip)
-    from engine.config import get_active_account as _get_act, set_active_account as _set_act, _SYSTEM as _SYS
+    from engine.config import get_active_account as _get_act, set_active_account, _SYSTEM as _SYS
     old_profile: Path | None = None
     current_active = _get_act()
     current_path = _SYS / current_active
     if current_path != target_path and current_path.is_dir():
         old_profile = current_path
 
-    await service.close()
     try:
-        _set_act(target_name)
+        await service.close()
+        set_active_account(target_name)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Switch failed: {exc}")
 
@@ -1092,36 +1106,9 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
     return {"status": "ok", "active": target_name, "email": email}
 
 
-_chrome_executable_cache: str | None = None
-
-
-async def _get_chrome_executable() -> str:
-    """Resolve Playwright's bundled Chromium binary path (cached after first call)."""
-    global _chrome_executable_cache
-    if _chrome_executable_cache is not None:
-        return _chrome_executable_cache
-
-    # Start a throwaway Playwright instance just to get the binary path,
-    # then stop it immediately. The actual browser launch uses subprocess.
-    from playwright.async_api import async_playwright
-    pw = await async_playwright().start()
-    path = pw.chromium.executable_path
-    await pw.stop()
-
-    _chrome_executable_cache = path
-    return path
-
-
 @router.post("/api/settings/accounts/create")
 async def create_account() -> dict[str, Any]:
-    """Find next available acc integer, create profile dir, and open headed browser.
-
-    Launches Chromium as a detached subprocess — no Playwright connection held.
-    The browser runs independently and survives Sable restarts.
-    """
-    import sys
-    _is_windows = sys.platform == "win32"
-
+    """Find next available acc integer and launch browser_opener headed."""
     def _next_acc() -> int:
         existing: set[int] = set()
         for d in _SYSTEM_DIR.iterdir():
@@ -1135,45 +1122,20 @@ async def create_account() -> dict[str, Any]:
 
     acc_num = await asyncio.to_thread(_next_acc)
     profile_name = f"browser-data-acc{acc_num}"
-    target_path = _SYSTEM_DIR / profile_name
-    target_path.mkdir(parents=True, exist_ok=True)
 
-    url = "https://chat.qwen.ai"
-
-    # Launch Chromium as a detached subprocess — no Playwright connection held.
-    launch_args = [
-        "--disable-blink-features=AutomationControlled",
-        "--disk-cache-size=2097152",
-        "--disable-gpu-shader-cache",
-        "--disable-component-update",
-        f"--user-data-dir={target_path}",
-        url,
-    ]
-    if not _is_windows:
-        launch_args.insert(0, "--no-sandbox")
+    def _launch() -> None:
+        subprocess.Popen(
+            ["uv", "run", "python", "engine/account_login.py", profile_name],
+            cwd=str(BASE_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     try:
-        chrome_path = await _get_chrome_executable()
-        proc = await asyncio.create_subprocess_exec(
-            chrome_path, *launch_args,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        logger.info("Created and opened new account %s (pid=%d)", profile_name, proc.pid)
-        return {"status": "ok", "profile": profile_name}
-    except Exception as e:
-        logger.error("Browser create FAILED for %s: %s", profile_name, e, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"Failed to open browser for {profile_name}: {e}\n\n"
-                f"Troubleshooting:\n"
-                f"1. Run 'uv run playwright install chromium'\n"
-                f"2. On Windows, install VC++ Redistributable: winget install Microsoft.VCRedist.2015+.x64\n"
-                f"3. Check no other process locks: {target_path}"
-            ),
-        )
+        await asyncio.to_thread(_launch)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to launch browser_opener: {exc}")
+    return {"status": "ok", "profile": profile_name}
 
 
 @router.delete("/api/settings/accounts/delete")
@@ -1209,20 +1171,9 @@ async def delete_account(payload: dict[str, str]) -> dict[str, Any]:
     return {"status": "ok", "deleted": target_name}
 
 
-# Detached browser launches — no persistent Playwright connection needed.
-# Browsers run independently via subprocess and survive Sable restarts.
-
-
 @router.post("/api/settings/accounts/open")
 async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
-    """Launch a headed browser with the specified account profile.
-
-    Launches Chromium as a detached subprocess — no Playwright connection held.
-    The browser runs independently and survives Sable restarts.
-    """
-    import sys
-    _is_windows = sys.platform == "win32"
-
+    """Launch a headful browser with the specified profile."""
     target_name = payload.get("profile", "")
     if not re.match(r"^browser-data-acc\d+$", target_name):
         raise HTTPException(status_code=400, detail="Invalid profile name")
@@ -1232,40 +1183,30 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
 
     url = payload.get("url", "https://chat.qwen.ai")
 
-    # Launch Chromium as a detached subprocess — no Playwright connection held.
-    launch_args = [
-        "--disable-blink-features=AutomationControlled",
-        "--disk-cache-size=2097152",
-        "--disable-gpu-shader-cache",
-        "--disable-component-update",
-        f"--user-data-dir={target_path}",
-        url,
-    ]
-    if not _is_windows:
-        launch_args.insert(0, "--no-sandbox")
+    async def _run_browser() -> None:
+        from playwright.async_api import async_playwright
+        try:
+            async with async_playwright() as p:
+                context = await p.chromium.launch_persistent_context(
+                    user_data_dir=str(target_path),
+                    headless=False,
+                    timeout=0,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-blink-features=AutomationControlled",
+                        "--disk-cache-size=2097152",
+                        "--disable-gpu-shader-cache",
+                        "--disable-component-update",
+                    ],
+                )
+                page = context.pages[0] if context.pages else await context.new_page()
+                await page.goto(url, timeout=120000)
+                await context.wait_for_event("close", timeout=0)
+        except Exception as e:
+            logger.warning(f"Browser for {target_name} exited: {e}")
 
-    try:
-        chrome_path = await _get_chrome_executable()
-        proc = await asyncio.create_subprocess_exec(
-            chrome_path, *launch_args,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        logger.info("Opened browser for %s at %s (pid=%d)", target_name, url, proc.pid)
-        return {"status": "opened", "profile": target_name, "url": url}
-    except Exception as e:
-        logger.error("Browser open FAILED for %s: %s", target_name, e, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"Failed to open browser for {target_name}: {e}\n\n"
-                f"Troubleshooting:\n"
-                f"1. Run 'uv run playwright install chromium'\n"
-                f"2. Check no other process locks: {target_path}\n"
-                f"3. On Windows, ensure Playwright is in the same Python env"
-            ),
-        )
+    asyncio.create_task(_run_browser())
+    return {"status": "opened", "profile": target_name, "url": url}
 
 
 _SERVICE_NAME = "sable.service"

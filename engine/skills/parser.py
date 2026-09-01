@@ -350,8 +350,9 @@ class SkillParser:
     for the engine to dispatch through the middleware pipeline.
     """
 
-    _ACTION_OPEN = re.compile(r"<\s*tool_calls?\s*>", re.I)
-    _ACTION_CLOSE = re.compile(r"<\s*/\s*tool_calls?\s*>", re.I)
+    # Supports both <tool_call (Hermes) and <action> (Qwen native) wrappers.
+    _ACTION_OPEN = re.compile(r"(?:<\s*tool_calls?\s*>|<\s*action\s*>)", re.I)
+    _ACTION_CLOSE = re.compile(r"(?:<\s*/\s*tool_calls?\s*>|<\s*/\s*action\s*>)", re.I)
     _TOOL_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
 
     # DSML (DeepSeek Markup Language) patterns — tolerates missing leading ｜,
@@ -379,6 +380,14 @@ class SkillParser:
     _LEGACY_BLOCK_OPEN = re.compile(r"<tool_calls\s*>", re.I)
     _LEGACY_BLOCK_CLOSE = re.compile(r"</tool_calls\s*>", re.I)
 
+    # Safety net regex for orphaned tags in bare-JSON prefix text.
+    # Also catches bare fragments like "action>" or "tool_call>" that result
+    # from </ being consumed by partial-tag detection in a prior chunk.
+    _ORPHAN_TAG_RE = re.compile(
+        r'(?:</?\s*(?:action|tool_calls?)\s*>|(?:^|(?<=[\s</]))(?:action|tool_calls?)\s*>)',
+        re.IGNORECASE,
+    )
+
     def __init__(self, known_tags: tuple[str, ...] | None = None) -> None:
         self._known_tags = set(known_tags or KNOWN_TAGS)
         self.buf = ""
@@ -386,6 +395,11 @@ class SkillParser:
         self._in_dsml = False
         self._pending_tag: str | None = None
         self._last_progress: tuple[int, int] = (0, 0)
+
+    @classmethod
+    def _strip_orphan_tags(cls, text: str) -> str:
+        """Remove orphaned action/tool_call tags from prose text."""
+        return cls._ORPHAN_TAG_RE.sub("", text)
 
     def feed(self, text: str) -> Generator[dict[str, Any], None, None]:
         """Feed a chunk of streamed text. Yields events as calls/prose are resolved."""
@@ -505,7 +519,7 @@ class SkillParser:
                                 if _bare_calls:
                                     _plog(f"BARE_JSON_TOOL_CALL: parsed {len(_bare_calls)} calls at offset {_scan_i}")
                                     if _scan_i > 0 and self.buf[:_scan_i].strip():
-                                        yield {"type": "text", "text": self.buf[:_scan_i]}
+                                        yield {"type": "text", "text": self._strip_orphan_tags(self.buf[:_scan_i])}
                                     self.buf = _candidate[_json_end_idx:]
                                     self._pending_tag = None
                                     self._last_progress = (0, 0)
@@ -532,7 +546,7 @@ class SkillParser:
                                     if _looks_like_tool_call:
                                         _plog(f"BARE_JSON_PARSE_ERROR: offset={_scan_i} len={len(_json_str)}")
                                         if _scan_i > 0 and self.buf[:_scan_i].strip():
-                                            yield {"type": "text", "text": self.buf[:_scan_i]}
+                                            yield {"type": "text", "text": self._strip_orphan_tags(self.buf[:_scan_i])}
                                         self.buf = _candidate[_json_end_idx:]
                                         yield {
                                             "type": "parse_error",
@@ -545,7 +559,7 @@ class SkillParser:
                                         # Not a tool call — treat as prose, skip past this bracket block
                                         _plog(f"BARE_JSON_NON_TOOL: offset={_scan_i} len={len(_json_str)} | preview={repr(_json_str[:80])}")
                                         if _scan_i > 0 and self.buf[:_scan_i].strip():
-                                            yield {"type": "text", "text": self.buf[:_scan_i]}
+                                            yield {"type": "text", "text": self._strip_orphan_tags(self.buf[:_scan_i])}
                                         # Emit the bracket content as text and continue scanning
                                         yield {"type": "text", "text": _json_str}
                                         self.buf = _candidate[_json_end_idx:]
@@ -554,7 +568,7 @@ class SkillParser:
                             else:
                                 # Incomplete JSON at _scan_i — emit preceding text, hold rest
                                 if _scan_i > 0:
-                                    yield {"type": "text", "text": self.buf[:_scan_i]}
+                                    yield {"type": "text", "text": self._strip_orphan_tags(self.buf[:_scan_i])}
                                     self.buf = self.buf[_scan_i:]
                                 _bare_hold = True
                                 break
@@ -584,7 +598,7 @@ class SkillParser:
                         _is_dsml_delimiters_only = bool(tail) and not _tail_norm and all(
                             c in "\uff5c|_" for c in tail
                         )
-                        _legacy_prefixes = ("tool_call", "tool_calls", "invoke", "parameter")
+                        _legacy_prefixes = ("action", "tool_call", "tool_calls", "invoke", "parameter")
                         _open_match = (
                             tail == ""
                             or _is_dsml_delimiters_only
@@ -606,7 +620,7 @@ class SkillParser:
                             self.buf = self.buf[idx:]
                             break
                     if self.buf:
-                        yield {"type": "text", "text": self.buf}
+                        yield {"type": "text", "text": self._strip_orphan_tags(self.buf)}
                         self.buf = ""
                     break
                 # Found action open — emit prose before it, validate JSON before entering action mode
