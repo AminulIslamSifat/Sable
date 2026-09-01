@@ -1156,7 +1156,7 @@
             _enqueueAnswer(text);
           }
         },
-        replaceWithRateLimit(message, hours) {
+        replaceWithRateLimit(message, hours, debugInfo) {
           hidePending();
           // Kill typewriter queues immediately — don't flush partial content
           if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
@@ -1177,17 +1177,30 @@
           ensureAnswer();
           answerEl.classList.remove('streaming');
           const h = hours || '?';
+          const dbg = debugInfo || {};
+          const debugHtml = dbg.account ? `
+              <div class="card-debug-info">
+                <span class="cdi-label">Service Account</span><span class="cdi-value">${dbg.account}</span>
+                <span class="cdi-label">Override</span><span class="cdi-value">${dbg.account_override || 'none'}</span>
+                <span class="cdi-label">Active File</span><span class="cdi-value">${dbg.active_account_file || '—'}</span>
+                <span class="cdi-label">Browser Data</span><span class="cdi-value cdi-path">${dbg.browser_data_dir || '—'}</span>
+                <span class="cdi-label">Cookie Snippet</span><span class="cdi-value cdi-cookies">${dbg.cookie_snippet || 'none'}</span>
+                <span class="cdi-label">bx_ua</span><span class="cdi-value">${dbg.has_bx_ua ? '✅' : '❌'}</span>
+                <span class="cdi-label">bx_umidtoken</span><span class="cdi-value">${dbg.has_bx_umidtoken ? '✅' : '❌'}</span>
+                ${dbg.error ? `<span class="cdi-label">Error</span><span class="cdi-value cdi-error">${dbg.error}</span>` : ''}
+              </div>` : '';
           answerContent.innerHTML = `
             <div class="rate-limit-card">
               <span class="rl-icon">⏳</span>
               <span class="rl-title">Daily Usage Limit Reached</span>
               <span class="rl-detail">${message || 'You have reached the upper limit for today\'s usage.'}</span>
               <span class="rl-timer">Try again in ~${h} hour${h === 1 ? '' : 's'}. This message will stay visible so you don't miss it.</span>
+              ${debugHtml}
             </div>`;
           raw = "\u200B"; // non-empty so closeAnswer() won't remove the card
           scrollBottom();
         },
-        replaceWithCaptchaBlock(message) {
+        replaceWithCaptchaBlock(message, debugInfo) {
           hidePending();
           if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
           _thinkQueue = "";
@@ -1204,12 +1217,25 @@
           }
           ensureAnswer();
           answerEl.classList.remove('streaming');
+          const dbg = debugInfo || {};
+          const debugHtml = dbg.account ? `
+              <div class="card-debug-info">
+                <span class="cdi-label">Service Account</span><span class="cdi-value">${dbg.account}</span>
+                <span class="cdi-label">Override</span><span class="cdi-value">${dbg.account_override || 'none'}</span>
+                <span class="cdi-label">Active File</span><span class="cdi-value">${dbg.active_account_file || '—'}</span>
+                <span class="cdi-label">Browser Data</span><span class="cdi-value cdi-path">${dbg.browser_data_dir || '—'}</span>
+                <span class="cdi-label">Cookie Snippet</span><span class="cdi-value cdi-cookies">${dbg.cookie_snippet || 'none'}</span>
+                <span class="cdi-label">bx_ua</span><span class="cdi-value">${dbg.has_bx_ua ? '✅' : '❌'}</span>
+                <span class="cdi-label">bx_umidtoken</span><span class="cdi-value">${dbg.has_bx_umidtoken ? '✅' : '❌'}</span>
+                ${dbg.error ? `<span class="cdi-label">Error</span><span class="cdi-value cdi-error">${dbg.error}</span>` : ''}
+              </div>` : '';
           answerContent.innerHTML = `
             <div class="captcha-block-card">
               <span class="cb-icon">🛡️</span>
               <span class="cb-title">Captcha / WAF Challenge Hit</span>
               <span class="cb-detail">${message || 'Qwen rejected this request with a captcha or WAF validation challenge.'}</span>
               <span class="cb-note">The request was stopped so you can switch/refresh the account or solve the challenge manually.</span>
+              ${debugHtml}
             </div>`;
           raw = "\u200B";
           scrollBottom();
@@ -1597,11 +1623,11 @@
             }
           } else if (evt.type === "rate_limited") {
             gotError = true;
-            ui.replaceWithRateLimit(evt.message, evt.hours);
+            ui.replaceWithRateLimit(evt.message, evt.hours, evt);
             break;
           } else if (evt.type === "waf_blocked") {
             gotError = true;
-            ui.replaceWithCaptchaBlock(evt.message);
+            ui.replaceWithCaptchaBlock(evt.message, evt);
             break;
           } else if (evt.type === "error") {
             gotError = true;

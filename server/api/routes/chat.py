@@ -33,6 +33,19 @@ def _auto_switch_enabled() -> bool:
         return True  # default to enabled on error
 
 
+def _build_account_debug_info() -> dict[str, Any]:
+    """Build debug info from the LIVE service singleton, not the config file.
+
+    This shows what the running ChatService is *actually* using — which may
+    differ from .active_account if the singleton wasn't properly updated.
+    """
+    try:
+        from server.api.dependencies import service
+        return service._get_debug_account_info()
+    except Exception as _dbg_exc:
+        return {"account": "unknown", "error": str(_dbg_exc)}
+
+
 def _reconstruct_message_content(msg: dict[str, Any]) -> str:
     """Reconstruct full message content including skill event outputs.
 
@@ -1435,7 +1448,7 @@ async def chat(request: ChatRequest):
                             if _main_timeout_retries >= 2:
                                 # Synthesize waf_blocked to trigger auto-switch
                                 yield sse({"type": "status", "message": "first_chunk_timeout_triggering_switch"})
-                                event = {"type": "waf_blocked", "message": "No response within 15s after 2 attempts — connection hung"}
+                                event = {"type": "waf_blocked", "message": "No response within 15s after 2 attempts — connection hung", **_build_account_debug_info()}
                                 # Fall through to normal event handling below
                             else:
                                 # Retry: close current service, re-create stream
@@ -1446,7 +1459,7 @@ async def chat(request: ChatRequest):
                                         round_event_source = _connector.stream_chat(**_stream_kwargs)
                                     except Exception as _retry_exc:
                                         logger.warning("[main-stream] API retry failed: %s", _retry_exc)
-                                        event = {"type": "waf_blocked", "message": f"API retry failed: {_retry_exc}"}
+                                        event = {"type": "waf_blocked", "message": f"API retry failed: {_retry_exc}", **_build_account_debug_info()}
                                 else:
                                     # Qwen scraper path
                                     try:
@@ -1474,7 +1487,7 @@ async def chat(request: ChatRequest):
                             logger.warning("[main-stream] Stall timeout (%ds) after first chunk for chat %s",
                                            _MAIN_STALL_TIMEOUT, active_chat_id)
                             yield sse({"type": "status", "message": "stream_stall_timeout_triggering_switch"})
-                            event = {"type": "waf_blocked", "message": f"Stream stalled for {_MAIN_STALL_TIMEOUT}s mid-response — connection died"}
+                            event = {"type": "waf_blocked", "message": f"Stream stalled for {_MAIN_STALL_TIMEOUT}s mid-response — connection died", **_build_account_debug_info()}
                             # Fall through to auto-switch handler
                     except StopAsyncIteration:
                         # --- Empty response detection & retry ---
@@ -1494,7 +1507,7 @@ async def chat(request: ChatRequest):
                                         round_event_source = _connector.stream_chat(**_stream_kwargs)
                                     except Exception as _retry_exc:
                                         logger.warning("[main-stream] API empty-retry failed: %s", _retry_exc)
-                                        event = {"type": "empty_exhausted", "message": f"API retry failed: {_retry_exc}"}
+                                        event = {"type": "empty_exhausted", "message": f"API retry failed: {_retry_exc}", **_build_account_debug_info()}
                                 else:
                                     # Qwen scraper path
                                     try:
@@ -1527,7 +1540,7 @@ async def chat(request: ChatRequest):
                                     yield sse({"type": "status", "message": "empty_response_exhausted_triggering_switch"})
                                     # Synthesize empty_exhausted event — triggers auto-switch WITHOUT
                                     # marking captcha-blocked (empty ≠ captcha; could be transient)
-                                    event = {"type": "empty_exhausted", "message": f"Empty response after {_EMPTY_RESPONSE_MAX_RETRIES} retries — possible silent block"}
+                                    event = {"type": "empty_exhausted", "message": f"Empty response after {_EMPTY_RESPONSE_MAX_RETRIES} retries — possible silent block", **_build_account_debug_info()}
                                     _should_break = False  # don't break — let event handling below catch this
                                 else:
                                     # Auto-switch OFF or API backend → just fail cleanly
@@ -1738,7 +1751,7 @@ async def chat(request: ChatRequest):
                             logger.warning("[main-stream] Generic error looks like %s, escalating to auto-switch: %s",
                                            "rate_limit" if _is_rate_limit else "captcha", error_message[:200])
                             # Rewrite event type so the auto-switch block below catches it
-                            event = {**event, "type": "rate_limited" if _is_rate_limit else "waf_blocked"}
+                            event = {**event, "type": "rate_limited" if _is_rate_limit else "waf_blocked", **_build_account_debug_info()}
                             event_type = event["type"]
                             # Fall through to rate_limited/waf_blocked handler below
                         else:
@@ -1765,6 +1778,7 @@ async def chat(request: ChatRequest):
                             _resolve_active_account as _get_active,
                             mark_account_captcha_blocked,
                             mark_account_exhausted,
+                            _SYSTEM as _SYS,
                         )
                         _current_acc = _get_active()
 
@@ -1806,6 +1820,11 @@ async def chat(request: ChatRequest):
                             try:
                                 await service.close()
                                 set_active_account(_next_acc)
+                                # Update singleton service internals so subsequent
+                                # requests use the new account's browser profile.
+                                _next_path = _SYS / _next_acc
+                                service._browser.user_data_dir = str(_next_path)
+                                service._account_override = _next_acc
                                 logger.info("[auto-switch] Active account updated to %s", _next_acc)
                             except Exception as _sw_exc:
                                 logger.error("[auto-switch] Account switch failed: %s", _sw_exc)
