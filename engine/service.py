@@ -5,7 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import signal
+import sys
 from collections.abc import AsyncGenerator
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +27,28 @@ from engine.session import BrowserManager, create_new_chat
 
 logger = logging.getLogger("sable")
 
+# --- Raw response logger (Qwen only, server path) ---
+_QWEN_LOG_DIR = Path(__file__).resolve().parent.parent / "output" / "qwen_raw"
+_QWEN_LOG_DIR.mkdir(parents=True, exist_ok=True)
+_QWEN_CHUNK_DIR = _QWEN_LOG_DIR.parent / "qwen_chunks"
+_QWEN_CHUNK_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _log_qwen_raw_line(line: str) -> None:
+    """Append a single raw SSE line to today's log file."""
+    logfile = _QWEN_LOG_DIR / f"{datetime.now():%Y-%m-%d}.txt"
+    with open(logfile, "a", encoding="utf-8") as f:
+        f.write(f"[{datetime.now():%H:%M:%S.%f}] {line}\n")
+
+
+def _log_qwen_stream_chunk(phase: str, content: str) -> None:
+    """Log a single parsed streaming content delta."""
+    if not content:
+        return
+    logfile = _QWEN_CHUNK_DIR / f"{datetime.now():%Y-%m-%d}.txt"
+    with open(logfile, "a", encoding="utf-8") as f:
+        f.write(f"[{datetime.now():%H:%M:%S.%f}] [{phase}] {content!r}\n")
+
 
 
 class ChatService:
@@ -36,23 +62,14 @@ class ChatService:
 
     def __init__(self, user_data_dir: str | None = None) -> None:
         if user_data_dir is None:
-            from engine.config import get_browser_data_dir
-            user_data_dir = str(get_browser_data_dir())
+            from engine.config import BROWSER_DATA_DIR
+            user_data_dir = str(BROWSER_DATA_DIR)
         self._browser = BrowserManager(user_data_dir=user_data_dir)
         self._headers: dict[str, str] | None = None
         # Which account self._headers belong to (guards against fast double-switch
         # races where a stale in-memory header set outlives the active symlink).
         self._headers_account: str | None = None
         self._lock = asyncio.Lock()
-        # FIX #1: Cross-request auto-switch serialization lock.
-        # Prevents concurrent requests from entering the auto-switch block
-        # simultaneously, which would cause them to select the same next account
-        # and create duplicate sessions on it.
-        self._auto_switch_lock = asyncio.Lock()
-        # FIX #5: In-flight profile reference counter.
-        # Tracks how many active streams are using each account's profile.
-        # Background tasks must not destroy a profile while it's in use.
-        self._in_flight_profiles: dict[str, int] = {}
         # Derive account name from user_data_dir for token lookup
         # e.g. ".../system/browser-data-acc3" → "browser-data-acc3"
         import re
@@ -62,27 +79,26 @@ class ChatService:
         else:
             self._account_override = None
 
-    def _sync_browser_data_dir(self) -> None:
-        """Re-sync BrowserManager's user_data_dir with the current active account.
-
-        Called before header resolution to catch external .active_account changes
-        (e.g. settings UI update) without requiring a server restart.
-        Skipped when an explicit _account_override is pinned via switch_account().
-        """
-        if self._account_override is not None:
-            return  # pinned account — don't drift
-        from engine.config import get_browser_data_dir
-        current_dir = str(get_browser_data_dir())
-        if current_dir != self._browser.user_data_dir:
-            logger.info(
-                "[service] Active account changed externally: %s → %s",
-                Path(self._browser.user_data_dir).name,
-                Path(current_dir).name,
-            )
-            self._browser.user_data_dir = current_dir
-            # Invalidate cached headers so they're re-fetched for the new account
-            self._headers = None
-            self._headers_account = None
+    def _get_debug_account_info(self) -> dict:
+        """Return debug info about which account/browser profile is actually being used."""
+        from engine.config import _resolve_active_account
+        account = self._account_override or _resolve_active_account()
+        browser_dir = str(self._browser.user_data_dir) if self._browser else "unknown"
+        # Get cached token snippet (first 40 chars of cookies for identification)
+        from engine.config import get_qwen_tokens_for_account
+        tok = get_qwen_tokens_for_account(account)
+        cookie_snippet = (tok.get("cookies", "")[:60] + "...") if tok and tok.get("cookies") else "none"
+        has_bx_ua = bool(tok and tok.get("bx_ua"))
+        has_umid = bool(tok and tok.get("bx_umidtoken"))
+        return {
+            "account": account,
+            "account_override": self._account_override,
+            "active_account_file": _resolve_active_account(),
+            "browser_data_dir": browser_dir,
+            "cookie_snippet": cookie_snippet,
+            "has_bx_ua": has_bx_ua,
+            "has_bx_umidtoken": has_umid,
+        }
 
     def _mark_exhausted(self) -> None:
         """Mark the current account as quota-exhausted."""
@@ -96,26 +112,6 @@ class ChatService:
             self._headers = None
             self._headers_account = None
 
-    async def switch_account(self, account_name: str) -> None:
-        """Switch to a different browser account.
-
-        Closes the current browser, updates the active account file,
-        re-points the BrowserManager at the new profile directory,
-        and clears cached headers so _ensure_headers fetches fresh ones.
-        """
-        from engine.config import set_active_account, get_browser_data_dir
-        async with self._lock:
-            await self._browser.close()
-            self._headers = None
-            self._headers_account = None
-            # Persist + update in-memory override
-            set_active_account(account_name)
-            self._account_override = account_name
-            # Re-point browser manager at new profile
-            new_data_dir = str(get_browser_data_dir())
-            self._browser.user_data_dir = new_data_dir
-            logger.info("[service] Switched to account %s (data_dir=%s)", account_name, new_data_dir)
-
     async def restart_browser(self, headless: bool | None = None) -> None:
         async with self._lock:
             await self._browser.restart(headless=headless)
@@ -127,65 +123,53 @@ class ChatService:
         return self._browser.headless
 
     async def _ensure_headers(self) -> dict[str, str]:
-        self._sync_browser_data_dir()
         from engine.config import _resolve_active_account
         account = self._account_override or _resolve_active_account()
         # Fast path: headers for THIS account already in memory
         if self._headers and self._headers_account == account:
             return self._headers
-        # Medium path: check per-account token cache before launching browser.
-        # ALL critical fields must be present — partial cache (e.g. cookies
-        # without JWT) means we must refresh via browser.
+        # Medium path: check per-account token cache before launching browser
         cached = get_qwen_tokens_for_account(account)
-        if cached and cached.get("cookies") and cached.get("jwt_token"):
+        if cached and cached.get("cookies"):
             from engine.session import build_headers
             self._headers = build_headers(
                 cookies=cached["cookies"],
                 bx_ua=cached.get("bx_ua"),
                 bx_umidtoken=cached.get("bx_umidtoken"),
-                jwt_token=cached.get("jwt_token"),
             )
             self._headers_account = account
-            logger.info("Loaded cached Qwen WAF tokens for %s (jwt=%s)", account, bool(cached.get("jwt_token")))
+            logger.info("Loaded cached Qwen WAF tokens for %s", account)
             return self._headers
         # Slow path: launch browser to fetch fresh headers
         # (BrowserManager.start() guards against missing profiles)
         async with self._lock:
             if not self._headers or self._headers_account != account:
                 await self._browser.start()
-                try:
-                    self._headers = await self._browser.get_fresh_headers()
-                    self._headers_account = account
-                    # Save to per-account cache
-                    save_qwen_tokens_for_account(
-                        cookies=self._headers.get("Cookie", ""),
-                        bx_ua=self._headers.get("bx-ua", ""),
-                        bx_umidtoken=self._headers.get("bx-umidtoken", ""),
-                        account=account,
-                        jwt_token=self._headers.get("Authorization", "").removeprefix("Bearer ") or None,
-                    )
-                finally:
-                    await self._browser.close()
-            return self._headers
-
-    async def _refresh_headers(self) -> dict[str, str]:
-        async with self._lock:
-            await self._browser.start()
-            try:
                 self._headers = await self._browser.get_fresh_headers()
-                # Save refreshed tokens + JWT to per-account cache
-                from engine.config import _resolve_active_account
-                account = self._account_override or _resolve_active_account()
                 self._headers_account = account
+                # Save to per-account cache
                 save_qwen_tokens_for_account(
                     cookies=self._headers.get("Cookie", ""),
                     bx_ua=self._headers.get("bx-ua", ""),
                     bx_umidtoken=self._headers.get("bx-umidtoken", ""),
                     account=account,
-                    jwt_token=self._headers.get("Authorization", "").removeprefix("Bearer ") or None,
                 )
-            finally:
-                await self._browser.close()
+            return self._headers
+
+    async def _refresh_headers(self) -> dict[str, str]:
+        async with self._lock:
+            await self._browser.start()
+            self._headers = await self._browser.get_fresh_headers()
+            # Save refreshed tokens to per-account cache
+            from engine.config import _resolve_active_account
+            account = self._account_override or _resolve_active_account()
+            self._headers_account = account
+            save_qwen_tokens_for_account(
+                cookies=self._headers.get("Cookie", ""),
+                bx_ua=self._headers.get("bx-ua", ""),
+                bx_umidtoken=self._headers.get("bx-umidtoken", ""),
+                account=account,
+            )
             return self._headers
 
     async def warmup(self, account: str | None = None) -> None:
@@ -195,26 +179,22 @@ class ChatService:
         Pass account= to pin the target — background callers MUST, since the
         active-profile symlink can move between scheduling and execution.
         """
-        self._sync_browser_data_dir()
         from engine.config import _resolve_active_account
         account = account or self._account_override or _resolve_active_account()
         # Fast path: headers for this account already in memory
         if self._headers and self._headers_account == account:
             return
         # Medium path: per-account token cache on disk — no browser launch needed.
-        # ALL critical fields must be present (cookies + JWT); partial cache
-        # triggers a browser refresh to collect the missing pieces.
         cached = get_qwen_tokens_for_account(account)
-        if cached and cached.get("cookies") and cached.get("jwt_token"):
+        if cached and cached.get("cookies"):
             from engine.session import build_headers
             self._headers = build_headers(
                 cookies=cached["cookies"],
                 bx_ua=cached.get("bx_ua"),
                 bx_umidtoken=cached.get("bx_umidtoken"),
-                jwt_token=cached.get("jwt_token"),
             )
             self._headers_account = account
-            logger.info("Warmup: loaded cached Qwen WAF tokens for %s (no browser launch, jwt=%s)", account, bool(cached.get("jwt_token")))
+            logger.info("Warmup: loaded cached Qwen WAF tokens for %s (no browser launch)", account)
             return
         # Guard: no valid profile → skip browser launch entirely
         # Slow path: launch browser to fetch fresh headers
@@ -225,22 +205,17 @@ class ChatService:
                 if not self._headers or self._headers_account != account:
                     self._headers = await self._browser.get_fresh_headers()
                     self._headers_account = account
-                    # Persist WAF tokens + JWT to per-account cache
+                    # Persist WAF tokens to per-account cache
                     save_qwen_tokens_for_account(
                         cookies=self._headers.get("Cookie", ""),
                         bx_ua=self._headers.get("bx-ua", ""),
                         bx_umidtoken=self._headers.get("bx-umidtoken", ""),
                         account=account,
-                        jwt_token=self._headers.get("Authorization", "").removeprefix("Bearer ") or None,
                     )
             except Exception as exc:
                 logger.warning("Warmup failed: %s: %s", type(exc).__name__, exc)
                 self._headers = None
                 self._headers_account = None
-            finally:
-                # Close browser immediately — tokens are cached to disk;
-                # all subsequent ops use HTTP APIs, no live Chromium needed.
-                await self._browser.close()
 
     async def force_refresh_waf(self, account: str | None = None) -> None:
         """Always launch browser to collect fresh WAF tokens, ignoring cache.
@@ -248,7 +223,6 @@ class ChatService:
         Designed for post-switch background warmup — never blocks the main
         request path. Updates in-memory headers AND persists to disk cache.
         """
-        self._sync_browser_data_dir()
         from engine.config import _resolve_active_account
         account = account or self._account_override or _resolve_active_account()
         async with self._lock:
@@ -261,7 +235,6 @@ class ChatService:
                     bx_ua=self._headers.get("bx-ua", ""),
                     bx_umidtoken=self._headers.get("bx-umidtoken", ""),
                     account=account,
-                    jwt_token=self._headers.get("Authorization", "").removeprefix("Bearer ") or None,
                 )
                 logger.info("Force-refreshed WAF tokens for %s via browser", account)
             except Exception as exc:
@@ -274,15 +247,12 @@ class ChatService:
                         cookies=cached["cookies"],
                         bx_ua=cached.get("bx_ua"),
                         bx_umidtoken=cached.get("bx_umidtoken"),
-                        jwt_token=cached.get("jwt_token"),
                     )
                     self._headers_account = account
                     logger.info("Fell back to cached WAF tokens for %s", account)
                 else:
                     self._headers = None
                     self._headers_account = None
-            finally:
-                await self._browser.close()
 
     async def refresh_deepseek_token(self) -> str:
         """Extract a fresh DeepSeek token. Reuses an already-running browser
@@ -330,10 +300,10 @@ class ChatService:
         )
 
     async def sync_context(self, project_id: str | None = None) -> bool:
-        # Always resolve headers from cache first — never let sync_context
-        # trigger a browser launch on its own.
-        headers = await self._ensure_headers()
-        return await self._browser.sync_context(headers=headers, project_id=project_id)
+        # Reuse cached headers from warmup to avoid a redundant browser launch
+        if self._headers:
+            return await self._browser.sync_context(headers=self._headers, project_id=project_id)
+        return await self._browser.sync_context(project_id=project_id)
 
     async def _stop_upstream_generation(self, chat_id: str, response_id: str | None = None) -> bool:
         """Call Qwen's stop API to halt server-side token generation.
@@ -368,13 +338,7 @@ class ChatService:
         model: str | None = None,
         thinking_mode: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        # FIX #5: Track in-flight profile usage so background strip doesn't
-        # destroy a profile while a stream is actively using it.
-        _profile_key = getattr(self, '_account_override', None) or "__default__"
-        _in_flight = getattr(self, '_in_flight_profiles', None)
-        if _in_flight is not None:
-            _in_flight[_profile_key] = _in_flight.get(_profile_key, 0) + 1
-        print(f"[STREAM] ▶ stream_events START account={_profile_key} chat_id={chat_id} msg_len={len(message)} (in_flight={_in_flight.get(_profile_key, '?') if _in_flight else 'n/a'})")
+        print(f"[STREAM] ▶ stream_events START chat_id={chat_id} msg_len={len(message)}")
         try:
             print(f"[STREAM]   ↳ _ensure_headers()...")
             headers = await self._ensure_headers()
@@ -399,6 +363,7 @@ class ChatService:
             return
 
         print(f"[STREAM] ✓ active_chat_id={active_chat_id}, building body...")
+
         yield {"type": "meta", "chat_id": active_chat_id, "parent_id": parent_id}
         yield {"type": "status", "message": "calling_upstream"}
 
@@ -428,12 +393,7 @@ class ChatService:
         except Exception as exc:
             yield {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
         finally:
-            # FIX #5: Decrement in-flight counter when stream ends (normal or error).
-            _in_flight = getattr(self, '_in_flight_profiles', None)
-            if _in_flight is not None:
-                _in_flight[_profile_key] = max(0, _in_flight.get(_profile_key, 1) - 1)
-                if _in_flight[_profile_key] == 0:
-                    del _in_flight[_profile_key]
+            pass
 
     async def _stream_request(
         self,
@@ -486,6 +446,7 @@ class ChatService:
                                             "message": details,
                                             "hours": hours,
                                             "template": inner.get("template", ""),
+                                            **self._get_debug_account_info(),
                                         }
                                         return
                                     if code == "CHAT_NOT_FOUND":
@@ -531,6 +492,9 @@ class ChatService:
                                     line, buffer = buffer.split("\n", 1)
                                     line = line.strip()
 
+                                    # Log every raw SSE line before parsing
+                                    _log_qwen_raw_line(line)
+
                                     if not line.startswith("data: "):
                                         # Check for non-SSE JSON error responses (e.g. rate limit, WAF block)
                                         if line:
@@ -542,12 +506,8 @@ class ChatService:
                                                     ret_str = " ".join(str(r) for r in ret_list)
                                                     if "FAIL_SYS_USER_VALIDATE" in ret_str or "RGV587_ERROR" in ret_str:
                                                         logger.warning("WAF/captcha block detected: %s", ret_str[:200])
-                                                        yield {
-                                                            "type": "waf_blocked",
-                                                            "message": "Account blocked by WAF/captcha",
-                                                            "ret": ret_list,
-                                                        }
-                                                        return
+                                                        last_error_msg = f"WAF/captcha block: {ret_str[:200]}"
+                                                        break
                                                 if err_data.get("success") is False:
                                                     inner = err_data.get("data", {})
                                                     code = inner.get("code", "")
@@ -560,6 +520,7 @@ class ChatService:
                                                             "message": details,
                                                             "hours": hours,
                                                             "template": inner.get("template", ""),
+                                                            **self._get_debug_account_info(),
                                                         }
                                                         return
                                                     if code == "CHAT_NOT_FOUND":
@@ -643,16 +604,21 @@ class ChatService:
                                             new_parts = thoughts[_thinking_sent_count:]
                                             _thinking_sent_count = len(thoughts)
                                             if new_parts:
+                                                joined = "\n\n".join(new_parts)
+                                                _log_qwen_stream_chunk(phase, joined)
                                                 got_content = True
-                                                yield {"type": "thinking", "text": "\n\n".join(new_parts)}
+                                                yield {"type": "thinking", "text": joined}
                                         elif content:
+                                            _log_qwen_stream_chunk(phase, content)
                                             got_content = True
                                             yield {"type": "thinking", "text": content}
                                     elif phase == "answer" and content:
+                                        _log_qwen_stream_chunk(phase, content)
                                         got_content = True
                                         _answer_chars += len(content)
                                         yield {"type": "answer", "text": content}
                                     elif content:
+                                        _log_qwen_stream_chunk(phase or "unknown", content)
                                         got_content = True
                                         _answer_chars += len(content)
                                         yield {"type": "answer", "text": content}
@@ -714,12 +680,7 @@ class ChatService:
                             ret_str = " ".join(str(r) for r in ret_list)
                             if "FAIL_SYS_USER_VALIDATE" in ret_str or "RGV587_ERROR" in ret_str:
                                 logger.warning("WAF/captcha block detected in leftover: %s", ret_str[:200])
-                                yield {
-                                    "type": "waf_blocked",
-                                    "message": "Account blocked by WAF/captcha",
-                                    "ret": ret_list,
-                                }
-                                return
+                                last_error_msg = f"WAF/captcha block: {ret_str[:200]}"
                         if err_data.get("success") is False:
                             inner = err_data.get("data", {})
                             code = inner.get("code", "")
@@ -732,6 +693,7 @@ class ChatService:
                                     "message": details,
                                     "hours": hours,
                                     "template": inner.get("template", ""),
+                                    **self._get_debug_account_info(),
                                 }
                                 return
                             if code == "CHAT_NOT_FOUND":
@@ -764,12 +726,6 @@ class ChatService:
                 logger.warning("Rate-limit detected on attempt %d — skipping remaining retries", attempt)
                 yield {"type": "rate_limited", "message": last_error_msg, "hours": "?"}
                 return
-            if any(kw in _fail_lower for kw in ("captcha", "waf", "validate", "rgv587", "blocked", "forbidden")):
-                print(f"[STREAM]     ⚡ FAST-FAIL captcha/waf on attempt {attempt} — skipping retries")
-                logger.warning("WAF/captcha detected on attempt %d — skipping remaining retries", attempt)
-                yield {"type": "waf_blocked", "message": last_error_msg}
-                return
-
             if attempt < max_attempts:
                 logger.warning("Attempt %d failed: %s. Refreshing headers and retrying...", attempt, last_error_msg)
                 yield {"type": "status", "message": f"retrying_attempt_{attempt + 1}"}

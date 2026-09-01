@@ -1426,6 +1426,88 @@
       50% { border-color: var(--danger-bg); }
     }
 
+    /* ---------- captcha / WAF block card ---------- */
+
+    .captcha-block-card {
+      background: color-mix(in srgb, var(--warning, #f59e0b) 12%, transparent);
+      border: 1px solid var(--warning, #f59e0b);
+      border-radius: var(--radius-lg);
+      padding: var(--sp-7) var(--sp-8);
+      margin-top: var(--sp-4);
+      display: flex;
+      flex-direction: column;
+      gap: var(--sp-3);
+      animation: cb-pulse 2s ease-in-out infinite;
+    }
+
+    .captcha-block-card .cb-icon {
+      font-size: 28px;
+      line-height: 1;
+    }
+
+    .captcha-block-card .cb-title {
+      font-size: var(--font-size-system);
+      font-weight: 600;
+      color: var(--warning, #f59e0b);
+    }
+
+    .captcha-block-card .cb-detail {
+      font-size: var(--font-size-system);
+      color: var(--text-dim);
+      line-height: 1.5;
+    }
+
+    .captcha-block-card .cb-note {
+      font-size: var(--font-size-system);
+      color: var(--muted);
+      margin-top: var(--sp-2);
+    }
+
+    @keyframes cb-pulse {
+      0%, 100% { border-color: var(--warning, #f59e0b); }
+      50% { border-color: color-mix(in srgb, var(--warning, #f59e0b) 35%, transparent); }
+    }
+
+    /* ---------- Debug info inside error cards ---------- */
+
+    .card-debug-info {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 2px 8px;
+      margin-top: var(--sp-3);
+      padding-top: var(--sp-3);
+      border-top: 1px dashed color-mix(in srgb, var(--muted) 40%, transparent);
+      font-size: 11px;
+      line-height: 1.6;
+      opacity: 0.85;
+    }
+
+    .card-debug-info .cdi-label {
+      color: var(--muted);
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .card-debug-info .cdi-value {
+      color: var(--text-dim);
+      word-break: break-all;
+      font-family: var(--font-mono, monospace);
+    }
+
+    .card-debug-info .cdi-path {
+      font-size: 10px;
+      opacity: 0.75;
+    }
+
+    .card-debug-info .cdi-cookies {
+      font-size: 10px;
+      opacity: 0.7;
+    }
+
+    .card-debug-info .cdi-error {
+      color: var(--danger, #ef4444);
+    }
+
     /* --- Compact API/Scraper toggle (beside logo, thinking-switcher style) --- */
     .brand-row .mode-toggle-compact { margin-top: -3px; }
     .mode-toggle-compact {
