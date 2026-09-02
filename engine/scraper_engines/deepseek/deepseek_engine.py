@@ -465,18 +465,17 @@ class GhostChat:
                     pass
                 elif not self.system_injected:
                     instructions = self._load_instructions()
-                    markdown_instruction = "MOST IMPORTANT OF ALL\n START YOUR RESPONSE WITH ``` AND ENDS WITH ```, WRAP YOUR WHOLE RESPONSE WITH IT. DON'T USE ``` IN ANYWHERE ELSE IN YOUR RESPONSE."
                     # Memory is injected centrally by server.py — do NOT duplicate here.
                     if instructions:
-                        message = f"[SYSTEM INSTRUCTION]\n{instructions}\n\n{markdown_instruction}\n\n[USER MESSAGE]\n{message}"
+                        message = f"[SYSTEM INSTRUCTION]\n{instructions}\n\n[USER MESSAGE]\n{message}"
                     self.system_injected = True
                 else:
                     # Prepend a short quick reminder to every next user message
                     reminder = (
                         "[QUICK REMINDER]\n"
-                        "1. start your response with ``` and ends with ```, only two use of ``` in whole response.\n"
-                        "2. Use ~~~ for code blocks instead of ```, <execute_command> to run any command.\n"
-                        "3. Always use approtiate tag to run command or use skills.\n\n"
+                        "1. Use DSML format for all tool calls.\n"
+                        "2. Use <execute_command> to run any command.\n"
+                        "3. Always use appropriate tags to run commands or use skills.\n\n"
                     )
                     # Memory is injected centrally by server.py — do NOT duplicate here.
                     message = f"{reminder}[USER MESSAGE]\n{message}"
@@ -752,29 +751,9 @@ class GhostChat:
             console.print(f"[dim red]Setup failed: {e}[/dim red]")
 
     def _load_instructions(self) -> str:
-        parts: list[str] = []
-
-        # Load Maria.md first
-        maria_path = _INSTRUCTION_PATHS[0]
-        if os.path.exists(maria_path):
-            try:
-                with open(maria_path) as f:
-                    parts.append(f.read())
-            except Exception:
-                pass
-
-        # Memory is now injected per-message via semantic search (see send_msg)
-
-        # Load remaining instructions (output_format.md, skills.md)
-        for path in _INSTRUCTION_PATHS[1:]:
-            if os.path.exists(path):
-                try:
-                    with open(path) as f:
-                        parts.append(f.read())
-                except Exception:
-                    pass
-
-        return "\n\n".join(parts) + f"\n\nPROJECT_ROOT = {PROJECT_ROOT} \n OUTPUT_FOLDER = {PROJECT_ROOT / 'output'}"
+        """Use the shared instruction builder — same as API mode."""
+        from connectors.common.instruction_builder import build_instructions
+        return build_instructions(provider="deepseek")
 
     # ------------------------------------------------------------------
     # Text cleaning

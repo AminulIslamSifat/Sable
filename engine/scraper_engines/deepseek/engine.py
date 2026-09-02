@@ -60,6 +60,11 @@ class DeepSeekEngine(BaseScraperEngine):
         self._last_response_text = ""
         self.INSTRUCTION_PATHS = _INSTRUCTION_PATHS
 
+    def _load_instructions(self) -> str:
+        """Use the shared instruction builder — same as API mode."""
+        from connectors.common.instruction_builder import build_instructions
+        return build_instructions(provider="deepseek")
+
     # ------------------------------------------------------------------
     # DeepSeek-specific text cleaning
     # ------------------------------------------------------------------
@@ -198,19 +203,15 @@ class DeepSeekEngine(BaseScraperEngine):
                     pass
                 elif not self.system_injected:
                     instructions = self._load_instructions()
-                    markdown_instruction = (
-                        "MOST IMPORTANT OF ALL\n START YOUR RESPONSE WITH ``` AND ENDS WITH ```, "
-                        "WRAP YOUR WHOLE RESPONSE WITH IT. DON'T USE ``` IN ANYWHERE ELSE IN YOUR RESPONSE."
-                    )
                     if instructions:
-                        message = f"[SYSTEM INSTRUCTION]\n{instructions}\n\n{markdown_instruction}\n\n[USER MESSAGE]\n{message}"
+                        message = f"[SYSTEM INSTRUCTION]\n{instructions}\n\n[USER MESSAGE]\n{message}"
                     self.system_injected = True
                 else:
                     reminder = (
                         "[QUICK REMINDER]\n"
-                        "1. start your response with ``` and ends with ```, only two use of ``` in whole response.\n"
-                        "2. Use ~~~ for code blocks instead of ```, <execute_command> to run any command.\n"
-                        "3. Always use approtiate tag to run command or use skills.\n\n"
+                        "1. Use DSML format for all tool calls.\n"
+                        "2. Use <execute_command> to run any command.\n"
+                        "3. Always use appropriate tags to run commands or use skills.\n\n"
                     )
                     message = f"{reminder}[USER MESSAGE]\n{message}"
 
