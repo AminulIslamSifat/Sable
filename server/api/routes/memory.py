@@ -460,127 +460,73 @@ def _load_consolidation_settings() -> dict[str, Any]:
     return defaults
 
 async def _try_consolidation_call(
-    model: str, prompt: str, browser_profile: str = "", system_instruction: str = ""
+    model: str, prompt: str, *, system_instruction: str = ""
 ) -> dict[str, Any] | None:
-    """Try a single consolidation model call. Returns result dict or None on failure.
+    """Try a single consolidation model call via API only. Returns result dict or None.
     
-    Always uses chat_id=None and parent_id=None so the Qwen service creates a fresh
-    server-side session automatically. Consolidation must NOT reuse the source
-    conversation's chat_id (different browser profiles won't have it, and appending
-    to the same chat pollutes history).
-
-    For Qwen paths, uses a DEDICATED temp ChatService to avoid sharing the main
-    chat's Playwright browser/lock.
+    Memory consolidation MUST use API backends only — never scraper/browser mode.
+    If the model doesn't resolve to an API backend, returns None immediately.
     """
     try:
         api_backend = _resolve_api_backend(model)
 
-        # ── Diagnostic print: what path is actually taken ──
-        _log_path = "API" if api_backend else (f"Qwen@{browser_profile}" if browser_profile else "Qwen@default")
-        _log_browser_dir = ""
-        _log_waf_account = ""
         if not api_backend:
-            from engine.config import _SYSTEM as _SYS, _resolve_active_account
-            if browser_profile:
-                _log_browser_dir = str(_SYS / browser_profile)
-                _log_waf_account = browser_profile
-            else:
-                _log_waf_account = _resolve_active_account()
-                _log_browser_dir = str(_SYS / _log_waf_account)
+            logger.debug("[consolidation] Skipping %s — no API backend (scraper mode not allowed)", model)
+            return None
+
         print(
             f"\n{'='*60}\n"
             f"[CONSOLIDATION CALL]\n"
             f"  model:              {model}\n"
-            f"  path:               {_log_path}\n"
-            f"  api_backend:        {api_backend or '(none)'}\n"
-            f"  browser_dir:        {_log_browser_dir or '(n/a)'}\n"
-            f"  waf_account:        {_log_waf_account or '(n/a)'}\n"
+            f"  api_backend:        {api_backend}\n"
             f"  system_instruction: {'YES (personality)' if system_instruction else 'NO (consolidation)'}\n"
             f"{'='*60}\n",
             flush=True,
         )
 
-        if api_backend:
-            # API-backed model (Gemini/Groq/Mistral/DeepSeek/etc.) — no Playwright
-            if api_backend in _CONSOLIDATION_BACKENDS:
-                connector = get_connector(api_backend)
-                _extra_kwargs = {}
-                if system_instruction:
-                    _extra_kwargs["system_instruction"] = system_instruction
-                result = await retry_async(
-                    lambda: connector.chat(
-                        message=prompt,
-                        model=model,
-                        inject_instructions=False,
-                        chat_id=None,
-                        **_extra_kwargs,
-                    ),
-                    label=f"memory_consolidate_{api_backend}",
-                )
-            elif _is_deepseek_api_model(model):
-                ds_cfg = get_model_config(model)
-                ds_api_type = ds_cfg.get("api_model_type")
-                ds_msg = f"{system_instruction}\n\n{prompt}" if system_instruction else prompt
-                result = await retry_async(
-                    lambda: get_deepseek_client().chat(
-                        message=ds_msg,
-                        model=ds_api_type,
-                        thinking_mode="fast",
-                        chat_id=None,
-                        inject_instructions=False,
-                    ),
-                    label="memory_consolidate_ds",
-                )
-            else:
-                _api_kwargs = {}
-                if system_instruction:
-                    _api_kwargs["system_instruction"] = system_instruction
-                result = await retry_async(
-                    lambda: service.chat(
-                        message=prompt,
-                        chat_id=None,
-                        parent_id=None,
-                        model=model,
-                        **_api_kwargs,
-                    ),
-                    label="memory_consolidate_api",
-                )
-        elif browser_profile:
-            # Qwen with specific browser profile — dedicated temp service
-            from engine.config import _SYSTEM
-            acc_dir = _SYSTEM / browser_profile
-            if not acc_dir.exists():
-                return None
-            qwen_msg = f"{system_instruction}\n\n{prompt}" if system_instruction else prompt
-            temp_service = ChatService(user_data_dir=str(acc_dir))
-            try:
-                result = await retry_async(
-                    lambda: temp_service.chat(
-                        message=qwen_msg,
-                        chat_id=None,
-                        model=model,
-                    ),
-                    label=f"memory_consolidate_profile_{browser_profile}",
-                )
-            finally:
-                await temp_service.close()
+        if api_backend in _CONSOLIDATION_BACKENDS:
+            connector = get_connector(api_backend)
+            _extra_kwargs = {}
+            if system_instruction:
+                _extra_kwargs["system_instruction"] = system_instruction
+            result = await retry_async(
+                lambda: connector.chat(
+                    message=prompt,
+                    model=model,
+                    inject_instructions=False,
+                    chat_id=None,
+                    **_extra_kwargs,
+                ),
+                label=f"memory_consolidate_{api_backend}",
+            )
+        elif _is_deepseek_api_model(model):
+            ds_cfg = get_model_config(model)
+            ds_api_type = ds_cfg.get("api_model_type")
+            ds_msg = f"{system_instruction}\n\n{prompt}" if system_instruction else prompt
+            result = await retry_async(
+                lambda: get_deepseek_client().chat(
+                    message=ds_msg,
+                    model=ds_api_type,
+                    thinking_mode="fast",
+                    chat_id=None,
+                    inject_instructions=False,
+                ),
+                label="memory_consolidate_ds",
+            )
         else:
-            # Default Qwen — use DEDICATED temp service (not the shared main-chat one)
-            # to avoid Playwright browser/lock contention with the user's active chat.
-            qwen_msg = f"{system_instruction}\n\n{prompt}" if system_instruction else prompt
-            temp_service = ChatService()
-            try:
-                result = await retry_async(
-                    lambda: temp_service.chat(
-                        message=qwen_msg,
-                        chat_id=None,
-                        parent_id=None,
-                        model=model,
-                    ),
-                    label="memory_consolidate_default",
-                )
-            finally:
-                await temp_service.close()
+            _api_kwargs = {}
+            if system_instruction:
+                _api_kwargs["system_instruction"] = system_instruction
+            result = await retry_async(
+                lambda: service.chat(
+                    message=prompt,
+                    chat_id=None,
+                    parent_id=None,
+                    model=model,
+                    **_api_kwargs,
+                ),
+                label="memory_consolidate_api",
+            )
 
         answer = result.get("answer", "").strip()
         if answer:
@@ -590,67 +536,28 @@ async def _try_consolidation_call(
         return None
 
 
-def _try_consolidation_call_threaded(
-    model: str, prompt: str, browser_profile: str = "", *, system_instruction: str = ""
-) -> dict[str, Any] | None:
-    """Run a Qwen/Playwright consolidation call in a dedicated thread with its own event loop.
-    Only used for Qwen paths — API backends stay on the main loop (shared httpx clients)."""
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(
-            _try_consolidation_call(model, prompt, browser_profile=browser_profile, system_instruction=system_instruction)
-        )
-    except Exception:
-        return None
-    finally:
-        loop.close()
-
-
 async def _consolidation_llm_phase(
-    model: str, prompt: str, fallback_models: list[str], browser_profiles: list[str]
+    model: str, prompt: str, fallback_models: list[str], browser_profiles: list[str] | None = None
 ) -> tuple[dict[str, Any] | None, list[str]]:
-    """LLM call phase: API backends run on main loop; Qwen paths get thread isolation.
+    """LLM call phase: API-only consolidation. Scraper/browser mode is never used.
     
-    API backends (Gemini/Groq/Mistral/DeepSeek) use shared httpx.AsyncClient instances
-    bound to the main event loop — they MUST NOT be moved to a different loop.
-    Qwen paths use Playwright — they get a dedicated thread + event loop to avoid
-    blocking the main loop with heavy browser operations.
+    All consolidation calls go through API backends only. Models that don't resolve
+    to an API backend are skipped entirely. browser_profiles parameter is accepted
+    for signature compatibility but ignored.
     """
     attempts: list[str] = []
-    api_backend = _resolve_api_backend(model)
 
-    # ── Primary model ──
-    if api_backend:
-        # API backend — run on main event loop (httpx clients bound here)
-        result = await _try_consolidation_call(model, prompt)
-        if result:
-            attempts.append(f"{model} ✓")
-            return result, attempts
-        attempts.append(f"{model} ✗")
-    elif browser_profiles:
-        # Qwen with configured profiles — NEVER use default browser data
-        for profile in browser_profiles[:3]:
-            result = await asyncio.to_thread(_try_consolidation_call_threaded, model, prompt, profile)
-            if result:
-                attempts.append(f"{model}@{profile} ✓")
-                return result, attempts
-            attempts.append(f"{model}@{profile} ✗")
-    else:
-        # Qwen with no configured profiles — last resort default
-        result = await asyncio.to_thread(_try_consolidation_call_threaded, model, prompt, "")
-        if result:
-            attempts.append(f"{model}@default ✓")
-            return result, attempts
-        attempts.append(f"{model}@default ✗")
+    # ── Primary model (API only) ──
+    result = await _try_consolidation_call(model, prompt)
+    if result:
+        attempts.append(f"{model} ✓")
+        return result, attempts
+    attempts.append(f"{model} ✗")
 
-    # ── Fallback models (may be API or Qwen) ──
+    # ── Fallback models (API only) ──
     if fallback_models:
         for fb_model in fallback_models[:3]:
-            fb_backend = _resolve_api_backend(fb_model)
-            if fb_backend:
-                result = await _try_consolidation_call(fb_model, prompt)
-            else:
-                result = await asyncio.to_thread(_try_consolidation_call_threaded, fb_model, prompt, "")
+            result = await _try_consolidation_call(fb_model, prompt)
             if result:
                 attempts.append(f"{fb_model} ✓")
                 return result, attempts
@@ -663,7 +570,7 @@ async def _run_personality_assessment(conv_text: str, model: str, browser_profil
     
     Returns True if assessment was saved, False otherwise.
     Non-blocking failure — consolidation should not fail if personality assessment fails.
-    Uses same browser-profile routing as consolidation (never touches default browser).
+    API-only: never uses scraper/browser mode.
     """
     try:
         # Build system instruction (template) and user message (conversation)
@@ -674,28 +581,8 @@ async def _run_personality_assessment(conv_text: str, model: str, browser_profil
         # Conversation goes as user message
         prompt = f"CONVERSATION DATA:\n{conv_text}"
 
-        # Route through same profile logic as consolidation
-        api_backend = _resolve_api_backend(model)
-        profiles = browser_profiles or []
-
-        if api_backend:
-            result = await _try_consolidation_call(model, prompt, system_instruction=system_instruction)
-        elif profiles:
-            # Qwen with configured profiles — NEVER use default browser data
-            result = None
-            for profile in profiles[:3]:
-                result = await asyncio.to_thread(
-                    _try_consolidation_call_threaded, model, prompt, profile,
-                    system_instruction=system_instruction,
-                )
-                if result:
-                    break
-        else:
-            # Qwen with no configured profiles — last resort default
-            result = await asyncio.to_thread(
-                _try_consolidation_call_threaded, model, prompt, "",
-                system_instruction=system_instruction,
-            )
+        # API-only: personality assessment never uses scraper/browser mode
+        result = await _try_consolidation_call(model, prompt, system_instruction=system_instruction)
         if not result:
             return False
 

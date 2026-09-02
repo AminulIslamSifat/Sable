@@ -724,9 +724,10 @@
         console.warn("Could not read persisted chat:", err);
       }
 
-      if (savedChatId && chatList.some(c => c.id === savedChatId)) {
+      // Always start fresh — don't restore last chat on reload
+      if (false && savedChatId && chatList.some(c => c.id === savedChatId)) {
         await selectChat(savedChatId);
-      } else if (chatList.length > 0) {
+      } else if (false && chatList.length > 0) {
         await selectChat(chatList[0].id);
       } else {
         chatEl.innerHTML = `<div class="empty"><h2>Start a chat</h2><p>Create a new chat and talk to Sable.</p></div>`;

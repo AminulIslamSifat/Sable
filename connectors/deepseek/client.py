@@ -343,6 +343,13 @@ class DeepSeekClient:
             return None
         return self._rotate_tokens[self._rotate_idx % len(self._rotate_tokens)]
 
+    @staticmethod
+    def _mask_token(token: str | None) -> str:
+        """Mask a JWT token for safe display: show first 8 + last 4 chars."""
+        if not token or len(token) < 16:
+            return "***"
+        return f"{token[:8]}…{token[-4:]}"
+
     def _advance_rotation(self) -> None:
         if self._rotate_tokens:
             self._rotate_idx = (self._rotate_idx + 1) % len(self._rotate_tokens)
@@ -743,6 +750,24 @@ class DeepSeekClient:
             except json.JSONDecodeError:
                 continue
 
+            # Check for business-layer errors (muted account, etc.)
+            # DeepSeek returns HTTP 200 with biz_code for account-level issues
+            biz_code = obj.get("biz_code")
+            if biz_code is not None and biz_code != 0:
+                biz_msg = obj.get("biz_msg", "unknown")
+                mute_until = None
+                biz_data = obj.get("biz_data")
+                if isinstance(biz_data, dict):
+                    mute_until = biz_data.get("mute_until")
+                logger.warning("DeepSeek biz_code=%s: %s (mute_until=%s)", biz_code, biz_msg, mute_until)
+                yield {
+                    "type": "biz_error",
+                    "biz_code": biz_code,
+                    "biz_msg": biz_msg,
+                    "mute_until": mute_until,
+                }
+                return  # Stop parsing — stream is dead
+
             # Extract response_message_id from initial handshake event
             # Format: {"request_message_id":1,"response_message_id":2,"model_type":"default"}
             if "response_message_id" in obj:
@@ -913,10 +938,21 @@ class DeepSeekClient:
                         await resp.aread()
                         last_err = f"HTTP {resp.status_code}"
                         logger.warning("DeepSeek token failed (%s), rotating...", last_err)
+                        _old_token = self._current_rotate_token
                         # Failover breaks the parent chain — different session next attempt
                         if chat_id:
                             self._parent_ids[chat_id] = None
                         self._advance_rotation()
+                        _new_token = self._current_rotate_token
+                        yield {
+                            "type": "token_rotation",
+                            "reason": last_err,
+                            "from_token": self._mask_token(_old_token),
+                            "to_token": self._mask_token(_new_token),
+                            "from_index": self._rotate_idx - 1 if self._rotate_idx > 0 else len(self._rotate_tokens) - 1,
+                            "to_index": self._rotate_idx,
+                            "total_tokens": len(self._rotate_tokens),
+                        }
                         continue
 
                     if resp.status_code != 200:
@@ -925,6 +961,7 @@ class DeepSeekClient:
                         return
 
                     _response_parent_id: int | None = None
+                    _got_biz_error = False
                     async for event in self._iter_completion_events(resp):
                         etype = event.get("type")
                         if etype == "answer":
@@ -933,9 +970,52 @@ class DeepSeekClient:
                             full_thinking += event.get("text", "")
                         elif etype == "done":
                             _response_parent_id = event.get("parent_id")
+                        elif etype == "biz_error":
+                            _got_biz_error = True
+                            # Business-layer error (muted, etc.) — rotate to next token
+                            last_err = f"biz_code:{event.get('biz_code')} ({event.get('biz_msg', 'unknown')})"
+                            logger.warning("DeepSeek biz_error, rotating: %s", last_err)
+                            if chat_id:
+                                self._parent_ids[chat_id] = None
+                            _old_token_biz = self._current_rotate_token
+                            self._advance_rotation()
+                            _new_token_biz = self._current_rotate_token
+                            yield {
+                                "type": "token_rotation",
+                                "reason": last_err,
+                                "from_token": self._mask_token(_old_token_biz),
+                                "to_token": self._mask_token(_new_token_biz),
+                                "from_index": self._rotate_idx - 1 if self._rotate_idx > 0 else len(self._rotate_tokens) - 1,
+                                "to_index": self._rotate_idx,
+                                "total_tokens": len(self._rotate_tokens),
+                            }
+                            break  # Break out of stream parsing, continue to next attempt
                         yield event
 
+                    if _got_biz_error:
+                        continue  # Try next token
+
                 _log_raw("RESPONSE (raw)", (full_thinking + "\n---\n" + full_answer) if full_thinking else full_answer)
+
+                # Empty response detection: HTTP 200 but zero content = dead token
+                if not full_answer and not full_thinking:
+                    last_err = "empty_response"
+                    logger.warning("DeepSeek empty response, rotating to next token...")
+                    if chat_id:
+                        self._parent_ids[chat_id] = None
+                    _old_token_empty = self._current_rotate_token
+                    self._advance_rotation()
+                    _new_token_empty = self._current_rotate_token
+                    yield {
+                        "type": "token_rotation",
+                        "reason": "empty_response",
+                        "from_token": self._mask_token(_old_token_empty),
+                        "to_token": self._mask_token(_new_token_empty),
+                        "from_index": self._rotate_idx - 1 if self._rotate_idx > 0 else len(self._rotate_tokens) - 1,
+                        "to_index": self._rotate_idx,
+                        "total_tokens": len(self._rotate_tokens),
+                    }
+                    continue  # Try next token
 
                 # Success — save user message + assistant response to history
                 _summarize_idx = extract_summarize_tag(full_answer)
@@ -976,29 +1056,30 @@ class DeepSeekClient:
                         # Trimming may have removed messages the parent depends on
                         # but server-side session still has them — chain stays valid
 
-                # Advance rotation for round-robin on next call.
-                # Token rotation means a different account's session — chain breaks.
-                # We keep the parent_id only if the SAME token will be used next turn.
-                if chat_id and self._rotate_tokens:
-                    # After advance, check if we're back to the same token
-                    old_idx = self._rotate_idx
-                    self._advance_rotation()
-                    new_idx = self._rotate_idx
-                    if old_idx != new_idx:
-                        # Different token next turn → different session → chain breaks
-                        self._parent_ids[chat_id] = None
-                        logger.debug("DeepSeek: token rotation broke chain for chat %s", chat_id)
-                else:
-                    self._advance_rotation()
+                # No round-robin advance on success — keep the same token for
+                # next turn to preserve parent_message_id session continuity.
+                # Rotation only happens on failure (HTTP errors, timeout) via
+                # _prepare_request_with_rotation failover.
                 return
 
             except httpx.ReadTimeout:
                 last_err = "timeout (120s)"
                 logger.warning("DeepSeek token timed out, rotating...")
+                _old_token_to = self._current_rotate_token
                 # Timeout failover breaks the parent chain
                 if chat_id:
                     self._parent_ids[chat_id] = None
                 self._advance_rotation()
+                _new_token_to = self._current_rotate_token
+                yield {
+                    "type": "token_rotation",
+                    "reason": "timeout",
+                    "from_token": self._mask_token(_old_token_to),
+                    "to_token": self._mask_token(_new_token_to),
+                    "from_index": self._rotate_idx - 1 if self._rotate_idx > 0 else len(self._rotate_tokens) - 1,
+                    "to_index": self._rotate_idx,
+                    "total_tokens": len(self._rotate_tokens),
+                }
                 continue
             except Exception as exc:
                 yield {"type": "error", "message": f"Stream error: {type(exc).__name__}: {exc}"}

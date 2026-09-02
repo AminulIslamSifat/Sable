@@ -131,6 +131,11 @@ class GhostChat:
         self.current_model_type: str = "default"
         self.has_fresh_chat: bool = False
 
+        # Network SSE capture state
+        self._sse_chunks: list[str] = []
+        self._sse_done: asyncio.Event = asyncio.Event()
+        self._sse_active_req_id: str | None = None
+
         logs_dir = os.path.join(OUTPUT_ROOT, "logs")
         os.makedirs(logs_dir, exist_ok=True)
         self.response_log_file = os.path.join(
@@ -149,6 +154,101 @@ class GhostChat:
                 f.write(json.dumps(payload, ensure_ascii=False) + "\n")
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # Network SSE capture callbacks (called from JS via expose_function)
+    # ------------------------------------------------------------------
+
+    def _on_network_sse_chunk(self, chunk: str, req_id: str) -> None:
+        """Called by JS interceptor for each SSE chunk from /api/v0/chat/completion."""
+        self._sse_active_req_id = req_id
+        self._sse_chunks.append(chunk)
+
+    def _on_network_sse_done(self, req_id: str) -> None:
+        """Called by JS interceptor when SSE stream completes."""
+        self._sse_done.set()
+
+    def _reset_sse_capture(self) -> None:
+        """Reset SSE capture state before a new request."""
+        self._sse_chunks.clear()
+        self._sse_done.clear()
+        self._sse_active_req_id = None
+
+    async def _ensure_fetch_patched(self) -> None:
+        """Verify the JS fetch interceptor is active; re-patch if overwritten by page scripts."""
+        try:
+            result = await self.page.evaluate("""
+                (() => {
+                    const TARGET = '/api/v0/chat/completion';
+                    if (window.__ghost_fetch_patched && window.fetch.toString().includes(TARGET)) {
+                        return 'active';
+                    }
+                    // Re-patch: page scripts may have overwritten window.fetch
+                    window.__ghost_fetch_patched = true;
+                    const originalFetch = window.__fetch_original || window.fetch;
+                    window.__fetch_original = originalFetch;
+                    let chunkIndex = 0;
+                    window.fetch = async function(...args) {
+                        const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+                        const response = await originalFetch.apply(this, args);
+                        if (!url.includes(TARGET)) return response;
+                        const clone = response.clone();
+                        const reader = clone.body.getReader();
+                        const decoder = new TextDecoder();
+                        const reqId = 'sse_' + Date.now() + '_' + (++chunkIndex);
+                        (async () => {
+                            try {
+                                while (true) {
+                                    const { done, value } = await reader.read();
+                                    if (done) { window.__ds_on_sse_done(reqId); break; }
+                                    const text = decoder.decode(value, { stream: true });
+                                    window.__ds_on_sse_chunk(text, reqId);
+                                }
+                            } catch (e) {
+                                console.error('[GhostChat] SSE capture error:', e);
+                                window.__ds_on_sse_done(reqId);
+                            }
+                        })();
+                        return response;
+                    };
+                    return 'repatched';
+                })()
+            """)
+            if result == 'repatched':
+                console.print("[yellow]🔧 SSE fetch interceptor was overwritten — re-patched[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]⚠️ SSE fetch patch check failed: {e}[/yellow]")
+
+    @staticmethod
+    def _parse_sse_delta(raw_text: str) -> tuple[str, str]:
+        """
+        Parse DeepSeek SSE text into (content_delta, reasoning_delta).
+        Format: lines of 'data: {json}' where json has choices[0].delta.content / .reasoning_content
+        Returns accumulated deltas from all data lines in the chunk.
+        """
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+
+        for line in raw_text.split("\n"):
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                obj = json.loads(payload)
+                delta = obj.get("choices", [{}])[0].get("delta", {})
+                c = delta.get("content", "")
+                r = delta.get("reasoning_content", "")
+                if c:
+                    content_parts.append(c)
+                if r:
+                    reasoning_parts.append(r)
+            except (json.JSONDecodeError, IndexError, KeyError):
+                pass
+
+        return "".join(content_parts), "".join(reasoning_parts)
 
     # ------------------------------------------------------------------
     # Launch & Connect
@@ -344,6 +444,121 @@ class GhostChat:
             ]:
                 await page.route(pattern, lambda route: route.abort())
 
+            # Network response logger — captures raw SSE/API responses
+            async def _on_response(response):
+                try:
+                    url = response.url
+                    ct = response.headers.get("content-type", "")
+                    # Only log potential chat/streaming endpoints
+                    if any(kw in url.lower() for kw in ["chat", "completions", "message", "stream", "sse"]):
+                        status = response.status
+                        console.print(f"[dim cyan]🌐 [{status}] {ct[:40]} → {url[:120]}[/dim cyan]")
+                        if "event-stream" in ct or "json" in ct:
+                            try:
+                                body = await response.text()
+                                # Log first 500 chars of response body
+                                preview = body[:500].replace("\n", "\n")
+                                console.print(f"[dim cyan]   BODY: {preview}[/dim cyan]")
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+            # --- JS-level fetch interception for SSE capture ---
+            # DeepSeek uses fetch() + ReadableStream (not native EventSource),
+            # so CDP Network events fire with 0 bytes. We monkey-patch fetch
+            # to capture SSE chunks as the page's own JS consumes them.
+            await page.expose_function("__ds_on_sse_chunk", lambda chunk, req_id: self._on_network_sse_chunk(chunk, req_id))
+            await page.expose_function("__ds_on_sse_done", lambda req_id: self._on_network_sse_done(req_id))
+
+            await page.add_init_script("""
+                (() => {
+                    const TARGET = '/api/v0/chat/completion';
+                    const originalFetch = window.fetch;
+                    let chunkIndex = 0;
+
+                    window.fetch = async function(...args) {
+                        const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+                        const response = await originalFetch.apply(this, args);
+
+                        if (!url.includes(TARGET)) return response;
+
+                        // Clone so the page can still consume the original stream
+                        const clone = response.clone();
+                        const reader = clone.body.getReader();
+                        const decoder = new TextDecoder();
+                        const reqId = 'sse_' + Date.now() + '_' + (++chunkIndex);
+
+                        (async () => {
+                            try {
+                                while (true) {
+                                    const { done, value } = await reader.read();
+                                    if (done) {
+                                        window.__ds_on_sse_done(reqId);
+                                        break;
+                                    }
+                                    const text = decoder.decode(value, { stream: true });
+                                    window.__ds_on_sse_chunk(text, reqId);
+                                }
+                            } catch (e) {
+                                console.error('[GhostChat] SSE capture error:', e);
+                                window.__ds_on_sse_done(reqId);
+                            }
+                        })();
+
+                        return response;
+                    };
+                })();
+            """)
+
+            # Also inject immediately for the current page (add_init_script only covers future navigations).
+            # We verify the patch actually took effect — the guard flag alone is unreliable because
+            # page scripts can overwrite window.fetch after our injection.
+            _FETCH_PATCH_JS = """
+                (() => {
+                    const TARGET = '/api/v0/chat/completion';
+                    // Re-patch if fetch was overwritten by page scripts
+                    if (window.__ghost_fetch_patched && window.fetch.toString().includes(TARGET)) {
+                        return 'already_active';
+                    }
+                    window.__ghost_fetch_patched = true;
+                    const originalFetch = window.__fetch_original || window.fetch;
+                    window.__fetch_original = originalFetch;
+                    let chunkIndex = 0;
+                    window.fetch = async function(...args) {
+                        const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+                        const response = await originalFetch.apply(this, args);
+                        if (!url.includes(TARGET)) return response;
+                        const clone = response.clone();
+                        const reader = clone.body.getReader();
+                        const decoder = new TextDecoder();
+                        const reqId = 'sse_' + Date.now() + '_' + (++chunkIndex);
+                        (async () => {
+                            try {
+                                while (true) {
+                                    const { done, value } = await reader.read();
+                                    if (done) { window.__ds_on_sse_done(reqId); break; }
+                                    const text = decoder.decode(value, { stream: true });
+                                    window.__ds_on_sse_chunk(text, reqId);
+                                }
+                            } catch (e) {
+                                console.error('[GhostChat] SSE capture error:', e);
+                                window.__ds_on_sse_done(reqId);
+                            }
+                        })();
+                        return response;
+                    };
+                    return 'patched';
+                })()
+            """
+            try:
+                result = await page.evaluate(_FETCH_PATCH_JS)
+                console.print(f"[dim cyan]🔌 SSE fetch interceptor: {result}[/dim cyan]")
+            except Exception as e:
+                console.print(f"[yellow]⚠️ SSE fetch patch failed: {e}[/yellow]")
+
+            page.on("response", _on_response)
+
             await page.add_init_script(f"""
                 const injectGhostStyles = () => {{
                     if (document.getElementById('ghost-engine-styles')) return;
@@ -473,7 +688,7 @@ class GhostChat:
                     # Prepend a short quick reminder to every next user message
                     reminder = (
                         "[QUICK REMINDER]\n"
-                        "1. Use DSML format for all tool calls.\n"
+                        "1. Use <action>[...]</action> JSON array format for all tool calls (NOT DSML).\n"
                         "2. Use <execute_command> to run any command.\n"
                         "3. Always use appropriate tags to run commands or use skills.\n\n"
                     )
@@ -501,6 +716,11 @@ class GhostChat:
                 if not is_ready:
                     self._log_debug("send_button_timeout", timeout=10)
                 
+                # Ensure fetch interceptor is alive (page scripts may overwrite it)
+                await self._ensure_fetch_patched()
+                # Reset network SSE capture for the new request
+                self._reset_sse_capture()
+
                 # Mark all existing messages as old so get_response can cleanly identify the new one
                 await self.page.evaluate("""() => {
                     document.querySelectorAll('div.ds-message, div.ds-assistant-message-main-content').forEach(el => {
@@ -900,9 +1120,14 @@ class GhostChat:
         last_response: str = "",
         user_input: str = "",
     ) -> str:
-        """Dedicated DeepSeek capture logic matching Playwright user program logic."""
-        self._log_debug("deepseek_capture_started")
-        
+        """
+        Network-first SSE capture with DOM fallback.
+        Uses JS fetch interceptor to capture raw SSE chunks in real-time,
+        parses deltas for live display, then falls back to DOM for final text.
+        """
+        self._log_debug("deepseek_capture_started", mode="network+dom")
+        self._reset_sse_capture()
+
         stop_sel = PLATFORM["selectors"].get("stop", "div[role='button']:has(path[d^='M2 4.88'])")
         thinking_sel = PLATFORM["selectors"].get("thoughts", "div.ds-think-content")
         response_sel = PLATFORM["selectors"].get("content", "div.ds-assistant-message-main-content")
@@ -912,71 +1137,104 @@ class GhostChat:
 
         cached_thinking = ""
         cached_response = ""
+        net_content_accum = ""   # accumulated content from network SSE
+        net_reasoning_accum = "" # accumulated reasoning from network SSE
+        sse_chunk_index = 0      # how many chunks we've processed
 
-        # Wait for generation to actually start.
-        # The stop button appearing means DeepSeek began generating.
-        # If the server is slow, we poll here indefinitely instead of
-        # accidentally capturing the previous message.
         stop_locator = self.page.locator(stop_sel)
         new_response_sel = f"{response_sel}:not([data-ghost-old='true'])"
 
+        # --- Phase 1: Wait for generation to start ---
         wait_deadline = time.time() + 60
         while True:
             if await stop_locator.is_visible():
                 break
-            # Fast-response edge case: stop already disappeared but new content exists
             if await self.page.locator(new_response_sel).count() > 0:
+                break
+            # Also check if SSE chunks started arriving (network may lead DOM)
+            if self._sse_chunks:
                 break
             if time.time() > wait_deadline:
                 console.print("[bold red]⏰ Timed out waiting for DeepSeek response (60s)[/bold red]")
                 return "", ""
             await asyncio.sleep(0.3)
 
-        # Loop while stop button is visible (streaming capture)
+        # --- Phase 2: Stream loop — network-first, DOM fallback ---
         while await stop_locator.is_visible():
+            # Process any new SSE chunks from network capture
+            while sse_chunk_index < len(self._sse_chunks):
+                raw_chunk = self._sse_chunks[sse_chunk_index]
+                sse_chunk_index += 1
+                content_delta, reasoning_delta = self._parse_sse_delta(raw_chunk)
+
+                if reasoning_delta:
+                    net_reasoning_accum += reasoning_delta
+                    if thoughts_callback and self.show_thoughts:
+                        await thoughts_callback(self._clean_thoughts_text(net_reasoning_accum))
+
+                if content_delta:
+                    net_content_accum += content_delta
+                    if live_display:
+                        live_display(self._clean_garbage(net_content_accum))
+
+            # DOM fallback for thinking (network doesn't always carry reasoning)
             try:
                 thinking_stream = await self.page.locator(thinking_sel).last.inner_text() if await self.page.locator(thinking_sel).count() > 0 else ""
             except Exception:
                 thinking_stream = ""
 
-            try:
-                response_stream = await self.page.locator(response_sel).last.inner_text() if await self.page.locator(response_sel).count() > 0 else ""
-            except Exception:
-                response_stream = ""
-
-            # Check thinking stream changes
             if thinking_stream != cached_thinking and thinking_stream != last_thinking:
                 cached_thinking = thinking_stream
                 if thoughts_callback and self.show_thoughts:
                     cleaned_thoughts = self._clean_thoughts_text(thinking_stream)
                     await thoughts_callback(cleaned_thoughts)
 
-            # Check response stream changes
-            response_stream = self._strip_ds(response_stream)
-            if response_stream != cached_response and response_stream != last_response_val:
-                cached_response = response_stream
-                if live_display:
-                    cleaned_response = self._clean_garbage(response_stream)
-                    live_display(cleaned_response)
+            # DOM fallback for response if network hasn't delivered yet
+            if not net_content_accum:
+                try:
+                    response_stream = await self.page.locator(response_sel).last.inner_text() if await self.page.locator(response_sel).count() > 0 else ""
+                except Exception:
+                    response_stream = ""
+
+                response_stream = self._strip_ds(response_stream)
+                if response_stream != cached_response and response_stream != last_response_val:
+                    cached_response = response_stream
+                    if live_display:
+                        live_display(self._clean_garbage(response_stream))
 
             await asyncio.sleep(0.3)
 
-        # After stop button is no longer visible, capture the final content.
-        # Only grab NEW content (not marked ghost-old by send_msg).
+        # Drain any remaining SSE chunks after stop button disappears
+        while sse_chunk_index < len(self._sse_chunks):
+            raw_chunk = self._sse_chunks[sse_chunk_index]
+            sse_chunk_index += 1
+            content_delta, reasoning_delta = self._parse_sse_delta(raw_chunk)
+            if content_delta:
+                net_content_accum += content_delta
+            if reasoning_delta:
+                net_reasoning_accum += reasoning_delta
+
+        # --- Phase 3: Final capture — prefer network, fallback to DOM ---
+        if net_content_accum:
+            final_response = net_content_accum
+            self._log_debug("network_capture_success", chunks=len(self._sse_chunks), bytes=len(net_content_accum))
+        else:
+            # Full DOM fallback
+            try:
+                loc = self.page.locator(new_response_sel)
+                final_response = await loc.last.inner_text() if await loc.count() > 0 else ""
+            except Exception:
+                final_response = ""
+            final_response = self._strip_ds(final_response)
+            self._log_debug("network_capture_empty_dom_fallback", chunks=len(self._sse_chunks))
+
+        # Final thinking from DOM (most reliable for complete reasoning)
         new_thinking_sel = f"{thinking_sel}:not([data-ghost-old='true'])"
         try:
             loc = self.page.locator(new_thinking_sel)
             final_thinking = await loc.last.inner_text() if await loc.count() > 0 else ""
         except Exception:
             final_thinking = ""
-
-        try:
-            loc = self.page.locator(new_response_sel)
-            final_response = await loc.last.inner_text() if await loc.count() > 0 else ""
-        except Exception:
-            final_response = ""
-
-        final_response = self._strip_ds(final_response)
 
         # Trigger final callbacks
         if thoughts_callback and self.show_thoughts and final_thinking:
