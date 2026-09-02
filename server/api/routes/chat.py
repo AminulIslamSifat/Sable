@@ -1408,12 +1408,15 @@ async def chat(request: ChatRequest):
                 # so session setup time (_ensure_headers, create_new_chat) is excluded.
                 print(f"[MAIN-STREAM] ▶ Starting main stream loop (first_chunk_timeout=15s, stall_timeout=30s)")
                 _MAIN_FIRST_CHUNK_TIMEOUT = 15.0
-                _MAIN_STALL_TIMEOUT = 30.0
+                # Must exceed service.py's total retry budget (3 × 30s = 90s)
+                # to avoid racing with internal retries and orphaning generators.
+                _MAIN_STALL_TIMEOUT = 120.0
                 _EMPTY_RESPONSE_MAX_RETRIES = 3
                 _empty_response_retries = 0
                 _main_got_first = False
                 _main_request_sent = False
                 _main_timeout_retries = 0
+                _main_stall_retries = 0
                 _main_iter = round_event_source.__aiter__()
 
                 while True:
@@ -1442,13 +1445,13 @@ async def chat(request: ChatRequest):
                     except asyncio.TimeoutError:
                         if not _main_got_first:
                             _main_timeout_retries += 1
-                            print(f"[MAIN-STREAM]   ⏰ FIRST-CHUNK TIMEOUT ({_MAIN_FIRST_CHUNK_TIMEOUT}s), attempt {_main_timeout_retries}/2")
-                            logger.warning("[main-stream] First-chunk timeout (%ds), attempt %d/2 for chat %s",
+                            print(f"[MAIN-STREAM]   ⏰ FIRST-CHUNK TIMEOUT ({_MAIN_FIRST_CHUNK_TIMEOUT}s), attempt {_main_timeout_retries}/3")
+                            logger.warning("[main-stream] First-chunk timeout (%ds), attempt %d/3 for chat %s",
                                            _MAIN_FIRST_CHUNK_TIMEOUT, _main_timeout_retries, active_chat_id)
-                            if _main_timeout_retries >= 2:
+                            if _main_timeout_retries >= 3:
                                 # Synthesize waf_blocked to trigger auto-switch
                                 yield sse({"type": "status", "message": "first_chunk_timeout_triggering_switch"})
-                                event = {"type": "waf_blocked", "message": "No response within 15s after 2 attempts — connection hung", **_build_account_debug_info()}
+                                event = {"type": "waf_blocked", "message": "No response within 15s after 3 attempts — connection hung", **_build_account_debug_info()}
                                 # Fall through to normal event handling below
                             else:
                                 # Retry: close current service, re-create stream
@@ -1484,11 +1487,44 @@ async def chat(request: ChatRequest):
                                 continue
                         else:
                             # Mid-stream stall — connection died after partial response
-                            logger.warning("[main-stream] Stall timeout (%ds) after first chunk for chat %s",
-                                           _MAIN_STALL_TIMEOUT, active_chat_id)
-                            yield sse({"type": "status", "message": "stream_stall_timeout_triggering_switch"})
-                            event = {"type": "waf_blocked", "message": f"Stream stalled for {_MAIN_STALL_TIMEOUT}s mid-response — connection died", **_build_account_debug_info()}
-                            # Fall through to auto-switch handler
+                            _main_stall_retries += 1
+                            print(f"[MAIN-STREAM]   ⏰ STALL TIMEOUT ({_MAIN_STALL_TIMEOUT}s), attempt {_main_stall_retries}/3")
+                            logger.warning("[main-stream] Stall timeout (%ds) after first chunk for chat %s, attempt %d/3",
+                                           _MAIN_STALL_TIMEOUT, active_chat_id, _main_stall_retries)
+                            if _main_stall_retries >= 3:
+                                yield sse({"type": "status", "message": "stream_stall_timeout_triggering_switch"})
+                                event = {"type": "waf_blocked", "message": f"Stream stalled for {_MAIN_STALL_TIMEOUT}s mid-response after 3 attempts — connection died", **_build_account_debug_info()}
+                                # Fall through to auto-switch handler
+                            else:
+                                # Retry: drop connection and reconnect
+                                yield sse({"type": "status", "message": f"retrying_stall_{_main_stall_retries + 1}"})
+                                if _is_api_model(request.model):
+                                    try:
+                                        round_event_source = _connector.stream_chat(**_stream_kwargs)
+                                    except Exception as _retry_exc:
+                                        logger.warning("[main-stream] API stall-retry failed: %s", _retry_exc)
+                                        event = {"type": "waf_blocked", "message": f"API stall-retry failed: {_retry_exc}", **_build_account_debug_info()}
+                                else:
+                                    try:
+                                        await service.close()
+                                        await service._ensure_headers()
+                                    except Exception as _retry_exc:
+                                        logger.warning("[main-stream] Stall-retry refresh failed: %s", _retry_exc)
+                                    round_event_source = retry_stream(
+                                        lambda: service.stream_events(
+                                            message=current_message,
+                                            chat_id=_qwen_chat_id,
+                                            parent_id=current_parent,
+                                            files=files_for_round,
+                                            model=request.model,
+                                            thinking_mode=request.thinking_mode,
+                                        ),
+                                        label=f"stream_round_{round_index}_stall_retry{_main_stall_retries}",
+                                    )
+                                _main_iter = round_event_source.__aiter__()
+                                _main_got_first = False
+                                _main_request_sent = False
+                                continue
                     except StopAsyncIteration:
                         # --- Empty response detection & retry ---
                         _got_answer_content = bool("".join(_round_raw_parts).strip())
@@ -1728,6 +1764,85 @@ async def chat(request: ChatRequest):
                         async for _sse_line in _drain_sync_gen(emit_flush()):
                             yield _sse_line
                         error_message = str(event.get("message", "Unknown error"))
+                        # --- "Chat in progress" retry: 30s total, 3s delay between attempts ---
+                        _cip_lower = error_message.lower()
+                        _is_chat_in_progress = any(kw in _cip_lower for kw in (
+                            "chat in progress", "generation in progress", "already generating",
+                            "task in progress", "please wait", "busy", "concurrent request",
+                        ))
+                        if _is_chat_in_progress and not _is_api_model(request.model):
+                            _cip_max_retries = 10  # 10 × 3s = 30s
+                            _cip_retry = 0
+                            _cip_resolved = False
+                            while _cip_retry < _cip_max_retries:
+                                _cip_retry += 1
+                                print(f"[MAIN-STREAM]   ⏳ 'chat in progress' detected, retry {_cip_retry}/{_cip_max_retries} (waiting 3s)")
+                                logger.info("[main-stream] 'chat in progress' for chat %s, retry %d/%d",
+                                            active_chat_id, _cip_retry, _cip_max_retries)
+                                yield sse({"type": "status", "message": f"chat_in_progress_retry_{_cip_retry}"})
+                                await asyncio.sleep(3)
+                                try:
+                                    await service.close()
+                                    await service._ensure_headers()
+                                except Exception as _cip_exc:
+                                    logger.warning("[main-stream] Chat-in-progress retry refresh failed: %s", _cip_exc)
+                                round_event_source = retry_stream(
+                                    lambda: service.stream_events(
+                                        message=current_message,
+                                        chat_id=_qwen_chat_id,
+                                        parent_id=current_parent,
+                                        files=files_for_round,
+                                        model=request.model,
+                                        thinking_mode=request.thinking_mode,
+                                    ),
+                                    label=f"stream_round_{round_index}_cip_retry{_cip_retry}",
+                                )
+                                _main_iter = round_event_source.__aiter__()
+                                _main_got_first = False
+                                _main_request_sent = False
+                                # Peek at first real event to check if still "chat in progress"
+                                try:
+                                    _peek_event = await asyncio.wait_for(
+                                        _main_iter.__anext__(),
+                                        timeout=_MAIN_FIRST_CHUNK_TIMEOUT,
+                                    )
+                                    _peek_type = _peek_event.get("type", "")
+                                    _peek_msg = str(_peek_event.get("message", "")).lower()
+                                    if _peek_type == "error" and any(kw in _peek_msg for kw in (
+                                        "chat in progress", "generation in progress", "already generating",
+                                        "task in progress", "please wait", "busy", "concurrent request",
+                                    )):
+                                        continue  # Still in progress, retry again
+                                    else:
+                                        # Resolved! Process this event normally
+                                        _cip_resolved = True
+                                        event = _peek_event
+                                        event_type = event.get("type", "")
+                                        if event_type == "request_sent":
+                                            _main_request_sent = True
+                                            continue
+                                        break
+                                except asyncio.TimeoutError:
+                                    # Timeout waiting for first chunk after retry — treat as normal timeout
+                                    break
+                                except StopAsyncIteration:
+                                    # Empty stream — let empty-response handler deal with it
+                                    break
+                            if not _cip_resolved and _cip_retry >= _cip_max_retries:
+                                print(f"[MAIN-STREAM]   ✗ 'chat in progress' persisted after {_cip_max_retries} retries (30s)")
+                                logger.warning("[main-stream] 'chat in progress' persisted after %d retries for chat %s",
+                                               _cip_max_retries, active_chat_id)
+                                stream_error = True
+                            elif _cip_resolved:
+                                # Continue processing the resolved event through normal flow
+                                pass
+                            else:
+                                # Broke out of retry loop due to timeout/empty — fall through
+                                pass
+                            if _cip_resolved or _cip_retry >= _cip_max_retries:
+                                pass  # Fall through to normal event handling below
+                            else:
+                                continue  # Retry loop continues
                         # FIX #7: Stricter keyword matching to avoid false positives.
                         # Use phrase-level matching with context awareness instead of raw substrings.
                         # "blocked" alone is too broad (e.g., "content blocked by filter" ≠ WAF).
@@ -2211,6 +2326,16 @@ async def chat(request: ChatRequest):
                         "round": round_index,
                     }
                 )
+        except asyncio.CancelledError:
+            # Frontend disconnected (stop button / tab close) — kill upstream generation
+            logger.info("[event_stream] Client disconnected for chat %s — stopping upstream", active_chat_id)
+            try:
+                _svc = service if not _is_api_model(request.model) else None
+                if _svc and hasattr(_svc, '_stop_upstream_generation'):
+                    await _svc._stop_upstream_generation(active_chat_id, final_parent)
+            except Exception:
+                pass
+            raise  # re-raise so Starlette cleans up properly
         except Exception as exc:
             error_message = f"{type(exc).__name__}: {exc}"
             try:
