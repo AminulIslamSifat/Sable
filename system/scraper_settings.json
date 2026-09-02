@@ -1,6 +1,6 @@
 {
-  "enabled": false,
-  "engine_type": "qwen",
+  "enabled": true,
+  "engine_type": "deepseek",
   "port": 9333,
   "headless": false,
   "show_thoughts": true

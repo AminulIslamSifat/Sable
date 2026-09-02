@@ -117,23 +117,30 @@ def _extract_actions_from_text(text: str) -> tuple[str, list[dict[str, Any]]]:
 #
 # Models sometimes drop the leading ｜, so we make it optional.
 
-# Optional leading fullwidth bar: matches both <｜DSML｜ and <DSML｜
-_D = r'\uff5c?'  # optional ｜
+# Matches both ASCII pipe | (U+007C) and fullwidth pipe ｜ (U+FF5C) in any combination
+_P = r'[\|\uff5c]'   # required pipe (ASCII or fullwidth)
+_PO = r'[\|\uff5c]?'  # optional pipe
 
-_DSML_OPEN_RE = re.compile(r'<\uff5c?DSML\uff5ctool_calls>')
-_DSML_CLOSE_RE = re.compile(r'</\uff5c?DSML\uff5ctool_calls>')
+_DSML_OPEN_RE = re.compile(rf'<{_PO}DSML{_P}tool_calls>')
+_DSML_CLOSE_RE = re.compile(rf'</{_PO}DSML{_P}tool_calls>')
 
-# For streaming buffer detection — exact strings for both variants
-_DSML_OPEN_VARIANTS = ["<\uff5cDSML\uff5ctool_calls>", "<DSML\uff5ctool_calls>"]
-_DSML_CLOSE_VARIANTS = ["</\uff5cDSML\uff5ctool_calls>", "</DSML\uff5ctool_calls>"]
+# For streaming buffer detection — all possible variants
+_DSML_OPEN_VARIANTS = [
+    "<|DSML|tool_calls>", "<｜DSML｜tool_calls>",
+    "<DSML|tool_calls>", "<DSML｜tool_calls>",
+]
+_DSML_CLOSE_VARIANTS = [
+    "</|DSML|tool_calls>", "</｜DSML｜tool_calls>",
+    "</DSML|tool_calls>", "</DSML｜tool_calls>",
+]
 
 _DSML_INVOKE_RE = re.compile(
-    r'<\uff5c?DSML\uff5cinvoke\s+name="([^"]+)">(.*?)</\uff5c?DSML\uff5cinvoke>',
+    rf'<{_PO}DSML{_P}invoke\s+name="([^"]+)">(.*?)</{_PO}DSML{_P}invoke>',
     re.DOTALL,
 )
 
 _DSML_PARAM_RE = re.compile(
-    r'<\uff5c?DSML\uff5cparameter\s+name="([^"]+)"\s+string="(true|false)">(.*?)</\uff5c?DSML\uff5cparameter>',
+    rf'<{_PO}DSML{_P}parameter\s+name="([^"]+)"\s+string="(true|false)">(.*?)</{_PO}DSML{_P}parameter>',
     re.DOTALL,
 )
 
@@ -175,8 +182,8 @@ def _extract_dsml_from_text(text: str) -> tuple[str, list[dict[str, Any]]]:
             return ""
         return inner  # malformed — leave as-is
 
-    # Match both <｜DSML｜...> and <DSML｜...> variants
-    pattern = r'<\uff5c?DSML\uff5ctool_calls>.*?</\uff5c?DSML\uff5ctool_calls>'
+    # Match all ASCII/fullwidth pipe variants
+    pattern = rf'<{_PO}DSML{_P}tool_calls>.*?</{_PO}DSML{_P}tool_calls>'
     cleaned = re.sub(pattern, _replace, text, flags=re.DOTALL)
     return cleaned, calls
 
