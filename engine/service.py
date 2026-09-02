@@ -395,6 +395,71 @@ class ChatService:
         finally:
             pass
 
+    async def _wait_for_chat_in_progress_clear(
+        self,
+        headers: dict[str, str],
+        body: dict[str, Any],
+        params: dict[str, str],
+        chat_id: str,
+    ) -> bool:
+        """Poll for CHAT_IN_PROGRESS to clear. 10 checks × 3s = 30s max.
+
+        Returns True if the error cleared (safe to retry), False if still present after 30s.
+        Uses a lightweight HEAD/non-streaming POST to check status without opening a stream.
+        """
+        for i in range(10):
+            await asyncio.sleep(3)
+            print(f"[STREAM]     ↳ CHAT_IN_PROGRESS poll {i+1}/10 for chat {chat_id}")
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    resp = await client.post(URL, headers=headers, json=body, params=params)
+                    if resp.status_code == 200:
+                        # Check if response body indicates chat is still in progress
+                        try:
+                            data = resp.json()
+                            inner = data.get("data", {})
+                            code = inner.get("code", "") if isinstance(inner, dict) else ""
+                            if code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
+                                continue  # still busy
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                        # 200 without CHAT_IN_PROGRESS code → cleared
+                        print(f"[STREAM]     ✓ CHAT_IN_PROGRESS cleared after {(i+1)*3}s")
+                        return True
+                    elif resp.status_code != 200:
+                        try:
+                            data = resp.json()
+                            inner = data.get("data", {})
+                            code = inner.get("code", "") if isinstance(inner, dict) else ""
+                            if code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
+                                continue  # still busy
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                        # Non-200 but NOT chat-in-progress → something else, treat as cleared
+                        print(f"[STREAM]     ✓ CHAT_IN_PROGRESS cleared (HTTP {resp.status_code}) after {(i+1)*3}s")
+                        return True
+            except Exception as exc:
+                logger.warning("CHAT_IN_PROGRESS poll %d failed: %s", i+1, exc)
+                continue
+        print(f"[STREAM]     ✗ CHAT_IN_PROGRESS still present after 30s")
+        return False
+
+    def _is_chat_in_progress_error(self, raw: str, status_code: int) -> bool:
+        """Check if an error response indicates chat is still generating."""
+        try:
+            err_data = json.loads(raw)
+            inner = err_data.get("data", {})
+            if isinstance(inner, dict):
+                code = inner.get("code", "")
+                if code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
+                    return True
+                details = str(inner.get("details", "")).lower()
+                if "in progress" in details or "generating" in details or "busy" in details:
+                    return True
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return False
+
     async def _stream_request(
         self,
         headers: dict[str, str],
@@ -407,6 +472,7 @@ class ChatService:
     ) -> AsyncGenerator[dict[str, Any], None]:
         max_attempts = 3
         last_error_msg: str | None = None
+        _CHUNK_TIMEOUT = 30.0  # seconds for first chunk and between chunks
 
         for attempt in range(1, max_attempts + 1):
             print(f"[STREAM]   ↳ _stream_request attempt {attempt}/{max_attempts}")
@@ -416,9 +482,10 @@ class ChatService:
             _thinking_sent_count = 0  # track cumulative thinking paragraphs already yielded
             status_code = 0
             needs_refresh = False
+            _chunk_timeout_triggered = False
 
             try:
-                async with httpx.AsyncClient(timeout=120) as client:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(connect=15.0, read=None, write=15.0, pool=15.0)) as client:
                     print(f"[STREAM]     ↳ HTTP POST {URL[:60]}...")
                     async with client.stream("POST", URL, headers=headers, json=body, params=params) as res:
                         status_code = res.status_code
@@ -461,6 +528,22 @@ class ChatService:
                                             "message": f"Stale parent_id: {inner.get('details', '')}",
                                         }
                                         return
+                                    # CHAT_IN_PROGRESS: poll until clear, then retry
+                                    if code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
+                                        print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS detected (attempt {attempt})")
+                                        yield {"type": "status", "message": "chat_in_progress_waiting"}
+                                        cleared = await self._wait_for_chat_in_progress_clear(
+                                            headers, body, params, chat_id,
+                                        )
+                                        if not cleared:
+                                            yield {
+                                                "type": "error",
+                                                "message": "Chat still in progress after 30s — upstream may be stuck",
+                                            }
+                                            return
+                                        # Cleared — refresh headers and retry
+                                        headers = await self._refresh_headers()
+                                        continue
                                     yield {
                                         "type": "error",
                                         "message": f"API error [{code}]: {inner.get('details', 'Unknown error')}",
@@ -468,6 +551,21 @@ class ChatService:
                                     return
                             except (json.JSONDecodeError, ValueError):
                                 pass
+                            # Also check raw text for chat-in-progress patterns
+                            if self._is_chat_in_progress_error(raw, res.status_code):
+                                print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS detected in raw response (attempt {attempt})")
+                                yield {"type": "status", "message": "chat_in_progress_waiting"}
+                                cleared = await self._wait_for_chat_in_progress_clear(
+                                    headers, body, params, chat_id,
+                                )
+                                if not cleared:
+                                    yield {
+                                        "type": "error",
+                                        "message": "Chat still in progress after 30s — upstream may be stuck",
+                                    }
+                                    return
+                                headers = await self._refresh_headers()
+                                continue
                             last_error_msg = f"HTTP {res.status_code}: {raw[:500]}"
                             continue
                         else:
@@ -481,7 +579,29 @@ class ChatService:
                                 "Qwen stream started: chat_id=%s attempt=%d model=%s",
                                 chat_id, attempt, body.get("model", "?"),
                             )
-                            async for chunk in res.aiter_bytes():
+                            # Use an iterator so we can wrap each next() with asyncio.wait_for
+                            _byte_iter = res.aiter_bytes()
+                            while True:
+                                try:
+                                    chunk = await asyncio.wait_for(
+                                        _byte_iter.__anext__(),
+                                        timeout=_CHUNK_TIMEOUT,
+                                    )
+                                except StopAsyncIteration:
+                                    break  # stream ended normally
+                                except asyncio.TimeoutError:
+                                    # Chunk timeout — send stop request, then close backend connection
+                                    _chunk_timeout_triggered = True
+                                    _phase = "first chunk" if _chunk_count == 0 else f"inter-chunk (after {_chunk_count} chunks)"
+                                    print(f"[STREAM]     ⏰ Chunk timeout ({_phase}) after {_CHUNK_TIMEOUT}s — sending stop & closing backend")
+                                    logger.warning(
+                                        "Chunk timeout (%s) on chat_id=%s attempt=%d — sending stop request",
+                                        _phase, chat_id, attempt,
+                                    )
+                                    await self._stop_upstream_generation(chat_id, chosen_response_id)
+                                    last_error_msg = f"Timeout waiting for {_phase}"
+                                    break  # exits the async with client.stream → closes connection
+
                                 if not chunk:
                                     continue
 
@@ -535,6 +655,22 @@ class ChatService:
                                                             "message": f"Stale parent_id: {inner.get('details', '')}",
                                                         }
                                                         return
+                                                    # CHAT_IN_PROGRESS in SSE stream body
+                                                    if code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
+                                                        print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS in SSE stream (attempt {attempt})")
+                                                        await self._stop_upstream_generation(chat_id, chosen_response_id)
+                                                        yield {"type": "status", "message": "chat_in_progress_waiting"}
+                                                        cleared = await self._wait_for_chat_in_progress_clear(
+                                                            headers, body, params, chat_id,
+                                                        )
+                                                        if not cleared:
+                                                            yield {
+                                                                "type": "error",
+                                                                "message": "Chat still in progress after 30s — upstream may be stuck",
+                                                            }
+                                                            return
+                                                        headers = await self._refresh_headers()
+                                                        break  # exit chunk loop → retry
                                                     # Other API errors
                                                     yield {
                                                         "type": "error",
@@ -661,6 +797,21 @@ class ChatService:
                 last_error_msg = f"{type(exc).__name__}: {exc}"
                 continue
 
+            # If chunk timeout triggered, treat as a retryable failure
+            if _chunk_timeout_triggered and not got_content:
+                print(f"[STREAM]     ⏰ Chunk timeout on attempt {attempt}/{max_attempts} — will retry")
+                if attempt < max_attempts:
+                    yield {"type": "status", "message": f"retrying_attempt_{attempt + 1}"}
+                    yield {"type": "debug", "message": f"Chunk timeout on attempt {attempt}. Retrying."}
+                    headers = await self._refresh_headers()
+                    await asyncio.sleep(1 * attempt)
+                    continue
+                else:
+                    # All 3 attempts timed out
+                    print(f"[STREAM]   ✗ All {max_attempts} attempts timed out")
+                    yield {"type": "error", "message": "No response from upstream"}
+                    return
+
             if got_content:
                 yield {"type": "done", "chat_id": chat_id, "parent_id": new_parent_id}
                 return
@@ -746,7 +897,12 @@ class ChatService:
             yield {"type": "waf_blocked", "message": last_error_msg}
         else:
             print(f"[STREAM]   ✗ generic error after {max_attempts} attempts: {last_error_msg[:100] if last_error_msg else 'unknown'}")
-            yield {"type": "error", "message": f"Failed after {max_attempts} attempts: {last_error_msg}"}
+            # If all failures were timeouts, give a cleaner message
+            _err_lower = (last_error_msg or "").lower()
+            if "timeout" in _err_lower or "timed out" in _err_lower:
+                yield {"type": "error", "message": "No response from upstream"}
+            else:
+                yield {"type": "error", "message": f"Failed after {max_attempts} attempts: {last_error_msg}"}
 
     async def chat(
         self,

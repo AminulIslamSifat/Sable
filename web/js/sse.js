@@ -999,9 +999,20 @@
           activateLucideIcons(answerContent);
         }
         if (!_ansTimer) {
-          // Final render: produce proper mermaid-wrap so renderMermaidDiagrams can find them
+          // Final tick render: produce proper mermaid-wrap but defer heavy rendering
+          // to closeAnswer() which runs after stream truly ends or segment closes.
+          // This prevents partial math/mermaid from rendering mid-stream.
           answerContent.innerHTML = renderMarkdown(raw);
-          renderMermaidDiagrams(answerContent); renderMathJax(answerContent);
+          // Neutralize mermaid during streaming to prevent flicker
+          answerContent.querySelectorAll(".mermaid-wrap").forEach(wrap => {
+            const pre = wrap.querySelector("pre.mermaid");
+            if (!pre) return;
+            const code = pre.textContent;
+            const div = document.createElement("div");
+            div.className = "code-block";
+            div.innerHTML = `<pre><code class="language-mermaid">${escHtml(code)}</code></pre>`;
+            wrap.replaceWith(div);
+          });
         }
       }
       function _enqueueAnswer(text) {
@@ -1013,9 +1024,9 @@
         if (_ansQueue && answerContent) {
           raw += _ansQueue;
           _ansQueue = "";
+          // Only do lightweight markdown render here; heavy mermaid/math rendering
+          // is deferred to closeAnswer() to avoid rendering partial content mid-stream.
           answerContent.innerHTML = renderMarkdown(raw);
-          renderMermaidDiagrams(answerContent);
-          renderMathJax(answerContent);
           activateLucideIcons(answerContent);
           scrollBottom();
         }
@@ -1024,8 +1035,19 @@
       function closeAnswer() {
         _flushAnswerQueue();
         if (!answerEl) return;
+        // Skip markdown re-render for special cards (rate-limit, captcha) that
+        // already have their final HTML set via innerHTML.
+        const _isSpecialCard = raw === "__rate_limit_card__" || raw === "__captcha_block_card__";
+        // Final render with full mermaid + math support — only runs when this answer
+        // segment is truly done (stream end or skill interleave boundary).
+        if (answerContent && raw && !_isSpecialCard) {
+          answerContent.innerHTML = renderMarkdown(raw);
+          renderMermaidDiagrams(answerContent);
+          renderMathJax(answerContent);
+          activateLucideIcons(answerContent);
+        }
         answerEl.classList.remove("streaming");
-        if (!raw.trim()) answerEl.remove();
+        if (!_isSpecialCard && !raw.trim()) answerEl.remove();
         answerEl = null;
         answerContent = null;
         raw = "";
@@ -1176,6 +1198,8 @@
           // Build persistent rate-limit card
           ensureAnswer();
           answerEl.classList.remove('streaming');
+          // Set raw so closeAnswer() doesn't remove this element on finalize
+          raw = "__rate_limit_card__";
           const h = hours || '?';
           const dbg = debugInfo || {};
           const debugHtml = dbg.account ? `
@@ -1197,7 +1221,7 @@
               <span class="rl-timer">Try again in ~${h} hour${h === 1 ? '' : 's'}. This message will stay visible so you don't miss it.</span>
               ${debugHtml}
             </div>`;
-          raw = "\u200B"; // non-empty so closeAnswer() won't remove the card
+          // raw already set to "__rate_limit_card__" above — do NOT overwrite
           scrollBottom();
         },
         replaceWithCaptchaBlock(message, debugInfo) {
@@ -1217,6 +1241,8 @@
           }
           ensureAnswer();
           answerEl.classList.remove('streaming');
+          // Set raw so closeAnswer() doesn't remove this element on finalize
+          raw = "__captcha_block_card__";
           const dbg = debugInfo || {};
           const debugHtml = dbg.account ? `
               <div class="card-debug-info">
@@ -1237,7 +1263,7 @@
               <span class="cb-note">The request was stopped so you can switch/refresh the account or solve the challenge manually.</span>
               ${debugHtml}
             </div>`;
-          raw = "\u200B";
+          // raw already set to "__captcha_block_card__" above — do NOT overwrite
           scrollBottom();
         },
         trackFileEdit(evt) {

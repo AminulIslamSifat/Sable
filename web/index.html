@@ -8,7 +8,7 @@
 
   <link rel="stylesheet" href="/static/css/variables.css?v=4">
   <link rel="stylesheet" href="/static/css/base.css?v=5">
-  <link rel="stylesheet" href="/static/css/layout.css?v=61">
+  <link rel="stylesheet" href="/static/css/layout.css?v=62">
   <link rel="stylesheet" href="/static/css/ide.css?v=5">
   <link rel="stylesheet" href="/static/css/chat.css?v=35">
   <link rel="stylesheet" href="/static/css/panels.css?v=56">
@@ -160,6 +160,9 @@
       </button>
       <button class="rail-btn" data-rail="prompt" title="Prompt Generator">
         <span class="icon-emoji">✨</span><i data-lucide="sparkles" class="icon-lucide"></i>
+      </button>
+      <button class="rail-btn" data-rail="ocr" title="OCR">
+        <span class="icon-emoji">👁</span><i data-lucide="eye" class="icon-lucide"></i>
       </button>
       <div class="rail-sep"></div>
       <!-- Planning -->
@@ -1183,10 +1186,10 @@
           <!-- Fallback Chain (multi-select) -->
           <div style="margin-bottom:16px;border-top:1px solid var(--border);padding-top:16px;">
             <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Fallback Chain</label>
-            <p class="muted" style="font-size:11px;margin:0 0 8px 0;">Select providers to try when primary fails (drag to reorder).</p>
+            <p class="muted" style="font-size:11px;margin:0 0 8px 0;">Click the dropdown to add fallback providers. They're tried in order when the primary fails.</p>
             <div id="searchFallbackDropdown" style="position:relative;width:100%;max-width:400px;">
               <div id="searchFallbackSelected" class="mem-input" style="min-height:36px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;padding:4px 8px;cursor:pointer;">
-                <span class="muted" style="font-size:11px;">Select providers…</span>
+                <span class="muted" style="font-size:11px;">Click to add fallback engines…</span>
               </div>
               <div id="searchFallbackOptions" style="display:none;z-index:9999;background:var(--panel);border:1px solid var(--border);border-radius:8px;max-height:200px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.3);"></div>
             </div>
@@ -1992,7 +1995,7 @@
   <script src="/static/js/chat.js?v=2"></script>
   <script src="/static/js/sidebar-host.js?v=10"></script>
   <script src="/static/js/tracknote.js?v=8"></script>
-  <script src="/static/js/sse.js?v=7"></script>
+  <script src="/static/js/sse.js?v=9"></script>
   <script src="/static/js/sidebar.js?v=1"></script>
   <script src="/static/js/statusbar.js?v=1"></script>
   <script src="/static/js/settings-projects.js?v=2"></script>
@@ -2003,7 +2006,7 @@
   <script src="/static/js/library.js?v=2"></script>
   <script src="/static/js/telegram.js?v=4"></script>
   <script src="/static/js/memory-panel.js?v=1"></script>
-  <script src="/static/js/skills-panel.js?v=14"></script>
+  <script src="/static/js/skills-panel.js?v=15"></script>
   <script src="/static/js/appearance.js?v=3"></script>
   <script src="/static/src/research.js?v=10"></script>
   <script src="/static/js/research-panel.js?v=3"></script>
