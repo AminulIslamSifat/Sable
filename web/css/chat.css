@@ -696,6 +696,44 @@
       50% { opacity: 0.5; transform: scale(0.92); }
     }
 
+    /* Token Rotation Card */
+    .token-rotation-card .tr-details {
+      padding: 6px 12px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .tr-detail-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: var(--font-size-system);
+      font-family: var(--font-mono);
+      padding: 4px 0;
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+    }
+    .tr-detail-row:last-child { border-bottom: none; }
+    .tr-reason {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--muted);
+      min-width: 130px;
+    }
+    .tr-token-from, .tr-token-to {
+      color: var(--text-dim);
+      opacity: 0.8;
+    }
+    .tr-token-to { color: var(--accent); opacity: 1; }
+    .tr-arrow { color: var(--muted); font-size: 11px; }
+    .tr-index {
+      margin-left: auto;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .token-rotation-card.collapsed .tr-details { display: none; }
+
+
 
     .skill-image {
       margin-top: 8px;

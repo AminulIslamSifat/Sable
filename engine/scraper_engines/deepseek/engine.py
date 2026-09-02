@@ -209,7 +209,7 @@ class DeepSeekEngine(BaseScraperEngine):
                 else:
                     reminder = (
                         "[QUICK REMINDER]\n"
-                        "1. Use DSML format for all tool calls.\n"
+                        "1. Use <action>[...]</action> JSON array format for all tool calls (NOT DSML).\n"
                         "2. Use <execute_command> to run any command.\n"
                         "3. Always use appropriate tags to run commands or use skills.\n\n"
                     )

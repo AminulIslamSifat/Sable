@@ -208,6 +208,12 @@ class GhostChat:
         self.system_injected   = False
         self.image_attached    = False
 
+        # Network SSE capture state (mirrors DeepSeek engine)
+        self._sse_chunks: list[str] = []
+        self._sse_done: asyncio.Event = asyncio.Event()
+        self._sse_active_req_id: str | None = None
+        self._sse_line_buffer: str = ""  # holds partial SSE lines between chunks
+
         logs_dir = os.path.join(OUTPUT_ROOT, "logs")
         os.makedirs(logs_dir, exist_ok=True)
         self.response_log_file = os.path.join(
@@ -226,6 +232,150 @@ class GhostChat:
                 f.write(json.dumps(payload, ensure_ascii=False) + "\n")
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # Network SSE capture callbacks (called from JS via expose_function)
+    # ------------------------------------------------------------------
+
+    def _on_network_sse_chunk(self, chunk: str, req_id: str) -> None:
+        """Called by JS interceptor for each SSE chunk from /api/v2/chat/completions.
+
+        ReadableStream chunks don't align with SSE line boundaries, so we
+        buffer partial lines and only emit complete lines to _sse_chunks.
+        This mirrors how service.py handles Qwen API streaming with proper
+        newline-delimited buffering.
+        """
+        self._sse_active_req_id = req_id
+        self._sse_line_buffer += chunk
+        lines_emitted = 0
+        while "\n" in self._sse_line_buffer:
+            line, self._sse_line_buffer = self._sse_line_buffer.split("\n", 1)
+            self._sse_chunks.append(line + "\n")
+            lines_emitted += 1
+        if lines_emitted > 0:
+            self._log_debug("sse_lines_buffered", count=lines_emitted, total=len(self._sse_chunks), req_id=req_id)
+
+    def _on_network_sse_done(self, req_id: str) -> None:
+        """Called by JS interceptor when SSE stream completes."""
+        # Flush any remaining partial line
+        if self._sse_line_buffer:
+            self._sse_chunks.append(self._sse_line_buffer)
+            self._sse_line_buffer = ""
+        self._sse_done.set()
+
+    def _reset_sse_capture(self) -> None:
+        """Reset SSE capture state before a new request."""
+        self._sse_chunks.clear()
+        self._sse_done.clear()
+        self._sse_active_req_id = None
+        self._sse_line_buffer = ""
+
+    async def _ensure_fetch_patched(self) -> None:
+        """Verify the JS fetch interceptor is active; re-patch if overwritten by page scripts."""
+        try:
+            result = await self.page.evaluate("""
+                (() => {
+                    const TARGET = '/api/v2/chat/completions';
+                    if (window.__qw_fetch_patched && window.fetch.toString().includes(TARGET)) {
+                        return 'active';
+                    }
+                    window.__qw_fetch_patched = true;
+                    const originalFetch = window.__qw_fetch_original || window.fetch;
+                    window.__qw_fetch_original = originalFetch;
+                    let chunkIndex = 0;
+                    window.fetch = async function(...args) {
+                        const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+                        const response = await originalFetch.apply(this, args);
+                        if (!url.includes(TARGET) || url.includes('/stop')) return response;
+                        const clone = response.clone();
+                        const reader = clone.body.getReader();
+                        const decoder = new TextDecoder();
+                        const reqId = 'qw_sse_' + Date.now() + '_' + (++chunkIndex);
+                        (async () => {
+                            try {
+                                while (true) {
+                                    const { done, value } = await reader.read();
+                                    if (done) { window.__qw_on_sse_done(reqId); break; }
+                                    const text = decoder.decode(value, { stream: true });
+                                    window.__qw_on_sse_chunk(text, reqId);
+                                }
+                            } catch (e) {
+                                console.error('[GhostChat] Qwen SSE capture error:', e);
+                                window.__qw_on_sse_done(reqId);
+                            }
+                        })();
+                        return response;
+                    };
+                    return 'repatched';
+                })()
+            """)
+            if result == 'repatched':
+                console.print("[yellow]🔧 Qwen SSE fetch interceptor was overwritten — re-patched[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]⚠️ Qwen SSE fetch patch check failed: {e}[/yellow]")
+
+    @staticmethod
+    def _parse_sse_delta(
+        raw_text: str, thinking_count: int = 0
+    ) -> tuple[str, str, int]:
+        """Parse Qwen SSE text into (content_delta, reasoning_delta, new_thinking_count).
+
+        Qwen's SSE format uses phase-based deltas (matching service.py):
+          - delta.phase = "thinking" | "thinking_summary" | "answer"
+          - delta.content = answer text (when phase="answer")
+          - delta.extra.summary_thought.content = cumulative thinking array
+          - Also handles legacy OpenAI-style delta.content / delta.reasoning_content
+
+        Args:
+            raw_text: One or more SSE lines.
+            thinking_count: Current position in the cumulative thinking array,
+                used to only extract new entries (mirrors service.py logic).
+
+        Returns:
+            (content_delta, reasoning_delta, updated_thinking_count)
+        """
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+
+        for line in raw_text.split("\n"):
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                obj = json.loads(payload)
+                choices = obj.get("choices", [])
+                if not choices:
+                    continue
+                delta = choices[0].get("delta", {})
+                phase = delta.get("phase", "")
+                content = delta.get("content", "")
+                extra = delta.get("extra", {})
+
+                if phase in ("thinking", "thinking_summary"):
+                    thoughts = extra.get("summary_thought", {}).get("content", [])
+                    if thoughts and isinstance(thoughts, list):
+                        # Cumulative array — only yield entries beyond what we've seen
+                        new_parts = thoughts[thinking_count:]
+                        thinking_count = len(thoughts)
+                        if new_parts:
+                            reasoning_parts.append("\n\n".join(new_parts))
+                    elif content:
+                        reasoning_parts.append(content)
+                elif content:
+                    content_parts.append(content)
+
+                # Legacy fallback: reasoning_content / thinking fields
+                r = delta.get("reasoning_content", "") or delta.get("thinking", "")
+                if r and not reasoning_parts:
+                    reasoning_parts.append(r)
+
+            except (json.JSONDecodeError, IndexError, KeyError):
+                pass
+
+        return "".join(content_parts), "".join(reasoning_parts), thinking_count
 
     # ------------------------------------------------------------------
     # Launch & Connect
@@ -551,6 +701,97 @@ class GhostChat:
                 "**/collect?*", "**/*.{woff,woff2,ttf}",
             ]:
                 await page.route(pattern, lambda route: route.abort())
+
+            # --- JS-level fetch interception for SSE capture ---
+            # Qwen uses fetch() + ReadableStream for /api/v2/chat/completions
+            await page.expose_function("__qw_on_sse_chunk", lambda chunk, req_id: self._on_network_sse_chunk(chunk, req_id))
+            await page.expose_function("__qw_on_sse_done", lambda req_id: self._on_network_sse_done(req_id))
+
+            await page.add_init_script("""
+                (() => {
+                    const TARGET = '/api/v2/chat/completions';
+                    if (window.__qw_fetch_patched) return;  // Prevent double-injection
+                    window.__qw_fetch_patched = true;
+                    const originalFetch = window.__qw_fetch_original || window.fetch;
+                    window.__qw_fetch_original = originalFetch;
+                    let chunkIndex = 0;
+
+                    window.fetch = async function(...args) {
+                        const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+                        const response = await originalFetch.apply(this, args);
+
+                        // Only intercept streaming completion requests (not stop or other endpoints)
+                        if (!url.includes(TARGET) || url.includes('/stop')) return response;
+
+                        const clone = response.clone();
+                        const reader = clone.body.getReader();
+                        const decoder = new TextDecoder();
+                        const reqId = 'qw_sse_' + Date.now() + '_' + (++chunkIndex);
+
+                        (async () => {
+                            try {
+                                while (true) {
+                                    const { done, value } = await reader.read();
+                                    if (done) {
+                                        window.__qw_on_sse_done(reqId);
+                                        break;
+                                    }
+                                    const text = decoder.decode(value, { stream: true });
+                                    window.__qw_on_sse_chunk(text, reqId);
+                                }
+                            } catch (e) {
+                                console.error('[GhostChat] Qwen SSE capture error:', e);
+                                window.__qw_on_sse_done(reqId);
+                            }
+                        })();
+
+                        return response;
+                    };
+                })();
+            """)
+
+            # Also inject immediately for the current page (add_init_script only covers future navigations).
+            # Verify the patch actually took effect — guard flag alone is unreliable.
+            try:
+                result = await page.evaluate("""
+                    (() => {
+                        const TARGET = '/api/v2/chat/completions';
+                        if (window.__qw_fetch_patched && window.fetch.toString().includes(TARGET)) {
+                            return 'already_active';
+                        }
+                        window.__qw_fetch_patched = true;
+                        const originalFetch = window.__qw_fetch_original || window.fetch;
+                        window.__qw_fetch_original = originalFetch;
+                        let chunkIndex = 0;
+                        window.fetch = async function(...args) {
+                            const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+                            const response = await originalFetch.apply(this, args);
+                            if (!url.includes(TARGET) || url.includes('/stop')) return response;
+                            const clone = response.clone();
+                            const reader = clone.body.getReader();
+                            const decoder = new TextDecoder();
+                            const reqId = 'qw_sse_' + Date.now() + '_' + (++chunkIndex);
+                            (async () => {
+                                try {
+                                    while (true) {
+                                        const { done, value } = await reader.read();
+                                        if (done) { window.__qw_on_sse_done(reqId); break; }
+                                        const text = decoder.decode(value, { stream: true });
+                                        window.__qw_on_sse_chunk(text, reqId);
+                                    }
+                                } catch (e) {
+                                    console.error('[GhostChat] Qwen SSE capture error:', e);
+                                    window.__qw_on_sse_done(reqId);
+                                }
+                            })();
+                            return response;
+                        };
+                        return 'patched';
+                    })()
+                """)
+                console.print(f"[dim cyan]🔌 Qwen SSE fetch interceptor: {result}[/dim cyan]")
+            except Exception as e:
+                console.print(f"[yellow]⚠️ Qwen SSE fetch patch failed: {e}[/yellow]")
 
             await page.add_init_script(f"""
                 const injectGhostStyles = () => {{
@@ -1021,6 +1262,9 @@ class GhostChat:
                 if not is_ready:
                     self._log_debug("send_button_timeout", timeout=10)
                 
+                # Ensure fetch interceptor is alive before sending (page scripts may overwrite it)
+                await self._ensure_fetch_patched()
+
                 # Mark all existing messages and thinking cards as old so we can cleanly identify new ones
                 await self.page.evaluate("""() => {
                     document.querySelectorAll('div.response-message-content').forEach(el => {
@@ -1746,10 +1990,11 @@ class GhostChat:
         text = re.sub(r"(?i)^Model[\s\u202F]+\d{1,2}:\d{2}(?:[\s\u202F]*(?:am|pm))?[\s\u202F]*\n?", "", text, flags=re.MULTILINE)
         text = re.sub(r"(?i)\n?\d+(\.\d+)?s\s*$", "", text)
         text = text.strip()
-        half = len(text) // 2
-        if len(text) > 20 and text[:half].strip() == text[half:].strip():
-            text = text[:half].strip()
-        return text.strip()
+        # NOTE: Removed exact-duplicate halving heuristic. With SSE as primary
+        # capture path, content arrives incrementally and this check caused
+        # false positives on legitimately repetitive text, breaking delta
+        # computation in live_display and producing duplicated output.
+        return text
 
     def _is_meaningful_response_text(self, text: str) -> bool:
         cleaned = self._clean_garbage(text).strip() if text else ""
@@ -1882,9 +2127,10 @@ class GhostChat:
         last_response: str = "",
         user_input: str = "",
     ) -> str:
-        """Dedicated Qwen capture logic with path-based stop."""
+        """Hybrid network+DOM capture: SSE chunks primary, DOM polling fallback."""
         state = _CaptureState(start_time=time.time())
-        self._log_debug("qwen_capture_started", initial_count="ignored_now")
+        self._reset_sse_capture()
+        self._log_debug("qwen_capture_started", mode="network+dom")
         
         stop_sel = PLATFORM["selectors"].get("stop", "div.chat-prompt-send-button button.stop-button")
         # Ignore old messages entirely via data-ghost-old marker
@@ -1898,6 +2144,12 @@ class GhostChat:
         FROZEN_TIMEOUT  = 4.5   # response already started, then went quiet with stop gone
         SILENCE_TIMEOUT = 10.0  # nothing meaningful ever appeared, stop gone
         START_TIMEOUT   = 120   # hard failure: no content elements ever showed up
+
+        # Network SSE accumulation
+        net_content = ""
+        net_reasoning = ""
+        _thinking_entry_count = 0  # tracks cumulative thinking array position (mirrors service.py)
+        sse_chunk_idx = 0
 
         while True:
             try:
@@ -1916,6 +2168,26 @@ class GhostChat:
                     if state.stop_disappeared_at is None:
                         state.stop_disappeared_at = now
 
+                # --- Process SSE chunks from network capture ---
+                _sse_batch_start = sse_chunk_idx
+                while sse_chunk_idx < len(self._sse_chunks):
+                    raw_chunk = self._sse_chunks[sse_chunk_idx]
+                    sse_chunk_idx += 1
+                    c_delta, r_delta, _thinking_entry_count = self._parse_sse_delta(
+                        raw_chunk, _thinking_entry_count
+                    )
+                    if r_delta:
+                        net_reasoning += r_delta
+                        if thoughts_callback and self.show_thoughts:
+                            await thoughts_callback(net_reasoning)
+                    if c_delta:
+                        net_content += c_delta
+                        if live_display:
+                            live_display(self._clean_garbage(net_content))
+                _sse_processed = sse_chunk_idx - _sse_batch_start
+                if _sse_processed > 0:
+                    self._log_debug("sse_chunks_processed", batch=_sse_processed, total=sse_chunk_idx, net_content_len=len(net_content), net_reasoning_len=len(net_reasoning))
+
                 # If the new content hasn't appeared yet
                 if len(elements) == 0:
                     if stop_active:
@@ -1925,7 +2197,7 @@ class GhostChat:
                     await asyncio.sleep(0.3)
                     continue
 
-                # Retrieve and clean text from all matching elements to support multi-part responses
+                # Retrieve and clean text from DOM (fallback when no SSE data)
                 raw_parts = []
                 cleaned_parts = []
                 for el in elements:
@@ -1946,7 +2218,11 @@ class GhostChat:
                     state.last_change_at  = now
                     if self._is_meaningful_response_text(cleaned):
                         state.response_started = True
-                        if live_display: live_display(cleaned)
+                        # Only fire live_display from DOM if network capture hasn't started
+                        # producing ANY data (content or reasoning). Once SSE flows, DOM
+                        # would feed conflicting text causing duplicate/garbled output.
+                        if live_display and not net_content and not net_reasoning:
+                            live_display(cleaned)
                 else:
                     state.no_change_count += 1
 
@@ -1955,21 +2231,32 @@ class GhostChat:
                         pass
                     elif state.stop_disappeared_at is not None:
                         if now - state.stop_disappeared_at > 0.5:
-                            self._log_debug("qwen_capture_timeout_stop_disappeared", elapsed=round(now - state.stop_disappeared_at, 2))
+                            # Drain remaining SSE chunks
+                            while sse_chunk_idx < len(self._sse_chunks):
+                                c_d, r_d, _thinking_entry_count = self._parse_sse_delta(
+                                    self._sse_chunks[sse_chunk_idx], _thinking_entry_count
+                                )
+                                sse_chunk_idx += 1
+                                if c_d: net_content += c_d
+                                if r_d: net_reasoning += r_d
+                            final = self._clean_garbage(net_content) if net_content else state.last_text
+                            self._log_debug("qwen_capture_done_stop_gone", mode="network" if net_content else "dom")
                             await self.close_thinking_panel()
-                            return state.last_text
+                            return final
                     elif now - state.last_change_at > FROZEN_TIMEOUT:
-                        self._log_debug("qwen_capture_timeout", elapsed=round(now - state.last_change_at, 2))
+                        final = self._clean_garbage(net_content) if net_content else state.last_text
+                        self._log_debug("qwen_capture_timeout", elapsed=round(now - state.last_change_at, 2), mode="network" if net_content else "dom")
                         await self.close_thinking_panel()
-                        return state.last_text
+                        return final
 
                 # Total silence (nothing meaningful ever arrived) - short timeout since
                 # there's no in-flight generation to protect.
                 if not is_moving and not stop_active and not state.response_started \
                         and (now - state.last_change_at > SILENCE_TIMEOUT):
-                    self._log_debug("capture_done_silence", elapsed=round(now - state.last_change_at, 2))
+                    final = self._clean_garbage(net_content) if net_content else (state.last_text or "")
+                    self._log_debug("capture_done_silence", elapsed=round(now - state.last_change_at, 2), mode="network" if net_content else "dom")
                     await self.close_thinking_panel()
-                    return state.last_text or ""
+                    return final
 
                 await asyncio.sleep(0.3)
             except ResponseCaptureError:

@@ -69,17 +69,44 @@ class ScraperEngine(ScraperLifecycle):
         last_answer = ''
         last_thought = ''
 
+        def _compute_delta(full: str, prev: str) -> str:
+            """Compute new content delta between previous and current full text.
+
+            Handles three cases:
+            1. Normal growth: full starts with prev → emit tail
+            2. Text shrunk (_clean_garbage dedup): full is a prefix of prev → no delta
+            3. Mid-text reformat: use longest common prefix to find new tail
+            """
+            if full.startswith(prev):
+                return full[len(prev):]
+            # Text got shorter (e.g. _clean_garbage removed duplicate halves)
+            # or was reformatted — don't re-emit old content
+            if prev.startswith(full):
+                return ''
+            # Find longest common prefix
+            min_len = min(len(prev), len(full))
+            common = 0
+            while common < min_len and prev[common] == full[common]:
+                common += 1
+            # Only emit genuinely new content beyond the shared prefix
+            if common > len(prev) // 2 and len(full) > common:
+                return full[common:]
+            # Too little overlap — likely a full replacement, not incremental
+            return ''
+
         def live_display(full_text: str) -> None:
             nonlocal last_answer
             full = str(full_text or '')
             if not full or full == last_answer:
                 return
-            if full.startswith(last_answer):
-                delta = full[len(last_answer):]
-            else:
-                delta = full
+            delta = _compute_delta(full, last_answer)
             last_answer = full
             if delta:
+                import logging as _logging
+                _logging.getLogger("sable.scraper.stream").debug(
+                    "live_display delta: len=%d full_len=%d prev_len=%d preview=%r",
+                    len(delta), len(full), len(full) - len(delta), delta[:80]
+                )
                 answer_queue.put_nowait(delta)
 
         async def thoughts_callback(full_text: str) -> None:
@@ -87,10 +114,7 @@ class ScraperEngine(ScraperLifecycle):
             full = str(full_text or '')
             if not full or full == last_thought:
                 return
-            if full.startswith(last_thought):
-                delta = full[len(last_thought):]
-            else:
-                delta = full
+            delta = _compute_delta(full, last_thought)
             last_thought = full
             if delta:
                 thought_queue.put_nowait(delta)
@@ -135,11 +159,16 @@ class ScraperEngine(ScraperLifecycle):
         state['answer'] = answer_text
 
         if answer_text:
-            if answer_text.startswith(last_answer):
-                tail = answer_text[len(last_answer):]
-            else:
-                tail = '' if state.get('streamed') else answer_text
+            tail = _compute_delta(answer_text, last_answer)
+            if not tail and not state.get('streamed'):
+                # Nothing streamed yet — use full answer as fallback
+                tail = answer_text
             if tail:
+                import logging as _logging
+                _logging.getLogger("sable.scraper.stream").debug(
+                    "final_flush tail: len=%d answer_len=%d last_answer_len=%d streamed=%s preview=%r",
+                    len(tail), len(answer_text), len(last_answer), state.get('streamed'), tail[:80]
+                )
                 state['streamed'] = True
                 yield {'type': 'answer', 'text': tail}
 
