@@ -1608,6 +1608,9 @@
           } else if (evt.type === "account_switch") {
             const _ascTurn = activePane.querySelector('.turn:last-child');
             if (_ascTurn) handleAccountSwitchEvent(evt, _ascTurn);
+          } else if (evt.type === "token_rotation") {
+            const _trTurn = activePane.querySelector('.turn:last-child');
+            if (_trTurn) handleTokenRotationEvent(evt, _trTurn);
           } else if (evt.type === "user_message_id") {
             // Store DB message ID on the div and enable the fork button
             if (userMsgDiv && evt.id) {
@@ -1940,5 +1943,64 @@ function handleAccountSwitchEvent(evt, container) {
   const activeRow = stepsEl.querySelector(".asc-step-active, .asc-step-failed");
   if (activeRow) activeRow.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
+
+// ---------------------------------------------------------------------------
+// Token Rotation Card (DeepSeek API token switching)
+// ---------------------------------------------------------------------------
+
+const _TOKEN_ROTATION_REASONS = {
+  round_robin:    { label: "Round-robin rotation", icon: "refresh-cw" },
+  timeout:        { label: "Timeout failover",     icon: "clock" },
+  empty_response: { label: "Empty response",       icon: "circle-alert" },
+  "HTTP 401":     { label: "Auth failed (401)",    icon: "shield-alert" },
+  "HTTP 403":     { label: "Forbidden (403)",      icon: "shield-x" },
+  "HTTP 429":     { label: "Rate limited (429)",   icon: "gauge" },
+};
+
+function handleTokenRotationEvent(evt, container) {
+  let card = container.querySelector(".token-rotation-card");
+  if (!card) {
+    card = document.createElement("div");
+    card.className = "skill-card token-rotation-card";
+    card.innerHTML = `
+      <div class="skill-header">
+        <div class="skill-header-left">
+          <span class="skill-arrow"><i data-lucide="chevron-down" style="width:14px;height:14px"></i></span>
+          <span class="skill-name"><i data-lucide="repeat" style="width:15px;height:15px"></i> Token Rotation</span>
+        </div>
+        <div class="skill-header-right" style="display:flex;align-items:center;gap:8px;">
+          <span class="skill-status tr-status">switching…</span>
+        </div>
+      </div>
+      <div class="tr-details"></div>`;
+    card.querySelector(".skill-header").onclick = () => card.classList.toggle("collapsed");
+    container.appendChild(card);
+    if (typeof activateLucideIcons === "function") activateLucideIcons(card);
+  }
+
+  const detailsEl = card.querySelector(".tr-details");
+  const statusEl = card.querySelector(".tr-status");
+  const reasonMeta = _TOKEN_ROTATION_REASONS[evt.reason] || { label: evt.reason, icon: "arrow-right-left" };
+
+  // Build detail row
+  const row = document.createElement("div");
+  row.className = "tr-detail-row";
+  row.innerHTML = `
+    <span class="tr-reason"><i data-lucide="${reasonMeta.icon}" style="width:12px;height:12px"></i> ${reasonMeta.label}</span>
+    <span class="tr-token-from" title="Previous token">${evt.from_token || "???"}</span>
+    <span class="tr-arrow">→</span>
+    <span class="tr-token-to" title="New token">${evt.to_token || "???"}</span>
+    <span class="tr-index">#${evt.to_index + 1}/${evt.total_tokens}</span>`;
+  detailsEl.appendChild(row);
+
+  if (typeof activateLucideIcons === "function") activateLucideIcons(card);
+
+  // Update status
+  statusEl.textContent = `token #${evt.to_index + 1}/${evt.total_tokens}`;
+
+  // Auto-scroll
+  row.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
 
 

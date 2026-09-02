@@ -174,7 +174,7 @@ Follow the function schemas provided in the API request.
 """
 
 _PROVIDER_TOOL_FORMATS: dict[str, str] = {
-    "deepseek": _TOOL_FORMAT_DEEPSEEK,
+    "deepseek": _TOOL_FORMAT_QWEN,  # TEMP: use Qwen <action> format instead of DSML
     "qwen": _TOOL_FORMAT_QWEN,
     "native": _TOOL_FORMAT_NATIVE,
     "none": _TOOL_FORMAT_NONE,
