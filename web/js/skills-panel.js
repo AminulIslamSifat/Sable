@@ -720,14 +720,18 @@
       }
     });
 
-    // --- Fallback chain multi-select dropdown ---
+    // --- Fallback chain: add-from-dropdown (no drag-and-drop) ---
     const _fallbackUI = (() => {
       let providers = [];
-      let selected = []; // ordered
+      let selected = []; // ordered list of provider names
 
       function syncHidden() {
         const h = _searchEls.fallback();
         if (h) h.value = selected.join(", ");
+      }
+
+      function markDirty() {
+        window._universalSave?.markDirty("providers");
       }
 
       function renderChips() {
@@ -735,36 +739,26 @@
         if (!el) return;
         el.innerHTML = "";
         if (selected.length === 0) {
-          el.innerHTML = '<span class="muted" style="font-size:11px;">Select providers…</span>';
+          el.innerHTML = '<span class="muted" style="font-size:11px;">No fallback engines added</span>';
           syncHidden();
           return;
         }
         selected.forEach((name) => {
           const chip = document.createElement("span");
-          chip.draggable = true;
-          chip.style.cssText = "display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 8px;border-radius:10px;background:color-mix(in srgb, var(--accent) 18%, transparent);border:1px solid var(--border);color:var(--text);cursor:grab;";
+          chip.style.cssText = "display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 8px;border-radius:10px;background:color-mix(in srgb, var(--accent) 18%, transparent);border:1px solid var(--border);color:var(--text);";
           chip.textContent = name;
           const x = document.createElement("span");
           x.textContent = "×";
-          x.style.cssText = "cursor:pointer;opacity:.7;font-weight:700;";
+          x.title = "Remove";
+          x.style.cssText = "cursor:pointer;opacity:.7;font-weight:700;margin-left:2px;";
           x.addEventListener("click", (ev) => {
             ev.stopPropagation();
             selected = selected.filter((p) => p !== name);
             renderChips();
             renderOptions();
+            markDirty();
           });
           chip.appendChild(x);
-          chip.addEventListener("dragstart", (ev) => ev.dataTransfer.setData("text/plain", name));
-          chip.addEventListener("dragover", (ev) => ev.preventDefault());
-          chip.addEventListener("drop", (ev) => {
-            ev.preventDefault();
-            ev.stopPropagation();
-            const src = ev.dataTransfer.getData("text/plain");
-            if (!src || src === name) return;
-            selected = selected.filter((p) => p !== src);
-            selected.splice(selected.indexOf(name), 0, src);
-            renderChips();
-          });
           el.appendChild(chip);
         });
         syncHidden();
@@ -775,17 +769,22 @@
         if (!el) return;
         el.innerHTML = "";
         const currentPrimary = _searchEls.provider()?.value || "searxng";
-        providers.filter((p) => p !== "disabled" && p !== currentPrimary).forEach((name) => {
-          const isSel = selected.includes(name);
+        const available = providers.filter((p) => p !== "disabled" && p !== currentPrimary && !selected.includes(p));
+        if (available.length === 0) {
+          el.innerHTML = '<div class="muted" style="padding:8px 10px;font-size:11px;">All available engines already added</div>';
+          return;
+        }
+        available.forEach((name) => {
           const row = document.createElement("div");
           row.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:12px;cursor:pointer;color:var(--text);";
-          row.innerHTML = `<span style="opacity:${isSel ? 1 : 0.35}">${isSel ? "☑" : "☐"}</span> ${name}`;
+          row.innerHTML = `<span style="opacity:0.35">＋</span> ${name}`;
           row.addEventListener("mouseenter", () => (row.style.background = "color-mix(in srgb, var(--accent) 8%, transparent)"));
           row.addEventListener("mouseleave", () => (row.style.background = "transparent"));
           row.addEventListener("click", () => {
-            selected = selected.includes(name) ? selected.filter((p) => p !== name) : [...selected, name];
+            selected.push(name);
             renderChips();
             renderOptions();
+            markDirty();
           });
           el.appendChild(row);
         });
@@ -920,6 +919,7 @@
     _searchEls.provider()?.addEventListener("change", () => {
       _updateSearchProviderUI();
       _fallbackUI.renderOptions();
+      window._universalSave?.markDirty("providers");
     });
 
     _loadSearchProviders();
@@ -944,8 +944,8 @@
       }
     }
 
-    // Register Search tab with universal save
-    _universalSave.register("search", _saveSearchSettings);
+    // Register under "providers" tab since search settings live inside the Providers panel
+    _universalSave.register("providers", _saveSearchSettings);
 
     _searchEls.testBtn()?.addEventListener("click", async () => {
       const statusEl = _searchEls.status();
