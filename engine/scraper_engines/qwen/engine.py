@@ -1439,3 +1439,7 @@ class QwenEngine(BaseScraperEngine):
                 kill_process_tree(self.chrome_process.pid, sig=signal.SIGTERM)
             except Exception:
                 pass
+
+
+# Backward compatibility for dynamic scraper loader that looks for GhostChat class.
+GhostChat = QwenEngine

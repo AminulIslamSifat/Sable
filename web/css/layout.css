@@ -1274,7 +1274,8 @@
       gap: 4px;
     }
 
-    .chat-row .chat-item { flex: 1; width: auto; }
+    .chat-row .chat-item { flex: 1; width: auto; display: flex; align-items: center; gap: 6px; }
+    .chat-item .chat-item-icon { width: 14px; height: 14px; flex-shrink: 0; opacity: 0.7; }
 
     .chat-item {
       width: 100%;

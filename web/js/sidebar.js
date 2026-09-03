@@ -1,6 +1,4 @@
-    let scraperChatsCollapsed = false;
-
-    async function renderChats() {
+        async function renderChats() {
       chatsEl.innerHTML = '';
       chatsEl.classList.remove('has-project-banner');
 
@@ -64,9 +62,8 @@
       }
 
       const filtered = q ? chatList.filter(c => (c.title || '').toLowerCase().includes(q)) : chatList;
-      const apiChats = filtered.filter(c => !c.id.startsWith('browser-'))
+      const allChats = filtered
         .sort((a, b) => (b.updated_at || b.created_at || '').localeCompare(a.updated_at || a.created_at || ''));
-      const scraperChats = filtered.filter(c => c.id.startsWith('browser-'));
 
       const __groupOf = (c) => {
         const raw = c.updated_at || c.created_at || c.last_message_at || null;
@@ -82,13 +79,21 @@
         return 'Earlier';
       };
 
-      const renderChatRow = (chat) => {
+      const renderChatRow = (chat, isScraper) => {
         const row = document.createElement("div");
         row.className = "chat-row";
         row.dataset.chatId = chat.id;
         const btn = document.createElement("button");
         btn.className = "chat-item" + (chat.id === activeChatId ? " active" : "");
-        btn.textContent = chat.title || "New chat";
+        if (isScraper) {
+          const icon = document.createElement("i");
+          icon.setAttribute("data-lucide", "globe");
+          icon.className = "icon-lucide chat-item-icon";
+          btn.appendChild(icon);
+        }
+        const titleSpan = document.createElement("span");
+        titleSpan.textContent = chat.title || "New chat";
+        btn.appendChild(titleSpan);
         btn.onclick = () => selectChat(chat.id);
         if (activeStreams.has(chat.id)) row.classList.add("streaming");
         const del = document.createElement("button");
@@ -101,9 +106,9 @@
         return row;
       };
 
-      // API chats with date groups
+      // All chats unified with date groups
       let __lastGroup = null;
-      for (const chat of apiChats) {
+      for (const chat of allChats) {
         const __g = __groupOf(chat);
         if (__g !== __lastGroup) {
           __lastGroup = __g;
@@ -112,30 +117,12 @@
           lbl.textContent = __g;
           chatsEl.appendChild(lbl);
         }
-        chatsEl.appendChild(renderChatRow(chat));
+        const isScraper = chat.id.startsWith('browser-');
+        chatsEl.appendChild(renderChatRow(chat, isScraper));
       }
 
-      // Activate lucide icons for dynamically created project elements
+      // Activate lucide icons for dynamically created elements
       if (typeof lucide !== 'undefined') lucide.createIcons();
-
-      // Scraper chats at bottom in collapsible section
-      if (scraperChats.length > 0) {
-        const header = document.createElement('div');
-        header.className = 'scraper-chats-header' + (scraperChatsCollapsed ? ' collapsed' : '');
-        header.innerHTML = '<span class="arrow">▼</span> 🌐 Scraper Chats (' + scraperChats.length + ')';
-        header.onclick = () => {
-          scraperChatsCollapsed = !scraperChatsCollapsed;
-          renderChats();
-        };
-        chatsEl.appendChild(header);
-
-        const body = document.createElement('div');
-        body.className = 'scraper-chats-body' + (scraperChatsCollapsed ? ' collapsed' : '');
-        for (const chat of scraperChats) {
-          body.appendChild(renderChatRow(chat));
-        }
-        chatsEl.appendChild(body);
-      }
 
       // Sync tab titles from chatList (backend auto-titles after first msg)
       for (const [id, tab] of openTabs) {

@@ -869,6 +869,24 @@ class GhostChat:
             pass
 
     # ------------------------------------------------------------------
+    # UI metadata for frontend
+    # ------------------------------------------------------------------
+
+    def get_ui_metadata(self) -> dict[str, Any]:
+        """DeepSeek has 3 model types and deepthink toggle."""
+        return {
+            "models": [
+                {"id": "default", "label": "Instant"},
+                {"id": "expert", "label": "Expert"},
+                {"id": "vision", "label": "Vision"},
+            ],
+            "thinking_modes": [
+                {"id": "fast", "label": "Fast"},
+                {"id": "deepthink", "label": "DeepThink"},
+            ],
+        }
+
+    # ------------------------------------------------------------------
     # AI Studio setup
     # ------------------------------------------------------------------
 

@@ -1,0 +1,26 @@
+{
+    "active_platform": "chatgpt",
+    "stealth_mode": true,
+    "use_obsidian": false,
+    "output_dir": "output",
+    "chatgpt": {
+        "name": "ChatGPT",
+        "url": "https://chatgpt.com/",
+        "selectors": {
+            "input": "#prompt-textarea",
+            "send_btn": "button[aria-label='Send prompt']",
+            "stop": "button[aria-label='Stop generating']",
+            "response": "div[data-message-author-role='assistant']",
+            "content": "div.markdown",
+            "thoughts": "div[data-message-author-role='assistant'] div.text-token-text-secondary",
+            "new_chat": "a[aria-label='New chat']",
+            "model_switcher": "button[data-testid='model-switcher-button']",
+            "attach_files": "button[aria-label='Attach files']",
+            "file_input": "input[type='file']",
+            "think_toggle": "button[aria-label='Toggle think mode']"
+        },
+        "keys": {
+            "send": "Enter"
+        }
+    }
+}
