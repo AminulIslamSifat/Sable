@@ -4236,8 +4236,8 @@ body.ocr-open #inputArea { display: none !important; }
 
 .ocr-textarea {
   width: 100%;
-  min-height: 180px;
-  max-height: 400px;
+  min-height: 360px;
+  max-height: 800px;
   padding: 12px;
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -4349,5 +4349,10 @@ body.ocr-open #inputArea { display: none !important; }
   gap: 8px;
 }
 .ocr-batch-card-body.hidden { display: none; }
+.ocr-batch-card-body .ocr-textarea {
+  min-height: 360px;
+  max-height: 360px;
+  resize: none;
+}
 
 

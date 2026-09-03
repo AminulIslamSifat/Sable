@@ -51,6 +51,7 @@ from .routes.update import router as update_router
 from .routes.dashboard import router as dashboard_router
 from .routes.telegram_bot import router as telegram_bot_router
 from .routes.ocr import router as ocr_router
+from .routes.ocr_local import router as ocr_local_router
 
 def _raise_nofile_limit() -> None:
     """Raise open file limit for agentic workloads (browsers, agents, streams)."""
@@ -286,6 +287,7 @@ app.include_router(update_router)
 app.include_router(dashboard_router)
 app.include_router(telegram_bot_router)
 app.include_router(ocr_router)
+app.include_router(ocr_local_router)
 
 # Wire agent runtime event callback → SSE push
 from .routes.agents import _async_push_agent_event, push_agent_event

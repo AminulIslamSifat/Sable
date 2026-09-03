@@ -275,13 +275,11 @@
           throw new Error(err.detail || 'Batch OCR failed');
         }
 
-        fill.style.width = '10%';
-        statusEl.textContent = `Processing 0/${files.length} files…`;
-
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
         let results = null;
+        let totalPages = 0;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -295,14 +293,13 @@
             if (!line.startsWith('data: ')) continue;
             try {
               const msg = JSON.parse(line.slice(6));
-              if (msg.type === 'progress') {
-                const pct = Math.round(10 + (msg.files_completed / msg.files_total) * 85);
-                fill.style.width = `${pct}%`;
-                let statusTxt = `Processing ${msg.files_completed}/${msg.files_total} files`;
-                if (msg.pages_total) {
-                  statusTxt += ` — ${msg.source}: ${msg.pages_completed}/${msg.pages_total} pages`;
-                }
-                statusEl.textContent = statusTxt;
+              if (msg.type === 'init') {
+                totalPages = msg.total_pages;
+                fill.style.width = '0%';
+                statusEl.textContent = `Recognizing text… 0/${totalPages} pages`;
+              } else if (msg.type === 'progress') {
+                fill.style.width = `${msg.pct}%`;
+                statusEl.textContent = `Recognizing text… ${msg.pages_done}/${msg.total_pages} pages (${msg.pct}%)`;
               } else if (msg.type === 'complete') {
                 results = msg.results;
               }
@@ -457,21 +454,51 @@
       recognizeBtn.disabled = true;
       progress.classList.remove('hidden');
       results.classList.add('hidden');
-      fill.style.width = '20%';
-      statusEl.textContent = 'Uploading PDF & processing pages…';
 
       const form = new FormData();
-      form.append('file', selectedFile);
+      form.append('files', selectedFile);
 
       try {
-        fill.style.width = '50%';
-        const res = await fetch('/api/ocr/recognize', { method: 'POST', body: form });
-        fill.style.width = '90%';
+        const res = await fetch('/api/ocr/stream', { method: 'POST', body: form });
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: res.statusText }));
           throw new Error(err.detail || 'PDF OCR failed');
         }
-        const data = await res.json();
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalResults = null;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const msg = JSON.parse(line.slice(6));
+              if (msg.type === 'init') {
+                fill.style.width = '0%';
+                statusEl.textContent = `Recognizing text… 0/${msg.total_pages} pages`;
+              } else if (msg.type === 'progress') {
+                fill.style.width = `${msg.pct}%`;
+                statusEl.textContent = `Recognizing text… ${msg.pages_done}/${msg.total_pages} pages (${msg.pct}%)`;
+              } else if (msg.type === 'complete') {
+                finalResults = msg.results;
+              }
+            } catch {}
+          }
+        }
+
+        if (!finalResults || !finalResults[0]) throw new Error('No results received');
+        const data = finalResults[0];
+        if (data.error) throw new Error(data.error);
+
         fill.style.width = '100%';
         statusEl.textContent = `Done — ${data.page_count || '?'} pages in ${data.duration_sec || '?'}s`;
         textarea.value = data.full_text || '';
@@ -585,9 +612,6 @@
           throw new Error(err.detail || 'Multi-PDF OCR failed');
         }
 
-        fill.style.width = '10%';
-        statusEl.textContent = `Processing 0/${files.length} PDFs…`;
-
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
@@ -604,14 +628,12 @@
             if (!line.startsWith('data: ')) continue;
             try {
               const msg = JSON.parse(line.slice(6));
-              if (msg.type === 'progress') {
-                const pct = Math.round(10 + (msg.files_completed / msg.files_total) * 85);
-                fill.style.width = `${pct}%`;
-                let statusTxt = `Processing ${msg.files_completed}/${msg.files_total} PDFs`;
-                if (msg.pages_total) {
-                  statusTxt += ` — ${msg.source}: ${msg.pages_completed}/${msg.pages_total} pages`;
-                }
-                statusEl.textContent = statusTxt;
+              if (msg.type === 'init') {
+                fill.style.width = '0%';
+                statusEl.textContent = `Recognizing text… 0/${msg.total_pages} pages`;
+              } else if (msg.type === 'progress') {
+                fill.style.width = `${msg.pct}%`;
+                statusEl.textContent = `Recognizing text… ${msg.pages_done}/${msg.total_pages} pages (${msg.pct}%)`;
               } else if (msg.type === 'complete') {
                 allResults = msg.results;
               }
@@ -687,6 +709,148 @@
     });
   }
 
+  let selectedProvider = localStorage.getItem('ocr_provider') || 'banglaocr';
+  let providerData = {};
+
+  async function fetchProviders() {
+    try {
+      const res = await fetch('/api/ocr/providers');
+      if (res.ok) providerData = await res.json();
+    } catch {}
+  }
+
+  function getProviderEndpoint(isStream) {
+    if (selectedProvider === 'banglaocr') {
+      return isStream ? '/api/ocr/stream' : '/api/ocr/recognize';
+    }
+    return isStream ? '/api/ocr/local/stream' : '/api/ocr/local/recognize';
+  }
+
+  function getProviderFormData(form, isStream) {
+    if (selectedProvider !== 'banglaocr') {
+      form.append('provider', selectedProvider);
+      const info = providerData[selectedProvider];
+      if (info?.default_lang) form.append('lang', info.default_lang);
+    }
+  }
+
+  /* ── Provider Config Sidebar Widget ── */
+  function renderProviderConfig(container) {
+    container.innerHTML = `
+      <div class="ocr-provider-config">
+        <label class="ocr-config-label">OCR Provider</label>
+        <select class="ocr-provider-select" id="ocrProviderSelect">
+          <option value="banglaocr"${selectedProvider === 'banglaocr' ? ' selected' : ''}>BanglaOCR — Cloud</option>
+          <option value="sableocr"${selectedProvider === 'sableocr' ? ' selected' : ''}>SableOCR — Local</option>
+          <option value="paddleocr"${selectedProvider === 'paddleocr' ? ' selected' : ''}>PaddleOCR — Local</option>
+          <option value="pytesseract"${selectedProvider === 'pytesseract' ? ' selected' : ''}>Pytesseract — Local</option>
+        </select>
+        <div class="ocr-config-details" id="ocrConfigDetails"></div>
+      </div>
+    `;
+
+    const select = container.querySelector('#ocrProviderSelect');
+    const details = container.querySelector('#ocrConfigDetails');
+
+    function renderDetails() {
+      const pid = select.value;
+      selectedProvider = pid;
+      localStorage.setItem('ocr_provider', pid);
+      const info = providerData[pid];
+
+      if (!info || info.type === 'cloud') {
+        details.innerHTML = `<div class="ocr-config-placeholder">No config available for this provider</div>`;
+        return;
+      }
+
+      const installed = info.installed && info.ready;
+      const missingSys = !info.system_deps_met ? info.system_deps.filter(d => true) : [];
+
+      let html = `<div class="ocr-config-status ${installed ? 'installed' : 'not-installed'}">
+        <span class="ocr-config-dot"></span>
+        <span>${installed ? 'Installed & Ready' : 'Not Installed'}</span>
+      </div>`;
+
+      if (!installed) {
+        html += `<button class="ocr-config-btn ocr-install-btn" data-provider="${pid}">
+          <i data-lucide="download"></i> Install Dependencies
+        </button>`;
+      } else {
+        html += `<button class="ocr-config-btn ocr-uninstall-btn" data-provider="${pid}">
+          <i data-lucide="trash-2"></i> Uninstall
+        </button>`;
+      }
+
+      if (missingSys.length > 0) {
+        html += `<div class="ocr-config-warn">⚠ System deps needed: <code>${missingSys.join(', ')}</code><br><small>Install via: <code>sudo pacman -S ${missingSys.join(' ')}</code></small></div>`;
+      }
+
+      // Language selector
+      const defaultLang = info.default_lang || 'eng';
+      html += `<label class="ocr-config-label" style="margin-top:8px">Language</label>
+        <select class="ocr-lang-select" id="ocrLangSelect">
+          <option value="eng+ben"${defaultLang === 'eng+ben' ? ' selected' : ''}>English + Bangla</option>
+          <option value="eng"${defaultLang === 'eng' ? ' selected' : ''}>English</option>
+          <option value="ben"${defaultLang === 'ben' ? ' selected' : ''}>Bangla</option>
+          <option value="en"${defaultLang === 'en' ? ' selected' : ''}>English (Paddle)</option>
+        </select>`;
+
+      details.innerHTML = html;
+      if (window.lucide) lucide.createIcons({ nodes: details.querySelectorAll('[data-lucide]') });
+
+      // Install button handler
+      const installBtn = details.querySelector('.ocr-install-btn');
+      if (installBtn) {
+        installBtn.addEventListener('click', async () => {
+          installBtn.disabled = true;
+          installBtn.innerHTML = '<i data-lucide="loader"></i> Installing…';
+          try {
+            const res = await fetch(`/api/ocr/install/${pid}`, { method: 'POST' });
+            const data = await res.json();
+            if (res.ok) {
+              await fetchProviders();
+              renderDetails();
+            } else {
+              alert(data.detail || 'Install failed');
+              installBtn.disabled = false;
+              installBtn.innerHTML = '<i data-lucide="download"></i> Install Dependencies';
+            }
+          } catch (e) {
+            alert('Install error: ' + e.message);
+            installBtn.disabled = false;
+          }
+          if (window.lucide) lucide.createIcons({ nodes: details.querySelectorAll('[data-lucide]') });
+        });
+      }
+
+      // Uninstall button handler
+      const uninstallBtn = details.querySelector('.ocr-uninstall-btn');
+      if (uninstallBtn) {
+        uninstallBtn.addEventListener('click', async () => {
+          if (!confirm(`Uninstall ${info.name} dependencies?`)) return;
+          uninstallBtn.disabled = true;
+          uninstallBtn.innerHTML = '<i data-lucide="loader"></i> Removing…';
+          try {
+            const res = await fetch(`/api/ocr/uninstall/${pid}`, { method: 'POST' });
+            if (res.ok) {
+              await fetchProviders();
+              renderDetails();
+            } else {
+              const data = await res.json();
+              alert(data.detail || 'Uninstall failed');
+            }
+          } catch (e) {
+            alert('Uninstall error: ' + e.message);
+          }
+          if (window.lucide) lucide.createIcons({ nodes: details.querySelectorAll('[data-lucide]') });
+        });
+      }
+    }
+
+    select.addEventListener('change', renderDetails);
+    renderDetails();
+  }
+
   /* ── Main Panel Renderer ── */
   function renderOcrPanel(container) {
     container.innerHTML = `
@@ -694,6 +858,7 @@
         <div class="ocr-panel-header">
           <h2 class="ocr-panel-title"><i data-lucide="scan-text" class="icon-lucide"></i> OCR Text Recognition</h2>
         </div>
+        <div class="ocr-provider-bar" id="ocrProviderBar"></div>
         <div class="kb-mode-tabs ocr-tabs">
           <button class="kb-mode-tab${currentTab === 'single' ? ' active' : ''}" data-ocr-tab="single">Single Image</button>
           <button class="kb-mode-tab${currentTab === 'batch' ? ' active' : ''}" data-ocr-tab="batch">Batch Images</button>
@@ -704,6 +869,8 @@
       </div>
     `;
     if (window.lucide) lucide.createIcons({ nodes: container.querySelectorAll('[data-lucide]') });
+
+    renderProviderConfig(container.querySelector('#ocrProviderBar'));
 
     const content = container.querySelector('#ocrTabContent');
     const tabs = container.querySelectorAll('[data-ocr-tab]');
@@ -763,9 +930,8 @@
   });
 
   /* ── Init ── */
-  function init() {
-    // No sidebar widget needed for OCR (no recent results API)
-    // Panel is self-contained in main area
+  async function init() {
+    await fetchProviders();
   }
 
   if (document.readyState === 'loading') {
