@@ -1,5 +1,5 @@
 {
-  "enabled": true,
+  "enabled": false,
   "engine_type": "chatgpt",
   "port": 9333,
   "headless": false,
