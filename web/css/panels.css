@@ -4355,4 +4355,122 @@ body.ocr-open #inputArea { display: none !important; }
   resize: none;
 }
 
+/* ── OCR Provider Config Bar ── */
+.ocr-provider-bar {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.ocr-provider-config {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ocr-config-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+}
+.ocr-provider-select,
+.ocr-lang-select {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2, color-mix(in srgb, var(--panel) 60%, transparent));
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+}
+.ocr-provider-select:focus,
+.ocr-lang-select:focus {
+  border-color: var(--accent);
+}
+.ocr-config-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ocr-config-placeholder {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-style: italic;
+  padding: 4px 0;
+}
+.ocr-config-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.ocr-config-status.installed {
+  color: var(--success, #4ade80);
+}
+.ocr-config-status.not-installed {
+  color: var(--warning, #fbbf24);
+}
+.ocr-config-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.ocr-config-status.installed .ocr-config-dot {
+  background: var(--success, #4ade80);
+}
+.ocr-config-status.not-installed .ocr-config-dot {
+  background: var(--warning, #fbbf24);
+}
+.ocr-config-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2, color-mix(in srgb, var(--panel) 60%, transparent));
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.ocr-config-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: var(--accent);
+}
+.ocr-config-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ocr-install-btn i[data-lucide] {
+  width: 14px;
+  height: 14px;
+}
+.ocr-uninstall-btn {
+  color: var(--danger, #f87171);
+}
+.ocr-uninstall-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger, #f87171) 10%, transparent);
+  border-color: var(--danger, #f87171);
+}
+.ocr-config-warn {
+  font-size: 11px;
+  color: var(--warning, #fbbf24);
+  line-height: 1.5;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warning, #fbbf24) 8%, transparent);
+}
+.ocr-config-warn code {
+  font-size: 11px;
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+
 
