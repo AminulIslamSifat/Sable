@@ -154,11 +154,19 @@
       status.textContent = 'Uploading & recognizing…';
 
       const form = new FormData();
-      form.append('file', selectedFile);
+      if (selectedProvider === 'banglaocr') {
+        form.append('file', selectedFile);
+      } else {
+        form.append('file', selectedFile);
+        form.append('provider', selectedProvider);
+        const langSel = document.querySelector('#ocrLangSelect');
+        if (langSel) form.append('lang', langSel.value);
+      }
 
       try {
         fill.style.width = '60%';
-        const res = await fetch('/api/ocr/recognize', { method: 'POST', body: form });
+        const endpoint = getProviderEndpoint(false);
+        const res = await fetch(endpoint, { method: 'POST', body: form });
         fill.style.width = '90%';
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: res.statusText }));
@@ -166,7 +174,7 @@
         }
         const data = await res.json();
         fill.style.width = '100%';
-        status.textContent = `Done in ${data.duration_sec || '?'}s`;
+        status.textContent = `[${getProviderName()}] Done`;
         textarea.value = data.full_text || '';
         results.classList.remove('hidden');
       } catch (err) {
@@ -264,12 +272,17 @@
 
       const form = new FormData();
       files.forEach(f => form.append('files', f));
+      if (selectedProvider !== 'banglaocr') {
+        form.append('provider', selectedProvider);
+        const langSel = document.querySelector('#ocrLangSelect');
+        if (langSel) form.append('lang', langSel.value);
+      }
 
       fill.style.width = '5%';
       statusEl.textContent = `Uploading ${files.length} files…`;
 
       try {
-        const res = await fetch('/api/ocr/stream', { method: 'POST', body: form });
+        const res = await fetch(getProviderEndpoint(true), { method: 'POST', body: form });
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: res.statusText }));
           throw new Error(err.detail || 'Batch OCR failed');
@@ -299,7 +312,7 @@
                 statusEl.textContent = `Recognizing text… 0/${totalPages} pages`;
               } else if (msg.type === 'progress') {
                 fill.style.width = `${msg.pct}%`;
-                statusEl.textContent = `Recognizing text… ${msg.pages_done}/${msg.total_pages} pages (${msg.pct}%)`;
+                statusEl.textContent = `[${getProviderName()}] ${msg.pages_done}/${msg.total_pages} pages (${msg.pct}%)`;
               } else if (msg.type === 'complete') {
                 results = msg.results;
               }
@@ -310,7 +323,7 @@
         if (!results) throw new Error('Stream ended without results');
 
         fill.style.width = '100%';
-        statusEl.textContent = `Done — ${results.length} files processed`;
+        statusEl.textContent = `[${getProviderName()}] Done — ${results.length} files`;
 
         resultsDiv.innerHTML = '';
         results.forEach((r, i) => {
@@ -457,9 +470,14 @@
 
       const form = new FormData();
       form.append('files', selectedFile);
+      if (selectedProvider !== 'banglaocr') {
+        form.append('provider', selectedProvider);
+        const langSel = document.querySelector('#ocrLangSelect');
+        if (langSel) form.append('lang', langSel.value);
+      }
 
       try {
-        const res = await fetch('/api/ocr/stream', { method: 'POST', body: form });
+        const res = await fetch(getProviderEndpoint(true), { method: 'POST', body: form });
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: res.statusText }));
           throw new Error(err.detail || 'PDF OCR failed');
@@ -484,10 +502,10 @@
               const msg = JSON.parse(line.slice(6));
               if (msg.type === 'init') {
                 fill.style.width = '0%';
-                statusEl.textContent = `Recognizing text… 0/${msg.total_pages} pages`;
+                statusEl.textContent = `[${getProviderName()}] Recognizing… 0/${msg.total_pages} pages`;
               } else if (msg.type === 'progress') {
                 fill.style.width = `${msg.pct}%`;
-                statusEl.textContent = `Recognizing text… ${msg.pages_done}/${msg.total_pages} pages (${msg.pct}%)`;
+                statusEl.textContent = `[${getProviderName()}] ${msg.pages_done}/${msg.total_pages} pages (${msg.pct}%)`;
               } else if (msg.type === 'complete') {
                 finalResults = msg.results;
               }
@@ -500,7 +518,7 @@
         if (data.error) throw new Error(data.error);
 
         fill.style.width = '100%';
-        statusEl.textContent = `Done — ${data.page_count || '?'} pages in ${data.duration_sec || '?'}s`;
+        statusEl.textContent = `[${getProviderName()}] Done — ${data.page_count || '?'} pages`;
         textarea.value = data.full_text || '';
         results.classList.remove('hidden');
       } catch (err) {
@@ -599,14 +617,19 @@
       // Use SSE streaming for parallel processing with real-time progress
       const form = new FormData();
       files.forEach(f => form.append('files', f));
+      if (selectedProvider !== 'banglaocr') {
+        form.append('provider', selectedProvider);
+        const langSel = document.querySelector('#ocrLangSelect');
+        if (langSel) form.append('lang', langSel.value);
+      }
 
       fill.style.width = '5%';
-      statusEl.textContent = `Uploading ${files.length} PDFs…`;
+      statusEl.textContent = `[${getProviderName()}] Uploading ${files.length} PDFs…`;
 
       let allResults = null;
 
       try {
-        const res = await fetch('/api/ocr/stream', { method: 'POST', body: form });
+        const res = await fetch(getProviderEndpoint(true), { method: 'POST', body: form });
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: res.statusText }));
           throw new Error(err.detail || 'Multi-PDF OCR failed');
@@ -630,10 +653,10 @@
               const msg = JSON.parse(line.slice(6));
               if (msg.type === 'init') {
                 fill.style.width = '0%';
-                statusEl.textContent = `Recognizing text… 0/${msg.total_pages} pages`;
+                statusEl.textContent = `[${getProviderName()}] Recognizing… 0/${msg.total_pages} pages`;
               } else if (msg.type === 'progress') {
                 fill.style.width = `${msg.pct}%`;
-                statusEl.textContent = `Recognizing text… ${msg.pages_done}/${msg.total_pages} pages (${msg.pct}%)`;
+                statusEl.textContent = `[${getProviderName()}] ${msg.pages_done}/${msg.total_pages} pages (${msg.pct}%)`;
               } else if (msg.type === 'complete') {
                 allResults = msg.results;
               }
@@ -650,7 +673,7 @@
       }
 
       fill.style.width = '100%';
-      statusEl.textContent = `Done — ${files.length} PDFs processed`;
+      statusEl.textContent = `[${getProviderName()}] Done — ${files.length} PDFs`;
 
       resultsDiv.innerHTML = '';
       allResults.forEach((r, i) => {
@@ -726,17 +749,14 @@
     return isStream ? '/api/ocr/local/stream' : '/api/ocr/local/recognize';
   }
 
-  function getProviderFormData(form, isStream) {
-    if (selectedProvider !== 'banglaocr') {
-      form.append('provider', selectedProvider);
-      const info = providerData[selectedProvider];
-      if (info?.default_lang) form.append('lang', info.default_lang);
-    }
+  function getProviderName() {
+    const names = { banglaocr: 'BanglaOCR', sableocr: 'SableOCR', paddleocr: 'PaddleOCR', pytesseract: 'Pytesseract' };
+    return names[selectedProvider] || selectedProvider;
   }
 
-  /* ── Provider Config Sidebar Widget ── */
-  function renderProviderConfig(container) {
-    container.innerHTML = `
+  /* ── Sidebar Widget: Provider Config ── */
+  function renderSidebarProviderConfig(contentEl) {
+    contentEl.innerHTML = `
       <div class="ocr-provider-config">
         <label class="ocr-config-label">OCR Provider</label>
         <select class="ocr-provider-select" id="ocrProviderSelect">
@@ -749,8 +769,8 @@
       </div>
     `;
 
-    const select = container.querySelector('#ocrProviderSelect');
-    const details = container.querySelector('#ocrConfigDetails');
+    const select = contentEl.querySelector('#ocrProviderSelect');
+    const details = contentEl.querySelector('#ocrConfigDetails');
 
     function renderDetails() {
       const pid = select.value;
@@ -759,12 +779,12 @@
       const info = providerData[pid];
 
       if (!info || info.type === 'cloud') {
-        details.innerHTML = `<div class="ocr-config-placeholder">No config available for this provider</div>`;
+        details.innerHTML = `<div class="ocr-config-placeholder">Cloud provider — no local setup needed</div>`;
         return;
       }
 
       const installed = info.installed && info.ready;
-      const missingSys = !info.system_deps_met ? info.system_deps.filter(d => true) : [];
+      const missingSys = !info.system_deps_met ? (info.system_deps || []) : [];
 
       let html = `<div class="ocr-config-status ${installed ? 'installed' : 'not-installed'}">
         <span class="ocr-config-dot"></span>
@@ -782,7 +802,7 @@
       }
 
       if (missingSys.length > 0) {
-        html += `<div class="ocr-config-warn">⚠ System deps needed: <code>${missingSys.join(', ')}</code><br><small>Install via: <code>sudo pacman -S ${missingSys.join(' ')}</code></small></div>`;
+        html += `<div class="ocr-config-warn">⚠ System packages needed: <code>${missingSys.join(', ')}</code><br><small>Install via your OS package manager (apt, pacman, brew, choco, etc.)</small></div>`;
       }
 
       // Language selector
@@ -858,7 +878,6 @@
         <div class="ocr-panel-header">
           <h2 class="ocr-panel-title"><i data-lucide="scan-text" class="icon-lucide"></i> OCR Text Recognition</h2>
         </div>
-        <div class="ocr-provider-bar" id="ocrProviderBar"></div>
         <div class="kb-mode-tabs ocr-tabs">
           <button class="kb-mode-tab${currentTab === 'single' ? ' active' : ''}" data-ocr-tab="single">Single Image</button>
           <button class="kb-mode-tab${currentTab === 'batch' ? ' active' : ''}" data-ocr-tab="batch">Batch Images</button>
@@ -869,8 +888,6 @@
       </div>
     `;
     if (window.lucide) lucide.createIcons({ nodes: container.querySelectorAll('[data-lucide]') });
-
-    renderProviderConfig(container.querySelector('#ocrProviderBar'));
 
     const content = container.querySelector('#ocrTabContent');
     const tabs = container.querySelectorAll('[data-ocr-tab]');
