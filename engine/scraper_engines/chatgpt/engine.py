@@ -54,6 +54,11 @@ class ChatGPTEngine(BaseScraperEngine):
         self._sse_done = asyncio.Event()
         self._sse_error: str | None = None
 
+    def _load_instructions(self) -> str:
+        """Use the shared instruction builder — same as API mode."""
+        from connectors.common.instruction_builder import build_instructions
+        return build_instructions(provider="qwen")
+
     # ------------------------------------------------------------------
     # Text cleaning
     # ------------------------------------------------------------------
@@ -112,7 +117,7 @@ class ChatGPTEngine(BaseScraperEngine):
     # Send message
     # ------------------------------------------------------------------
 
-    async def send_msg(self, message: str, **kwargs: Any) -> bool:
+    async def send_msg(self, message: str, raw: bool = False, **kwargs: Any) -> bool:
         """Send a message to ChatGPT."""
         console.print(f"[dim]📤 Sending to ChatGPT...[/dim]")
 
@@ -120,6 +125,23 @@ class ChatGPTEngine(BaseScraperEngine):
         self._sse_buffer.clear()
         self._sse_done.clear()
         self._sse_error = None
+
+        # Inject instructions on first message, reminder on subsequent
+        if raw:
+            pass
+        elif not self.system_injected:
+            instructions = self._load_instructions()
+            if instructions:
+                message = f"[SYSTEM INSTRUCTION]\n{instructions}\n\n[USER MESSAGE]\n{message}"
+            self.system_injected = True
+        else:
+            reminder = (
+                "[QUICK REMINDER]\n"
+                "1. Use <action>[...]</action> JSON array format for all tool calls.\n"
+                "2. Use <execute_command> to run any command.\n"
+                "3. Always use appropriate tags to run commands or use skills.\n\n"
+            )
+            message = f"{reminder}[USER MESSAGE]\n{message}"
 
         # Type message into input
         if not await self._type_into_input(message):
