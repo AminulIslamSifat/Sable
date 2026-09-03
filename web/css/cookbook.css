@@ -118,7 +118,7 @@
 
 .cb-progress-fill {
   height: 100%;
-  background: var(--accent, #818cf8);
+  background: var(--accent);
   border-radius: 3px;
   transition: width 0.5s ease;
 }
@@ -195,7 +195,7 @@
   transition: border-color 0.2s;
 }
 .cb-preset-card:hover {
-  border-color: var(--accent, #818cf8);
+  border-color: var(--accent);
 }
 
 .cb-preset-card.cb-incompatible {
@@ -238,8 +238,8 @@
 }
 
 .cb-tag {
-  background: rgba(129, 140, 248, 0.1);
-  color: var(--accent, #818cf8);
+  background: var(--accent-dim);
+  color: var(--accent-text);
   padding: 1px 6px;
   border-radius: 4px;
   font-size: 10px;
@@ -247,8 +247,8 @@
 
 .cb-preset-btn {
   margin-top: 4px;
-  background: var(--accent, #818cf8);
-  color: white;
+  background: var(--accent);
+  color: var(--panel);
   border: none;
   border-radius: 6px;
   padding: 6px 10px;
@@ -316,7 +316,7 @@
 }
 
 .cb-logs-modal-content {
-  background: var(--panel, #1e1e2e);
+  background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 12px;
   width: 90%;
@@ -364,8 +364,8 @@
 
 .cb-diagnosis {
   padding: 10px 16px;
-  background: rgba(251, 191, 36, 0.08);
-  border-bottom: 1px solid rgba(251, 191, 36, 0.2);
+  background: color-mix(in srgb, #fbbf24 8%, var(--panel));
+  border-bottom: 1px solid color-mix(in srgb, #fbbf24 20%, transparent);
   font-size: 12px;
   color: #fbbf24;
 }
@@ -383,7 +383,7 @@
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%) translateY(20px);
-  background: var(--panel, #1e1e2e);
+  background: var(--panel);
   border: 1px solid var(--border);
   color: var(--text);
   padding: 10px 18px;
@@ -399,11 +399,11 @@
   transform: translateX(-50%) translateY(0);
 }
 .cb-toast-error {
-  border-color: rgba(248, 113, 113, 0.4);
-  color: #f87171;
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  color: var(--danger);
 }
 .cb-dl-speed {
-  color: var(--accent, #7c3aed);
+  color: var(--accent-text);
   font-weight: 600;
   font-size: 11px;
 }
@@ -416,10 +416,10 @@
   gap: 12px;
 }
 .cb-model-settings-card {
-  border: 1px solid var(--border, #2a2a3a);
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 12px 14px;
-  background: var(--bg-secondary, rgba(255,255,255,0.02));
+  background: var(--panel-2);
 }
 .cb-ms-header {
   display: flex;
@@ -430,7 +430,7 @@
 .cb-ms-name {
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-primary, #e0e0e0);
+  color: var(--text);
 }
 .cb-ms-status {
   font-size: 10px;
@@ -440,12 +440,12 @@
   font-weight: 600;
 }
 .cb-ms-status.running {
-  background: rgba(34, 197, 94, 0.15);
-  color: #22c55e;
+  background: color-mix(in srgb, var(--ok) 15%, transparent);
+  color: var(--ok);
 }
 .cb-ms-status.cached, .cb-ms-status.stopped {
-  background: rgba(148, 163, 184, 0.12);
-  color: #94a3b8;
+  background: color-mix(in srgb, var(--muted) 12%, transparent);
+  color: var(--muted);
 }
 .cb-ms-body {
   display: flex;
@@ -462,18 +462,18 @@
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: var(--text-secondary, #a0a0b0);
+  color: var(--muted);
   cursor: pointer;
 }
 .cb-ms-toggle input[type="checkbox"] {
   width: 14px;
   height: 14px;
-  accent-color: var(--accent, #7c3aed);
+  accent-color: var(--accent);
 }
 .cb-ms-distilled {
   margin-top: 4px;
   padding-top: 8px;
-  border-top: 1px solid var(--border, #2a2a3a);
+  border-top: 1px solid var(--border);
 }
 .cb-ms-skills {
   margin-top: 4px;
@@ -481,7 +481,7 @@
 .cb-ms-skills-label {
   font-size: 11px;
   font-weight: 600;
-  color: var(--text-secondary, #a0a0b0);
+  color: var(--muted);
   margin-bottom: 6px;
 }
 .cb-ms-skill-tags {
@@ -497,9 +497,9 @@
   font-size: 11px;
   padding: 3px 8px;
   border-radius: 6px;
-  background: rgba(124, 58, 237, 0.12);
-  color: var(--accent, #7c3aed);
-  border: 1px solid rgba(124, 58, 237, 0.2);
+  background: var(--accent-dim);
+  color: var(--accent-text);
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
 }
 .cb-skill-rm {
   background: none;
@@ -513,7 +513,7 @@
 }
 .cb-skill-rm:hover {
   opacity: 1;
-  color: #f87171;
+  color: var(--danger);
 }
 .cb-tool-tag {
   display: inline-flex;
@@ -522,9 +522,9 @@
   font-size: 11px;
   padding: 3px 8px;
   border-radius: 6px;
-  background: rgba(14, 165, 233, 0.12);
-  color: var(--accent-blue, #0ea5e9);
-  border: 1px solid rgba(14, 165, 233, 0.2);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent-text);
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
 }
 .cb-tool-rm {
   background: none;
@@ -538,31 +538,31 @@
 }
 .cb-tool-rm:hover {
   opacity: 1;
-  color: #f87171;
+  color: var(--danger);
 }
 .cb-ms-skill-add select {
   font-size: 11px;
   padding: 4px 8px;
   border-radius: 6px;
-  border: 1px solid var(--border, #2a2a3a);
-  background: var(--bg-primary, #1a1a2e);
-  color: var(--text-secondary, #a0a0b0);
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
   max-width: 180px;
 }
 
 .cb-delete-btn {
   background: transparent;
-  border: 1px solid rgba(248, 113, 113, 0.3);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
   border-radius: 8px;
   padding: 5px 10px;
   font-size: 11px;
-  color: #f87171;
+  color: var(--danger);
   cursor: pointer;
   transition: all 0.15s;
 }
 .cb-delete-btn:hover {
-  background: rgba(248, 113, 113, 0.1);
-  border-color: rgba(248, 113, 113, 0.5);
+  background: var(--danger-bg);
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
 }
 
 
@@ -575,8 +575,8 @@
   overflow-y: auto;
 }
 .cb-search-result-card {
-  background: var(--surface-2, #1e1e2e);
-  border: 1px solid var(--border, #333);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 12px;
   display: flex;
@@ -584,7 +584,7 @@
   gap: 4px;
 }
 .cb-search-result-card:hover {
-  border-color: var(--accent, #818cf8);
+  border-color: var(--accent);
 }
 .cb-sr-header {
   display: flex;
@@ -595,7 +595,7 @@
 .cb-sr-name {
   font-size: 12px;
   font-weight: 600;
-  color: var(--text, #e0e0e0);
+  color: var(--text);
   word-break: break-all;
 }
 .cb-sr-tags {
@@ -605,8 +605,8 @@
 }
 .cb-sr-dl-btn {
   margin-top: 4px;
-  background: var(--accent, #818cf8);
-  color: white;
+  background: var(--accent);
+  color: var(--panel);
   border: none;
   border-radius: 6px;
   padding: 5px 10px;
