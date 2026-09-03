@@ -289,6 +289,45 @@ class ScraperLifecycle:
             logger.exception("Model switch failed")
             return {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
 
+    async def get_ui_metadata(self) -> dict[str, Any]:
+        """Return engine-specific UI metadata (models, thinking modes)."""
+        settings = _load_settings()
+        try:
+            async with self._lock:
+                engine = await self._ensure_engine(settings)
+                meta_fn = getattr(engine, "get_ui_metadata", None)
+                if meta_fn:
+                    return meta_fn()
+        except Exception as exc:
+            logger.warning("Could not get UI metadata: %s", exc)
+
+        # Fallback based on engine_type from settings
+        engine_type = settings.get("engine_type", DEFAULT_ENGINE_TYPE)
+        if engine_type == "deepseek":
+            return {
+                "models": [
+                    {"id": "default", "label": "Instant"},
+                    {"id": "expert", "label": "Expert"},
+                    {"id": "vision", "label": "Vision"},
+                ],
+                "thinking_modes": [
+                    {"id": "fast", "label": "Fast"},
+                    {"id": "deepthink", "label": "DeepThink"},
+                ],
+            }
+        elif engine_type == "chatgpt":
+            return {
+                "models": [{"id": "default", "label": "ChatGPT"}],
+                "thinking_modes": [
+                    {"id": "fast", "label": "Fast"},
+                    {"id": "thinking", "label": "Thinking"},
+                ],
+            }
+        return {
+            "models": [{"id": "default", "label": engine_type.title()}],
+            "thinking_modes": [],
+        }
+
     async def get_session_info(self) -> dict[str, Any]:
         """Return info about the active browser session for the settings UI."""
         engine = self.engine
