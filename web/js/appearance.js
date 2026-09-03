@@ -718,6 +718,70 @@
       }
     })();
 
+    // ---------- Appearance Mode (Light / Dark / Auto) ----------
+    const MODE_KEY = "sable_appearance_mode";
+    const modeToggle = document.getElementById("modeToggle");
+
+    function getEffectiveMode(saved) {
+      if (saved === "light") return "light";
+      if (saved === "dark") return "dark";
+      // auto or unset: follow OS
+      return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+    }
+
+    function applyMode(mode) {
+      const effective = getEffectiveMode(mode);
+      document.documentElement.setAttribute("data-mode", effective);
+      // Update Monaco editor theme if available
+      if (typeof getSableMonacoThemeName === "function") {
+        try { monaco.editor.setTheme(getSableMonacoThemeName()); } catch(e) {}
+      }
+      updateFavicon();
+    }
+
+    function updateModeButtons(saved) {
+      if (!modeToggle) return;
+      modeToggle.querySelectorAll(".mode-btn").forEach(btn => {
+        const isActive = btn.dataset.mode === (saved || "auto");
+        btn.classList.toggle("active", isActive);
+        if (isActive) {
+          btn.style.background = "var(--accent-dim)";
+          btn.style.color = "var(--accent-text)";
+        } else {
+          btn.style.background = "transparent";
+          btn.style.color = "var(--muted)";
+        }
+      });
+    }
+
+    if (modeToggle) {
+      modeToggle.addEventListener("click", (e) => {
+        const btn = e.target.closest(".mode-btn");
+        if (!btn) return;
+        const mode = btn.dataset.mode;
+        try { localStorage.setItem(MODE_KEY, mode); } catch(err) {}
+        applyMode(mode);
+        updateModeButtons(mode);
+      });
+    }
+
+    // Listen for OS preference changes when in auto mode
+    window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
+      let saved = null;
+      try { saved = localStorage.getItem(MODE_KEY); } catch(e) {}
+      if (!saved || saved === "auto") {
+        applyMode("auto");
+      }
+    });
+
+    // Load saved mode on startup
+    (function loadMode() {
+      let saved = null;
+      try { saved = localStorage.getItem(MODE_KEY); } catch(e) {}
+      applyMode(saved || "auto");
+      updateModeButtons(saved);
+    })();
+
     // ---------- Mode Switcher (API / Scraper) ----------
     const modeApiBtn = document.getElementById('modeApi');
     const modeScraperBtn = document.getElementById('modeScraper');

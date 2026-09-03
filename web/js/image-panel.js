@@ -18,7 +18,7 @@
     if (chat) chat.classList.add('hidden');
     const inputArea = document.getElementById('inputArea');
     if (inputArea) inputArea.classList.add('hidden');
-    ['searchView', 'dashboardView', 'knowledgeView', 'researchView', 'promptgenView', 'calendarView'].forEach(id => {
+    ['searchView', 'dashboardView', 'knowledgeView', 'researchView', 'promptgenView', 'calendarView', 'ocrView'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.classList.add('hidden');
     });

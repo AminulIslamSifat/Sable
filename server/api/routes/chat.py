@@ -2218,6 +2218,17 @@ async def chat(request: ChatRequest):
                         if _incomplete_warn:
                             _guard_warnings.append(_incomplete_warn)
                 feedback = build_tool_feedback(round_skill_events)
+                # Flush pending teacher escalation requests mid-stream so Maria
+                # can respond with teacher_guidance tool call alongside tool results
+                try:
+                    from engine.agents.auto_turn import auto_turn as _at_flush
+                    _pending_teacher = _at_flush.get_pending_teacher_prompts(active_chat_id)
+                    if _pending_teacher:
+                        _teacher_block = "\n\n".join(_pending_teacher)
+                        feedback = (feedback + "\n\n" + _teacher_block) if feedback else _teacher_block
+                        logger.info("[chat %s] flushed %d pending teacher escalation(s) mid-stream", active_chat_id, len(_pending_teacher))
+                except Exception:
+                    pass
                 # Extract image paths from skill results for multimodal injection next round
                 for _ev in round_skill_events:
                     if _ev.get("type") == "skill_end" and _ev.get("ok"):

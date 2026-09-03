@@ -66,6 +66,13 @@
       --danger-bg: #e5646a15;
       --ok: #6fcf97;
       --bg-glow: #131008;
+      /* Shadow/glow tokens (dark defaults) */
+      --shadow-inner-glow: rgba(255, 255, 255, 0.06);
+      --shadow-inner-highlight: rgba(255, 255, 255, 0.25);
+      --shadow-outer: rgba(0, 0, 0, 0.12);
+      --shadow-outer-heavy: rgba(0, 0, 0, 0.4);
+      --scrollbar-thumb: #2a2a2e;
+      --scrollbar-thumb-hover: #34343a;
       --radius: 10px;
       --radius-lg: 14px;
       --sp-1: 2px;
@@ -86,7 +93,7 @@
     }
 
     /* ---------- Theme: Default (neutral gray) ---------- */
-    [data-theme="default"] {
+    html:not([data-mode="light"])[data-theme="default"] {
       --bg: #0c0c0d;
       --sidebar: #101011;
       --panel: #17171a;
@@ -107,7 +114,7 @@
     }
 
     /* ---------- Theme: Noctalia (purple/lavender) ---------- */
-    [data-theme="noctalia"] {
+    html:not([data-mode="light"])[data-theme="noctalia"] {
       --bg: #0f0d15;
       --sidebar: #131019;
       --panel: #1a1625;
@@ -128,7 +135,7 @@
     }
 
     /* ---------- Theme: Ember (warm red/orange) ---------- */
-    [data-theme="ember"] {
+    html:not([data-mode="light"])[data-theme="ember"] {
       --bg: #0d0b0a;
       --sidebar: #12100e;
       --panel: #1a1614;
@@ -149,7 +156,7 @@
     }
 
     /* ---------- Theme: Ocean (blue/cyan) ---------- */
-    [data-theme="ocean"] {
+    html:not([data-mode="light"])[data-theme="ocean"] {
       --bg: #0a0d12;
       --sidebar: #0e1218;
       --panel: #141a22;
@@ -170,7 +177,7 @@
     }
 
     /* ---------- Theme: Forest (green) ---------- */
-    [data-theme="forest"] {
+    html:not([data-mode="light"])[data-theme="forest"] {
       --bg: #0a0d0a;
       --sidebar: #0e120e;
       --panel: #141a14;
@@ -191,7 +198,7 @@
     }
 
     /* ---------- Theme: Rosé (pink) ---------- */
-    [data-theme="rose"] {
+    html:not([data-mode="light"])[data-theme="rose"] {
       --bg: #0d0a0c;
       --sidebar: #120e11;
       --panel: #1a1418;
@@ -212,7 +219,7 @@
     }
 
     /* ---------- Theme: Indigo (deep blue-violet) ---------- */
-    [data-theme="indigo"] {
+    html:not([data-mode="light"])[data-theme="indigo"] {
       --bg: #0a0b12;
       --sidebar: #0e0f18;
       --panel: #141625;
@@ -233,7 +240,7 @@
     }
 
     /* ---------- Theme: Crimson (deep red) ---------- */
-    [data-theme="crimson"] {
+    html:not([data-mode="light"])[data-theme="crimson"] {
       --bg: #0d0a0b;
       --sidebar: #120e0f;
       --panel: #1a1416;
@@ -254,7 +261,7 @@
     }
 
     /* ---------- Theme: Mono (grayscale) ---------- */
-    [data-theme="mono"] {
+    html:not([data-mode="light"])[data-theme="mono"] {
       --bg: #0b0b0b;
       --sidebar: #101010;
       --panel: #161616;
@@ -275,7 +282,7 @@
     }
 
     /* ---------- Theme: Teal (cyan-teal) ---------- */
-    [data-theme="teal"] {
+    html:not([data-mode="light"])[data-theme="teal"] {
       --bg: #090d0d;
       --sidebar: #0d1212;
       --panel: #131a1a;
@@ -296,7 +303,7 @@
     }
 
     /* ---------- Theme: Blue (pure vivid blue) ---------- */
-    [data-theme="blue"] {
+    html:not([data-mode="light"])[data-theme="blue"] {
       --bg: #080b12;
       --sidebar: #0c1018;
       --panel: #121824;
@@ -315,6 +322,292 @@
       --ok: #34d399;
       --bg-glow: #0c1220;
     }
+
+    /* ============================================================
+       LIGHT MODE — activated via [data-mode="light"] on <html>
+       When data-mode="auto", falls back to OS preference via media query below
+       Each theme gets a distinct light palette with tinted backgrounds
+       NOTE: Both data-mode and data-theme live on <html>, so we use
+       compound selectors (html[attr][attr]) not nested descendants.
+       ============================================================ */
+    html[data-mode="light"] {
+      --bg: #faf9f7;
+      --sidebar: #f2f0ec;
+      --panel: #ffffff;
+      --panel-2: #f5f3ef;
+      --border: #ddd8d0;
+      --border-soft: #e8e4dc;
+      --text: #1a1816;
+      --text-dim: #4a4640;
+      --muted: #7a756e;
+      --muted-2: #a09a92;
+      --accent: #9a7d4a;
+      --accent-dim: #9a7d4a18;
+      --accent-text: #7a6230;
+      --danger: #d44048;
+      --danger-bg: #d4404812;
+      --ok: #2da44e;
+      --bg-glow: #f5f0e8;
+      --shadow-inner-glow: rgba(0, 0, 0, 0.04);
+      --shadow-inner-highlight: rgba(255, 255, 255, 0.6);
+      --shadow-outer: rgba(0, 0, 0, 0.08);
+      --shadow-outer-heavy: rgba(0, 0, 0, 0.12);
+      --scrollbar-thumb: #c8c4bc;
+      --scrollbar-thumb-hover: #a8a49c;
+    }
+
+    html[data-mode="light"][data-theme="default"] {
+      --bg: #f8f8f9;
+      --sidebar: #f0f0f2;
+      --panel: #ffffff;
+      --panel-2: #f3f3f5;
+      --border: #d8d8dc;
+      --border-soft: #e4e4e8;
+      --text: #1a1a1c;
+      --text-dim: #48484c;
+      --muted: #78787e;
+      --muted-2: #9e9ea4;
+      --accent: #9a7d4a;
+      --accent-dim: #9a7d4a18;
+      --accent-text: #7a6230;
+      --danger: #d44048;
+      --danger-bg: #d4404812;
+      --ok: #2da44e;
+      --bg-glow: #f0f0f4;
+    }
+
+    html[data-mode="light"][data-theme="noctalia"] {
+      --bg: #f8f6fc;
+      --sidebar: #f0ecf6;
+      --panel: #fdfcff;
+      --panel-2: #f4f0fa;
+      --border: #d8d0e8;
+      --border-soft: #e6e0f0;
+      --text: #1c1824;
+      --text-dim: #4a4460;
+      --muted: #7a70a0;
+      --muted-2: #a098b8;
+      --accent: #8b5cf6;
+      --accent-dim: #8b5cf618;
+      --accent-text: #6d3fd4;
+      --danger: #e04848;
+      --danger-bg: #e0484812;
+      --ok: #1aa868;
+      --bg-glow: #f0ecfa;
+    }
+
+    html[data-mode="light"][data-theme="ember"] {
+      --bg: #fdf8f5;
+      --sidebar: #f6f0eb;
+      --panel: #fffdfb;
+      --panel-2: #f8f2ed;
+      --border: #e0d4cc;
+      --border-soft: #ece2da;
+      --text: #1e1814;
+      --text-dim: #504438;
+      --muted: #887468;
+      --muted-2: #a89888;
+      --accent: #e05a2b;
+      --accent-dim: #e05a2b18;
+      --accent-text: #b84418;
+      --danger: #d44048;
+      --danger-bg: #d4404812;
+      --ok: #2da44e;
+      --bg-glow: #f8f0ea;
+    }
+
+    html[data-mode="light"][data-theme="ocean"] {
+      --bg: #f5f8fc;
+      --sidebar: #ecf2f8;
+      --panel: #fbfdff;
+      --panel-2: #f0f5fa;
+      --border: #ccd8e8;
+      --border-soft: #dce6f0;
+      --text: #141c24;
+      --text-dim: #3c4c60;
+      --muted: #6880a0;
+      --muted-2: #90a4b8;
+      --accent: #2d9cdb;
+      --accent-dim: #2d9cdb18;
+      --accent-text: #1a78b0;
+      --danger: #e04848;
+      --danger-bg: #e0484812;
+      --ok: #1aa868;
+      --bg-glow: #eaf2fa;
+    }
+
+    html[data-mode="light"][data-theme="forest"] {
+      --bg: #f5faf5;
+      --sidebar: #ecf4ec;
+      --panel: #fbfffb;
+      --panel-2: #f0f8f0;
+      --border: #cce0cc;
+      --border-soft: #dcecdc;
+      --text: #141e14;
+      --text-dim: #3c503c;
+      --muted: #689068;
+      --muted-2: #90ac90;
+      --accent: #3daa5c;
+      --accent-dim: #3daa5c18;
+      --accent-text: #2a8844;
+      --danger: #e04848;
+      --danger-bg: #e0484812;
+      --ok: #2da44e;
+      --bg-glow: #eaf6ea;
+    }
+
+    html[data-mode="light"][data-theme="rose"] {
+      --bg: #fdf5f8;
+      --sidebar: #f6ecf2;
+      --panel: #fffbfd;
+      --panel-2: #f8f0f4;
+      --border: #e0ccd8;
+      --border-soft: #ecdce6;
+      --text: #1e141a;
+      --text-dim: #503c48;
+      --muted: #886878;
+      --muted-2: #a890a0;
+      --accent: #d4548a;
+      --accent-dim: #d4548a18;
+      --accent-text: #b03870;
+      --danger: #e04848;
+      --danger-bg: #e0484812;
+      --ok: #2da44e;
+      --bg-glow: #f8eaf2;
+    }
+
+    html[data-mode="light"][data-theme="indigo"] {
+      --bg: #f5f6fc;
+      --sidebar: #eceef8;
+      --panel: #fbfcff;
+      --panel-2: #f0f2fa;
+      --border: #ccd0e8;
+      --border-soft: #dce0f0;
+      --text: #141624;
+      --text-dim: #3c4060;
+      --muted: #6870a0;
+      --muted-2: #9098b8;
+      --accent: #5b6ee1;
+      --accent-dim: #5b6ee118;
+      --accent-text: #4050c0;
+      --danger: #e04848;
+      --danger-bg: #e0484812;
+      --ok: #1aa868;
+      --bg-glow: #eaecfa;
+    }
+
+    html[data-mode="light"][data-theme="crimson"] {
+      --bg: #fdf5f6;
+      --sidebar: #f6ecee;
+      --panel: #fffbfc;
+      --panel-2: #f8f0f2;
+      --border: #e0ccd0;
+      --border-soft: #ecdce0;
+      --text: #1e1416;
+      --text-dim: #503c40;
+      --muted: #886868;
+      --muted-2: #a89090;
+      --accent: #cf3b52;
+      --accent-dim: #cf3b5218;
+      --accent-text: #a82840;
+      --danger: #d44048;
+      --danger-bg: #d4404812;
+      --ok: #2da44e;
+      --bg-glow: #f8eaee;
+    }
+
+    html[data-mode="light"][data-theme="mono"] {
+      --bg: #f8f8f8;
+      --sidebar: #f0f0f0;
+      --panel: #ffffff;
+      --panel-2: #f4f4f4;
+      --border: #d4d4d4;
+      --border-soft: #e2e2e2;
+      --text: #1a1a1a;
+      --text-dim: #484848;
+      --muted: #787878;
+      --muted-2: #a0a0a0;
+      --accent: #555555;
+      --accent-dim: #55555518;
+      --accent-text: #333333;
+      --danger: #d44048;
+      --danger-bg: #d4404812;
+      --ok: #2da44e;
+      --bg-glow: #f0f0f0;
+    }
+
+    html[data-mode="light"][data-theme="teal"] {
+      --bg: #f4faf9;
+      --sidebar: #eaf4f2;
+      --panel: #fbfffe;
+      --panel-2: #eef8f6;
+      --border: #c8e0dc;
+      --border-soft: #daecea;
+      --text: #141e1c;
+      --text-dim: #3c504c;
+      --muted: #689088;
+      --muted-2: #90aca4;
+      --accent: #14b8a6;
+      --accent-dim: #14b8a618;
+      --accent-text: #0e9488;
+      --danger: #e04848;
+      --danger-bg: #e0484812;
+      --ok: #1aa868;
+      --bg-glow: #e8f6f4;
+    }
+
+    html[data-mode="light"][data-theme="blue"] {
+      --bg: #f4f7fc;
+      --sidebar: #eaf0f8;
+      --panel: #fbfdff;
+      --panel-2: #eef4fa;
+      --border: #c8d4e8;
+      --border-soft: #dae4f0;
+      --text: #141a24;
+      --text-dim: #3c4860;
+      --muted: #687ca0;
+      --muted-2: #90a0b8;
+      --accent: #3b82f6;
+      --accent-dim: #3b82f618;
+      --accent-text: #2060d0;
+      --danger: #e04848;
+      --danger-bg: #e0484812;
+      --ok: #1aa868;
+      --bg-glow: #eaf0fa;
+    }
+
+    /* ---------- Auto mode fallback ---------- */
+    /* When JS hasn't loaded yet and OS prefers light, apply base light vars.
+       Once JS runs, it sets data-mode explicitly so this becomes irrelevant.
+       Per-theme light overrides are handled by [data-mode="light"] above. */
+    @media (prefers-color-scheme: light) {
+      html:not([data-mode]) {
+        --bg: #faf9f7;
+        --sidebar: #f2f0ec;
+        --panel: #ffffff;
+        --panel-2: #f5f3ef;
+        --border: #ddd8d0;
+        --border-soft: #e8e4dc;
+        --text: #1a1816;
+        --text-dim: #4a4640;
+        --muted: #7a756e;
+        --muted-2: #a09a92;
+        --accent: #9a7d4a;
+        --accent-dim: #9a7d4a18;
+        --accent-text: #7a6230;
+        --danger: #d44048;
+        --danger-bg: #d4404812;
+        --ok: #2da44e;
+        --bg-glow: #f5f0e8;
+        --shadow-inner-glow: rgba(0, 0, 0, 0.04);
+        --shadow-inner-highlight: rgba(255, 255, 255, 0.7);
+        --shadow-outer: rgba(0, 0, 0, 0.06);
+        --shadow-outer-heavy: rgba(0, 0, 0, 0.12);
+        --scrollbar-thumb: #c8c4bc;
+        --scrollbar-thumb-hover: #b0aca4;
+      }
+    }
+
 
     * { box-sizing: border-box; }
 
@@ -344,11 +637,11 @@
     }
 
     /* scrollbars */
-    html, body { scrollbar-width: thin; scrollbar-color: #2a2a2e transparent; }
+    html, body { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
     ::-webkit-scrollbar { width: 8px; height: 8px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: #2a2a2e; border-radius: 8px; }
-    ::-webkit-scrollbar-thumb:hover { background: #34343a; }
+    ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 8px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
 
     /* Hide number input spinners */
     input[type=number]::-webkit-inner-spin-button,

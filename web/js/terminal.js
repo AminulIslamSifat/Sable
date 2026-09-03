@@ -375,7 +375,7 @@
   new MutationObserver(() => {
     const th = termTheme();
     sessions.forEach((s) => { s.term.options.theme = th; });
-  }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-mode'] });
 
   /* ---------- Exposed: ensure at least one session exists (for sidebar-host) ---------- */
   window.ensureTerminalSession = function () {

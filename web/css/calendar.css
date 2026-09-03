@@ -47,7 +47,7 @@ body.calendar-open #calendarView { display: flex !important; }
   font-family: var(--font-body);
   transition: all 0.15s ease;
   box-shadow:
-    inset 0 0 0 1px rgba(255,255,255,0.04),
+    inset 0 0 0 1px var(--shadow-inner-glow),
     0 1px 3px rgba(0,0,0,0.2);
 }
 
@@ -117,7 +117,7 @@ body.calendar-open #calendarView { display: flex !important; }
   min-height: 70px;
   overflow: hidden;
   box-shadow:
-    inset 0 0 0 1px rgba(255,255,255,0.03),
+    inset 0 0 0 1px var(--shadow-inner-glow),
     0 1px 2px rgba(0,0,0,0.1);
 }
 
@@ -147,7 +147,7 @@ body.calendar-open #calendarView { display: flex !important; }
   border-color: var(--accent-text) !important;
   background: color-mix(in srgb, var(--accent-dim) 50%, var(--panel-2) 50%) !important;
   box-shadow:
-    inset 0 0 0 1px rgba(255,255,255,0.06),
+    inset 0 0 0 1px var(--shadow-inner-glow),
     0 0 12px color-mix(in srgb, var(--accent) 20%, transparent) !important;
 }
 

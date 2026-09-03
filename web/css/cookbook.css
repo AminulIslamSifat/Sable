@@ -627,8 +627,8 @@
   margin-top: 12px;
 }
 .persona-card {
-  background: var(--surface-2, #1e1e2e);
-  border: 1px solid var(--border, #2a2a3a);
+  background: var(--panel);
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 14px;
   cursor: pointer;
@@ -636,12 +636,12 @@
   position: relative;
 }
 .persona-card:hover {
-  border-color: rgba(139, 92, 246, 0.5);
-  background: rgba(139, 92, 246, 0.04);
+  border-color: var(--accent);
+  background: var(--accent-dim);
 }
 .persona-card-active {
-  border-color: rgba(139, 92, 246, 0.7);
-  box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.3);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-dim);
 }
 .persona-card-disabled {
   opacity: 0.5;
@@ -655,21 +655,21 @@
 .persona-card-name {
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-primary, #e0e0e8);
+  color: var(--text);
 }
 .persona-badge-active {
   font-size: 9px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  background: rgba(139, 92, 246, 0.15);
-  color: #a78bfa;
+  background: var(--accent-dim);
+  color: var(--accent-text);
   padding: 2px 7px;
   border-radius: 4px;
 }
 .persona-card-preview {
   font-size: 11px;
-  color: var(--text-secondary, #a0a0b0);
+  color: var(--muted);
   line-height: 1.4;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -689,26 +689,26 @@
 }
 .persona-act {
   background: transparent;
-  border: 1px solid var(--border, #333);
+  border: 1px solid var(--border);
   border-radius: 5px;
   padding: 3px 9px;
   font-size: 10px;
   font-weight: 500;
-  color: var(--text-secondary, #a0a0b0);
+  color: var(--muted);
   cursor: pointer;
   transition: all 0.15s;
 }
 .persona-act:hover {
-  background: var(--surface-3, #2a2a3a);
-  color: var(--text-primary, #e0e0e8);
+  background: var(--panel-2);
+  color: var(--text);
 }
 .persona-act-active:hover {
-  border-color: rgba(139, 92, 246, 0.5);
-  color: #a78bfa;
+  border-color: var(--accent);
+  color: var(--accent-text);
 }
 .persona-act-delete:hover {
-  border-color: rgba(248, 113, 113, 0.5);
-  color: #f87171;
+  border-color: var(--danger);
+  color: var(--danger);
 }
 .persona-actions-bar {
   display: flex;
@@ -720,9 +720,9 @@
   font-weight: 500;
   padding: 5px 12px;
   border-radius: 6px;
-  border: 1px solid var(--border, #2a2a3a);
-  background: var(--surface-2, #1e1e2e);
-  color: var(--text-secondary, #a0a0b0);
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
   cursor: pointer;
   transition: all 0.15s;
 }
@@ -731,20 +731,20 @@
   align-items: center;
   gap: 6px;
   font-size: 11px;
-  color: var(--text-secondary, #a0a0b0);
+  color: var(--muted);
   cursor: pointer;
   user-select: none;
 }
 .persona-toggle-label input[type="checkbox"] {
-  accent-color: rgba(139, 92, 246, 0.8);
+  accent-color: var(--accent);
   width: 14px;
   height: 14px;
   cursor: pointer;
 }
 .persona-action-btn:hover {
-  border-color: rgba(139, 92, 246, 0.4);
-  color: var(--text-primary, #e0e0e8);
-  background: rgba(139, 92, 246, 0.06);
+  border-color: var(--accent);
+  color: var(--text);
+  background: var(--accent-dim);
 }
 .persona-editor-backdrop {
   position: fixed;
@@ -762,14 +762,14 @@
   transform: translate(-50%, -50%);
   width: min(680px, 90vw);
   max-height: 80vh;
-  border: 1px solid var(--border, #2a2a3a);
+  border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
   z-index: 9999;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 20px 60px var(--shadow-outer-heavy);
   display: flex;
   flex-direction: column;
-  background: var(--bg-primary, #12121a);
+  background: var(--panel);
 }
 .persona-editor.hidden {
   display: none;
@@ -779,8 +779,8 @@
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
-  background: var(--surface-2, #1e1e2e);
-  border-bottom: 1px solid var(--border, #2a2a3a);
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
 }
 .persona-editor-textarea {
   width: 100%;
@@ -790,8 +790,8 @@
   font-family: "JetBrains Mono", "Fira Code", monospace;
   font-size: 12px;
   line-height: 1.6;
-  background: var(--bg-primary, #12121a);
-  color: var(--text-primary, #e0e0e8);
+  background: var(--panel);
+  color: var(--text);
   border: none;
   resize: none;
   outline: none;

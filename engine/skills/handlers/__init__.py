@@ -26,6 +26,7 @@ from engine.skills.handlers.agents import (
     handle_agent_status,
     handle_kill_agent,
     handle_spawn_agent,
+    handle_teacher_guidance,
     handle_todo_complete,
     handle_todo_skip,
 )
@@ -64,6 +65,7 @@ HANDLER_MAP: dict[str, object] = {
     "kill_agent": handle_kill_agent,
     "todo_complete": handle_todo_complete,
     "todo_skip": handle_todo_skip,
+    "teacher_guidance": handle_teacher_guidance,
     "ask_user": handle_ask_user,
     "grep": handle_grep,
     "glob": handle_glob,
@@ -94,6 +96,7 @@ __all__ = [
     "handle_spawn_agent",
     "handle_agent_status",
     "handle_kill_agent",
+    "handle_teacher_guidance",
     "handle_todo_complete",
     "handle_todo_skip",
     "handle_ask_user",

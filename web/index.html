@@ -3,27 +3,80 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <title>Sable</title>
   <link rel="icon" type="image/svg+xml" href="/static/assets/sable_icon.svg?v=5">
 
-  <link rel="stylesheet" href="/static/css/variables.css?v=4">
-  <link rel="stylesheet" href="/static/css/base.css?v=5">
-  <link rel="stylesheet" href="/static/css/layout.css?v=62">
-  <link rel="stylesheet" href="/static/css/ide.css?v=5">
-  <link rel="stylesheet" href="/static/css/chat.css?v=35">
-  <link rel="stylesheet" href="/static/css/panels.css?v=56">
-  <link rel="stylesheet" href="/static/css/components.css?v=20">
-  <link rel="stylesheet" href="/static/css/responsive.css?v=6">
-  <link rel="stylesheet" href="/static/css/agents.css?v=36">
-  <link rel="stylesheet" href="/static/css/cookbook.css?v=1">
-  <link rel="stylesheet" href="/static/css/search-panel.css?v=2">
-  <link rel="stylesheet" href="/static/css/dashboard.css?v=1">
-  <link rel="stylesheet" href="/static/css/calendar.css?v=1">
-  <link rel="stylesheet" href="/static/css/knowledge.css?v=1">
+  <!-- Early boot: set data-mode and data-theme BEFORE any CSS parses.
+       This MUST come before <style> so html[data-mode="light"] selectors match
+       at initial parse time. Without this, Firefox/Zen won't re-evaluate inline
+       <style> rules when the attribute is added later by JS. -->
+  <script>
+    (function(){
+      try{
+        var r=document.documentElement;
+        var m=null;try{m=localStorage.getItem("sable_appearance_mode")}catch(x){}
+        var e=m==="light"?"light":m==="dark"?"dark":(window.matchMedia&&window.matchMedia("(prefers-color-scheme: light)").matches?"light":"dark");
+        r.setAttribute("data-mode",e);
+        /* Persist resolved mode so subsequent reloads don't depend on auto-detection */
+        if(!m){try{localStorage.setItem("sable_appearance_mode",e)}catch(x){}}
+        var t=null;try{t=localStorage.getItem("sable_theme")}catch(x){}
+        if(t&&t!=="sable")r.setAttribute("data-theme",t);
+      }catch(x){}
+    })();
+  </script>
+  <!-- Critical inline CSS — complete theme variables embedded to prevent ANY FOUC.
+       Both light and dark are defined here so the page is fully styled before
+       external stylesheets load. External sheets override these when they arrive. -->
+  <style>
+    /* Dark defaults */
+    :root{--bg:#0d0c0a;--sidebar:#12110e;--panel:#191714;--panel-2:#201d19;--border:#2a2720;--border-soft:#211e19;--text:#eaeaea;--text-dim:#c4c4c8;--muted:#85858c;--muted-2:#616167;--accent:#9a7d4a;--accent-dim:#9a7d4a0e;--accent-text:#c4a66b;--danger:#e5646a;--danger-bg:#e5646a15;--ok:#6fcf97;--bg-glow:#131008;--shadow-inner-glow:rgba(255,255,255,0.06);--shadow-inner-highlight:rgba(255,255,255,0.25);--shadow-outer:rgba(0,0,0,0.12);--shadow-outer-heavy:rgba(0,0,0,0.4);--scrollbar-thumb:#2a2a2e;--scrollbar-thumb-hover:#34343a;--radius:10px;--radius-lg:14px;--font-body:'Maple Mono',ui-monospace,monospace;--font-serif:'Maple Mono',ui-monospace,monospace;--font-mono:'Maple Mono',ui-monospace,monospace;--font-size-response:14.5px;--font-size-system:13px;--editor-font-size:13px;--ide-chat-font-size:13px}
+    /* Light overrides — applied immediately via data-mode set by early boot script above */
+    html[data-mode="light"]{--bg:#faf9f7;--sidebar:#f2f0ec;--panel:#ffffff;--panel-2:#f5f3ef;--border:#ddd8d0;--border-soft:#e8e4dc;--text:#1a1816;--text-dim:#4a4640;--muted:#7a756e;--muted-2:#a09a92;--accent:#9a7d4a;--accent-dim:#9a7d4a18;--accent-text:#7a6230;--danger:#d44048;--danger-bg:#d4404812;--ok:#2da44e;--bg-glow:#f5f0e8;--shadow-inner-glow:rgba(0,0,0,0.04);--shadow-inner-highlight:rgba(255,255,255,0.6);--shadow-outer:rgba(0,0,0,0.08);--shadow-outer-heavy:rgba(0,0,0,0.12);--scrollbar-thumb:#c8c4bc;--scrollbar-thumb-hover:#a8a49c}
+    html{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:var(--font-body)}
+    body{margin:0;height:100%;display:flex;-webkit-font-smoothing:antialiased}
+    *{box-sizing:border-box}
+    ::-webkit-scrollbar{width:8px}::-webkit-scrollbar-track{background:transparent}
+    ::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:8px}
+    a{color:inherit;text-decoration:none}
+    button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+    input,select,textarea{font-family:inherit;color:inherit;background:transparent;border:1px solid var(--border);border-radius:10px;padding:6px 10px}
+    .hidden{display:none!important}
+  </style>
+  <link rel="stylesheet" href="/static/css/variables.css?v=101">
+  <link rel="stylesheet" href="/static/css/base.css?v=100">
+  <link rel="stylesheet" href="/static/css/layout.css?v=100">
+  <link rel="stylesheet" href="/static/css/ide.css?v=100">
+  <link rel="stylesheet" href="/static/css/chat.css?v=100">
+  <link rel="stylesheet" href="/static/css/panels.css?v=100">
+  <link rel="stylesheet" href="/static/css/components.css?v=101">
+  <link rel="stylesheet" href="/static/css/responsive.css?v=100">
+  <link rel="stylesheet" href="/static/css/agents.css?v=101">
+  <link rel="stylesheet" href="/static/css/cookbook.css?v=100">
+  <link rel="stylesheet" href="/static/css/search-panel.css?v=100">
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=100">
+  <link rel="stylesheet" href="/static/css/calendar.css?v=100">
+  <link rel="stylesheet" href="/static/css/knowledge.css?v=100">
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v=2">
 
   <link rel="manifest" href="/static/assets/manifest.json">
   <meta name="theme-color" content="#0f0e17">
+
+  <!-- Force-kill any lingering ServiceWorker from previous versions.
+       The old SW cached root-relative paths that 404'd against /static/,
+       causing intermittent broken CSS/JS on reload. -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(function(rs) {
+        rs.forEach(function(r) { r.unregister(); });
+      });
+      caches.keys().then(function(ks) {
+        ks.forEach(function(k) { caches.delete(k); });
+      });
+    }
+  </script>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="apple-touch-icon" href="/static/assets/icon-192.png">
@@ -318,6 +371,9 @@
 
     <!-- Prompt Generator view (replaces chat area when active) -->
     <div id="promptgenView" class="promptgen-view hidden"></div>
+
+    <!-- OCR view (replaces chat area when active) -->
+    <div id="ocrView" class="ocr-view hidden"></div>
 
     <!-- Knowledge Base view (replaces chat area when active) -->
     <div id="knowledgeView" class="knowledge-view hidden">
@@ -921,6 +977,14 @@
               style="width:18px;height:18px;cursor:pointer;accent-color:var(--accent);" />
           </div>
           <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+              <label style="font-size:13px;color:var(--text-dim);">Appearance</label>
+              <div id="modeToggle" class="mode-toggle" style="display:flex;background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+                <button class="mode-btn" data-mode="light" title="Light mode" style="padding:4px 10px;font-size:12px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-family:inherit;transition:all .15s;">☀️</button>
+                <button class="mode-btn active" data-mode="auto" title="Follow system" style="padding:4px 10px;font-size:12px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-family:inherit;transition:all .15s;">Auto</button>
+                <button class="mode-btn" data-mode="dark" title="Dark mode" style="padding:4px 10px;font-size:12px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-family:inherit;transition:all .15s;">🌙</button>
+              </div>
+            </div>
             <label style="font-size:13px;color:var(--text-dim);display:block;margin-bottom:8px;">Theme</label>
             <div id="themePicker" class="theme-picker">
               <button class="theme-swatch active" data-theme="sable" title="Sable">
@@ -1314,14 +1378,14 @@
           <!-- ═══ Section 1: Personal Context (who you are) ═══ -->
           <h3 class="mem-title"><span class="icon-emoji">👤</span><i data-lucide="user" class="icon-lucide"></i> Personal Context</h3>
           <p class="muted mem-desc">Your name, preferences, hobbies, and context. Saved to instruction/personal.md and loaded into every conversation.</p>
-          <textarea id="personalContextArea" class="mem-input" style="width:100%;min-height:120px;font-family:var(--font-mono);font-size:12px;line-height:1.5;resize:vertical;padding:10px;border-radius:8px;background:var(--bg-secondary);color:var(--text);border:1px solid var(--border);" placeholder="Name, preferences, hobbies, context..."></textarea>
+          <textarea id="personalContextArea" class="mem-input" style="width:100%;min-height:120px;font-family:var(--font-mono);font-size:12px;line-height:1.5;resize:vertical;padding:10px;border-radius:8px;background:var(--panel);color:var(--text);border:1px solid var(--border);" placeholder="Name, preferences, hobbies, context..."></textarea>
           <div class="mem-input-row mem-save-row" style="margin-top:8px;">
             <button id="personalSaveBtn" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">💾</span><i data-lucide="hard-drive" class="icon-lucide"></i> Save</button>
             <span id="personalStatus" class="muted mem-status"></span>
           </div>
 
           <!-- ═══ Section 2: Personas (identity) ═══ -->
-          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🎭</span><i data-lucide="masks" class="icon-lucide"></i> Personas &amp; Output Format</h3>
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🎭</span><i data-lucide="venetian-mask" class="icon-lucide"></i> Personas &amp; Output Format</h3>
           <p class="muted mem-desc">Choose who the AI becomes. Select one active character or none at all. Edit, create, or disable entries below.</p>
           <div id="personaGrid" class="persona-grid"></div>
           <div class="persona-actions-bar">
@@ -2006,12 +2070,13 @@
   <script src="/static/js/library.js?v=2"></script>
   <script src="/static/js/telegram.js?v=4"></script>
   <script src="/static/js/memory-panel.js?v=1"></script>
-  <script src="/static/js/skills-panel.js?v=15"></script>
+  <script src="/static/js/skills-panel.js?v=100"></script>
   <script src="/static/js/appearance.js?v=3"></script>
   <script src="/static/src/research.js?v=10"></script>
   <script src="/static/js/research-panel.js?v=3"></script>
   <script src="/static/js/image-panel.js?v=1"></script>
   <script src="/static/js/prompt-panel.js?v=1"></script>
+  <script src="/static/js/ocr-panel.js?v=1"></script>
   <script src="/static/js/agents.js?v=32"></script>
   <script src="/static/js/filesystem.js?v=32"></script>
   <script src="/static/js/mode.js?v=20"></script>
