@@ -818,26 +818,75 @@
       details.innerHTML = html;
       if (window.lucide) lucide.createIcons({ nodes: details.querySelectorAll('[data-lucide]') });
 
-      // Install button handler
+      // Install button handler — SSE streamed progress
       const installBtn = details.querySelector('.ocr-install-btn');
       if (installBtn) {
         installBtn.addEventListener('click', async () => {
           installBtn.disabled = true;
           installBtn.innerHTML = '<i data-lucide="loader"></i> Installing…';
+
+          // Create log area below the button
+          let logArea = details.querySelector('.ocr-install-log');
+          if (!logArea) {
+            logArea = document.createElement('div');
+            logArea.className = 'ocr-install-log';
+            installBtn.after(logArea);
+          }
+          logArea.innerHTML = '';
+
           try {
             const res = await fetch(`/api/ocr/install/${pid}`, { method: 'POST' });
-            const data = await res.json();
-            if (res.ok) {
-              await fetchProviders();
-              renderDetails();
-            } else {
-              alert(data.detail || 'Install failed');
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({ detail: res.statusText }));
+              logArea.innerHTML = `<span class="ocr-log-error">❌ ${escHtml(err.detail || 'Install failed')}</span>`;
               installBtn.disabled = false;
               installBtn.innerHTML = '<i data-lucide="download"></i> Install Dependencies';
+              return;
+            }
+
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+
+              const lines = buffer.split('\n');
+              buffer = lines.pop() || '';
+
+              for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                try {
+                  const msg = JSON.parse(line.slice(6));
+                  if (msg.type === 'start') {
+                    logArea.innerHTML = `<span class="ocr-log-info">Installing: ${msg.deps.join(', ')}</span>\n`;
+                  } else if (msg.type === 'log') {
+                    const span = document.createElement('span');
+                    span.className = 'ocr-log-line';
+                    span.textContent = msg.text + '\n';
+                    logArea.appendChild(span);
+                    logArea.scrollTop = logArea.scrollHeight;
+                  } else if (msg.type === 'error') {
+                    logArea.innerHTML += `<span class="ocr-log-error">❌ ${escHtml(msg.message)}</span>\n`;
+                    installBtn.disabled = false;
+                    installBtn.innerHTML = '<i data-lucide="download"></i> Install Dependencies';
+                  } else if (msg.type === 'done') {
+                    logArea.innerHTML += `<span class="ocr-log-success">✅ ${escHtml(msg.message)}</span>\n`;
+                    if (msg.warning) {
+                      logArea.innerHTML += `<span class="ocr-log-warn">⚠ ${escHtml(msg.warning)}</span>\n`;
+                    }
+                    await fetchProviders();
+                    renderDetails();
+                  }
+                } catch {}
+              }
             }
           } catch (e) {
-            alert('Install error: ' + e.message);
+            logArea.innerHTML = `<span class="ocr-log-error">❌ ${escHtml(e.message)}</span>`;
             installBtn.disabled = false;
+            installBtn.innerHTML = '<i data-lucide="download"></i> Install Dependencies';
           }
           if (window.lucide) lucide.createIcons({ nodes: details.querySelectorAll('[data-lucide]') });
         });
@@ -920,6 +969,13 @@
     if (!view.querySelector('.ocr-panel')) {
       renderOcrPanel(view);
     }
+    // Host sidebar widget
+    const widget = document.getElementById('ocrSidebarWidget');
+    if (widget && window.sidebarHost) {
+      widget.classList.remove('hidden');
+      sidebarHost.host('ocrSidebarWidget');
+      renderSidebarProviderConfig(document.getElementById('ocrSidebarContent'));
+    }
     isOpen = true;
   }
 
@@ -928,6 +984,13 @@
     document.body.classList.remove('ocr-open');
     const view = document.getElementById('ocrView');
     if (view) view.classList.add('hidden');
+    const widget = document.getElementById('ocrSidebarWidget');
+    if (widget && window.sidebarHost && sidebarHost.getCurrent() === 'ocrSidebarWidget') {
+      sidebarHost.unhost();
+      widget.classList.add('hidden');
+    } else if (widget) {
+      widget.classList.add('hidden');
+    }
     showChat();
     isOpen = false;
   }
@@ -948,6 +1011,19 @@
 
   /* ── Init ── */
   async function init() {
+    // Create sidebar widget and insert into DOM
+    const widget = document.createElement('div');
+    widget.id = 'ocrSidebarWidget';
+    widget.className = 'ocr-sidebar-widget hidden';
+    widget.innerHTML = `
+      <div class="ocr-sidebar-header">
+        <span class="ocr-sidebar-title"><i data-lucide="settings-2" class="icon-lucide"></i> OCR Settings</span>
+      </div>
+      <div class="ocr-sidebar-content" id="ocrSidebarContent"></div>
+    `;
+    document.body.appendChild(widget);
+    if (window.lucide) lucide.createIcons({ nodes: widget.querySelectorAll('[data-lucide]') });
+
     await fetchProviders();
   }
 
