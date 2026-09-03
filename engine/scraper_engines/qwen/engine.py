@@ -142,7 +142,7 @@ class QwenEngine(BaseScraperEngine):
         "has_file_upload": True,
         "has_clipboard_paste": True,
         "has_diary": True,
-        "has_persona_sync": True,
+        "has_persona_sync": False,
         "has_bridge_session": True,
         "has_commands": True,
     }
@@ -652,7 +652,7 @@ class QwenEngine(BaseScraperEngine):
     # Send message
     # ------------------------------------------------------------------
 
-    async def send_msg(self, message: str, **kwargs: Any) -> bool:
+    async def send_msg(self, message: str, raw: bool = False, **kwargs: Any) -> bool:
         for attempt in range(3):
             try:
                 field = await self._find_input_field()
@@ -665,16 +665,25 @@ class QwenEngine(BaseScraperEngine):
                 await asyncio.sleep(0.5)
                 await field.click()
 
-                reminder = (
-                    "[QUICK REMINDER]\n"
-                    "1. Keep responses as short and humane as possible.\n"
-                    "2. Start your response with ``` and ends with ```\n"
-                    "3. Use ~~~ for code blocks instead of ```. There must be only two ``` (start and end) in your response.\n"
-                    "4. always use skills over raw command when respective skill are available.\n"
-                )
-
-                date_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                message = f"[{date_time}]\n{message}"
+                # Inject instructions on first message, reminder on subsequent
+                if raw:
+                    pass
+                elif not self.system_injected:
+                    instructions = self._load_instructions()
+                    if instructions:
+                        message = f"[SYSTEM INSTRUCTION]\n{instructions}\n\n[USER MESSAGE]\n{message}"
+                    self.system_injected = True
+                else:
+                    reminder = (
+                        "[QUICK REMINDER]\n"
+                        "1. Use <action>[...]</action> JSON array format for all tool calls.\n"
+                        "2. Use <execute_command> to run any command.\n"
+                        "3. Always use appropriate tags to run commands or use skills.\n"
+                        "4. Keep responses as short and humane as possible.\n"
+                        "5. Start your response with ``` and end with ```.\n"
+                        "6. Use ~~~ for code blocks instead of ```. There must be only two ``` (start and end).\n\n"
+                    )
+                    message = f"{reminder}[USER MESSAGE]\n{message}"
 
                 await self._ensure_field_populated(field, message)
 
@@ -1183,126 +1192,16 @@ class QwenEngine(BaseScraperEngine):
         except Exception as e:
             console.print(f"[dim red]Setup failed: {e}[/dim red]")
 
-    # ------------------------------------------------------------------
-    # Persona sync
-    # ------------------------------------------------------------------
 
-    async def sync_persona(self) -> bool:
-        """Sync instructions to Qwen custom instructions settings."""
-        PERSONALIZATION_URL = "https://chat.qwen.ai/settings/personalization"
-        CHAT_URL = PLATFORM["url"]
-
-        console.print("[bold purple]📡 Syncing persona to Qwen custom instructions...[/bold purple]")
-
-        instructions = self._load_instructions()
-        MAX_CHARS = 40960
-        if len(instructions) > MAX_CHARS:
-            instructions = instructions[:MAX_CHARS]
-            console.print(f"[dim yellow]⚠ Instructions truncated to {MAX_CHARS} chars.[/dim yellow]")
-
-        try:
-            await self.page.goto(PERSONALIZATION_URL)
-            await asyncio.sleep(3)
-
-            settings_btn_sel = "button.qwen-personalization-custom-instruction-button"
-            await self.page.wait_for_selector(settings_btn_sel, timeout=10000)
-            await self.page.evaluate(
-                "document.querySelector('button.qwen-personalization-custom-instruction-button').click()"
-            )
-            await asyncio.sleep(1.5)
-
-            textarea_sel = "div.comment-textarea textarea[maxlength='40960']"
-            await self.page.wait_for_selector(textarea_sel, timeout=8000)
-
-            el_handle = await self.page.query_selector(textarea_sel)
-            if not el_handle:
-                raise Exception("Custom instruction textarea not found")
-
-            await self.page.evaluate("""({element, msg}) => {
-                if (!element) return;
-                element.focus();
-                const setter = Object.getOwnPropertyDescriptor(
-                    window.HTMLTextAreaElement.prototype, 'value'
-                ).set;
-                if (setter) setter.call(element, msg);
-                else element.value = msg;
-                element.dispatchEvent(new Event('input',  { bubbles: true }));
-                element.dispatchEvent(new Event('change', { bubbles: true }));
-            }""", {"element": el_handle, "msg": instructions})
-            await asyncio.sleep(0.5)
-
-            await self.page.evaluate("""(element) => {
-                element.focus();
-                const end = element.value.length;
-                element.setSelectionRange(end, end);
-            }""", el_handle)
-            await self.page.keyboard.type(" ")
-            await self.page.keyboard.press("Backspace")
-            await asyncio.sleep(0.3)
-
-            saved = await self.page.evaluate("""() => {
-                const btns = document.querySelectorAll('button.qwen-chat-btn.brandprimary');
-                for (const btn of btns) {
-                    if (btn.innerText.trim() === 'Save') {
-                        btn.click();
-                        return true;
-                    }
-                }
-                return false;
-            }""")
-            if not saved:
-                raise Exception("Save button not found")
-
-            await asyncio.sleep(1.5)
-            console.print("[bold green]✅ Persona synced & saved![/bold green] 🔐")
-
-            await self.page.goto(CHAT_URL)
-            await asyncio.sleep(2)
-            await self.setup_provider(force_update=False)
-            return True
-
-        except Exception as e:
-            console.print(f"[bold red]❌ sync_persona failed: {e}[/bold red]")
-            try:
-                await self.page.goto(CHAT_URL)
-            except Exception:
-                pass
-            return False
 
     # ------------------------------------------------------------------
     # Instructions loading override
     # ------------------------------------------------------------------
 
     def _load_instructions(self) -> str:
-        parts: list[str] = []
-
-        maria_path = INSTRUCTIONS_DIR / "Maria.md"
-        if os.path.exists(maria_path):
-            try:
-                with open(maria_path, encoding="utf-8") as f:
-                    maria_content = f.read()
-                if "# Maria's Active Context" in maria_content:
-                    maria_content = maria_content.split("# Maria's Active Context")[0].strip()
-                elif "# 💋 Maria's Active Context" in maria_content:
-                    maria_content = maria_content.split("# 💋 Maria's Active Context")[0].strip()
-                else:
-                    maria_content = maria_content.strip()
-                parts.append(maria_content)
-            except Exception:
-                pass
-
-        for path_str in _INSTRUCTION_PATHS:
-            path = Path(path_str)
-            if path.name == "Maria.md":
-                continue
-            if os.path.exists(path):
-                try:
-                    with open(path, encoding="utf-8") as f:
-                        parts.append(f.read().strip())
-                except Exception:
-                    pass
-
-        return "\n\n".join(parts)
+        """Use the shared instruction builder — same as API mode."""
+        from connectors.common.instruction_builder import build_instructions
+        return build_instructions(provider="qwen")
 
     # ------------------------------------------------------------------
     # Diary processing
