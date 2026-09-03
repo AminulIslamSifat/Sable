@@ -18,7 +18,7 @@ from typing import Any
 
 from engine.agents.agent import Agent
 from engine.agents.resilience import CircuitBreaker, LoopDetector, TurnCapTracker
-from engine.agents.registry import get_role_config, get_account_pool
+from engine.agents.registry import get_role_config
 
 logger = logging.getLogger("sable")
 
@@ -252,25 +252,10 @@ async def run_agent_llm_loop(
     )
     turn_caps = TurnCapTracker()  # Caps reset per run_agent_llm_loop invocation
 
-    # Initial breaker check (fallback chain handles mid-loop failures)
-    initial_breaker = _resolve_breaker(agent, breakers)
-    if not initial_breaker.can_execute():
-        # Check if any fallback model has a viable breaker
-        has_viable_fallback = False
-        if agent.model_chain:
-            for fb_model in agent.model_chain:
-                fb_key = _get_backend_key(fb_model)
-                fb_breaker = breakers.get(fb_key)
-                if fb_breaker and fb_breaker.can_execute():
-                    has_viable_fallback = True
-                    break
-                # No breaker registered for this backend = not tripped = viable
-                if fb_breaker is None:
-                    has_viable_fallback = True
-                    break
-        if not has_viable_fallback:
-            key = _get_backend_key(agent.model)
-            raise RuntimeError(f"Circuit breaker open for {key} — provider unavailable")
+    # Note: No initial breaker pre-check. Let the agent try and fail naturally.
+    # The shared auto_switch_account() in _send_with_retry handles failures
+    # consistently with main chat. Pre-checking caused false-positive fallbacks
+    # when breakers were tripped by unrelated sessions.
 
     # Store allowed tool groups on agent for native tool passing to API backends
     agent.allowed_tool_groups = list(role_cfg.allowed_tools)
@@ -281,8 +266,9 @@ async def run_agent_llm_loop(
     _agent_backend = _get_agent_model_cfg(agent.model).get("api_backend", "")
     _use_native_tools = _agent_backend in _NATIVE_TOOL_BACKENDS
 
+    # System prompt already includes persona + personal.md + output_format + skills + tools
+    # from the shared instruction builder (via get_role_config). No need to append _build_tool_guide.
     system_prompt = role_cfg.system_prompt
-    system_prompt += _build_tool_guide(role_cfg.allowed_tools, role_cfg.allowed_skills, native_tools=_use_native_tools)
     if agent.instruction:
         system_prompt += f"\n\nSpecial instruction from orchestrator: {agent.instruction}"
 
@@ -657,11 +643,15 @@ async def run_agent_llm_loop(
 
 
 async def _try_teacher_escalation(agent: Agent, stuck_reason: str) -> str | None:
-    """Attempt teacher intervention. Returns guidance text or None.
+    """Request teacher guidance from main chat (Maria) via auto_turn engine.
+
+    Instead of calling a separate LLM, this sends the escalation to the main
+    chat session. Maria responds using the teacher_guidance tool call, which
+    gets routed back to the waiting subagent.
 
     Respects the max intervention limit to avoid infinite escalation loops.
     """
-    from engine.agents.teacher import escalate_to_teacher, MAX_TEACHER_INTERVENTIONS
+    from engine.agents.teacher import MAX_TEACHER_INTERVENTIONS
 
     if agent.teacher_interventions >= MAX_TEACHER_INTERVENTIONS:
         return None
@@ -673,9 +663,31 @@ async def _try_teacher_escalation(agent: Agent, stuck_reason: str) -> str | None
         "reason": stuck_reason,
     })
 
-    guidance = await escalate_to_teacher(agent, stuck_reason)
+    # Build context snapshot for Maria
+    todo_snapshot = None
+    if agent.todos:
+        todo_snapshot = [
+            {"id": t.id, "content": t.content, "status": t.status, "result": t.result}
+            for t in agent.todos.todos
+        ]
+
+    recent_messages = agent.messages[-6:] if agent.messages else None
+
+    # Request guidance from main chat — blocks until Maria responds via tool call
+    from engine.agents.auto_turn import auto_turn
+    guidance = await auto_turn.request_teacher_guidance(
+        chat_id=agent.chat_id,
+        agent_id=agent.id,
+        role=agent.role,
+        task=agent.task,
+        stuck_reason=stuck_reason,
+        todo_snapshot=todo_snapshot,
+        context=agent.context,
+        recent_messages=recent_messages,
+    )
+
     if guidance:
-        logger.info("[agent %s] Teacher intervened (#%d)", agent.id, agent.teacher_interventions)
+        logger.info("[agent %s] Teacher (main chat) intervened (#%d)", agent.id, agent.teacher_interventions)
     return guidance
 
 
@@ -780,52 +792,6 @@ async def _try_fallback_model(agent: Agent, failed_model: str) -> str | None:
     return None  # All fallbacks exhausted
 
 
-def _try_browser_fallback(agent: Agent) -> str | None:
-    """Try the next browser profile from the account pool (Qwen only).
-
-    Searches from the back (highest number first) to avoid competing with
-    main chat auto-switch which searches forward. Falls back to the global
-    reverse pool if the role-specific pool is empty or exhausted.
-
-    Tracks failed profiles on the agent via `_fallback_tried` to prevent
-    ping-ponging between two accounts when both fail.
-
-    Returns the full path to the next available profile or None if exhausted.
-    """
-    from engine.config import _SYSTEM as _AGENT_SYSTEM_DIR, get_available_accounts_reverse
-
-    current_name = Path(agent.browser_data_dir).name if agent.browser_data_dir else ""
-
-    # Accumulate tried-and-failed profiles across recursive fallback attempts
-    if not hasattr(agent, "_fallback_tried"):
-        agent._fallback_tried: set[str] = set()
-    agent._fallback_tried.add(current_name)
-
-    # Try role-specific pool first (reverse order)
-    pool = get_account_pool(agent.role)
-    if pool:
-        from engine.config import is_account_exhausted, is_account_captcha_blocked
-        # Search pool in reverse, skipping tried/exhausted/captcha-blocked accounts
-        for entry in reversed(pool):
-            if entry in agent._fallback_tried:
-                continue
-            if is_account_exhausted(entry):
-                continue
-            if is_account_captcha_blocked(entry):
-                continue
-            acct_profile = _AGENT_SYSTEM_DIR / entry
-            if acct_profile.is_dir():
-                return str(acct_profile)
-
-    # Fall back to global reverse pool (highest number first, up to 10)
-    for acc_name in get_available_accounts_reverse(exclude=agent._fallback_tried, limit=10):
-        acct_profile = _AGENT_SYSTEM_DIR / acc_name
-        if acct_profile.is_dir():
-            return str(acct_profile)
-
-    return None
-
-
 async def _clear_qwen_account_settings(headers: dict[str, str], agent_id: str) -> None:
     """Disable Qwen built-in tools and clear personalization for an agent account.
 
@@ -892,41 +858,6 @@ async def _clear_qwen_account_settings(headers: dict[str, str], agent_id: str) -
     logger.info("Agent %s: Qwen account settings cleared (tools disabled + empty instruction)", agent_id)
 
 
-def _classify_and_mark_account_error(exc: Exception, account_name: str) -> None:
-    """Inspect an exception message and mark the account if WAF-blocked or rate-limited.
-
-    Mirrors the detection logic in engine/service.py so subagent failures
-    persist globally — preventing future agents from retrying blocked accounts.
-    """
-    msg = str(exc).lower()
-    if not account_name:
-        return
-
-    # Rate-limit patterns (same keywords as service.py defense-in-depth)
-    rate_kw = ("ratelimit", "rate_limit", "rate limit", "quota", "daily usage", "exceeded", "429")
-    if any(kw in msg for kw in rate_kw):
-        try:
-            from engine.config import mark_account_exhausted
-            mark_account_exhausted(account_name)
-            logger.warning("Subagent marked account %s as exhausted (rate-limited): %s",
-                           account_name, str(exc)[:200])
-        except Exception as e:
-            logger.error("Failed to mark account %s exhausted: %s", account_name, e)
-        return
-
-    # WAF/captcha patterns (same keywords as service.py defense-in-depth)
-    waf_kw = ("captcha", "waf", "validate", "rgv587", "blocked", "forbidden",
-              "fail_sys_user_validate", "403", "401")
-    if any(kw in msg for kw in waf_kw):
-        try:
-            from engine.config import mark_account_captcha_blocked
-            mark_account_captcha_blocked(account_name)
-            logger.warning("Subagent marked account %s as captcha/WAF-blocked: %s",
-                           account_name, str(exc)[:200])
-        except Exception as e:
-            logger.error("Failed to mark account %s captcha-blocked: %s", account_name, e)
-
-
 def _get_backend_key(model: str) -> str:
     """Map model name to its circuit breaker key."""
     from engine.config import get_model_config
@@ -945,6 +876,33 @@ def _resolve_breaker(agent: Agent, breakers: dict[str, CircuitBreaker]) -> Circu
     return breakers.get(key, list(breakers.values())[0])
 
 
+def _classify_error_type(exc: Exception) -> str:
+    """Classify an exception into auto-switch trigger types.
+
+    Mirrors main chat's error detection in chat.py so subagents use the
+    same classification logic. Returns one of:
+      'rate_limited', 'waf_blocked', 'empty_exhausted', 'transient'
+    """
+    msg = str(exc).lower()
+
+    # Rate-limit patterns (same as main chat)
+    rate_kw = ("ratelimit", "rate_limit", "rate limit", "quota", "daily usage", "exceeded", "429")
+    if any(kw in msg for kw in rate_kw):
+        return "rate_limited"
+
+    # WAF/captcha patterns (same as main chat)
+    waf_kw = ("captcha", "waf", "validate", "rgv587", "blocked", "forbidden",
+              "fail_sys_user_validate", "403", "401")
+    if any(kw in msg for kw in waf_kw):
+        return "waf_blocked"
+
+    # Empty response patterns
+    if "empty response" in msg or "zero content" in msg:
+        return "empty_exhausted"
+
+    return "transient"
+
+
 async def _send_with_retry(
     agent: Agent,
     message: str,
@@ -954,149 +912,124 @@ async def _send_with_retry(
     max_retries: int = 3,
     files: list[str] | None = None,
 ) -> tuple[str, str | None]:
-    """Send message to LLM with exponential backoff + model fallback chain.
+    """Send message to LLM with auto-switch fallback matching main chat behavior.
 
-    On persistent failure (all retries exhausted OR circuit breaker open),
-    tries the next model in agent.model_chain with conversation migration.
+    Uses the shared auto_switch_account() from engine/config.py for account
+    marking + selection. Searches reverse (highest-number-first) to avoid
+    competing with main chat auto-switch which searches forward.
+    Auto-switch is always enabled for subagents.
+
+    Falls back to model chain only after ALL browser accounts are exhausted.
     Returns (response_text, new_parent_id).
     """
+    from engine.config import auto_switch_account, _SYSTEM as _AGENT_SYSTEM_DIR
+
     last_exc: Exception | None = None
-    breaker = _resolve_breaker(agent, breakers)
+    tried_accounts: set[str] = set()
 
-    logger.info("[FALLBACK-DEBUG] agent=%s model=%s model_chain=%s _fallback_index=%d",
-                agent.id, agent.model, agent.model_chain, agent._fallback_index)
+    logger.info("[SUBAGENT-FALLBACK] agent=%s model=%s model_chain=%s",
+                agent.id, agent.model, agent.model_chain)
 
-    for attempt in range(max_retries):
-        try:
-            text, new_pid = await _call_llm(agent, message, parent_id, is_first_turn, files=files)
-            breaker.record_success()
-            return text, new_pid
-        except Exception as exc:
-            last_exc = exc
-            breaker.record_failure()
-            logger.warning("[FALLBACK-DEBUG] agent=%s attempt=%d/%d FAILED: %s",
-                           agent.id, attempt + 1, max_retries, exc)
-            if attempt == max_retries - 1:
-                break  # Exhausted retries — try fallback below
-            delay = (2 ** attempt) + random.uniform(0, 1)
-            logger.warning("Agent %s retry %d/%d: %s (%.1fs)", agent.id, attempt + 1, max_retries, exc, delay)
-            await asyncio.sleep(delay)
-
-    # All retries failed with current model+profile.
-    backend_type = _get_backend_type(agent.model)
-    logger.info("[FALLBACK-DEBUG] agent=%s retries exhausted. backend_type=%s, attempting fallback",
-                agent.id, backend_type)
-
-    # Mark the failed account globally so other agents/subagents skip it.
-    # Only for Qwen — non-Qwen backends (Gemini/Groq/DeepSeek) don't use browser accounts.
-    if backend_type == "qwen" and last_exc and agent.browser_data_dir:
-        from pathlib import Path as _Path
-        _failed_acct = _Path(agent.browser_data_dir).name
-        _classify_and_mark_account_error(last_exc, _failed_acct)
-
-    # Qwen: exhaust ALL browser profiles first, THEN switch model.
-    # Non-Qwen: go straight to model fallback.
-    if _get_backend_type(agent.model) == "qwen":
-        browser_profile = _try_browser_fallback(agent)
-        if browser_profile:
-            old_profile = agent.browser_data_dir or "default"
-            logger.info("[agent %s] Browser fallback: %s → %s", agent.id, old_profile, browser_profile)
-            agent.push_stream_event({
-                "type": "browser_fallback",
-                "from": old_profile,
-                "to": browser_profile,
-                "reason": str(last_exc)[:200] if last_exc else "retries exhausted",
-            })
-            agent.browser_data_dir = browser_profile
-            agent.qwen_session_id = None
-
-            # Clear stale settings on the fallback account (tools + instruction)
-            try:
-                fb_headers = await _get_agent_qwen_headers(agent)
-                await _clear_qwen_account_settings(fb_headers, agent.id)
-            except Exception as exc:
-                logger.warning("Agent %s: clear settings on fallback account %s failed: %s", agent.id, browser_profile, exc)
-            try:
-                from server.database import set_upstream_session_id as _set_usid
-                _set_usid(agent.chat_id, None)
-            except Exception:
-                pass
-            parent_id = None
-            is_first_turn = True
-
-            breaker = _resolve_breaker(agent, breakers)
-            for attempt in range(max_retries):
-                try:
-                    text, new_pid = await _call_llm(agent, message, parent_id, is_first_turn)
-                    breaker.record_success()
-                    logger.info("[agent %s] Browser fallback to %s succeeded", agent.id, browser_profile)
-                    # Reset fallback tracking on success so next request starts fresh
-                    agent._fallback_tried = set()
-                    return text, new_pid
-                except Exception as exc3:
-                    last_exc = exc3
-                    breaker.record_failure()
-                    if attempt == max_retries - 1:
-                        break
-                    delay = (2 ** attempt) + random.uniform(0, 1)
-                    logger.warning("Agent %s browser fallback retry %d/%d: %s (%.1fs)", agent.id, attempt + 1, max_retries, exc3, delay)
-                    await asyncio.sleep(delay)
-
-            # This browser profile also failed — try next one recursively
-            return await _send_with_retry(agent, message, parent_id, breakers, is_first_turn, max_retries)
-
-    # All browser profiles exhausted (or not Qwen) — try model fallback chain
-    logger.info("[FALLBACK-DEBUG] agent=%s entering model fallback section", agent.id)
-    fallback_model = await _try_fallback_model(agent, agent.model)
-    if fallback_model:
-        old_model = agent.model
-        logger.info("[agent %s] Falling back: %s → %s", agent.id, old_model, fallback_model)
-        agent.push_stream_event({
-            "type": "model_fallback",
-            "from": old_model,
-            "to": fallback_model,
-            "reason": str(last_exc)[:200] if last_exc else "unknown",
-        })
-
-        migration_ctx = await _migrate_conversation(agent, old_model, fallback_model)
-        agent.model = fallback_model
-
-        if _get_backend_type(fallback_model) == "qwen":
-            agent.qwen_session_id = None
-            try:
-                from server.database import set_upstream_session_id as _set_usid
-                _set_usid(agent.chat_id, None)
-            except Exception:
-                pass
-            parent_id = None
-            is_first_turn = True
-
-        if migration_ctx:
-            message = f"{migration_ctx}\n\n---\n\n{message}"
-
+    while True:
         breaker = _resolve_breaker(agent, breakers)
 
         for attempt in range(max_retries):
             try:
-                text, new_pid = await _call_llm(agent, message, parent_id, is_first_turn)
+                text, new_pid = await _call_llm(agent, message, parent_id, is_first_turn, files=files)
                 breaker.record_success()
-                logger.info("[agent %s] Fallback to %s succeeded", agent.id, fallback_model)
                 return text, new_pid
-            except Exception as exc2:
-                last_exc = exc2
+            except Exception as exc:
+                last_exc = exc
                 breaker.record_failure()
+                logger.warning("[SUBAGENT-FALLBACK] agent=%s attempt=%d/%d FAILED: %s",
+                               agent.id, attempt + 1, max_retries, exc)
                 if attempt == max_retries - 1:
                     break
                 delay = (2 ** attempt) + random.uniform(0, 1)
-                logger.warning("Agent %s fallback retry %d/%d: %s (%.1fs)", agent.id, attempt + 1, max_retries, exc2, delay)
                 await asyncio.sleep(delay)
 
-        # Model fallback also failed — try next in chain recursively
-        return await _send_with_retry(agent, message, parent_id, breakers, is_first_turn, max_retries)
+        # All retries exhausted for current account/model.
+        backend_type = _get_backend_type(agent.model)
 
-    # No fallbacks left at all — raise
-    logger.error("[FALLBACK-DEBUG] agent=%s NO FALLBACK AVAILABLE. Raising: %s", agent.id, last_exc)
-    raise last_exc or RuntimeError("All retries and fallbacks exhausted")
+        # Qwen: try auto-switch to next browser account (reverse order)
+        if backend_type == "qwen" and agent.browser_data_dir:
+            from pathlib import Path as _Path
+            current_acct = _Path(agent.browser_data_dir).name
+            error_type = _classify_error_type(last_exc) if last_exc else "transient"
+
+            # Only auto-switch for actionable error types (not transient network blips)
+            if error_type in ("rate_limited", "waf_blocked", "empty_exhausted"):
+                next_acct = auto_switch_account(
+                    current_account=current_acct,
+                    error_type=error_type,
+                    exclude=tried_accounts,
+                    reverse=True,  # Search highest-number-first for subagents
+                )
+
+                if next_acct:
+                    tried_accounts.add(current_acct)
+                    old_profile = agent.browser_data_dir
+                    new_profile = str(_AGENT_SYSTEM_DIR / next_acct)
+                    logger.info("[SUBAGENT-FALLBACK] agent=%s auto-switch: %s → %s (reason=%s)",
+                                agent.id, current_acct, next_acct, error_type)
+                    agent.push_stream_event({
+                        "type": "account_switch",
+                        "from": current_acct,
+                        "to": next_acct,
+                        "reason": error_type,
+                    })
+                    agent.browser_data_dir = new_profile
+                    agent.qwen_session_id = None
+
+                    # Clear stale settings on the new account
+                    try:
+                        fb_headers = await _get_agent_qwen_headers(agent)
+                        await _clear_qwen_account_settings(fb_headers, agent.id)
+                    except Exception as exc:
+                        logger.warning("Agent %s: clear settings on %s failed: %s", agent.id, next_acct, exc)
+                    try:
+                        from server.database import set_upstream_session_id as _set_usid
+                        _set_usid(agent.chat_id, None)
+                    except Exception:
+                        pass
+                    parent_id = None
+                    is_first_turn = True
+                    continue  # Retry with new account
+                else:
+                    logger.warning("[SUBAGENT-FALLBACK] agent=%s all accounts exhausted", agent.id)
+
+        # All browser accounts exhausted (or not Qwen) — try model fallback chain
+        fallback_model = await _try_fallback_model(agent, agent.model)
+        if fallback_model:
+            old_model = agent.model
+            logger.info("[SUBAGENT-FALLBACK] agent=%s model fallback: %s → %s", agent.id, old_model, fallback_model)
+            agent.push_stream_event({
+                "type": "model_fallback",
+                "from": old_model,
+                "to": fallback_model,
+                "reason": str(last_exc)[:200] if last_exc else "unknown",
+            })
+
+            migration_ctx = await _migrate_conversation(agent, old_model, fallback_model)
+            agent.model = fallback_model
+
+            if _get_backend_type(fallback_model) == "qwen":
+                agent.qwen_session_id = None
+                try:
+                    from server.database import set_upstream_session_id as _set_usid
+                    _set_usid(agent.chat_id, None)
+                except Exception:
+                    pass
+                parent_id = None
+                is_first_turn = True
+
+            if migration_ctx:
+                message = f"{migration_ctx}\n\n---\n\n{message}"
+            continue  # Retry with new model
+
+        # No fallbacks left — raise
+        logger.error("[SUBAGENT-FALLBACK] agent=%s NO FALLBACK AVAILABLE. Raising: %s", agent.id, last_exc)
+        raise last_exc or RuntimeError("All retries and fallbacks exhausted")
 
 
 async def _call_llm(

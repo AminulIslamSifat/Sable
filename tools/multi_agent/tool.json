@@ -63,5 +63,30 @@
         "id"
       ]
     }
+  },
+  {
+    "name": "teacher_guidance",
+    "description": "Respond to a subagent's teacher escalation request with mentorship guidance and optional plan corrections. Only use when you receive a [TEACHER ESCALATION REQUEST] message.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "agent_id": {
+          "type": "string",
+          "description": "The agent ID from the escalation request"
+        },
+        "guidance": {
+          "type": "string",
+          "description": "Specific actionable instructions for what the agent is doing wrong and how to fix it"
+        },
+        "todo_updates": {
+          "type": "string",
+          "description": "Optional JSON array of plan corrections. Actions: add, remove, replace, skip. Example: [{\"action\": \"add\", \"content\": \"new step\"}]"
+        }
+      },
+      "required": [
+        "agent_id",
+        "guidance"
+      ]
+    }
   }
 ]

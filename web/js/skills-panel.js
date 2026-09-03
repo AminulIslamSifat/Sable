@@ -1370,7 +1370,7 @@
       } catch {}
     }
 
-    for (const sel of [..._ctxPassModelSelects, ..._ctxPassBrowserSelects]) {
+    for (const sel of _ctxPassModelSelects) {
       if (sel) sel.addEventListener("change", saveContextPassSettings);
     }
 

@@ -849,3 +849,51 @@ def get_available_accounts_reverse(
     return result[:limit]
 
 
+def auto_switch_account(
+    current_account: str,
+    error_type: str,
+    exclude: set[str] | None = None,
+    reverse: bool = False,
+) -> str | None:
+    """Mark the failing account and find the next available one.
+
+    Shared auto-switch logic used by both main chat and subagents.
+    Mirrors the marking + selection from chat.py auto-switch handler.
+
+    Args:
+        current_account: The account that just failed (e.g. 'browser-data-acc3').
+        error_type: One of 'rate_limited', 'waf_blocked', 'empty_exhausted'.
+        exclude: Additional accounts to skip (already-tried in this request).
+        reverse: If True, search highest-number-first (for subagents/background).
+                 If False, search lowest-number-first (for main chat).
+
+    Returns:
+        Next account name or None if all exhausted.
+    """
+    import logging as _logging
+    _logger = _logging.getLogger(__name__)
+
+    # Mark the failing account
+    if error_type == "waf_blocked":
+        mark_account_captcha_blocked(current_account)
+        _logger.info("[auto-switch] Marked %s as captcha-blocked", current_account)
+    elif error_type == "empty_exhausted":
+        mark_account_exhausted(current_account)
+        _logger.info("[auto-switch] Marked %s as exhausted (empty_exhausted)", current_account)
+    elif error_type == "rate_limited":
+        mark_account_exhausted(current_account)
+        _logger.info("[auto-switch] Marked %s as exhausted (rate_limited)", current_account)
+
+    # Build exclusion set
+    _exclude = set(exclude or {})
+    _exclude.add(current_account)
+
+    # Find next account
+    if reverse:
+        candidates = get_available_accounts_reverse(exclude=_exclude, limit=10)
+        return candidates[0] if candidates else None
+    else:
+        return get_next_available_account(exclude=_exclude)
+
+
+

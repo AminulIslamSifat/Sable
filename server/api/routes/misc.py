@@ -184,10 +184,22 @@ def revert_file(payload: RevertRequest) -> dict[str, str]:
         raise HTTPException(status_code=500, detail=f"Revert failed: {exc}")
     return {"status": "ok"}
 
+# Cache index.html in memory to avoid disk I/O on every request.
+# Invalidated automatically on server restart (which is when code changes happen).
+_INDEX_CACHE: str | None = None
+
+def _get_index_html() -> str:
+    global _INDEX_CACHE
+    if _INDEX_CACHE is None:
+        if INDEX_FILE.exists():
+            _INDEX_CACHE = INDEX_FILE.read_text(encoding="utf-8")
+        else:
+            _INDEX_CACHE = "<html><body><h1>Sable</h1><p>index.html not found.</p></body></html>"
+    return _INDEX_CACHE
+
 @router.get("/", response_class=HTMLResponse)
 def index() -> str:
-    if INDEX_FILE.exists():
-        return INDEX_FILE.read_text(encoding="utf-8")
+    return _get_index_html()
 
 
 _INSTRUCTION_EXTRA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "instruction" / "extra"

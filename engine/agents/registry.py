@@ -1,14 +1,12 @@
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 
 
 @dataclass(frozen=True)
 class RoleConfig:
-    system_prompt: str              # Built from persona file + output_format (not stored in config)
-    allowed_tools: list[str]        # Handler names from HANDLER_MAP (execute_command, view_file, etc.)
+    system_prompt: str              # Built lazily via shared instruction builder
+    allowed_tools: list[str]        # Tool group keys (execute_command, grep_search, etc.)
     allowed_skills: list[str]       # Skill keys from /skills/ (telegram, system_repair, etc.)
     output_format: str              # Markdown section requirements for final answer
     default_model: str
@@ -19,58 +17,7 @@ class RoleConfig:
 
 
 # Fallback chain applied to ANY role that has no explicit model_chain configured.
-# Ensures no agent ever dies without at least attempting a model switch.
 _DEFAULT_MODEL_CHAIN: list[str] = ["deepseek-expert", "gemini-2.5-flash"]
-
-_MARKDOWN_RULES = (
-    "\n\nCRITICAL OUTPUT FORMAT RULES:\n"
-    "- You MUST respond with ONLY a clean markdown document as your final answer.\n"
-    "- Use proper ## headers, bullet lists, and code blocks where appropriate.\n"
-    "- NEVER output JSON objects, JSON arrays, or any structured data format.\n"
-    "- NEVER wrap your answer in code fences.\n"
-    "- Write it like a human-readable report. Your entire response must be pure markdown."
-)
-
-# ---------------------------------------------------------------------------
-# Persona-file loader: reads instruction/agents/<role>.md for system prompt
-# ---------------------------------------------------------------------------
-_AGENTS_DIR = Path(__file__).resolve().parent.parent.parent / "instruction" / "agents"
-_PERSONAL_PATH = Path(__file__).resolve().parent.parent.parent / "instruction" / "personal.md"
-
-
-def _load_agent_persona(role: str) -> str:
-    """Load persona markdown for a subagent role. Falls back to generic prompt."""
-    path = _AGENTS_DIR / f"{role}.md"
-    if path.is_file():
-        return path.read_text(encoding="utf-8").strip()
-    return f"You are a {role} specialist. Complete the assigned task thoroughly."
-
-
-def _load_personal_context() -> str:
-    """Load personal.md user context. Returns empty string if missing or blank."""
-    if _PERSONAL_PATH.is_file():
-        content = _PERSONAL_PATH.read_text(encoding="utf-8").strip()
-        if content:
-            return content
-    return ""
-
-
-def _build_system_prompt(role: str, output_format: str = "") -> str:
-    """Compose full system prompt: persona + personal context + markdown rules + output format.
-
-    Persona is always loaded from instruction/agents/{role}.md.
-    Personal context from instruction/personal.md is injected for all agents.
-    Output format comes from config (not hardcoded).
-    """
-    persona = _load_agent_persona(role)
-    parts = [persona]
-    personal = _load_personal_context()
-    if personal:
-        parts.append(personal)
-    parts.append(_MARKDOWN_RULES)
-    if output_format:
-        parts.append(f"\n\n{output_format}")
-    return "\n".join(parts)
 
 _ALL_TOOL_GROUPS = [
     "ask_user", "chat_title", "code_editor", "execute_command",
@@ -80,7 +27,7 @@ _ALL_TOOL_GROUPS = [
 
 AGENT_ROLES: dict[str, RoleConfig] = {
     "analyst": RoleConfig(
-        system_prompt=_build_system_prompt("analyst"),
+        system_prompt="",
         allowed_tools=list(_ALL_TOOL_GROUPS),
         allowed_skills=[],
         output_format="",
@@ -93,7 +40,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         ],
     ),
     "coder": RoleConfig(
-        system_prompt=_build_system_prompt("coder"),
+        system_prompt="",
         allowed_tools=list(_ALL_TOOL_GROUPS),
         allowed_skills=[],
         output_format="",
@@ -104,7 +51,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
     ),
 
     "writer": RoleConfig(
-        system_prompt=_build_system_prompt("writer"),
+        system_prompt="",
         allowed_tools=list(_ALL_TOOL_GROUPS),
         allowed_skills=[],
         output_format="",
@@ -118,7 +65,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
     # Domain-specialist agents (hierarchical routing)
     # ------------------------------------------------------------------
     "sysutil": RoleConfig(
-        system_prompt=_build_system_prompt("sysutil"),
+        system_prompt="",
         allowed_tools=list(_ALL_TOOL_GROUPS),
         allowed_skills=["system_repair", "phone_control", "youtube_downloader"],
         output_format="",
@@ -128,7 +75,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         required_sections=["Task", "Diagnosis", "Actions Taken", "Result", "Notes"],
     ),
     "docs": RoleConfig(
-        system_prompt=_build_system_prompt("docs"),
+        system_prompt="",
         allowed_tools=list(_ALL_TOOL_GROUPS),
         allowed_skills=["document_skills", "text_humanizer"],
         output_format="",
@@ -138,7 +85,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         required_sections=["Task", "Document Path", "Structure Overview", "Notes"],
     ),
     "visuals": RoleConfig(
-        system_prompt=_build_system_prompt("visuals"),
+        system_prompt="",
         allowed_tools=list(_ALL_TOOL_GROUPS),
         allowed_skills=["graph_master", "svg_creator", "frontend_design", "simulacra_engine"],
         output_format="",
@@ -148,7 +95,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
         required_sections=["Task", "Output Path", "Description", "Notes"],
     ),
     "tester": RoleConfig(
-        system_prompt=_build_system_prompt("tester"),
+        system_prompt="",
         allowed_tools=list(_ALL_TOOL_GROUPS),
         allowed_skills=["testing_debugging"],
         output_format="",
@@ -160,7 +107,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
 
     # Scheduled agent ops — broad skill set for autonomous tasks
     "scheduled": RoleConfig(
-        system_prompt=_build_system_prompt("scheduled"),
+        system_prompt="",
         allowed_tools=list(_ALL_TOOL_GROUPS),
         allowed_skills=["telegram", "email"],
         output_format="",
@@ -172,7 +119,7 @@ AGENT_ROLES: dict[str, RoleConfig] = {
 
     # Maria — full persona from instruction/agents/maria.md, all tools & skills
     "maria": RoleConfig(
-        system_prompt=_build_system_prompt("maria"),
+        system_prompt="",
         allowed_tools=list(_ALL_TOOL_GROUPS),
         allowed_skills=[],
         output_format="",
@@ -283,7 +230,12 @@ def _load_role_list_from_settings(role: str, key: str) -> list[str]:
 
 
 def get_role_config(role: str) -> RoleConfig:
-    """Get role config with any file-based overrides applied."""
+    """Get role config with any file-based overrides applied.
+
+    System prompt is built lazily via the shared instruction builder
+    (connectors/common/instruction_builder.py) so subagents use the same
+    pipeline as main chat — persona + personal.md + output_format + skills + tools.
+    """
     base = AGENT_ROLES.get(role, AGENT_ROLES["analyst"])
     ov = _role_overrides.get(role)
     # Load chains: override > settings.json > default fallback
@@ -292,27 +244,8 @@ def get_role_config(role: str) -> RoleConfig:
         chain = ov["model_chain"]
     if not chain:
         chain = list(_DEFAULT_MODEL_CHAIN)  # Never leave a role without fallback
-    # Build output_format-aware system prompt if override provides output_format
-    ov_output = ov.get("output_format", "") if ov else ""
-    if ov_output:
-        system_prompt = _build_system_prompt(role, ov_output)
-    else:
-        system_prompt = base.system_prompt
 
-    if not ov:
-        return RoleConfig(
-            system_prompt=system_prompt,
-            allowed_tools=base.allowed_tools,
-            allowed_skills=base.allowed_skills,
-            output_format=base.output_format,
-            default_model=base.default_model,
-            default_timeout=base.default_timeout,
-            max_parallel=base.max_parallel,
-            required_sections=base.required_sections,
-            model_chain=chain,
-        )
-
-    # Backward compat: old configs may have allowed_skills/default_skills with tool names mixed in
+    # Resolve effective tools/skills (override > base)
     known_tools = {"execute_command", "view_file", "edit_file", "create_file", "insert_file",
                    "get_file", "grep", "glob", "list_dir", "online_search", "web_search",
                    "web_fetch", "check_command", "spawn_agent", "agent_status", "kill_agent",
@@ -320,23 +253,38 @@ def get_role_config(role: str) -> RoleConfig:
                    "memory", "tracknote", "read_file", "openweb", "create_note",
                    "list_checkpoints", "restore_checkpoint", "run_simulacra"}
 
-    ov_tools = ov.get("allowed_tools", None)
-    ov_skills = ov.get("allowed_skills", None)
+    ov_tools = ov.get("allowed_tools", None) if ov else None
+    ov_skills = ov.get("allowed_skills", None) if ov else None
 
     # If old-style allowed_skills exists but no allowed_tools, auto-split
     if ov_tools is None and ov_skills is not None:
         ov_tools = [s for s in ov_skills if s in known_tools]
         ov_skills = [s for s in ov_skills if s not in known_tools]
 
+    eff_tools = ov_tools if ov_tools is not None else base.allowed_tools
+    eff_skills = ov_skills if ov_skills is not None else base.allowed_skills
+    eff_output = ov.get("output_format", base.output_format) if ov else base.output_format
+
+    # Build system prompt via shared instruction builder
+    from connectors.common.instruction_builder import build_instructions
+    system_prompt = build_instructions(
+        agent_role=role,
+        agent_tools=eff_tools,
+        agent_skills=eff_skills,
+    )
+    # Append role-specific output format if configured
+    if eff_output:
+        system_prompt += f"\n\n{eff_output}"
+
     return RoleConfig(
         system_prompt=system_prompt,
-        allowed_tools=ov_tools if ov_tools is not None else base.allowed_tools,
-        allowed_skills=ov_skills if ov_skills is not None else base.allowed_skills,
-        output_format=ov.get("output_format", base.output_format),
-        default_model=ov.get("default_model", base.default_model),
-        default_timeout=ov.get("default_timeout", base.default_timeout),
-        max_parallel=ov.get("max_parallel", base.max_parallel),
-        required_sections=ov.get("required_sections", base.required_sections),
+        allowed_tools=eff_tools,
+        allowed_skills=eff_skills,
+        output_format=eff_output,
+        default_model=ov.get("default_model", base.default_model) if ov else base.default_model,
+        default_timeout=ov.get("default_timeout", base.default_timeout) if ov else base.default_timeout,
+        max_parallel=ov.get("max_parallel", base.max_parallel) if ov else base.max_parallel,
+        required_sections=ov.get("required_sections", base.required_sections) if ov else base.required_sections,
         model_chain=chain,
     )
 
