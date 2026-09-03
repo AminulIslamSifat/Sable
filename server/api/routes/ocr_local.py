@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,7 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "name": "PaddleOCR",
         "type": "local",
         "description": "Local OCR using PaddlePaddle + PaddleOCR models",
-        "deps": ["paddlepaddle", "paddleocr", "opencv-python-headless"],
+        "deps": ["paddlepaddle==3.2.0", "paddleocr==2.10.0", "opencv-python-headless"],
         "default_lang": "en",
     },
     "pytesseract": {
@@ -69,11 +70,25 @@ def _get_venv_pip_cmd() -> list[str]:
     return [_get_project_venv_python(), "-m", "pip"]
 
 
+# Map pip package names to their actual Python import names
+_IMPORT_NAME_MAP: dict[str, str] = {
+    "opencv-python-headless": "cv2",
+    "opencv-python": "cv2",
+    "paddlepaddle": "paddle",
+    "paddleocr": "paddleocr",
+    "bnunicodenormalizer": "bnunicodenormalizer",
+    "pytesseract": "pytesseract",
+}
+
+
 def _is_package_installed(package: str) -> bool:
     venv_py = _get_project_venv_python()
+    # Strip version specifiers (e.g. "paddlepaddle==3.2.0" → "paddlepaddle")
+    pkg_name = re.split(r"[=<>!~;]", package)[0].strip()
+    import_name = _IMPORT_NAME_MAP.get(pkg_name, pkg_name.replace("-", "_"))
     try:
         result = subprocess.run(
-            [venv_py, "-c", f"import {package.replace('-', '_')}"],
+            [venv_py, "-c", f"import {import_name}"],
             capture_output=True, timeout=10,
         )
         return result.returncode == 0
@@ -172,9 +187,10 @@ async def uninstall_provider(provider_id: str) -> dict[str, Any]:
 @router.post("/api/ocr/local/recognize")
 async def local_ocr_recognize(
     file: UploadFile = File(...),
-    provider: str = "sableocr",
-    lang: str = "",
+    provider: str = Form("sableocr"),
+    lang: str = Form(""),
 ) -> dict[str, Any]:
+    logger.info("OCR recognize request: provider=%s, lang=%s, filename=%s", provider, lang, file.filename)
     if provider not in PROVIDERS:
         raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
     info = PROVIDERS[provider]
@@ -205,11 +221,12 @@ async def local_ocr_recognize(
 @router.post("/api/ocr/local/stream")
 async def local_ocr_stream(
     files: list[UploadFile] = File(...),
-    provider: str = "sableocr",
-    lang: str = "",
+    provider: str = Form("sableocr"),
+    lang: str = Form(""),
 ) -> StreamingResponse:
     import json as _json
 
+    logger.info("OCR stream request: provider=%s, lang=%s, files=%d", provider, lang, len(files))
     if provider not in PROVIDERS:
         raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
     info = PROVIDERS[provider]

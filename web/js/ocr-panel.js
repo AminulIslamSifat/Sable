@@ -174,7 +174,8 @@
         }
         const data = await res.json();
         fill.style.width = '100%';
-        status.textContent = `[${getProviderName()}] Done`;
+        const engineUsed = data.engine || getProviderName();
+        status.textContent = `[${engineUsed}] Done — ${data.word_count || data.line_count || '?'} words`;
         textarea.value = data.full_text || '';
         results.classList.remove('hidden');
       } catch (err) {
@@ -971,6 +972,8 @@
     if (!view.querySelector('.ocr-panel')) {
       renderOcrPanel(view);
     }
+    // Lazy-load provider status only when user actually opens the OCR panel
+    fetchProviders();
     // Host sidebar widget
     const widget = document.getElementById('ocrSidebarWidget');
     if (widget && window.sidebarHost) {
@@ -1012,7 +1015,7 @@
   });
 
   /* ── Init ── */
-  async function init() {
+  function init() {
     // Create sidebar widget and insert into DOM
     const widget = document.createElement('div');
     widget.id = 'ocrSidebarWidget';
@@ -1025,8 +1028,6 @@
     `;
     document.body.appendChild(widget);
     if (window.lucide) lucide.createIcons({ nodes: widget.querySelectorAll('[data-lucide]') });
-
-    await fetchProviders();
   }
 
   if (document.readyState === 'loading') {
