@@ -52,15 +52,32 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 }
 
 
+def _get_project_venv_python() -> str:
+    """Find the project's own venv python, not sys.executable (which may be uv-managed)."""
+    # Walk up from this file to find the project root containing .venv
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        venv_py = parent / ".venv" / "bin" / "python"
+        if venv_py.exists():
+            return str(venv_py)
+        # Windows fallback
+        venv_py_win = parent / ".venv" / "Scripts" / "python.exe"
+        if venv_py_win.exists():
+            return str(venv_py_win)
+    # Fallback to sys.executable if no project venv found
+    return sys.executable
+
+
 def _get_venv_pip_cmd() -> list[str]:
-    """Return pip command using python -m pip (works even without pip script)."""
-    return [sys.executable, "-m", "pip"]
+    """Return pip command using the project venv's python -m pip."""
+    return [_get_project_venv_python(), "-m", "pip"]
 
 
 def _is_package_installed(package: str) -> bool:
+    venv_py = _get_project_venv_python()
     try:
         result = subprocess.run(
-            [sys.executable, "-c", f"import {package.replace('-', '_')}"],
+            [venv_py, "-c", f"import {package.replace('-', '_')}"],
             capture_output=True, timeout=10,
         )
         return result.returncode == 0
