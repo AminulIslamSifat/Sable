@@ -52,8 +52,9 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 }
 
 
-def _get_venv_pip() -> str:
-    return str(Path(sys.executable).parent / "pip")
+def _get_venv_pip_cmd() -> list[str]:
+    """Return pip command using python -m pip (works even without pip script)."""
+    return [sys.executable, "-m", "pip"]
 
 
 def _is_package_installed(package: str) -> bool:
@@ -99,8 +100,7 @@ async def install_provider(provider_id: str) -> StreamingResponse:
     if not info["deps"]:
         raise HTTPException(status_code=400, detail="No Python dependencies to install")
 
-    pip = _get_venv_pip()
-    cmd = [pip, "install", "--progress-bar", "off"] + info["deps"]
+    cmd = _get_venv_pip_cmd() + ["install", "--progress-bar", "off"] + info["deps"]
     logger.info("Installing %s deps: %s", provider_id, " ".join(info["deps"]))
 
     async def _stream():
@@ -144,8 +144,7 @@ async def uninstall_provider(provider_id: str) -> dict[str, Any]:
     if not info["deps"]:
         return {"status": "ok", "message": "Nothing to uninstall"}
 
-    pip = _get_venv_pip()
-    cmd = [pip, "uninstall", "-y", "--quiet"] + info["deps"]
+    cmd = _get_venv_pip_cmd() + ["uninstall", "-y", "--quiet"] + info["deps"]
     logger.info("Uninstalling %s deps: %s", provider_id, " ".join(info["deps"]))
 
     proc = await asyncio.create_subprocess_exec(

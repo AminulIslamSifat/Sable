@@ -839,6 +839,16 @@
               return;
             }
 
+            const ct = res.headers.get('content-type') || '';
+            if (!ct.includes('text/event-stream')) {
+              // Server returned non-SSE (old endpoint or error) — show raw text
+              const text = await res.text();
+              logArea.innerHTML = `<span class="ocr-log-error">❌ Server returned unexpected response. Restart the server to use SSE install streaming.</span>\n<span class="ocr-log-line">${escHtml(text.slice(0, 500))}</span>`;
+              installBtn.disabled = false;
+              installBtn.innerHTML = '<i data-lucide="download"></i> Install Dependencies';
+              return;
+            }
+
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
