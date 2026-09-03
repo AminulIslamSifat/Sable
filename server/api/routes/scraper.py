@@ -19,6 +19,11 @@ async def kill_scraper_session() -> dict[str, Any]:
 
 @router.post("/api/scraper/model")
 async def switch_scraper_model(payload: dict[str, Any]) -> dict[str, Any]:
-    """Switch the browser engine's active model type (DeepSeek Instant/Expert/Vision)."""
+    """Switch the browser engine's active model type."""
     model_type = str(payload.get("model_type") or "default").strip()
     return await scraper_service.switch_model(model_type)
+
+@router.get("/api/scraper/models")
+async def get_scraper_models() -> dict[str, Any]:
+    """Return engine-specific models and thinking modes for the active scraper engine."""
+    return await scraper_service.get_ui_metadata()

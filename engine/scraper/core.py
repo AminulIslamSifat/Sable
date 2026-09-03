@@ -881,6 +881,20 @@ class BaseScraperEngine(ABC):
         """Generate bridge prompt for session continuity. Override as needed."""
         return ""
 
+    def get_ui_metadata(self) -> dict[str, Any]:
+        """Return engine-specific UI metadata for the frontend.
+
+        Returns dict with:
+            models: list of {id, label} for model dropdown
+            thinking_modes: list of {id, label} for thinking toggle
+        Default: single 'default' model, no thinking modes.
+        Override in subclass for engine-specific options.
+        """
+        return {
+            "models": [{"id": "default", "label": self.PROVIDER_NAME.title()}],
+            "thinking_modes": [],
+        }
+
     # ------------------------------------------------------------------
     # Abstract methods — MUST be implemented by subclass
     # ------------------------------------------------------------------

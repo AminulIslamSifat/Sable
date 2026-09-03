@@ -17,11 +17,15 @@ ENGINES_DIR = BASE_DIR / "engine" / "scraper_engines"
 ENGINE_REGISTRY: dict[str, dict[str, str]] = {
     "qwen": {
         "label": "Qwen",
-        "path": str(ENGINES_DIR / "qwen" / "qwen_engine.py"),
+        "path": str(ENGINES_DIR / "qwen" / "engine.py"),
     },
     "deepseek": {
         "label": "DeepSeek",
         "path": str(ENGINES_DIR / "deepseek" / "deepseek_engine.py"),
+    },
+    "chatgpt": {
+        "label": "ChatGPT",
+        "path": str(ENGINES_DIR / "chatgpt" / "engine.py"),
     },
 }
 
