@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import random
 from typing import Any
 
 import httpx
@@ -18,6 +19,46 @@ OCR_HEADERS = {
     "Referer": "https://banglaocr.com/",
     "Origin": "https://banglaocr.com/",
 }
+
+# Free proxy sources — fetched on demand, cached briefly
+_PROXY_CACHE: dict[str, Any] = {"proxies": [], "fetched_at": 0.0}
+_PROXY_CACHE_TTL = 300  # refresh every 5 min
+_PROXY_SOURCES = [
+    "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&protocol=http&proxy_format=protocolipport&format=text&timeout=5000",
+    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+]
+
+
+async def _fetch_proxies(client: httpx.AsyncClient) -> list[str]:
+    """Fetch fresh proxy list from free sources."""
+    import time
+    now = time.time()
+    if _PROXY_CACHE["proxies"] and (now - _PROXY_CACHE["fetched_at"]) < _PROXY_CACHE_TTL:
+        return _PROXY_CACHE["proxies"]
+
+    proxies: list[str] = []
+    for url in _PROXY_SOURCES:
+        try:
+            resp = await client.get(url, timeout=10.0)
+            if resp.status_code == 200:
+                for line in resp.text.strip().splitlines():
+                    line = line.strip()
+                    if line and ":" in line:
+                        # Normalize: strip protocol prefix if present
+                        proxy = line.split("//")[-1] if "://" in line else line
+                        if not proxy.startswith("http"):
+                            proxy = f"http://{proxy}"
+                        proxies.append(proxy)
+                if proxies:
+                    break  # got enough from first source
+        except Exception:
+            continue
+
+    if proxies:
+        _PROXY_CACHE["proxies"] = proxies[:100]  # cap at 100
+        _PROXY_CACHE["fetched_at"] = now
+        logger.info("Fetched %d proxies for OCR rotation", len(_PROXY_CACHE["proxies"]))
+    return _PROXY_CACHE["proxies"]
 ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tiff"}
 ALLOWED_PDF_EXT = {".pdf"}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB per file
@@ -54,23 +95,93 @@ def _validate_file(filename: str, size: int) -> None:
         raise HTTPException(status_code=413, detail=f"File too large ({size} bytes, max {MAX_FILE_SIZE})")
 
 
+PER_PROXY_TIMEOUT = 15.0   # seconds per proxy attempt (fast fail on dead proxies)
+DIRECT_TIMEOUT = 30.0       # slightly longer for direct connection
+OVERALL_OCR_TIMEOUT = 300.0  # 5 min hard cap per file total
+
+
 async def _call_bangla_ocr(client: httpx.AsyncClient, data: bytes, filename: str, mime: str | None = None) -> dict[str, Any]:
-    """Send a single file (image or pre-converted PNG) to BanglaOCR."""
+    """Send a single file to BanglaOCR with proxy rotation on 429 and strict timeouts."""
     content_type = mime or _get_mime(filename)
     files = {"file": (filename, data, content_type)}
+
+    deadline = asyncio.get_event_loop().time() + OVERALL_OCR_TIMEOUT
+
+    # Try direct first, then rotate proxies on 429
+    proxies: list[str | None] = [None]  # None = direct connection
     try:
-        resp = await client.post(BANGLA_OCR_URL, files=files, headers=OCR_HEADERS, timeout=120.0)
-        resp.raise_for_status()
-        return resp.json()
-    except httpx.HTTPStatusError as exc:
-        logger.error("BanglaOCR HTTP error for %s: %s %s", filename, exc.response.status_code, exc.response.text[:300])
-        raise HTTPException(status_code=502, detail=f"BanglaOCR error: {exc.response.status_code}") from exc
-    except httpx.RequestError as exc:
-        logger.error("BanglaOCR request error for %s: %s", filename, exc)
-        raise HTTPException(status_code=502, detail=f"BanglaOCR connection error: {exc}") from exc
+        proxy_list = await asyncio.wait_for(_fetch_proxies(client), timeout=8.0)
+        if proxy_list:
+            proxies.extend(random.sample(proxy_list, min(10, len(proxy_list))))
+    except Exception:
+        pass
+
+    last_exc: Exception | None = None
+    for attempt, proxy in enumerate(proxies):
+        # Check overall deadline before each attempt
+        remaining = deadline - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            logger.warning("BanglaOCR overall timeout for %s after %d attempts", filename, attempt)
+            break
+
+        timeout = DIRECT_TIMEOUT if proxy is None else min(PER_PROXY_TIMEOUT, remaining)
+        req_client: httpx.AsyncClient | None = None
+        try:
+            if proxy:
+                req_client = httpx.AsyncClient(proxy=proxy, timeout=timeout)
+                resp = await req_client.post(BANGLA_OCR_URL, files=files, headers=OCR_HEADERS)
+            else:
+                resp = await client.post(BANGLA_OCR_URL, files=files, headers=OCR_HEADERS, timeout=timeout)
+
+            if resp.status_code == 429:
+                logger.warning("BanglaOCR 429 for %s via %s (%d/%d), rotating",
+                               filename, proxy or "direct", attempt + 1, len(proxies))
+                continue
+
+            resp.raise_for_status()
+            return resp.json()
+
+        except httpx.HTTPStatusError as exc:
+            last_exc = exc
+            if exc.response.status_code == 429:
+                logger.warning("BanglaOCR 429 for %s via %s (%d/%d), rotating",
+                               filename, proxy or "direct", attempt + 1, len(proxies))
+                continue
+            logger.error("BanglaOCR HTTP error for %s: %s", filename, exc.response.status_code)
+            raise HTTPException(status_code=502, detail=f"BanglaOCR error: {exc.response.status_code}") from exc
+
+        except (httpx.TimeoutException, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
+            last_exc = exc
+            logger.warning("BanglaOCR timeout for %s via %s (%.1fs): %s",
+                           filename, proxy or "direct", timeout, exc)
+            continue
+
+        except (httpx.RequestError, httpx.ProxyError) as exc:
+            last_exc = exc
+            logger.warning("BanglaOCR proxy error for %s via %s: %s", filename, proxy or "direct", exc)
+            continue
+
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("BanglaOCR unexpected error for %s via %s: %s", filename, proxy or "direct", exc)
+            continue
+
+        finally:
+            if req_client is not None:
+                try:
+                    await req_client.aclose()
+                except Exception:
+                    pass
+
+    raise HTTPException(
+        status_code=502,
+        detail=f"BanglaOCR failed after {len(proxies)} attempts ({OVERALL_OCR_TIMEOUT}s cap): {last_exc}"
+    )
 
 
-MAX_CONCURRENT_OCR = 32
+MAX_CONCURRENT_OCR = 4
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 2.0  # seconds
 
 
 async def _process_pdf_pages(
@@ -119,13 +230,16 @@ async def _process_pdf_pages(
                     "duration_sec": result.get("duration_sec", 0.0),
                 }
                 total_duration += result.get("duration_sec", 0.0)
+            except HTTPException as exc:
+                logger.error("OCR HTTP error for %s page %d: %s", filename, page_num, exc.detail)
+                pages_result[page_num - 1] = {"page": page_num, "text": f"[Error: {exc.detail}]", "error": exc.detail}
             except Exception as exc:
                 logger.error("OCR failed for %s page %d: %s", filename, page_num, exc)
-                pages_result[page_num - 1] = {"page": page_num, "text": "", "error": str(exc)}
+                pages_result[page_num - 1] = {"page": page_num, "text": f"[Error: {exc}]", "error": str(exc)}
             finally:
                 completed += 1
                 if progress_queue is not None:
-                    await progress_queue.put({"completed": completed, "total": page_count, "source": filename})
+                    await progress_queue.put({"completed": 1})
 
     tasks = [_ocr_page(pn, img) for pn, img in page_images]
     await asyncio.gather(*tasks)
@@ -243,6 +357,21 @@ async def ocr_stream(files: list[UploadFile] = File(...)) -> StreamingResponse:
     total_files = len(file_data)
     progress_queue: asyncio.Queue = asyncio.Queue()
 
+    # Pre-scan PDFs to get total page count upfront
+    total_pages = 0
+    for fname, data in file_data:
+        ext = f".{_get_ext(fname)}"
+        if ext in ALLOWED_PDF_EXT:
+            try:
+                import fitz
+                doc = fitz.open(stream=data, filetype="pdf")
+                total_pages += len(doc)
+                doc.close()
+            except Exception:
+                total_pages += 1  # fallback
+        else:
+            total_pages += 1  # images count as 1 page
+
     async def _run():
         sem = asyncio.Semaphore(MAX_CONCURRENT_OCR)
         async with httpx.AsyncClient() as client:
@@ -251,15 +380,16 @@ async def ocr_stream(files: list[UploadFile] = File(...)) -> StreamingResponse:
                 for fname, data in file_data
             ]
             results = await asyncio.gather(*tasks)
-        # Signal completion
         await progress_queue.put({"done": True, "results": list(results)})
 
     async def _event_generator():
         import json as _json
 
-        # Start processing in background
         task = asyncio.create_task(_run())
-        files_completed = 0
+        pages_done = 0
+
+        # Emit initial total so frontend knows the scale
+        yield f"data: {_json.dumps({'type': 'init', 'total_pages': total_pages, 'total_files': total_files})}\n\n"
 
         while not task.done() or not progress_queue.empty():
             try:
@@ -272,10 +402,10 @@ async def ocr_stream(files: list[UploadFile] = File(...)) -> StreamingResponse:
                 yield f"data: {_json.dumps({'type': 'complete', 'results': msg['results']})}\n\n"
                 break
             else:
-                files_completed += 1
-                yield f"data: {_json.dumps({'type': 'progress', 'files_completed': files_completed, 'files_total': total_files, 'pages_completed': msg.get('completed'), 'pages_total': msg.get('total'), 'source': msg.get('source')})}\n\n"
+                pages_done += msg.get("completed", 1)
+                pct = round((pages_done / total_pages) * 100) if total_pages else 0
+                yield f"data: {_json.dumps({'type': 'progress', 'pages_done': pages_done, 'total_pages': total_pages, 'pct': pct})}\n\n"
 
-        # Ensure task is done
         if not task.done():
             await task
 
