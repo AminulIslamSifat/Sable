@@ -53,18 +53,14 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 
 
 def _get_project_venv_python() -> str:
-    """Find the project's own venv python, not sys.executable (which may be uv-managed)."""
-    # Walk up from this file to find the project root containing .venv
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        venv_py = parent / ".venv" / "bin" / "python"
-        if venv_py.exists():
-            return str(venv_py)
-        # Windows fallback
-        venv_py_win = parent / ".venv" / "Scripts" / "python.exe"
-        if venv_py_win.exists():
-            return str(venv_py_win)
-    # Fallback to sys.executable if no project venv found
+    """Get the project venv python using BASE_DIR from config."""
+    from server.config import BASE_DIR
+    venv_py = BASE_DIR / ".venv" / "bin" / "python"
+    if venv_py.exists():
+        return str(venv_py)
+    venv_py_win = BASE_DIR / ".venv" / "Scripts" / "python.exe"
+    if venv_py_win.exists():
+        return str(venv_py_win)
     return sys.executable
 
 
