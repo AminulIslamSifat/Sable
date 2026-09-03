@@ -50,6 +50,7 @@ from .routes.personas import router as personas_router
 from .routes.update import router as update_router
 from .routes.dashboard import router as dashboard_router
 from .routes.telegram_bot import router as telegram_bot_router
+from .routes.ocr import router as ocr_router
 
 def _raise_nofile_limit() -> None:
     """Raise open file limit for agentic workloads (browsers, agents, streams)."""
@@ -214,13 +215,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Static assets must always revalidate — a stale cached app.js once served a
-# broken markdown renderer while the server already had the fixed file.
+# Cache policy:
+# - HTML (/ and /index.html): no-cache (always revalidate — small payload, must be fresh)
+# - Static assets (/static/*): short cache with revalidation. Query-string versioning
+#   (?v=N) already handles cache-busting when files change. Without this, browsers
+#   re-fetch ~40+ assets on every reload, causing intermittent load failures under
+#   server load (startup, MCP connect, etc.).
 @app.middleware("http")
-async def no_cache_static(request: Request, call_next):
+async def cache_policy(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path.startswith("/static/") or request.url.path in ("/", "/index.html"):
+    path = request.url.path
+    if path in ("/", "/index.html"):
         response.headers["Cache-Control"] = "no-cache"
+    elif path.startswith("/static/"):
+        # Always revalidate — prevents stale CSS/JS during development.
+        # ETag/Last-Modified still allows 304 Not Modified when unchanged.
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
     return response
 
 if WEB_DIR.exists():
@@ -275,6 +285,7 @@ app.include_router(personas_router)
 app.include_router(update_router)
 app.include_router(dashboard_router)
 app.include_router(telegram_bot_router)
+app.include_router(ocr_router)
 
 # Wire agent runtime event callback → SSE push
 from .routes.agents import _async_push_agent_event, push_agent_event

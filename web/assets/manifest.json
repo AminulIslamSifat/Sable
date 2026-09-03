@@ -4,8 +4,8 @@
   "description": "Agentic chat platform",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0f0e17",
-  "theme_color": "#0f0e17",
+  "background_color": "#faf9f7",
+  "theme_color": "#9a7d4a",
   "orientation": "portrait",
   "icons": [
     {

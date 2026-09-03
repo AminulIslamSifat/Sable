@@ -33,7 +33,7 @@
     if (window.sidebarHost?.isTerminalOpen?.()) window.sidebarHost.closeTerminal();
     if (window.sidebarHost?.getCurrent?.()) window.sidebarHost.unhost();
     // Hide other main-area views
-    ['researchView', 'imageView', 'promptgenView', 'dashboardView', 'knowledgeView', 'calendarView'].forEach(id => {
+    ['researchView', 'imageView', 'promptgenView', 'dashboardView', 'knowledgeView', 'calendarView', 'ocrView'].forEach(id => {
       const el = document.getElementById(id);
       if (el) { el.classList.add('hidden'); el.style.display = ''; }
     });

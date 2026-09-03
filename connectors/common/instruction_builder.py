@@ -184,12 +184,15 @@ _PROVIDER_TOOL_FORMATS: dict[str, str] = {
 def build_instructions(
     project_id: str | None = None,
     provider: str | None = None,
+    agent_role: str | None = None,
+    agent_tools: list[str] | None = None,
+    agent_skills: list[str] | None = None,
 ) -> str:
     """Build full system instruction with optional project overrides.
 
     This is the single source of truth for instruction assembly across all
-    API connectors (DeepSeek, Gemini, Mistral). Qwen uses session.py directly.
-    Groq/OpenAI use their own minimal prompts and are NOT affected.
+    API connectors (DeepSeek, Gemini, Mistral), AND subagent roles.
+    Qwen uses session.py directly. Groq/OpenAI use their own minimal prompts.
 
     Args:
         project_id: Optional project ID for project-specific overrides.
@@ -198,43 +201,65 @@ def build_instructions(
                   "native"   → tag-wrapped format (Gemini, Mistral, etc.).
                   "none"     → native API function calling (no prompt format).
                   None       → no tool format section appended.
+        agent_role: If set, build instructions for a subagent role instead of
+                    the main chat persona. Loads instruction/agents/{role}.md
+                    as persona, skips project/git/facts sections.
+        agent_tools: Tool group keys for subagent (filters tool schemas).
+        agent_skills: Skill keys for subagent (filters skill registry).
     """
-    proj = _get_project(project_id)
+    proj = None if agent_role else _get_project(project_id)
     parts: list[str] = []
 
+    # Persona config is needed for both main chat and subagent paths (output_format toggle)
+    _persona_cfg_path = _INSTRUCTION_DIR / ".persona_config.json"
+
     # --- Persona / Instruction ---
-    project_instruction = None
-    if proj and proj.get("instruction_text"):
-        project_instruction = proj["instruction_text"]
-    elif proj and proj.get("instruction_file"):
-        instr_path = Path(proj["instruction_file"])
-        if instr_path.exists():
-            project_instruction = instr_path.read_text(encoding="utf-8")
+    if agent_role:
+        # Subagent mode: load role-specific persona from instruction/agents/{role}.md
+        _agents_dir = _INSTRUCTION_DIR / "agents"
+        _role_persona = _agents_dir / f"{agent_role}.md"
+        if _role_persona.is_file():
+            parts.append(_role_persona.read_text(encoding="utf-8").strip())
+        else:
+            parts.append(f"You are a {agent_role} specialist. Complete the assigned task thoroughly.")
 
-    if project_instruction and proj and proj.get("persona_enabled", True):
-        parts.append(project_instruction)
-    else:
-        # Load active persona from config
-        _persona_cfg_path = _INSTRUCTION_DIR / ".persona_config.json"
-        _active_persona = None
-        _disabled_personas: list[str] = []
-        if _persona_cfg_path.exists():
-            try:
-                _pcfg = json.loads(_persona_cfg_path.read_text(encoding="utf-8"))
-                _active_persona = _pcfg.get("active")
-                _disabled_personas = _pcfg.get("disabled", [])
-            except (json.JSONDecodeError, OSError):
-                pass
-
-        if _active_persona and _active_persona not in _disabled_personas:
-            persona_path = _INSTRUCTION_DIR / f"{_active_persona}.md"
-            if persona_path.exists():
-                parts.append(persona_path.read_text(encoding="utf-8").strip())
-
-        # Always load personal.md (user info, not a persona)
+        # Always load personal.md for subagents too (user context)
         personal_path = _INSTRUCTION_DIR / "personal.md"
         if personal_path.exists():
             parts.append(personal_path.read_text(encoding="utf-8").strip())
+    else:
+        # Main chat mode: original persona logic
+        project_instruction = None
+        if proj and proj.get("instruction_text"):
+            project_instruction = proj["instruction_text"]
+        elif proj and proj.get("instruction_file"):
+            instr_path = Path(proj["instruction_file"])
+            if instr_path.exists():
+                project_instruction = instr_path.read_text(encoding="utf-8")
+
+        if project_instruction and proj and proj.get("persona_enabled", True):
+            parts.append(project_instruction)
+        else:
+            # Load active persona from config
+            _active_persona = None
+            _disabled_personas: list[str] = []
+            if _persona_cfg_path.exists():
+                try:
+                    _pcfg = json.loads(_persona_cfg_path.read_text(encoding="utf-8"))
+                    _active_persona = _pcfg.get("active")
+                    _disabled_personas = _pcfg.get("disabled", [])
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            if _active_persona and _active_persona not in _disabled_personas:
+                persona_path = _INSTRUCTION_DIR / f"{_active_persona}.md"
+                if persona_path.exists():
+                    parts.append(persona_path.read_text(encoding="utf-8").strip())
+
+            # Always load personal.md (user info, not a persona)
+            personal_path = _INSTRUCTION_DIR / "personal.md"
+            if personal_path.exists():
+                parts.append(personal_path.read_text(encoding="utf-8").strip())
 
     # --- Output Format ---
     _of_enabled = True
@@ -268,27 +293,36 @@ def build_instructions(
     from engine.skills import SkillEngine
     from engine.skills.handlers import HANDLER_MAP
 
-    # Collect disabled skills BEFORE engine creation so they're excluded at discovery
+    # --- Skill Registry ---
+    # Subagents: only include explicitly allowed skills
+    # Main chat: include all skills minus disabled ones
     _disabled_skills: list[str] = []
-    _global_disabled_path = _PROJECT_ROOT / "Brain" / "disabled_skills.json"
-    if _global_disabled_path.exists():
-        try:
-            _gd = json.loads(_global_disabled_path.read_text(encoding="utf-8"))
-            if isinstance(_gd, list):
-                _disabled_skills.extend(_gd)
-        except Exception:
-            pass
-    if proj and proj.get("skills_config"):
-        _disabled_skills.extend([k for k, v in proj["skills_config"].items() if not v])
+    if agent_role and agent_skills is not None:
+        # For subagents, disable everything NOT in the allowed list
+        from engine.skills.registry import discover_skills as _discover_all_skills
+        _all_skill_keys = [s.key for s in _discover_all_skills(_SKILLS_DIR)]
+        _disabled_skills = [k for k in _all_skill_keys if k not in agent_skills]
+    else:
+        _global_disabled_path = _PROJECT_ROOT / "Brain" / "disabled_skills.json"
+        if _global_disabled_path.exists():
+            try:
+                _gd = json.loads(_global_disabled_path.read_text(encoding="utf-8"))
+                if isinstance(_gd, list):
+                    _disabled_skills.extend(_gd)
+            except Exception:
+                pass
+        if proj and proj.get("skills_config"):
+            _disabled_skills.extend([k for k, v in proj["skills_config"].items() if not v])
 
     _engine = SkillEngine(
         skills_dir=_SKILLS_DIR,
         handlers=HANDLER_MAP,
-        agent_id="maria",
+        agent_id="maria" if not agent_role else f"agent-{agent_role}",
         disabled=_disabled_skills or None,
     )
     skills_prompt = _engine.get_registry_prompt()
-    parts.append(skills_prompt)
+    if skills_prompt.strip():
+        parts.append(skills_prompt)
 
     # --- ⚠️ TOOL CALL FORMAT PRIMER (BEFORE tool schemas) ---
     # Injected FIRST so the model knows HOW to call tools before seeing WHAT tools exist.
@@ -299,12 +333,18 @@ def build_instructions(
     # --- Tool Schemas ---
     try:
         from engine.tools_loader import get_tools_prompt_section
-        _disabled_tools_path = _PROJECT_ROOT / "Brain" / "disabled_tools.json"
         _disabled_tools: list[str] = []
-        if _disabled_tools_path.exists():
-            _dt = json.loads(_disabled_tools_path.read_text(encoding="utf-8"))
-            if isinstance(_dt, list):
-                _disabled_tools = _dt
+        if agent_role and agent_tools is not None:
+            # For subagents, disable everything NOT in the allowed tool groups
+            from engine.tools_loader import browse_tools as _browse_all_tools
+            _all_tool_keys = [g["key"] for g in _browse_all_tools()]
+            _disabled_tools = [k for k in _all_tool_keys if k not in agent_tools]
+        else:
+            _disabled_tools_path = _PROJECT_ROOT / "Brain" / "disabled_tools.json"
+            if _disabled_tools_path.exists():
+                _dt = json.loads(_disabled_tools_path.read_text(encoding="utf-8"))
+                if isinstance(_dt, list):
+                    _disabled_tools = _dt
         tools_section = get_tools_prompt_section(disabled=_disabled_tools, provider=provider)
         if tools_section:
             parts.append(tools_section)
