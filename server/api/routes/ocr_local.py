@@ -97,35 +97,55 @@ async def list_providers() -> dict[str, Any]:
 
 
 @router.post("/api/ocr/install/{provider_id}")
-async def install_provider(provider_id: str) -> dict[str, Any]:
+async def install_provider(provider_id: str) -> StreamingResponse:
+    """SSE-streamed pip install with real-time progress."""
+    import json as _json
+
     if provider_id not in PROVIDERS:
         raise HTTPException(status_code=404, detail=f"Unknown provider: {provider_id}")
 
     info = PROVIDERS[provider_id]
     if info["type"] == "cloud":
-        return {"status": "ok", "message": "Cloud provider needs no installation"}
+        raise HTTPException(status_code=400, detail="Cloud provider needs no installation")
     if not info["deps"]:
-        return {"status": "ok", "message": "No Python dependencies to install"}
+        raise HTTPException(status_code=400, detail="No Python dependencies to install")
 
     pip = _get_venv_pip()
-    cmd = [pip, "install", "--quiet"] + info["deps"]
+    cmd = [pip, "install", "--progress-bar", "off"] + info["deps"]
     logger.info("Installing %s deps: %s", provider_id, " ".join(info["deps"]))
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
+    async def _stream():
+        yield f"data: {_json.dumps({'type': 'start', 'deps': info['deps']})}\n\n"
 
-    if proc.returncode != 0:
-        err_msg = stderr.decode().strip()[-500:]
-        logger.error("Install failed for %s: %s", provider_id, err_msg)
-        raise HTTPException(status_code=500, detail=f"Install failed: {err_msg}")
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
 
-    missing_sys = [d for d in info["system_deps"] if not _is_system_dep_installed(d)]
-    msg = f"Installed {', '.join(info['deps'])}"
-    if missing_sys:
-        msg += f". WARNING: System deps missing: {', '.join(missing_sys)} (install via pacman/apt)"
-    return {"status": "ok", "message": msg}
+        # Stream stdout line by line
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            text = line.decode(errors="replace").rstrip()
+            if text:
+                yield f"data: {_json.dumps({'type': 'log', 'text': text})}\n\n"
+
+        await proc.wait()
+
+        if proc.returncode != 0:
+            yield f"data: {_json.dumps({'type': 'error', 'message': f'pip exited with code {proc.returncode}'})}\n\n"
+            return
+
+        # Check system deps
+        missing_sys = [d for d in info["system_deps"] if not _is_system_dep_installed(d)]
+        result = {"type": "done", "message": f"Installed {', '.join(info['deps'])}"}
+        if missing_sys:
+            result["warning"] = f"System packages needed: {', '.join(missing_sys)} — install via your OS package manager (apt, pacman, brew, choco, etc.)"
+        yield f"data: {_json.dumps(result)}\n\n"
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
 @router.post("/api/ocr/uninstall/{provider_id}")
