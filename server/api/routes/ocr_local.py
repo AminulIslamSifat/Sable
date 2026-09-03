@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -28,14 +27,12 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "type": "cloud",
         "description": "Cloud-based Bangla+English OCR via BanglaOCR API",
         "deps": [],
-        "system_deps": [],
     },
     "sableocr": {
         "name": "SableOCR",
         "type": "local",
         "description": "Local Bangla+English OCR using Pytesseract + Unicode Normalizer",
         "deps": ["pytesseract", "opencv-python-headless", "bnunicodenormalizer"],
-        "system_deps": ["tesseract-ocr", "tesseract-ocr-ben"],
         "default_lang": "eng+ben",
     },
     "paddleocr": {
@@ -43,7 +40,6 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "type": "local",
         "description": "Local OCR using PaddlePaddle + PaddleOCR models",
         "deps": ["paddlepaddle", "paddleocr", "opencv-python-headless"],
-        "system_deps": [],
         "default_lang": "en",
     },
     "pytesseract": {
@@ -51,7 +47,6 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "type": "local",
         "description": "Raw Pytesseract OCR (no preprocessing or normalization)",
         "deps": ["pytesseract", "opencv-python-headless"],
-        "system_deps": ["tesseract-ocr"],
         "default_lang": "eng",
     },
 }
@@ -72,10 +67,6 @@ def _is_package_installed(package: str) -> bool:
         return False
 
 
-def _is_system_dep_installed(dep: str) -> bool:
-    return shutil.which(dep) is not None
-
-
 # ── Status / Install / Uninstall ───────────────────────────────────
 
 @router.get("/api/ocr/providers")
@@ -86,12 +77,10 @@ async def list_providers() -> dict[str, Any]:
             result[pid] = {**info, "installed": True, "ready": True}
             continue
         deps_ok = all(_is_package_installed(d) for d in info["deps"])
-        sys_ok = all(_is_system_dep_installed(d) for d in info["system_deps"])
         result[pid] = {
             **info,
             "installed": deps_ok,
-            "system_deps_met": sys_ok,
-            "ready": deps_ok and sys_ok,
+            "ready": deps_ok,
         }
     return result
 
@@ -138,12 +127,8 @@ async def install_provider(provider_id: str) -> StreamingResponse:
             yield f"data: {_json.dumps({'type': 'error', 'message': f'pip exited with code {proc.returncode}'})}\n\n"
             return
 
-        # Check system deps
-        missing_sys = [d for d in info["system_deps"] if not _is_system_dep_installed(d)]
-        result = {"type": "done", "message": f"Installed {', '.join(info['deps'])}"}
-        if missing_sys:
-            result["warning"] = f"System packages needed: {', '.join(missing_sys)} — install via your OS package manager (apt, pacman, brew, choco, etc.)"
-        yield f"data: {_json.dumps(result)}\n\n"
+        done_msg = f"Installed {', '.join(info['deps'])}"
+        yield f"data: {_json.dumps({'type': 'done', 'message': done_msg})}\n\n"
 
     return StreamingResponse(_stream(), media_type="text/event-stream")
 

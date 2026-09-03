@@ -784,7 +784,6 @@
       }
 
       const installed = info.installed && info.ready;
-      const missingSys = !info.system_deps_met ? (info.system_deps || []) : [];
 
       let html = `<div class="ocr-config-status ${installed ? 'installed' : 'not-installed'}">
         <span class="ocr-config-dot"></span>
@@ -799,10 +798,6 @@
         html += `<button class="ocr-config-btn ocr-uninstall-btn" data-provider="${pid}">
           <i data-lucide="trash-2"></i> Uninstall
         </button>`;
-      }
-
-      if (missingSys.length > 0) {
-        html += `<div class="ocr-config-warn">⚠ System packages needed: <code>${missingSys.join(', ')}</code><br><small>Install via your OS package manager (apt, pacman, brew, choco, etc.)</small></div>`;
       }
 
       // Language selector
@@ -874,9 +869,6 @@
                     installBtn.innerHTML = '<i data-lucide="download"></i> Install Dependencies';
                   } else if (msg.type === 'done') {
                     logArea.innerHTML += `<span class="ocr-log-success">✅ ${escHtml(msg.message)}</span>\n`;
-                    if (msg.warning) {
-                      logArea.innerHTML += `<span class="ocr-log-warn">⚠ ${escHtml(msg.warning)}</span>\n`;
-                    }
                     await fetchProviders();
                     renderDetails();
                   }
