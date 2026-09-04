@@ -101,8 +101,6 @@ DEFAULT_AGENT_CONFIG: dict[str, Any] = {
     },
     "limits": {
         "max_iterations": 25,
-        "max_consecutive_tool_calls": 15,
-        "max_total_tool_calls": 50,
     },
     "defaults": {
         "analyst_model": "qwen3.7-max",
@@ -304,6 +302,7 @@ async def list_active_agents(chat_id: str | None = None):
             "skills_used": a.skills_used,
             "chat_id": a.chat_id,
             "created_at": a.created_at,
+            "browser_data_dir": a.browser_data_dir or "",
         }
         for a in agents
     ]
@@ -365,11 +364,15 @@ async def agent_stream(agent_id: str, request: Request, since: int = 0):
 
 @router.get("/api/agents/{agent_id}/messages")
 async def get_agent_history(agent_id: str):
-    """Full conversation history + status for an agent."""
-    from server.database import get_agent_messages
+    """Full conversation history + status for an agent.
+
+    Uses the same get_messages() path as main chat so skill_events
+    (tool calls, results, file edits) are included in history replay.
+    """
+    from server.database import get_messages
     from engine.agents import get_runtime
 
-    messages = get_agent_messages(agent_id)
+    messages = get_messages(agent_id, include_skill_events=True)
     rt = get_runtime()
     agent = rt.get_agent(agent_id)
     status = agent.status.value if agent else "unknown"
@@ -426,6 +429,7 @@ async def get_agent_detail(agent_id: str):
         "chat_id": agent.chat_id,
         "depth": agent.depth,
         "parent_id": agent.parent_id,
+        "browser_data_dir": agent.browser_data_dir or "",
     }
 
 

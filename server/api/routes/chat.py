@@ -1771,6 +1771,16 @@ async def chat(request: ChatRequest):
                             "task in progress", "please wait", "busy", "concurrent request",
                         ))
                         if _is_chat_in_progress and not _is_api_model(request.model):
+                            # IMMEDIATELY call stop API — don't wait for retries
+                            print(f"[MAIN-STREAM]   🔨 'chat in progress' detected — calling stop API immediately")
+                            try:
+                                _stop_ok = await service._stop_upstream_generation(_qwen_chat_id)
+                                if _stop_ok:
+                                    print(f"[MAIN-STREAM]   ✓ Stop API succeeded on first detection")
+                                else:
+                                    print(f"[MAIN-STREAM]   ✗ Stop API returned failure on first detection")
+                            except Exception as _stop_exc:
+                                logger.warning("[main-stream] Immediate stop failed: %s", _stop_exc)
                             _cip_max_retries = 10  # 10 × 3s = 30s
                             _cip_retry = 0
                             _cip_resolved = False

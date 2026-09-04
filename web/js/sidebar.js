@@ -90,6 +90,11 @@
           icon.setAttribute("data-lucide", "globe");
           icon.className = "icon-lucide chat-item-icon";
           btn.appendChild(icon);
+        } else if (chat.mode === 'agent') {
+          const icon = document.createElement("i");
+          icon.setAttribute("data-lucide", "bot");
+          icon.className = "icon-lucide chat-item-icon";
+          btn.appendChild(icon);
         }
         const titleSpan = document.createElement("span");
         titleSpan.textContent = chat.title || "New chat";

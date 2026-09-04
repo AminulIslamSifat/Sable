@@ -861,6 +861,12 @@ class SkillParser:
             _plog(f"NON_JSON_CONTENT: discarding {repr(raw_stripped[:50])}")
             return
 
+        # Discard obvious placeholder/ellipsis content instead of surfacing parse_error.
+        # Models sometimes emit <action>[...]</action> when summarizing or truncating.
+        if re.fullmatch(r'\[?\s*\.{2,}\s*\]?', raw_stripped):
+            _plog(f"ELLIPSIS_PLACEHOLDER: discarding {repr(raw_stripped[:50])}")
+            return
+
         # Log parse failure on final (non-partial) attempts
         if not partial:
             _plog(f"PARSE_FAIL: len={len(raw_stripped)} | first_200={repr(raw_stripped[:200])} | last_100={repr(raw_stripped[-100:])}")
