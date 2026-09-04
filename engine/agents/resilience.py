@@ -133,14 +133,16 @@ class LoopDetector:
     _POLLING_EXEMPT_SUFFIXES = ("_get_result", "_poll")
     _POLLING_EXEMPT_EXACT = frozenset({"process", "bfl_flux3_get_result"})
 
+    _GUARD_PFX = "[GUARD]"
+
     STUCK_WARNING = (
-        "[LOOP WARNING] You have run the same command 5 times in a row. "
+        _GUARD_PFX + "[LOOP WARNING] You have run the same command 5 times in a row. "
         "This approach is not working. Try a different strategy, search online, "
         "or summarize what you have so far."
     )
 
     STRUCTURE_WARNING = (
-        "[LOOP WARNING] The same command structure has been repeated 5+ times. "
+        _GUARD_PFX + "[LOOP WARNING] The same command structure has been repeated 5+ times. "
         "This approach is not working. Stop repeating and either:\n"
         "1. Try a completely different strategy\n"
         "2. Summarize what you have and provide your final answer\n"
@@ -148,7 +150,7 @@ class LoopDetector:
     )
 
     EXACT_FAIL_WARNING = (
-        "[EXACT FAILURE WARNING] The same tool call with identical arguments "
+        _GUARD_PFX + "[EXACT FAILURE WARNING] The same tool call with identical arguments "
         "has failed {count} times with the same error. This will not succeed "
         "by retrying. Change your approach entirely."
     )
@@ -479,7 +481,7 @@ class LoopDetector:
             recent = self.history[-self.CONSECUTIVE_THRESHOLD:]
             if len(set(recent)) == 1:
                 self._stuck_warned = True
-                return f"[LOOP WARNING] You have run '{self._last_tool_name}' {self.CONSECUTIVE_THRESHOLD} times in a row with identical arguments. This approach is not working. Try a different strategy, search online, or summarize what you have so far."
+                return self._GUARD_PFX + f"[LOOP WARNING] You have run '{self._last_tool_name}' {self.CONSECUTIVE_THRESHOLD} times in a row with identical arguments. This approach is not working. Try a different strategy, search online, or summarize what you have so far."
 
         # --- Structural looping (same tool names in same order) ---
         if not self._structure_warned and self.is_structure_looping():
@@ -577,17 +579,18 @@ class MainChatGuard:
     - Malformed tool_call blocks (JSON outside tool_call wrap, orphan close tags)
     """
 
+    _GUARD_PFX = "[GUARD]"
     LOOP_THRESHOLD = 5
     FAILURE_THRESHOLD = 5
 
     LOOP_WARNING = (
-        "[LOOP WARNING] You have run the same command 5 times in a row. "
+        _GUARD_PFX + "[LOOP WARNING] You have run the same command 5 times in a row. "
         "This approach is not working. Try a different strategy, search online, "
         "or summarize what you have so far."
     )
 
     FAILURE_WARNING = (
-        "[FAILURE WARNING] 5 consecutive tool failures detected. "
+        _GUARD_PFX + "[FAILURE WARNING] 5 consecutive tool failures detected. "
         "Stop retrying the same approach. Either:\n"
         "1. Search online for the correct solution\n"
         "2. Rethink your strategy entirely\n"
@@ -596,49 +599,44 @@ class MainChatGuard:
 
     # Default (tag-based) malformed warnings
     MALFORMED_NO_OPEN = (
-        "[FORMAT WARNING] Found a closing tag without a matching opening tag. "
-        "Wrap your tool calls properly."
+        _GUARD_PFX + "[FORMAT WARNING] Found a closing tag without a matching opening tag. "
+        "Wrap tool calls in <action>...</action> tags."
     )
 
     MALFORMED_NO_CLOSE = (
-        "[FORMAT WARNING] Found an opening tag without a closing tag. "
-        "Every tool call block must be properly closed."
+        _GUARD_PFX + "[FORMAT WARNING] Found an opening tag without a closing tag. "
+        "Every <action> block must be properly closed with </action>."
     )
 
     MALFORMED_JSON_OUTSIDE = (
-        "[FORMAT WARNING] A JSON tool call was found outside the expected format. "
-        "All tool calls MUST use the correct wrapper."
+        _GUARD_PFX + "[FORMAT WARNING] Tool call JSON was found outside <action> tags. "
+        "All tool calls MUST be wrapped in <action>[...]</action>."
     )
 
     MALFORMED_INVALID_JSON = (
-        "[FORMAT WARNING] Your tool call contains invalid JSON. "
-        "Fix the JSON syntax and try again."
+        _GUARD_PFX + "[FORMAT WARNING] Tool call contains invalid JSON. "
+        "Fix the JSON syntax inside <action> tags and try again."
     )
 
-    # DeepSeek-specific warnings (no tag examples to avoid reinforcing XML habits)
+    # DeepSeek-specific warnings (uses <action> tags per _TOOL_FORMAT_QWEN)
     _DEEPSEEK_MALFORMED_NO_OPEN = (
-        "[FORMAT WARNING] Tool call format error. Output a plain JSON array at the end of your message. "
-        'Example: [{"name": "tool_name", "arguments": {...}}]\n'
-        "Do NOT use any XML tags, wrappers, or custom markup."
+        _GUARD_PFX + "[FORMAT WARNING] Found a closing tag without a matching opening tag. "
+        "Wrap tool calls in <action>...</action> tags."
     )
 
     _DEEPSEEK_MALFORMED_NO_CLOSE = (
-        "[FORMAT WARNING] Tool call format error. Output a plain JSON array at the end of your message. "
-        'Example: [{"name": "tool_name", "arguments": {...}}]\n'
-        "Do NOT use any XML tags, wrappers, or custom markup."
+        _GUARD_PFX + "[FORMAT WARNING] Found an opening tag without a closing tag. "
+        "Every <action> block must be properly closed with </action>."
     )
 
     _DEEPSEEK_MALFORMED_JSON_OUTSIDE = (
-        "[FORMAT WARNING] Tool call JSON was not in the expected format. "
-        "Output a plain JSON array at the end of your message. "
-        'Example: [{"name": "tool_name", "arguments": {...}}]\n'
-        "Do NOT wrap it in any tags or elements."
+        _GUARD_PFX + "[FORMAT WARNING] Tool call JSON was found outside <action> tags. "
+        "All tool calls MUST be wrapped in <action>[...]</action>."
     )
 
     _DEEPSEEK_MALFORMED_INVALID_JSON = (
-        "[FORMAT WARNING] Your tool call JSON is invalid. "
-        "Output a valid JSON array: [{\"name\": \"tool_name\", \"arguments\": {...}}]\n"
-        "No tags, no wrappers, just clean JSON."
+        _GUARD_PFX + "[FORMAT WARNING] Tool call contains invalid JSON. "
+        "Fix the JSON syntax inside <action> tags and try again."
     )
 
     def __init__(self, provider: str | None = None):
@@ -776,10 +774,9 @@ class MainChatGuard:
                     self._malformed_warned = True
                     if self._provider == "deepseek":
                         return (
-                            '[FORMAT WARNING] Invalid JSON in tool call.\n'
+                            self._GUARD_PFX + '[FORMAT WARNING] Invalid JSON in tool call.\n'
                             + _diagnose_json_failure(block) + '\n\n'
-                            + 'Output a valid JSON array: [{"name": "tool_name", "arguments": {...}}]\n'
-                            + 'No tags, no wrappers, just clean JSON.'
+                            + 'Fix the JSON syntax inside <action> tags and try again.'
                         )
                     else:
                         diagnosis = _diagnose_json_failure(block)
@@ -787,7 +784,7 @@ class MainChatGuard:
                         tc_close = chr(60) + '/tool_call' + chr(62)
                         fmt_ex = chr(123) + chr(34) + 'name' + chr(34) + ': ' + chr(34) + 'tool' + chr(34) + chr(125)
                         return (
-                            '[FORMAT WARNING] Invalid JSON in ' + tc_open + ' block.' + chr(10)
+                            self._GUARD_PFX + '[FORMAT WARNING] Invalid JSON in ' + tc_open + ' block.' + chr(10)
                             + diagnosis + chr(10) + chr(10)
                             + 'Expected: ' + tc_open + fmt_ex + tc_close
                         )
