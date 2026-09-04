@@ -1776,8 +1776,8 @@ async def chat(request: ChatRequest):
                             _cip_resolved = False
                             while _cip_retry < _cip_max_retries:
                                 _cip_retry += 1
-                                print(f"[MAIN-STREAM]   ⏳ 'chat in progress' detected, retry {_cip_retry}/{_cip_max_retries} (waiting 3s)")
-                                logger.info("[main-stream] 'chat in progress' for chat %s, retry %d/%d",
+                                print(f"[MAIN-STREAM]   ⏳ 'chat in progress' check {_cip_retry}/{_cip_max_retries} (waiting 3s)")
+                                logger.info("[main-stream] 'chat in progress' for chat %s, check %d/%d",
                                             active_chat_id, _cip_retry, _cip_max_retries)
                                 yield sse({"type": "status", "message": f"chat_in_progress_retry_{_cip_retry}"})
                                 await asyncio.sleep(3)
@@ -1812,6 +1812,16 @@ async def chat(request: ChatRequest):
                                         "chat in progress", "generation in progress", "already generating",
                                         "task in progress", "please wait", "busy", "concurrent request",
                                     )):
+                                        # Confirmed still busy → call stop reactively before next retry
+                                        print(f"[MAIN-STREAM]   🔨 Still busy after probe — calling stop API (check {_cip_retry})")
+                                        try:
+                                            _stop_ok = await service._stop_upstream_generation(_qwen_chat_id)
+                                            if _stop_ok:
+                                                print(f"[MAIN-STREAM]   ✓ Stop API succeeded on check {_cip_retry}")
+                                            else:
+                                                print(f"[MAIN-STREAM]   ✗ Stop API failed on check {_cip_retry}")
+                                        except Exception as _stop_exc:
+                                            logger.warning("[main-stream] Reactive stop failed: %s", _stop_exc)
                                         continue  # Still in progress, retry again
                                     else:
                                         # Resolved! Process this event normally

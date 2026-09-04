@@ -266,11 +266,26 @@ def get_role_config(role: str) -> RoleConfig:
     eff_output = ov.get("output_format", base.output_format) if ov else base.output_format
 
     # Build system prompt via shared instruction builder
+    # Only Qwen and DeepSeek need tool format primer (prompt-based tool calling).
+    # Native API models (Gemini, Groq, Mistral) handle tools via API — no primer needed.
     from connectors.common.instruction_builder import build_instructions
+    _eff_model = ov.get("default_model", base.default_model) if ov else base.default_model
+    _provider = None  # None = no tool format primer (native API models)
+    try:
+        from engine.config import get_model_config as _gmc
+        _mcfg = _gmc(_eff_model)
+        _backend = _mcfg.get("api_backend", "")
+        if _backend == "deepseek" or "deepseek" in _eff_model.lower():
+            _provider = "deepseek"
+        elif _backend == "qwen" or "qwen" in _eff_model.lower():
+            _provider = "qwen"
+    except Exception:
+        pass
     system_prompt = build_instructions(
         agent_role=role,
         agent_tools=eff_tools,
         agent_skills=eff_skills,
+        provider=_provider,
     )
     # Append role-specific output format if configured
     if eff_output:
