@@ -178,12 +178,10 @@ class LoopDetector:
         "Use the data you already have or try a different approach."
     )
 
-    def __init__(self, max_consecutive: int = 5, max_total: int = 50):
+    def __init__(self):
         self.history: list[str] = []
         self.per_tool_counts: dict[str, int] = defaultdict(int)
         self.structure_history: list[str] = []  # tag names only (no args)
-        self.max_consecutive = max_consecutive
-        self.max_total = max_total
         self._stuck_warned: bool = False
         self._structure_warned: bool = False
         self._last_tool_name: str = ""  # for legacy consecutive warning message

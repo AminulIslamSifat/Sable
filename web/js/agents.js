@@ -413,19 +413,89 @@ const AgentPanel = {
       if (role === "user") {
         this._appendUserMsg(msg.content || "");
       } else if (role === "assistant" || role === "tool") {
-        const clean = stripToolJson(msg.content || "");
-        if (!clean) continue; // pure tool-call message — nothing to show
-        const div = document.createElement("div");
-        div.className = "msg bot";
-        const content = document.createElement("div");
-        content.className = "md-content";
-        const raw = typeof marked !== "undefined" ? marked.parse(clean) : escHtml(clean);
-        content.innerHTML = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw, { FORBID_TAGS: ["action", "grep", "glob", "list_dir", "execute_command", "get_file", "view_file", "edit_file", "create_file", "insert_file", "spawn_agent", "ask_user", "mcp_call", "chat_title"] }) : raw;
-        div.appendChild(content);
-        this.bodyEl.appendChild(div);
+        // Render skill_events as tool cards (same as main chat history replay)
+        const events = Array.isArray(msg.skill_events) ? msg.skill_events : [];
+        const hasRoundText = events.some(e => e.type === "round_text" && e.text && e.text.trim());
+
+        // If round_text events exist, replay text + skills in streaming order
+        if (hasRoundText) {
+          this._renderAgentSkillEvents(events);
+        } else {
+          // Render message content first
+          const clean = stripToolJson(msg.content || "");
+          if (clean) {
+            const div = document.createElement("div");
+            div.className = "msg bot";
+            const content = document.createElement("div");
+            content.className = "md-content";
+            const raw = typeof marked !== "undefined" ? marked.parse(clean) : escHtml(clean);
+            content.innerHTML = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw, { FORBID_TAGS: ["action", "grep", "glob", "list_dir", "execute_command", "get_file", "view_file", "edit_file", "create_file", "insert_file", "spawn_agent", "ask_user", "mcp_call", "chat_title"] }) : raw;
+            div.appendChild(content);
+            this.bodyEl.appendChild(div);
+          }
+          // Then render any skill_events as tool cards
+          if (events.length > 0) {
+            this._renderAgentSkillEvents(events);
+          }
+        }
       }
     }
     this._scrollBottom(true);
+  },
+
+  _renderAgentSkillEvents(events) {
+    const cards = {};
+    let group = null;
+    for (const evt of events) {
+      if (evt.type === "round_thinking") {
+        group = null;
+        const wrap = document.createElement("div");
+        wrap.className = "thinking-wrap";
+        wrap.innerHTML = `<details class="thinking"><summary><i data-lucide="chevron-right" class="thinking-chevron"></i>Thinking</summary><div class="thinking-body">${escHtml(evt.text || "")}</div></details>`;
+        this.bodyEl.appendChild(wrap);
+        if (typeof activateLucideIcons === "function") activateLucideIcons(wrap);
+      } else if (evt.type === "round_text") {
+        if (evt.text && evt.text.trim()) {
+          const textDiv = document.createElement("div");
+          textDiv.className = "msg bot";
+          const content = document.createElement("div");
+          content.className = "md-content";
+          content.innerHTML = typeof renderMarkdown === "function" ? renderMarkdown(evt.text) : escHtml(evt.text);
+          if (typeof renderMermaidDiagrams === "function") renderMermaidDiagrams(content);
+          if (typeof renderMathJax === "function") renderMathJax(content);
+          if (typeof activateLucideIcons === "function") activateLucideIcons(content);
+          textDiv.appendChild(content);
+          this.bodyEl.appendChild(textDiv);
+        }
+      } else if (evt.type === "skill_start") {
+        if (evt.name === "ask_user") continue;
+        if (!group) {
+          group = document.createElement("div");
+          group.className = "skill-stack";
+          group.style.display = "flex";
+          this.bodyEl.appendChild(group);
+        }
+        if (typeof window.createSkillCard === "function") {
+          const card = window.createSkillCard(evt);
+          group.appendChild(card);
+          if (typeof activateLucideIcons === "function") activateLucideIcons(card);
+          cards[evt.id] = card;
+        }
+      } else if (evt.type === "skill_output") {
+        if (evt.name === "ask_user") continue;
+        const card = cards[evt.id];
+        if (card && typeof window.appendSkillCardOutput === "function") {
+          window.appendSkillCardOutput(card, evt.text);
+        }
+      } else if (evt.type === "skill_end") {
+        if (evt.name === "ask_user") continue;
+        const card = cards[evt.id];
+        if (card && typeof window.finishSkillCard === "function") {
+          window.finishSkillCard(card, evt);
+        }
+        group = null;
+      }
+    }
   },
 
   _connectStream(agentId) {
@@ -975,8 +1045,7 @@ const AgentSettings = {
       document.getElementById("agentCbThreshold").value = cfg.resilience?.circuit_breaker_threshold ?? 5;
       document.getElementById("agentCbReset").value = cfg.resilience?.circuit_breaker_reset_seconds ?? 60;
       document.getElementById("agentMaxIter").value = cfg.limits?.max_iterations ?? 25;
-      document.getElementById("agentMaxConsec").value = cfg.limits?.max_consecutive_tool_calls ?? 15;
-      document.getElementById("agentMaxTotal").value = cfg.limits?.max_total_tool_calls ?? 50;
+
 
       this._roles = cfg.roles || {};
       this._availableModels = cfg.available_models || [];
@@ -1311,8 +1380,7 @@ const AgentSettings = {
       },
       limits: {
         max_iterations: parseInt(document.getElementById("agentMaxIter").value) || 25,
-        max_consecutive_tool_calls: parseInt(document.getElementById("agentMaxConsec").value) || 15,
-        max_total_tool_calls: parseInt(document.getElementById("agentMaxTotal").value) || 50,
+
       },
       teacher: {
         enabled: document.getElementById("teacherEnabled").checked,

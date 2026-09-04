@@ -138,12 +138,12 @@ def list_chats(project_id: str | None = None) -> list[dict[str, Any]]:
     with get_db() as conn:
         if project_id is not None:
             rows = conn.execute(
-                "SELECT id, title, parent_id, created_at, updated_at, provider, project_id FROM chats WHERE project_id = ? ORDER BY updated_at DESC",
+                "SELECT id, title, parent_id, created_at, updated_at, provider, project_id, mode FROM chats WHERE project_id = ? ORDER BY updated_at DESC",
                 (project_id,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, title, parent_id, created_at, updated_at, provider, project_id FROM chats ORDER BY updated_at DESC"
+                "SELECT id, title, parent_id, created_at, updated_at, provider, project_id, mode FROM chats ORDER BY updated_at DESC"
             ).fetchall()
         return [dict(row) for row in rows]
 

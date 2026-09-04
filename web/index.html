@@ -1854,23 +1854,14 @@
           </div>
 
           <h3 class="mem-title" style="margin-top:16px;">Loop Safety Limits</h3>
-          <p class="muted" style="font-size:11px;margin:-4px 0 8px;">Prevents runaway agents from looping forever or hammering tools endlessly.</p>
+          <p class="muted" style="font-size:11px;margin:-4px 0 8px;">Controls how many LLM cycles an agent gets before timing out.</p>
           <div style="display:flex;flex-direction:column;gap:12px;">
             <div>
               <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Max Iterations</label>
               <input type="number" id="agentMaxIter" class="mem-input" style="width:80px;" min="5" max="100" value="25">
               <p class="muted" style="font-size:11px;margin:3px 0 0;">Maximum LLM call cycles per agent task. Each iteration = one model response + optional tool calls. 25 handles most tasks.</p>
             </div>
-            <div>
-              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Max Consecutive Tool Calls</label>
-              <input type="number" id="agentMaxConsec" class="mem-input" style="width:80px;" min="3" max="50" value="15">
-              <p class="muted" style="font-size:11px;margin:3px 0 0;">Stops the agent if it calls tools this many times in a row without producing a text response. Catches stuck tool loops.</p>
-            </div>
-            <div>
-              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Max Total Tool Calls</label>
-              <input type="number" id="agentMaxTotal" class="mem-input" style="width:80px;" min="10" max="200" value="50">
-              <p class="muted" style="font-size:11px;margin:3px 0 0;">Hard cap on total tool invocations per task. Prevents infinite file reads or API calls even across multiple iterations.</p>
-            </div>
+
           </div>
 
           <h3 class="mem-title" style="margin-top:16px;">🎓 Teacher (Escalation)</h3>
@@ -2056,7 +2047,7 @@
   <script src="/static/js/core.js?v=1"></script>
   <script src="/static/js/tts.js?v=3"></script>
   <script src="/static/js/markdown.js?v=1"></script>
-  <script src="/static/js/chat.js?v=2"></script>
+  <script src="/static/js/chat.js?v=3"></script>
   <script src="/static/js/sidebar-host.js?v=10"></script>
   <script src="/static/js/tracknote.js?v=8"></script>
   <script src="/static/js/sse.js?v=9"></script>
@@ -2077,7 +2068,7 @@
   <script src="/static/js/image-panel.js?v=1"></script>
   <script src="/static/js/prompt-panel.js?v=1"></script>
   <script src="/static/js/ocr-panel.js?v=1"></script>
-  <script src="/static/js/agents.js?v=32"></script>
+  <script src="/static/js/agents.js?v=33"></script>
   <script src="/static/js/filesystem.js?v=32"></script>
   <script src="/static/js/mode.js?v=20"></script>
   <script src="/static/js/resize-panels.js?v=3"></script>
