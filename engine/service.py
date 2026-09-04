@@ -401,46 +401,51 @@ class ChatService:
         body: dict[str, Any],
         params: dict[str, str],
         chat_id: str,
+        response_id: str | None = None,
     ) -> bool:
-        """Poll for CHAT_IN_PROGRESS to clear. 10 checks × 3s = 30s max.
+        """Retry-then-stop loop for CHAT_IN_PROGRESS. 10 checks × 3s = 30s max.
 
-        Returns True if the error cleared (safe to retry), False if still present after 30s.
-        Uses a lightweight HEAD/non-streaming POST to check status without opening a stream.
+        Each iteration:
+          1. Wait 3s
+          2. Probe by resending the message
+          3. If probe succeeds (no CHAT_IN_PROGRESS) → cleared, return True
+          4. If probe still returns CHAT_IN_PROGRESS → call stop ONCE → loop
+          5. After 30s → return False
+
+        Stop is only called reactively when a probe confirms the error persists.
         """
         for i in range(10):
             await asyncio.sleep(3)
-            print(f"[STREAM]     ↳ CHAT_IN_PROGRESS poll {i+1}/10 for chat {chat_id}")
+            print(f"[STREAM]     ↳ CHAT_IN_PROGRESS check {i+1}/10 for chat {chat_id}")
+            # Step 1: Probe — try resending to see if the error cleared
+            still_busy = False
             try:
                 async with httpx.AsyncClient(timeout=10) as client:
                     resp = await client.post(URL, headers=headers, json=body, params=params)
-                    if resp.status_code == 200:
-                        # Check if response body indicates chat is still in progress
-                        try:
-                            data = resp.json()
-                            inner = data.get("data", {})
-                            code = inner.get("code", "") if isinstance(inner, dict) else ""
-                            if code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
-                                continue  # still busy
-                        except (json.JSONDecodeError, ValueError):
-                            pass
-                        # 200 without CHAT_IN_PROGRESS code → cleared
-                        print(f"[STREAM]     ✓ CHAT_IN_PROGRESS cleared after {(i+1)*3}s")
-                        return True
-                    elif resp.status_code != 200:
-                        try:
-                            data = resp.json()
-                            inner = data.get("data", {})
-                            code = inner.get("code", "") if isinstance(inner, dict) else ""
-                            if code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
-                                continue  # still busy
-                        except (json.JSONDecodeError, ValueError):
-                            pass
-                        # Non-200 but NOT chat-in-progress → something else, treat as cleared
-                        print(f"[STREAM]     ✓ CHAT_IN_PROGRESS cleared (HTTP {resp.status_code}) after {(i+1)*3}s")
-                        return True
+                    try:
+                        data = resp.json()
+                        inner = data.get("data", {})
+                        code = inner.get("code", "") if isinstance(inner, dict) else ""
+                        if code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
+                            still_busy = True
+                    except (json.JSONDecodeError, ValueError):
+                        pass  # Can't parse → treat as cleared
             except Exception as exc:
-                logger.warning("CHAT_IN_PROGRESS poll %d failed: %s", i+1, exc)
+                logger.warning("CHAT_IN_PROGRESS probe %d failed: %s", i+1, exc)
                 continue
+
+            if not still_busy:
+                print(f"[STREAM]     ✓ CHAT_IN_PROGRESS cleared after {(i+1)*3}s")
+                return True
+
+            # Step 2: Still busy → call stop ONCE reactively
+            print(f"[STREAM]     🔨 Still busy — calling stop API (check {i+1}/10)")
+            stopped = await self._stop_upstream_generation(chat_id, response_id)
+            if stopped:
+                print(f"[STREAM]     ✓ Stop API succeeded on check {i+1}")
+            else:
+                print(f"[STREAM]     ✗ Stop API failed on check {i+1}")
+
         print(f"[STREAM]     ✗ CHAT_IN_PROGRESS still present after 30s")
         return False
 
@@ -528,12 +533,12 @@ class ChatService:
                                             "message": f"Stale parent_id: {inner.get('details', '')}",
                                         }
                                         return
-                                    # CHAT_IN_PROGRESS: poll until clear, then retry
+                                    # CHAT_IN_PROGRESS: hammer stop API for 30s, then retry
                                     if code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
                                         print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS detected (attempt {attempt})")
                                         yield {"type": "status", "message": "chat_in_progress_waiting"}
                                         cleared = await self._wait_for_chat_in_progress_clear(
-                                            headers, body, params, chat_id,
+                                            headers, body, params, chat_id, chosen_response_id,
                                         )
                                         if not cleared:
                                             yield {
@@ -556,7 +561,7 @@ class ChatService:
                                 print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS detected in raw response (attempt {attempt})")
                                 yield {"type": "status", "message": "chat_in_progress_waiting"}
                                 cleared = await self._wait_for_chat_in_progress_clear(
-                                    headers, body, params, chat_id,
+                                    headers, body, params, chat_id, chosen_response_id,
                                 )
                                 if not cleared:
                                     yield {
@@ -658,10 +663,9 @@ class ChatService:
                                                     # CHAT_IN_PROGRESS in SSE stream body
                                                     if code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
                                                         print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS in SSE stream (attempt {attempt})")
-                                                        await self._stop_upstream_generation(chat_id, chosen_response_id)
                                                         yield {"type": "status", "message": "chat_in_progress_waiting"}
                                                         cleared = await self._wait_for_chat_in_progress_clear(
-                                                            headers, body, params, chat_id,
+                                                            headers, body, params, chat_id, chosen_response_id,
                                                         )
                                                         if not cleared:
                                                             yield {

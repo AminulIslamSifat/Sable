@@ -216,7 +216,7 @@ class AutoTurnEngine:
         prompt = (
             "The following agent(s) have completed their tasks. "
             "Acknowledge the result and take any necessary follow-up action. "
-            "You may use tool calls wrapped in <tool_call>...</tool_call> blocks if needed.\n\n"
+            "You may use tool calls wrapped in <action>...</action> tags if needed.\n\n"
             + "\n\n".join(result_lines)
         )
 

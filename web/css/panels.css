@@ -868,6 +868,14 @@
   transition: opacity 0.18s ease, transform 0.18s ease;
   z-index: 100;
 }
+html[data-mode="light"] .status-dropdown-menu {
+  background: color-mix(in srgb, var(--panel) 98%, white);
+  border-color: color-mix(in srgb, var(--border) 85%, white);
+  box-shadow:
+    0 -4px 12px rgba(0,0,0,0.08),
+    0 -12px 32px rgba(0,0,0,0.06),
+    inset 0 1px 0 var(--shadow-inner-highlight);
+}
 .status-dropdown.open .status-dropdown-menu {
   opacity: 1;
   transform: translateY(0) scale(1);
@@ -882,18 +890,32 @@
   transition: background 0.12s ease, color 0.12s ease;
   white-space: nowrap;
 }
+html[data-mode="light"] .status-dropdown-item {
+  color: color-mix(in srgb, var(--text) 82%, transparent);
+}
 .status-dropdown-item:hover {
   background: var(--panel-2);
+  color: var(--text);
+}
+html[data-mode="light"] .status-dropdown-item:hover {
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel-2));
   color: var(--text);
 }
 .status-dropdown-item.active {
   color: var(--accent);
   font-weight: 600;
 }
+html[data-mode="light"] .status-dropdown-item.active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent-text);
+}
 .status-dropdown-divider {
   height: 1px;
   background: var(--border, rgba(255,255,255,0.08));
   margin: 4px 6px;
+}
+html[data-mode="light"] .status-dropdown-divider {
+  background: color-mix(in srgb, var(--border) 70%, white);
 }
 .status-dropdown-toggle {
   display: flex;
