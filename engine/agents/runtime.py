@@ -62,12 +62,10 @@ class AgentRuntime:
             "mistral": CircuitBreaker(threshold, reset),
         }
 
-        # Loop limits (max iterations, tool call caps)
+        # Loop limits (max iterations)
         limits = cfg.get("limits", {})
         self._limits: dict[str, int] = {
             "max_iterations": limits.get("max_iterations", 25),
-            "max_consecutive_tool_calls": limits.get("max_consecutive_tool_calls", 15),
-            "max_total_tool_calls": limits.get("max_total_tool_calls", 50),
         }
 
         # SSE event callback (set by API layer)
@@ -104,8 +102,6 @@ class AgentRuntime:
         # Update loop limits
         if limits:
             self._limits["max_iterations"] = limits.get("max_iterations", self._limits["max_iterations"])
-            self._limits["max_consecutive_tool_calls"] = limits.get("max_consecutive_tool_calls", self._limits["max_consecutive_tool_calls"])
-            self._limits["max_total_tool_calls"] = limits.get("max_total_tool_calls", self._limits["max_total_tool_calls"])
 
     # ------------------------------------------------------------------
     # Spawning
@@ -185,8 +181,16 @@ class AgentRuntime:
 
             self._agents[agent.id] = agent
 
-        # DB persist
-        from server.database import insert_agent_run
+        # DB persist — register as a chat so it appears in sidebar
+        from server.database import insert_agent_run, ensure_chat, touch_chat
+        ensure_chat(
+            chat_id=agent.id,
+            title=f"[{agent.role}] {agent.task[:60]}",
+            parent_id=chat_id,
+            mode="agent",
+        )
+        touch_chat(agent.id)
+
         insert_agent_run(
             agent_id=agent.id,
             chat_id=chat_id,

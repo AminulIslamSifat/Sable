@@ -231,12 +231,12 @@
 .agent-mention-popup {
   position: fixed;
   z-index: 9999;
-  background: var(--bg-secondary, #1e1e2e);
-  border: 1px solid var(--border, #3d4a63);
+  background: var(--panel);
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 6px;
   min-width: 220px;
-  box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  box-shadow: 0 8px 24px var(--shadow-outer-heavy, rgba(0,0,0,.12));
 }
 .mention-item {
   display: flex;
@@ -248,13 +248,13 @@
   transition: background .15s;
 }
 .mention-item:hover {
-  background: var(--bg-hover, #2a2a3e);
+  background: var(--accent-dim);
 }
 .mention-icon { font-size: 16px; }
-.mention-label { font-weight: 600; font-size: var(--font-size-system); color: var(--text, #e0e0e0); }
-.mention-desc { font-size: var(--font-size-system); color: var(--text-muted, #888); margin-left: auto; }
+.mention-label { font-weight: 600; font-size: var(--font-size-system); color: var(--text); }
+.mention-desc { font-size: var(--font-size-system); color: var(--muted); margin-left: auto; }
 .mention-item.active {
-  background: var(--bg-hover, #2a2a3e);
+  background: var(--accent-dim);
 }
 
 
