@@ -72,23 +72,28 @@ _INNER_TAG_RE = re.compile(
     re.DOTALL | re.MULTILINE,
 )
 
-# Warning messages injected as user messages when format violations are detected
+# Guardrail prefix for warnings (distinguishes from user input).
+_GUARD_PFX = "[GUARD]"
+_ACTION_O = "<action>"
+_ACTION_C = "</action>"
+
+# Warning messages injected as system-role feedback when format violations are detected.
 ACTION_WRAPPER_WARNING = (
-    "[FORMAT WARNING] You used a tool call without wrapping it in a <tool" + "_call> block. "
-    "All tool calls MUST be wrapped like this:\n"
-    "<tool" + "_call>{\"name\": \"tool_name\", \"arguments\": {...}}</tool" + "_call>\n"
-    "Please retry with the correct format."
+    _GUARD_PFX + "[FORMAT WARNING] Tool call JSON was found outside " + _ACTION_O + "..." + _ACTION_C + " tags. "
+    "All tool calls MUST be a JSON array inside ONE " + _ACTION_O + " block:\n"
+    + _ACTION_O + '[{"name": "tool_name", "arguments": {...}}]' + _ACTION_C + "\n"
+    "Retry with the correct format."
 )
 
 ORPHAN_CLOSE_TAG_WARNING = (
-    "[FORMAT WARNING] Found a closing </tool" + "_call> tag without a matching opening <tool" + "_call> tag. "
-    "Make sure every tool call is properly wrapped:\n"
-    "<tool" + "_call>{\"name\": \"tool_name\", \"arguments\": {...}}</tool" + "_call>\n"
-    "Please retry with the correct format."
+    _GUARD_PFX + "[FORMAT WARNING] Found a closing tag without a matching opening tag. "
+    "Every tool call must be properly wrapped:\n"
+    + _ACTION_O + '[{"name": "tool_name", "arguments": {...}}]' + _ACTION_C + "\n"
+    "Retry with the correct format."
 )
 
 REPEAT_LOOP_WARNING = (
-    "[LOOP WARNING] The same command structure has been repeated 5+ times. "
+    _GUARD_PFX + "[LOOP WARNING] The same command structure has been repeated 5+ times. "
     "This approach is not working. Stop repeating and either:\n"
     "1. Try a completely different strategy\n"
     "2. Summarize what you have and provide your final answer\n"
@@ -371,7 +376,7 @@ async def run_agent_llm_loop(
         # Check for action wrapper format violations BEFORE parsing tags
         format_warning = _check_action_wrapper_violations(response_text)
         if format_warning:
-            agent.messages.append({"role": "user", "content": format_warning})
+            agent.messages.append({"role": "system", "content": format_warning})
             await _persist_message(agent.id, "user", format_warning)
             response_text, new_parent_id = await _send_with_retry(
                 agent, format_warning, parent_id, breakers, False
@@ -401,7 +406,7 @@ async def run_agent_llm_loop(
             # Missing required sections or malformed → one re-prompt
             base_reminder = FORMAT_REMINDERS.get(agent.role, "Provide a clean markdown document with the required sections as your final answer.")
             reminder = f"{base_reminder}\n\nIMPORTANT: Output ONLY the markdown document. Do NOT include any JSON object, structured data block, or duplicate summary. Your entire response must be pure markdown with ## headers. No tool_call blocks."
-            agent.messages.append({"role": "user", "content": reminder})
+            agent.messages.append({"role": "system", "content": reminder})
             await _persist_message(agent.id, "user", reminder)
             response_text, new_parent_id = await _send_with_retry(
                 agent, reminder, parent_id, breakers, False
@@ -470,7 +475,7 @@ async def run_agent_llm_loop(
                     warning_msg = f"[MENTOR INTERVENTION]\n{teacher_guidance}"
                 else:
                     warning_msg = _decision.message or ""
-                agent.messages.append({"role": "user", "content": warning_msg})
+                agent.messages.append({"role": "system", "content": warning_msg})
                 await _persist_message(agent.id, "user", warning_msg)
 
         # Execute skills
