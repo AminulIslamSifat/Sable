@@ -47,6 +47,18 @@
       font-weight: 700;
       font-display: swap;
     }
+    @font-face {
+      font-family: 'Noto Sans Bengali';
+      src: url('/static/fonts/NotoSansBengali-Regular.ttf') format('truetype');
+      font-weight: 400;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Noto Sans Bengali';
+      src: url('/static/fonts/NotoSansBengali-Bold.ttf') format('truetype');
+      font-weight: 700;
+      font-display: swap;
+    }
 
     :root {
       --bg: #0d0c0a;
@@ -83,9 +95,9 @@
       --sp-6: 16px;
       --sp-7: 20px;
       --sp-8: 24px;
-      --font-body: 'Maple Mono', ui-monospace, monospace;
-      --font-serif: 'Maple Mono', ui-monospace, monospace;
-      --font-mono: 'Maple Mono', ui-monospace, monospace;
+      --font-body: 'Maple Mono', 'Noto Sans Bengali', ui-monospace, monospace;
+      --font-serif: 'Maple Mono', 'Noto Sans Bengali', ui-monospace, monospace;
+      --font-mono: 'Maple Mono', 'Noto Sans Bengali', ui-monospace, monospace;
       --font-size-response: 14.5px;
       --font-size-system: 13px;
       --editor-font-size: 13px;
