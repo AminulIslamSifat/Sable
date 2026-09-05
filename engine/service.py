@@ -777,6 +777,38 @@ class ChatService:
                                         headers = await self._refresh_headers()
                                         break  # exit chunk loop → retry
 
+                                    # Catch top-level "error" field in SSE data lines.
+                                    # Qwen sometimes sends: data: {"error": {...}, "response_id": "..."}
+                                    # instead of normal choices/delta content.
+                                    _sse_error = data.get("error")
+                                    if _sse_error and not got_content:
+                                        if isinstance(_sse_error, dict):
+                                            _err_code = _sse_error.get("code", "")
+                                            _err_msg = _sse_error.get("message", "") or _sse_error.get("details", "")
+                                            # CHAT_IN_PROGRESS via error object
+                                            if _err_code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
+                                                print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS in data.error (attempt {attempt})")
+                                                yield {"type": "status", "message": "chat_in_progress_waiting"}
+                                                cleared = await self._wait_for_chat_in_progress_clear(
+                                                    headers, body, params, chat_id, chosen_response_id,
+                                                )
+                                                if not cleared:
+                                                    yield {"type": "error", "message": "Chat still in progress after 30s"}
+                                                    return
+                                                headers = await self._refresh_headers()
+                                                break
+                                            # Other error codes
+                                            if _err_code:
+                                                err_text = f"API error [{_err_code}]: {_err_msg or 'Unknown error'}"
+                                            else:
+                                                err_text = f"Upstream error: {_err_msg or json.dumps(_sse_error)[:200]}"
+                                        else:
+                                            err_text = f"Upstream error: {str(_sse_error)[:300]}"
+                                        logger.warning("SSE data.error on attempt %d: %s", attempt, err_text)
+                                        print(f"[STREAM]     ✗ SSE error object: {err_text}")
+                                        last_error_msg = err_text
+                                        break  # exit chunk loop → retry logic
+
                                     # Capture finish_reason from choices or top-level
                                     _fr = None
                                     if data.get("choices"):
@@ -918,6 +950,46 @@ class ChatService:
                             if "FAIL_SYS_USER_VALIDATE" in ret_str or "RGV587_ERROR" in ret_str:
                                 logger.warning("WAF/captcha block detected in leftover: %s", ret_str[:200])
                                 last_error_msg = f"WAF/captcha block: {ret_str[:200]}"
+                        # Top-level error object (Qwen sometimes sends {"error": {...}})
+                        _leftover_err = err_data.get("error")
+                        if _leftover_err and not last_error_msg:
+                            if isinstance(_leftover_err, dict):
+                                _lo_code = _leftover_err.get("code", "")
+                                _lo_msg = _leftover_err.get("message", "") or _leftover_err.get("details", "")
+                                if _lo_code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
+                                    print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS in leftover buffer")
+                                    yield {"type": "status", "message": "chat_in_progress_waiting"}
+                                    cleared = await self._wait_for_chat_in_progress_clear(
+                                        headers, body, params, chat_id, chosen_response_id,
+                                    )
+                                    if not cleared:
+                                        yield {"type": "error", "message": "Chat still in progress after 30s"}
+                                        return
+                                    headers = await self._refresh_headers()
+                                    continue  # retry
+                                if _lo_code:
+                                    last_error_msg = f"API error [{_lo_code}]: {_lo_msg or 'Unknown'}"
+                                else:
+                                    last_error_msg = f"Upstream error: {_lo_msg or json.dumps(_leftover_err)[:200]}"
+                            else:
+                                last_error_msg = f"Upstream error: {str(_leftover_err)[:300]}"
+                        # Early CHAT_IN_PROGRESS in leftover (before success gate)
+                        _lo_early_code = ""
+                        if isinstance(err_data.get("data"), dict):
+                            _lo_early_code = err_data["data"].get("code", "")
+                        if not _lo_early_code:
+                            _lo_early_code = err_data.get("code", "")
+                        if _lo_early_code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY") and not last_error_msg:
+                            print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS in leftover (early detect)")
+                            yield {"type": "status", "message": "chat_in_progress_waiting"}
+                            cleared = await self._wait_for_chat_in_progress_clear(
+                                headers, body, params, chat_id, chosen_response_id,
+                            )
+                            if not cleared:
+                                yield {"type": "error", "message": "Chat still in progress after 30s"}
+                                return
+                            headers = await self._refresh_headers()
+                            continue  # retry
                         if err_data.get("success") is False:
                             inner = err_data.get("data", {})
                             code = inner.get("code", "")
