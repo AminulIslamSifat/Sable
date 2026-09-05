@@ -299,11 +299,11 @@ class ChatService:
             thinking_enabled=thinking_enabled,
         )
 
-    async def sync_context(self, project_id: str | None = None) -> bool:
+    async def sync_context(self, project_id: str | None = None, custom_instructions: str | None = None) -> bool:
         # Reuse cached headers from warmup to avoid a redundant browser launch
         if self._headers:
-            return await self._browser.sync_context(headers=self._headers, project_id=project_id)
-        return await self._browser.sync_context(project_id=project_id)
+            return await self._browser.sync_context(headers=self._headers, project_id=project_id, custom_instructions=custom_instructions)
+        return await self._browser.sync_context(project_id=project_id, custom_instructions=custom_instructions)
 
     async def _stop_upstream_generation(self, chat_id: str, response_id: str | None = None) -> bool:
         """Call Qwen's stop API to halt server-side token generation.
@@ -403,48 +403,61 @@ class ChatService:
         chat_id: str,
         response_id: str | None = None,
     ) -> bool:
-        """Retry-then-stop loop for CHAT_IN_PROGRESS. 10 checks × 3s = 30s max.
+        """Stop-then-wait loop for CHAT_IN_PROGRESS. 10 checks × 3s = 30s max.
 
         Each iteration:
-          1. Wait 3s
-          2. Probe by resending the message
-          3. If probe succeeds (no CHAT_IN_PROGRESS) → cleared, return True
-          4. If probe still returns CHAT_IN_PROGRESS → call stop ONCE → loop
+          1. Call stop API (hammer it — upstream may ignore the first call)
+          2. Wait 3s for upstream to release
+          3. If stop acknowledged → assume clear (no wasteful probe)
+          4. Fallback probe only when stop API isn't responding
           5. After 30s → return False
 
-        Stop is only called reactively when a probe confirms the error persists.
+        All probes are silent — errors here NEVER reach the user.
         """
+        # Immediately call stop before first wait — don't waste 3s doing nothing
+        print(f"[STREAM]     🔨 Calling stop API immediately for chat {chat_id}")
+        stop_ok = await self._stop_upstream_generation(chat_id, response_id)
+        if stop_ok:
+            print(f"[STREAM]     ✓ Stop API acknowledged on first call")
+            await asyncio.sleep(2)
+            return True
+
         for i in range(10):
             await asyncio.sleep(3)
             print(f"[STREAM]     ↳ CHAT_IN_PROGRESS check {i+1}/10 for chat {chat_id}")
-            # Step 1: Probe — try resending to see if the error cleared
+
+            # Re-call stop each iteration — upstream may ignore earlier calls
+            try:
+                stop_ok = await self._stop_upstream_generation(chat_id, response_id)
+            except Exception:
+                stop_ok = False
+
+            if stop_ok:
+                print(f"[STREAM]     ✓ Stop acknowledged on check {i+1}, waiting 2s...")
+                await asyncio.sleep(2)
+                return True
+
+            # Fallback probe — only when stop API isn't responding
             still_busy = False
             try:
-                async with httpx.AsyncClient(timeout=10) as client:
+                async with httpx.AsyncClient(timeout=8) as client:
                     resp = await client.post(URL, headers=headers, json=body, params=params)
                     try:
                         data = resp.json()
                         inner = data.get("data", {})
                         code = inner.get("code", "") if isinstance(inner, dict) else ""
+                        if not code:
+                            code = data.get("code", "")
                         if code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
                             still_busy = True
                     except (json.JSONDecodeError, ValueError):
-                        pass  # Can't parse → treat as cleared
-            except Exception as exc:
-                logger.warning("CHAT_IN_PROGRESS probe %d failed: %s", i+1, exc)
+                        pass
+            except Exception:
                 continue
 
             if not still_busy:
                 print(f"[STREAM]     ✓ CHAT_IN_PROGRESS cleared after {(i+1)*3}s")
                 return True
-
-            # Step 2: Still busy → call stop ONCE reactively
-            print(f"[STREAM]     🔨 Still busy — calling stop API (check {i+1}/10)")
-            stopped = await self._stop_upstream_generation(chat_id, response_id)
-            if stopped:
-                print(f"[STREAM]     ✓ Stop API succeeded on check {i+1}")
-            else:
-                print(f"[STREAM]     ✗ Stop API failed on check {i+1}")
 
         print(f"[STREAM]     ✗ CHAT_IN_PROGRESS still present after 30s")
         return False
@@ -506,6 +519,31 @@ class ChatService:
                             # Check if non-200 response is actually a rate-limit or API error
                             try:
                                 err_data = json.loads(raw)
+                                # ── Early CHAT_IN_PROGRESS detection ──────────────────────
+                                # Qwen sometimes returns CHAT_IN_PROGRESS without success:false,
+                                # or in a flat structure. Check BEFORE the success gate so it
+                                # never leaks as a generic error.
+                                _early_code = ""
+                                if isinstance(err_data.get("data"), dict):
+                                    _early_code = err_data["data"].get("code", "")
+                                if not _early_code:
+                                    _early_code = err_data.get("code", "")
+                                if _early_code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
+                                    print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS detected early (attempt {attempt}, status={res.status_code})")
+                                    logger.info("CHAT_IN_PROGRESS early-detect: status=%s body=%s", res.status_code, raw[:300])
+                                    yield {"type": "status", "message": "chat_in_progress_waiting"}
+                                    cleared = await self._wait_for_chat_in_progress_clear(
+                                        headers, body, params, chat_id, chosen_response_id,
+                                    )
+                                    if not cleared:
+                                        yield {
+                                            "type": "error",
+                                            "message": "Chat still in progress after 30s — upstream may be stuck",
+                                        }
+                                        return
+                                    headers = await self._refresh_headers()
+                                    continue
+                                # ── End early detection ───────────────────────────────────
                                 if err_data.get("success") is False:
                                     inner = err_data.get("data", {})
                                     code = inner.get("code", "")
@@ -633,6 +671,28 @@ class ChatService:
                                                         logger.warning("WAF/captcha block detected: %s", ret_str[:200])
                                                         last_error_msg = f"WAF/captcha block: {ret_str[:200]}"
                                                         break
+                                                # ── Early CHAT_IN_PROGRESS detection (SSE body) ──
+                                                _early_code_sse = ""
+                                                if isinstance(err_data.get("data"), dict):
+                                                    _early_code_sse = err_data["data"].get("code", "")
+                                                if not _early_code_sse:
+                                                    _early_code_sse = err_data.get("code", "")
+                                                if _early_code_sse in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
+                                                    print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS detected early in SSE body (attempt {attempt})")
+                                                    logger.info("CHAT_IN_PROGRESS early-detect SSE: body=%s", line[:300])
+                                                    yield {"type": "status", "message": "chat_in_progress_waiting"}
+                                                    cleared = await self._wait_for_chat_in_progress_clear(
+                                                        headers, body, params, chat_id, chosen_response_id,
+                                                    )
+                                                    if not cleared:
+                                                        yield {
+                                                            "type": "error",
+                                                            "message": "Chat still in progress after 30s — upstream may be stuck",
+                                                        }
+                                                        return
+                                                    headers = await self._refresh_headers()
+                                                    break  # exit chunk loop → retry
+                                                # ── End early detection ──────────────────────────
                                                 if err_data.get("success") is False:
                                                     inner = err_data.get("data", {})
                                                     code = inner.get("code", "")
@@ -694,6 +754,28 @@ class ChatService:
                                             line[:200],
                                         )
                                         continue
+
+                                    # Safety: catch CHAT_IN_PROGRESS even inside data: lines
+                                    _sse_code = ""
+                                    if isinstance(data.get("data"), dict):
+                                        _sse_code = data["data"].get("code", "")
+                                    if not _sse_code:
+                                        _sse_code = data.get("code", "")
+                                    if _sse_code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
+                                        print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS in data: line (attempt {attempt})")
+                                        logger.info("CHAT_IN_PROGRESS in data: SSE: %s", line[:300])
+                                        yield {"type": "status", "message": "chat_in_progress_waiting"}
+                                        cleared = await self._wait_for_chat_in_progress_clear(
+                                            headers, body, params, chat_id, chosen_response_id,
+                                        )
+                                        if not cleared:
+                                            yield {
+                                                "type": "error",
+                                                "message": "Chat still in progress after 30s — upstream may be stuck",
+                                            }
+                                            return
+                                        headers = await self._refresh_headers()
+                                        break  # exit chunk loop → retry
 
                                     # Capture finish_reason from choices or top-level
                                     _fr = None

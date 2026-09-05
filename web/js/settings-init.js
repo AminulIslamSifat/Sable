@@ -267,8 +267,15 @@
 
     /* =========================== end attachments =========================== */
 
+    // Guard: prevents sending while a stop request is in-flight
+    let _stopInFlight = false;
+
     async function sendMessage() {
+      // Block sends while a stop is being processed — prevents CHAT_IN_PROGRESS race
+      if (_stopInFlight) return;
+
       if (isStreaming()) {
+        _stopInFlight = true;
         const ctrl = activeStreams.get(activeChatId);
         if (ctrl) ctrl.abort();
         // Fallback: if abort doesn't end the stream within 3s, force-clean
@@ -280,12 +287,18 @@
             _toggleStreamIndicator(_stuckId, false);
           }
         }, 3000);
-        // Best-effort: tell backend to stop upstream Qwen generation (fire-and-forget)
-        fetch("/api/chat/stop", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: activeChatId }),
-        }).catch(() => {});
+        // Await the stop API so upstream generation is actually halted before
+        // the user can send a new message — eliminates CHAT_IN_PROGRESS race.
+        try {
+          await fetch("/api/chat/stop", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: activeChatId }),
+          });
+        } catch (_) {}
+        // Small grace period for upstream to fully release the session
+        await new Promise(r => setTimeout(r, 500));
+        _stopInFlight = false;
         return;
       }
 

@@ -677,17 +677,20 @@
           <button class="ab-cwd-session"><i data-lucide="shield-check"></i> Allow for Session</button>
           <button class="ab-cwd-continue"><i data-lucide="arrow-right"></i> Continue</button>
           <button class="ab-cwd-open"><i data-lucide="folder-open"></i> Open Folder</button>
+          <button class="ab-cwd-deny"><i data-lucide="x"></i> Deny</button>
         </div>
       `;
 
       const sessionBtn = banner.querySelector('.ab-cwd-session');
       const continueBtn = banner.querySelector('.ab-cwd-continue');
       const openBtn = banner.querySelector('.ab-cwd-open');
+      const denyBtn = banner.querySelector('.ab-cwd-deny');
 
       function disableAllCwdBtns() {
         if (sessionBtn) sessionBtn.disabled = true;
         continueBtn.disabled = true;
         openBtn.disabled = true;
+        if (denyBtn) denyBtn.disabled = true;
       }
 
       sessionBtn?.addEventListener('click', async () => {
@@ -804,6 +807,53 @@
           banner.querySelector('.ab-actions')?.replaceWith(st);
         }
         setTimeout(() => banner.classList.add('hidden'), 4000);
+      });
+
+      denyBtn?.addEventListener('click', async () => {
+        disableAllCwdBtns();
+        activePane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
+        banner.classList.add('ab-resolved');
+
+        const st = document.createElement('span');
+        st.className = 'ab-status no';
+        st.textContent = 'denied';
+
+        if (activePane) {
+          const card = createSkillCard({ name: name, data: { attrs: { path: path } } });
+          const status = card.querySelector('.skill-status');
+          if (status) {
+            status.textContent = 'denied ✗';
+            status.style.color = 'var(--danger)';
+          }
+          const output = card.querySelector('.skill-output');
+          if (output) output.textContent = '[denied by user]';
+
+          const turn = activePane.querySelector('.turn:last-child');
+          const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
+          if (target) { target.appendChild(card); activateLucideIcons(card); }
+          activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
+        }
+
+        banner.querySelector('.ab-actions')?.replaceWith(st);
+
+        try {
+          const resp = await fetch('/api/skills/cwd-deny/' + id, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({chat_id: activeChatId}),
+          });
+          const result = await resp.json();
+          if (result.feedback) {
+            setTimeout(() => sendAutoTurnMessage(result.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
+          } else {
+            setTimeout(() => sendAutoTurnMessage('[System: File operation outside project was denied by user.]', { skipUserBubble: true, skipUserSave: true }), 300);
+          }
+        } catch(e) {
+          console.error('[cwd-warning] deny error:', e);
+          setTimeout(() => sendAutoTurnMessage('[System: File operation outside project was denied by user.]', { skipUserBubble: true, skipUserSave: true }), 300);
+        }
+
+        setTimeout(() => banner.classList.add('hidden'), 3000);
       });
 
       activateLucideIcons(banner);

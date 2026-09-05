@@ -374,9 +374,18 @@ async def run_agent_llm_loop(
         _llm_success = False
 
         while not _llm_success:
-            _event_source, _initial_pid = await _get_llm_event_source(
+            _event_source, _initial_pid, _instructions_synced = await _get_llm_event_source(
                 agent, current_message, parent_id, is_first_turn, files=_files_for_round
             )
+
+            # If sync_context succeeded on first turn, Qwen already has the system
+            # prompt via personalization API — strip it from the message so we
+            # don't double-send instructions.
+            if is_first_turn and _instructions_synced:
+                if agent.context:
+                    current_message = f"Context: {agent.context}\n\nTask: {agent.task}"
+                else:
+                    current_message = agent.task
             new_parent_id: str | None = _initial_pid
             response_text = ""
             _hit_blockable_error = False
@@ -1094,7 +1103,7 @@ async def _call_llm_simple(
     """
     from server.database import set_upstream_session_id
 
-    event_source, _ = await _get_llm_event_source(agent, message, parent_id, is_first_turn=False)
+    event_source, _, _ = await _get_llm_event_source(agent, message, parent_id, is_first_turn=False)
     accumulated = ""
     new_parent_id: str | None = None
 
@@ -1203,7 +1212,7 @@ async def _get_llm_event_source(
         except Exception:
             pass
 
-        return connector.stream_chat(**stream_kwargs), None
+        return connector.stream_chat(**stream_kwargs), None, False
 
     # --- Qwen (scraper-based) ---
     from engine.service import ChatService
@@ -1212,13 +1221,30 @@ async def _get_llm_event_source(
     svc = ChatService(user_data_dir=agent.browser_data_dir)
     agent._qwen_service = svc  # store for cleanup
 
-    # Clear Qwen built-in tools/personalization on first turn
+    instructions_synced = False
+
+    # On first turn: try sync_context with agent's system prompt.
+    # If it succeeds, Qwen already has the instructions via personalization API
+    # and we don't need to embed them in the first message.
+    # If it fails, fall back to clearing settings — caller will include
+    # system prompt in the message text as before.
     if is_first_turn and agent.browser_data_dir:
         try:
-            headers = await svc._ensure_headers()
-            await _clear_qwen_account_settings(headers, agent.id)
+            synced = await svc.sync_context(custom_instructions=agent.system_prompt)
+            if synced:
+                instructions_synced = True
+                logger.info("Agent %s: sync_context succeeded — instructions pushed via personalization API", agent.id)
+            else:
+                logger.warning("Agent %s: sync_context returned False, falling back to clear settings", agent.id)
+                headers = await svc._ensure_headers()
+                await _clear_qwen_account_settings(headers, agent.id)
         except Exception as exc:
-            logger.warning("Agent %s: clear account settings failed: %s", agent.id, exc)
+            logger.warning("Agent %s: sync_context failed (%s), falling back to clear settings", agent.id, exc)
+            try:
+                headers = await svc._ensure_headers()
+                await _clear_qwen_account_settings(headers, agent.id)
+            except Exception as exc2:
+                logger.warning("Agent %s: fallback clear also failed: %s", agent.id, exc2)
 
     chat_id = get_upstream_session_id(agent.chat_id) or agent.qwen_session_id
     if is_first_turn or not chat_id:
@@ -1229,7 +1255,7 @@ async def _get_llm_event_source(
         chat_id=chat_id,
         parent_id=parent_id,
         model=model,
-    ), None
+    ), None, instructions_synced
 
 
 def _validate_markdown_output(text: str, required_sections: list[str]) -> bool:

@@ -2550,3 +2550,29 @@ async def cwd_approve_command(tag_id: str, request: Request):
             append_skill_event(chat_id, ev)
 
     return {"ok": True, "feedback": feedback}
+
+
+@router.post("/api/skills/cwd-deny/{tag_id}")
+async def cwd_deny_command(tag_id: str, request: Request):
+    """User denied a CWD warning — return tool feedback without executing."""
+    from engine.security.middleware import consume_pending_cwd_warning
+
+    pending = consume_pending_cwd_warning(tag_id)
+    if pending is None:
+        return {"ok": False, "error": "CWD warning expired or not found"}
+
+    path_preview = pending.path[:200]
+    feedback = f"[{pending.name}] FAILED — User denied file operation outside project: {path_preview}"
+
+    from server.database import append_skill_event
+    chat_id = (await request.json()).get("chat_id") if request else None
+    if chat_id:
+        append_skill_event(chat_id, {
+            "type": "skill_start", "id": tag_id, "name": pending.name,
+        })
+        append_skill_event(chat_id, {
+            "type": "skill_end", "id": tag_id, "name": pending.name,
+            "ok": False, "error": "User denied file operation outside project",
+        })
+
+    return {"ok": True, "feedback": feedback}
