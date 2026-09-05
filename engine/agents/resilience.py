@@ -709,8 +709,9 @@ class MainChatGuard:
         if self._malformed_warned:
             return None
         import re as _re
-        open_pat = r"<\s*tool_call\s*>"
-        close_pat = r"<\s*/\s*tool_call\s*>"
+        # Support both <action> and <tool_call wrappers
+        open_pat = r"<\s*(?:action|tool_call)\s*>"
+        close_pat = r"<\s*/\s*(?:action|tool_call)\s*>"
         has_open = bool(_re.search(open_pat, raw_text, _re.I))
         has_close = bool(_re.search(close_pat, raw_text, _re.I))
 
@@ -748,7 +749,7 @@ class MainChatGuard:
                 self._malformed_warned = True
                 return self._get_malformed_warning("json_outside")
         elif has_open and has_close:
-            stripped = _re.sub(r"<\s*tool_calls?\s*>.*?<\s*/\s*tool_calls?\s*>", "", raw_text, flags=_re.S | _re.I)
+            stripped = _re.sub(r"<\s*(?:action|tool_calls?)\s*>.*?<\s*/\s*(?:action|tool_calls?)\s*>", "", raw_text, flags=_re.S | _re.I)
             if tool_json_pat.search(stripped):
                 self._malformed_warned = True
                 return self._get_malformed_warning("json_outside")
@@ -756,7 +757,7 @@ class MainChatGuard:
         # Check for invalid JSON inside tool_call blocks
         if has_open and has_close:
             from engine.skills.parser import _parse_action_payload, _diagnose_json_failure, sanitize_transport
-            action_contents = _re.findall(r"<\s*tool_call\s*>(.*?)<\s*/\s*tool_call\s*>", raw_text, flags=_re.S | _re.I)
+            action_contents = _re.findall(r"<\s*(?:action|tool_call)\s*>(.*?)<\s*/\s*(?:action|tool_call)\s*>", raw_text, flags=_re.S | _re.I)
             for block in action_contents:
                 block = block.strip()
                 if not block:
