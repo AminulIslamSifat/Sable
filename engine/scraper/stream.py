@@ -290,6 +290,15 @@ class ScraperEngine(ScraperLifecycle):
                         }
                         return
                     setup_ok = True
+
+                    # Diagnostics: heartbeat on successful send
+                    try:
+                        from .diagnostics import get_monitor
+                        diag_sid = getattr(self, '_diag_session_id', None)
+                        if diag_sid:
+                            await get_monitor().heartbeat(diag_sid)
+                    except Exception:
+                        pass
         except TimeoutError:
             logger.error("Scraper setup lock timed out after %ss — previous stream may be stuck", _LOCK_ACQUIRE_TIMEOUT)
             yield {

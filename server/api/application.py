@@ -140,6 +140,13 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     except Exception as exc:
         logger.warning("Telegram Bot auto-start failed: %s: %s", type(exc).__name__, exc)
 
+    # ── Auto-start Diagnostics Beacon (if bridge configured) ──
+    try:
+        from engine.scraper.diagnostics import get_beacon
+        _aio.create_task(get_beacon().start())
+    except Exception as exc:
+        logger.debug("Diagnostics beacon start skipped: %s", exc)
+
     await service.warmup()
     try:
         ds_token = await service.refresh_deepseek_token()
@@ -201,6 +208,13 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     # 7. Telegram Bot — cancel background task
     if _tg_bot_task and not _tg_bot_task.done():
         _tg_bot_task.cancel()
+
+    # 8. Diagnostics Beacon — stop gracefully
+    try:
+        from engine.scraper.diagnostics import get_beacon
+        await asyncio.wait_for(get_beacon().stop(), timeout=0.3)
+    except Exception:
+        pass
         try:
             await asyncio.wait_for(_tg_bot_task, timeout=1.0)
         except Exception:
