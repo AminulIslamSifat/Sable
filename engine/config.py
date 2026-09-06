@@ -134,7 +134,7 @@ MODELS = [
         "id": "qwen3.8-max",
         "label": "Qwen3.8 Max",
         "max_session_chars": 3_000_000,
-        "capabilities": {"image": True, "video": False, "document": False, "audio": False},
+        "capabilities": {"image": True, "video": False, "document": True, "audio": False},
         "thinking_modes": [
             {
                 "id": "fast",
@@ -185,7 +185,7 @@ MODELS = [
         "id": "qwen3.7-plus",
         "label": "Qwen3.7 Plus",
         "max_session_chars": 3_000_000,
-        "capabilities": {"image": True, "video": False, "document": False, "audio": False},
+        "capabilities": {"image": True, "video": False, "document": True, "audio": False},
         "thinking_modes": [
             {
                 "id": "fast",
