@@ -184,6 +184,23 @@ class ScraperLifecycle:
 
         self.engine = engine
         self.loaded_path = engine_path
+
+        # Diagnostics: passively track engine session
+        try:
+            from .diagnostics import get_monitor
+            monitor = get_monitor()
+            settings_diag = _load_settings()
+            import asyncio as _aio
+            sid = _aio.get_event_loop().run_until_complete(
+                monitor.register_session(
+                    settings_diag.get("engine_type", DEFAULT_ENGINE_TYPE),
+                    metadata={"cdp_port": getattr(engine, "port", None)},
+                )
+            )
+            self._diag_session_id = sid
+        except Exception:
+            self._diag_session_id = None
+
         return engine
 
     async def _is_browser_alive(self, engine: Any) -> bool:
