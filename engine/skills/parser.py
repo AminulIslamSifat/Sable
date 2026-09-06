@@ -954,8 +954,9 @@ class SkillParser:
                     self.buf = self.buf[:_xml_m.start()]
 
             if self._in_action:
-                _plog(f"FLUSH_IN_ACTION: buf_len={len(self.buf)} | first_100={repr(self.buf[:100])}")
-                yield from self._extract_json(self.buf, partial=False)
+                _flush_content = self._ACTION_CLOSE.sub("", self.buf).strip()
+                _plog(f"FLUSH_IN_ACTION: buf_len={len(self.buf)} | first_100={repr(_flush_content[:100])}")
+                yield from self._extract_json(_flush_content, partial=False)
             # Strip any remaining tool_call / DSML remnants
             if self.buf:
                 cleaned = self._ACTION_OPEN.sub("", self.buf)
