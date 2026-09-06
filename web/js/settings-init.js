@@ -143,12 +143,39 @@
 
     /* ============================= attachments ============================= */
 
+    const _DOC_ICON_MAP = {
+      "application/pdf": { label: "PDF", color: "#e74c3c" },
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation": { label: "PPTX", color: "#d35400" },
+      "application/vnd.ms-powerpoint": { label: "PPT", color: "#d35400" },
+      "application/msword": { label: "DOC", color: "#2980b9" },
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document": { label: "DOCX", color: "#2980b9" },
+      "text/csv": { label: "CSV", color: "#27ae60" },
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": { label: "XLSX", color: "#16a085" },
+      "application/vnd.ms-excel": { label: "XLS", color: "#16a085" },
+      "text/markdown": { label: "MD", color: "#8e44ad" },
+      "text/plain": { label: "TXT", color: "#7f8c8d" },
+    };
+
+    function _isImageFile(file) {
+      return file.type.startsWith("image/");
+    }
+
     function addAttachmentChip(file) {
       const chip = document.createElement("div");
       chip.className = "attach-chip uploading";
-      const img = document.createElement("img");
-      img.src = URL.createObjectURL(file);
-      chip.appendChild(img);
+
+      if (_isImageFile(file)) {
+        const img = document.createElement("img");
+        img.src = URL.createObjectURL(file);
+        chip.appendChild(img);
+      } else {
+        // Document / non-image file — show styled icon + extension label
+        const info = _DOC_ICON_MAP[file.type] || { label: (file.name.split(".").pop() || "FILE").toUpperCase().slice(0, 5), color: "#95a5a6" };
+        chip.classList.add("attach-chip-doc");
+        chip.innerHTML = `<span class="doc-icon">📄</span><span class="doc-label" style="color:${info.color}">${info.label}</span>`;
+        chip.title = file.name;
+      }
+
       attachPreview.appendChild(chip);
       return chip;
     }
@@ -156,7 +183,8 @@
     function removePendingByChip(chip) {
       const idx = pendingFiles.findIndex(p => p.chip === chip);
       if (idx !== -1) {
-        URL.revokeObjectURL(pendingFiles[idx].chip.querySelector("img").src);
+        const img = pendingFiles[idx].chip.querySelector("img");
+        if (img) URL.revokeObjectURL(img.src);
         pendingFiles[idx].chip.remove();
         pendingFiles.splice(idx, 1);
       }
