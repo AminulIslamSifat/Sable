@@ -8,6 +8,7 @@ def sanitize_transport(raw: str) -> str:
     s = raw
     s = _normalize_backslashes(s)
     s = _fix_mixed_quotes(s)
+    s = _fix_inner_double_quotes(s)
     return s
 
 
@@ -76,4 +77,51 @@ def _fix_mixed_quotes(s: str) -> str:
             else:
                 result.append(c)
         i += 1
+    return ''.join(result)
+
+
+def _fix_inner_double_quotes(s: str) -> str:
+    """Fix unescaped double quotes inside JSON string values.
+
+    When LLM streaming corrupts apostrophes to bare double quotes inside
+    JSON strings (e.g. {"q": "arafat"s laptop"}), this detects and escapes
+    the inner quotes so json.loads can parse it.
+    """
+    DQ = chr(34)
+    BS = chr(92)
+    _AFTER_CLOSE = frozenset(',}]:')
+
+    result = []
+    in_string = False
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if not in_string:
+            result.append(c)
+            if c == DQ:
+                in_string = True
+            i += 1
+        else:
+            if c == BS and i + 1 < len(s):
+                result.append(c)
+                result.append(s[i + 1])
+                i += 2
+                continue
+            if c == DQ:
+                j = i + 1
+                while j < len(s) and s[j] in ' \t\n\r':
+                    j += 1
+                if j < len(s) and s[j] in _AFTER_CLOSE:
+                    result.append(c)
+                    in_string = False
+                elif j >= len(s):
+                    result.append(c)
+                    in_string = False
+                else:
+                    result.append(BS)
+                    result.append(c)
+                i += 1
+            else:
+                result.append(c)
+                i += 1
     return ''.join(result)
