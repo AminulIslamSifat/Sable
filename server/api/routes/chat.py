@@ -824,8 +824,42 @@ async def chat(request: ChatRequest):
     resolved_files: list[dict[str, Any]] | None = None
     _backend = _resolve_api_backend(request.model) if _is_api_model(request.model) else None
     if request.files:
+        # --- Doc→Image conversion for models that accept images but not native docs ---
+        _model_caps = get_model_config(request.model).get("capabilities", {})
+        _should_convert_docs = (
+            _model_caps.get("image", False)
+            and not _model_caps.get("document", False)
+        )
+        # Also convert for Qwen models marked document=True since Qwen OSS
+        # only accepts images — the document flag just means "we handle docs"
+        _is_qwen_backend = _backend not in _DIRECT_READ_BACKENDS and _backend != "deepseek" and not scraper_enabled
+        if _is_qwen_backend and _model_caps.get("image", False):
+            _should_convert_docs = True
+
+        _expanded_files: list[dict[str, Any]] = []
+        if _should_convert_docs:
+            from connectors.common.media import is_convertible_doc, convert_doc_to_images
+            for f in request.files:
+                fpath = f.get("path", "")
+                if fpath and is_convertible_doc(fpath):
+                    _img_paths = convert_doc_to_images(fpath)
+                    if _img_paths:
+                        for _ip in _img_paths:
+                            _expanded_files.append({"path": _ip})
+                        logger.info(
+                            "Converted doc %s → %d images for model %s",
+                            Path(fpath).name, len(_img_paths), request.model,
+                        )
+                    else:
+                        # Conversion failed or too many pages — pass original through
+                        _expanded_files.append(f)
+                else:
+                    _expanded_files.append(f)
+        else:
+            _expanded_files = list(request.files)
+
         resolved_files = []
-        for f in request.files:
+        for f in _expanded_files:
             if scraper_enabled:
                 # Scraper mode: engine handles Playwright upload internally
                 if "path" in f or "url" in f:

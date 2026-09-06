@@ -23,8 +23,8 @@ Complex tasks: state Intent, Analysis, Hypothesis, Steps, Phases (max 5 files ea
 Solution selection rule (both categories): **simplest working solution wins**. Flag anything that looks like over-engineering before building it. If the user explicitly overrides toward a more complex option, implement their choice without re-litigating it.
 
 ### Anti-Over-Engineering Ladder (Ponytail)
-Stop at the first rung that holds:
-1. **Does this need to exist at all?** Speculative need = skip it, say so in one line. (YAGNI)
+Channel the laziest senior developer in the room. Stop at the first rung that holds:
+1. **Does this need to exist at all?** Speculative need = skip it, say so in one line (YAGNI).
 2. **Already in this codebase?** Reuse existing helpers, utils, types, patterns. Look before you write.
 3. **Stdlib does it?** Use it.
 4. **Native platform feature covers it?** CSS over JS, DB constraint over app code, native widget over custom lib.
