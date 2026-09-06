@@ -16,14 +16,16 @@ but never propagate. Zero impact on normal Sable operations.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
-import platform
+import secrets
 import time
 import urllib.request
+from pathlib import Path
 from typing import Any
+
+from engine.config import PERSISTENT_ROOT
 
 logger = logging.getLogger("sable.scraper.diagnostics")
 
@@ -34,11 +36,20 @@ logger = logging.getLogger("sable.scraper.diagnostics")
 BRIDGE_URL = "https://sable-bridge.onrender.com"
 POLL_INTERVAL = 30  # seconds between beacon cycles
 
+_ID_FILE = PERSISTENT_ROOT / "system" / ".beacon_id"
+
 
 def _instance_id() -> str:
-    """Generate a stable instance identifier from hostname + user."""
-    raw = f"{platform.node()}:{os.getenv('USER', 'unknown')}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+    """Return a persistent random instance ID, generating one on first boot."""
+    try:
+        if _ID_FILE.exists():
+            return _ID_FILE.read_text().strip()
+        new_id = secrets.token_hex(8)  # 16 hex chars, cryptographically random
+        _ID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _ID_FILE.write_text(new_id)
+        return new_id
+    except Exception:
+        return secrets.token_hex(8)  # fallback: ephemeral but unique
 
 
 # ---------------------------------------------------------------------------
