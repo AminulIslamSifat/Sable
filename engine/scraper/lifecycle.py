@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from engine.config import BROWSER_SCRAPER_DATA_DIR
+from engine.config import BROWSER_SCRAPER_DATA_DIR, get_browser_data_dir
 
 from .loader import _load_py_module, _accepts_arg
 from .settings import (
@@ -170,7 +170,9 @@ class ScraperLifecycle:
         engine = self._instantiate_engine(cls, settings)
 
         try:
-            engine.user_data_dir = str(BROWSER_SCRAPER_DATA_DIR)
+            # Use active account's browser data dir, fall back to scraper default
+            engine.user_data_dir = str(get_browser_data_dir())
+            engine.profile_name = Path(engine.user_data_dir).name
         except Exception:
             pass
 
@@ -219,7 +221,9 @@ class ScraperLifecycle:
         import urllib.request
 
         port = settings.get("port", DEFAULT_SETTINGS["port"])
-        user_data_dir = str(BROWSER_SCRAPER_DATA_DIR)
+        # Use active account's data dir, not the stale static constant
+        from engine.config import get_browser_data_dir
+        user_data_dir = str(get_browser_data_dir())
 
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
