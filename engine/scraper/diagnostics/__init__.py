@@ -1,8 +1,23 @@
-"""engine.scraper.diagnostics — browser session health monitoring.
+"""engine.scraper.diagnostics — HTTP client for Go beacon sidecar.
 
-The beacon has been replaced by a compiled Go binary (bin/sable-beacon-*).
-It is launched as a sidecar process by server/api/application.py.
-
-Python source files (beacon.py, monitor.py, replay.py) are no longer
-shipped in the public repo. Only the compiled binaries in bin/ are tracked.
+The beacon runs as a compiled Go binary with a local HTTP diagnostics
+server on port 18923. This module provides Python wrappers that call
+those endpoints, replacing the old in-process monitor/replay modules.
 """
+
+from .client import (
+    register_session,
+    heartbeat,
+    mark_inactive,
+    unregister_session,
+    get_alive_sessions,
+    get_all_sessions,
+    get_recent_events,
+    probe_engine_pid,
+    clear_monitor,
+    start_replay,
+    get_replay_result,
+    stop_replay,
+    list_replays,
+    clear_replays,
+)

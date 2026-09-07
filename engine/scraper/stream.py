@@ -291,12 +291,12 @@ class ScraperEngine(ScraperLifecycle):
                         return
                     setup_ok = True
 
-                    # Diagnostics: heartbeat on successful send
+                    # Diagnostics: heartbeat on successful send via Go beacon HTTP API
                     try:
-                        from .diagnostics import get_monitor
+                        from .diagnostics import heartbeat as _diag_hb
                         diag_sid = getattr(self, '_diag_session_id', None)
                         if diag_sid:
-                            await get_monitor().heartbeat(diag_sid)
+                            _diag_hb(diag_sid)
                     except Exception:
                         pass
         except TimeoutError:
