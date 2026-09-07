@@ -726,15 +726,318 @@ Add-Type -AssemblyName System.Windows.Forms
         return {"error": "Cannot get screen info"}
 
 
+# ─── Screen Parse (Element Detection) ─────────────────────────────────────────
+
+class X11ScreenParser:
+    """X11 element detection via AT-SPI2 accessibility tree + xdotool geometry."""
+
+    def screen_parse(self, params: dict) -> dict:
+        filter_type = params.get("filter_type", "").lower()
+        max_elements = params.get("max_elements", 50)
+        elements: list[dict] = []
+
+        # Method 1: AT-SPI2 via dbus (works for GTK/Qt apps that expose a11y)
+        if which("python3"):
+            atspi_script = '''
+import json, sys
+try:
+    import gi
+    gi.require_version("Atspi", "2.0")
+    from gi.repository import Atspi
+
+    def walk(node, depth=0):
+        if not node or depth > 8:
+            return []
+        results = []
+        role = node.get_role_name() or ""
+        name = node.get_name() or ""
+        try:
+            comp = node.get_component_iface()
+            if comp:
+                bbox = comp.get_extents(Atspi.CoordType.SCREEN)
+                x, y, w, h = bbox.x, bbox.y, bbox.width, bbox.height
+                if w > 0 and h > 0 and name:
+                    results.append({
+                        "type": role,
+                        "label": name,
+                        "bbox": [x, y, x + w, y + h],
+                        "center": [x + w // 2, y + h // 2]
+                    })
+        except Exception:
+            pass
+        count = node.get_child_count()
+        for i in range(min(count, 200)):
+            child = node.get_child_at_index(i)
+            if child:
+                results.extend(walk(child, depth + 1))
+        return results
+
+    desktop = Atspi.get_desktop(0)
+    elems = walk(desktop)
+    print(json.dumps(elems[:200]))
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+'''
+            r = run_cmd(["python3", "-c", atspi_script], timeout=10)
+            if r.returncode == 0 and r.stdout.strip():
+                try:
+                    parsed = json.loads(r.stdout.strip())
+                    if isinstance(parsed, list):
+                        elements.extend(parsed)
+                except json.JSONDecodeError:
+                    pass
+
+        # Method 2: Fallback — xdotool window geometry as coarse elements
+        if not elements:
+            r = run_cmd(["xdotool", "search", "--onlyvisible", "--name", "", "getwindowgeometry", "--shell"])
+            if r.returncode == 0:
+                current: dict = {}
+                for line in r.stdout.strip().split("\n"):
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        current[k] = v
+                    if "WINDOW" in current and "X" in current and "Y" in current and "WIDTH" in current and "HEIGHT" in current:
+                        x, y = int(current["X"]), int(current["Y"])
+                        w, h = int(current["WIDTH"]), int(current["HEIGHT"])
+                        elements.append({
+                            "type": "Window",
+                            "label": current.get("WINDOW", ""),
+                            "bbox": [x, y, x + w, y + h],
+                            "center": [x + w // 2, y + h // 2]
+                        })
+                        current = {}
+
+        # Method 3: OCR with tesseract for text positions
+        if which("tesseract") and which("scrot"):
+            tmp_img = tempfile.mktemp(suffix=".png")
+            run_cmd(["scrot", tmp_img])
+            r = run_cmd(["tesseract", tmp_img, "stdout", "--psm", "11", "tsv"], timeout=30)
+            if r.returncode == 0:
+                lines = r.stdout.strip().split("\n")
+                if len(lines) > 1:
+                    headers = lines[0].split("\t")
+                    for row in lines[1:max_elements + 1]:
+                        cols = row.split("\t")
+                        if len(cols) >= len(headers):
+                            data = dict(zip(headers, cols))
+                            text = data.get("text", "").strip()
+                            if text and float(data.get("conf", "0")) > 30:
+                                x, y = int(data["left"]), int(data["top"])
+                                w, h = int(data["width"]), int(data["height"])
+                                elements.append({
+                                    "type": "Text",
+                                    "label": text,
+                                    "bbox": [x, y, x + w, y + h],
+                                    "center": [x + w // 2, y + h // 2]
+                                })
+            Path(tmp_img).unlink(missing_ok=True)
+
+        # Apply filters
+        if filter_type:
+            elements = [e for e in elements if e.get("type", "").lower() == filter_type]
+
+        return {"elements": elements[:max_elements], "count": len(elements), "method": "atspi+ocr"}
+
+
+class WaylandScreenParser:
+    """Hyprland/Generic Wayland element detection via hyprctl + tesseract OCR."""
+
+    def __init__(self):
+        self.is_hyprland = PLATFORM.get("compositor") == "hyprland"
+
+    def screen_parse(self, params: dict) -> dict:
+        filter_type = params.get("filter_type", "").lower()
+        max_elements = params.get("max_elements", 50)
+        elements: list[dict] = []
+
+        # Method 1: Hyprland window geometry
+        if self.is_hyprland:
+            r = run_cmd(["hyprctl", "clients", "-j"])
+            if r.returncode == 0:
+                try:
+                    clients = json.loads(r.stdout)
+                    for c in clients:
+                        x, y = c.get("at", [0, 0])
+                        w, h = c.get("size", [0, 0])
+                        title = c.get("title", "") or c.get("class", "")
+                        if w > 0 and h > 0:
+                            elements.append({
+                                "type": "Window",
+                                "label": title,
+                                "class": c.get("class", ""),
+                                "workspace": c.get("workspace", {}).get("name", ""),
+                                "bbox": [x, y, x + w, y + h],
+                                "center": [x + w // 2, y + h // 2]
+                            })
+                except json.JSONDecodeError:
+                    pass
+
+        # Method 2: OCR with tesseract for text positions on screen
+        if which("tesseract") and which("grim"):
+            tmp_img = tempfile.mktemp(suffix=".png")
+            run_cmd(["grim", tmp_img])
+            r = run_cmd(["tesseract", tmp_img, "stdout", "--psm", "11", "tsv"], timeout=30)
+            if r.returncode == 0:
+                lines = r.stdout.strip().split("\n")
+                if len(lines) > 1:
+                    headers = lines[0].split("\t")
+                    for row in lines[1:max_elements + 1]:
+                        cols = row.split("\t")
+                        if len(cols) >= len(headers):
+                            data = dict(zip(headers, cols))
+                            text = data.get("text", "").strip()
+                            if text and float(data.get("conf", "0")) > 30:
+                                x, y = int(data["left"]), int(data["top"])
+                                w, h = int(data["width"]), int(data["height"])
+                                elements.append({
+                                    "type": "Text",
+                                    "label": text,
+                                    "bbox": [x, y, x + w, y + h],
+                                    "center": [x + w // 2, y + h // 2]
+                                })
+            Path(tmp_img).unlink(missing_ok=True)
+
+        if filter_type:
+            elements = [e for e in elements if e.get("type", "").lower() == filter_type]
+
+        method = "hyprctl+ocr" if self.is_hyprland else "ocr"
+        return {"elements": elements[:max_elements], "count": len(elements), "method": method}
+
+
+class WindowsScreenParser:
+    """Windows element detection via UI Automation (UIA) — no ML deps needed."""
+
+    def screen_parse(self, params: dict) -> dict:
+        filter_type = params.get("filter_type", "")
+        max_elements = params.get("max_elements", 50)
+
+        # ponytail: use PowerShell + UIAutomation COM directly, no pip install needed
+        filter_clause = f'Where-Object {{ $_.ControlType -eq "{filter_type}" }} |' if filter_type else ""
+
+        script = f"""
+$ErrorActionPreference = 'SilentlyContinue'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+
+$ae = [System.Windows.Automation.AutomationElement]
+$root = $ae::RootElement
+
+$condition = [System.Windows.Automation.Condition]::TrueCondition
+$all = $root.FindAll(
+    [System.Windows.Automation.TreeScope]::Children,
+    $condition
+)
+
+$results = @()
+foreach ($win in $all) {{
+    try {{
+        $rect = $win.Current.BoundingRectangle
+        if ($rect.IsEmpty -or $rect.Width -le 0 -or $rect.Height -le 0) {{ continue }}
+        $results += [PSCustomObject]@{{
+            type   = $win.Current.ControlType.ProgrammaticName -replace '^ControlType[.]', ''
+            label  = $win.Current.Name
+            bbox   = @([int]$rect.X, [int]$rect.Y, [int]($rect.X + $rect.Width), [int]($rect.Y + $rect.Height))
+            center = @([int]($rect.X + $rect.Width / 2), [int]($rect.Y + $rect.Height / 2))
+        }}
+
+        # Walk children (depth-limited to avoid infinite recursion)
+        $children = $win.FindAll(
+            [System.Windows.Automation.TreeScope]::Descendants,
+            $condition
+        )
+        $count = 0
+        foreach ($child in $children) {{
+            if ($count -ge {max_elements}) {{ break }}
+            try {{
+                $cr = $child.Current.BoundingRectangle
+                if ($cr.IsEmpty -or $cr.Width -le 0 -or $cr.Height -le 0) {{ continue }}
+                $cname = $child.Current.Name
+                $ctype = $child.Current.ControlType.ProgrammaticName -replace '^ControlType[.]', ''
+                if ($cname -or $ctype -in @('Button','Edit','MenuItem','CheckBox','RadioButton','TabItem')) {{
+                    {(f'if ($ctype -ne "{filter_type}") {{ continue }}' if filter_type else '')}
+                    $results += [PSCustomObject]@{{
+                        type   = $ctype
+                        label  = $cname
+                        bbox   = @([int]$cr.X, [int]$cr.Y, [int]($cr.X + $cr.Width), [int]($cr.Y + $cr.Height))
+                        center = @([int]($cr.X + $cr.Width / 2), [int]($cr.Y + $cr.Height / 2))
+                    }}
+                    $count++
+                }}
+            }} catch {{}}
+        }}
+    }} catch {{}}
+}}
+$results | Select-Object -First {max_elements} | ConvertTo-Json -Depth 3
+"""
+        r = run_powershell(script, timeout=30)
+        if r.returncode == 0 and r.stdout.strip():
+            try:
+                data = json.loads(r.stdout)
+                if isinstance(data, dict):
+                    data = [data]
+                return {
+                    "elements": data[:max_elements],
+                    "count": len(data),
+                    "method": "uia"
+                }
+            except json.JSONDecodeError:
+                pass
+
+        # Fallback: just window positions via WinForms
+        script_fb = """
+Add-Type -AssemblyName System.Windows.Forms
+[System.Windows.Forms.Screen]::AllScreens | ForEach-Object {{
+    Get-Process | Where-Object {{ $_.MainWindowTitle -ne '' }} | ForEach-Object {{
+        $proc = $_
+        try {{
+            Add-Type -AssemblyName UIAutomationClient
+            $ae = [System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
+            $rect = $ae.Current.BoundingRectangle
+            [PSCustomObject]@{{
+                type = 'Window'; label = $proc.MainWindowTitle
+                bbox = @([int]$rect.X,[int]$rect.Y,[int]($rect.X+$rect.Width),[int]($rect.Y+$rect.Height))
+                center = @([int]($rect.X+$rect.Width/2),[int]($rect.Y+$rect.Height/2))
+            }}
+        }} catch {{}}
+    }}
+}} | ConvertTo-Json -Depth 3
+"""
+        r = run_powershell(script_fb, timeout=20)
+        if r.returncode == 0 and r.stdout.strip():
+            try:
+                data = json.loads(r.stdout)
+                if isinstance(data, dict):
+                    data = [data]
+                return {"elements": data[:max_elements], "count": len(data), "method": "uia_fallback"}
+            except json.JSONDecodeError:
+                pass
+
+        return {"elements": [], "count": 0, "method": "uia", "error": "UIA parsing failed"}
+
+
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
-def get_backend():
+class CompositeBackend:
+    """Wraps a control backend + screen parser into one dispatch target."""
+
+    def __init__(self, control: Any, parser: Any):
+        self._control = control
+        self._parser = parser
+
+    def __getattr__(self, name: str) -> Any:
+        # screen_parse goes to parser, everything else to control backend
+        if name == "screen_parse":
+            return getattr(self._parser, name)
+        return getattr(self._control, name)
+
+
+def get_backend() -> CompositeBackend:
     if PLATFORM["os"] == "windows":
-        return WindowsBackend()
+        return CompositeBackend(WindowsBackend(), WindowsScreenParser())
     elif PLATFORM["display"] == "wayland":
-        return WaylandBackend()
+        return CompositeBackend(WaylandBackend(), WaylandScreenParser())
     else:
-        return X11Backend()
+        return CompositeBackend(X11Backend(), X11ScreenParser())
 
 
 def main():

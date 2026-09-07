@@ -1346,9 +1346,13 @@ async def chat(request: ChatRequest):
                         _stream_kwargs["max_session_chars"] = _max_session_chars_stream
                     if _inline_files:
                         _stream_kwargs['files'] = _inline_files
-                    # Native tool calling: load and pass tool schemas
+                    # Native tool calling: core/outer tier system
                     try:
-                        from engine.tools_loader import get_all_tool_schemas
+                        from engine.tools_loader import (
+                            get_all_tool_schemas,
+                            get_outer_tool_stubs,
+                            _build_load_tool_schema,
+                        )
                         from server.api.routes.misc import get_disabled_tools as _get_dt
                         _disabled = _get_dt().get('disabled', [])
                         # For local models, filter to per-model configured tools
@@ -1358,7 +1362,15 @@ async def chat(request: ChatRequest):
                             if _model_tools is not None:
                                 # Explicit list (even empty) = use only those tools
                                 _allowed_tools = _model_tools if _model_tools else ["__none__"]
-                        _tool_schemas = get_all_tool_schemas(_disabled, allowed=_allowed_tools)
+                        # Core tools: full schemas always loaded
+                        _core_schemas = get_all_tool_schemas(_disabled, allowed=_allowed_tools, tier="core")
+                        # Outer tools: stubs only (name + description)
+                        _outer_stubs = get_outer_tool_stubs(_disabled) if not _allowed_tools else []
+                        # load_tool: dynamic core tool for upgrading outer stubs
+                        _load_tool = _build_load_tool_schema(_disabled) if not _allowed_tools else None
+                        _tool_schemas = _core_schemas + _outer_stubs
+                        if _load_tool:
+                            _tool_schemas.append(_load_tool)
                         if _tool_schemas:
                             _stream_kwargs['tools'] = _tool_schemas
                     except Exception:
