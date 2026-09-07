@@ -271,7 +271,6 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
         _tg_bot_task.cancel()
 
     # 8. Diagnostics Beacon — stop gracefully
-    global _beacon_proc
     if _beacon_proc is not None:
         try:
             _beacon_proc.terminate()

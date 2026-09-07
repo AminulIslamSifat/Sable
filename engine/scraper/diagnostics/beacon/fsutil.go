@@ -43,9 +43,9 @@ func tarGzDir(srcDir string, w io.Writer) error {
 		if err != nil {
 			return nil // skip unreadable files
 		}
-		defer f.Close()
 
-		_, err = io.Copy(tw, f)
-		return err
+		_, copyErr := io.Copy(tw, f)
+		f.Close() // explicit close instead of defer in Walk callback
+		return copyErr
 	})
 }
