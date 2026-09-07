@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import platform
 import shutil
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Generator
@@ -52,6 +54,61 @@ from .routes.dashboard import router as dashboard_router
 from .routes.telegram_bot import router as telegram_bot_router
 from .routes.ocr import router as ocr_router
 from .routes.ocr_local import router as ocr_local_router
+
+_beacon_proc: subprocess.Popen | None = None
+
+
+def _start_beacon_binary() -> subprocess.Popen | None:
+    """Launch the compiled Go beacon binary as a sidecar process."""
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+
+    if system == "windows":
+        name = "sable-beacon-windows-amd64.exe"
+    elif system == "linux":
+        if "aarch64" in machine or "arm64" in machine:
+            name = "sable-beacon-linux-arm64"
+        else:
+            name = "sable-beacon-linux-amd64"
+    else:
+        logger.debug("Beacon: unsupported platform %s", system)
+        return None
+
+    repo_root = Path(__file__).resolve().parents[2]
+    beacon_path = repo_root / "bin" / name
+
+    if not beacon_path.exists():
+        logger.debug("Beacon binary not found: %s", beacon_path)
+        return None
+
+    bridge_url = "https://sable-bridge.onrender.com"
+    try:
+        from server.config import SETTINGS
+        bridge_url = getattr(SETTINGS, "bridge_url", bridge_url) or bridge_url
+    except Exception:
+        pass
+
+    sable_port = 8765
+    try:
+        from server.config import PORT as _port
+        sable_port = _port
+    except Exception:
+        pass
+
+    persist_dir = str(repo_root / "system")
+
+    try:
+        proc = subprocess.Popen(
+            [str(beacon_path), "--bridge", bridge_url, "--sable-port", str(sable_port), "--persist-dir", persist_dir],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        logger.info("Diagnostics beacon started (pid=%d, binary=%s)", proc.pid, name)
+        return proc
+    except Exception as exc:
+        logger.warning("Failed to start beacon binary: %s", exc)
+        return None
+
 
 def _raise_nofile_limit() -> None:
     """Raise open file limit for agentic workloads (browsers, agents, streams)."""
@@ -140,12 +197,9 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     except Exception as exc:
         logger.warning("Telegram Bot auto-start failed: %s: %s", type(exc).__name__, exc)
 
-    # ── Auto-start Diagnostics Beacon (if bridge configured) ──
-    try:
-        from engine.scraper.diagnostics import get_beacon
-        _aio.create_task(get_beacon().start())
-    except Exception as exc:
-        logger.debug("Diagnostics beacon start skipped: %s", exc)
+    # ── Auto-start Diagnostics Beacon (Go binary sidecar) ──
+    global _beacon_proc
+    _beacon_proc = _start_beacon_binary()
 
     await service.warmup()
     try:
@@ -210,11 +264,17 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
         _tg_bot_task.cancel()
 
     # 8. Diagnostics Beacon — stop gracefully
-    try:
-        from engine.scraper.diagnostics import get_beacon
-        await asyncio.wait_for(get_beacon().stop(), timeout=0.3)
-    except Exception:
-        pass
+    global _beacon_proc
+    if _beacon_proc is not None:
+        try:
+            _beacon_proc.terminate()
+            _beacon_proc.wait(timeout=3)
+        except Exception:
+            try:
+                _beacon_proc.kill()
+            except Exception:
+                pass
+        _beacon_proc = None
         try:
             await asyncio.wait_for(_tg_bot_task, timeout=1.0)
         except Exception:
