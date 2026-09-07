@@ -100,18 +100,24 @@ def main() -> None:
 
     try:
         from playwright.sync_api import sync_playwright
+        from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
+        profile_name = user_data_dir.name
+        exe_path = resolve_browser_for_profile(profile_name)
+        launch_kwargs: dict = dict(
+            user_data_dir=str(user_data_dir),
+            headless=False,
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disk-cache-size=2097152",
+                "--disable-gpu-shader-cache",
+                "--disable-component-update",
+            ] + extra_browser_args(exe_path),
+        )
+        if exe_path:
+            launch_kwargs["executable_path"] = exe_path
         with sync_playwright() as p:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=str(user_data_dir),
-                headless=False,
-                args=[
-                    "--no-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disk-cache-size=2097152",
-                    "--disable-gpu-shader-cache",
-                    "--disable-component-update",
-                ],
-            )
+            context = p.chromium.launch_persistent_context(**launch_kwargs)
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(url)
 

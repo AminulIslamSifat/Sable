@@ -5,6 +5,7 @@ import threading
 from server import app
 import uvicorn
 from engine.config import HOST, PORT
+from engine.service_manager import _write_pid
 
 
 def _sigterm_deadman(signum, frame):
@@ -19,5 +20,6 @@ def _sigterm_deadman(signum, frame):
 signal.signal(signal.SIGTERM, _sigterm_deadman)
 
 if __name__ == "__main__":
+    _write_pid()
     uvicorn.run(app, host=HOST, port=PORT, reload=False)
 #

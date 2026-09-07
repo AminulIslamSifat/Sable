@@ -143,12 +143,39 @@
 
     /* ============================= attachments ============================= */
 
+    const _DOC_ICON_MAP = {
+      "application/pdf": { label: "PDF", color: "#e74c3c" },
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation": { label: "PPTX", color: "#d35400" },
+      "application/vnd.ms-powerpoint": { label: "PPT", color: "#d35400" },
+      "application/msword": { label: "DOC", color: "#2980b9" },
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document": { label: "DOCX", color: "#2980b9" },
+      "text/csv": { label: "CSV", color: "#27ae60" },
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": { label: "XLSX", color: "#16a085" },
+      "application/vnd.ms-excel": { label: "XLS", color: "#16a085" },
+      "text/markdown": { label: "MD", color: "#8e44ad" },
+      "text/plain": { label: "TXT", color: "#7f8c8d" },
+    };
+
+    function _isImageFile(file) {
+      return file.type.startsWith("image/");
+    }
+
     function addAttachmentChip(file) {
       const chip = document.createElement("div");
       chip.className = "attach-chip uploading";
-      const img = document.createElement("img");
-      img.src = URL.createObjectURL(file);
-      chip.appendChild(img);
+
+      if (_isImageFile(file)) {
+        const img = document.createElement("img");
+        img.src = URL.createObjectURL(file);
+        chip.appendChild(img);
+      } else {
+        // Document / non-image file — show styled icon + extension label
+        const info = _DOC_ICON_MAP[file.type] || { label: (file.name.split(".").pop() || "FILE").toUpperCase().slice(0, 5), color: "#95a5a6" };
+        chip.classList.add("attach-chip-doc");
+        chip.innerHTML = `<span class="doc-icon">📄</span><span class="doc-label" style="color:${info.color}">${info.label}</span>`;
+        chip.title = file.name;
+      }
+
       attachPreview.appendChild(chip);
       return chip;
     }
@@ -156,7 +183,8 @@
     function removePendingByChip(chip) {
       const idx = pendingFiles.findIndex(p => p.chip === chip);
       if (idx !== -1) {
-        URL.revokeObjectURL(pendingFiles[idx].chip.querySelector("img").src);
+        const img = pendingFiles[idx].chip.querySelector("img");
+        if (img) URL.revokeObjectURL(img.src);
         pendingFiles[idx].chip.remove();
         pendingFiles.splice(idx, 1);
       }
@@ -267,8 +295,15 @@
 
     /* =========================== end attachments =========================== */
 
+    // Guard: prevents sending while a stop request is in-flight
+    let _stopInFlight = false;
+
     async function sendMessage() {
+      // Block sends while a stop is being processed — prevents CHAT_IN_PROGRESS race
+      if (_stopInFlight) return;
+
       if (isStreaming()) {
+        _stopInFlight = true;
         const ctrl = activeStreams.get(activeChatId);
         if (ctrl) ctrl.abort();
         // Fallback: if abort doesn't end the stream within 3s, force-clean
@@ -280,12 +315,18 @@
             _toggleStreamIndicator(_stuckId, false);
           }
         }, 3000);
-        // Best-effort: tell backend to stop upstream Qwen generation (fire-and-forget)
-        fetch("/api/chat/stop", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: activeChatId }),
-        }).catch(() => {});
+        // Await the stop API so upstream generation is actually halted before
+        // the user can send a new message — eliminates CHAT_IN_PROGRESS race.
+        try {
+          await fetch("/api/chat/stop", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: activeChatId }),
+          });
+        } catch (_) {}
+        // Small grace period for upstream to fully release the session
+        await new Promise(r => setTimeout(r, 500));
+        _stopInFlight = false;
         return;
       }
 
@@ -380,7 +421,7 @@
           body: JSON.stringify({
             message,
             chat_id: streamChatId,
-            parent_id: parentId,
+            parent_id: parentId != null ? String(parentId) : undefined,
             files: filesPayload.length ? filesPayload : undefined,
             model: selectedModel,
             thinking_mode: selectedThinkingMode,
@@ -491,7 +532,7 @@
           body: JSON.stringify({
             message,
             chat_id: streamChatId,
-            parent_id: parentId,
+            parent_id: parentId != null ? String(parentId) : undefined,
             model: selectedModel,
             thinking_mode: selectedThinkingMode,
             stream: true,
@@ -724,9 +765,10 @@
         console.warn("Could not read persisted chat:", err);
       }
 
-      if (savedChatId && chatList.some(c => c.id === savedChatId)) {
+      // Always start fresh — don't restore last chat on reload
+      if (false && savedChatId && chatList.some(c => c.id === savedChatId)) {
         await selectChat(savedChatId);
-      } else if (chatList.length > 0) {
+      } else if (false && chatList.length > 0) {
         await selectChat(chatList[0].id);
       } else {
         chatEl.innerHTML = `<div class="empty"><h2>Start a chat</h2><p>Create a new chat and talk to Sable.</p></div>`;

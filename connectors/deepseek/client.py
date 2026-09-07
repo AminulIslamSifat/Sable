@@ -282,6 +282,10 @@ class DeepSeekClient:
         self._lock = asyncio.Lock()
         # Client-side conversation history: chat_id → [message dicts]
         self._sessions: dict[str, list[dict[str, Any]]] = {}
+        # Server-side message chaining: chat_id → last assistant message_id
+        # Used as parent_message_id for the next request so DeepSeek chains server-side.
+        # DeepSeek message_id is an integer (not string).
+        self._parent_ids: dict[str, int | None] = {}
         # Token rotation state (always active — like Gemini/Mistral key rotation)
         self._rotate_tokens: list[str] = []
         self._rotate_idx: int = 0
@@ -338,6 +342,13 @@ class DeepSeekClient:
         if not self._rotate_tokens:
             return None
         return self._rotate_tokens[self._rotate_idx % len(self._rotate_tokens)]
+
+    @staticmethod
+    def _mask_token(token: str | None) -> str:
+        """Mask a JWT token for safe display: show first 8 + last 4 chars."""
+        if not token or len(token) < 16:
+            return "***"
+        return f"{token[:8]}…{token[-4:]}"
 
     def _advance_rotation(self) -> None:
         if self._rotate_tokens:
@@ -681,18 +692,11 @@ class DeepSeekClient:
             self._sessions[chat_id] = history
         return history
 
-    # Warning injected before the final user message to prevent DeepSeek from
-    # emitting legacy XML tool-call tags (<invoke>, <parameter>) instead of
-    # the expected format.  Keep this as a class-level constant so it's easy
-    # to tweak or disable.
-    _DEEPSEEK_TAG_WARNING = (
-        "[SYSTEM WARNING: Do NOT use <invoke>, <parameter>, <tool_calls>, "
-        "or ANY XML/custom tags for tool calls. Output tool calls as a "
-        "plain JSON array at the end of your message. Example: "
-        '[{"name": "grep", "arguments": {"pattern": "foo"}}] — '
-        "no tags, no wrappers, just clean JSON. "
-        "Any response containing XML tags will be rejected.]"
-    )
+    # Tag warning disabled — system prompt (tools_loader) now handles format
+    # instruction per-provider (DSML for DeepSeek). This warning contradicted
+    # the DSML format instruction and caused the model to output bare JSON
+    # instead of DSML invoke/parameter blocks.
+    _DEEPSEEK_TAG_WARNING = ""
 
     @classmethod
     def _serialize_history(cls, history: list[dict[str, Any]], current_message: str) -> str:
@@ -712,8 +716,11 @@ class DeepSeekClient:
                 parts.append(f"User: {content}")
             elif role == "assistant":
                 parts.append(f"Assistant: {content}")
-        # Prepend warning to the current (last) user message
-        warned_message = f"{cls._DEEPSEEK_TAG_WARNING}\n\n{current_message}"
+        # Prepend warning to the current (last) user message (if any)
+        if cls._DEEPSEEK_TAG_WARNING:
+            warned_message = f"{cls._DEEPSEEK_TAG_WARNING}\n\n{current_message}"
+        else:
+            warned_message = current_message
         parts.append(f"User: {warned_message}")
         return "\n\n".join(parts)
 
@@ -725,8 +732,12 @@ class DeepSeekClient:
         self,
         resp: httpx.Response,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """Parse an open /chat/completion SSE stream into Sable events."""
+        """Parse an open /chat/completion SSE stream into Sable events.
+
+        Extracts message_id from response events for server-side chaining.
+        """
         current_frag_type: str = "RESPONSE"
+        last_message_id: int | None = None  # Track assistant message ID from stream
 
         async for line in resp.aiter_lines():
             if not line.startswith("data: "):
@@ -739,6 +750,31 @@ class DeepSeekClient:
             except json.JSONDecodeError:
                 continue
 
+            # Check for business-layer errors (muted account, etc.)
+            # DeepSeek returns HTTP 200 with biz_code for account-level issues
+            biz_code = obj.get("biz_code")
+            if biz_code is not None and biz_code != 0:
+                biz_msg = obj.get("biz_msg", "unknown")
+                mute_until = None
+                biz_data = obj.get("biz_data")
+                if isinstance(biz_data, dict):
+                    mute_until = biz_data.get("mute_until")
+                logger.warning("DeepSeek biz_code=%s: %s (mute_until=%s)", biz_code, biz_msg, mute_until)
+                yield {
+                    "type": "biz_error",
+                    "biz_code": biz_code,
+                    "biz_msg": biz_msg,
+                    "mute_until": mute_until,
+                }
+                return  # Stop parsing — stream is dead
+
+            # Extract response_message_id from initial handshake event
+            # Format: {"request_message_id":1,"response_message_id":2,"model_type":"default"}
+            if "response_message_id" in obj:
+                rid = obj["response_message_id"]
+                if isinstance(rid, int):
+                    last_message_id = rid
+
             v = obj.get("v")
             p = obj.get("p")
             o = obj.get("o")
@@ -746,10 +782,11 @@ class DeepSeekClient:
             if v is None and p is None:
                 continue
             if p == "response" and o == "BATCH":
+                # BATCH events contain token usage / status, not message IDs
                 continue
             if p == "response/status" and o == "SET":
                 if v == "FINISHED":
-                    yield {"type": "done", "parent_id": None}
+                    yield {"type": "done", "parent_id": last_message_id}
                 continue
             if p and "elapsed_secs" in p:
                 continue
@@ -773,7 +810,11 @@ class DeepSeekClient:
                     yield {"type": etype, "text": text}
                 continue
             if isinstance(v, dict) and "response" in v:
-                fragments = v["response"].get("fragments", [])
+                # Extract message_id from response metadata
+                resp_data = v["response"]
+                if resp_data.get("message_id"):
+                    last_message_id = resp_data["message_id"]
+                fragments = resp_data.get("fragments", [])
                 for frag in fragments:
                     ftype = frag.get("type", "RESPONSE")
                     current_frag_type = ftype
@@ -804,8 +845,11 @@ class DeepSeekClient:
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat completion. Yields Sable-compatible event dicts.
 
-        Mirrors Gemini/Mistral: client-side history, full-context prompt, automatic
-        token rotation with round-robin + failover.
+        Uses server-side message chaining via parent_message_id (like Qwen).
+        Only the current user message is sent as prompt; DeepSeek chains context
+        server-side using the parent_message_id from the previous response.
+        Falls back to full-context serialization when parent is unknown (fresh
+        session, token rotation, summarization, or first message).
         """
         thinking_enabled = str(thinking_mode or "").lower() in ("thinking", "deepthink")
         model_type = model
@@ -821,16 +865,40 @@ class DeepSeekClient:
                 history.append({"role": _m["role"], "content": _m["content"]})
 
         # Context summarization: check thresholds before sending
+        # If summarization fires, we lose the parent chain — must send full context
+        _summarized_this_turn = False
         if chat_id:
+            old_history_len = len(history)
             history = await self._maybe_summarize(chat_id, history)
+            if len(history) != old_history_len:
+                _summarized_this_turn = True
+                # Summarization broke the parent chain — reset tracked parent
+                self._parent_ids[chat_id] = None
             prefix_len = 1 if history and history[0].get("role") == "system" else 0
             total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
             if should_inject_hint(total_chars, self._max_session_chars):
                 hint = get_hint_text(total_chars, self._max_session_chars)
                 message = message + hint
 
-        # Serialize history + current message into prompt
-        prompt = self._serialize_history(history, message)
+        # Determine whether to use chained mode or full-context fallback
+        _parent_id = self._parent_ids.get(chat_id) if chat_id else None
+        _is_first_message = len(history) <= 1  # Only system instruction (or empty)
+        _use_chaining = (
+            _parent_id is not None
+            and not _summarized_this_turn
+            and not _is_first_message
+        )
+
+        if _use_chaining:
+            # Chained mode: send only the current message, DeepSeek uses parent
+            prompt = message
+            logger.debug("DeepSeek chained mode: parent=%s, chat=%s", _parent_id, chat_id)
+        else:
+            # Full-context fallback: serialize entire history into prompt
+            prompt = self._serialize_history(history, message)
+            _parent_id = None  # Stateless when sending full context
+            logger.debug("DeepSeek full-context mode: chat=%s, reason=%s",
+                         chat_id, "first_msg" if _is_first_message else "no_parent" if not self._parent_ids.get(chat_id) else "summarized")
 
         # Try each token with round-robin rotation + failover
         attempts = max(1, len(self._rotate_tokens) or 1)
@@ -845,7 +913,7 @@ class DeepSeekClient:
 
             body = {
                 "chat_session_id": session_id,
-                "parent_message_id": None,  # Always stateless — context is in the prompt
+                "parent_message_id": _parent_id,
                 "model_type": model_type,
                 "prompt": prompt,
                 "ref_file_ids": file_ids,
@@ -870,7 +938,21 @@ class DeepSeekClient:
                         await resp.aread()
                         last_err = f"HTTP {resp.status_code}"
                         logger.warning("DeepSeek token failed (%s), rotating...", last_err)
+                        _old_token = self._current_rotate_token
+                        # Failover breaks the parent chain — different session next attempt
+                        if chat_id:
+                            self._parent_ids[chat_id] = None
                         self._advance_rotation()
+                        _new_token = self._current_rotate_token
+                        yield {
+                            "type": "token_rotation",
+                            "reason": last_err,
+                            "from_token": self._mask_token(_old_token),
+                            "to_token": self._mask_token(_new_token),
+                            "from_index": self._rotate_idx - 1 if self._rotate_idx > 0 else len(self._rotate_tokens) - 1,
+                            "to_index": self._rotate_idx,
+                            "total_tokens": len(self._rotate_tokens),
+                        }
                         continue
 
                     if resp.status_code != 200:
@@ -878,15 +960,62 @@ class DeepSeekClient:
                         yield {"type": "error", "message": f"HTTP {resp.status_code}: {error_body.decode()[:500]}"}
                         return
 
+                    _response_parent_id: int | None = None
+                    _got_biz_error = False
                     async for event in self._iter_completion_events(resp):
                         etype = event.get("type")
                         if etype == "answer":
                             full_answer += event.get("text", "")
                         elif etype == "thinking":
                             full_thinking += event.get("text", "")
+                        elif etype == "done":
+                            _response_parent_id = event.get("parent_id")
+                        elif etype == "biz_error":
+                            _got_biz_error = True
+                            # Business-layer error (muted, etc.) — rotate to next token
+                            last_err = f"biz_code:{event.get('biz_code')} ({event.get('biz_msg', 'unknown')})"
+                            logger.warning("DeepSeek biz_error, rotating: %s", last_err)
+                            if chat_id:
+                                self._parent_ids[chat_id] = None
+                            _old_token_biz = self._current_rotate_token
+                            self._advance_rotation()
+                            _new_token_biz = self._current_rotate_token
+                            yield {
+                                "type": "token_rotation",
+                                "reason": last_err,
+                                "from_token": self._mask_token(_old_token_biz),
+                                "to_token": self._mask_token(_new_token_biz),
+                                "from_index": self._rotate_idx - 1 if self._rotate_idx > 0 else len(self._rotate_tokens) - 1,
+                                "to_index": self._rotate_idx,
+                                "total_tokens": len(self._rotate_tokens),
+                            }
+                            break  # Break out of stream parsing, continue to next attempt
                         yield event
 
+                    if _got_biz_error:
+                        continue  # Try next token
+
                 _log_raw("RESPONSE (raw)", (full_thinking + "\n---\n" + full_answer) if full_thinking else full_answer)
+
+                # Empty response detection: HTTP 200 but zero content = dead token
+                if not full_answer and not full_thinking:
+                    last_err = "empty_response"
+                    logger.warning("DeepSeek empty response, rotating to next token...")
+                    if chat_id:
+                        self._parent_ids[chat_id] = None
+                    _old_token_empty = self._current_rotate_token
+                    self._advance_rotation()
+                    _new_token_empty = self._current_rotate_token
+                    yield {
+                        "type": "token_rotation",
+                        "reason": "empty_response",
+                        "from_token": self._mask_token(_old_token_empty),
+                        "to_token": self._mask_token(_new_token_empty),
+                        "from_index": self._rotate_idx - 1 if self._rotate_idx > 0 else len(self._rotate_tokens) - 1,
+                        "to_index": self._rotate_idx,
+                        "total_tokens": len(self._rotate_tokens),
+                    }
+                    continue  # Try next token
 
                 # Success — save user message + assistant response to history
                 _summarize_idx = extract_summarize_tag(full_answer)
@@ -896,33 +1025,61 @@ class DeepSeekClient:
                 if response_content:
                     history.append({"role": "assistant", "content": response_content})
 
+                # Store the assistant message ID for next-turn chaining
+                if chat_id and _response_parent_id:
+                    self._parent_ids[chat_id] = _response_parent_id
+                elif chat_id and not _response_parent_id:
+                    # No message_id from stream — chain broken, next turn uses full-context
+                    self._parent_ids[chat_id] = None
+                    logger.warning("DeepSeek: no message_id in response for chat %s, chain reset", chat_id)
+
                 # Handle model-triggered summarization
                 if _summarize_idx is not None and chat_id:
                     prefix_len = 1 if history and history[0].get("role") == "system" else 0
                     actual_cut = max(prefix_len, min(_summarize_idx, len(history) - 1))
                     msgs_to_summarize = history[prefix_len:actual_cut]
                     if len(msgs_to_summarize) >= 2:
-                        prompt = build_summary_prompt(msgs_to_summarize, _msg_chars)
-                        summary = await self._call_self_summarize(prompt)
+                        sum_prompt = build_summary_prompt(msgs_to_summarize, _msg_chars)
+                        summary = await self._call_self_summarize(sum_prompt)
                         if summary:
                             logger.info("Model-triggered summarization at index %d for chat %s", _summarize_idx, chat_id)
                             history = rewrite_history_with_summary(history, summary, actual_cut, prefix_len, fmt="openai")
                             self._sessions[chat_id] = history
+                            # Summarization broke the chain
+                            self._parent_ids[chat_id] = None
 
                 if chat_id:
                     prefix_len = 1 if history and history[0].get("role") == "system" else 0
                     total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
                     if total_chars > self._max_session_chars:
                         self._sessions[chat_id] = _trim_history(history, prefix_len, self._max_session_chars)
+                        # Trimming may have removed messages the parent depends on
+                        # but server-side session still has them — chain stays valid
 
-                # Advance rotation for round-robin on next call
-                self._advance_rotation()
+                # No round-robin advance on success — keep the same token for
+                # next turn to preserve parent_message_id session continuity.
+                # Rotation only happens on failure (HTTP errors, timeout) via
+                # _prepare_request_with_rotation failover.
                 return
 
             except httpx.ReadTimeout:
                 last_err = "timeout (120s)"
                 logger.warning("DeepSeek token timed out, rotating...")
+                _old_token_to = self._current_rotate_token
+                # Timeout failover breaks the parent chain
+                if chat_id:
+                    self._parent_ids[chat_id] = None
                 self._advance_rotation()
+                _new_token_to = self._current_rotate_token
+                yield {
+                    "type": "token_rotation",
+                    "reason": "timeout",
+                    "from_token": self._mask_token(_old_token_to),
+                    "to_token": self._mask_token(_new_token_to),
+                    "from_index": self._rotate_idx - 1 if self._rotate_idx > 0 else len(self._rotate_tokens) - 1,
+                    "to_index": self._rotate_idx,
+                    "total_tokens": len(self._rotate_tokens),
+                }
                 continue
             except Exception as exc:
                 yield {"type": "error", "message": f"Stream error: {type(exc).__name__}: {exc}"}
