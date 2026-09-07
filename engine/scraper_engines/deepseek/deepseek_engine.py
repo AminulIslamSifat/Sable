@@ -18,18 +18,6 @@ from exceptions import ResponseCaptureError
 # Constants
 # ---------------------------------------------------------------------------
 
-_CHROME_BINARIES = [
-    "thorium-browser-avx2",
-    "google-chrome-stable",
-    "google-chrome",
-    "chromium-browser",
-    "chromium",
-]
-
-# Fallback: Playwright-bundled Chromium (check newest version first)
-from engine.platform_paths import find_playwright_chrome as _find_pw_chrome
-_PLAYWRIGHT_CHROME_GLOB = None  # resolved lazily via find_playwright_chrome()
-
 _INPUT_SELECTORS = [
     PLATFORM["selectors"]["input"],
     "textarea[formcontrolname='promptText']",
@@ -298,17 +286,12 @@ class GhostChat:
             except Exception:
                 pass
 
-        from engine.platform_paths import system_chrome_candidates, find_playwright_chrome
-        chrome_path = next((shutil.which(b) for b in _CHROME_BINARIES if shutil.which(b)), None)
+        # Use centralized browser resolution — respects per-account saved browser path
+        from engine.platform_paths import resolve_browser_for_profile, find_best_chrome
+        profile_name = getattr(self, "profile_name", None) or Path(self.user_data_dir).name
+        chrome_path = resolve_browser_for_profile(profile_name)
         if not chrome_path:
-            # Try platform-aware system Chrome candidates
-            for cand in system_chrome_candidates():
-                if os.path.isfile(cand):
-                    chrome_path = cand
-                    break
-        if not chrome_path:
-            # Fallback to Playwright-bundled Chromium (newest version)
-            chrome_path = find_playwright_chrome()
+            chrome_path = find_best_chrome()
         if not chrome_path:
             console.print("[bold red]❌ No Chrome found![/bold red]")
             sys.exit(1)

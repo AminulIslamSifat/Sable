@@ -163,7 +163,7 @@
       loadTools();
       loadSkills();
     });
-    document.querySelector('[data-tab="account"]')?.addEventListener("click", () => { if (typeof loadAccountProfiles === 'function') loadAccountProfiles(); });
+    document.querySelector('[data-tab="account"]')?.addEventListener("click", () => { if (window.loadAvailableBrowsers) window.loadAvailableBrowsers(); if (typeof loadAccountProfiles === 'function') loadAccountProfiles(); });
 
     // --- Providers tab: Unified API key manager ---
     const _keyProviderMeta = {

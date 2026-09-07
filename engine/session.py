@@ -7,6 +7,7 @@ import uuid
 import base64
 import json
 from pathlib import Path
+from typing import Any
 
 import httpx
 from engine.config import COOKIES, BX_UA, BX_UMIDTOKEN, NEW_CHAT_URL, get_model_config
@@ -98,8 +99,11 @@ class BrowserManager:
             launch_num = _increment_playwright_counter()
             print(f"[DEBUG] Launching persistent browser context #{launch_num} (headless={self.headless})...")
             from playwright.async_api import async_playwright
+            from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
             self.playwright = await async_playwright().start()
-            self.context = await self.playwright.chromium.launch_persistent_context(
+            profile_name = getattr(self, "profile_name", None) or Path(self.user_data_dir).name
+            exe_path = resolve_browser_for_profile(profile_name)
+            launch_kwargs: dict[str, Any] = dict(
                 user_data_dir=self.user_data_dir,
                 headless=self.headless,
                 args=[
@@ -107,8 +111,11 @@ class BrowserManager:
                     "--disable-blink-features=AutomationControlled",
                     "--disable-infobars",
                     "--disable-gpu",
-                ],
+                ] + extra_browser_args(exe_path),
             )
+            if exe_path:
+                launch_kwargs["executable_path"] = exe_path
+            self.context = await self.playwright.chromium.launch_persistent_context(**launch_kwargs)
             self.page = await self.context.new_page()
             await self.page.goto("https://chat.qwen.ai", wait_until="domcontentloaded", timeout=15000)
 

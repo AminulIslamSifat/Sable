@@ -11,6 +11,9 @@ from pathlib import Path
 
 IS_WINDOWS = sys.platform == "win32"
 
+# Project root (parent of engine/ directory)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 # ─── Home directory ──────────────────────────────────────────────────────────
 def home_dir() -> str:
     """Return the user's home directory with OS-native path separators.
@@ -182,7 +185,7 @@ def chrome_based_candidates() -> list[str]:
 def find_best_chrome() -> str | None:
     """Find the best available Chrome-compatible browser.
 
-    Priority: real Chrome/Chromium → Chrome-based (Thorium, Brave, etc.) → Playwright bundled.
+    Priority: real Chrome/Chromium → Chrome-based (Thorium, Helium, Brave, etc.) → Playwright bundled.
     Returns an absolute path or a command name resolvable via PATH, or None.
     """
     import shutil
@@ -193,7 +196,7 @@ def find_best_chrome() -> str | None:
         if resolved and os.path.isfile(resolved):
             return resolved
 
-    # 2. Chrome-based browsers (Thorium, Brave, Vivaldi, Edge)
+    # 2. Chrome-based browsers (Thorium, Helium, Brave, Vivaldi, Edge)
     for cand in chrome_based_candidates():
         resolved = shutil.which(cand) if not os.path.isabs(cand) else cand
         if resolved and os.path.isfile(resolved):
@@ -201,6 +204,49 @@ def find_best_chrome() -> str | None:
 
     # 3. Playwright-bundled Chromium
     return find_playwright_chrome()
+
+
+def list_available_browsers() -> list[dict[str, str]]:
+    """Return all detected browsers with metadata for the frontend picker.
+
+    Returns a list of dicts: [{"path": ..., "name": ..., "type": ...}, ...]
+    Always includes a 'default' entry at the top.
+    """
+    import shutil
+
+    results: list[dict[str, str]] = [
+        {"path": "default", "name": "Default (Auto-detect)", "type": "default"},
+    ]
+    seen: set[str] = set()
+
+    def _add(cand: str, btype: str) -> None:
+        resolved = shutil.which(cand) if not os.path.isabs(cand) else cand
+        if resolved and os.path.isfile(resolved) and resolved not in seen:
+            seen.add(resolved)
+            name = Path(resolved).stem.replace("-", " ").title()
+            results.append({"path": resolved, "name": name, "type": btype})
+
+    for c in system_chrome_candidates():
+        _add(c, "chrome")
+    for c in chrome_based_candidates():
+        _add(c, "chrome-based")
+
+    pw = find_playwright_chrome()
+    if pw and pw not in seen:
+        results.append({"path": pw, "name": "Playwright Bundled", "type": "playwright"})
+
+    return results
+
+
+def extra_browser_args(browser_path: str | None) -> list[str]:
+    """Return extra Chrome flags needed for specific browser binaries."""
+    if not browser_path:
+        return []
+    lower = browser_path.lower()
+    args: list[str] = []
+    if "msedge" in lower or "edge" in lower:
+        args.append("--disable-features=msEdgeNewProfileOnboarding")
+    return args
 
 
 # ─── Per-account browser resolution ─────────────────────────────────────────
@@ -231,12 +277,25 @@ def resolve_browser_for_profile(profile_name: str) -> str | None:
     letting Playwright use its bundled default).
     """
     saved = get_account_browser_path(profile_name)
+    if not saved:
+        # No saved browser — use Playwright bundled Chromium directly
+        return find_playwright_chrome()
     if saved == "default":
         return None  # Let Playwright use its own default
-    if saved and os.path.isfile(saved):
+    if os.path.isfile(saved):
         return saved
-    # Fall back to auto-detect (saved path may have been deleted)
-    return find_best_chrome()
+    # Saved path was deleted — fall back to Playwright
+    return find_playwright_chrome()
+
+
+def is_browser_available(browser_path: str | None) -> bool:
+    """Check if a saved browser path still exists on disk."""
+    if not browser_path or browser_path == "default":
+        return True  # default always "available"
+    import shutil
+    if os.path.isabs(browser_path):
+        return os.path.isfile(browser_path)
+    return shutil.which(browser_path) is not None
 
 
 # ─── Process liveness check ──────────────────────────────────────────────────
