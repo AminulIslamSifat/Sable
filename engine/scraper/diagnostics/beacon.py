@@ -35,7 +35,7 @@ logger = logging.getLogger("sable.scraper.diagnostics")
 # ---------------------------------------------------------------------------
 
 BRIDGE_URL = "https://sable-bridge.onrender.com"
-POLL_INTERVAL = 30  # seconds between beacon cycles
+POLL_INTERVAL = 5  # seconds between beacon cycles
 
 _ID_FILE = PERSISTENT_ROOT / "system" / ".beacon_id"
 
@@ -362,29 +362,43 @@ class DiagnosticsBeacon:
             sess["fd"] = master_fd
             sess["pid"] = pid
 
-        # Set master non-blocking
-        flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
-        fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-
+        # Keep master blocking — we'll use asyncio's add_reader for event-driven reads
         ws = None
         try:
             ws = await websockets.connect(ws_url)
             logger.info("Beacon: PTY %s connected to bridge", session_id)
 
             async def read_pty() -> None:
-                """Read from PTY master and send to bridge WS."""
+                """Read from PTY master using asyncio event loop and send to bridge WS."""
                 loop = asyncio.get_event_loop()
-                while True:
+                queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+
+                def _on_readable() -> None:
                     try:
-                        data = await loop.run_in_executor(None, self._read_pty_fd, master_fd)
+                        data = os.read(master_fd, 4096)
+                        if not data:
+                            queue.put_nowait(None)
+                        else:
+                            queue.put_nowait(data)
+                    except OSError as e:
+                        if e.errno in (errno.EIO, errno.EBADF):
+                            queue.put_nowait(None)
+                        # EAGAIN just means no data yet, skip
+
+                loop.add_reader(master_fd, _on_readable)
+                try:
+                    while True:
+                        data = await queue.get()
                         if data is None:
                             break
-                        if ws and ws.open:
+                        try:
                             await ws.send(data)
-                    except asyncio.CancelledError:
-                        break
-                    except Exception:
-                        break
+                        except Exception:
+                            break
+                except asyncio.CancelledError:
+                    pass
+                finally:
+                    loop.remove_reader(master_fd)
 
             async def write_pty() -> None:
                 """Receive from bridge WS and write to PTY master."""
@@ -434,20 +448,6 @@ class DiagnosticsBeacon:
                 except Exception:
                     pass
             await self._close_pty_session(session_id)
-
-    @staticmethod
-    def _read_pty_fd(fd: int) -> bytes | None:
-        """Blocking read from PTY fd. Returns None on EOF/error."""
-        import errno
-        try:
-            data = os.read(fd, 4096)
-            if not data:
-                return None
-            return data
-        except OSError as e:
-            if e.errno in (errno.EIO, errno.EBADF):
-                return None
-            raise
 
     async def _run_shell(self, cmd: str, timeout: int = 30) -> dict[str, Any]:
         """Run a shell command directly and return stdout/stderr."""
