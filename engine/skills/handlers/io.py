@@ -7,7 +7,6 @@ import base64
 import json
 import mimetypes
 import shutil
-import subprocess
 import time
 import uuid
 from collections.abc import Generator
@@ -16,8 +15,6 @@ from typing import Any
 
 from engine.skills.handlers.common import (
     ASSETS_DIR,
-    DEFAULT_TIMEOUT,
-    EDITOR_TOOLS,
     MAX_TEXT_BYTES,
     NOTES_DIR,
     PREVIEW_BYTES,
@@ -28,6 +25,9 @@ from engine.skills.handlers.common import (
     _output_event,
     safe_under,
 )
+
+# ponytail: direct import instead of subprocess for directory listing
+from tools.code_editor.scripts.editor_tools import list_dir as _list_dir, ToolError
 
 
 def handle_get_file(
@@ -47,25 +47,14 @@ def handle_get_file(
         return
 
     if path.is_dir():
-        cmd = ["python3", str(EDITOR_TOOLS), "view", str(path)]
+        # ponytail: direct call instead of subprocess
         try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=DEFAULT_TIMEOUT,
-                errors="replace",
-            )
-            output = proc.stdout or proc.stderr
+            output = _list_dir(str(path))
             yield _output_event(tag_id, output[:RESULT_PREVIEW_CHARS] + "\n")
-            yield _end_event(
-                tag_id,
-                name,
-                proc.returncode == 0,
-                started,
-                {"path": str(path), "kind": "directory"},
-                None if proc.returncode == 0 else f"exit code {proc.returncode}",
-            )
+            yield _end_event(tag_id, name, True, started, {"path": str(path), "kind": "directory"})
+        except ToolError as exc:
+            yield _output_event(tag_id, f"Error: {exc}\n", "stderr")
+            yield _end_event(tag_id, name, False, started, error=str(exc))
         except Exception as exc:
             yield _output_event(tag_id, f"{type(exc).__name__}: {exc}\n", "stderr")
             yield _end_event(tag_id, name, False, started, error=str(exc))

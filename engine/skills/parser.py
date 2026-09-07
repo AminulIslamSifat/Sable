@@ -71,6 +71,8 @@ KNOWN_TAGS = (
     "web_fetch",
     "online_search",
     "chat_title",
+    "computer_use",
+    "load_tool",
 )
 
 # Params that map to the content field for handler compatibility.

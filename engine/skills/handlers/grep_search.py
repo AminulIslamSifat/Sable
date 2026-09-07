@@ -3,45 +3,15 @@
 
 from __future__ import annotations
 
-import json
-import subprocess
 import time
 from collections.abc import Generator
-from pathlib import Path
 from typing import Any
 
 from engine.skills.handlers.common import _end_event, _output_event
 
-_SCRIPT = str(Path(__file__).resolve().parent.parent.parent.parent / "tools" / "grep_search" / "scripts" / "grep_search.py")
-
-
-def _run_script(command: str, args: dict[str, str]) -> list[str]:
-    """Run grep_search.py with JSON stdin, return result lines or error."""
-    payload = json.dumps({"command": command, "args": args})
-    try:
-        proc = subprocess.run(
-            ["python3", _SCRIPT],
-            input=payload,
-            capture_output=True,
-            text=True,
-            timeout=35,
-        )
-    except subprocess.TimeoutExpired:
-        return [f"Error: {command} timed out after 35s"]
-    except Exception as e:
-        return [f"Error: {e}"]
-
-    if proc.returncode != 0 and not proc.stdout.strip():
-        return [f"Error: {proc.stderr.strip() or 'script failed'}"]
-
-    try:
-        result = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return [proc.stdout[:2000] if proc.stdout else f"Error: invalid output from script"]
-
-    if "error" in result:
-        return [f"Error: {result['error']}"]
-    return result.get("lines", [])
+# ponytail: direct import instead of subprocess — grep still uses rg binary internally,
+# but we skip the Python-in-Python overhead for all three commands
+from tools.grep_search.scripts.grep_search import cmd_grep, cmd_glob, cmd_list_dir
 
 
 def handle_grep(
@@ -54,7 +24,10 @@ def handle_grep(
         args["pattern"] = content.strip()
 
     yield _output_event(tag_id, f"$ grep '{args.get('pattern', '')}' in {args.get('path', '$PROJECT_ROOT')}\n", "command")
-    lines = _run_script("grep", args)
+    try:
+        lines = cmd_grep(args)
+    except Exception as exc:
+        lines = [f"Error: {exc}"]
     for line in lines:
         yield _output_event(tag_id, line + "\n")
     ok = not any(l.startswith("Error:") for l in lines)
@@ -70,7 +43,10 @@ def handle_glob(
         args["pattern"] = content.strip()
 
     yield _output_event(tag_id, f"$ glob '{args.get('pattern', '')}' in {args.get('path', '$PROJECT_ROOT')}\n", "command")
-    lines = _run_script("glob", args)
+    try:
+        lines = cmd_glob(args)
+    except Exception as exc:
+        lines = [f"Error: {exc}"]
     for line in lines:
         yield _output_event(tag_id, line + "\n")
     ok = not any(l.startswith("Error:") for l in lines)
@@ -86,7 +62,10 @@ def handle_list_dir(
         args["path"] = content.strip()
 
     yield _output_event(tag_id, f"$ ls {args.get('path', '$PROJECT_ROOT')}\n", "command")
-    lines = _run_script("list_dir", args)
+    try:
+        lines = cmd_list_dir(args)
+    except Exception as exc:
+        lines = [f"Error: {exc}"]
     for line in lines:
         yield _output_event(tag_id, line + "\n")
     ok = not any(l.startswith("Error:") for l in lines)

@@ -8,9 +8,7 @@ from __future__ import annotations
 
 import os
 import time
-import uuid
 from collections.abc import Generator
-from pathlib import Path
 from typing import Any
 
 from engine.skills.handlers.common import (
@@ -20,7 +18,16 @@ from engine.skills.handlers.common import (
     _output_event,
     build_file_edit_event,
     make_backup,
-    run_editor,
+)
+
+# ponytail: direct import instead of subprocess — native call, zero overhead
+from tools.code_editor.scripts.editor_tools import (
+    ToolError,
+    create_file as _create_file,
+    edit_file as _edit_file,
+    insert_file as _insert_file,
+    view_file as _view_file,
+    _parse_search_replace_blocks,
 )
 
 
@@ -36,21 +43,23 @@ def handle_view_file(
 
     path = os.path.expandvars(os.path.expanduser(path))
 
-    args = ["view", path]
-    start_line = attrs.get("start")
-    end_line = attrs.get("end")
+    start_line = int(attrs["start"]) if attrs.get("start") else None
+    end_line = int(attrs["end"]) if attrs.get("end") else None
     full = attrs.get("full", "").lower() in ("true", "1", "yes")
-    if start_line:
-        args += ["--start", str(start_line)]
-    if end_line:
-        args += ["--end", str(end_line)]
-    if full:
-        args.append("--full")
 
-    ok, output = run_editor(args)
-    output_trimmed = output[:RESULT_PREVIEW_CHARS]
-    yield _output_event(tag_id, output_trimmed + "\n")
-    yield _end_event(tag_id, name, ok, started, {"path": path}, None if ok else output_trimmed[:500])
+    try:
+        output = _view_file(path, start=start_line, end=end_line, full=full)
+        output_trimmed = output[:RESULT_PREVIEW_CHARS]
+        yield _output_event(tag_id, output_trimmed + "\n")
+        yield _end_event(tag_id, name, True, started, {"path": path})
+    except ToolError as exc:
+        err_msg = str(exc)[:RESULT_PREVIEW_CHARS]
+        yield _output_event(tag_id, f"Error: {err_msg}\n", "stderr")
+        yield _end_event(tag_id, name, False, started, {"path": path}, error=err_msg[:500])
+    except Exception as exc:
+        err_msg = f"{type(exc).__name__}: {exc}"
+        yield _output_event(tag_id, f"{err_msg}\n", "stderr")
+        yield _end_event(tag_id, name, False, started, {"path": path}, error=err_msg[:500])
 
 
 def handle_edit_file(
@@ -80,12 +89,18 @@ def handle_edit_file(
     dry_run = attrs.get("dry_run", "").lower() in ("true", "1", "yes")
 
     backup_path = make_backup(path) if not dry_run else None
-    args = ["edit", path]
-    if replace_all:
-        args.append("--replace-all")
-    if dry_run:
-        args.append("--dry-run")
-    ok, output = run_editor(args, stdin_data=content)
+
+    try:
+        payload = _parse_search_replace_blocks(content)
+        output = _edit_file(path, payload, backup=True, replace_all=replace_all, dry_run=dry_run)
+        ok = True
+    except ToolError as exc:
+        output = f"Error: {exc}"
+        ok = False
+    except Exception as exc:
+        output = f"Internal error: {exc}"
+        ok = False
+
     output_trimmed = output[:RESULT_PREVIEW_CHARS]
     yield _output_event(tag_id, output_trimmed + "\n")
 
@@ -116,12 +131,18 @@ def handle_create_file(
         return
     overwrite = attrs.get("overwrite", "").lower() in ("true", "1", "yes")
 
-    args = ["create", path]
-    if overwrite:
-        args.append("--overwrite")
-
     backup_path = make_backup(path) if overwrite else None
-    ok, output = run_editor(args, stdin_data=content)
+
+    try:
+        output = _create_file(path, content, overwrite=overwrite)
+        ok = True
+    except ToolError as exc:
+        output = f"Error: {exc}"
+        ok = False
+    except Exception as exc:
+        output = f"Internal error: {exc}"
+        ok = False
+
     output_trimmed = output[:RESULT_PREVIEW_CHARS]
     yield _output_event(tag_id, output_trimmed + "\n")
 
@@ -151,41 +172,27 @@ def handle_insert_file(
         yield _end_event(tag_id, name, False, started, error="Blocked: SSD tree write guard")
         return
 
-    at_line = attrs.get("at_line") or attrs.get("at-line")
+    at_line_raw = attrs.get("at_line") or attrs.get("at-line")
     after_str = attrs.get("after_str") or attrs.get("after-str")
     dry_run = attrs.get("dry_run", "").lower() in ("true", "1", "yes")
 
-    if not at_line and not after_str:
+    if not at_line_raw and not after_str:
         yield _output_event(tag_id, "insert_file requires at_line or after_str attribute\n", "stderr")
         yield _end_event(tag_id, name, False, started, error="Missing at_line or after_str")
         return
 
-    args = ["insert", path]
-    if dry_run:
-        args.append("--dry-run")
+    at_line = int(at_line_raw) if at_line_raw else None
     backup_path = make_backup(path) if not dry_run else None
-    tmp_anchor: Path | None = None
-    tmp_content: Path | None = None
+
     try:
-        tmp_content = Path("/tmp") / f"sable_insert_{uuid.uuid4().hex}.txt"
-        tmp_content.write_text(content, encoding="utf-8")
-        args += ["--content-file", str(tmp_content)]
-
-        if at_line:
-            args += ["--at-line", str(at_line)]
-        elif after_str:
-            tmp_anchor = Path("/tmp") / f"sable_anchor_{uuid.uuid4().hex}.txt"
-            tmp_anchor.write_text(after_str, encoding="utf-8")
-            args += ["--after-file", str(tmp_anchor)]
-
-        ok, output = run_editor(args)
-    finally:
-        for tmp in (tmp_anchor, tmp_content):
-            if tmp and tmp.exists():
-                try:
-                    tmp.unlink()
-                except Exception:
-                    pass
+        output = _insert_file(path, content, at_line=at_line, after_str=after_str, dry_run=dry_run)
+        ok = True
+    except ToolError as exc:
+        output = f"Error: {exc}"
+        ok = False
+    except Exception as exc:
+        output = f"Internal error: {exc}"
+        ok = False
 
     output_trimmed = output[:RESULT_PREVIEW_CHARS]
     yield _output_event(tag_id, output_trimmed + "\n")

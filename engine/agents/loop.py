@@ -161,13 +161,24 @@ def _build_tool_guide(allowed_tools: list[str], allowed_skills: list[str], *, na
             "",
         ])
 
-        from engine.tools_loader import get_all_tool_schemas
+        from engine.tools_loader import (
+            get_all_tool_schemas,
+            get_outer_tool_stubs,
+            _build_load_tool_schema,
+        )
         from server.api.routes.misc import get_disabled_tools
         disabled = get_disabled_tools().get("disabled", [])
-        schemas = get_all_tool_schemas(disabled=disabled, allowed=allowed_tools)
-        if schemas:
+        # Core tools: full schemas
+        core_schemas = get_all_tool_schemas(disabled=disabled, allowed=allowed_tools, tier="core")
+        # Outer tools: stubs only
+        outer_stubs = get_outer_tool_stubs(disabled) if not allowed_tools else []
+        load_tool = _build_load_tool_schema(disabled) if not allowed_tools else None
+        all_schemas = core_schemas + outer_stubs
+        if load_tool:
+            all_schemas.append(load_tool)
+        if all_schemas:
             lines.append("\n<tools>")
-            for s in schemas:
+            for s in all_schemas:
                 lines.append(json.dumps(s, ensure_ascii=False))
             lines.append("</tools>")
             lines.append("")
@@ -1203,10 +1214,19 @@ async def _get_llm_event_source(
         if files:
             stream_kwargs["files"] = files
 
-        # Native tool schemas
+        # Native tool schemas: core/outer tier system
         try:
-            from engine.tools_loader import get_all_tool_schemas
-            tool_schemas = get_all_tool_schemas([])
+            from engine.tools_loader import (
+                get_all_tool_schemas,
+                get_outer_tool_stubs,
+                _build_load_tool_schema,
+            )
+            _core = get_all_tool_schemas([], tier="core")
+            _outer = get_outer_tool_stubs([])
+            _loader = _build_load_tool_schema([])
+            tool_schemas = _core + _outer
+            if _loader:
+                tool_schemas.append(_loader)
             if tool_schemas:
                 stream_kwargs["tools"] = tool_schemas
         except Exception:

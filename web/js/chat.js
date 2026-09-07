@@ -212,48 +212,58 @@
 
     /* ---------- end multi-tab ---------- */
 
-    // ── Smart auto-scroll: event-driven flag + rAF batching ──
-    // Pattern from Smashing Magazine / shadcn: track user intent via scroll
-    // event, batch writes with requestAnimationFrame, reset on new stream.
+    // ── Smart auto-scroll ──
     let _userScrolled = false;
-    let _scrollRafPending = false;
     let _scrollForChat = null;
+    let _isAutoScrolling = false;
+    let _scrollTimer = null;
 
     // Attach scroll listener whenever activePane changes (idempotent)
     const _scrollBoundPanes = new WeakSet();
     function _bindScrollListener(pane) {
       if (!pane || _scrollBoundPanes.has(pane)) return;
       _scrollBoundPanes.add(pane);
+      let _prevScrollTop = 0;
       pane.addEventListener("scroll", () => {
-        const gap = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
-        _userScrolled = gap > 60;
+        if (_isAutoScrolling) return; // ignore our own scrolls
+        const st = pane.scrollTop;
+        if (st < _prevScrollTop - 5) {
+          _userScrolled = true;
+        } else if (st >= pane.scrollHeight - pane.clientHeight - 30) {
+          _userScrolled = false;
+        }
+        _prevScrollTop = st;
       }, { passive: true });
     }
 
     // Call at stream start so previous scroll-up doesn't block new content
     function resetScrollTracking() {
       _userScrolled = false;
-      _scrollRafPending = false;
     }
 
     function scrollBottom(force) {
       if (!activePane) return;
-      if (_scrollForChat !== activeChatId) { _userScrolled = false; _scrollRafPending = false; }
+      if (_scrollForChat !== activeChatId) { _userScrolled = false; }
       _scrollForChat = activeChatId;
-      if (!force && _userScrolled) return;
-      if (_scrollRafPending) return;
-      _scrollRafPending = true;
-      requestAnimationFrame(() => {
-        _scrollRafPending = false;
+      // During active streaming, always scroll — content growth (skill cards,
+      // images) can falsely flip _userScrolled via scroll events, permanently
+      // blocking auto-scroll for the rest of the stream. Only respect the flag
+      // when no stream is running (i.e. user reading old messages).
+      const streaming = activeStreams.has(activeChatId);
+      if (!force && _userScrolled && !streaming) return;
+      // Cancel any pending scroll — we only care about the latest state
+      if (_scrollTimer) clearTimeout(_scrollTimer);
+      // setTimeout(0) runs AFTER layout is complete, unlike rAF which runs BEFORE.
+      // This guarantees scrollHeight reflects newly inserted cards/images/etc.
+      _scrollTimer = setTimeout(() => {
+        _scrollTimer = null;
         if (!activePane) return;
-        // Re-check position at paint time — user may have scrolled up between
-        // the scrollBottom() call and this rAF firing (race during fast streaming)
-        if (!force) {
-          const gap = activePane.scrollHeight - activePane.scrollTop - activePane.clientHeight;
-          if (gap > 80) { _userScrolled = true; return; }
-        }
+        if (!force && _userScrolled && !activeStreams.has(activeChatId)) return;
+        _isAutoScrolling = true;
         activePane.scrollTop = activePane.scrollHeight;
-      });
+        // Reset flag after the browser dispatches the scroll event
+        setTimeout(() => { _isAutoScrolling = false; }, 50);
+      }, 0);
     }
 
     function clearEmptyState() {

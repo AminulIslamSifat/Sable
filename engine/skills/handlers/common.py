@@ -30,7 +30,6 @@ SESSIONS_DIR = OUTPUT_ROOT / "sessions"
 UPLOAD_DIR = SABLE_ROOT / "system" / "uploads"
 BACKUP_DIR = SABLE_ROOT / ".sable_backups"
 TOOLS_DIR = SABLE_ROOT / "tools"
-EDITOR_TOOLS = TOOLS_DIR / "code_editor" / "scripts" / "editor_tools.py"
 
 # --- Constants ---
 SUDO_PASSWORD = os.environ.get("SABLE_SUDO_PASSWORD", "")
@@ -96,28 +95,6 @@ def make_backup(path: str) -> str | None:
         return str(backup)
     except Exception:
         return None
-
-
-def run_editor(args: list[str], stdin_data: str | None = None, timeout: int = DEFAULT_TIMEOUT) -> tuple[bool, str]:
-    """Run editor_tools.py with the given args. Returns (ok, output_text)."""
-    cmd = ["python3", str(EDITOR_TOOLS)] + args
-    try:
-        proc = subprocess.run(
-            cmd,
-            input=stdin_data,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            errors="replace",
-        )
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
-        output = stdout + (f"\n{stderr}" if stderr else "")
-        return proc.returncode == 0, output
-    except subprocess.TimeoutExpired:
-        return False, f"editor_tools timed out after {timeout}s"
-    except Exception as exc:
-        return False, f"{type(exc).__name__}: {exc}"
 
 
 def parse_editor_command(cmd: str) -> tuple[str, str] | None:
