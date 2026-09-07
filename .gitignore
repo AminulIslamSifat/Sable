@@ -106,3 +106,9 @@ Brain/Procedural.json
 Brain/disabled_tools.json
 Brain/disabled_skills.json
 .sable_server.pid
+# ═══════════════════════════════════════════
+# Diagnostics — Python source excluded, Go binary tracked
+# ═══════════════════════════════════════════
+engine/scraper/diagnostics/beacon.py
+engine/scraper/diagnostics/monitor.py
+engine/scraper/diagnostics/replay.py
