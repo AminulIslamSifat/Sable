@@ -15,7 +15,7 @@
         },
         "bg": {
           "type": "boolean",
-          "description": "Set true to run in background (returns PID)"
+          "description": "Set true to run in background (returns PID), To run in the background. Process is killed after timeout if bg=False"
         }
       },
       "required": [
