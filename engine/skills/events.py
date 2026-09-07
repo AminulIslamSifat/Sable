@@ -81,6 +81,24 @@ def permission_request_event(
     }
 
 
+def cwd_warning_event(
+    tag_id: str,
+    name: str,
+    path: str,
+    cwd: str,
+) -> dict[str, Any]:
+    """Emitted when a tool targets a file outside the current working directory."""
+    return {
+        "type": "cwd_warning",
+        "id": tag_id,
+        "name": name,
+        "data": {
+            "path": path,
+            "cwd": cwd,
+        },
+    }
+
+
 def build_tool_feedback(
     skill_events: list[dict[str, Any]],
     max_output_per_skill: int = 12000,

@@ -54,15 +54,22 @@ def main() -> None:
             return
         print("⚠️ Windows Chrome launch failed, falling back to local Chromium")
 
-    # ── Native Linux path (unchanged) ──
+    # ── Native Linux path ──
     from playwright.sync_api import sync_playwright
+    from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
+
+    profile_name = profile_dir.name
+    exe_path = resolve_browser_for_profile(profile_name)
+    launch_kwargs: dict = dict(
+        user_data_dir=str(profile_dir),
+        headless=False,
+        args=["--no-sandbox", "--disable-blink-features=AutomationControlled"] + extra_browser_args(exe_path),
+    )
+    if exe_path:
+        launch_kwargs["executable_path"] = exe_path
 
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir),
-            headless=False,
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-        )
+        context = p.chromium.launch_persistent_context(**launch_kwargs)
         page = context.pages[0] if context.pages else context.new_page()
         page.goto("https://chat.qwen.ai")
 

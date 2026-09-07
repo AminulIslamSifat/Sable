@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -19,7 +20,7 @@ from engine.scraper import (
 from connectors.deepseek.client import get_client as get_deepseek_client
 
 from server.config import (
-    BASE_DIR, _SYSTEM_DIR, _ACTIVE_PROFILE_LINK, _BROWSER_PROFILES,
+    BASE_DIR, _SYSTEM_DIR, _BROWSER_PROFILES,
 )
 from server.utils import _dir_size_mb, _read_profile_email, logger
 from ..dependencies import service
@@ -999,10 +1000,29 @@ async def list_accounts() -> dict[str, Any]:
         exhaustion = get_all_exhaustion_status()
         captcha_blocks = get_all_captcha_block_status()
 
+        # Load per-account browser config
+        acc_cfg = _read_accounts_config()
+
+        def _browser_label(path: str) -> str:
+            if not path:
+                return "Playwright"
+            if path == "default":
+                return "Default"
+            bname = Path(path).stem.lower()
+            for kw in ("chrome", "chromium", "thorium", "helium", "brave", "vivaldi", "msedge", "edge"):
+                if kw in bname:
+                    return kw.capitalize() if kw != "msedge" else "Edge"
+            return Path(path).stem
+
         accounts: list[dict[str, Any]] = []
         for entry in _SYSTEM_DIR.iterdir():
             m = re.match(r"browser-data-acc(\d+)$", entry.name)
             if entry.is_dir() and m:
+                browser_path = acc_cfg.get(entry.name, {}).get("browser_path", "")
+                # Check if saved browser still exists on disk
+                browser_available = True
+                if browser_path and browser_path != "default":
+                    browser_available = os.path.isfile(browser_path)
                 accounts.append({
                     "name": entry.name,
                     "num": int(m.group(1)),
@@ -1012,13 +1032,30 @@ async def list_accounts() -> dict[str, Any]:
                     "has_ds": entry.name in ds_tokens,
                     "exhausted": exhaustion.get(entry.name, False),
                     "captcha_blocked": captcha_blocks.get(entry.name, False),
+                    "browser_path": browser_path,
+                    "browser_label": _browser_label(browser_path),
+                    "browser_available": browser_available,
                 })
         accounts.sort(key=lambda a: a["num"])
         return accounts
     accounts = await asyncio.to_thread(_scan)
     from engine.config import get_active_account as _get_active
     active = _get_active()
-    return {"accounts": accounts, "active": active}
+    _settings = _read_system_settings()
+    return {
+        "accounts": accounts,
+        "active": active,
+        "auto_switch_enabled": _settings.get("account_auto_switch_enabled", True),
+    }
+
+@router.post("/api/settings/accounts/auto-switch-toggle")
+async def toggle_auto_switch(payload: dict[str, Any]) -> dict[str, Any]:
+    """Toggle account auto-switch on/off."""
+    enabled = payload.get("enabled", True)
+    _settings = _read_system_settings()
+    _settings["account_auto_switch_enabled"] = bool(enabled)
+    _write_system_settings(_settings)
+    return {"auto_switch_enabled": bool(enabled)}
 
 @router.post("/api/settings/accounts/switch")
 async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
@@ -1029,16 +1066,20 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
     if not target_path.is_dir():
         raise HTTPException(status_code=404, detail=f"Profile directory '{target_name}' not found")
     # Resolve old profile before switching (for post-switch strip)
-    from engine.config import get_active_account as _get_act, set_active_account as _set_act, _SYSTEM as _SYS
+    from engine.config import get_active_account as _get_act, set_active_account, _SYSTEM as _SYS
     old_profile: Path | None = None
     current_active = _get_act()
     current_path = _SYS / current_active
     if current_path != target_path and current_path.is_dir():
         old_profile = current_path
 
-    await service.close()
     try:
-        _set_act(target_name)
+        await service.close()
+        set_active_account(target_name)
+        # Update the singleton service's browser profile and account override
+        # so subsequent requests use the NEW account, not the stale one from init.
+        service._browser.user_data_dir = str(target_path)
+        service._account_override = target_name
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Switch failed: {exc}")
 
@@ -1092,36 +1133,45 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
     return {"status": "ok", "active": target_name, "email": email}
 
 
-_chrome_executable_cache: str | None = None
+# ─── accounts.json helpers ──────────────────────────────────────────────────
+_ACCOUNTS_JSON = _SYSTEM_DIR / "accounts.json"
 
 
-async def _get_chrome_executable() -> str:
-    """Resolve Playwright's bundled Chromium binary path (cached after first call)."""
-    global _chrome_executable_cache
-    if _chrome_executable_cache is not None:
-        return _chrome_executable_cache
+def _read_accounts_config() -> dict[str, Any]:
+    try:
+        return json.loads(_ACCOUNTS_JSON.read_text())
+    except Exception:
+        return {}
 
-    # Start a throwaway Playwright instance just to get the binary path,
-    # then stop it immediately. The actual browser launch uses subprocess.
-    from playwright.async_api import async_playwright
-    pw = await async_playwright().start()
-    path = pw.chromium.executable_path
-    await pw.stop()
 
-    _chrome_executable_cache = path
-    return path
+def _write_accounts_config(cfg: dict[str, Any]) -> None:
+    _ACCOUNTS_JSON.write_text(json.dumps(cfg, indent=2))
+
+
+def _get_account_browser(profile_name: str) -> str | None:
+    cfg = _read_accounts_config()
+    return cfg.get(profile_name, {}).get("browser_path")
+
+
+def _set_account_browser(profile_name: str, browser_path: str) -> None:
+    cfg = _read_accounts_config()
+    if profile_name not in cfg:
+        cfg[profile_name] = {}
+    cfg[profile_name]["browser_path"] = browser_path
+    _write_accounts_config(cfg)
+
+
+@router.get("/api/settings/accounts/available-browsers")
+async def available_browsers() -> dict[str, Any]:
+    """Return all detected Chrome-compatible browsers on this system."""
+    from engine.platform_paths import list_available_browsers
+    browsers = await asyncio.to_thread(list_available_browsers)
+    return {"browsers": browsers}
 
 
 @router.post("/api/settings/accounts/create")
-async def create_account() -> dict[str, Any]:
-    """Find next available acc integer, create profile dir, and open headed browser.
-
-    Launches Chromium as a detached subprocess — no Playwright connection held.
-    The browser runs independently and survives Sable restarts.
-    """
-    import sys
-    _is_windows = sys.platform == "win32"
-
+async def create_account(payload: dict[str, str] | None = None) -> dict[str, Any]:
+    """Find next available acc integer and launch headed browser for login."""
     def _next_acc() -> int:
         existing: set[int] = set()
         for d in _SYSTEM_DIR.iterdir():
@@ -1135,45 +1185,45 @@ async def create_account() -> dict[str, Any]:
 
     acc_num = await asyncio.to_thread(_next_acc)
     profile_name = f"browser-data-acc{acc_num}"
-    target_path = _SYSTEM_DIR / profile_name
-    target_path.mkdir(parents=True, exist_ok=True)
+    profile_path = _SYSTEM_DIR / profile_name
+    profile_path.mkdir(parents=True, exist_ok=True)
 
-    url = "https://chat.qwen.ai"
+    # Save user's browser choice (may be 'default', a path, or empty for auto-detect)
+    chosen_browser = (payload or {}).get("browser_path", "")
+    if chosen_browser:
+        await asyncio.to_thread(_set_account_browser, profile_name, chosen_browser)
 
-    # Launch Chromium as a detached subprocess — no Playwright connection held.
-    launch_args = [
-        "--disable-blink-features=AutomationControlled",
-        "--disk-cache-size=2097152",
-        "--disable-gpu-shader-cache",
-        "--disable-component-update",
-        f"--user-data-dir={target_path}",
-        url,
-    ]
-    if not _is_windows:
-        launch_args.insert(0, "--no-sandbox")
+    # Resolve actual binary to use
+    from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
+    resolved_browser = await asyncio.to_thread(resolve_browser_for_profile, profile_name)
 
-    try:
-        chrome_path = await _get_chrome_executable()
-        proc = await asyncio.create_subprocess_exec(
-            chrome_path, *launch_args,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        logger.info("Created and opened new account %s (pid=%d)", profile_name, proc.pid)
-        return {"status": "ok", "profile": profile_name}
-    except Exception as e:
-        logger.error("Browser create FAILED for %s: %s", profile_name, e, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"Failed to open browser for {profile_name}: {e}\n\n"
-                f"Troubleshooting:\n"
-                f"1. Run 'uv run playwright install chromium'\n"
-                f"2. On Windows, install VC++ Redistributable: winget install Microsoft.VCRedist.2015+.x64\n"
-                f"3. Check no other process locks: {target_path}"
-            ),
-        )
+    async def _run_browser() -> None:
+        from playwright.async_api import async_playwright
+        try:
+            launch_kwargs: dict[str, Any] = {
+                "user_data_dir": str(profile_path),
+                "headless": False,
+                "timeout": 0,
+                "args": [
+                    "--no-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disk-cache-size=2097152",
+                    "--disable-gpu-shader-cache",
+                    "--disable-component-update",
+                ] + extra_browser_args(resolved_browser),
+            }
+            if resolved_browser:
+                launch_kwargs["executable_path"] = resolved_browser
+            async with async_playwright() as p:
+                context = await p.chromium.launch_persistent_context(**launch_kwargs)
+                page = context.pages[0] if context.pages else await context.new_page()
+                await page.goto("https://chat.qwen.ai", timeout=120000)
+                await context.wait_for_event("close", timeout=0)
+        except Exception as e:
+            logger.warning(f"Account creation browser for {profile_name} exited: {e}")
+
+    asyncio.create_task(_run_browser())
+    return {"status": "ok", "profile": profile_name}
 
 
 @router.delete("/api/settings/accounts/delete")
@@ -1209,20 +1259,9 @@ async def delete_account(payload: dict[str, str]) -> dict[str, Any]:
     return {"status": "ok", "deleted": target_name}
 
 
-# Detached browser launches — no persistent Playwright connection needed.
-# Browsers run independently via subprocess and survive Sable restarts.
-
-
 @router.post("/api/settings/accounts/open")
 async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
-    """Launch a headed browser with the specified account profile.
-
-    Launches Chromium as a detached subprocess — no Playwright connection held.
-    The browser runs independently and survives Sable restarts.
-    """
-    import sys
-    _is_windows = sys.platform == "win32"
-
+    """Launch a headful browser with the specified profile."""
     target_name = payload.get("profile", "")
     if not re.match(r"^browser-data-acc\d+$", target_name):
         raise HTTPException(status_code=400, detail="Invalid profile name")
@@ -1232,40 +1271,37 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
 
     url = payload.get("url", "https://chat.qwen.ai")
 
-    # Launch Chromium as a detached subprocess — no Playwright connection held.
-    launch_args = [
-        "--disable-blink-features=AutomationControlled",
-        "--disk-cache-size=2097152",
-        "--disable-gpu-shader-cache",
-        "--disable-component-update",
-        f"--user-data-dir={target_path}",
-        url,
-    ]
-    if not _is_windows:
-        launch_args.insert(0, "--no-sandbox")
+    # Resolve browser using centralized resolver (respects accounts.json)
+    from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
+    resolved_browser = await asyncio.to_thread(resolve_browser_for_profile, target_name)
 
-    try:
-        chrome_path = await _get_chrome_executable()
-        proc = await asyncio.create_subprocess_exec(
-            chrome_path, *launch_args,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        logger.info("Opened browser for %s at %s (pid=%d)", target_name, url, proc.pid)
-        return {"status": "opened", "profile": target_name, "url": url}
-    except Exception as e:
-        logger.error("Browser open FAILED for %s: %s", target_name, e, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"Failed to open browser for {target_name}: {e}\n\n"
-                f"Troubleshooting:\n"
-                f"1. Run 'uv run playwright install chromium'\n"
-                f"2. Check no other process locks: {target_path}\n"
-                f"3. On Windows, ensure Playwright is in the same Python env"
-            ),
-        )
+    async def _run_browser() -> None:
+        from playwright.async_api import async_playwright
+        try:
+            launch_kwargs: dict[str, Any] = {
+                "user_data_dir": str(target_path),
+                "headless": False,
+                "timeout": 0,
+                "args": [
+                    "--no-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disk-cache-size=2097152",
+                    "--disable-gpu-shader-cache",
+                    "--disable-component-update",
+                ] + extra_browser_args(resolved_browser),
+            }
+            if resolved_browser:
+                launch_kwargs["executable_path"] = resolved_browser
+            async with async_playwright() as p:
+                context = await p.chromium.launch_persistent_context(**launch_kwargs)
+                page = context.pages[0] if context.pages else await context.new_page()
+                await page.goto(url, timeout=120000)
+                await context.wait_for_event("close", timeout=0)
+        except Exception as e:
+            logger.warning(f"Browser for {target_name} exited: {e}")
+
+    asyncio.create_task(_run_browser())
+    return {"status": "opened", "profile": target_name, "url": url}
 
 
 _SERVICE_NAME = "sable.service"
@@ -1957,7 +1993,9 @@ async def get_search_settings() -> dict[str, Any]:
         "has_google_pse_key": bool(settings.get("google_pse_key")),
         "has_google_pse_cx": bool(settings.get("google_pse_cx")),
         "has_tavily_key": bool(settings.get("tavily_api_key")),
+        "tavily_key_count": len(settings["tavily_api_key"]) if isinstance(settings.get("tavily_api_key"), list) else (1 if settings.get("tavily_api_key") else 0),
         "has_serper_key": bool(settings.get("serper_api_key")),
+        "serper_key_count": len(settings["serper_api_key"]) if isinstance(settings.get("serper_api_key"), list) else (1 if settings.get("serper_api_key") else 0),
     }
 
 @router.post("/api/settings/search")
@@ -2005,8 +2043,16 @@ async def update_search_settings(payload: dict[str, Any]) -> dict[str, Any]:
 
     for field in _SEARCH_KEY_FIELDS:
         val = payload.get(field)
-        if val is not None and str(val).strip():
-            settings[field] = str(val).strip()
+        if val is not None:
+            # Accept string (single key) or list of strings (multi-key)
+            if isinstance(val, list):
+                cleaned = [str(v).strip() for v in val if isinstance(v, str) and str(v).strip()]
+                if cleaned:
+                    settings[field] = cleaned if len(cleaned) > 1 else cleaned[0]
+                else:
+                    settings.pop(field, None)
+            elif isinstance(val, str) and val.strip():
+                settings[field] = val.strip()
 
     _write_system_settings(settings)
 
@@ -2122,6 +2168,105 @@ async def clear_search_cache() -> dict[str, Any]:
     invalidate_cache()
     logger.info("Search cache cleared via API")
     return {"cleared": True}
+
+
+# ---------------------------------------------------------------------------
+# Search Provider Multi-Key Management (Tavily, Serper, Brave, Google PSE)
+# ---------------------------------------------------------------------------
+
+_SEARCH_KEY_MAP = {
+    "tavily": "tavily_api_key",
+    "serper": "serper_api_key",
+    "brave": "brave_api_key",
+    "google_pse": "google_pse_key",
+}
+
+_SEARCH_KEY_PLACEHOLDERS = {
+    "tavily": "tvly-…",
+    "serper": "serper-…",
+    "brave": "BSA…",
+    "google_pse": "AIza…",
+}
+
+def _mask_search_key(key: str) -> str:
+    if len(key) <= 8:
+        return key[:2] + "•" * (len(key) - 2)
+    return key[:4] + "•" * (len(key) - 8) + key[-4:]
+
+def _get_search_keys_list(provider: str) -> list[str]:
+    """Get keys for a search provider as a list (handles legacy single-string)."""
+    settings = _read_system_settings()
+    field = _SEARCH_KEY_MAP.get(provider)
+    if not field:
+        return []
+    raw = settings.get(field, "")
+    if isinstance(raw, list):
+        return [k for k in raw if isinstance(k, str) and k.strip()]
+    elif isinstance(raw, str) and raw.strip():
+        return [raw.strip()]
+    return []
+
+def _save_search_keys_list(provider: str, keys: list[str]) -> None:
+    """Save keys for a search provider (single string if 1 key, list if >1)."""
+    settings = _read_system_settings()
+    field = _SEARCH_KEY_MAP.get(provider)
+    if not field:
+        return
+    cleaned = [k.strip() for k in keys if k.strip()]
+    if len(cleaned) == 0:
+        settings.pop(field, None)
+    elif len(cleaned) == 1:
+        settings[field] = cleaned[0]
+    else:
+        settings[field] = cleaned
+    _write_system_settings(settings)
+
+@router.get("/api/settings/search/{provider}/keys")
+async def list_search_provider_keys(provider: str) -> dict[str, Any]:
+    """List all configured keys for a search provider (masked)."""
+    if provider not in _SEARCH_KEY_MAP:
+        raise HTTPException(status_code=404, detail=f"Unknown search provider '{provider}'")
+    keys = _get_search_keys_list(provider)
+    masked = [
+        {"index": i, "masked": _mask_search_key(k), "active": i == 0}
+        for i, k in enumerate(keys)
+    ]
+    return {"keys": masked, "available": len(keys) > 0}
+
+@router.post("/api/settings/search/{provider}/api-key")
+async def add_search_provider_key(provider: str, request: Request) -> dict[str, Any]:
+    """Add a key to a search provider's pool."""
+    if provider not in _SEARCH_KEY_MAP:
+        raise HTTPException(status_code=404, detail=f"Unknown search provider '{provider}'")
+    body = await request.json()
+    key = body.get("api_key", "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="Missing 'api_key' field")
+    keys = _get_search_keys_list(provider)
+    if key in keys:
+        raise HTTPException(status_code=409, detail="Key already exists")
+    keys.append(key)
+    _save_search_keys_list(provider, keys)
+    # Invalidate search cache so new key is picked up
+    from engine.search import invalidate_cache
+    invalidate_cache()
+    logger.info("Added %s search key (total: %d)", provider, len(keys))
+    return {"status": "ok", "keys": [{"index": i, "masked": _mask_search_key(k), "active": i == 0} for i, k in enumerate(keys)], "available": True}
+
+@router.delete("/api/settings/search/{provider}/api-key/{index}")
+async def remove_search_provider_key(provider: str, index: int) -> dict[str, Any]:
+    """Remove a key from a search provider's pool by index."""
+    if provider not in _SEARCH_KEY_MAP:
+        raise HTTPException(status_code=404, detail=f"Unknown search provider '{provider}'")
+    keys = _get_search_keys_list(provider)
+    if index < 0 or index >= len(keys):
+        raise HTTPException(status_code=404, detail="Key not found at that index")
+    keys.pop(index)
+    _save_search_keys_list(provider, keys)
+    from engine.search import invalidate_cache
+    invalidate_cache()
+    logger.info("Removed %s search key at index %d (remaining: %d)", provider, index, len(keys))
+    return {"status": "ok", "keys": [{"index": i, "masked": _mask_search_key(k), "active": i == 0} for i, k in enumerate(keys)], "available": len(keys) > 0}
 
 
 # ─── General Settings (tool output limit, etc.) ─────────────────────────────

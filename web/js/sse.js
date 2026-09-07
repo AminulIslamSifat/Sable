@@ -345,6 +345,15 @@
             const turn = activePane.querySelector('.turn:last-child');
             (turn || activePane).appendChild(note);
           }
+        } else if (evt.type === "cwd_warning") {
+          // History replay: decision already made — show static note
+          const note = document.createElement('div');
+          note.className = 'cwd-warning-pending-note';
+          note.textContent = '⚠️ CWD warning: ' + (evt.data?.path || '').slice(0, 80);
+          if (activePane) {
+            const turn = activePane.querySelector('.turn:last-child');
+            (turn || activePane).appendChild(note);
+          }
         } else if (evt.type === "agent_result") {
           if (typeof addAgentResultCard === "function") {
             addAgentResultCard({
@@ -647,6 +656,209 @@
       activateLucideIcons(banner);
     }
 
+    function renderCwdWarningCard(evt, container) {
+      const { id, name, data } = evt;
+      const { path, cwd } = data;
+      const banner = document.getElementById('approvalBanner');
+      if (!banner) return;
+
+      const shortPath = path.length > 80 ? '…' + path.slice(-77) : path;
+
+      banner.className = 'approval-banner cwd-warning-banner';
+      banner.dataset.tagId = id;
+      banner.innerHTML = `
+        <div class="ab-icon"><i data-lucide="folder-alert"></i></div>
+        <div class="ab-body">
+          <div class="ab-title">File operation outside project folder</div>
+          <div class="ab-sub">${shortPath.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
+          <div class="ab-detail">Without making it the project folder, you can't recover in case of accidental damage.</div>
+        </div>
+        <div class="ab-actions">
+          <button class="ab-cwd-session"><i data-lucide="shield-check"></i> Allow for Session</button>
+          <button class="ab-cwd-continue"><i data-lucide="arrow-right"></i> Continue</button>
+          <button class="ab-cwd-open"><i data-lucide="folder-open"></i> Open Folder</button>
+          <button class="ab-cwd-deny"><i data-lucide="x"></i> Deny</button>
+        </div>
+      `;
+
+      const sessionBtn = banner.querySelector('.ab-cwd-session');
+      const continueBtn = banner.querySelector('.ab-cwd-continue');
+      const openBtn = banner.querySelector('.ab-cwd-open');
+      const denyBtn = banner.querySelector('.ab-cwd-deny');
+
+      function disableAllCwdBtns() {
+        if (sessionBtn) sessionBtn.disabled = true;
+        continueBtn.disabled = true;
+        openBtn.disabled = true;
+        if (denyBtn) denyBtn.disabled = true;
+      }
+
+      sessionBtn?.addEventListener('click', async () => {
+        disableAllCwdBtns();
+        activePane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
+        try {
+          const resp = await fetch('/api/skills/cwd-approve/' + id, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({chat_id: activeChatId, session: true}),
+          });
+          banner.classList.add('ab-resolved');
+          if (resp.ok && activePane) {
+            const card = createSkillCard({ name: name, data: { attrs: { path: path } } });
+            const status = card.querySelector('.skill-status');
+            status.textContent = 'allowed for session ✓';
+            status.style.color = 'var(--ok)';
+            const turn = activePane.querySelector('.turn:last-child');
+            const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
+            if (target) { target.appendChild(card); activateLucideIcons(card); }
+            activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
+          }
+          const result = await resp.json();
+          const st = document.createElement('span');
+          st.className = 'ab-status ok';
+          st.textContent = 'session allowed';
+          banner.querySelector('.ab-actions').replaceWith(st);
+          if (result.feedback) {
+            setTimeout(() => sendAutoTurnMessage(result.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
+          }
+        } catch(e) {
+          banner.classList.add('ab-resolved');
+          const st = document.createElement('span');
+          st.className = 'ab-status no';
+          st.textContent = 'error';
+          banner.querySelector('.ab-actions')?.replaceWith(st);
+        }
+        setTimeout(() => banner.classList.add('hidden'), 4000);
+      });
+
+      continueBtn.addEventListener('click', async () => {
+        disableAllCwdBtns();
+        activePane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
+        try {
+          const resp = await fetch('/api/skills/cwd-approve/' + id, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({chat_id: activeChatId}),
+          });
+          banner.classList.add('ab-resolved');
+          if (resp.ok && activePane) {
+            const card = createSkillCard({ name: name, data: { attrs: { path: path } } });
+            const status = card.querySelector('.skill-status');
+            status.textContent = 'approved ✓';
+            status.style.color = 'var(--ok)';
+            const turn = activePane.querySelector('.turn:last-child');
+            const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
+            if (target) { target.appendChild(card); activateLucideIcons(card); }
+            activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
+          }
+          const result = await resp.json();
+          const st = document.createElement('span');
+          st.className = 'ab-status ok';
+          st.textContent = 'done';
+          banner.querySelector('.ab-actions').replaceWith(st);
+          if (result.feedback) {
+            setTimeout(() => sendAutoTurnMessage(result.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
+          }
+        } catch(e) {
+          banner.classList.add('ab-resolved');
+          const st = document.createElement('span');
+          st.className = 'ab-status no';
+          st.textContent = 'error';
+          banner.querySelector('.ab-actions')?.replaceWith(st);
+        }
+        setTimeout(() => banner.classList.add('hidden'), 4000);
+      });
+
+      openBtn.addEventListener('click', async () => {
+        continueBtn.disabled = true;
+        openBtn.disabled = true;
+        activePane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
+        try {
+          const res = await fetch('/api/filesystem/pick-folder');
+          const pickData = await res.json();
+          if (pickData.path && window.pickFsRoot) {
+            window.pickFsRoot(pickData.path);
+            // After changing CWD, approve the operation with new context
+            const resp = await fetch('/api/skills/cwd-approve/' + id, {
+              method: 'POST',
+              headers: {'Content-Type':'application/json'},
+              body: JSON.stringify({chat_id: activeChatId}),
+            });
+            banner.classList.add('ab-resolved');
+            const result = await resp.json();
+            const st = document.createElement('span');
+            st.className = 'ab-status ok';
+            st.textContent = 'folder changed ✓';
+            banner.querySelector('.ab-actions').replaceWith(st);
+            if (result.feedback) {
+              setTimeout(() => sendAutoTurnMessage(result.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
+            }
+          } else {
+            // User cancelled folder picker — re-enable buttons
+            continueBtn.disabled = false;
+            openBtn.disabled = false;
+            return;
+          }
+        } catch(e) {
+          banner.classList.add('ab-resolved');
+          const st = document.createElement('span');
+          st.className = 'ab-status no';
+          st.textContent = 'error';
+          banner.querySelector('.ab-actions')?.replaceWith(st);
+        }
+        setTimeout(() => banner.classList.add('hidden'), 4000);
+      });
+
+      denyBtn?.addEventListener('click', async () => {
+        disableAllCwdBtns();
+        activePane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
+        banner.classList.add('ab-resolved');
+
+        const st = document.createElement('span');
+        st.className = 'ab-status no';
+        st.textContent = 'denied';
+
+        if (activePane) {
+          const card = createSkillCard({ name: name, data: { attrs: { path: path } } });
+          const status = card.querySelector('.skill-status');
+          if (status) {
+            status.textContent = 'denied ✗';
+            status.style.color = 'var(--danger)';
+          }
+          const output = card.querySelector('.skill-output');
+          if (output) output.textContent = '[denied by user]';
+
+          const turn = activePane.querySelector('.turn:last-child');
+          const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
+          if (target) { target.appendChild(card); activateLucideIcons(card); }
+          activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
+        }
+
+        banner.querySelector('.ab-actions')?.replaceWith(st);
+
+        try {
+          const resp = await fetch('/api/skills/cwd-deny/' + id, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({chat_id: activeChatId}),
+          });
+          const result = await resp.json();
+          if (result.feedback) {
+            setTimeout(() => sendAutoTurnMessage(result.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
+          } else {
+            setTimeout(() => sendAutoTurnMessage('[System: File operation outside project was denied by user.]', { skipUserBubble: true, skipUserSave: true }), 300);
+          }
+        } catch(e) {
+          console.error('[cwd-warning] deny error:', e);
+          setTimeout(() => sendAutoTurnMessage('[System: File operation outside project was denied by user.]', { skipUserBubble: true, skipUserSave: true }), 300);
+        }
+
+        setTimeout(() => banner.classList.add('hidden'), 3000);
+      });
+
+      activateLucideIcons(banner);
+    }
+
 
     // one "turn" holds everything for a single response: thinking, then any
     // skill/tool runs it made, then the final answer — all stacked in order,
@@ -837,9 +1049,20 @@
           activateLucideIcons(answerContent);
         }
         if (!_ansTimer) {
-          // Final render: produce proper mermaid-wrap so renderMermaidDiagrams can find them
+          // Final tick render: produce proper mermaid-wrap but defer heavy rendering
+          // to closeAnswer() which runs after stream truly ends or segment closes.
+          // This prevents partial math/mermaid from rendering mid-stream.
           answerContent.innerHTML = renderMarkdown(raw);
-          renderMermaidDiagrams(answerContent); renderMathJax(answerContent);
+          // Neutralize mermaid during streaming to prevent flicker
+          answerContent.querySelectorAll(".mermaid-wrap").forEach(wrap => {
+            const pre = wrap.querySelector("pre.mermaid");
+            if (!pre) return;
+            const code = pre.textContent;
+            const div = document.createElement("div");
+            div.className = "code-block";
+            div.innerHTML = `<pre><code class="language-mermaid">${escHtml(code)}</code></pre>`;
+            wrap.replaceWith(div);
+          });
         }
       }
       function _enqueueAnswer(text) {
@@ -851,9 +1074,9 @@
         if (_ansQueue && answerContent) {
           raw += _ansQueue;
           _ansQueue = "";
+          // Only do lightweight markdown render here; heavy mermaid/math rendering
+          // is deferred to closeAnswer() to avoid rendering partial content mid-stream.
           answerContent.innerHTML = renderMarkdown(raw);
-          renderMermaidDiagrams(answerContent);
-          renderMathJax(answerContent);
           activateLucideIcons(answerContent);
           scrollBottom();
         }
@@ -862,8 +1085,19 @@
       function closeAnswer() {
         _flushAnswerQueue();
         if (!answerEl) return;
+        // Skip markdown re-render for special cards (rate-limit, captcha) that
+        // already have their final HTML set via innerHTML.
+        const _isSpecialCard = raw === "__rate_limit_card__" || raw === "__captcha_block_card__";
+        // Final render with full mermaid + math support — only runs when this answer
+        // segment is truly done (stream end or skill interleave boundary).
+        if (answerContent && raw && !_isSpecialCard) {
+          answerContent.innerHTML = renderMarkdown(raw);
+          renderMermaidDiagrams(answerContent);
+          renderMathJax(answerContent);
+          activateLucideIcons(answerContent);
+        }
         answerEl.classList.remove("streaming");
-        if (!raw.trim()) answerEl.remove();
+        if (!_isSpecialCard && !raw.trim()) answerEl.remove();
         answerEl = null;
         answerContent = null;
         raw = "";
@@ -994,7 +1228,7 @@
             _enqueueAnswer(text);
           }
         },
-        replaceWithRateLimit(message, hours) {
+        replaceWithRateLimit(message, hours, debugInfo) {
           hidePending();
           // Kill typewriter queues immediately — don't flush partial content
           if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
@@ -1014,15 +1248,72 @@
           // Build persistent rate-limit card
           ensureAnswer();
           answerEl.classList.remove('streaming');
+          // Set raw so closeAnswer() doesn't remove this element on finalize
+          raw = "__rate_limit_card__";
           const h = hours || '?';
+          const dbg = debugInfo || {};
+          const debugHtml = dbg.account ? `
+              <div class="card-debug-info">
+                <span class="cdi-label">Service Account</span><span class="cdi-value">${dbg.account}</span>
+                <span class="cdi-label">Override</span><span class="cdi-value">${dbg.account_override || 'none'}</span>
+                <span class="cdi-label">Active File</span><span class="cdi-value">${dbg.active_account_file || '—'}</span>
+                <span class="cdi-label">Browser Data</span><span class="cdi-value cdi-path">${dbg.browser_data_dir || '—'}</span>
+                <span class="cdi-label">Cookie Snippet</span><span class="cdi-value cdi-cookies">${dbg.cookie_snippet || 'none'}</span>
+                <span class="cdi-label">bx_ua</span><span class="cdi-value">${dbg.has_bx_ua ? '✅' : '❌'}</span>
+                <span class="cdi-label">bx_umidtoken</span><span class="cdi-value">${dbg.has_bx_umidtoken ? '✅' : '❌'}</span>
+                ${dbg.error ? `<span class="cdi-label">Error</span><span class="cdi-value cdi-error">${dbg.error}</span>` : ''}
+              </div>` : '';
           answerContent.innerHTML = `
             <div class="rate-limit-card">
               <span class="rl-icon">⏳</span>
               <span class="rl-title">Daily Usage Limit Reached</span>
               <span class="rl-detail">${message || 'You have reached the upper limit for today\'s usage.'}</span>
               <span class="rl-timer">Try again in ~${h} hour${h === 1 ? '' : 's'}. This message will stay visible so you don't miss it.</span>
+              ${debugHtml}
             </div>`;
-          raw = "\u200B"; // non-empty so closeAnswer() won't remove the card
+          // raw already set to "__rate_limit_card__" above — do NOT overwrite
+          scrollBottom();
+        },
+        replaceWithCaptchaBlock(message, debugInfo) {
+          hidePending();
+          if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
+          _thinkQueue = "";
+          if (_ansTimer) { clearTimeout(_ansTimer); _ansTimer = null; }
+          _ansQueue = "";
+          currentThinkWrap = null;
+          currentThinkBody = null;
+          currentThinkSummary = null;
+          if (answerEl) {
+            answerEl.remove();
+            answerEl = null;
+            answerContent = null;
+            raw = "";
+          }
+          ensureAnswer();
+          answerEl.classList.remove('streaming');
+          // Set raw so closeAnswer() doesn't remove this element on finalize
+          raw = "__captcha_block_card__";
+          const dbg = debugInfo || {};
+          const debugHtml = dbg.account ? `
+              <div class="card-debug-info">
+                <span class="cdi-label">Service Account</span><span class="cdi-value">${dbg.account}</span>
+                <span class="cdi-label">Override</span><span class="cdi-value">${dbg.account_override || 'none'}</span>
+                <span class="cdi-label">Active File</span><span class="cdi-value">${dbg.active_account_file || '—'}</span>
+                <span class="cdi-label">Browser Data</span><span class="cdi-value cdi-path">${dbg.browser_data_dir || '—'}</span>
+                <span class="cdi-label">Cookie Snippet</span><span class="cdi-value cdi-cookies">${dbg.cookie_snippet || 'none'}</span>
+                <span class="cdi-label">bx_ua</span><span class="cdi-value">${dbg.has_bx_ua ? '✅' : '❌'}</span>
+                <span class="cdi-label">bx_umidtoken</span><span class="cdi-value">${dbg.has_bx_umidtoken ? '✅' : '❌'}</span>
+                ${dbg.error ? `<span class="cdi-label">Error</span><span class="cdi-value cdi-error">${dbg.error}</span>` : ''}
+              </div>` : '';
+          answerContent.innerHTML = `
+            <div class="captcha-block-card">
+              <span class="cb-icon">🛡️</span>
+              <span class="cb-title">Captcha / WAF Challenge Hit</span>
+              <span class="cb-detail">${message || 'Qwen rejected this request with a captcha or WAF validation challenge.'}</span>
+              <span class="cb-note">The request was stopped so you can switch/refresh the account or solve the challenge manually.</span>
+              ${debugHtml}
+            </div>`;
+          // raw already set to "__captcha_block_card__" above — do NOT overwrite
           scrollBottom();
         },
         trackFileEdit(evt) {
@@ -1367,6 +1658,9 @@
           } else if (evt.type === "account_switch") {
             const _ascTurn = activePane.querySelector('.turn:last-child');
             if (_ascTurn) handleAccountSwitchEvent(evt, _ascTurn);
+          } else if (evt.type === "token_rotation") {
+            const _trTurn = activePane.querySelector('.turn:last-child');
+            if (_trTurn) handleTokenRotationEvent(evt, _trTurn);
           } else if (evt.type === "user_message_id") {
             // Store DB message ID on the div and enable the fork button
             if (userMsgDiv && evt.id) {
@@ -1408,7 +1702,11 @@
             }
           } else if (evt.type === "rate_limited") {
             gotError = true;
-            ui.replaceWithRateLimit(evt.message, evt.hours);
+            ui.replaceWithRateLimit(evt.message, evt.hours, evt);
+            break;
+          } else if (evt.type === "waf_blocked") {
+            gotError = true;
+            ui.replaceWithCaptchaBlock(evt.message, evt);
             break;
           } else if (evt.type === "error") {
             gotError = true;
@@ -1459,6 +1757,18 @@
             const pending = document.createElement('div');
             pending.className = 'approval-pending-note';
             pending.textContent = evt.text || '⏳ Waiting for your approval…';
+            if (activePane) {
+              const turn = activePane.querySelector('.turn:last-child');
+              (turn || activePane.querySelector('.messages')).appendChild(pending);
+            }
+          } else if (evt.type === "cwd_warning") {
+            if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
+            renderCwdWarningCard(evt, activePane);
+          } else if (evt.type === "cwd_warning_pending") {
+            if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
+            const pending = document.createElement('div');
+            pending.className = 'cwd-warning-pending-note';
+            pending.textContent = evt.text || '⚠️ File operation outside project folder detected.';
             if (activePane) {
               const turn = activePane.querySelector('.turn:last-child');
               (turn || activePane.querySelector('.messages')).appendChild(pending);
@@ -1683,5 +1993,64 @@ function handleAccountSwitchEvent(evt, container) {
   const activeRow = stepsEl.querySelector(".asc-step-active, .asc-step-failed");
   if (activeRow) activeRow.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
+
+// ---------------------------------------------------------------------------
+// Token Rotation Card (DeepSeek API token switching)
+// ---------------------------------------------------------------------------
+
+const _TOKEN_ROTATION_REASONS = {
+  round_robin:    { label: "Round-robin rotation", icon: "refresh-cw" },
+  timeout:        { label: "Timeout failover",     icon: "clock" },
+  empty_response: { label: "Empty response",       icon: "circle-alert" },
+  "HTTP 401":     { label: "Auth failed (401)",    icon: "shield-alert" },
+  "HTTP 403":     { label: "Forbidden (403)",      icon: "shield-x" },
+  "HTTP 429":     { label: "Rate limited (429)",   icon: "gauge" },
+};
+
+function handleTokenRotationEvent(evt, container) {
+  let card = container.querySelector(".token-rotation-card");
+  if (!card) {
+    card = document.createElement("div");
+    card.className = "skill-card token-rotation-card";
+    card.innerHTML = `
+      <div class="skill-header">
+        <div class="skill-header-left">
+          <span class="skill-arrow"><i data-lucide="chevron-down" style="width:14px;height:14px"></i></span>
+          <span class="skill-name"><i data-lucide="repeat" style="width:15px;height:15px"></i> Token Rotation</span>
+        </div>
+        <div class="skill-header-right" style="display:flex;align-items:center;gap:8px;">
+          <span class="skill-status tr-status">switching…</span>
+        </div>
+      </div>
+      <div class="tr-details"></div>`;
+    card.querySelector(".skill-header").onclick = () => card.classList.toggle("collapsed");
+    container.appendChild(card);
+    if (typeof activateLucideIcons === "function") activateLucideIcons(card);
+  }
+
+  const detailsEl = card.querySelector(".tr-details");
+  const statusEl = card.querySelector(".tr-status");
+  const reasonMeta = _TOKEN_ROTATION_REASONS[evt.reason] || { label: evt.reason, icon: "arrow-right-left" };
+
+  // Build detail row
+  const row = document.createElement("div");
+  row.className = "tr-detail-row";
+  row.innerHTML = `
+    <span class="tr-reason"><i data-lucide="${reasonMeta.icon}" style="width:12px;height:12px"></i> ${reasonMeta.label}</span>
+    <span class="tr-token-from" title="Previous token">${evt.from_token || "???"}</span>
+    <span class="tr-arrow">→</span>
+    <span class="tr-token-to" title="New token">${evt.to_token || "???"}</span>
+    <span class="tr-index">#${evt.to_index + 1}/${evt.total_tokens}</span>`;
+  detailsEl.appendChild(row);
+
+  if (typeof activateLucideIcons === "function") activateLucideIcons(card);
+
+  // Update status
+  statusEl.textContent = `token #${evt.to_index + 1}/${evt.total_tokens}`;
+
+  // Auto-scroll
+  row.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
 
 

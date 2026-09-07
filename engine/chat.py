@@ -3,12 +3,38 @@
 import asyncio
 import json
 import sys
+from datetime import datetime
+from pathlib import Path
 
 import httpx
 
 from engine.config import MODEL, MODELS, URL, get_model_config
 from engine.payloads import build_body
 from engine.session import BrowserManager, create_new_chat
+
+# --- Raw response logger (Qwen only) ---
+_LOG_DIR = Path(__file__).resolve().parent.parent / "output" / "qwen_raw"
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _log_raw_line(line: str) -> None:
+    """Append a single raw SSE line to today's log file."""
+    logfile = _LOG_DIR / f"{datetime.now():%Y-%m-%d}.txt"
+    with open(logfile, "a", encoding="utf-8") as f:
+        f.write(f"[{datetime.now():%H:%M:%S.%f}] {line}\n")
+
+
+_CHUNK_LOG_DIR = _LOG_DIR.parent / "qwen_chunks"
+_CHUNK_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _log_stream_chunk(phase: str, content: str) -> None:
+    """Log a single parsed streaming content delta to today's chunk log."""
+    if not content:
+        return
+    logfile = _CHUNK_LOG_DIR / f"{datetime.now():%Y-%m-%d}.txt"
+    with open(logfile, "a", encoding="utf-8") as f:
+        f.write(f"[{datetime.now():%H:%M:%S.%f}] [{phase}] {content!r}\n")
 
 # Initialize single persistent browser manager instance
 bm = BrowserManager()
@@ -72,6 +98,9 @@ async def stream_chat(
                         line_str = line.strip()
                         line_count += 1
 
+                        # Log every raw SSE line before any parsing
+                        _log_raw_line(line_str)
+
                         if not line_str.startswith("data: "):
                             if line_str:
                                 try:
@@ -119,6 +148,7 @@ async def stream_chat(
                             text = "".join(thoughts) if thoughts else content
 
                             if text:
+                                _log_stream_chunk(phase, text)
                                 if not in_thinking:
                                     sys.stdout.write("\n🧠 [Thinking]\n")
                                     in_thinking = True
@@ -127,6 +157,7 @@ async def stream_chat(
 
                         # Stream Answer phase
                         elif phase == "answer" and content:
+                            _log_stream_chunk(phase, content)
                             if not in_answer:
                                 if in_thinking:
                                     sys.stdout.write("\n\n💬 [Answer]\n")

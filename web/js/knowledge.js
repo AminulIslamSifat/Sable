@@ -885,7 +885,7 @@
     const inputEl = $('inputArea');
     if (chatEl) chatEl.classList.add('hidden');
     if (inputEl) inputEl.classList.add('hidden');
-    ['searchView', 'researchView', 'imageView', 'promptgenView', 'dashboardView', 'calendarView'].forEach(id => {
+    ['searchView', 'researchView', 'imageView', 'promptgenView', 'dashboardView', 'calendarView', 'ocrView'].forEach(id => {
       const el = $(id);
       if (el) { el.classList.add('hidden'); el.style.display = ''; }
     });

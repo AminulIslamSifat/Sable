@@ -84,11 +84,11 @@
   margin: 8px 10px 10px;
   padding: 4px 6px;
   border-radius: 16px;
-  background: rgba(23, 23, 26, 0.95);
+  background: color-mix(in srgb, var(--panel) 95%, transparent);
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.06),
-    inset 1.5px 2.5px 0px -1.5px rgba(255, 255, 255, 0.25),
-    inset -1.5px -1.5px 0px -1.5px rgba(255, 255, 255, 0.12),
+    inset 0 0 0 1px var(--shadow-inner-glow),
+    inset 1.5px 2.5px 0px -1.5px var(--shadow-inner-highlight),
+    inset -1.5px -1.5px 0px -1.5px var(--shadow-inner-highlight),
     inset -0.5px -1px 3px 0px rgba(0, 0, 0, 0.15),
     0px 1px 4px 0px rgba(0, 0, 0, 0.2),
     0px 4px 12px 0px rgba(0, 0, 0, 0.3);
@@ -208,7 +208,7 @@
   box-shadow:
     0 -4px 12px rgba(0,0,0,0.4),
     0 -12px 32px rgba(0,0,0,0.3),
-    inset 0 1px 0 rgba(255,255,255,0.05);
+    inset 0 1px 0 var(--shadow-inner-glow);
 }
 
 /* Context breakdown popup — matches thinking dropdown style */
@@ -221,7 +221,7 @@
   font-size: 10px;
   font-weight: 600;
   color: var(--text);
-  border-bottom: 1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid var(--shadow-inner-glow);
   margin-bottom: 2px;
 }
 .ctx-bd-row {
@@ -537,8 +537,8 @@ body[data-mode="ide"] .header-center-group {
 }
 body[data-mode="ide"] .header-cell {
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.06),
-    inset 1px 1.5px 0px -1px rgba(255, 255, 255, 0.2),
+    inset 0 0 0 1px var(--shadow-inner-glow),
+    inset 1px 1.5px 0px -1px var(--shadow-inner-highlight),
     0px 1px 4px 0px rgba(0, 0, 0, 0.3);
 }
 
