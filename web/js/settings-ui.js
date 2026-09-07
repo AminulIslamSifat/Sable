@@ -488,8 +488,10 @@ async function applyUpdate() {
   if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = "Updating…"; }
   if (checkBtn) checkBtn.disabled = true;
   if (progress) progress.classList.remove("hidden");
-  if (progressBar) progressBar.style.width = "10%";
+  if (progressBar) { progressBar.style.width = "10%"; progressBar.style.background = ""; }
   if (progressText) progressText.textContent = "Starting update…";
+  const logBox = document.getElementById("updateLog");
+  if (logBox) { logBox.innerHTML = ""; logBox.style.display = "none"; }
 
   try {
     const resp = await fetch("/api/update/apply", {
@@ -503,6 +505,7 @@ async function applyUpdate() {
     let buffer = "";
 
     const stepProgress = { check: 10, pull: 35, sync: 65, restart: 90 };
+    const logEl = document.getElementById("updateLog");
 
     while (true) {
       const { done, value } = await reader.read();
@@ -521,6 +524,13 @@ async function applyUpdate() {
             const pct = stepProgress[event.step] || 50;
             if (progressBar) progressBar.style.width = pct + "%";
             if (progressText) progressText.textContent = event.message;
+          } else if (event.type === "log") {
+            if (logEl) {
+              logEl.style.display = "block";
+              const escaped = event.message.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+              logEl.innerHTML += escaped + "\n";
+              logEl.scrollTop = logEl.scrollHeight;
+            }
           } else if (event.type === "warning") {
             if (progressText) progressText.textContent = event.message;
           } else if (event.type === "error") {
