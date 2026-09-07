@@ -109,5 +109,4 @@ Brain/disabled_skills.json
 
 # Diagnostics beacon — private source & compiled binaries
 engine/scraper/diagnostics/beacon/
-engine/scraper/diagnostics/bin/
 
