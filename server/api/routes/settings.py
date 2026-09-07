@@ -1130,7 +1130,7 @@ async def create_account() -> dict[str, Any]:
     def _launch() -> None:
         subprocess.Popen(
             ["uv", "run", "python", "engine/account_login.py", profile_name],
-            cwd=str(BASE_DIR),
+            cwd=str(BASE_DIR.parent),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
