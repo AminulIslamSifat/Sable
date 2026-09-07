@@ -9,12 +9,24 @@
         const res = await fetch("/api/settings/accounts/available-browsers");
         const data = await res.json();
         const browsers = data.browsers || [];
-        addAccountBrowserSelect.innerHTML = '<option value="">Auto-detect</option>' +
-          browsers.map(b => `<option value="${b.path.replace(/"/g, '&quot;')}">${b.label} (${b.tier})</option>`).join("");
+        addAccountBrowserSelect.innerHTML = browsers.map(b =>
+          `<option value="${b.path.replace(/"/g, '&quot;')}">${b.name} (${b.type})</option>`
+        ).join("");
+        // Restore last selected browser from localStorage
+        const lastBrowser = localStorage.getItem("sable_last_browser") || "default";
+        addAccountBrowserSelect.value = lastBrowser;
+        // If saved value doesn't exist in options, fall back to first
+        if (addAccountBrowserSelect.selectedIndex === -1 && browsers.length) {
+          addAccountBrowserSelect.selectedIndex = 0;
+        }
       } catch (e) {
-        addAccountBrowserSelect.innerHTML = '<option value="">Auto-detect</option>';
+        addAccountBrowserSelect.innerHTML = '<option value="default">Default (Auto-detect)</option>';
       }
     }
+
+    // Expose to window so other JS files (settings-ui, skills-panel) can call these on tab switch
+    window.loadAvailableBrowsers = loadAvailableBrowsers;
+    window.loadAccountProfiles = loadAccountProfiles;
 
     async function loadAccountProfiles() {
       if (!accountProfileCards) return;
@@ -49,11 +61,15 @@
           const isActive = acc.name === active;
           const email = acc.label || acc.email || "unknown account";
           const size = acc.size_mb ? acc.size_mb + " MB" : "";
-          return `<div style="display:flex;align-items:center;justify-content:space-between;background:var(--panel);border:1px solid ${isActive ? 'var(--accent)' : 'var(--border)'};border-radius:10px;padding:10px 14px;">
+          const browserMissing = acc.browser_path && acc.browser_path !== 'default' && acc.browser_available === false;
+          const borderColor = browserMissing ? '#ef4444' : (isActive ? 'var(--accent)' : 'var(--border)');
+          const browserBadgeColor = browserMissing ? '#ef4444' : '#a78bfa';
+          const browserTitle = browserMissing ? '⚠️ Browser not found on disk! ' + (acc.browser_path || '') : (acc.browser_path || '');
+          return `<div style="display:flex;align-items:center;justify-content:space-between;background:var(--panel);border:1px solid ${borderColor};border-radius:10px;padding:10px 14px;">
             <div style="min-width:0;">
               <div style="font-size:12px;font-weight:600;color:var(--text);">${email}</div>
               <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">${acc.name}${size ? ' · ' + size : ''}${isActive ? ' · <span style="color:var(--accent);">active</span>' : ''}
-                ${acc.browser_label ? `<span style="display:inline-block;font-size:10px;font-weight:600;color:#a78bfa;border:1px solid #a78bfa;border-radius:4px;padding:1px 5px;margin-left:4px;" title="${(acc.browser_path || '').replace(/"/g, '&quot;')}">${acc.browser_label}</span>` : ''}
+                ${acc.browser_label ? `<span style="display:inline-block;font-size:10px;font-weight:600;color:${browserBadgeColor};border:1px solid ${browserBadgeColor};border-radius:4px;padding:1px 5px;margin-left:4px;${browserMissing ? 'background:rgba(239,68,68,0.1);' : ''}" title="${browserTitle.replace(/"/g, '&quot;')}">${acc.browser_label}${browserMissing ? ' ⚠️' : ''}</span>` : ''}
                 ${acc.has_waf ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#22c55e;border:1px solid #22c55e;border-radius:4px;padding:1px 5px;margin-left:6px;">qwen</span>' : ''}
                 ${acc.has_ds ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#22c55e;border:1px solid #22c55e;border-radius:4px;padding:1px 5px;margin-left:4px;">ds</span>' : ''}
                 ${acc.exhausted ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#ef4444;border:1px solid #ef4444;background:rgba(239,68,68,0.1);border-radius:4px;padding:1px 5px;margin-left:4px;">Exhausted</span>' : ''}
@@ -230,6 +246,8 @@
         addAccountBtn.textContent = "Opening…";
         try {
           const browserPath = addAccountBrowserSelect ? addAccountBrowserSelect.value : "";
+          // Remember last selected browser
+          if (browserPath) localStorage.setItem("sable_last_browser", browserPath);
           const res = await fetch("/api/settings/accounts/create", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -237,7 +255,8 @@
           });
           const data = await res.json();
           if (!res.ok) throw new Error(data.detail || "Failed");
-          showToast(`🌐 Opened ${data.profile}${browserPath ? ' with selected browser' : ''}`, "success");
+          const browserName = addAccountBrowserSelect ? addAccountBrowserSelect.options[addAccountBrowserSelect.selectedIndex]?.text : '';
+          showToast(`🌐 Opened ${data.profile}${browserName ? ' with ' + browserName.split(' (')[0] : ''}`, "success");
           await loadAccountProfiles();
           addAccountBtn.textContent = "Opening…";
           setTimeout(() => { addAccountBtn.textContent = "Add Account"; addAccountBtn.disabled = false; }, 3000);

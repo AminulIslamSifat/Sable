@@ -62,7 +62,7 @@
         const target = document.getElementById('tab-' + tabName);
         if (target) target.classList.add('active');
         if (tabName === 'general') { loadBrowserSettings(); }
-        else if (tabName === 'account') loadAccountProfiles();
+        else if (tabName === 'account') { if (window.loadAvailableBrowsers) window.loadAvailableBrowsers(); loadAccountProfiles(); }
         else if (tabName === 'mcp') loadMcpServers();
         else if (tabName === 'cookbook') { if (window._cbInit) window._cbInit(); }
         else if (tabName === 'tools') loadTools();
@@ -270,7 +270,7 @@
         if (target) target.classList.add("active");
         const tabName = tab.dataset.tab;
         if (tabName === 'general') { loadBrowserSettings(); }
-        else if (tabName === 'account') loadAccountProfiles();
+        else if (tabName === 'account') { if (window.loadAvailableBrowsers) window.loadAvailableBrowsers(); loadAccountProfiles(); }
         else if (tabName === 'mcp') loadMcpServers();
         else if (tabName === 'cookbook') { if (window._cbInit) window._cbInit(); }
         else if (tabName === 'personalization') { if (window._personaInit) window._personaInit(); }

@@ -1004,8 +1004,10 @@ async def list_accounts() -> dict[str, Any]:
         acc_cfg = _read_accounts_config()
 
         def _browser_label(path: str) -> str:
-            if not path or path == "default":
-                return "Default" if path == "default" else ""
+            if not path:
+                return "Playwright"
+            if path == "default":
+                return "Default"
             bname = Path(path).stem.lower()
             for kw in ("chrome", "chromium", "thorium", "helium", "brave", "vivaldi", "msedge", "edge"):
                 if kw in bname:
@@ -1162,43 +1164,8 @@ def _set_account_browser(profile_name: str, browser_path: str) -> None:
 @router.get("/api/settings/accounts/available-browsers")
 async def available_browsers() -> dict[str, Any]:
     """Return all detected Chrome-compatible browsers on this system."""
-    from engine.platform_paths import (
-        system_chrome_candidates,
-        chrome_based_candidates,
-        find_playwright_chrome,
-    )
-    import shutil
-
-    def _detect() -> list[dict[str, str]]:
-        results: list[dict[str, str]] = []
-        seen: set[str] = set()
-
-        def _add(label: str, candidates: list[str], tier: str) -> None:
-            for c in candidates:
-                resolved = shutil.which(c) if not os.path.isabs(c) else c
-                if resolved and os.path.isfile(resolved) and resolved not in seen:
-                    seen.add(resolved)
-                    results.append({"label": label, "path": resolved, "tier": tier})
-
-        _add("Chrome", ["google-chrome-stable", "google-chrome"], "chrome")
-        _add("Chromium", ["chromium-browser", "chromium"], "chrome")
-        _add("Thorium", ["thorium-browser", "thorium"], "chrome-based")
-        _add("Helium", ["helium-browser", "helium"], "chrome-based")
-        _add("Brave", ["brave-browser", "brave"], "chrome-based")
-        _add("Vivaldi", ["vivaldi", "vivaldi-stable"], "chrome-based")
-        _add("Edge", ["microsoft-edge", "microsoft-edge-stable"], "chrome-based")
-
-        # Also check absolute-path candidates from platform_paths
-        _add("Chrome", system_chrome_candidates(), "chrome")
-        _add("Chrome-based", chrome_based_candidates(), "chrome-based")
-
-        pw = find_playwright_chrome()
-        if pw and pw not in seen:
-            results.append({"label": "Playwright Chromium", "path": pw, "tier": "playwright"})
-
-        return results
-
-    browsers = await asyncio.to_thread(_detect)
+    from engine.platform_paths import list_available_browsers
+    browsers = await asyncio.to_thread(list_available_browsers)
     return {"browsers": browsers}
 
 
@@ -1227,7 +1194,7 @@ async def create_account(payload: dict[str, str] | None = None) -> dict[str, Any
         await asyncio.to_thread(_set_account_browser, profile_name, chosen_browser)
 
     # Resolve actual binary to use
-    from engine.platform_paths import resolve_browser_for_profile
+    from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
     resolved_browser = await asyncio.to_thread(resolve_browser_for_profile, profile_name)
 
     async def _run_browser() -> None:
@@ -1243,7 +1210,7 @@ async def create_account(payload: dict[str, str] | None = None) -> dict[str, Any
                     "--disk-cache-size=2097152",
                     "--disable-gpu-shader-cache",
                     "--disable-component-update",
-                ],
+                ] + extra_browser_args(resolved_browser),
             }
             if resolved_browser:
                 launch_kwargs["executable_path"] = resolved_browser
@@ -1305,7 +1272,7 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
     url = payload.get("url", "https://chat.qwen.ai")
 
     # Resolve browser using centralized resolver (respects accounts.json)
-    from engine.platform_paths import resolve_browser_for_profile
+    from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
     resolved_browser = await asyncio.to_thread(resolve_browser_for_profile, target_name)
 
     async def _run_browser() -> None:
@@ -1321,7 +1288,7 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
                     "--disk-cache-size=2097152",
                     "--disable-gpu-shader-cache",
                     "--disable-component-update",
-                ],
+                ] + extra_browser_args(resolved_browser),
             }
             if resolved_browser:
                 launch_kwargs["executable_path"] = resolved_browser

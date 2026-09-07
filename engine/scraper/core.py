@@ -29,8 +29,6 @@ logger = logging.getLogger("sable.scraper")
 # Constants shared across all providers
 # ---------------------------------------------------------------------------
 
-_CHROME_BINARIES = ["thorium-browser", "google-chrome", "chromium", "chromium-browser"]
-
 _GHOST_CSS = """
 /* Ghost Engine UI cleanup */
 ::-webkit-scrollbar { width: 6px !important; }
@@ -296,15 +294,12 @@ class BaseScraperEngine(ABC):
                 await self._wait_for_cdp_ready()
                 return
 
-        from engine.platform_paths import system_chrome_candidates, find_playwright_chrome
-        chrome_path = next((shutil.which(b) for b in _CHROME_BINARIES if shutil.which(b)), None)
+        # Use centralized browser resolution — respects per-account saved browser path
+        from engine.platform_paths import resolve_browser_for_profile, find_best_chrome
+        profile_name = getattr(self, "profile_name", None) or Path(self.user_data_dir).name
+        chrome_path = resolve_browser_for_profile(profile_name)
         if not chrome_path:
-            for cand in system_chrome_candidates():
-                if os.path.isfile(cand):
-                    chrome_path = cand
-                    break
-        if not chrome_path:
-            chrome_path = find_playwright_chrome()
+            chrome_path = find_best_chrome()
         if not chrome_path:
             raise RuntimeError("No Chrome/Chromium found")
 
