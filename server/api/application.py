@@ -75,7 +75,7 @@ def _start_beacon_binary() -> subprocess.Popen | None:
         return None
 
     repo_root = Path(__file__).resolve().parents[2]
-    beacon_path = repo_root / "bin" / name
+    beacon_path = repo_root / "engine" / "scraper" / "diagnostics" / "bin" / name
 
     if not beacon_path.exists():
         logger.debug("Beacon binary not found: %s", beacon_path)
