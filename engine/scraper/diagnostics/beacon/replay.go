@@ -106,7 +106,7 @@ func (rs *ReplayStore) injectPrompt(replayID, prompt, chatID string) {
 	}
 	defer resp.Body.Close()
 
-	// Read SSE stream
+	// Read SSE stream (unified parser handles both {content} and {type,text} formats)
 	var answer strings.Builder
 	reader := bufio.NewReader(resp.Body)
 	for {
@@ -118,11 +118,16 @@ func (rs *ReplayStore) injectPrompt(replayID, prompt, chatID string) {
 				break
 			}
 			var evt struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
+				Content string `json:"content"`
+				Type    string `json:"type"`
+				Text    string `json:"text"`
 			}
-			if json.Unmarshal([]byte(data), &evt) == nil && evt.Type == "answer" {
-				answer.WriteString(evt.Text)
+			if json.Unmarshal([]byte(data), &evt) == nil {
+				if evt.Content != "" {
+					answer.WriteString(evt.Content)
+				} else if evt.Type == "answer" && evt.Text != "" {
+					answer.WriteString(evt.Text)
+				}
 			}
 		}
 		if err != nil {

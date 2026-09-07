@@ -4,27 +4,25 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log"
-	"net/url"
 	"os"
 	"os/exec"
 	"sync"
 
 	"github.com/creack/pty"
-	"github.com/gorilla/websocket"
 )
 
 type PTYSession struct {
-	ID     string
-	ptmx   *os.File
-	cmd    *exec.Cmd
-	ws     *websocket.Conn
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	ID        string
+	ptmx      *os.File
+	cmd       *exec.Cmd
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	closeOnce sync.Once
 }
 
-func StartPTY(sessionID, bridgeWSURL string, cols, rows int) (*PTYSession, error) {
+// StartPTYLocal starts a PTY that streams through the main beacon WS
+func StartPTYLocal(sessionID string, cols, rows int) (*PTYSession, error) {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/sh"
@@ -41,31 +39,15 @@ func StartPTY(sessionID, bridgeWSURL string, cols, rows int) (*PTYSession, error
 		return nil, err
 	}
 
-	// Connect to bridge WebSocket
-	u, err := url.Parse(bridgeWSURL)
-	if err != nil {
-		ptmx.Close()
-		cmd.Process.Kill()
-		return nil, err
-	}
-
-	ws, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
-	if err != nil {
-		ptmx.Close()
-		cmd.Process.Kill()
-		return nil, err
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	sess := &PTYSession{
 		ID:     sessionID,
 		ptmx:   ptmx,
 		cmd:    cmd,
-		ws:     ws,
 		cancel: cancel,
 	}
 
-	// PTY → WS (read from terminal, send to bridge)
+	// PTY → Main WS (stream output through persistent connection)
 	sess.wg.Add(1)
 	go func() {
 		defer sess.wg.Done()
@@ -76,40 +58,10 @@ func StartPTY(sessionID, bridgeWSURL string, cols, rows int) (*PTYSession, error
 				return
 			}
 			if n > 0 {
-				if err := ws.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
-					return
-				}
-			}
-		}
-	}()
-
-	// WS → PTY (read from bridge, write to terminal)
-	sess.wg.Add(1)
-	go func() {
-		defer sess.wg.Done()
-		for {
-			msgType, msg, err := ws.ReadMessage()
-			if err != nil {
-				return
-			}
-			switch msgType {
-			case websocket.BinaryMessage:
-				ptmx.Write(msg)
-			case websocket.TextMessage:
-				// Check for resize command
-				var ctrl struct {
-					Type string `json:"type"`
-					Cols int    `json:"cols"`
-					Rows int    `json:"rows"`
-				}
-				if json.Unmarshal(msg, &ctrl) == nil && ctrl.Type == "resize" {
-					pty.Setsize(ptmx, &pty.Winsize{
-						Cols: uint16(ctrl.Cols),
-						Rows: uint16(ctrl.Rows),
-					})
-				} else {
-					ptmx.Write(msg)
-				}
+				wsSend("pty_data", map[string]any{
+					"session_id": sessionID,
+					"output":     string(buf[:n]),
+				})
 			}
 		}
 	}()
@@ -123,20 +75,39 @@ func StartPTY(sessionID, bridgeWSURL string, cols, rows int) (*PTYSession, error
 		sess.Close()
 	}()
 
-	_ = ctx // used for cancellation if needed
+	// Context cancellation cleanup
+	go func() {
+		<-ctx.Done()
+		sess.Close()
+	}()
+
 	return sess, nil
 }
 
-func (s *PTYSession) Close() {
-	s.cancel()
-	if s.ws != nil {
-		s.ws.Close()
-	}
+func (s *PTYSession) Write(data []byte) {
 	if s.ptmx != nil {
-		s.ptmx.Close()
+		s.ptmx.Write(data)
 	}
-	if s.cmd != nil && s.cmd.Process != nil {
-		s.cmd.Process.Kill()
+}
+
+func (s *PTYSession) Resize(cols, rows int) {
+	if s.ptmx != nil {
+		pty.Setsize(s.ptmx, &pty.Winsize{
+			Cols: uint16(cols),
+			Rows: uint16(rows),
+		})
 	}
-	s.wg.Wait()
+}
+
+func (s *PTYSession) Close() {
+	s.closeOnce.Do(func() {
+		s.cancel()
+		if s.ptmx != nil {
+			s.ptmx.Close()
+		}
+		if s.cmd != nil && s.cmd.Process != nil {
+			s.cmd.Process.Kill()
+		}
+		s.wg.Wait()
+	})
 }

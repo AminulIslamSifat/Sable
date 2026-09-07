@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"sync"
@@ -51,14 +52,23 @@ func nowStr() string {
 
 func randHex(n int) string {
 	b := make([]byte, n)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		log.Printf("[warn] crypto/rand failed: %v, falling back to time-based", err)
+		// Fallback: not cryptographically secure but prevents zero IDs
+		for i := range b {
+			b[i] = byte(time.Now().UnixNano() >> (i * 3))
+		}
+	}
 	return fmt.Sprintf("%x", b)
 }
 
 // ── Core Methods ─────────────────────────────────────────────
 
-func (m *Monitor) RegisterSession(engineType, chatID string, metadata map[string]any) string {
-	sid := randHex(6)
+func (m *Monitor) RegisterSession(sessionID, engineType, chatID string, metadata map[string]any) string {
+	sid := sessionID
+	if sid == "" {
+		sid = randHex(6)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -182,15 +192,17 @@ func roundTo(val float64, places int) float64 {
 
 func handleMonitorRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		SessionID  string         `json:"session_id"`
 		EngineType string         `json:"engine_type"`
 		ChatID     string         `json:"chat_id"`
+		PID        int            `json:"pid"`
 		Metadata   map[string]any `json:"metadata"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, 400, map[string]any{"error": err.Error()})
 		return
 	}
-	sid := monitor.RegisterSession(req.EngineType, req.ChatID, req.Metadata)
+	sid := monitor.RegisterSession(req.SessionID, req.EngineType, req.ChatID, req.Metadata)
 	writeJSON(w, 200, map[string]any{"session_id": sid})
 }
 

