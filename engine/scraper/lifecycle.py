@@ -185,17 +185,13 @@ class ScraperLifecycle:
         self.engine = engine
         self.loaded_path = engine_path
 
-        # Diagnostics: passively track engine session
+        # Diagnostics: passively track engine session via Go beacon HTTP API
         try:
-            from .diagnostics import get_monitor
-            monitor = get_monitor()
+            from .diagnostics import register_session
             settings_diag = _load_settings()
-            import asyncio as _aio
-            sid = _aio.get_event_loop().run_until_complete(
-                monitor.register_session(
-                    settings_diag.get("engine_type", DEFAULT_ENGINE_TYPE),
-                    metadata={"cdp_port": getattr(engine, "port", None)},
-                )
+            sid = register_session(
+                settings_diag.get("engine_type", DEFAULT_ENGINE_TYPE),
+                metadata={"cdp_port": getattr(engine, "port", None)},
             )
             self._diag_session_id = sid
         except Exception:

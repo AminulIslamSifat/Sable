@@ -106,7 +106,4 @@ Brain/Procedural.json
 Brain/disabled_tools.json
 Brain/disabled_skills.json
 .sable_server.pid
-# ═══════════════════════════════════════════
-# Diagnostics — Go source excluded, compiled binaries tracked
-# ═══════════════════════════════════════════
-engine/scraper/diagnostics/beacon/
+
