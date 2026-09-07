@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -999,10 +1000,27 @@ async def list_accounts() -> dict[str, Any]:
         exhaustion = get_all_exhaustion_status()
         captcha_blocks = get_all_captcha_block_status()
 
+        # Load per-account browser config
+        acc_cfg = _read_accounts_config()
+
+        def _browser_label(path: str) -> str:
+            if not path or path == "default":
+                return "Default" if path == "default" else ""
+            bname = Path(path).stem.lower()
+            for kw in ("chrome", "chromium", "thorium", "helium", "brave", "vivaldi", "msedge", "edge"):
+                if kw in bname:
+                    return kw.capitalize() if kw != "msedge" else "Edge"
+            return Path(path).stem
+
         accounts: list[dict[str, Any]] = []
         for entry in _SYSTEM_DIR.iterdir():
             m = re.match(r"browser-data-acc(\d+)$", entry.name)
             if entry.is_dir() and m:
+                browser_path = acc_cfg.get(entry.name, {}).get("browser_path", "")
+                # Check if saved browser still exists on disk
+                browser_available = True
+                if browser_path and browser_path != "default":
+                    browser_available = os.path.isfile(browser_path)
                 accounts.append({
                     "name": entry.name,
                     "num": int(m.group(1)),
@@ -1012,6 +1030,9 @@ async def list_accounts() -> dict[str, Any]:
                     "has_ds": entry.name in ds_tokens,
                     "exhausted": exhaustion.get(entry.name, False),
                     "captcha_blocked": captcha_blocks.get(entry.name, False),
+                    "browser_path": browser_path,
+                    "browser_label": _browser_label(browser_path),
+                    "browser_available": browser_available,
                 })
         accounts.sort(key=lambda a: a["num"])
         return accounts
@@ -1110,9 +1131,80 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
     return {"status": "ok", "active": target_name, "email": email}
 
 
+# ─── accounts.json helpers ──────────────────────────────────────────────────
+_ACCOUNTS_JSON = _SYSTEM_DIR / "accounts.json"
+
+
+def _read_accounts_config() -> dict[str, Any]:
+    try:
+        return json.loads(_ACCOUNTS_JSON.read_text())
+    except Exception:
+        return {}
+
+
+def _write_accounts_config(cfg: dict[str, Any]) -> None:
+    _ACCOUNTS_JSON.write_text(json.dumps(cfg, indent=2))
+
+
+def _get_account_browser(profile_name: str) -> str | None:
+    cfg = _read_accounts_config()
+    return cfg.get(profile_name, {}).get("browser_path")
+
+
+def _set_account_browser(profile_name: str, browser_path: str) -> None:
+    cfg = _read_accounts_config()
+    if profile_name not in cfg:
+        cfg[profile_name] = {}
+    cfg[profile_name]["browser_path"] = browser_path
+    _write_accounts_config(cfg)
+
+
+@router.get("/api/settings/accounts/available-browsers")
+async def available_browsers() -> dict[str, Any]:
+    """Return all detected Chrome-compatible browsers on this system."""
+    from engine.platform_paths import (
+        system_chrome_candidates,
+        chrome_based_candidates,
+        find_playwright_chrome,
+    )
+    import shutil
+
+    def _detect() -> list[dict[str, str]]:
+        results: list[dict[str, str]] = []
+        seen: set[str] = set()
+
+        def _add(label: str, candidates: list[str], tier: str) -> None:
+            for c in candidates:
+                resolved = shutil.which(c) if not os.path.isabs(c) else c
+                if resolved and os.path.isfile(resolved) and resolved not in seen:
+                    seen.add(resolved)
+                    results.append({"label": label, "path": resolved, "tier": tier})
+
+        _add("Chrome", ["google-chrome-stable", "google-chrome"], "chrome")
+        _add("Chromium", ["chromium-browser", "chromium"], "chrome")
+        _add("Thorium", ["thorium-browser", "thorium"], "chrome-based")
+        _add("Helium", ["helium-browser", "helium"], "chrome-based")
+        _add("Brave", ["brave-browser", "brave"], "chrome-based")
+        _add("Vivaldi", ["vivaldi", "vivaldi-stable"], "chrome-based")
+        _add("Edge", ["microsoft-edge", "microsoft-edge-stable"], "chrome-based")
+
+        # Also check absolute-path candidates from platform_paths
+        _add("Chrome", system_chrome_candidates(), "chrome")
+        _add("Chrome-based", chrome_based_candidates(), "chrome-based")
+
+        pw = find_playwright_chrome()
+        if pw and pw not in seen:
+            results.append({"label": "Playwright Chromium", "path": pw, "tier": "playwright"})
+
+        return results
+
+    browsers = await asyncio.to_thread(_detect)
+    return {"browsers": browsers}
+
+
 @router.post("/api/settings/accounts/create")
-async def create_account() -> dict[str, Any]:
-    """Find next available acc integer and launch browser_opener headed."""
+async def create_account(payload: dict[str, str] | None = None) -> dict[str, Any]:
+    """Find next available acc integer and launch headed browser for login."""
     def _next_acc() -> int:
         existing: set[int] = set()
         for d in _SYSTEM_DIR.iterdir():
@@ -1126,19 +1218,44 @@ async def create_account() -> dict[str, Any]:
 
     acc_num = await asyncio.to_thread(_next_acc)
     profile_name = f"browser-data-acc{acc_num}"
+    profile_path = _SYSTEM_DIR / profile_name
+    profile_path.mkdir(parents=True, exist_ok=True)
 
-    def _launch() -> None:
-        subprocess.Popen(
-            ["uv", "run", "python", "engine/account_login.py", profile_name],
-            cwd=str(BASE_DIR.parent),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+    # Save user's browser choice (may be 'default', a path, or empty for auto-detect)
+    chosen_browser = (payload or {}).get("browser_path", "")
+    if chosen_browser:
+        await asyncio.to_thread(_set_account_browser, profile_name, chosen_browser)
 
-    try:
-        await asyncio.to_thread(_launch)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to launch browser_opener: {exc}")
+    # Resolve actual binary to use
+    from engine.platform_paths import resolve_browser_for_profile
+    resolved_browser = await asyncio.to_thread(resolve_browser_for_profile, profile_name)
+
+    async def _run_browser() -> None:
+        from playwright.async_api import async_playwright
+        try:
+            launch_kwargs: dict[str, Any] = {
+                "user_data_dir": str(profile_path),
+                "headless": False,
+                "timeout": 0,
+                "args": [
+                    "--no-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disk-cache-size=2097152",
+                    "--disable-gpu-shader-cache",
+                    "--disable-component-update",
+                ],
+            }
+            if resolved_browser:
+                launch_kwargs["executable_path"] = resolved_browser
+            async with async_playwright() as p:
+                context = await p.chromium.launch_persistent_context(**launch_kwargs)
+                page = context.pages[0] if context.pages else await context.new_page()
+                await page.goto("https://chat.qwen.ai", timeout=120000)
+                await context.wait_for_event("close", timeout=0)
+        except Exception as e:
+            logger.warning(f"Account creation browser for {profile_name} exited: {e}")
+
+    asyncio.create_task(_run_browser())
     return {"status": "ok", "profile": profile_name}
 
 
@@ -1187,22 +1304,29 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
 
     url = payload.get("url", "https://chat.qwen.ai")
 
+    # Resolve browser using centralized resolver (respects accounts.json)
+    from engine.platform_paths import resolve_browser_for_profile
+    resolved_browser = await asyncio.to_thread(resolve_browser_for_profile, target_name)
+
     async def _run_browser() -> None:
         from playwright.async_api import async_playwright
         try:
+            launch_kwargs: dict[str, Any] = {
+                "user_data_dir": str(target_path),
+                "headless": False,
+                "timeout": 0,
+                "args": [
+                    "--no-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disk-cache-size=2097152",
+                    "--disable-gpu-shader-cache",
+                    "--disable-component-update",
+                ],
+            }
+            if resolved_browser:
+                launch_kwargs["executable_path"] = resolved_browser
             async with async_playwright() as p:
-                context = await p.chromium.launch_persistent_context(
-                    user_data_dir=str(target_path),
-                    headless=False,
-                    timeout=0,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-blink-features=AutomationControlled",
-                        "--disk-cache-size=2097152",
-                        "--disable-gpu-shader-cache",
-                        "--disable-component-update",
-                    ],
-                )
+                context = await p.chromium.launch_persistent_context(**launch_kwargs)
                 page = context.pages[0] if context.pages else await context.new_page()
                 await page.goto(url, timeout=120000)
                 await context.wait_for_event("close", timeout=0)
