@@ -79,9 +79,10 @@ _ACTIVE_ACCOUNT_FILE = _SYSTEM / ".active_account"
 def get_active_account() -> str:
     """Get the active browser account name from the config file.
 
-    Falls back to symlink resolution for backward compatibility, then to 'browser-data'.
+    When the file is empty or missing, auto-selects the best available account
+    using priority: fresh (lowest number) > captcha-blocked (oldest) and persists
+    the selection so subsequent calls are stable.
     """
-    # 1. Try config file first
     try:
         name = _ACTIVE_ACCOUNT_FILE.read_text(encoding="utf-8").strip()
         if name:
@@ -89,17 +90,14 @@ def get_active_account() -> str:
     except OSError:
         pass
 
-    # 2. Migrate from legacy symlink
-    symlink = _SYSTEM / "browser-data"
-    try:
-        if symlink.is_symlink():
-            target = symlink.resolve()
-            name = target.name
-            set_active_account(name)
-            return name
-    except OSError:
-        pass
+    # Auto-select best available account instead of falling back to legacy name
+    selected = get_next_available_account()
+    if selected:
+        set_active_account(selected)
+        logger.info("Auto-selected active account: %s (was unset)", selected)
+        return selected
 
+    # No accounts exist at all — fall back to legacy name as last resort
     return "browser-data"
 
 
@@ -136,7 +134,7 @@ MODELS = [
         "id": "qwen3.8-max",
         "label": "Qwen3.8 Max",
         "max_session_chars": 3_000_000,
-        "capabilities": {"image": True, "video": False, "document": False, "audio": False},
+        "capabilities": {"image": True, "video": False, "document": True, "audio": False},
         "thinking_modes": [
             {
                 "id": "fast",
@@ -187,7 +185,7 @@ MODELS = [
         "id": "qwen3.7-plus",
         "label": "Qwen3.7 Plus",
         "max_session_chars": 3_000_000,
-        "capabilities": {"image": True, "video": False, "document": False, "audio": False},
+        "capabilities": {"image": True, "video": False, "document": True, "audio": False},
         "thinking_modes": [
             {
                 "id": "fast",
@@ -547,17 +545,17 @@ def get_qwen_tokens_for_account(account: str | None = None) -> dict[str, str] | 
         valid = [e for e in entries if e.get("cookies")]
         return valid[-1] if valid else None
 
-    if account and account in store:
-        tok = _latest(store[account])
-        if tok:
-            return tok
+    # Explicit account: strict lookup only. No fallback.
+    if account is not None:
+        entries = store.get(account)
+        if not entries:
+            return None
+        return _latest(entries)
+
+    # No explicit account: fall back to active account only.
     active = _resolve_active_account()
     if active in store:
         tok = _latest(store[active])
-        if tok:
-            return tok
-    for entries in store.values():
-        tok = _latest(entries)
         if tok:
             return tok
     return None
@@ -630,20 +628,25 @@ def mark_account_exhausted(account: str) -> None:
 
 
 def is_account_exhausted(account: str) -> bool:
-    """Check if account is exhausted. Auto-resets if exhausted_at is before today's UTC midnight."""
-    from datetime import datetime, timezone
+    """Check if account is exhausted. Auto-resets if exhausted_at is before today's UTC midnight
+    plus a per-account jitter (0-60 min) to prevent thundering herd at reset boundary."""
+    from datetime import datetime, timezone, timedelta
     store = _load_exhaustion_store()
     entry = store.get(account)
     if not entry or not entry.get("exhausted"):
         return False
-    # Check if quota has reset (new UTC day)
+    # Check if quota has reset (new UTC day + jitter)
     exhausted_at = entry.get("exhausted_at")
     if exhausted_at:
         try:
             dt = datetime.fromisoformat(exhausted_at)
             now = datetime.now(timezone.utc)
-            # If exhausted before today's UTC midnight, quota has reset
-            if dt.date() < now.date():
+            # FIX #6: Per-account jitter (0-60 min) based on account name hash.
+            # Prevents all accounts from resetting at exactly UTC midnight,
+            # which causes concurrent requests to select the same freshly-reset account.
+            _jitter_minutes = hash(account) % 60
+            _reset_time = datetime.combine(now.date(), datetime.min.time(), tzinfo=timezone.utc) + timedelta(minutes=_jitter_minutes)
+            if dt < _reset_time:
                 store[account] = {"exhausted": False, "exhausted_at": None}
                 _save_exhaustion_store(store)
                 return False
@@ -844,5 +847,53 @@ def get_available_accounts_reverse(
     result = [name for _, name in fresh]
     result.extend(name for _, name in captcha_blocked)
     return result[:limit]
+
+
+def auto_switch_account(
+    current_account: str,
+    error_type: str,
+    exclude: set[str] | None = None,
+    reverse: bool = False,
+) -> str | None:
+    """Mark the failing account and find the next available one.
+
+    Shared auto-switch logic used by both main chat and subagents.
+    Mirrors the marking + selection from chat.py auto-switch handler.
+
+    Args:
+        current_account: The account that just failed (e.g. 'browser-data-acc3').
+        error_type: One of 'rate_limited', 'waf_blocked', 'empty_exhausted'.
+        exclude: Additional accounts to skip (already-tried in this request).
+        reverse: If True, search highest-number-first (for subagents/background).
+                 If False, search lowest-number-first (for main chat).
+
+    Returns:
+        Next account name or None if all exhausted.
+    """
+    import logging as _logging
+    _logger = _logging.getLogger(__name__)
+
+    # Mark the failing account
+    if error_type == "waf_blocked":
+        mark_account_captcha_blocked(current_account)
+        _logger.info("[auto-switch] Marked %s as captcha-blocked", current_account)
+    elif error_type == "empty_exhausted":
+        mark_account_exhausted(current_account)
+        _logger.info("[auto-switch] Marked %s as exhausted (empty_exhausted)", current_account)
+    elif error_type == "rate_limited":
+        mark_account_exhausted(current_account)
+        _logger.info("[auto-switch] Marked %s as exhausted (rate_limited)", current_account)
+
+    # Build exclusion set
+    _exclude = set(exclude or {})
+    _exclude.add(current_account)
+
+    # Find next account
+    if reverse:
+        candidates = get_available_accounts_reverse(exclude=_exclude, limit=10)
+        return candidates[0] if candidates else None
+    else:
+        return get_next_available_account(exclude=_exclude)
+
 
 

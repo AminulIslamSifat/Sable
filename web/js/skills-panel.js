@@ -163,7 +163,7 @@
       loadTools();
       loadSkills();
     });
-    document.querySelector('[data-tab="account"]')?.addEventListener("click", () => { if (typeof loadAccountProfiles === 'function') loadAccountProfiles(); });
+    document.querySelector('[data-tab="account"]')?.addEventListener("click", () => { if (window.loadAvailableBrowsers) window.loadAvailableBrowsers(); if (typeof loadAccountProfiles === 'function') loadAccountProfiles(); });
 
     // --- Providers tab: Unified API key manager ---
     const _keyProviderMeta = {
@@ -580,23 +580,17 @@
       clearCacheBtn: () => document.getElementById("searchClearCacheBtn"),
       status: () => document.getElementById("searchStatus"),
       hint: () => document.getElementById("searchProviderHint"),
-      // API key inputs
-      keyBrave: () => document.getElementById("searchInputBrave"),
-      keyGooglePse: () => document.getElementById("searchInputGooglePse"),
-      keyGooglePseCx: () => document.getElementById("searchInputGooglePseCx"),
-      keyTavily: () => document.getElementById("searchInputTavily"),
-      keySerper: () => document.getElementById("searchInputSerper"),
-      // Key row containers
-      rowBrave: () => document.getElementById("searchKeyBrave"),
-      rowGooglePse: () => document.getElementById("searchKeyGooglePse"),
-      rowTavily: () => document.getElementById("searchKeyTavily"),
-      rowSerper: () => document.getElementById("searchKeySerper"),
       noKeyNeeded: () => document.getElementById("searchNoKeyNeeded"),
-      // Key status badges
-      statusBrave: () => document.getElementById("searchKeyBraveStatus"),
-      statusGooglePse: () => document.getElementById("searchKeyGooglePseStatus"),
-      statusTavily: () => document.getElementById("searchKeyTavilyStatus"),
-      statusSerper: () => document.getElementById("searchKeySerperStatus"),
+      // Multi-key API management
+      keyProviderSelect: () => document.getElementById("searchKeyProviderSelect"),
+      apiKeyInput: () => document.getElementById("searchApiKeyInput"),
+      addKeyBtn: () => document.getElementById("addSearchApiKeyBtn"),
+      keyList: () => document.getElementById("searchApiKeyList"),
+      keyStatus: () => document.getElementById("searchApiKeyStatus"),
+      // Google PSE CX
+      googlePseCxRow: () => document.getElementById("searchGooglePseCxRow"),
+      googlePseCxInput: () => document.getElementById("searchInputGooglePseCx"),
+      saveGooglePseCxBtn: () => document.getElementById("saveGooglePseCxBtn"),
       // Test & compare controls
       testQuery: () => document.getElementById("searchTestQuery"),
       testCount: () => document.getElementById("searchTestCount"),
@@ -620,20 +614,6 @@
       const section = _searchEls.searxngSection();
       if (section) section.style.display = provider === "searxng" ? "" : "none";
 
-      // Show/hide API key rows based on provider
-      const keyMap = {
-        brave: _searchEls.rowBrave(),
-        google_pse: _searchEls.rowGooglePse(),
-        tavily: _searchEls.rowTavily(),
-        serper: _searchEls.rowSerper(),
-      };
-      const needsKey = ["brave", "google_pse", "tavily", "serper"];
-      for (const [prov, el] of Object.entries(keyMap)) {
-        if (el) el.style.display = (provider === prov) ? "" : "none";
-      }
-      const noKeyEl = _searchEls.noKeyNeeded();
-      if (noKeyEl) noKeyEl.style.display = (!needsKey.includes(provider) && provider !== "disabled") ? "" : "none";
-
       const hints = {
         searxng: "Self-hosted meta-search. No API key needed.",
         brave: "Get your key at brave.com/search/api",
@@ -645,16 +625,113 @@
       };
       const hintEl = _searchEls.hint();
       if (hintEl) hintEl.textContent = hints[provider] || "";
+
+      // Show/hide Google PSE CX row based on key provider selection
+      const keyProv = _searchEls.keyProviderSelect()?.value;
+      const cxRow = _searchEls.googlePseCxRow();
+      if (cxRow) cxRow.style.display = keyProv === "google_pse" ? "" : "none";
     }
 
-    // --- Fallback chain multi-select dropdown ---
+    // --- Search Provider Multi-Key Management ---
+    let _currentSearchKeyProvider = "";
+
+    async function _loadSearchKeys(provider) {
+      const listEl = _searchEls.keyList();
+      const statusEl = _searchEls.keyStatus();
+      if (!listEl) return;
+      if (!provider) {
+        listEl.innerHTML = '<div class="muted" style="font-size:11px;">Select a provider to manage keys.</div>';
+        if (statusEl) statusEl.textContent = "";
+        return;
+      }
+      try {
+        const res = await fetch(`/api/settings/search/${provider}/keys`);
+        if (!res.ok) throw new Error("Failed to load keys");
+        const data = await res.json();
+        const keys = data.keys || [];
+        if (keys.length === 0) {
+          listEl.innerHTML = '<div class="muted" style="font-size:11px;">No keys added yet.</div>';
+          if (statusEl) statusEl.textContent = "";
+          return;
+        }
+        listEl.innerHTML = "";
+        keys.forEach((k, idx) => {
+          const row = document.createElement("div");
+          row.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:var(--bg-secondary);border-radius:8px;border:1px solid var(--border);";
+          row.innerHTML = `<span style="font-size:12px;font-family:monospace;color:var(--text);">${_escHtml(k.masked)}</span>`;
+          const delBtn = document.createElement("button");
+          delBtn.textContent = "✕";
+          delBtn.title = "Remove key";
+          delBtn.style.cssText = "background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;padding:2px 6px;border-radius:4px;";
+          delBtn.addEventListener("click", async () => {
+            try {
+              const r = await fetch(`/api/settings/search/${provider}/api-key/${idx}`, { method: "DELETE" });
+              if (!r.ok) throw new Error("Delete failed");
+              await _loadSearchKeys(provider);
+            } catch (e) {
+              if (statusEl) statusEl.textContent = "Error: " + e.message;
+            }
+          });
+          row.appendChild(delBtn);
+          listEl.appendChild(row);
+        });
+        if (statusEl) statusEl.textContent = `${keys.length} key${keys.length !== 1 ? "s" : ""} configured — auto-rotates on rate limit.`;
+      } catch (e) {
+        listEl.innerHTML = `<div style="color:var(--danger);font-size:11px;">Error loading keys: ${_escHtml(e.message)}</div>`;
+      }
+    }
+
+    // Wire up search key provider select
+    _searchEls.keyProviderSelect()?.addEventListener("change", () => {
+      _currentSearchKeyProvider = _searchEls.keyProviderSelect()?.value || "";
+      _loadSearchKeys(_currentSearchKeyProvider);
+      _updateSearchProviderUI();
+    });
+
+    // Wire up Add key button
+    _searchEls.addKeyBtn()?.addEventListener("click", async () => {
+      const provider = _searchEls.keyProviderSelect()?.value;
+      const input = _searchEls.apiKeyInput();
+      const statusEl = _searchEls.keyStatus();
+      if (!provider) {
+        if (statusEl) statusEl.textContent = "Select a provider first.";
+        return;
+      }
+      const key = input?.value?.trim();
+      if (!key) {
+        if (statusEl) statusEl.textContent = "Paste an API key first.";
+        return;
+      }
+      try {
+        const res = await fetch(`/api/settings/search/${provider}/api-key`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ api_key: key })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || err.error || "Add failed");
+        }
+        if (input) input.value = "";
+        if (statusEl) statusEl.textContent = "Key added!";
+        await _loadSearchKeys(provider);
+      } catch (e) {
+        if (statusEl) statusEl.textContent = "Error: " + e.message;
+      }
+    });
+
+    // --- Fallback chain: add-from-dropdown (no drag-and-drop) ---
     const _fallbackUI = (() => {
       let providers = [];
-      let selected = []; // ordered
+      let selected = []; // ordered list of provider names
 
       function syncHidden() {
         const h = _searchEls.fallback();
         if (h) h.value = selected.join(", ");
+      }
+
+      function markDirty() {
+        window._universalSave?.markDirty("providers");
       }
 
       function renderChips() {
@@ -662,36 +739,26 @@
         if (!el) return;
         el.innerHTML = "";
         if (selected.length === 0) {
-          el.innerHTML = '<span class="muted" style="font-size:11px;">Select providers…</span>';
+          el.innerHTML = '<span class="muted" style="font-size:11px;">No fallback engines added</span>';
           syncHidden();
           return;
         }
         selected.forEach((name) => {
           const chip = document.createElement("span");
-          chip.draggable = true;
-          chip.style.cssText = "display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 8px;border-radius:10px;background:color-mix(in srgb, var(--accent) 18%, transparent);border:1px solid var(--border);color:var(--text);cursor:grab;";
+          chip.style.cssText = "display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 8px;border-radius:10px;background:color-mix(in srgb, var(--accent) 18%, transparent);border:1px solid var(--border);color:var(--text);";
           chip.textContent = name;
           const x = document.createElement("span");
           x.textContent = "×";
-          x.style.cssText = "cursor:pointer;opacity:.7;font-weight:700;";
+          x.title = "Remove";
+          x.style.cssText = "cursor:pointer;opacity:.7;font-weight:700;margin-left:2px;";
           x.addEventListener("click", (ev) => {
             ev.stopPropagation();
             selected = selected.filter((p) => p !== name);
             renderChips();
             renderOptions();
+            markDirty();
           });
           chip.appendChild(x);
-          chip.addEventListener("dragstart", (ev) => ev.dataTransfer.setData("text/plain", name));
-          chip.addEventListener("dragover", (ev) => ev.preventDefault());
-          chip.addEventListener("drop", (ev) => {
-            ev.preventDefault();
-            ev.stopPropagation();
-            const src = ev.dataTransfer.getData("text/plain");
-            if (!src || src === name) return;
-            selected = selected.filter((p) => p !== src);
-            selected.splice(selected.indexOf(name), 0, src);
-            renderChips();
-          });
           el.appendChild(chip);
         });
         syncHidden();
@@ -702,17 +769,22 @@
         if (!el) return;
         el.innerHTML = "";
         const currentPrimary = _searchEls.provider()?.value || "searxng";
-        providers.filter((p) => p !== "disabled" && p !== currentPrimary).forEach((name) => {
-          const isSel = selected.includes(name);
+        const available = providers.filter((p) => p !== "disabled" && p !== currentPrimary && !selected.includes(p));
+        if (available.length === 0) {
+          el.innerHTML = '<div class="muted" style="padding:8px 10px;font-size:11px;">All available engines already added</div>';
+          return;
+        }
+        available.forEach((name) => {
           const row = document.createElement("div");
           row.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:12px;cursor:pointer;color:var(--text);";
-          row.innerHTML = `<span style="opacity:${isSel ? 1 : 0.35}">${isSel ? "☑" : "☐"}</span> ${name}`;
+          row.innerHTML = `<span style="opacity:0.35">＋</span> ${name}`;
           row.addEventListener("mouseenter", () => (row.style.background = "color-mix(in srgb, var(--accent) 8%, transparent)"));
           row.addEventListener("mouseleave", () => (row.style.background = "transparent"));
           row.addEventListener("click", () => {
-            selected = selected.includes(name) ? selected.filter((p) => p !== name) : [...selected, name];
+            selected.push(name);
             renderChips();
             renderOptions();
+            markDirty();
           });
           el.appendChild(row);
         });
@@ -829,17 +901,16 @@
         if (rc && data.search_result_count != null) rc.value = data.search_result_count;
         const ss = _searchEls.safesearch();
         if (ss && data.search_safesearch) ss.value = data.search_safesearch;
-        // Set API key status badges
-        const _keyBadge = (el, hasKey) => {
-          if (!el) return;
-          el.textContent = hasKey ? "✅ saved" : "⚠️ not set";
-          el.style.color = hasKey ? "var(--success)" : "var(--warning)";
-        };
-        _keyBadge(_searchEls.statusBrave(), data.has_brave_key);
-        _keyBadge(_searchEls.statusGooglePse(), data.has_google_pse_key);
-        _keyBadge(_searchEls.statusTavily(), data.has_tavily_key);
-        _keyBadge(_searchEls.statusSerper(), data.has_serper_key);
         _updateSearchProviderUI();
+        // Auto-select first search key provider and load its keys
+        const keySelect = _searchEls.keyProviderSelect();
+        if (keySelect && !keySelect.value) {
+          keySelect.value = "tavily";
+          _currentSearchKeyProvider = "tavily";
+          _loadSearchKeys("tavily");
+        } else if (_currentSearchKeyProvider) {
+          _loadSearchKeys(_currentSearchKeyProvider);
+        }
       } catch (e) {
         console.error("Failed to load search settings:", e);
       }
@@ -848,6 +919,7 @@
     _searchEls.provider()?.addEventListener("change", () => {
       _updateSearchProviderUI();
       _fallbackUI.renderOptions();
+      window._universalSave?.markDirty("providers");
     });
 
     _loadSearchProviders();
@@ -860,31 +932,20 @@
         search_result_count: parseInt(_searchEls.resultCount()?.value || "10", 10),
         search_safesearch: _searchEls.safesearch()?.value || "strict",
       };
-      const braveKey = _searchEls.keyBrave()?.value?.trim();
-      if (braveKey) payload.brave_api_key = braveKey;
-      const googlePseKey = _searchEls.keyGooglePse()?.value?.trim();
-      if (googlePseKey) payload.google_pse_key = googlePseKey;
-      const googlePseCx = _searchEls.keyGooglePseCx()?.value?.trim();
+      // Google PSE CX is still saved inline (not part of multi-key)
+      const googlePseCx = _searchEls.googlePseCxInput()?.value?.trim();
       if (googlePseCx) payload.google_pse_cx = googlePseCx;
-      const tavilyKey = _searchEls.keyTavily()?.value?.trim();
-      if (tavilyKey) payload.tavily_api_key = tavilyKey;
-      const serperKey = _searchEls.keySerper()?.value?.trim();
-      if (serperKey) payload.serper_api_key = serperKey;
       const res = await fetch("/api/settings/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const data = await res.json();
       if (data.status === "ok") {
-        ["keyBrave", "keyGooglePse", "keyGooglePseCx", "keyTavily", "keySerper"].forEach((k) => {
-          const el = _searchEls[k]();
-          if (el) el.value = "";
-        });
         await loadSearchSettings();
       } else {
         throw new Error(data.detail || data.error || "Save failed");
       }
     }
 
-    // Register Search tab with universal save
-    _universalSave.register("search", _saveSearchSettings);
+    // Register under "providers" tab since search settings live inside the Providers panel
+    _universalSave.register("providers", _saveSearchSettings);
 
     _searchEls.testBtn()?.addEventListener("click", async () => {
       const statusEl = _searchEls.status();
@@ -1309,7 +1370,7 @@
       } catch {}
     }
 
-    for (const sel of [..._ctxPassModelSelects, ..._ctxPassBrowserSelects]) {
+    for (const sel of _ctxPassModelSelects) {
       if (sel) sel.addEventListener("change", saveContextPassSettings);
     }
 

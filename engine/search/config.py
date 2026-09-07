@@ -2,11 +2,14 @@
 
 Reads from system/settings.json with fallback to tools/online_search/scripts/settings.json.
 Never caches secrets — keys are resolved on every call.
+Supports multiple API keys per provider with round-robin rotation.
 """
 
+import itertools
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -42,37 +45,87 @@ def _get_search_instance() -> str:
         return url.rstrip("/")
     return os.environ.get("SEARXNG_INSTANCE", "http://localhost:8080").rstrip("/")
 
-def _get_provider_key(provider: str) -> str:
-    """Resolve API key: settings field -> env var -> legacy search_api_key -> empty string."""
-    settings = _get_search_settings()
-    key_map = {
-        "brave": "brave_api_key",
-        "google_pse": "google_pse_key",
-        "tavily": "tavily_api_key",
-        "serper": "serper_api_key",
-    }
-    field = key_map.get(provider, "")
-    if field:
-        val = (settings.get(field) or "").strip()
-        if val:
-            return val
+# ── Key rotation state ────────────────────────────────────────────────
+# Per-provider round-robin iterators, lazily initialized.
+_key_rotators: Dict[str, itertools.cycle] = {}
+_key_rotator_lock = threading.Lock()
 
-    # Env var fallback
-    env_map = {
-        "brave": "DATA_BRAVE_API_KEY",
-        "google_pse": "GOOGLE_API_KEY",
-        "tavily": "TAVILY_API_KEY",
-        "serper": "SERPER_API_KEY",
-    }
-    env_name = env_map.get(provider, "")
-    if env_name:
-        env_val = (os.environ.get(env_name) or "").strip()
-        if env_val:
-            return env_val
+_SETTINGS_FIELD_MAP = {
+    "brave": "brave_api_key",
+    "google_pse": "google_pse_key",
+    "tavily": "tavily_api_key",
+    "serper": "serper_api_key",
+}
+_ENV_VAR_MAP = {
+    "brave": "DATA_BRAVE_API_KEY",
+    "google_pse": "GOOGLE_API_KEY",
+    "tavily": "TAVILY_API_KEY",
+    "serper": "SERPER_API_KEY",
+}
+
+
+def _resolve_provider_keys(provider: str) -> List[str]:
+    """Resolve ALL API keys for a provider (list). Backwards-compatible with single string.
+
+    Priority: settings field (string or list) -> env var -> legacy search_api_key.
+    """
+    settings = _get_search_settings()
+    keys: List[str] = []
+
+    field = _SETTINGS_FIELD_MAP.get(provider, "")
+    if field:
+        raw = settings.get(field)
+        if isinstance(raw, list):
+            keys = [k.strip() for k in raw if isinstance(k, str) and k.strip()]
+        elif isinstance(raw, str) and raw.strip():
+            keys = [raw.strip()]
+
+    # Env var fallback (single key)
+    if not keys:
+        env_name = _ENV_VAR_MAP.get(provider, "")
+        if env_name:
+            env_val = (os.environ.get(env_name) or "").strip()
+            if env_val:
+                keys = [env_val]
 
     # Legacy shared key
-    legacy = (settings.get("search_api_key") or "").strip()
-    return legacy
+    if not keys:
+        legacy = (settings.get("search_api_key") or "").strip()
+        if legacy:
+            keys = [legacy]
+
+    return keys
+
+
+def get_provider_keys(provider: str) -> List[str]:
+    """Return all configured API keys for a provider."""
+    return _resolve_provider_keys(provider)
+
+
+def _get_provider_key(provider: str) -> str:
+    """Resolve next API key via round-robin rotation. Backwards-compatible single-key API."""
+    keys = _resolve_provider_keys(provider)
+    if not keys:
+        return ""
+    if len(keys) == 1:
+        return keys[0]
+
+    # Round-robin for multiple keys
+    with _key_rotator_lock:
+        rotator = _key_rotators.get(provider)
+        if rotator is None:
+            rotator = itertools.cycle(keys)
+            _key_rotators[provider] = rotator
+        return next(rotator)
+
+
+def reset_key_rotation(provider: str | None = None) -> None:
+    """Reset round-robin state. None resets all providers."""
+    with _key_rotator_lock:
+        if provider is None:
+            _key_rotators.clear()
+        else:
+            _key_rotators.pop(provider, None)
 
 def _get_result_count() -> int:
     """Return configured result count, default 5."""

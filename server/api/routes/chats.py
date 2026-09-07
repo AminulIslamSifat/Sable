@@ -731,7 +731,7 @@ def _load_ctx_pass_settings() -> dict[str, str]:
 @router.post("/api/context/pass")
 async def context_pass(req: ContextPassRequest) -> dict[str, Any]:
     import re as _re
-    _tc_re = _re.compile(r'<tool_call[\s>]', _re.IGNORECASE)
+    _tc_re = _re.compile(r'<\s*tool_calls?[\s>]', _re.IGNORECASE)
     _tr_re = _re.compile(r'<tool_result[\s>]', _re.IGNORECASE)
 
     messages = get_messages(req.chat_id)

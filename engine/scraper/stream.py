@@ -15,6 +15,10 @@ from .settings import _load_settings, DEFAULT_ENGINE_TYPE
 
 logger = logging.getLogger("sable.scraper")
 
+# Timeout for acquiring the setup lock — prevents silent hangs when a
+# previous stream is stuck or leaked its lock.
+_LOCK_ACQUIRE_TIMEOUT = 30.0
+
 
 class ScraperEngine(ScraperLifecycle):
     """Singleton-ish adapter around a GhostChat-style browser scraper.
@@ -22,6 +26,13 @@ class ScraperEngine(ScraperLifecycle):
     Inherits lifecycle management (start/stop/probe/kill) from ScraperLifecycle
     and adds the streaming chat interface.
     """
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Serializes response capture so two concurrent streams don't
+        # interleave DOM reads.  Setup lock (_lock) is released before
+        # this phase so other chats can send while one response streams.
+        self._response_lock = asyncio.Lock()
 
     async def _interrupt_generation(self, engine: Any, chat_id: str | None = None, response_id: str | None = None) -> None:
         """Stop generation via API (Qwen) or on-page stop button."""
@@ -58,17 +69,44 @@ class ScraperEngine(ScraperLifecycle):
         last_answer = ''
         last_thought = ''
 
+        def _compute_delta(full: str, prev: str) -> str:
+            """Compute new content delta between previous and current full text.
+
+            Handles three cases:
+            1. Normal growth: full starts with prev → emit tail
+            2. Text shrunk (_clean_garbage dedup): full is a prefix of prev → no delta
+            3. Mid-text reformat: use longest common prefix to find new tail
+            """
+            if full.startswith(prev):
+                return full[len(prev):]
+            # Text got shorter (e.g. _clean_garbage removed duplicate halves)
+            # or was reformatted — don't re-emit old content
+            if prev.startswith(full):
+                return ''
+            # Find longest common prefix
+            min_len = min(len(prev), len(full))
+            common = 0
+            while common < min_len and prev[common] == full[common]:
+                common += 1
+            # Only emit genuinely new content beyond the shared prefix
+            if common > len(prev) // 2 and len(full) > common:
+                return full[common:]
+            # Too little overlap — likely a full replacement, not incremental
+            return ''
+
         def live_display(full_text: str) -> None:
             nonlocal last_answer
             full = str(full_text or '')
             if not full or full == last_answer:
                 return
-            if full.startswith(last_answer):
-                delta = full[len(last_answer):]
-            else:
-                delta = full
+            delta = _compute_delta(full, last_answer)
             last_answer = full
             if delta:
+                import logging as _logging
+                _logging.getLogger("sable.scraper.stream").debug(
+                    "live_display delta: len=%d full_len=%d prev_len=%d preview=%r",
+                    len(delta), len(full), len(full) - len(delta), delta[:80]
+                )
                 answer_queue.put_nowait(delta)
 
         async def thoughts_callback(full_text: str) -> None:
@@ -76,10 +114,7 @@ class ScraperEngine(ScraperLifecycle):
             full = str(full_text or '')
             if not full or full == last_thought:
                 return
-            if full.startswith(last_thought):
-                delta = full[len(last_thought):]
-            else:
-                delta = full
+            delta = _compute_delta(full, last_thought)
             last_thought = full
             if delta:
                 thought_queue.put_nowait(delta)
@@ -124,11 +159,16 @@ class ScraperEngine(ScraperLifecycle):
         state['answer'] = answer_text
 
         if answer_text:
-            if answer_text.startswith(last_answer):
-                tail = answer_text[len(last_answer):]
-            else:
-                tail = '' if state.get('streamed') else answer_text
+            tail = _compute_delta(answer_text, last_answer)
+            if not tail and not state.get('streamed'):
+                # Nothing streamed yet — use full answer as fallback
+                tail = answer_text
             if tail:
+                import logging as _logging
+                _logging.getLogger("sable.scraper.stream").debug(
+                    "final_flush tail: len=%d answer_len=%d last_answer_len=%d streamed=%s preview=%r",
+                    len(tail), len(answer_text), len(last_answer), state.get('streamed'), tail[:80]
+                )
                 state['streamed'] = True
                 yield {'type': 'answer', 'text': tail}
 
@@ -148,107 +188,151 @@ class ScraperEngine(ScraperLifecycle):
             yield {"type": "error", "message": "Browser scraper is disabled"}
             return
 
+        # ── Phase 1: Setup (locked) ──────────────────────────────────────
+        # Engine init, browser liveness, new_chat, file upload, send_msg.
+        # Lock is released BEFORE the long-running get_response so other
+        # requests don't block silently.
         engine: Any = None
-        async with self._lock:
-            try:
-                yield {"type": "status", "message": "browser_scraper_starting"}
-                engine = await self._ensure_engine(settings)
-                yield {"type": "status", "message": "browser_scraper_connected"}
+        initial_count = 0
+        setup_ok = False
 
-                if not await self._is_browser_alive(engine):
-                    logger.warning("Browser process gone, restarting engine")
-                    self.engine = None
-                    self.loaded_path = None
+        try:
+            async with asyncio.timeout(_LOCK_ACQUIRE_TIMEOUT):
+                async with self._lock:
+                    yield {"type": "status", "message": "browser_scraper_starting"}
                     engine = await self._ensure_engine(settings)
-                    yield {"type": "status", "message": "browser_scraper_reconnected"}
+                    yield {"type": "status", "message": "browser_scraper_connected"}
 
-                if model in ("default", "expert", "vision") and hasattr(engine, "current_model_type"):
-                    engine.current_model_type = model
+                    if not await self._is_browser_alive(engine):
+                        logger.warning("Browser process gone, restarting engine")
+                        self.engine = None
+                        self.loaded_path = None
+                        engine = await self._ensure_engine(settings)
+                        yield {"type": "status", "message": "browser_scraper_reconnected"}
 
-                if chat_id and chat_id != self.active_chat_id:
-                    if getattr(engine, "has_fresh_chat", False):
-                        engine.has_fresh_chat = False
-                    elif chat_url:
-                        page = getattr(engine, "page", None)
-                        if page is not None:
-                            try:
-                                current = page.url
-                                if current != chat_url:
-                                    await page.goto(chat_url, wait_until="domcontentloaded", timeout=15000)
-                                    await asyncio.sleep(2)
-                                    yield {"type": "status", "message": "browser_resumed_chat"}
-                            except Exception as exc:
-                                yield {
-                                    "type": "status",
-                                    "message": f"browser_resume_failed: {exc}",
-                                }
-                    else:
-                        new_chat = getattr(engine, "new_chat", None)
-                        if new_chat is not None:
-                            try:
-                                await new_chat()
-                            except Exception as exc:
-                                yield {
-                                    "type": "status",
-                                    "message": f"browser_new_chat_failed: {exc}",
-                                }
-                    self.active_chat_id = chat_id
+                    if model in ("default", "expert", "vision") and hasattr(engine, "current_model_type"):
+                        engine.current_model_type = model
 
-                initial_count = 0
-                get_response_count = getattr(engine, "get_response_count", None)
-                if get_response_count is not None:
-                    try:
-                        initial_count = int(await get_response_count())
-                    except Exception:
-                        initial_count = 0
+                    if chat_id and chat_id != self.active_chat_id:
+                        if getattr(engine, "has_fresh_chat", False):
+                            engine.has_fresh_chat = False
+                        elif chat_url:
+                            page = getattr(engine, "page", None)
+                            if page is not None:
+                                try:
+                                    current = page.url
+                                    if current != chat_url:
+                                        await page.goto(chat_url, wait_until="domcontentloaded", timeout=15000)
+                                        await asyncio.sleep(2)
+                                        yield {"type": "status", "message": "browser_resumed_chat"}
+                                except Exception as exc:
+                                    yield {
+                                        "type": "status",
+                                        "message": f"browser_resume_failed: {exc}",
+                                    }
+                        else:
+                            new_chat = getattr(engine, "new_chat", None)
+                            if new_chat is not None:
+                                try:
+                                    await new_chat()
+                                except Exception as exc:
+                                    yield {
+                                        "type": "status",
+                                        "message": f"browser_new_chat_failed: {exc}",
+                                    }
+                        self.active_chat_id = chat_id
 
-                if files:
-                    upload_file = getattr(engine, "upload_file", None)
-                    if upload_file is not None:
-                        for file_entry in files:
-                            path = file_entry.get("path") or file_entry.get("local_path")
-                            if not path:
-                                continue
-                            try:
-                                await upload_file(path, has_msg=False)
-                                yield {
-                                    "type": "status",
-                                    "message": f"browser_file_attached:{Path(path).name}",
-                                }
-                            except Exception as exc:
-                                yield {
-                                    "type": "status",
-                                    "message": f"browser_file_attach_failed:{exc}",
-                                }
-
-                if thinking_mode in ("deepthink", "fast"):
-                    set_thinking = getattr(engine, "set_thinking_mode", None)
-                    if set_thinking is not None:
+                    get_response_count = getattr(engine, "get_response_count", None)
+                    if get_response_count is not None:
                         try:
-                            await set_thinking(thinking_mode)
-                        except Exception as exc:
-                            yield {
-                                "type": "status",
-                                "message": f"browser_thinking_mode_failed: {exc}",
-                            }
+                            initial_count = int(await get_response_count())
+                        except Exception:
+                            initial_count = 0
 
-                send_kwargs: dict[str, Any] = {}
-                if _accepts_arg(engine.send_msg, 'raw'):
-                    send_kwargs['raw'] = raw
-                sent = await engine.send_msg(message, **send_kwargs)
-                if not sent:
-                    yield {
-                        "type": "error",
-                        "message": "Browser scraper could not send the message",
-                    }
-                    return
+                    if files:
+                        upload_file = getattr(engine, "upload_file", None)
+                        if upload_file is not None:
+                            for file_entry in files:
+                                fpath = file_entry.get("path") or file_entry.get("local_path")
+                                if not fpath:
+                                    continue
+                                try:
+                                    await upload_file(fpath, has_msg=False)
+                                    yield {
+                                        "type": "status",
+                                        "message": f"browser_file_attached:{Path(fpath).name}",
+                                    }
+                                except Exception as exc:
+                                    yield {
+                                        "type": "status",
+                                        "message": f"browser_file_attach_failed:{exc}",
+                                    }
 
-                yield {"type": "status", "message": "waiting_for_browser_response"}
+                    if thinking_mode in ("deepthink", "fast"):
+                        set_thinking = getattr(engine, "set_thinking_mode", None)
+                        if set_thinking is not None:
+                            try:
+                                await set_thinking(thinking_mode)
+                            except Exception as exc:
+                                yield {
+                                    "type": "status",
+                                    "message": f"browser_thinking_mode_failed: {exc}",
+                                }
 
-                response_kwargs: dict[str, Any] = {}
-                if _accepts_arg(engine.get_response, "initial_count"):
-                    response_kwargs["initial_count"] = initial_count
+                    send_kwargs: dict[str, Any] = {}
+                    if _accepts_arg(engine.send_msg, 'raw'):
+                        send_kwargs['raw'] = raw
+                    sent = await engine.send_msg(message, **send_kwargs)
+                    if not sent:
+                        yield {
+                            "type": "error",
+                            "message": "Browser scraper could not send the message",
+                        }
+                        return
+                    setup_ok = True
 
+                    # Diagnostics: heartbeat on successful send via Go beacon HTTP API
+                    try:
+                        from .diagnostics import heartbeat as _diag_hb
+                        diag_sid = getattr(self, '_diag_session_id', None)
+                        if diag_sid:
+                            _diag_hb(diag_sid)
+                    except Exception:
+                        pass
+        except TimeoutError:
+            logger.error("Scraper setup lock timed out after %ss — previous stream may be stuck", _LOCK_ACQUIRE_TIMEOUT)
+            yield {
+                "type": "error",
+                "message": f"Scraper busy: could not acquire lock within {_LOCK_ACQUIRE_TIMEOUT}s. Try stopping the current generation first.",
+            }
+            return
+        except (asyncio.CancelledError, GeneratorExit):
+            if engine is not None:
+                await self._interrupt_generation(engine, chat_id=chat_id, response_id=parent_id)
+            raise
+        except SystemExit as exc:
+            yield {"type": "error", "message": f"Browser engine exited unexpectedly: {exc}"}
+            return
+        except Exception as exc:
+            logger.exception("Browser scraper setup failed")
+            yield {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
+            return
+
+        if not setup_ok:
+            return
+
+        # ── Phase 2: Response capture (unlocked) ─────────────────────────
+        # The lock is released so other chats can queue up their send_msg
+        # while this response streams. Only one response capture runs at a
+        # time via _response_lock to avoid DOM read interleaving.
+        yield {"type": "status", "message": "waiting_for_browser_response"}
+
+        response_kwargs: dict[str, Any] = {}
+        if _accepts_arg(engine.get_response, "initial_count"):
+            response_kwargs["initial_count"] = initial_count
+
+        try:
+            async with self._response_lock:
                 scraper_state: dict[str, Any] = {}
                 async for event in self._stream_get_response(engine, response_kwargs, scraper_state):
                     yield event
@@ -265,35 +349,29 @@ class ScraperEngine(ScraperLifecycle):
                             "message": "browser_scraper_empty_response",
                         }
 
-                new_parent = f"browser-{uuid.uuid4().hex}"
-                chat_url_result = None
-                try:
-                    page = getattr(engine, "page", None)
-                    if page is not None:
-                        chat_url_result = page.url
-                except Exception:
-                    pass
-                yield {
-                    "type": "done",
-                    "chat_id": chat_id,
-                    "parent_id": new_parent,
-                    "chat_url": chat_url_result,
-                }
-            except (asyncio.CancelledError, GeneratorExit):
-                if engine is not None:
-                    await self._interrupt_generation(engine, chat_id=chat_id, response_id=parent_id)
-                raise
-            except SystemExit as exc:
-                yield {
-                    "type": "error",
-                    "message": f"Browser engine exited unexpectedly: {exc}",
-                }
-            except Exception as exc:
-                logger.exception("Browser scraper failed")
-                yield {
-                    "type": "error",
-                    "message": f"{type(exc).__name__}: {exc}",
-                }
+            new_parent = f"browser-{uuid.uuid4().hex}"
+            chat_url_result = None
+            try:
+                page = getattr(engine, "page", None)
+                if page is not None:
+                    chat_url_result = page.url
+            except Exception:
+                pass
+            yield {
+                "type": "done",
+                "chat_id": chat_id,
+                "parent_id": new_parent,
+                "chat_url": chat_url_result,
+            }
+        except (asyncio.CancelledError, GeneratorExit):
+            if engine is not None:
+                await self._interrupt_generation(engine, chat_id=chat_id, response_id=parent_id)
+            raise
+        except SystemExit as exc:
+            yield {"type": "error", "message": f"Browser engine exited unexpectedly: {exc}"}
+        except Exception as exc:
+            logger.exception("Browser scraper response capture failed")
+            yield {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
 
     async def chat(
         self,

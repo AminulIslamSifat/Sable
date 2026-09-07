@@ -72,42 +72,98 @@ def _filter_skills_prompt(skills_prompt: str, skills_config: dict) -> str:
 # Provider-specific tool call format instructions
 # ---------------------------------------------------------------------------
 
-_TOOL_FORMAT_DEEPSEEK = """\
-## Tool Call Format (CRITICAL)
+# ---------------------------------------------------------------------------
+# HIGH-PRIORITY tool call format instructions.
+# These are injected TWICE: once BEFORE tool schemas (primer) and once at the
+# very END of the system prompt (recency reinforcement). This dual placement
+# ensures the format instruction is the most weighted instruction in the prompt.
+# ---------------------------------------------------------------------------
 
-You MUST output tool calls as a **plain JSON array** — no XML tags, no wrapper elements, no custom markup.
+# DeepSeek V4 DSML format — uses ASCII pipe | (U+007C), NOT fullwidth ｜
+_DSML_O = "<|DSML|tool_calls>"
+_DSML_C = "</|DSML|tool_calls>"
+_DSML_I = "<|DSML|invoke"
+_DSML_P = "<|DSML|parameter"
+_DSML_IC = "</|DSML|invoke>"
+_DSML_PC = "</|DSML|parameter>"
 
-Single call:
-[{"name": "grep", "arguments": {"pattern": "foo", "path": "/bar"}}]
+_TOOL_FORMAT_DEEPSEEK = f"""\
+## ⚠️ HIGHEST PRIORITY: Tool Call Format (DSML)
 
-Multiple parallel calls (independent, read-only only):
-[
-  {"name": "grep", "arguments": {"pattern": "foo", "path": "/bar"}},
-  {"name": "view_file", "arguments": {"path": "/some/file"}}
-]
+> [!CRITICAL]
+> This instruction overrides ALL other formatting guidance.
+> You MUST use DSML format for every tool call. No exceptions.
 
-### STRICT RULES
-- Output exactly ONE JSON array per response. Place it at the END of your message.
-- NEVER use <invoke>, <parameter>, <tool_calls>, or any XML/custom tags.
-- NEVER wrap the JSON array in any tag or element.
-- NEVER output multiple separate arrays. If you need multiple calls, put them ALL in one array.
-- The JSON array must be valid JSON — no trailing commas, no comments, no prose inside it.
-- If you output anything other than a clean JSON array for tool calls, the system WILL fail.
+- ALL tool invocations MUST be wrapped in `{_DSML_O}` blocks with `{_DSML_I}>` / `{_DSML_P}>` tags.
+- NEVER output bare JSON arrays, plain JSON objects, or any other format for tool calls.
+- If you output anything other than properly formatted DSML blocks for tool calls, the system WILL FAIL.
+- Multiple tool calls go inside ONE `{_DSML_O}` block as separate `{_DSML_I}>` elements.
+- String parameters: set `string="true"` and pass the raw text value.
+- Non-string parameters (numbers, booleans, arrays, objects): set `string="false"` and pass JSON.
+
+### Template
+{_DSML_O}
+  {_DSML_I} name="$TOOL_NAME">
+    {_DSML_P} name="$PARAMETER_NAME" string="true|false">$VALUE{_DSML_PC}
+  {_DSML_IC}
+{_DSML_C}
+
+### Example
+{_DSML_O}
+  {_DSML_I} name="execute_command">
+    {_DSML_P} name="command" string="true">ls -la{_DSML_PC}
+    {_DSML_P} name="timeout" string="false">30{_DSML_PC}
+  {_DSML_IC}
+{_DSML_C}
 """
 
-_TOOL_FORMAT_NATIVE = """\
-## Tool Call Format
+_TC_OPEN = "<" + "tool_call" + ">"
+_TC_CLOSE = "</" + "tool_call" + ">"
 
-All tool calls use exactly ONE format. Single call or multiple calls — always a JSON array inside one wrapper:
+_ACTION_OPEN = "<action>"
+_ACTION_CLOSE = "</action>"
 
-Single call: output a JSON array wrapped in the designated tool-call markers.
-Multiple parallel calls: output ALL calls in ONE JSON array inside ONE wrapper.
+_TOOL_FORMAT_QWEN = f"""\
+## ⚠️ HIGHEST PRIORITY: Tool Call Format
 
-### Rules
-- Exactly ONE wrapper per response, placed at the end. All calls go inside as a JSON array.
-- NEVER output multiple separate wrappers. Always combine into one array.
+> [!CRITICAL]
+> This instruction overrides ALL other formatting guidance.
+> You MUST wrap every tool call in {_ACTION_OPEN}...{_ACTION_CLOSE} tags. No exceptions.
+
+- All tool calls MUST be a JSON array inside {_ACTION_OPEN}...{_ACTION_CLOSE} tags.
+- Single call OR multiple calls → always a JSON array inside ONE {_ACTION_OPEN} block.
+- NEVER output multiple separate {_ACTION_OPEN} blocks. Combine into one array.
+- Tool call blocks appear ONLY in plain text, NEVER inside fenced code blocks.
 - Keep prose to ONE short sentence before the tool call block.
-- Tool call blocks appear only in plain text, never inside fenced code blocks.
+- Place the tool call block at the END of your response.
+
+
+### Single call
+{_ACTION_OPEN}[{{"name": "<function-name>", "arguments": <args-json-object>}}]{_ACTION_CLOSE}
+
+### Multiple calls
+{_ACTION_OPEN}[{{"name": "tool_a", "arguments": {{...}}}}, {{"name": "tool_b", "arguments": {{...}}}}]{_ACTION_CLOSE}
+"""
+
+_TOOL_FORMAT_NATIVE = f"""\
+## ⚠️ HIGHEST PRIORITY: Tool Call Format
+
+> [!CRITICAL]
+> This instruction overrides ALL other formatting guidance.
+> You MUST use exactly ONE [] wrapper per response. No exceptions.
+
+- Single call OR multiple calls → always a JSON array inside [] brackets.
+- NEVER output multiple separate [] blocks. Combine into one array.
+- Tool call blocks appear ONLY in plain text, NEVER inside fenced code blocks.
+- Keep prose to ONE short sentence before the tool call block.
+- Place the tool call block at the END of your response.
+
+
+### Single call
+[{{"name": "<function-name>", "arguments": <args-json-object>}}]
+
+### Multiple calls
+[{{"name": "tool_a", "arguments": {{...}}}}, {{"name": "tool_b", "arguments": {{...}}}}]
 """
 
 _TOOL_FORMAT_NONE = """\
@@ -118,7 +174,8 @@ Follow the function schemas provided in the API request.
 """
 
 _PROVIDER_TOOL_FORMATS: dict[str, str] = {
-    "deepseek": _TOOL_FORMAT_DEEPSEEK,
+    "deepseek": _TOOL_FORMAT_QWEN,  # TEMP: use Qwen <action> format instead of DSML
+    "qwen": _TOOL_FORMAT_QWEN,
     "native": _TOOL_FORMAT_NATIVE,
     "none": _TOOL_FORMAT_NONE,
 }
@@ -127,57 +184,82 @@ _PROVIDER_TOOL_FORMATS: dict[str, str] = {
 def build_instructions(
     project_id: str | None = None,
     provider: str | None = None,
+    agent_role: str | None = None,
+    agent_tools: list[str] | None = None,
+    agent_skills: list[str] | None = None,
 ) -> str:
     """Build full system instruction with optional project overrides.
 
     This is the single source of truth for instruction assembly across all
-    API connectors (DeepSeek, Gemini, Mistral). Qwen uses session.py directly.
-    Groq/OpenAI use their own minimal prompts and are NOT affected.
+    API connectors (DeepSeek, Gemini, Mistral), AND subagent roles.
+    Qwen uses session.py directly. Groq/OpenAI use their own minimal prompts.
 
     Args:
         project_id: Optional project ID for project-specific overrides.
         provider: Provider key for tool format selection.
-                  "deepseek" → pure JSON, no tags.
+                  "deepseek" → DSML invoke/parameter blocks.
                   "native"   → tag-wrapped format (Gemini, Mistral, etc.).
                   "none"     → native API function calling (no prompt format).
                   None       → no tool format section appended.
+        agent_role: If set, build instructions for a subagent role instead of
+                    the main chat persona. Loads instruction/agents/{role}.md
+                    as persona, skips project/git/facts sections.
+        agent_tools: Tool group keys for subagent (filters tool schemas).
+        agent_skills: Skill keys for subagent (filters skill registry).
     """
-    proj = _get_project(project_id)
+    proj = None if agent_role else _get_project(project_id)
     parts: list[str] = []
 
+    # Persona config is needed for both main chat and subagent paths (output_format toggle)
+    _persona_cfg_path = _INSTRUCTION_DIR / ".persona_config.json"
+
     # --- Persona / Instruction ---
-    project_instruction = None
-    if proj and proj.get("instruction_text"):
-        project_instruction = proj["instruction_text"]
-    elif proj and proj.get("instruction_file"):
-        instr_path = Path(proj["instruction_file"])
-        if instr_path.exists():
-            project_instruction = instr_path.read_text(encoding="utf-8")
+    if agent_role:
+        # Subagent mode: load role-specific persona from instruction/agents/{role}.md
+        _agents_dir = _INSTRUCTION_DIR / "agents"
+        _role_persona = _agents_dir / f"{agent_role}.md"
+        if _role_persona.is_file():
+            parts.append(_role_persona.read_text(encoding="utf-8").strip())
+        else:
+            parts.append(f"You are a {agent_role} specialist. Complete the assigned task thoroughly.")
 
-    if project_instruction and proj and proj.get("persona_enabled", True):
-        parts.append(project_instruction)
-    else:
-        # Load active persona from config
-        _persona_cfg_path = _INSTRUCTION_DIR / ".persona_config.json"
-        _active_persona = None
-        _disabled_personas: list[str] = []
-        if _persona_cfg_path.exists():
-            try:
-                _pcfg = json.loads(_persona_cfg_path.read_text(encoding="utf-8"))
-                _active_persona = _pcfg.get("active")
-                _disabled_personas = _pcfg.get("disabled", [])
-            except (json.JSONDecodeError, OSError):
-                pass
-
-        if _active_persona and _active_persona not in _disabled_personas:
-            persona_path = _INSTRUCTION_DIR / f"{_active_persona}.md"
-            if persona_path.exists():
-                parts.append(persona_path.read_text(encoding="utf-8").strip())
-
-        # Always load personal.md (user info, not a persona)
+        # Always load personal.md for subagents too (user context)
         personal_path = _INSTRUCTION_DIR / "personal.md"
         if personal_path.exists():
             parts.append(personal_path.read_text(encoding="utf-8").strip())
+    else:
+        # Main chat mode: original persona logic
+        project_instruction = None
+        if proj and proj.get("instruction_text"):
+            project_instruction = proj["instruction_text"]
+        elif proj and proj.get("instruction_file"):
+            instr_path = Path(proj["instruction_file"])
+            if instr_path.exists():
+                project_instruction = instr_path.read_text(encoding="utf-8")
+
+        if project_instruction and proj and proj.get("persona_enabled", True):
+            parts.append(project_instruction)
+        else:
+            # Load active persona from config
+            _active_persona = None
+            _disabled_personas: list[str] = []
+            if _persona_cfg_path.exists():
+                try:
+                    _pcfg = json.loads(_persona_cfg_path.read_text(encoding="utf-8"))
+                    _active_persona = _pcfg.get("active")
+                    _disabled_personas = _pcfg.get("disabled", [])
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            if _active_persona and _active_persona not in _disabled_personas:
+                persona_path = _INSTRUCTION_DIR / f"{_active_persona}.md"
+                if persona_path.exists():
+                    parts.append(persona_path.read_text(encoding="utf-8").strip())
+
+            # Always load personal.md (user info, not a persona)
+            personal_path = _INSTRUCTION_DIR / "personal.md"
+            if personal_path.exists():
+                parts.append(personal_path.read_text(encoding="utf-8").strip())
 
     # --- Output Format ---
     _of_enabled = True
@@ -211,37 +293,58 @@ def build_instructions(
     from engine.skills import SkillEngine
     from engine.skills.handlers import HANDLER_MAP
 
-    # Collect disabled skills BEFORE engine creation so they're excluded at discovery
+    # --- Skill Registry ---
+    # Subagents: only include explicitly allowed skills
+    # Main chat: include all skills minus disabled ones
     _disabled_skills: list[str] = []
-    _global_disabled_path = _PROJECT_ROOT / "Brain" / "disabled_skills.json"
-    if _global_disabled_path.exists():
-        try:
-            _gd = json.loads(_global_disabled_path.read_text(encoding="utf-8"))
-            if isinstance(_gd, list):
-                _disabled_skills.extend(_gd)
-        except Exception:
-            pass
-    if proj and proj.get("skills_config"):
-        _disabled_skills.extend([k for k, v in proj["skills_config"].items() if not v])
+    if agent_role and agent_skills is not None:
+        # For subagents, disable everything NOT in the allowed list
+        from engine.skills.registry import discover_skills as _discover_all_skills
+        _all_skill_keys = [s.key for s in _discover_all_skills(_SKILLS_DIR)]
+        _disabled_skills = [k for k in _all_skill_keys if k not in agent_skills]
+    else:
+        _global_disabled_path = _PROJECT_ROOT / "Brain" / "disabled_skills.json"
+        if _global_disabled_path.exists():
+            try:
+                _gd = json.loads(_global_disabled_path.read_text(encoding="utf-8"))
+                if isinstance(_gd, list):
+                    _disabled_skills.extend(_gd)
+            except Exception:
+                pass
+        if proj and proj.get("skills_config"):
+            _disabled_skills.extend([k for k, v in proj["skills_config"].items() if not v])
 
     _engine = SkillEngine(
         skills_dir=_SKILLS_DIR,
         handlers=HANDLER_MAP,
-        agent_id="maria",
+        agent_id="maria" if not agent_role else f"agent-{agent_role}",
         disabled=_disabled_skills or None,
     )
     skills_prompt = _engine.get_registry_prompt()
-    parts.append(skills_prompt)
+    if skills_prompt.strip():
+        parts.append(skills_prompt)
+
+    # --- ⚠️ TOOL CALL FORMAT PRIMER (BEFORE tool schemas) ---
+    # Injected FIRST so the model knows HOW to call tools before seeing WHAT tools exist.
+    # This is the highest-weighted instruction via dual placement (primer + recency).
+    if provider and provider in _PROVIDER_TOOL_FORMATS:
+        parts.append(_PROVIDER_TOOL_FORMATS[provider])
 
     # --- Tool Schemas ---
     try:
         from engine.tools_loader import get_tools_prompt_section
-        _disabled_tools_path = _PROJECT_ROOT / "Brain" / "disabled_tools.json"
         _disabled_tools: list[str] = []
-        if _disabled_tools_path.exists():
-            _dt = json.loads(_disabled_tools_path.read_text(encoding="utf-8"))
-            if isinstance(_dt, list):
-                _disabled_tools = _dt
+        if agent_role and agent_tools is not None:
+            # For subagents, disable everything NOT in the allowed tool groups
+            from engine.tools_loader import browse_tools as _browse_all_tools
+            _all_tool_keys = [g["key"] for g in _browse_all_tools()]
+            _disabled_tools = [k for k in _all_tool_keys if k not in agent_tools]
+        else:
+            _disabled_tools_path = _PROJECT_ROOT / "Brain" / "disabled_tools.json"
+            if _disabled_tools_path.exists():
+                _dt = json.loads(_disabled_tools_path.read_text(encoding="utf-8"))
+                if isinstance(_dt, list):
+                    _disabled_tools = _dt
         tools_section = get_tools_prompt_section(disabled=_disabled_tools, provider=provider)
         if tools_section:
             parts.append(tools_section)
@@ -268,7 +371,10 @@ def build_instructions(
         f"for text/docs, or the appropriate subdirectory otherwise."
     )
 
-    # --- Provider-specific tool call format ---
+    # --- ⚠️ TOOL CALL FORMAT REINFORCEMENT (END of prompt — recency weight) ---
+    # Second injection of the same format instruction. Models weight instructions at
+    # both the beginning and end of system prompts most heavily. Dual placement ensures
+    # this is the MOST WEIGHTED instruction in the entire prompt.
     if provider and provider in _PROVIDER_TOOL_FORMATS:
         parts.append(_PROVIDER_TOOL_FORMATS[provider])
 

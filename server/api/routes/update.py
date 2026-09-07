@@ -141,16 +141,7 @@ async def apply_update() -> StreamingResponse:
     """Apply update: git pull + uv sync + restart service. Streams SSE progress."""
 
     async def generator():
-        steps = [
-            ("check", "Checking for uncommitted changes…"),
-            ("pull", "Pulling latest code…"),
-            ("sync", "Syncing dependencies…"),
-            ("restart", "Restarting Sable…"),
-        ]
-
-        for step_id, label in steps:
-            yield sse({"type": "progress", "step": step_id, "message": label})
-            await asyncio.sleep(0.1)
+        yield sse({"type": "progress", "step": "check", "message": "Checking for uncommitted changes…"})
 
         # Step 1: Check for uncommitted changes
         proc = await asyncio.to_thread(
@@ -162,11 +153,11 @@ async def apply_update() -> StreamingResponse:
             yield sse({"type": "error", "message": f"Git status failed: {proc.stderr.strip()}"})
             return
 
-        dirty_files = [l for l in proc.stdout.strip().splitlines() if l.strip()]
+        dirty_files = [ln for ln in proc.stdout.strip().splitlines() if ln.strip()]
         if dirty_files:
             yield sse({
                 "type": "warning",
-                "message": f"{len(dirty_files)} uncommitted change(s) detected. Stashing before pull…",
+                "message": f"{len(dirty_files)} uncommitted change(s) detected. Stashing…",
             })
             stash = await asyncio.to_thread(
                 subprocess.run,
@@ -176,49 +167,78 @@ async def apply_update() -> StreamingResponse:
             if stash.returncode != 0:
                 yield sse({"type": "error", "message": f"Git stash failed: {stash.stderr.strip()}"})
                 return
-            yield sse({"type": "progress", "step": "pull", "message": "Changes stashed. Pulling…"})
+            yield sse({"type": "log", "step": "check", "message": "Changes stashed."})
 
-        # Step 2: Git pull via HTTPS (works for all users, no SSH key needed)
+        # Helper: stream a subprocess line-by-line via SSE.
+        # Uses a mutable list to smuggle the return code out of the async generator.
+        async def _stream_cmd(cmd: list[str], step_id: str, timeout_sec: int = 120, rc_out: list[int] | None = None):
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=str(_PROJECT_ROOT),
+            )
+            try:
+                while True:
+                    line = await asyncio.wait_for(
+                        process.stdout.readline(), timeout=timeout_sec
+                    )
+                    if not line:
+                        break
+                    decoded = line.decode("utf-8", errors="replace").rstrip()
+                    if decoded:
+                        yield sse({"type": "log", "step": step_id, "message": decoded})
+            except asyncio.TimeoutError:
+                process.kill()
+                yield sse({"type": "error", "message": f"Timed out after {timeout_sec}s: {' '.join(cmd)}"})
+                if rc_out is not None:
+                    rc_out[0] = -1
+                return
+
+            await process.wait()
+            if rc_out is not None:
+                rc_out[0] = process.returncode
+
+        # Step 2: Git fetch + merge via HTTPS
+        yield sse({"type": "progress", "step": "pull", "message": "Fetching latest code…"})
         _https_url = f"https://github.com/{_GITHUB_REPO}.git"
-        proc = await asyncio.to_thread(
-            subprocess.run,
-            ["git", "fetch", _https_url, "main"],
-            capture_output=True, text=True, cwd=str(_PROJECT_ROOT),
-            timeout=120,
-        )
-        if proc.returncode != 0:
-            yield sse({"type": "error", "message": f"Git fetch failed: {proc.stderr.strip()}"})
+
+        fetch_rc: list[int] = [0]
+        async for event in _stream_cmd(
+            ["git", "fetch", "--progress", _https_url, "main"], "pull", 120, fetch_rc
+        ):
+            yield event
+        if fetch_rc[0] != 0:
+            yield sse({"type": "error", "message": "Git fetch failed."})
             return
 
-        # Merge fetched main into current branch
-        merge = await asyncio.to_thread(
-            subprocess.run,
-            ["git", "merge", "FETCH_HEAD", "--no-edit"],
-            capture_output=True, text=True, cwd=str(_PROJECT_ROOT),
-            timeout=60,
-        )
-        if merge.returncode != 0:
-            yield sse({"type": "error", "message": f"Git merge failed: {merge.stderr.strip()}"})
+        yield sse({"type": "progress", "step": "pull", "message": "Merging…"})
+        merge_rc: list[int] = [0]
+        async for event in _stream_cmd(
+            ["git", "merge", "FETCH_HEAD", "--no-edit"], "pull", 60, merge_rc
+        ):
+            yield event
+        if merge_rc[0] != 0:
+            yield sse({"type": "error", "message": "Git merge failed."})
             return
-        yield sse({"type": "progress", "step": "pull", "message": "Code updated ✓"})
+        yield sse({"type": "log", "step": "pull", "message": "Code updated ✓"})
 
         # Step 3: uv sync
-        proc = await asyncio.to_thread(
-            subprocess.run,
-            ["uv", "sync"],
-            capture_output=True, text=True, cwd=str(_PROJECT_ROOT),
-            timeout=180,
-        )
-        if proc.returncode != 0:
-            yield sse({"type": "error", "message": f"uv sync failed: {proc.stderr.strip()}"})
+        yield sse({"type": "progress", "step": "sync", "message": "Syncing dependencies…"})
+        sync_rc: list[int] = [0]
+        async for event in _stream_cmd(
+            ["uv", "sync"], "sync", 180, sync_rc
+        ):
+            yield event
+        if sync_rc[0] != 0:
+            yield sse({"type": "error", "message": "uv sync failed."})
             return
-        yield sse({"type": "progress", "step": "sync", "message": "Dependencies synced ✓"})
+        yield sse({"type": "log", "step": "sync", "message": "Dependencies synced ✓"})
 
         # Step 4: Restart service
         yield sse({"type": "progress", "step": "restart", "message": "Restarting service… (page will reload)"})
         await asyncio.sleep(0.5)
 
-        # Fire-and-forget restart (cross-platform)
         from engine.service_manager import restart_service as _restart
         _restart()
 

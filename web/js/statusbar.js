@@ -331,15 +331,38 @@
     document.addEventListener("persona-changed", syncStatusPersona);
 
 
+    function _isScraperMode() {
+      const btn = document.getElementById('modeScraper');
+      return btn && btn.classList.contains('active');
+    }
+
     async function loadModels() {
+      const scraper = _isScraperMode();
       let models = FALLBACK_MODELS;
-      try {
-        const data = await fetch("/api/models").then(r => r.json());
-        if (Array.isArray(data.models) && data.models.length > 0) {
-          models = data.models;
+
+      if (scraper) {
+        // Load engine-specific models from scraper backend
+        try {
+          const data = await fetch("/api/scraper/models").then(r => r.json());
+          if (Array.isArray(data.models) && data.models.length > 0) {
+            models = data.models;
+            // Attach thinking_modes to first model entry so populateThinkingModes works
+            if (data.thinking_modes) {
+              models[0].thinking_modes = data.thinking_modes;
+            }
+          }
+        } catch (err) {
+          console.warn("Could not load /api/scraper/models:", err);
         }
-      } catch (err) {
-        console.warn("Could not load /api/models, using fallback list:", err);
+      } else {
+        try {
+          const data = await fetch("/api/models").then(r => r.json());
+          if (Array.isArray(data.models) && data.models.length > 0) {
+            models = data.models;
+          }
+        } catch (err) {
+          console.warn("Could not load /api/models, using fallback list:", err);
+        }
       }
 
       modelList = models;
@@ -368,23 +391,28 @@
     }
 
     modelSelectEl.addEventListener("change", async () => {
-      // Block cross-provider switches only for qwen/scraping chats.
-      // Pure API models share the same chat freely — provider swaps on every switch.
-      const activeMeta = chatList.find(c => c.id === activeChatId);
-      if (activeMeta?.provider) {
-        const chatProvider = activeMeta.provider;
-        const isApiChat = chatProvider !== "qwen" && chatProvider !== "scraping";
-        if (!isApiChat) {
-          const newEntry = modelList.find(m => m.id === modelSelectEl.value);
-          const newProvider = newEntry?.api_backend || "qwen";
-          const effectiveChatProvider = chatProvider === "scraping" ? "deepseek" : chatProvider;
-          if (newProvider !== effectiveChatProvider) {
-            modelSelectEl.value = selectedModel; // revert
-            showToast("This chat is locked to " + activeMeta.provider + " — start a new chat to switch providers.", "error");
-            return;
+      const scraper = _isScraperMode();
+
+      if (!scraper) {
+        // Block cross-provider switches only for qwen/scraping chats.
+        // Pure API models share the same chat freely — provider swaps on every switch.
+        const activeMeta = chatList.find(c => c.id === activeChatId);
+        if (activeMeta?.provider) {
+          const chatProvider = activeMeta.provider;
+          const isApiChat = chatProvider !== "qwen" && chatProvider !== "scraping";
+          if (!isApiChat) {
+            const newEntry = modelList.find(m => m.id === modelSelectEl.value);
+            const newProvider = newEntry?.api_backend || "qwen";
+            const effectiveChatProvider = chatProvider === "scraping" ? "deepseek" : chatProvider;
+            if (newProvider !== effectiveChatProvider) {
+              modelSelectEl.value = selectedModel; // revert
+              showToast("This chat is locked to " + activeMeta.provider + " — start a new chat to switch providers.", "error");
+              return;
+            }
           }
         }
       }
+
       selectedModel = modelSelectEl.value;
       try { localStorage.setItem(MODEL_KEY, selectedModel); } catch (err) {}
       // Switching models resets the thinking mode to that model's default,
@@ -393,9 +421,8 @@
       updateAttachUI();
 
       // In scraper mode the model selector maps to browser model buttons
-      // (e.g. DeepSeek Instant/Expert/Vision) — switch immediately and
-      // open a fresh chat so the new model starts clean.
-      if (scraperMode) {
+      // — switch immediately and open a fresh chat so the new model starts clean.
+      if (scraper) {
         try {
           const res = await fetch("/api/scraper/model", {
             method: "POST",
@@ -426,5 +453,9 @@
       }
     }
 
+
+
+    // Expose loadModels globally so appearance.js can trigger reload on mode switch
+    window.loadModels = loadModels;
 
 

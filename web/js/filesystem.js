@@ -5,6 +5,23 @@
 (function () {
   "use strict";
 
+  /** Cross-platform basename: handles both / and \ separators (Windows + Unix) */
+  function pathBasename(p) {
+    if (!p) return "";
+    var sep = p.indexOf('\\') !== -1 ? '\\' : '/';
+    var parts = p.split(sep);
+    return parts[parts.length - 1] || p;
+  }
+
+  /** Cross-platform dirname: handles both / and \ separators */
+  function pathDirname(p) {
+    if (!p) return "";
+    var fwd = p.lastIndexOf('/');
+    var bck = p.lastIndexOf('\\');
+    var idx = fwd > bck ? fwd : bck;
+    return idx > 0 ? p.substring(0, idx) : "";
+  }
+
   // Fetch home dir + username from backend for dynamic path resolution
   fetch("/api/env").then(r => r.json()).then(d => {
     window.__sable_home = d.home;
@@ -158,7 +175,7 @@
   }
 
   function getIdeTheme() {
-    return localStorage.getItem("sable_ide_theme") || "sable-dark";
+    return localStorage.getItem("sable_ide_theme") || getSableMonacoThemeName();
   }
 
   /* ---------- Lucide helpers ---------- */
@@ -506,6 +523,18 @@
   }
 
   /* ---------- Sable Monaco Theme ---------- */
+  function isLightMode() {
+    const mode = document.documentElement.getAttribute("data-mode");
+    if (mode === "light") return true;
+    if (mode === "dark") return false;
+    // auto or unset: follow OS
+    return window.matchMedia("(prefers-color-scheme: light)").matches;
+  }
+
+  function getSableMonacoThemeName() {
+    return isLightMode() ? "sable-light" : "sable-dark";
+  }
+
   function defineSableMonacoTheme() {
     const cs = getComputedStyle(document.documentElement);
     const v = (name, fallback) => (cs.getPropertyValue(name).trim() || fallback);
@@ -524,6 +553,9 @@
     // Helper: hex to hex without #
     const h = (c) => c.replace("#", "");
 
+    const light = isLightMode();
+
+    // Dark theme (original)
     monaco.editor.defineTheme("sable-dark", {
       base: "vs-dark",
       inherit: true,
@@ -612,16 +644,117 @@
         "diffEditorOverview.removedForeground": "#e5646a80",
       },
     });
+
+    // Light theme — uses CSS vars which auto-update via @media query
+    monaco.editor.defineTheme("sable-light", {
+      base: "vs",
+      inherit: true,
+      rules: [
+        { token: "comment", foreground: h(muted2), fontStyle: "italic" },
+        { token: "keyword", foreground: h(accentText) },
+        { token: "keyword.flow", foreground: h(accentText) },
+        { token: "string", foreground: "5a7a42" },
+        { token: "string.escape", foreground: "6b8a52" },
+        { token: "number", foreground: "b07040" },
+        { token: "constant", foreground: "b07040" },
+        { token: "type", foreground: "a08060" },
+        { token: "type.identifier", foreground: "a08060" },
+        { token: "identifier", foreground: h(textDim) },
+        { token: "function", foreground: h(accentText) },
+        { token: "variable", foreground: "a06050" },
+        { token: "variable.predefined", foreground: "a06050" },
+        { token: "operator", foreground: h(muted) },
+        { token: "delimiter", foreground: h(muted) },
+        { token: "tag", foreground: h(accentText) },
+        { token: "attribute.name", foreground: "a08060" },
+        { token: "attribute.value", foreground: "5a7a42" },
+        { token: "regexp", foreground: "b07040" },
+        { token: "annotation", foreground: h(muted) },
+        { token: "namespace", foreground: "a08060" },
+      ],
+      colors: {
+        "editor.background": "#00000000",
+        "editor.foreground": h(textDim),
+        "editor.lineHighlightBackground": h(panel),
+        "editorLineNumber.foreground": h(muted2),
+        "editorLineNumber.activeForeground": h(textDim),
+        "editorCursor.foreground": h(accentText),
+        "editor.selectionBackground": h(accent) + "30",
+        "editor.inactiveSelectionBackground": h(accent) + "18",
+        "editorGutter.background": "#00000000",
+        "editorWidget.background": h(panel),
+        "editorWidget.border": h(border),
+        "editorWidget.foreground": h(textDim),
+        "input.background": h(panel2),
+        "input.foreground": h(text),
+        "input.border": h(border),
+        "dropdown.background": h(panel),
+        "dropdown.border": h(border),
+        "dropdown.foreground": h(textDim),
+        "list.hoverBackground": h(panel2),
+        "list.activeSelectionBackground": h(accent) + "25",
+        "list.activeSelectionForeground": h(text),
+        "scrollbarSlider.background": h(border) + "80",
+        "scrollbarSlider.hoverBackground": h(border),
+        "scrollbarSlider.activeBackground": h(muted2),
+        "editorBracketMatch.border": "#00000000",
+        "editorBracketHighlight.foreground1": h(accentText),
+        "editorBracketHighlight.foreground2": "a08060",
+        "editorBracketHighlight.foreground3": "5a7a42",
+        "editorBracketHighlight.foreground4": "b07040",
+        "editorBracketHighlight.foreground5": "a06050",
+        "editorBracketHighlight.foreground6": h(muted),
+        "editorIndentGuide.background1": h(border),
+        "editorIndentGuide.activeBackground1": h(muted2),
+        "minimap.background": "#00000000",
+        "editorOverviewRuler.border": h(bg),
+        "editorGroup.border": h(border),
+        "tab.activeBackground": h(panel),
+        "tab.inactiveBackground": h(bg),
+        "tab.activeForeground": h(text),
+        "tab.inactiveForeground": h(muted),
+        "tab.border": h(border),
+        "focusBorder": h(accent) + "60",
+        "editorSuggestWidget.background": h(panel),
+        "editorSuggestWidget.border": h(border),
+        "editorSuggestWidget.foreground": h(textDim),
+        "editorSuggestWidget.selectedBackground": h(accent) + "25",
+        "editorHoverWidget.background": h(panel),
+        "editorHoverWidget.border": h(border),
+        "peekView.border": h(accent) + "40",
+        "peekViewEditor.background": h(bg),
+        "peekViewResult.background": h(panel),
+        "diffEditor.insertedTextBackground": "#2da44e30",
+        "diffEditor.insertedLineBackground": "#2da44e20",
+        "diffEditor.removedTextBackground": "#cf3b5230",
+        "diffEditor.removedLineBackground": "#cf3b5220",
+        "diffEditorGutter.insertedLineBackground": "#2da44e40",
+        "diffEditorGutter.removedLineBackground": "#cf3b5240",
+        "diffEditorOverview.insertedForeground": "#2da44e80",
+        "diffEditorOverview.removedForeground": "#cf3b5280",
+      },
+    });
   }
 
-  // Re-apply Monaco theme when Sable theme changes
+  // Re-apply Monaco theme when Sable theme or color scheme changes
   const themeObserver = new MutationObserver(() => {
     if (typeof monaco !== "undefined" && monaco.editor) {
       defineSableMonacoTheme();
-      monaco.editor.setTheme("sable-dark");
+      monaco.editor.setTheme(getSableMonacoThemeName());
     }
   });
-  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "class"] });
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-mode", "class"] });
+
+  // Also react to system color-scheme changes
+  window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
+    if (typeof monaco !== "undefined" && monaco.editor) {
+      // Small delay to let CSS vars update first
+      requestAnimationFrame(() => {
+        defineSableMonacoTheme();
+        monaco.editor.setTheme(getSableMonacoThemeName());
+      });
+    }
+  });
 
   /* ---------- Monaco lazy init ---------- */
   function loadMonaco() {
@@ -630,7 +763,7 @@
       require(["vs/editor/editor.main"], () => {
         // Define Sable theme — reads live CSS variables so it follows theme switches
         defineSableMonacoTheme();
-        monaco.editor.setTheme("sable-dark");
+        monaco.editor.setTheme(getSableMonacoThemeName());
         resolve(monaco);
       });
     });
@@ -800,7 +933,7 @@
 
     await loadMonaco();
     defineSableMonacoTheme();
-    monaco.editor.setTheme("sable-dark");
+    monaco.editor.setTheme(getSableMonacoThemeName());
 
     const originalModel = monaco.editor.createModel(diffData.original_content, monacoLang(ext));
     const modifiedModel = monaco.editor.createModel(diffData.modified_content, monacoLang(ext));
@@ -972,7 +1105,7 @@
   }
 
   async function doDelete(path) {
-    if (!confirm(`Delete "${path.split("/").pop()}"? This cannot be undone.`)) return;
+    if (!confirm(`Delete "${pathBasename(path)}"? This cannot be undone.`)) return;
     try {
       const res = await fetch("/api/filesystem/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
       const data = await res.json();
@@ -1103,7 +1236,7 @@
 
     const rootItem = document.createElement("div");
     rootItem.className = "fs-item fs-root";
-    rootItem.innerHTML = `<span class="fs-icon">${icon("folder-open", 14)}</span><span class="fs-name">${esc(sidebarRoot.split("/").pop() || "/")}</span>`;
+    rootItem.innerHTML = `<span class="fs-icon">${icon("folder-open", 14)}</span><span class="fs-name">${esc(pathBasename(sidebarRoot) || "/")}</span>`;
     sidebarTree.appendChild(rootItem);
 
     const inner = document.createElement("div");
@@ -1166,7 +1299,7 @@
       if (container) container.remove();
       // Update folder icon
       const row = sidebarTree.querySelector(`.fs-item[data-path="${path}"]`);
-      if (row) row.innerHTML = `<span class="fs-icon">${icon("folder", 14)}</span><span class="fs-name">${esc(path.split("/").pop())}</span>`;
+      if (row) row.innerHTML = `<span class="fs-icon">${icon("folder", 14)}</span><span class="fs-name">${esc(pathBasename(path))}</span>`;
       refreshIcons();
       return;
     }
@@ -1179,7 +1312,7 @@
     const row = sidebarTree.querySelector(`.fs-item[data-path="${path}"]`);
     if (!row) return;
     // Update icon to open
-    row.innerHTML = `<span class="fs-icon">${icon("folder-open", 14)}</span><span class="fs-name">${esc(path.split("/").pop())}</span>`;
+    row.innerHTML = `<span class="fs-icon">${icon("folder-open", 14)}</span><span class="fs-name">${esc(pathBasename(path))}</span>`;
 
     const container = document.createElement("div");
     container.dataset.children = path;
@@ -1292,11 +1425,11 @@
       const fp = currentFilePath;
       if (!fp) return;
       const ext = fp.split(".").pop().toLowerCase();
-      const name = fp.split("/").pop();
+      const name = pathBasename(fp);
 
       // HTML → read content, inject <base> for relative asset resolution, open as blob
       if (ext === "html" || ext === "htm") {
-        const dir = fp.substring(0, fp.lastIndexOf("/"));
+        const dir = pathDirname(fp);
         fetch(`/api/filesystem/read?path=${encodeURIComponent(fp)}`)
           .then(r => r.json())
           .then(data => {
@@ -1374,7 +1507,7 @@
     }
     try {
       if (filePath && filePath !== currentFilePath) {
-        await openSidebarFile(filePath, filePath.split("/").pop());
+        await openSidebarFile(filePath, pathBasename(filePath));
       }
       if (monacoEditor && line) {
         const pos = { lineNumber: line, column: col || 1 };
@@ -1434,11 +1567,11 @@
 
     // Expand all parent dirs leading to the last opened file
     if (lastFile) {
-      const fileDir = lastFile.substring(0, lastFile.lastIndexOf("/"));
+      const fileDir = pathDirname(lastFile);
       let dir = fileDir;
       while (dir.length > lastFolder.length && dir.startsWith(lastFolder)) {
         sidebarExpanded.add(dir);
-        dir = dir.substring(0, dir.lastIndexOf("/"));
+        dir = pathDirname(dir);
       }
     }
 
@@ -1451,7 +1584,7 @@
         const data = await sbApi("/read?path=" + encodeURIComponent(lastFile));
         if (data && !data.error && !data.binary) {
           const ext = (data.ext || "").replace(".", "");
-          addOrUpdateTab(lastFile, lastFile.split("/").pop(), data.content, ext);
+          addOrUpdateTab(lastFile, pathBasename(lastFile), data.content, ext);
           const editorContainer = document.getElementById("editorContainer");
           const editorEmpty = document.getElementById("editorEmptyState");
           if (editorEmpty) editorEmpty.classList.add("hidden");
@@ -1541,7 +1674,7 @@
 
     viewerEl.innerHTML = `
       <div class="fs-viewer-header">
-        <span class="fs-viewer-name">${icon("git-compare", 14)} <span>${esc(fileName || path.split("/").pop())}</span> <span style="color:var(--text-dim);font-size:11px;">(diff)</span></span>
+        <span class="fs-viewer-name">${icon("git-compare", 14)} <span>${esc(fileName || pathBasename(path))}</span> <span style="color:var(--text-dim);font-size:11px;">(diff)</span></span>
         <span class="fs-viewer-meta">before \u2194 after</span>
       </div>
       <div class="fs-monaco-wrap" id="fsDiffWrap"></div>
@@ -1554,7 +1687,7 @@
     const modifiedModel = monaco.editor.createModel(modData.content, monacoLang(ext));
 
     defineSableMonacoTheme();
-    monaco.editor.setTheme("sable-dark");
+    monaco.editor.setTheme(getSableMonacoThemeName());
 
     diffEditor = monaco.editor.createDiffEditor(wrapEl, {
       fontSize: getEditorFontSize(),
@@ -1592,7 +1725,7 @@
 
     const rootItem = document.createElement("div");
     rootItem.className = "fs-item fs-root";
-    rootItem.innerHTML = `<span class="fs-icon">${icon("folder-open", 14)}</span><span class="fs-name">${esc(leftRoot.split("/").pop() || "/")}</span>`;
+    rootItem.innerHTML = `<span class="fs-icon">${icon("folder-open", 14)}</span><span class="fs-name">${esc(pathBasename(leftRoot) || "/")}</span>`;
     leftTree.appendChild(rootItem);
 
     const inner = document.createElement("div");
@@ -1647,7 +1780,7 @@
       const container = leftTree.querySelector(`[data-children="${path}"]`);
       if (container) container.remove();
       const row = leftTree.querySelector(`.fs-item[data-path="${path}"]`);
-      if (row) row.innerHTML = `<span class="fs-icon">${icon("folder", 14)}</span><span class="fs-name">${esc(path.split("/").pop())}</span>`;
+      if (row) row.innerHTML = `<span class="fs-icon">${icon("folder", 14)}</span><span class="fs-name">${esc(pathBasename(path))}</span>`;
       refreshIcons();
       return;
     }
@@ -1657,7 +1790,7 @@
     if (!items.length) return;
     const row = leftTree.querySelector(`.fs-item[data-path="${path}"]`);
     if (!row) return;
-    row.innerHTML = `<span class="fs-icon">${icon("folder-open", 14)}</span><span class="fs-name">${esc(path.split("/").pop())}</span>`;
+    row.innerHTML = `<span class="fs-icon">${icon("folder-open", 14)}</span><span class="fs-name">${esc(pathBasename(path))}</span>`;
     const container = document.createElement("div");
     container.dataset.children = path;
     for (const it of items) container.appendChild(buildLeftNode(it, depth + 1));

@@ -1,6 +1,32 @@
     // ---------- Account Profile Switcher ----------
     const accountProfileCards = document.getElementById("accountProfileCards");
     const refreshAccountsBtn = document.getElementById("refreshAccountsBtn");
+    const addAccountBrowserSelect = document.getElementById("addAccountBrowserSelect");
+
+    async function loadAvailableBrowsers() {
+      if (!addAccountBrowserSelect) return;
+      try {
+        const res = await fetch("/api/settings/accounts/available-browsers");
+        const data = await res.json();
+        const browsers = data.browsers || [];
+        addAccountBrowserSelect.innerHTML = browsers.map(b =>
+          `<option value="${b.path.replace(/"/g, '&quot;')}">${b.name} (${b.type})</option>`
+        ).join("");
+        // Restore last selected browser from localStorage
+        const lastBrowser = localStorage.getItem("sable_last_browser") || "default";
+        addAccountBrowserSelect.value = lastBrowser;
+        // If saved value doesn't exist in options, fall back to first
+        if (addAccountBrowserSelect.selectedIndex === -1 && browsers.length) {
+          addAccountBrowserSelect.selectedIndex = 0;
+        }
+      } catch (e) {
+        addAccountBrowserSelect.innerHTML = '<option value="default">Default (Auto-detect)</option>';
+      }
+    }
+
+    // Expose to window so other JS files (settings-ui, skills-panel) can call these on tab switch
+    window.loadAvailableBrowsers = loadAvailableBrowsers;
+    window.loadAccountProfiles = loadAccountProfiles;
 
     async function loadAccountProfiles() {
       if (!accountProfileCards) return;
@@ -11,20 +37,39 @@
         const data = await res.json();
         const accounts = data.accounts || [];
         const active = data.active;
+        const autoSwitchEnabled = data.auto_switch_enabled !== false;
+
+        // Render auto-switch toggle above account cards
+        const toggleHtml = `<div style="display:flex;align-items:center;justify-content:space-between;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:10px;">
+          <div style="min-width:0;">
+            <div style="font-size:12px;font-weight:600;color:var(--text);">Auto-Switch on Rate Limit / Captcha</div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">Automatically switch to another account when Qwen blocks this one.</div>
+          </div>
+          <label style="position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0;cursor:pointer;">
+            <input type="checkbox" id="autoSwitchToggle" ${autoSwitchEnabled ? 'checked' : ''} style="opacity:0;width:0;height:0;">
+            <span style="position:absolute;inset:0;background:${autoSwitchEnabled ? 'var(--accent)' : 'var(--border)'};border-radius:20px;transition:0.2s;"></span>
+            <span style="position:absolute;left:${autoSwitchEnabled ? '18px' : '2px'};top:2px;width:16px;height:16px;background:#fff;border-radius:50%;transition:0.2s;"></span>
+          </label>
+        </div>`;
 
         if (!accounts.length) {
           accountProfileCards.innerHTML = '<p class="muted" style="font-size:12px;margin:0;">No account profiles found. Create dirs like <code>system/browser-data-acc1</code>, <code>system/browser-data-acc2</code>…</p>';
           return;
         }
 
-        accountProfileCards.innerHTML = accounts.map((acc) => {
+        accountProfileCards.innerHTML = toggleHtml + accounts.map((acc) => {
           const isActive = acc.name === active;
           const email = acc.label || acc.email || "unknown account";
           const size = acc.size_mb ? acc.size_mb + " MB" : "";
-          return `<div style="display:flex;align-items:center;justify-content:space-between;background:var(--panel);border:1px solid ${isActive ? 'var(--accent)' : 'var(--border)'};border-radius:10px;padding:10px 14px;">
+          const browserMissing = acc.browser_path && acc.browser_path !== 'default' && acc.browser_available === false;
+          const borderColor = browserMissing ? '#ef4444' : (isActive ? 'var(--accent)' : 'var(--border)');
+          const browserBadgeColor = browserMissing ? '#ef4444' : '#a78bfa';
+          const browserTitle = browserMissing ? '⚠️ Browser not found on disk! ' + (acc.browser_path || '') : (acc.browser_path || '');
+          return `<div style="display:flex;align-items:center;justify-content:space-between;background:var(--panel);border:1px solid ${borderColor};border-radius:10px;padding:10px 14px;">
             <div style="min-width:0;">
               <div style="font-size:12px;font-weight:600;color:var(--text);">${email}</div>
               <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">${acc.name}${size ? ' · ' + size : ''}${isActive ? ' · <span style="color:var(--accent);">active</span>' : ''}
+                ${acc.browser_label ? `<span style="display:inline-block;font-size:10px;font-weight:600;color:${browserBadgeColor};border:1px solid ${browserBadgeColor};border-radius:4px;padding:1px 5px;margin-left:4px;${browserMissing ? 'background:rgba(239,68,68,0.1);' : ''}" title="${browserTitle.replace(/"/g, '&quot;')}">${acc.browser_label}${browserMissing ? ' ⚠️' : ''}</span>` : ''}
                 ${acc.has_waf ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#22c55e;border:1px solid #22c55e;border-radius:4px;padding:1px 5px;margin-left:6px;">qwen</span>' : ''}
                 ${acc.has_ds ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#22c55e;border:1px solid #22c55e;border-radius:4px;padding:1px 5px;margin-left:4px;">ds</span>' : ''}
                 ${acc.exhausted ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#ef4444;border:1px solid #ef4444;background:rgba(239,68,68,0.1);border-radius:4px;padding:1px 5px;margin-left:4px;">Exhausted</span>' : ''}
@@ -38,6 +83,40 @@
             </div>
           </div>`;
         }).join("");
+
+        // Auto-switch toggle handler
+        const autoSwitchToggle = document.getElementById("autoSwitchToggle");
+        if (autoSwitchToggle) {
+          autoSwitchToggle.addEventListener("change", async () => {
+            const enabled = autoSwitchToggle.checked;
+            // Update visual toggle state immediately
+            const label = autoSwitchToggle.closest("label");
+            if (label) {
+              const bg = label.children[1];
+              const knob = label.children[2];
+              if (bg) bg.style.background = enabled ? "var(--accent)" : "var(--border)";
+              if (knob) knob.style.left = enabled ? "18px" : "2px";
+            }
+            try {
+              await fetch("/api/settings/accounts/auto-switch-toggle", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ enabled }),
+              });
+              showToast(enabled ? "✅ Auto-switch enabled" : "⏸️ Auto-switch disabled", enabled ? "success" : "info");
+            } catch (e) {
+              showToast("Failed to save: " + e.message, "error");
+              autoSwitchToggle.checked = !enabled;
+              // Revert visual state on error
+              if (label) {
+                const bg = label.children[1];
+                const knob = label.children[2];
+                if (bg) bg.style.background = enabled ? "var(--border)" : "var(--accent)";
+                if (knob) knob.style.left = enabled ? "2px" : "18px";
+              }
+            }
+          });
+        }
 
         accountProfileCards.querySelectorAll(".account-switch-btn").forEach((btn) => {
           btn.addEventListener("click", async () => {
@@ -166,9 +245,19 @@
         addAccountBtn.disabled = true;
         addAccountBtn.textContent = "Opening…";
         try {
-          const res = await fetch("/api/settings/accounts/create", { method: "POST" });
+          const browserPath = addAccountBrowserSelect ? addAccountBrowserSelect.value : "";
+          // Remember last selected browser
+          if (browserPath) localStorage.setItem("sable_last_browser", browserPath);
+          const res = await fetch("/api/settings/accounts/create", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ browser_path: browserPath }),
+          });
           const data = await res.json();
           if (!res.ok) throw new Error(data.detail || "Failed");
+          const browserName = addAccountBrowserSelect ? addAccountBrowserSelect.options[addAccountBrowserSelect.selectedIndex]?.text : '';
+          showToast(`🌐 Opened ${data.profile}${browserName ? ' with ' + browserName.split(' (')[0] : ''}`, "success");
+          await loadAccountProfiles();
           addAccountBtn.textContent = "Opening…";
           setTimeout(() => { addAccountBtn.textContent = "Add Account"; addAccountBtn.disabled = false; }, 3000);
         } catch (e) {
@@ -189,7 +278,7 @@
       if (activeTab) {
         const tabName = activeTab.dataset.tab;
         if (tabName === 'general') { loadBrowserSettings(); }
-        else if (tabName === 'account') loadAccountProfiles();
+        else if (tabName === 'account') { loadAvailableBrowsers(); loadAccountProfiles(); }
       }
     };
 
@@ -668,6 +757,70 @@
       } else {
         updateFavicon();
       }
+    })();
+
+    // ---------- Appearance Mode (Light / Dark / Auto) ----------
+    const MODE_KEY = "sable_appearance_mode";
+    const modeToggle = document.getElementById("modeToggle");
+
+    function getEffectiveMode(saved) {
+      if (saved === "light") return "light";
+      if (saved === "dark") return "dark";
+      // auto or unset: follow OS
+      return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+    }
+
+    function applyMode(mode) {
+      const effective = getEffectiveMode(mode);
+      document.documentElement.setAttribute("data-mode", effective);
+      // Update Monaco editor theme if available
+      if (typeof getSableMonacoThemeName === "function") {
+        try { monaco.editor.setTheme(getSableMonacoThemeName()); } catch(e) {}
+      }
+      updateFavicon();
+    }
+
+    function updateModeButtons(saved) {
+      if (!modeToggle) return;
+      modeToggle.querySelectorAll(".mode-btn").forEach(btn => {
+        const isActive = btn.dataset.mode === (saved || "auto");
+        btn.classList.toggle("active", isActive);
+        if (isActive) {
+          btn.style.background = "var(--accent-dim)";
+          btn.style.color = "var(--accent-text)";
+        } else {
+          btn.style.background = "transparent";
+          btn.style.color = "var(--muted)";
+        }
+      });
+    }
+
+    if (modeToggle) {
+      modeToggle.addEventListener("click", (e) => {
+        const btn = e.target.closest(".mode-btn");
+        if (!btn) return;
+        const mode = btn.dataset.mode;
+        try { localStorage.setItem(MODE_KEY, mode); } catch(err) {}
+        applyMode(mode);
+        updateModeButtons(mode);
+      });
+    }
+
+    // Listen for OS preference changes when in auto mode
+    window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
+      let saved = null;
+      try { saved = localStorage.getItem(MODE_KEY); } catch(e) {}
+      if (!saved || saved === "auto") {
+        applyMode("auto");
+      }
+    });
+
+    // Load saved mode on startup
+    (function loadMode() {
+      let saved = null;
+      try { saved = localStorage.getItem(MODE_KEY); } catch(e) {}
+      applyMode(saved || "auto");
+      updateModeButtons(saved);
     })();
 
     // ---------- Mode Switcher (API / Scraper) ----------

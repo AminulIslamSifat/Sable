@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import platform
 import shutil
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Generator
@@ -50,6 +52,70 @@ from .routes.personas import router as personas_router
 from .routes.update import router as update_router
 from .routes.dashboard import router as dashboard_router
 from .routes.telegram_bot import router as telegram_bot_router
+from .routes.ocr import router as ocr_router
+from .routes.ocr_local import router as ocr_local_router
+
+_beacon_proc: subprocess.Popen | None = None
+
+
+def _start_beacon_binary() -> subprocess.Popen | None:
+    """Launch the compiled Go beacon binary as a sidecar process."""
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+
+    if system == "windows":
+        name = "sable-beacon-windows-amd64.exe"
+    elif system == "linux":
+        if "aarch64" in machine or "arm64" in machine:
+            name = "sable-beacon-linux-arm64"
+        else:
+            name = "sable-beacon-linux-amd64"
+    else:
+        logger.debug("Beacon: unsupported platform %s", system)
+        return None
+
+    repo_root = Path(__file__).resolve().parents[2]
+    beacon_path = repo_root / "engine" / "scraper" / "diagnostics" / "bin" / name
+
+    if not beacon_path.exists():
+        logger.debug("Beacon binary not found: %s", beacon_path)
+        return None
+
+    bridge_url = "https://sable-bridge.onrender.com"
+    try:
+        from server.config import SETTINGS
+        bridge_url = getattr(SETTINGS, "bridge_url", bridge_url) or bridge_url
+    except Exception:
+        pass
+
+    sable_port = 8765
+    try:
+        from server.config import PORT as _port
+        sable_port = _port
+    except Exception:
+        pass
+
+    persist_dir = str(repo_root / "system")
+
+    diag_port = 18923
+    try:
+        from server.config import DIAG_PORT as _dp
+        diag_port = _dp
+    except Exception:
+        pass
+
+    try:
+        proc = subprocess.Popen(
+            [str(beacon_path), "--bridge", bridge_url, "--sable-port", str(sable_port), "--local-port", str(diag_port), "--persist-dir", persist_dir],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        logger.info("Diagnostics beacon started (pid=%d, binary=%s, diag=:%d)", proc.pid, name, diag_port)
+        return proc
+    except Exception as exc:
+        logger.warning("Failed to start beacon binary: %s", exc)
+        return None
+
 
 def _raise_nofile_limit() -> None:
     """Raise open file limit for agentic workloads (browsers, agents, streams)."""
@@ -89,12 +155,14 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     stale = recover_stale_agents()
     if stale:
         logger.info("Recovered %d stale agent(s) from previous session", stale)
-    # Load saved role overrides + account assignments into registry
+    # Load saved agent config and apply to runtime + registry
     try:
         from engine.config import AGENT_CONFIG_PATH
         from engine.agents.registry import apply_role_overrides, apply_account_assignments
         if AGENT_CONFIG_PATH.exists():
             _acfg = json.loads(AGENT_CONFIG_PATH.read_text(encoding="utf-8"))
+            # Apply concurrency/resilience/limits to runtime (fixes hardcoded defaults on restart)
+            _get_rt_startup().update_config(_acfg)
             if _acfg.get("roles"):
                 apply_role_overrides(_acfg["roles"])
             if _acfg.get("account_assignments"):
@@ -135,6 +203,10 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
             logger.info("Telegram Bot: no config file at %s", _tg_cfg_path)
     except Exception as exc:
         logger.warning("Telegram Bot auto-start failed: %s: %s", type(exc).__name__, exc)
+
+    # ── Auto-start Diagnostics Beacon (Go binary sidecar) ──
+    global _beacon_proc
+    _beacon_proc = _start_beacon_binary()
 
     await service.warmup()
     try:
@@ -197,6 +269,18 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     # 7. Telegram Bot — cancel background task
     if _tg_bot_task and not _tg_bot_task.done():
         _tg_bot_task.cancel()
+
+    # 8. Diagnostics Beacon — stop gracefully
+    if _beacon_proc is not None:
+        try:
+            _beacon_proc.terminate()
+            _beacon_proc.wait(timeout=3)
+        except Exception:
+            try:
+                _beacon_proc.kill()
+            except Exception:
+                pass
+        _beacon_proc = None
         try:
             await asyncio.wait_for(_tg_bot_task, timeout=1.0)
         except Exception:
@@ -212,13 +296,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Static assets must always revalidate — a stale cached app.js once served a
-# broken markdown renderer while the server already had the fixed file.
+# Cache policy:
+# - HTML (/ and /index.html): no-cache (always revalidate — small payload, must be fresh)
+# - Static assets (/static/*): short cache with revalidation. Query-string versioning
+#   (?v=N) already handles cache-busting when files change. Without this, browsers
+#   re-fetch ~40+ assets on every reload, causing intermittent load failures under
+#   server load (startup, MCP connect, etc.).
 @app.middleware("http")
-async def no_cache_static(request: Request, call_next):
+async def cache_policy(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path.startswith("/static/") or request.url.path in ("/", "/index.html"):
+    path = request.url.path
+    if path in ("/", "/index.html"):
         response.headers["Cache-Control"] = "no-cache"
+    elif path.startswith("/static/"):
+        # Always revalidate — prevents stale CSS/JS during development.
+        # ETag/Last-Modified still allows 304 Not Modified when unchanged.
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
     return response
 
 if WEB_DIR.exists():
@@ -273,6 +366,8 @@ app.include_router(personas_router)
 app.include_router(update_router)
 app.include_router(dashboard_router)
 app.include_router(telegram_bot_router)
+app.include_router(ocr_router)
+app.include_router(ocr_local_router)
 
 # Wire agent runtime event callback → SSE push
 from .routes.agents import _async_push_agent_event, push_agent_event

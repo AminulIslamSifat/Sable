@@ -483,6 +483,11 @@
       card.querySelector(".skill-output").textContent += text || "";
     }
 
+    // Expose skill card builders for agent panel history replay
+    window.createSkillCard = createSkillCard;
+    window.appendSkillCardOutput = appendSkillCardOutput;
+    window.finishSkillCard = finishSkillCard;
+
     function finishSkillCard(card, evt) {
       const status = card.querySelector(".skill-status");
       const pre = card.querySelector(".skill-output");
