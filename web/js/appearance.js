@@ -1,6 +1,20 @@
     // ---------- Account Profile Switcher ----------
     const accountProfileCards = document.getElementById("accountProfileCards");
     const refreshAccountsBtn = document.getElementById("refreshAccountsBtn");
+    const addAccountBrowserSelect = document.getElementById("addAccountBrowserSelect");
+
+    async function loadAvailableBrowsers() {
+      if (!addAccountBrowserSelect) return;
+      try {
+        const res = await fetch("/api/settings/accounts/available-browsers");
+        const data = await res.json();
+        const browsers = data.browsers || [];
+        addAccountBrowserSelect.innerHTML = '<option value="">Auto-detect</option>' +
+          browsers.map(b => `<option value="${b.path.replace(/"/g, '&quot;')}">${b.label} (${b.tier})</option>`).join("");
+      } catch (e) {
+        addAccountBrowserSelect.innerHTML = '<option value="">Auto-detect</option>';
+      }
+    }
 
     async function loadAccountProfiles() {
       if (!accountProfileCards) return;
@@ -39,6 +53,7 @@
             <div style="min-width:0;">
               <div style="font-size:12px;font-weight:600;color:var(--text);">${email}</div>
               <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">${acc.name}${size ? ' · ' + size : ''}${isActive ? ' · <span style="color:var(--accent);">active</span>' : ''}
+                ${acc.browser_label ? `<span style="display:inline-block;font-size:10px;font-weight:600;color:#a78bfa;border:1px solid #a78bfa;border-radius:4px;padding:1px 5px;margin-left:4px;" title="${(acc.browser_path || '').replace(/"/g, '&quot;')}">${acc.browser_label}</span>` : ''}
                 ${acc.has_waf ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#22c55e;border:1px solid #22c55e;border-radius:4px;padding:1px 5px;margin-left:6px;">qwen</span>' : ''}
                 ${acc.has_ds ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#22c55e;border:1px solid #22c55e;border-radius:4px;padding:1px 5px;margin-left:4px;">ds</span>' : ''}
                 ${acc.exhausted ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#ef4444;border:1px solid #ef4444;background:rgba(239,68,68,0.1);border-radius:4px;padding:1px 5px;margin-left:4px;">Exhausted</span>' : ''}
@@ -214,9 +229,16 @@
         addAccountBtn.disabled = true;
         addAccountBtn.textContent = "Opening…";
         try {
-          const res = await fetch("/api/settings/accounts/create", { method: "POST" });
+          const browserPath = addAccountBrowserSelect ? addAccountBrowserSelect.value : "";
+          const res = await fetch("/api/settings/accounts/create", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ browser_path: browserPath }),
+          });
           const data = await res.json();
           if (!res.ok) throw new Error(data.detail || "Failed");
+          showToast(`🌐 Opened ${data.profile}${browserPath ? ' with selected browser' : ''}`, "success");
+          await loadAccountProfiles();
           addAccountBtn.textContent = "Opening…";
           setTimeout(() => { addAccountBtn.textContent = "Add Account"; addAccountBtn.disabled = false; }, 3000);
         } catch (e) {
@@ -237,7 +259,7 @@
       if (activeTab) {
         const tabName = activeTab.dataset.tab;
         if (tabName === 'general') { loadBrowserSettings(); }
-        else if (tabName === 'account') loadAccountProfiles();
+        else if (tabName === 'account') { loadAvailableBrowsers(); loadAccountProfiles(); }
       }
     };
 

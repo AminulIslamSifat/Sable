@@ -1365,7 +1365,10 @@
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
             <label style="font-size:14px;color:var(--text);font-weight:600;">Account Profiles</label>
             <div style="display:flex;gap:6px;">
-              <button id="addAccountBtn" class="icon-btn" style="width:auto;padding:4px 10px;font-size:11px;">Add Account</button>
+              <div id="addAccountWrap" style="display:flex;gap:4px;align-items:center;">
+                <select id="addAccountBrowserSelect" style="padding:4px 6px;font-size:11px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:6px;outline:none;max-width:160px;"></select>
+                <button id="addAccountBtn" class="icon-btn" style="width:auto;padding:4px 10px;font-size:11px;">Add Account</button>
+              </div>
               <button id="refreshAccountsBtn" class="icon-btn" title="Refresh account list" style="width:auto;padding:4px 10px;font-size:11px;">↻ Refresh</button>
             </div>
           </div>

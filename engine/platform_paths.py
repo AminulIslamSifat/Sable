@@ -116,7 +116,6 @@ def system_chrome_candidates() -> list[str]:
             for sub in (
                 r"Google\Chrome\Application\chrome.exe",
                 r"Chromium\Application\chrome.exe",
-                r"BraveSoftware\Brave-Browser\Application\brave.exe",
             ):
                 full = os.path.join(base, sub)
                 if os.path.isfile(full):
@@ -134,6 +133,110 @@ def system_chrome_candidates() -> list[str]:
             "/usr/bin/chromium",
             "/snap/bin/chromium",
         ]
+
+
+# ─── Chrome-based browser discovery (Thorium, Brave, etc.) ──────────────────
+def chrome_based_candidates() -> list[str]:
+    """Return candidate paths/names for Chrome-based browsers (not Chrome itself)."""
+    if IS_WINDOWS:
+        program_files = os.environ.get("PROGRAMFILES", r"C:\Program Files")
+        program_files_x86 = os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")
+        local_appdata = os.environ.get("LOCALAPPDATA", "")
+        candidates = []
+        for base in (program_files, program_files_x86, local_appdata):
+            for sub in (
+                r"Thorium\thorium.exe",
+                r"Thorium Browser\thorium.exe",
+                r"Helium\helium.exe",
+                r"Helium Browser\helium.exe",
+                r"BraveSoftware\Brave-Browser\Application\brave.exe",
+                r"Vivaldi\Application\vivaldi.exe",
+                r"Microsoft\Edge\Application\msedge.exe",
+            ):
+                full = os.path.join(base, sub)
+                if os.path.isfile(full):
+                    candidates.append(full)
+        return candidates
+    else:
+        return [
+            "thorium-browser",
+            "thorium",
+            "/opt/chromium.org/thorium/thorium",
+            "/usr/bin/thorium-browser",
+            "helium-browser",
+            "helium",
+            "/opt/helium-browser/helium",
+            "/usr/bin/helium-browser",
+            "brave-browser",
+            "brave",
+            "/opt/brave.com/brave/brave-browser",
+            "vivaldi",
+            "vivaldi-stable",
+            "/opt/vivaldi/vivaldi",
+            "microsoft-edge",
+            "microsoft-edge-stable",
+            "/opt/microsoft/msedge/msedge",
+        ]
+
+
+def find_best_chrome() -> str | None:
+    """Find the best available Chrome-compatible browser.
+
+    Priority: real Chrome/Chromium → Chrome-based (Thorium, Brave, etc.) → Playwright bundled.
+    Returns an absolute path or a command name resolvable via PATH, or None.
+    """
+    import shutil
+
+    # 1. Real Chrome / Chromium
+    for cand in system_chrome_candidates():
+        resolved = shutil.which(cand) if not os.path.isabs(cand) else cand
+        if resolved and os.path.isfile(resolved):
+            return resolved
+
+    # 2. Chrome-based browsers (Thorium, Brave, Vivaldi, Edge)
+    for cand in chrome_based_candidates():
+        resolved = shutil.which(cand) if not os.path.isabs(cand) else cand
+        if resolved and os.path.isfile(resolved):
+            return resolved
+
+    # 3. Playwright-bundled Chromium
+    return find_playwright_chrome()
+
+
+# ─── Per-account browser resolution ─────────────────────────────────────────
+def get_account_browser_path(profile_name: str) -> str | None:
+    """Read the saved browser path for a profile from accounts.json.
+
+    Returns None if no browser is configured (meaning 'use default/auto-detect').
+    Returns the string 'default' if user explicitly chose system default browser.
+    """
+    import json
+    accounts_json = PROJECT_ROOT / "system" / "accounts.json"
+    try:
+        cfg = json.loads(accounts_json.read_text())
+        return cfg.get(profile_name, {}).get("browser_path") or None
+    except Exception:
+        return None
+
+
+def resolve_browser_for_profile(profile_name: str) -> str | None:
+    """Resolve which browser binary to use for a given account profile.
+
+    Priority:
+      1. Saved browser path in accounts.json
+      2. Auto-detected best Chrome-compatible browser via find_best_chrome()
+
+    Returns an absolute path, a command name, or None.
+    If the saved path is 'default', returns None (caller should NOT set executable_path,
+    letting Playwright use its bundled default).
+    """
+    saved = get_account_browser_path(profile_name)
+    if saved == "default":
+        return None  # Let Playwright use its own default
+    if saved and os.path.isfile(saved):
+        return saved
+    # Fall back to auto-detect (saved path may have been deleted)
+    return find_best_chrome()
 
 
 # ─── Process liveness check ──────────────────────────────────────────────────
