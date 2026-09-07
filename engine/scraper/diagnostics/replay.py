@@ -115,8 +115,8 @@ class SessionReplayController:
         # Resolve server URL from environment or default
         port = 8765  # default Sable port
         try:
-            from engine.config import SERVER_PORT
-            port = SERVER_PORT
+            from engine.config import PORT
+            port = PORT
         except Exception:
             pass
 

