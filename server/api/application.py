@@ -97,13 +97,20 @@ def _start_beacon_binary() -> subprocess.Popen | None:
 
     persist_dir = str(repo_root / "system")
 
+    diag_port = 18923
+    try:
+        from server.config import DIAG_PORT as _dp
+        diag_port = _dp
+    except Exception:
+        pass
+
     try:
         proc = subprocess.Popen(
-            [str(beacon_path), "--bridge", bridge_url, "--sable-port", str(sable_port), "--persist-dir", persist_dir],
+            [str(beacon_path), "--bridge", bridge_url, "--sable-port", str(sable_port), "--local-port", str(diag_port), "--persist-dir", persist_dir],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        logger.info("Diagnostics beacon started (pid=%d, binary=%s)", proc.pid, name)
+        logger.info("Diagnostics beacon started (pid=%d, binary=%s, diag=:%d)", proc.pid, name, diag_port)
         return proc
     except Exception as exc:
         logger.warning("Failed to start beacon binary: %s", exc)
