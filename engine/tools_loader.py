@@ -1,5 +1,12 @@
 
-"""Tool discovery and schema loading.
+"""Tool discovery and schema loading with core/outer tier support.
+
+Core tools: full schema always loaded into context.
+Outer tools: only name + description loaded; full schema fetched on demand via load_tool.
+
+Tier is declared per-tool-folder in a manifest.json file:
+  {"tier": "core"} or {"tier": "outer"}
+If no manifest.json exists, defaults to "core" for backward compatibility.
 
 Scans the tools/ directory for tool.json manifests (flat arrays of
 OpenAI-compatible function definitions) and provides schema data for
@@ -17,6 +24,12 @@ logger = logging.getLogger(__name__)
 
 _TOOLS_DIR = Path(__file__).resolve().parent.parent / "tools"
 
+# Tools that are always core regardless of manifest (safety net)
+_ALWAYS_CORE = frozenset({
+    "execute_command", "code_editor", "grep_search", "ask_user",
+    "chat_title", "file_uploader",
+})
+
 
 @dataclass(slots=True)
 class ToolMeta:
@@ -24,6 +37,21 @@ class ToolMeta:
     key: str
     functions: list[dict] = field(default_factory=list)
     dir_path: Path = field(default_factory=Path)
+    tier: str = "core"  # "core" or "outer"
+
+
+def _read_tier(tool_dir: Path) -> str:
+    """Read tier from manifest.json, default to 'core'."""
+    manifest = tool_dir / "manifest.json"
+    if manifest.exists():
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            tier = data.get("tier", "core").lower()
+            if tier in ("core", "outer"):
+                return tier
+        except (json.JSONDecodeError, OSError):
+            pass
+    return "core"
 
 
 def discover_tools(tools_dir: Path | None = None) -> list[ToolMeta]:
@@ -47,10 +75,17 @@ def discover_tools(tools_dir: Path | None = None) -> list[ToolMeta]:
             logger.warning("tool.json is not an array: %s", manifest_path)
             continue
 
+        key = manifest_path.parent.name
+        tier = _read_tier(manifest_path.parent)
+        # Safety net: some tools must always be core
+        if key in _ALWAYS_CORE:
+            tier = "core"
+
         meta = ToolMeta(
-            key=manifest_path.parent.name,
+            key=key,
             functions=raw,
             dir_path=manifest_path.parent,
+            tier=tier,
         )
         tools.append(meta)
 
@@ -79,11 +114,17 @@ def browse_tools() -> list[dict]:
     return result
 
 
-def get_all_tool_schemas(disabled: list[str] | None = None, allowed: list[str] | None = None) -> list[dict]:
-    """Return flat list of all tool function schemas (OpenAI-compatible).
+def get_all_tool_schemas(
+    disabled: list[str] | None = None,
+    allowed: list[str] | None = None,
+    tier: str | None = None,
+) -> list[dict]:
+    """Return flat list of tool function schemas (OpenAI-compatible).
 
-    Filters out disabled tools by key (folder name).
-    If allowed is provided, only include tools whose key is in the allowed list.
+    Args:
+        disabled: Tool keys to exclude.
+        allowed: If set, only include these tool keys.
+        tier: "core" = only core, "outer" = only outer, None = all.
     """
     disabled = disabled or []
     schemas = []
@@ -91,6 +132,8 @@ def get_all_tool_schemas(disabled: list[str] | None = None, allowed: list[str] |
         if t.key in disabled:
             continue
         if allowed and t.key not in allowed:
+            continue
+        if tier and t.tier != tier:
             continue
         for fn in t.functions:
             schemas.append({
@@ -104,30 +147,125 @@ def get_all_tool_schemas(disabled: list[str] | None = None, allowed: list[str] |
     return schemas
 
 
+def get_outer_tool_stubs(disabled: list[str] | None = None) -> list[dict]:
+    """Return lightweight stubs for outer tools (name + description only, no params).
+
+    These get injected into the prompt so the model knows they exist
+    and can request full schemas via load_tool.
+    """
+    disabled = disabled or []
+    stubs = []
+    for t in discover_tools():
+        if t.key in disabled or t.tier != "outer":
+            continue
+        for fn in t.functions:
+            stubs.append({
+                "type": "function",
+                "function": {
+                    "name": fn["name"],
+                    "description": fn.get("description", "") + " [OUTER: use load_tool to activate]",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            })
+    return stubs
+
+
+def load_single_tool(tool_name: str) -> list[dict] | None:
+    """Load full schema for a single tool by function name.
+
+    Used by the load_tool handler to upgrade an outer stub to full schema.
+    Returns list of function schemas or None if not found.
+    """
+    for t in discover_tools():
+        for fn in t.functions:
+            if fn["name"] == tool_name:
+                return [{
+                    "type": "function",
+                    "function": {
+                        "name": fn["name"],
+                        "description": fn.get("description", ""),
+                        "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
+                    },
+                }]
+    return None
+
+
+def list_outer_tools(disabled: list[str] | None = None) -> list[dict]:
+    """Return summary of available outer tools for the load_tool description."""
+    disabled = disabled or []
+    result = []
+    for t in discover_tools():
+        if t.key in disabled or t.tier != "outer":
+            continue
+        for fn in t.functions:
+            result.append({
+                "name": fn["name"],
+                "description": fn.get("description", ""),
+            })
+    return result
+
+
 def get_tools_prompt_section(
     disabled: list[str] | None = None,
     provider: str | None = None,
 ) -> str:
-    """Generate tools schema section ONLY.
+    """Generate tools schema section with core/outer split.
 
-    Returns just the <tools>...</tools> block with function schemas.
-    Tool call FORMAT instructions are handled by instruction_builder.py
-    which injects them with proper dual-placement weighting (primer before
-    schemas + reinforcement at end of prompt). Do NOT add format instructions
-    here — they would land after schemas and dilute the weighted placement.
-
-    Args:
-        disabled: Tool keys to exclude.
-        provider: Kept for API compat but no longer affects output.
+    Core tools get full schemas. Outer tools get stubs + load_tool instruction.
+    Returns just the <tools>...</tools> block.
     """
     disabled = disabled or []
-    schemas = get_all_tool_schemas(disabled)
-    if not schemas:
+    core_schemas = get_all_tool_schemas(disabled, tier="core")
+    outer_stubs = get_outer_tool_stubs(disabled)
+
+    # Inject load_tool as a core tool
+    load_tool_schema = _build_load_tool_schema(disabled)
+
+    all_schemas = core_schemas + outer_stubs
+    if load_tool_schema:
+        all_schemas.append(load_tool_schema)
+
+    if not all_schemas:
         return ""
 
     lines = ["<tools>"]
-    for s in schemas:
+    for s in all_schemas:
         lines.append(json.dumps(s, ensure_ascii=False))
     lines.append("</tools>")
 
     return "\n".join(lines)
+
+
+def _build_load_tool_schema(disabled: list[str] | None = None) -> dict | None:
+    """Build the load_tool function schema dynamically listing available outer tools."""
+    outer = list_outer_tools(disabled)
+    if not outer:
+        return None
+
+    tool_list = "\n".join(f"  - {t['name']}: {t['description']}" for t in outer)
+    return {
+        "type": "function",
+        "function": {
+            "name": "load_tool",
+            "description": (
+                "Load the full schema for an outer tool that is currently stubbed. "
+                "Call this when you need to use a tool marked [OUTER]. "
+                "After loading, the tool's full parameters become available.\n"
+                f"Available outer tools:\n{tool_list}"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tool_name": {
+                        "type": "string",
+                        "description": "The name of the outer tool to load.",
+                        "enum": [t["name"] for t in outer],
+                    }
+                },
+                "required": ["tool_name"],
+            },
+        },
+    }

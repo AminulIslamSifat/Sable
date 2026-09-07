@@ -282,9 +282,11 @@ class MCPManager:
 
 
     def get_prompt_section(self) -> str:
-        """Generate a system prompt section listing connected MCP tools.
+        """Generate a system prompt section for MCP tools.
 
-        Returns empty string if no servers are connected.
+        When mcp is an outer tool (has manifest.json with tier=outer),
+        only list connected server names — full tool details load via load_tool.
+        When core, show full tool listings as before.
         """
         connected = {
             name: conn for name, conn in self._connections.items()
@@ -292,6 +294,18 @@ class MCPManager:
         }
         if not connected:
             return ""
+
+        # Check if mcp is outer tier
+        is_outer = self._is_outer_tier()
+
+        if is_outer:
+            # Minimal stub: just server names, no tool details
+            servers = ", ".join(f"`{name}`" for name in connected)
+            return (
+                "## MCP Tools (External Servers)\n\n"
+                f"Connected MCP servers: {servers}.\n"
+                "Use `load_tool` with `tool_name=\"mcp_call\"` to load full MCP tool schemas.\n"
+            )
 
         lines = [
             "## MCP Tools (External Servers)",
@@ -326,6 +340,20 @@ class MCPManager:
 
         lines.append("> `*` = required param. Pass arguments as JSON in the tag body.")
         return chr(10).join(lines)
+
+    @staticmethod
+    def _is_outer_tier() -> bool:
+        """Check if the mcp tool group is marked as outer tier."""
+        import json
+        from pathlib import Path
+        manifest = Path(__file__).resolve().parent.parent.parent / "tools" / "mcp" / "manifest.json"
+        if manifest.exists():
+            try:
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+                return data.get("tier", "core").lower() == "outer"
+            except (json.JSONDecodeError, OSError):
+                pass
+        return False
 
 
 # Singleton
