@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from engine.config import BROWSER_SCRAPER_DATA_DIR
+from engine.config import BROWSER_SCRAPER_DATA_DIR, get_browser_data_dir
 
 from .loader import _load_py_module, _accepts_arg
 from .settings import (
@@ -170,7 +170,9 @@ class ScraperLifecycle:
         engine = self._instantiate_engine(cls, settings)
 
         try:
-            engine.user_data_dir = str(BROWSER_SCRAPER_DATA_DIR)
+            # Use active account's browser data dir, fall back to scraper default
+            engine.user_data_dir = str(get_browser_data_dir())
+            engine.profile_name = Path(engine.user_data_dir).name
         except Exception:
             pass
 
@@ -184,6 +186,19 @@ class ScraperLifecycle:
 
         self.engine = engine
         self.loaded_path = engine_path
+
+        # Diagnostics: passively track engine session via Go beacon HTTP API
+        try:
+            from .diagnostics import register_session
+            settings_diag = _load_settings()
+            sid = register_session(
+                settings_diag.get("engine_type", DEFAULT_ENGINE_TYPE),
+                metadata={"cdp_port": getattr(engine, "port", None)},
+            )
+            self._diag_session_id = sid
+        except Exception:
+            self._diag_session_id = None
+
         return engine
 
     async def _is_browser_alive(self, engine: Any) -> bool:
@@ -206,7 +221,9 @@ class ScraperLifecycle:
         import urllib.request
 
         port = settings.get("port", DEFAULT_SETTINGS["port"])
-        user_data_dir = str(BROWSER_SCRAPER_DATA_DIR)
+        # Use active account's data dir, not the stale static constant
+        from engine.config import get_browser_data_dir
+        user_data_dir = str(get_browser_data_dir())
 
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -288,6 +305,45 @@ class ScraperLifecycle:
         except Exception as exc:
             logger.exception("Model switch failed")
             return {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
+
+    async def get_ui_metadata(self) -> dict[str, Any]:
+        """Return engine-specific UI metadata (models, thinking modes)."""
+        settings = _load_settings()
+        try:
+            async with self._lock:
+                engine = await self._ensure_engine(settings)
+                meta_fn = getattr(engine, "get_ui_metadata", None)
+                if meta_fn:
+                    return meta_fn()
+        except Exception as exc:
+            logger.warning("Could not get UI metadata: %s", exc)
+
+        # Fallback based on engine_type from settings
+        engine_type = settings.get("engine_type", DEFAULT_ENGINE_TYPE)
+        if engine_type == "deepseek":
+            return {
+                "models": [
+                    {"id": "default", "label": "Instant"},
+                    {"id": "expert", "label": "Expert"},
+                    {"id": "vision", "label": "Vision"},
+                ],
+                "thinking_modes": [
+                    {"id": "fast", "label": "Fast"},
+                    {"id": "deepthink", "label": "DeepThink"},
+                ],
+            }
+        elif engine_type == "chatgpt":
+            return {
+                "models": [{"id": "default", "label": "ChatGPT"}],
+                "thinking_modes": [
+                    {"id": "fast", "label": "Fast"},
+                    {"id": "thinking", "label": "Thinking"},
+                ],
+            }
+        return {
+            "models": [{"id": "default", "label": engine_type.title()}],
+            "thinking_modes": [],
+        }
 
     async def get_session_info(self) -> dict[str, Any]:
         """Return info about the active browser session for the settings UI."""

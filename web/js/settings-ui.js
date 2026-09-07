@@ -62,7 +62,7 @@
         const target = document.getElementById('tab-' + tabName);
         if (target) target.classList.add('active');
         if (tabName === 'general') { loadBrowserSettings(); }
-        else if (tabName === 'account') loadAccountProfiles();
+        else if (tabName === 'account') { if (window.loadAvailableBrowsers) window.loadAvailableBrowsers(); loadAccountProfiles(); }
         else if (tabName === 'mcp') loadMcpServers();
         else if (tabName === 'cookbook') { if (window._cbInit) window._cbInit(); }
         else if (tabName === 'tools') loadTools();
@@ -182,8 +182,8 @@
       cheatSheetList.innerHTML = '';
       for (const [id, sc] of Object.entries(shortcuts)) {
         const row = document.createElement('div');
-        row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border-light, rgba(255,255,255,0.06));';
-        row.innerHTML = `<span style="font-size:13px;">${sc.label}</span><kbd style="background:var(--bg-secondary, #2a2a2a);padding:2px 8px;border-radius:4px;font-size:12px;font-family:monospace;border:1px solid var(--border, #333);">${sc.keys}</kbd>`;
+        row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border-soft);';
+        row.innerHTML = `<span style="font-size:13px;">${sc.label}</span><kbd style="background:var(--panel-2);padding:2px 8px;border-radius:4px;font-size:12px;font-family:monospace;border:1px solid var(--border);color:var(--text);">${sc.keys}</kbd>`;
         cheatSheetList.appendChild(row);
       }
     }
@@ -199,7 +199,7 @@
       container.innerHTML = '';
       for (const [id, sc] of Object.entries(shortcuts)) {
         const row = document.createElement('div');
-        row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-secondary, rgba(255,255,255,0.03));border-radius:6px;border:1px solid var(--border, rgba(255,255,255,0.08));';
+        row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--panel-2);border-radius:6px;border:1px solid var(--border);';
         
         const label = document.createElement('span');
         label.style.cssText = 'font-size:13px;flex:1;';
@@ -207,7 +207,7 @@
 
         const keyBtn = document.createElement('button');
         keyBtn.className = 'icon-btn';
-        keyBtn.style.cssText = 'min-width:100px;padding:4px 12px;font-size:12px;font-family:monospace;text-align:center;background:var(--bg-tertiary, rgba(255,255,255,0.06));border:1px solid var(--border, rgba(255,255,255,0.1));border-radius:4px;cursor:pointer;color:var(--text-primary, #fff);';
+        keyBtn.style.cssText = 'min-width:100px;padding:4px 12px;font-size:12px;font-family:monospace;text-align:center;background:var(--panel);border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text);';
         keyBtn.textContent = sc.keys;
         keyBtn.title = 'Click to reassign';
 
@@ -270,7 +270,7 @@
         if (target) target.classList.add("active");
         const tabName = tab.dataset.tab;
         if (tabName === 'general') { loadBrowserSettings(); }
-        else if (tabName === 'account') loadAccountProfiles();
+        else if (tabName === 'account') { if (window.loadAvailableBrowsers) window.loadAvailableBrowsers(); loadAccountProfiles(); }
         else if (tabName === 'mcp') loadMcpServers();
         else if (tabName === 'cookbook') { if (window._cbInit) window._cbInit(); }
         else if (tabName === 'personalization') { if (window._personaInit) window._personaInit(); }
@@ -488,8 +488,10 @@ async function applyUpdate() {
   if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = "Updating…"; }
   if (checkBtn) checkBtn.disabled = true;
   if (progress) progress.classList.remove("hidden");
-  if (progressBar) progressBar.style.width = "10%";
+  if (progressBar) { progressBar.style.width = "10%"; progressBar.style.background = ""; }
   if (progressText) progressText.textContent = "Starting update…";
+  const logBox = document.getElementById("updateLog");
+  if (logBox) { logBox.innerHTML = ""; logBox.style.display = "none"; }
 
   try {
     const resp = await fetch("/api/update/apply", {
@@ -503,6 +505,7 @@ async function applyUpdate() {
     let buffer = "";
 
     const stepProgress = { check: 10, pull: 35, sync: 65, restart: 90 };
+    const logEl = document.getElementById("updateLog");
 
     while (true) {
       const { done, value } = await reader.read();
@@ -521,6 +524,13 @@ async function applyUpdate() {
             const pct = stepProgress[event.step] || 50;
             if (progressBar) progressBar.style.width = pct + "%";
             if (progressText) progressText.textContent = event.message;
+          } else if (event.type === "log") {
+            if (logEl) {
+              logEl.style.display = "block";
+              const escaped = event.message.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+              logEl.innerHTML += escaped + "\n";
+              logEl.scrollTop = logEl.scrollHeight;
+            }
           } else if (event.type === "warning") {
             if (progressText) progressText.textContent = event.message;
           } else if (event.type === "error") {
