@@ -43,8 +43,10 @@ from engine.skills.handlers.image_generator import handle_generate_image
 from engine.skills.handlers.computer_use import handle_computer_use
 from engine.skills.handlers.load_tool import handle_load_tool
 from engine.mcp.handler import handle_mcp_call
+from engine.skills.handlers.critique import handle_critique
 
 HANDLER_MAP: dict[str, object] = {
+    "critique": handle_critique,
     "execute_command": handle_execute_command,
     "get_file": handle_get_file,
     "read_file": handle_get_file,
