@@ -13,6 +13,7 @@ Circles are yellow while fetching/reading, green on success, red on failure.
 from __future__ import annotations
 
 import asyncio
+import sys
 import json
 import logging
 import time
@@ -394,7 +395,7 @@ class DeepResearcher:
 
     # ── web helpers ──────────────────────────────────────────────────────────
     async def _run_search_script(self, args: list[str], timeout: int = 90) -> tuple[bool, str]:
-        cmd = ["python3", str(SEARCH_SCRIPT)] + args
+        cmd = [sys.executable, str(SEARCH_SCRIPT)] + args
         logger.info("running search script | timeout=%d args=%s", timeout, args)
         await self._trace("search_script_start", timeout=timeout, args=" ".join(args[:10]))
         try:

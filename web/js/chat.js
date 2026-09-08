@@ -212,58 +212,69 @@
 
     /* ---------- end multi-tab ---------- */
 
-    // ── Smart auto-scroll ──
-    let _userScrolled = false;
+    // ── Auto-scroll ──
+    // ponytail: ceiling = synchronous user-intent detection. Upgrade path: add smooth scroll animation if needed.
+    let _atBottom = true;
     let _scrollForChat = null;
-    let _isAutoScrolling = false;
-    let _scrollTimer = null;
 
-    // Attach scroll listener whenever activePane changes (idempotent)
     const _scrollBoundPanes = new WeakSet();
     function _bindScrollListener(pane) {
       if (!pane || _scrollBoundPanes.has(pane)) return;
       _scrollBoundPanes.add(pane);
-      let _prevScrollTop = 0;
-      pane.addEventListener("scroll", () => {
-        if (_isAutoScrolling) return; // ignore our own scrolls
-        const st = pane.scrollTop;
-        if (st < _prevScrollTop - 5) {
-          _userScrolled = true;
-        } else if (st >= pane.scrollHeight - pane.clientHeight - 30) {
-          _userScrolled = false;
+
+      // Synchronous intent detection — must set _atBottom BEFORE any
+      // scrollBottom() call that arrives in the same event loop tick.
+      // DOM mutations / programmatic scrollTop never fire these events.
+      pane.addEventListener("wheel", (e) => {
+        if (e.deltaY < 0) {
+          _atBottom = false;
+        } else {
+          // Scrolling down: check if we've reached the bottom
+          const gap = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
+          _atBottom = gap < 30;
         }
-        _prevScrollTop = st;
+      }, { passive: true });
+
+      let _lastTouchY = 0;
+      pane.addEventListener("touchstart", (e) => {
+        _lastTouchY = e.touches[0].clientY;
+      }, { passive: true });
+      pane.addEventListener("touchmove", (e) => {
+        const dy = e.touches[0].clientY - _lastTouchY;
+        _lastTouchY = e.touches[0].clientY;
+        if (dy > 0) {
+          _atBottom = false;   // finger moving down = content scrolls up
+        } else {
+          const gap = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
+          _atBottom = gap < 30;
+        }
+      }, { passive: true });
+
+      // Scrollbar drag: track pointer on scrollbar track (right edge)
+      let _draggingScrollbar = false;
+      pane.addEventListener("pointerdown", (e) => {
+        if (e.offsetX > pane.clientWidth) _draggingScrollbar = true;
+      });
+      document.addEventListener("pointerup", () => { _draggingScrollbar = false; });
+      pane.addEventListener("scroll", () => {
+        if (!_draggingScrollbar) return;
+        const gap = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
+        _atBottom = gap < 30;
       }, { passive: true });
     }
 
-    // Call at stream start so previous scroll-up doesn't block new content
     function resetScrollTracking() {
-      _userScrolled = false;
+      _atBottom = true;
     }
 
     function scrollBottom(force) {
       if (!activePane) return;
-      if (_scrollForChat !== activeChatId) { _userScrolled = false; }
-      _scrollForChat = activeChatId;
-      // During active streaming, always scroll — content growth (skill cards,
-      // images) can falsely flip _userScrolled via scroll events, permanently
-      // blocking auto-scroll for the rest of the stream. Only respect the flag
-      // when no stream is running (i.e. user reading old messages).
-      const streaming = activeStreams.has(activeChatId);
-      if (!force && _userScrolled && !streaming) return;
-      // Cancel any pending scroll — we only care about the latest state
-      if (_scrollTimer) clearTimeout(_scrollTimer);
-      // setTimeout(0) runs AFTER layout is complete, unlike rAF which runs BEFORE.
-      // This guarantees scrollHeight reflects newly inserted cards/images/etc.
-      _scrollTimer = setTimeout(() => {
-        _scrollTimer = null;
-        if (!activePane) return;
-        if (!force && _userScrolled && !activeStreams.has(activeChatId)) return;
-        _isAutoScrolling = true;
-        activePane.scrollTop = activePane.scrollHeight;
-        // Reset flag after the browser dispatches the scroll event
-        setTimeout(() => { _isAutoScrolling = false; }, 50);
-      }, 0);
+      if (_scrollForChat !== activeChatId) {
+        _atBottom = true;
+        _scrollForChat = activeChatId;
+      }
+      if (!force && !_atBottom) return;
+      activePane.scrollTop = activePane.scrollHeight;
     }
 
     function clearEmptyState() {

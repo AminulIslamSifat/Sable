@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -158,7 +159,7 @@ def _try_perchance(prompt: str, style: str, shape: str, count: str, neg: str, se
     if seed and seed != "-1":
         cli += ["--seed", seed]
 
-    cmd = ["python3", _SCRIPT] + cli
+    cmd = [sys.executable, _SCRIPT] + cli
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
@@ -198,7 +199,7 @@ def _try_dreamforge(prompt: str, style: str, shape: str, neg: str, seed: int, co
     }
     art_style = style_map.get(style, "photorealistic")
 
-    cmd = ["python3", _DREAMFORGE_SCRIPT, "generate",
+    cmd = [sys.executable, _DREAMFORGE_SCRIPT, "generate",
            "--prompt", prompt, "--art-style", art_style,
            "--dimensions", dimensions, "--batch", str(count)]
     if neg:
@@ -244,7 +245,7 @@ def _try_advanced_sdxl(prompt: str, style: str, shape: str, neg: str, seed: int,
     }
     sdxl_style = style_map.get(style, "none")
 
-    cmd = ["python3", _ADVANCED_SDXL_SCRIPT, "generate",
+    cmd = [sys.executable, _ADVANCED_SDXL_SCRIPT, "generate",
            "--prompt", prompt, "--aspect-ratio", aspect_ratio,
            "--batch-size", str(min(count, 4))]
     if sdxl_style != "none":

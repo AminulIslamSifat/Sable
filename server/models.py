@@ -29,6 +29,7 @@ class ChatRequest(BaseModel):
     cwd: str | None = None
     open_file: str | None = None
     skip_user_save: bool = False
+    layout_mode: str | None = None  # "agent" or "chat"
 
 class NewChatRequest(BaseModel):
     model: str | None = None

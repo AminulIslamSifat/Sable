@@ -89,8 +89,9 @@ async def set_active_persona(request: Request):
     # Bust instruction caches for all non-Qwen connectors
     from connectors.common.instruction_builder import invalidate_cache
     invalidate_cache()
+    _layout_mode = body.get("layout_mode") or None
     try:
-        await service.sync_context()
+        await service.sync_context(layout_mode=_layout_mode)
     except Exception as exc:
         logger.warning("sync_context after persona switch failed: %s", exc)
     return {"status": "ok", "active": name}
@@ -123,8 +124,9 @@ async def toggle_output_format(request: Request):
     _save_config(cfg)
     from connectors.common.instruction_builder import invalidate_cache
     invalidate_cache()
+    _layout_mode = body.get("layout_mode") or None
     try:
-        await service.sync_context()
+        await service.sync_context(layout_mode=_layout_mode)
     except Exception as exc:
         logger.warning("sync_context after output_format toggle failed: %s", exc)
     return {"status": "ok", "output_format_enabled": enabled}

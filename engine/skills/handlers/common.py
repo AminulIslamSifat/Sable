@@ -7,7 +7,7 @@ import html as html_lib
 import os
 import re
 import shutil
-import signal
+
 import subprocess
 import time
 import uuid
@@ -66,7 +66,7 @@ def safe_under(base: Path, raw: str) -> Path:
 def is_ssd_tree_write(path: str) -> bool:
     """Return True if the resolved path falls inside the SSD live tree."""
     from engine.config import SSD_TREE
-    resolved = str(Path(path).resolve()) if not path.startswith("/") else path
+    resolved = str(Path(path).resolve()) if not os.path.isabs(path) else path
     return resolved.startswith(SSD_TREE)
 
 
@@ -78,7 +78,9 @@ def strip_html(text: str) -> str:
 def kill_process_group(proc: subprocess.Popen[str]) -> None:
     """Kill a process and its entire process group."""
     from engine.process_utils import kill_process_tree
-    kill_process_tree(proc.pid, sig=signal.SIGKILL)
+    # Don't pass sig — kill_process_tree handles platform defaults
+    # (taskkill /F on Windows, SIGTERM→SIGKILL fallback on POSIX)
+    kill_process_tree(proc.pid)
 
 
 def make_backup(path: str) -> str | None:
