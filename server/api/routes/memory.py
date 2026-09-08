@@ -1029,8 +1029,8 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
     # ── Apply phase in thread (dedup, merge, file writes, searcher reload) ──
     apply_result = await asyncio.to_thread(_consolidation_apply, raw_answer, _mem_path, _proj_id, new_entries)
 
-    # Fire personality assessment in background — non-blocking, won't delay response
-    asyncio.create_task(_run_personality_assessment(conv_text, model, prep["browser_profiles"]))
+    # ponytail: personality assessment disabled — was doubling LLM calls per consolidation
+    # asyncio.create_task(_run_personality_assessment(conv_text, model, prep["browser_profiles"]))
 
     return apply_result
 
@@ -1139,10 +1139,10 @@ async def consolidate_memory_scraper(payload: dict[str, Any]) -> dict[str, Any]:
     # ── Apply in thread (reuses shared helper) ──
     apply_result = await asyncio.to_thread(_consolidation_apply, raw_answer, _MEMORY_PATH, None, new_entries)
 
-    # Fire personality assessment in background — non-blocking, won't delay response
-    conv_text = _format_conversation(prep["messages"])
-    _scraper_settings = _load_consolidation_settings()
-    _scraper_profiles = _scraper_settings.get("browser_profiles", [])
-    asyncio.create_task(_run_personality_assessment(conv_text, model, _scraper_profiles))
+    # ponytail: personality assessment disabled — was doubling LLM calls per consolidation
+    # conv_text = _format_conversation(prep["messages"])
+    # _scraper_settings = _load_consolidation_settings()
+    # _scraper_profiles = _scraper_settings.get("browser_profiles", [])
+    # asyncio.create_task(_run_personality_assessment(conv_text, model, _scraper_profiles))
 
     return apply_result

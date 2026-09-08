@@ -62,27 +62,37 @@
           const email = acc.label || acc.email || "unknown account";
           const size = acc.size_mb ? acc.size_mb + " MB" : "";
           const browserMissing = acc.browser_path && acc.browser_path !== 'default' && acc.browser_available === false;
-          const borderColor = browserMissing ? '#ef4444' : (isActive ? 'var(--accent)' : 'var(--border)');
-          const browserBadgeColor = browserMissing ? '#ef4444' : '#a78bfa';
-          const browserTitle = browserMissing ? '⚠️ Browser not found on disk! ' + (acc.browser_path || '') : (acc.browser_path || '');
-          return `<div style="display:flex;align-items:center;justify-content:space-between;background:var(--panel);border:1px solid ${borderColor};border-radius:10px;padding:10px 14px;">
+          const borderColor = browserMissing ? 'var(--danger)' : 'var(--border)';
+          const browserTitle = browserMissing ? 'Browser not found on disk: ' + (acc.browser_path || '') : (acc.browser_path || '');
+          const hasBackup = acc.has_backup;
+          const _badge = (txt, warn) => `<span style="font-size:10px;color:${warn ? 'var(--danger)' : 'var(--text-dim)'};border:1px solid ${warn ? 'var(--danger)' : 'var(--border)'};border-radius:4px;padding:1px 5px;">${txt}</span>`;
+          return `<div style="background:var(--panel);border:1px solid ${borderColor};border-radius:10px;padding:14px 18px;display:flex;flex-direction:column;gap:10px;">
             <div style="min-width:0;">
-              <div style="font-size:12px;font-weight:600;color:var(--text);">${email}</div>
-              <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">${acc.name}${size ? ' · ' + size : ''}${isActive ? ' · <span style="color:var(--accent);">active</span>' : ''}
-                ${acc.browser_label ? `<span style="display:inline-block;font-size:10px;font-weight:600;color:${browserBadgeColor};border:1px solid ${browserBadgeColor};border-radius:4px;padding:1px 5px;margin-left:4px;${browserMissing ? 'background:rgba(239,68,68,0.1);' : ''}" title="${browserTitle.replace(/"/g, '&quot;')}">${acc.browser_label}${browserMissing ? ' ⚠️' : ''}</span>` : ''}
-                ${acc.has_waf ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#22c55e;border:1px solid #22c55e;border-radius:4px;padding:1px 5px;margin-left:6px;">qwen</span>' : ''}
-                ${acc.has_ds ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#22c55e;border:1px solid #22c55e;border-radius:4px;padding:1px 5px;margin-left:4px;">ds</span>' : ''}
-                ${acc.exhausted ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#ef4444;border:1px solid #ef4444;background:rgba(239,68,68,0.1);border-radius:4px;padding:1px 5px;margin-left:4px;">Exhausted</span>' : ''}
+              <div style="font-size:13px;font-weight:600;color:var(--text);">${email}</div>
+              <div style="font-size:11px;color:var(--text-dim);margin-top:4px;display:flex;flex-wrap:wrap;align-items:center;gap:5px;">
+                <span>${acc.name}</span>
+                ${size ? `<span style="opacity:0.4;">·</span><span>${size}</span>` : ''}
+                ${isActive ? '<span style="color:var(--accent);">● active</span>' : ''}
+                ${acc.browser_label ? _badge(acc.browser_label + (browserMissing ? ' !' : ''), browserMissing) : ''}
+                ${acc.has_waf ? _badge('qwen') : ''}
+                ${acc.has_ds ? _badge('ds') : ''}
+                ${acc.exhausted ? _badge('exhausted', true) : ''}
+                ${acc.captcha_blocked ? _badge('captcha', true) : ''}
+                ${hasBackup ? _badge('backup') : ''}
               </div>
             </div>
-            <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
-              <button class="icon-btn account-rename-btn" data-profile="${acc.name}" data-current-label="${(acc.label || acc.email || '').replace(/"/g, '&quot;')}" style="width:auto;padding:5px 10px;font-size:11px;white-space:nowrap;">Rename</button>
-              <button class="icon-btn account-open-btn" data-profile="${acc.name}" style="width:auto;padding:5px 12px;font-size:11px;white-space:nowrap;">Open</button>
-              ${isActive ? '' : `<button class="icon-btn account-switch-btn" data-profile="${acc.name}" style="width:auto;padding:5px 12px;font-size:11px;white-space:nowrap;">Switch</button>`}
-              ${isActive ? '' : `<button class="icon-btn account-delete-btn" data-profile="${acc.name}" style="width:auto;padding:5px 10px;font-size:11px;white-space:nowrap;color:var(--danger);border-color:var(--danger);">Delete</button>`}
+            <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:8px;">
+              <button class="icon-btn account-backup-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Backup</button>
+              ${hasBackup ? `<button class="icon-btn account-restore-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Restore</button>` : ''}
+              <button class="icon-btn account-rename-btn" data-profile="${acc.name}" data-current-label="${(acc.label || acc.email || '').replace(/"/g, '&quot;')}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Rename</button>
+              <button class="icon-btn account-open-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Open</button>
+              <div style="flex:1;"></div>
+              ${isActive ? '' : `<button class="icon-btn account-switch-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Switch</button>`}
+              ${isActive ? '' : `<button class="icon-btn account-delete-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;color:var(--danger);">Delete</button>`}
             </div>
           </div>`;
         }).join("");
+
 
         // Auto-switch toggle handler
         const autoSwitchToggle = document.getElementById("autoSwitchToggle");
@@ -229,6 +239,67 @@
             btn.textContent = "Open";
           });
         });
+
+        // Per-account backup handlers
+        accountProfileCards.querySelectorAll(".account-backup-btn").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const profile = btn.dataset.profile;
+            const origText = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = "⏳…";
+            try {
+              const res = await fetch("/api/settings/accounts/backup", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ profile }),
+              });
+              const data = await res.json().catch(() => ({}));
+              if (res.ok) {
+                showToast(`Backed up ${profile}`, "success");
+                await loadAccountProfiles();
+              } else {
+                showToast("Backup failed: " + (data.detail || "unknown"), "error");
+                btn.disabled = false;
+                btn.innerHTML = origText;
+              }
+            } catch (e) {
+              showToast("Backup error: " + e.message, "error");
+              btn.disabled = false;
+              btn.innerHTML = origText;
+            }
+          });
+        });
+
+        // Per-account restore handlers
+        accountProfileCards.querySelectorAll(".account-restore-btn").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const profile = btn.dataset.profile;
+            if (!await sableConfirm(`Restore ${profile} from backup?\n\nThis will replace the current profile data with the .bak copy.`, { danger: true })) return;
+            const origText = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = "⏳…";
+            try {
+              const res = await fetch("/api/settings/accounts/restore", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ profile }),
+              });
+              const data = await res.json().catch(() => ({}));
+              if (res.ok) {
+                showToast(`Restored ${profile}`, "success");
+                await loadAccountProfiles();
+              } else {
+                showToast("Restore failed: " + (data.detail || "unknown"), "error");
+                btn.disabled = false;
+                btn.innerHTML = origText;
+              }
+            } catch (e) {
+              showToast("Restore error: " + e.message, "error");
+              btn.disabled = false;
+              btn.innerHTML = origText;
+            }
+          });
+        });
       } catch (e) {
         accountProfileCards.innerHTML = `<p class="muted" style="font-size:12px;margin:0;color:var(--danger);">Failed to load: ${e.message}</p>`;
       }
@@ -236,6 +307,54 @@
 
     if (refreshAccountsBtn) {
       refreshAccountsBtn.addEventListener("click", loadAccountProfiles);
+    }
+
+    // Backup All / Restore All header buttons
+    const backupAllBtn = document.getElementById("backupAllAccountsBtn");
+    if (backupAllBtn) {
+      backupAllBtn.addEventListener("click", async () => {
+        if (!await sableConfirm("Backup ALL account profiles?\n\nThis creates/replaces .bak directories for every account.")) return;
+        backupAllBtn.disabled = true;
+        backupAllBtn.textContent = "⏳ Backing up…";
+        try {
+          const res = await fetch("/api/settings/accounts/backup-all", { method: "POST" });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok) {
+            showToast(`Backed up ${data.count} account(s)`, "success");
+            await loadAccountProfiles();
+          } else {
+            showToast("Backup all failed: " + (data.detail || "unknown"), "error");
+          }
+        } catch (e) {
+          showToast("Backup error: " + e.message, "error");
+        }
+        backupAllBtn.disabled = false;
+        backupAllBtn.textContent = 'Backup All';
+      });
+    }
+
+    const restoreAllBtn = document.getElementById("restoreAllAccountsBtn");
+    if (restoreAllBtn) {
+      restoreAllBtn.addEventListener("click", async () => {
+        if (!await sableConfirm("Restore ALL account profiles from backups?\n\nThis replaces current profile data with .bak copies.\nThe active account will be skipped.", { danger: true })) return;
+        restoreAllBtn.disabled = true;
+        restoreAllBtn.textContent = "⏳ Restoring…";
+        try {
+          const res = await fetch("/api/settings/accounts/restore-all", { method: "POST" });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok) {
+            const msg = `Restored ${data.restored.length} account(s)` + (data.skipped.length ? ` (skipped active: ${data.skipped.join(', ')})` : '');
+            showToast(msg, "success");
+            await loadAccountProfiles();
+          } else {
+            showToast("Restore all failed: " + (data.detail || "unknown"), "error");
+          }
+        } catch (e) {
+          showToast("Restore error: " + e.message, "error");
+        }
+        restoreAllBtn.disabled = false;
+        restoreAllBtn.textContent = 'Restore All';
+      });
     }
 
 

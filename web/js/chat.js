@@ -267,14 +267,27 @@
       _atBottom = true;
     }
 
+    // ponytail: rAF throttle — coalesces dozens of per-line scroll calls during
+    // fast tool output into one layout pass per frame. Upgrade to a time-based
+    // throttle (e.g. 100ms interval) only if rAF still causes jank on low-end devices.
+    let _scrollRafPending = false;
+
     function scrollBottom(force) {
+      // During history load, all DOM is built off-screen in a temp container.
+      // Scrolling is meaningless until the fragment is attached to the real pane.
+      if (window._historyLoading) return;
       if (!activePane) return;
       if (_scrollForChat !== activeChatId) {
         _atBottom = true;
         _scrollForChat = activeChatId;
       }
       if (!force && !_atBottom) return;
-      activePane.scrollTop = activePane.scrollHeight;
+      if (_scrollRafPending) return;
+      _scrollRafPending = true;
+      requestAnimationFrame(() => {
+        _scrollRafPending = false;
+        if (activePane) activePane.scrollTop = activePane.scrollHeight;
+      });
     }
 
     function clearEmptyState() {
@@ -506,8 +519,27 @@
       return card;
     }
 
+    // ponytail: native DOM cap — no virtualization needed until a single tool
+    // call legitimately needs >50K chars visible in one card.
+    const SKILL_OUTPUT_CAP = 50_000;
+    const TRUNCATION_NOTE = "\n[… output truncated for display …]";
+
     function appendSkillCardOutput(card, text) {
-      card.querySelector(".skill-output").textContent += text || "";
+      const pre = card.querySelector(".skill-output");
+      if (!pre || !text) return;
+      // Already marked as truncated — silently drop further appends to avoid
+      // unbounded string concatenation that freezes the main thread.
+      if (pre.dataset.truncated === "1") return;
+      if (pre.textContent.length >= SKILL_OUTPUT_CAP) {
+        pre.textContent += TRUNCATION_NOTE;
+        pre.dataset.truncated = "1";
+        return;
+      }
+      pre.textContent += text;
+      if (pre.textContent.length > SKILL_OUTPUT_CAP) {
+        pre.textContent = pre.textContent.slice(0, SKILL_OUTPUT_CAP) + TRUNCATION_NOTE;
+        pre.dataset.truncated = "1";
+      }
     }
 
     // Expose skill card builders for agent panel history replay
@@ -743,15 +775,20 @@
           toolbar.appendChild(forkBtn);
 
           div.appendChild(toolbar);
-          activateLucideIcons(toolbar);
+          // ponytail: Skip per-element icon scan during bulk history render
+          if (!window._historyLoading) activateLucideIcons(toolbar);
         }
       } else {
         const content = document.createElement("div");
         content.className = "md-content";
         content.innerHTML = renderMarkdown(text);
-        renderMermaidDiagrams(content);
-        renderMathJax(content);
-        activateLucideIcons(content);
+        // ponytail: Skip heavy renders during bulk history load.
+        // loadMessages does a single pane-wide pass after fragment attach.
+        if (!window._historyLoading) {
+          renderMermaidDiagrams(content);
+          renderMathJax(content);
+          activateLucideIcons(content);
+        }
         div.appendChild(content);
       }
       activePane.appendChild(div);

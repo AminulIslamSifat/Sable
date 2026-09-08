@@ -1035,6 +1035,7 @@ async def list_accounts() -> dict[str, Any]:
                     "browser_path": browser_path,
                     "browser_label": _browser_label(browser_path),
                     "browser_available": browser_available,
+                    "has_backup": (_SYSTEM_DIR / f"{entry.name}.bak").is_dir(),
                 })
         accounts.sort(key=lambda a: a["num"])
         return accounts
@@ -1257,6 +1258,105 @@ async def delete_account(payload: dict[str, str]) -> dict[str, Any]:
 
     await asyncio.to_thread(_remove)
     return {"status": "ok", "deleted": target_name}
+
+
+@router.post("/api/settings/accounts/backup")
+async def backup_account(payload: dict[str, str]) -> dict[str, Any]:
+    """Backup browser-data-accN to browser-data-accN.bak (replaces existing .bak)."""
+    target_name = payload.get("profile", "")
+    if not re.match(r"^browser-data-acc\d+$", target_name):
+        raise HTTPException(status_code=400, detail="Invalid profile name")
+    target_path = _SYSTEM_DIR / target_name
+    if not target_path.is_dir():
+        raise HTTPException(status_code=404, detail=f"'{target_name}' not found")
+    bak_path = _SYSTEM_DIR / f"{target_name}.bak"
+
+    def _backup() -> None:
+        if bak_path.exists():
+            shutil.rmtree(bak_path)
+        shutil.copytree(target_path, bak_path)
+
+    await asyncio.to_thread(_backup)
+    return {"status": "ok", "profile": target_name, "backup": f"{target_name}.bak"}
+
+
+@router.post("/api/settings/accounts/restore")
+async def restore_account(payload: dict[str, str]) -> dict[str, Any]:
+    """Restore browser-data-accN from browser-data-accN.bak (replaces current accN)."""
+    target_name = payload.get("profile", "")
+    if not re.match(r"^browser-data-acc\d+$", target_name):
+        raise HTTPException(status_code=400, detail="Invalid profile name")
+    bak_path = _SYSTEM_DIR / f"{target_name}.bak"
+    if not bak_path.is_dir():
+        raise HTTPException(status_code=404, detail=f"No backup found for '{target_name}'")
+    target_path = _SYSTEM_DIR / target_name
+
+    # Block restoring over the active profile
+    from engine.config import get_active_account, _SYSTEM as _ENGINE_SYSTEM
+    try:
+        active_dir = _ENGINE_SYSTEM / get_active_account()
+        if active_dir.resolve() == target_path.resolve():
+            raise HTTPException(status_code=400, detail="Cannot restore over the active profile. Switch first.")
+    except HTTPException:
+        raise
+    except OSError:
+        pass
+
+    def _restore() -> None:
+        if target_path.exists():
+            shutil.rmtree(target_path)
+        shutil.copytree(bak_path, target_path)
+
+    await asyncio.to_thread(_restore)
+    return {"status": "ok", "profile": target_name}
+
+
+@router.post("/api/settings/accounts/backup-all")
+async def backup_all_accounts() -> dict[str, Any]:
+    """Backup all browser-data-accN profiles."""
+    def _backup_all() -> list[str]:
+        backed_up: list[str] = []
+        for entry in _SYSTEM_DIR.iterdir():
+            if entry.is_dir() and re.match(r"^browser-data-acc\d+$", entry.name):
+                bak_path = _SYSTEM_DIR / f"{entry.name}.bak"
+                if bak_path.exists():
+                    shutil.rmtree(bak_path)
+                shutil.copytree(entry, bak_path)
+                backed_up.append(entry.name)
+        return backed_up
+
+    backed_up = await asyncio.to_thread(_backup_all)
+    return {"status": "ok", "backed_up": backed_up, "count": len(backed_up)}
+
+
+@router.post("/api/settings/accounts/restore-all")
+async def restore_all_accounts() -> dict[str, Any]:
+    """Restore all browser-data-accN profiles from their .bak counterparts."""
+    from engine.config import get_active_account, _SYSTEM as _ENGINE_SYSTEM
+    try:
+        active_name = get_active_account()
+    except Exception:
+        active_name = None
+
+    def _restore_all() -> tuple[list[str], list[str]]:
+        restored: list[str] = []
+        skipped: list[str] = []
+        for entry in _SYSTEM_DIR.iterdir():
+            m = re.match(r"^(browser-data-acc\d+)\.bak$", entry.name)
+            if entry.is_dir() and m:
+                acc_name = m.group(1)
+                if acc_name == active_name:
+                    skipped.append(acc_name)
+                    continue
+                target_path = _SYSTEM_DIR / acc_name
+                if target_path.exists():
+                    shutil.rmtree(target_path)
+                shutil.copytree(entry, target_path)
+                restored.append(acc_name)
+        return restored, skipped
+
+    restored, skipped = await asyncio.to_thread(_restore_all)
+    return {"status": "ok", "restored": restored, "skipped": skipped}
 
 
 @router.post("/api/settings/accounts/open")
