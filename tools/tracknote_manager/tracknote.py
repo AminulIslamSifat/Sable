@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Unified CRUD for notes, schedules, agent_ops in sable.db"""
 import argparse, json, sqlite3, sys, uuid
+
+# ponytail: stdlib reconfigure; prevents UnicodeEncodeError on Windows CP1252 consoles
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 

@@ -957,8 +957,23 @@ class DeepSeekClient:
 
                     if resp.status_code != 200:
                         error_body = await resp.aread()
-                        yield {"type": "error", "message": f"HTTP {resp.status_code}: {error_body.decode()[:500]}"}
-                        return
+                        last_err = f"HTTP {resp.status_code}: {error_body.decode()[:200]}"
+                        logger.warning("DeepSeek token failed (%s), rotating...", last_err)
+                        if chat_id:
+                            self._parent_ids[chat_id] = None
+                        _old_token_http = self._current_rotate_token
+                        self._advance_rotation()
+                        _new_token_http = self._current_rotate_token
+                        yield {
+                            "type": "token_rotation",
+                            "reason": last_err,
+                            "from_token": self._mask_token(_old_token_http),
+                            "to_token": self._mask_token(_new_token_http),
+                            "from_index": self._rotate_idx - 1 if self._rotate_idx > 0 else len(self._rotate_tokens) - 1,
+                            "to_index": self._rotate_idx,
+                            "total_tokens": len(self._rotate_tokens),
+                        }
+                        continue
 
                     _response_parent_id: int | None = None
                     _got_biz_error = False
@@ -1082,8 +1097,23 @@ class DeepSeekClient:
                 }
                 continue
             except Exception as exc:
-                yield {"type": "error", "message": f"Stream error: {type(exc).__name__}: {exc}"}
-                return
+                last_err = f"{type(exc).__name__}: {exc}"
+                logger.warning("DeepSeek token failed (%s), rotating...", last_err)
+                if chat_id:
+                    self._parent_ids[chat_id] = None
+                _old_token_exc = self._current_rotate_token
+                self._advance_rotation()
+                _new_token_exc = self._current_rotate_token
+                yield {
+                    "type": "token_rotation",
+                    "reason": last_err,
+                    "from_token": self._mask_token(_old_token_exc),
+                    "to_token": self._mask_token(_new_token_exc),
+                    "from_index": self._rotate_idx - 1 if self._rotate_idx > 0 else len(self._rotate_tokens) - 1,
+                    "to_index": self._rotate_idx,
+                    "total_tokens": len(self._rotate_tokens),
+                }
+                continue
 
         yield {"type": "error", "message": f"All DeepSeek tokens failed ({last_err})."}
 

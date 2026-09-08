@@ -364,18 +364,23 @@
               <div class="critique-header-left">
                 <span class="critique-icon"><i data-lucide="search-check"></i></span>
                 <span class="critique-title">Critique Session</span>
-                <span class="critique-badge ${evt.focus || 'general'}">${evt.focus || 'general'}</span>
+                <span class="critique-badge" data-focus="${escHtml(evt.focus || 'general')}">${escHtml(evt.focus || 'general')}</span>
               </div>
-              <div class="critique-status"><span style="color:var(--muted)">Reviewing...</span></div>
+              <div class="critique-status"><span style="color:var(--ok)">Complete</span></div>
             </div>
-            <div class="critique-context">
-              <div class="critique-label">Context</div>
-              <div class="critique-text">${escHtml(evt.context || '')}</div>
-            </div>
-            <div class="critique-criteria">
-              <div class="critique-label">Criteria</div>
-              <div class="critique-text">${escHtml(evt.criteria || '')}</div>
-            </div>
+            <details class="critique-details">
+              <summary>Context & Criteria</summary>
+              <div class="critique-details-body">
+                <div class="critique-section">
+                  <div class="critique-label">Context</div>
+                  <div class="critique-text">${escHtml(evt.context || '')}</div>
+                </div>
+                <div class="critique-section">
+                  <div class="critique-label">Criteria</div>
+                  <div class="critique-text">${escHtml(evt.criteria || '')}</div>
+                </div>
+              </div>
+            </details>
             <div class="critique-log"></div>
           `;
           activePane.appendChild(box);
@@ -1473,7 +1478,18 @@
         finalize() {
           hidePending();
           closeCurrentThinking();
+          // If auto-switch didn't recover, render the permanent error card now.
+          // closeAnswer() will remove the transient switching-status card first.
+          const _prl = this._pendingRateLimit;
+          const _pcb = this._pendingCaptchaBlock;
           closeAnswer();
+          if (_prl) {
+            this.replaceWithRateLimit(_prl.message, _prl.hours, _prl.debug);
+            this._pendingRateLimit = null;
+          } else if (_pcb) {
+            this.replaceWithCaptchaBlock(_pcb.message, _pcb.debug);
+            this._pendingCaptchaBlock = null;
+          }
           // Cancel any pending exit timer from a tool that finished just before stop
           if (_tacExitTimer) { clearTimeout(_tacExitTimer); _tacExitTimer = null; }
           // Clean up any lingering tool activity card — mark as interrupted then fade out
@@ -1648,6 +1664,122 @@
       targetDiv.appendChild(resendBar);
     }
 
+
+    // Critique: fire a normal POST /api/chat turn, stream response into the critique card.
+    // Uses a separate chat_id so the critique session doesn't pollute the main conversation history.
+    // Everything else (model, provider, thinking_mode, system prompt, WAF) is identical.
+    async function _runCritiqueTurn(message, box, logEl, statusEl, critiqueId) {
+      if (!message || !activeChatId) return;
+      const critiqueChatId = activeChatId + "-critique-" + (critiqueId || Date.now().toString(36));
+      const controller = startStream(critiqueChatId);
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message,
+            chat_id: critiqueChatId,
+            parent_id: undefined,  // fresh session, no parent
+            model: selectedModel,
+            thinking_mode: selectedThinkingMode,
+            stream: true,
+          }),
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Failed</span>';
+          if (logEl) logEl.innerHTML += `<div class="critique-error">HTTP ${res.status}</div>`;
+          return;
+        }
+        // Stream SSE into the critique log
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        let answerBuf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() || "";
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const raw = line.slice(6).trim();
+            if (!raw) continue;
+            let evt;
+            try { evt = JSON.parse(raw); } catch (_) { continue; }
+            if (evt.type === "answer" && evt.text) {
+              answerBuf += evt.text;
+              if (logEl) {
+                logEl.innerHTML = renderMarkdown(answerBuf);
+                scrollBottom();
+              }
+            } else if (evt.type === "thinking" && evt.text) {
+              // Show thinking in a muted sub-block inside the card
+              if (logEl) {
+                let thinkEl = logEl.querySelector('.critique-thinking');
+                if (!thinkEl) {
+                  thinkEl = document.createElement('div');
+                  thinkEl.className = 'critique-thinking';
+                  logEl.prepend(thinkEl);
+                }
+                thinkEl.textContent += evt.text;
+              }
+            } else if (evt.type === "skill_start") {
+              if (logEl) {
+                const toolTag = document.createElement('div');
+                toolTag.className = 'critique-tool-entry';
+                toolTag.innerHTML = `<span class="critique-tool-name">⚡ ${escHtml(evt.name || '')}</span>`;
+                logEl.appendChild(toolTag);
+                scrollBottom();
+              }
+            } else if (evt.type === "skill_end") {
+              if (logEl) {
+                const entries = logEl.querySelectorAll('.critique-tool-entry');
+                const last = entries[entries.length - 1];
+                if (last && !last.dataset.done) {
+                  last.dataset.done = "1";
+                  const icon = evt.ok ? "✅" : "❌";
+                  last.innerHTML += ` <span>${icon}</span>`;
+                }
+              }
+            } else if (evt.type === "done") {
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
+              if (box) box.classList.add('critique-done');
+              if (logEl && answerBuf) logEl.innerHTML = renderMarkdown(answerBuf);
+              // Feed the critique report back into the main chat as a user message
+              if (answerBuf && typeof sendAutoTurnMessage === "function") {
+                const reportMsg = `[Critique Report]\n${answerBuf}`;
+                setTimeout(() => sendAutoTurnMessage(reportMsg, { skipUserBubble: false, skipUserSave: false }), 300);
+              }
+            } else if (evt.type === "error" || evt.type === "stream_error") {
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Error</span>';
+              if (logEl) logEl.innerHTML += `<div class="critique-error">${escHtml(evt.message || evt.error || 'Unknown error')}</div>`;
+            }
+          }
+        }
+        // If stream ended without explicit done event
+        if (statusEl && !box?.classList.contains('critique-done')) {
+          if (answerBuf) {
+            statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
+            if (box) box.classList.add('critique-done');
+            if (logEl) logEl.innerHTML = renderMarkdown(answerBuf);
+            if (typeof sendAutoTurnMessage === "function") {
+              const reportMsg = `[Critique Report]\n${answerBuf}`;
+              setTimeout(() => sendAutoTurnMessage(reportMsg, { skipUserBubble: false, skipUserSave: false }), 300);
+            }
+          } else {
+            statusEl.innerHTML = '<span style="color:var(--error)">No response</span>';
+          }
+        }
+      } catch (err) {
+        if (err.name !== "AbortError") {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Error</span>';
+          if (logEl) logEl.innerHTML += `<div class="critique-error">${escHtml(err.message)}</div>`;
+        }
+      }
+    }
+
     async function consumeChatStream(res, ui, userMsgDiv, streamChatId) {
       const reader  = res.body.getReader();
       const decoder = new TextDecoder();
@@ -1655,6 +1787,9 @@
       let gotAnswer = false;
       let gotDone = false;
       let gotError = false;
+      // Pending terminal cards stored on ui so finalize() can access them.
+      // Set when rate_limited/waf_blocked fires; cleared when answer arrives (recovery).
+      // If still set at finalize(), the permanent error card is rendered.
       let gotTitle = false;
       let _lastSkillPath = "";
       let _lastSkillName = "";
@@ -1708,7 +1843,12 @@
               saveActiveChat();
             }
           } else if (evt.type === "status") {
-            if (evt.message === "feeding_skill_results") ui.nextSkillRound();
+            if (evt.message === "feeding_skill_results") {
+              ui.nextSkillRound();
+            } else {
+              const _bsTurn = activePane.querySelector('.turn:last-child');
+              if (_bsTurn) handleBackendStatusEvent(evt, _bsTurn);
+            }
           } else if (evt.type === "account_switch") {
             const _ascTurn = activePane.querySelector('.turn:last-child');
             if (_ascTurn) handleAccountSwitchEvent(evt, _ascTurn);
@@ -1746,22 +1886,39 @@
             // Legacy fallback — backend no longer sends raw thinking tokens
             ui.appendThinking(evt.text || "");
           } else if (evt.type === "answer") {
-            if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
+            if (!gotAnswer) {
+              ui.closeThinking();
+              gotAnswer = true;
+              // Remove backend status cards from all previous turns; keep the current streaming one
+              const _allTurns = activePane.querySelectorAll('.turn');
+              for (let i = 0; i < _allTurns.length - 1; i++) {
+                _allTurns[i].querySelectorAll('.backend-status-card').forEach(c => c.remove());
+              }
+            }
+            // Recovery: backend auto-switched successfully — clear pending error cards
+            ui._pendingRateLimit = null;
+            ui._pendingCaptchaBlock = null;
             ui.appendAnswer(evt.text || "");
           } else if (evt.type === "done") {
             gotDone = true;
+            // Collapse backend status card when streaming finishes
+            const _lastTurn = activePane.querySelector('.turn:last-child');
+            if (_lastTurn) {
+              const _bsCard = _lastTurn.querySelector('.backend-status-card');
+              if (_bsCard && !_bsCard.classList.contains('collapsed')) _bsCard.classList.add('collapsed');
+            }
             if (activeChatId === streamChatId) {
               parentId = evt.parent_id || parentId;
               saveActiveChat();
             }
           } else if (evt.type === "rate_limited") {
-            gotError = true;
-            ui.replaceWithRateLimit(evt.message, evt.hours, evt);
-            break;
+            // Don't break — backend auto-switches and emits account_switch events.
+            // The existing handleAccountSwitchEvent renders the proper card.
+            // If stream ends without recovery, finalize() renders the permanent card.
+            ui._pendingRateLimit = { message: evt.message, hours: evt.hours, debug: evt };
           } else if (evt.type === "waf_blocked") {
-            gotError = true;
-            ui.replaceWithCaptchaBlock(evt.message, evt);
-            break;
+            // Don't break — backend auto-switches and emits account_switch events.
+            ui._pendingCaptchaBlock = { message: evt.message, debug: evt };
           } else if (evt.type === "error") {
             gotError = true;
             const msg = evt.message || "Unknown error";
@@ -1859,18 +2016,23 @@
                     <div class="critique-header-left">
                       <span class="critique-icon"><i data-lucide="search-check"></i></span>
                       <span class="critique-title">Critique Session</span>
-                      <span class="critique-badge ${evt.focus || 'general'}">${evt.focus || 'general'}</span>
+                      <span class="critique-badge" data-focus="${escHtml(evt.focus || 'general')}">${escHtml(evt.focus || 'general')}</span>
                     </div>
                     <div class="critique-status"><span class="critique-spinner"></span> Reviewing...</div>
                   </div>
-                  <div class="critique-context">
-                    <div class="critique-label">Context</div>
-                    <div class="critique-text">${escHtml(evt.context || '')}</div>
-                  </div>
-                  <div class="critique-criteria">
-                    <div class="critique-label">Criteria</div>
-                    <div class="critique-text">${escHtml(evt.criteria || '')}</div>
-                  </div>
+                  <details class="critique-details">
+                    <summary>Context & Criteria</summary>
+                    <div class="critique-details-body">
+                      <div class="critique-section">
+                        <div class="critique-label">Context</div>
+                        <div class="critique-text">${escHtml(evt.context || '')}</div>
+                      </div>
+                      <div class="critique-section">
+                        <div class="critique-label">Criteria</div>
+                        <div class="critique-text">${escHtml(evt.criteria || '')}</div>
+                      </div>
+                    </div>
+                  </details>
                   <div class="critique-log"></div>
                 `;
                 turn.appendChild(box);
@@ -1894,24 +2056,39 @@
                 }
               }
             }
+          } else if (evt.type === "critique_trigger") {
+            // Fire a normal chat turn, stream response into the critique card
+            const pane = activePane;
+            if (pane && evt.message) {
+              const box = pane.querySelector(`.critique-box[data-critique-id="${evt.id}"]`);
+              if (box) {
+                box.dataset.turnActive = "1"; // prevent critique_done from racing
+                const log = box.querySelector('.critique-log');
+                const statusEl = box.querySelector('.critique-status');
+                if (statusEl) statusEl.innerHTML = '<span class="critique-spinner"></span> Running...';
+                _runCritiqueTurn(evt.message, box, log, statusEl, evt.id);
+              }
+            }
           } else if (evt.type === "critique_done") {
-            // Replace critique box content with final report or error
+            // Backend skill_end fires immediately — if _runCritiqueTurn is still streaming,
+            // don't overwrite the "Running..." status. Only handle errors or fallback.
             const pane = activePane;
             if (pane) {
               const box = pane.querySelector(`.critique-box[data-critique-id="${evt.id}"]`);
-              if (box) {
+              if (box && box.dataset.turnActive !== "1") {
                 const statusEl = box.querySelector('.critique-status');
                 if (evt.error) {
                   if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Failed</span>';
                   const log = box.querySelector('.critique-log');
                   if (log) log.innerHTML += `<div class="critique-error">${escHtml(evt.error)}</div>`;
-                } else {
+                  box.classList.add('critique-done');
+                } else if (evt.report) {
+                  // Fallback: only render if no active turn handled it
                   if (statusEl) statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
-                  // Replace log with rendered report
                   const log = box.querySelector('.critique-log');
                   if (log) {
                     log.className = 'critique-report';
-                    log.innerHTML = renderMarkdown(evt.report || '');
+                    log.innerHTML = renderMarkdown(evt.report);
                   }
                   box.classList.add('critique-done');
                 }
@@ -1990,6 +2167,91 @@
         endStream(streamChatId);
       }
     }
+
+
+// ── Backend Status Card (retries, errors, recovery) ─────────────────────────
+const _BACKEND_STATUS_MAP = {
+  processing:                              { label: "Processing request…",              icon: "loader" },
+  first_chunk_timeout_triggering_switch:   { label: "No response after 3 attempts — switching…", icon: "triangle-alert" },
+  stream_stall_timeout_triggering_switch:  { label: "Stream stalled — switching…",      icon: "triangle-alert" },
+  empty_response_exhausted_triggering_switch: { label: "Empty responses exhausted — switching…", icon: "triangle-alert" },
+  recovering_session:                      { label: "Session expired — recovering…",    icon: "refresh-cw" },
+  recovering_parent:                       { label: "Parent message lost — recovering…", icon: "refresh-cw" },
+  waiting_for_agents:                      { label: "Waiting for agents…",              icon: "users" },
+  high_skill_round_count:                  { label: "High skill round count",           icon: "alert-circle" },
+};
+
+function _backendStatusIcon(name, size = 14) {
+  return `<i data-lucide="${name}" style="width:${size}px;height:${size}px"></i>`;
+}
+
+function handleBackendStatusEvent(evt, container) {
+  const msg = evt.message || "";
+  if (!msg) return;
+
+  // Parse retry patterns: retrying_timeout_2, retrying_stall_1, empty_response_retry_3, chat_in_progress_retry_5
+  let parsedLabel = null;
+  let parsedIcon = "refresh-cw";
+  const retryMatch = msg.match(/^(retrying_timeout|retrying_stall|empty_response_retry|chat_in_progress_retry)_(\d+)$/);
+  if (retryMatch) {
+    const kind = retryMatch[1];
+    const attempt = retryMatch[2];
+    const labels = {
+      retrying_timeout:       `Timeout — retry ${attempt}/3…`,
+      retrying_stall:         `Stream stall — retry ${attempt}/3…`,
+      empty_response_retry:   `Empty response — retry ${attempt}…`,
+      chat_in_progress_retry: `Chat in progress — check ${attempt}/10…`,
+    };
+    parsedLabel = labels[kind] || msg;
+    parsedIcon = kind.startsWith("empty") ? "ghost" : kind.startsWith("chat_in") ? "message-square" : "timer";
+  }
+
+  const mapped = _BACKEND_STATUS_MAP[msg];
+  const label = parsedLabel || (mapped ? mapped.label : msg.replace(/_/g, " "));
+  const icon = parsedLabel ? parsedIcon : (mapped ? mapped.icon : "info");
+
+  // Find or create the card
+  let card = container.querySelector(".backend-status-card");
+  if (!card) {
+    card = document.createElement("div");
+    card.className = "skill-card backend-status-card";
+    card.innerHTML = `
+      <div class="skill-header">
+        <div class="skill-header-left">
+          <span class="skill-arrow">${_backendStatusIcon("chevron-down")}</span>
+          <span class="skill-name">${_backendStatusIcon("terminal", 15)} Backend Status</span>
+        </div>
+        <div class="skill-header-right" style="display:flex;align-items:center;gap:8px;">
+          <span class="skill-status bs-status">working…</span>
+        </div>
+      </div>
+      <div class="bs-steps"></div>`;
+    card.querySelector(".skill-header").onclick = () => card.classList.toggle("collapsed");
+    container.appendChild(card);
+    if (typeof activateLucideIcons === "function") activateLucideIcons(card);
+  }
+
+  const stepsEl = card.querySelector(".bs-steps");
+  const statusEl = card.querySelector(".bs-status");
+
+  // Deactivate all previous rows
+  stepsEl.querySelectorAll(".bs-step-active").forEach(el => {
+    el.classList.remove("bs-step-active");
+    el.classList.add("bs-step-done");
+  });
+
+  // Add new row
+  const row = document.createElement("div");
+  row.className = "bs-step bs-step-active";
+  row.innerHTML = `<span class="bs-step-icon">${_backendStatusIcon(icon)}</span><span class="bs-step-label">${label}</span>`;
+  stepsEl.appendChild(row);
+
+  // Update header status text
+  if (statusEl) statusEl.textContent = label;
+
+  if (typeof activateLucideIcons === "function") activateLucideIcons(card);
+}
+
 
 // ── Account Switch Status Card ──────────────────────────────────────────────
 const _ACCOUNT_SWITCH_STEPS = [

@@ -253,7 +253,9 @@
           }
           if (messages.length > 0) {
             const last = messages[messages.length - 1];
-            parentId = last?.parent_id ? String(last.parent_id) : last?.id ? String(last.id) : null;
+            // Only use parent_id (upstream token), never fall back to DB row id
+            const _pid = last?.parent_id ? String(last.parent_id) : null;
+            parentId = (_pid && !_pid.match(/^\d+$/)) ? _pid : null;
           }
           if (typeof scrollBottom === 'function') scrollBottom(true);
         }
