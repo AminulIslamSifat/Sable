@@ -1,0 +1,27 @@
+[
+  {
+    "name": "critique",
+    "description": "Spawn an inline critique session that evaluates your work. Opens a live review box in the current chat. The critic uses the same model and config but fresh context. It judges the work, produces a structured report (Mark, Why, Suggestions), and the report is injected back into your chat for you to act on.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "context": {
+          "type": "string",
+          "description": "What to evaluate. Can be file paths, code snippets, descriptions of changes made, or any context the critic needs to review."
+        },
+        "criteria": {
+          "type": "string",
+          "description": "What to judge against. E.g., 'Check if the UI is responsive and accessible', 'Review code quality and error handling', 'Evaluate if the website looks professional'. Be specific about what matters."
+        },
+        "focus": {
+          "type": "string",
+          "description": "Optional focus area: 'visual' (UI/appearance), 'code' (code quality), 'functional' (does it work), 'security', or 'general'. Defaults to 'general'."
+        }
+      },
+      "required": [
+        "context",
+        "criteria"
+      ]
+    }
+  }
+]

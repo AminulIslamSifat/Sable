@@ -2313,6 +2313,19 @@ async def chat(request: ChatRequest):
                         if _incomplete_warn:
                             _guard_warnings.append(_incomplete_warn)
                 feedback = build_tool_feedback(round_skill_events)
+                # --- Critique report injection: prepend prominently so model acts on it ---
+                _critique_reports: list[str] = []
+                for _ev in round_skill_events:
+                    if _ev.get("type") == "skill_end" and _ev.get("name") == "critique" and _ev.get("ok"):
+                        _report = (_ev.get("result") or {}).get("report", "")
+                        if _report:
+                            _critique_reports.append(_report)
+                if _critique_reports:
+                    _critique_block = "\n\n---\n\n".join(_critique_reports)
+                    _critique_injection = (
+                        f"\n\n[CRITIQUE REPORT — Act on this]\n{_critique_block}\n[END CRITIQUE REPORT]"
+                    )
+                    feedback = (feedback + _critique_injection) if feedback else _critique_injection
                 # Flush pending teacher escalation requests mid-stream so Maria
                 # can respond with teacher_guidance tool call alongside tool results
                 try:
