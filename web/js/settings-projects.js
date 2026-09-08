@@ -592,20 +592,25 @@
           // If stale (user switched away), skip state updates
           if (myGeneration !== _loadGeneration) return;
           hidePaneLoading(targetPane);
-          // Derive parentId from the actual message chain
+          // Derive parentId from the actual message chain.
+          // Only use upstream tokens — never fall back to DB row IDs.
           if (Array.isArray(msgs) && msgs.length) {
             const last = msgs[msgs.length - 1];
-            parentId = last?.parent_id ? String(last.parent_id) : last?.id ? String(last.id) : null;
+            const _pid = last?.parent_id ? String(last.parent_id) : null;
+            parentId = (_pid && !_pid.match(/^\d+$/)) ? _pid : null;
           } else {
-            parentId = meta?.parent_id ? String(meta.parent_id) : null;
+            const _mp = meta?.parent_id ? String(meta.parent_id) : null;
+            parentId = (_mp && !_mp.match(/^\d+$/)) ? _mp : null;
           }
         } finally {
           _loadingChats.delete(chatId);
           hidePaneLoading(targetPane);
         }
       } else {
-        // Already loaded — just derive parentId from cached meta
-        parentId = meta?.parent_id ? String(meta.parent_id) : null;
+        // Already loaded — derive parentId from cached meta, filtering out
+        // bare integer DB row IDs that leak after errors/stops/WAF blocks.
+        const _mp = meta?.parent_id ? String(meta.parent_id) : null;
+        parentId = (_mp && !_mp.match(/^\d+$/)) ? _mp : null;
         // Restore context ring from cache for this chat
         window._statusContextChars = contextCharsCache.get(chatId) || 0;
         updateStatusBarContext();
