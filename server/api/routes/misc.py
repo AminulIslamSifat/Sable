@@ -154,11 +154,17 @@ async def set_disabled_tools(request: Request) -> dict[str, str]:
     return {"status": "ok"}
 
 @router.post("/api/sync-context")
-async def sync_context_route() -> dict[str, Any]:
+async def sync_context_route(request: Request) -> dict[str, Any]:
     from connectors.common.instruction_builder import invalidate_cache
     invalidate_cache()
+    body = {}
     try:
-        success = await service.sync_context()
+        body = await request.json()
+    except Exception:
+        pass
+    layout_mode = body.get("layout_mode") or None
+    try:
+        success = await service.sync_context(layout_mode=layout_mode)
     except Exception as exc:
         logger.warning("sync_context raised: %s: %s", type(exc).__name__, exc)
         raise HTTPException(status_code=500, detail=str(exc))

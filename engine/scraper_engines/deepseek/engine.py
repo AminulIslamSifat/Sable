@@ -507,6 +507,6 @@ class DeepSeekEngine(BaseScraperEngine):
         if self.chrome_process:
             try:
                 from engine.process_utils import kill_process_tree
-                kill_process_tree(self.chrome_process.pid, sig=signal.SIGTERM)
+                kill_process_tree(self.chrome_process.pid)  # cross-platform
             except Exception:
                 pass

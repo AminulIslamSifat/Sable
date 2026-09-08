@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -18,6 +19,8 @@ from engine.skills.handlers.common import _end_event, _output_event
 logger = logging.getLogger(__name__)
 
 _SCRIPT = str(Path(__file__).resolve().parent.parent.parent.parent / "tools" / "image_generator" / "scripts" / "image_generator.py")
+_DREAMFORGE_SCRIPT = str(Path(__file__).resolve().parent.parent.parent.parent / "tools" / "image_generator" / "scripts" / "dreamforge.py")
+_ADVANCED_SDXL_SCRIPT = str(Path(__file__).resolve().parent.parent.parent.parent / "tools" / "image_generator" / "scripts" / "advanced_sdxl.py")
 # Must match the directory mounted by server/api/application.py at /assets.
 _OUTPUT_DIR = ASSETS_DIR
 
@@ -156,7 +159,7 @@ def _try_perchance(prompt: str, style: str, shape: str, count: str, neg: str, se
     if seed and seed != "-1":
         cli += ["--seed", seed]
 
-    cmd = ["python3", _SCRIPT] + cli
+    cmd = [sys.executable, _SCRIPT] + cli
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
@@ -175,6 +178,101 @@ def _try_perchance(prompt: str, style: str, shape: str, count: str, neg: str, se
         result = json.loads(output)
         if result.get("ok"):
             result["provider"] = "perchance"
+            return result
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return None
+
+
+def _try_dreamforge(prompt: str, style: str, shape: str, neg: str, seed: int, count: int) -> dict | None:
+    """Attempt DreamForge generation via CLI script. Returns parsed result dict or None."""
+    # Map handler shapes to dreamforge dimensions
+    shape_map = {"square": "square_hd", "portrait": "portrait_hd", "landscape": "landscape_hd"}
+    dimensions = shape_map.get(shape, "portrait_hd")
+    # Map handler styles to dreamforge art styles (best-effort)
+    style_map = {
+        "photorealistic": "photorealistic", "cinematic": "cinematic",
+        "oil_painting": "oil_painting", "fantasy": "fantasy",
+        "watercolor": "watercolor", "anime": "anime",
+        "painted_anime": "anime", "pixel_art": "digital_art",
+        "cyberpunk": "sci_fi", "ghibli": "anime",
+    }
+    art_style = style_map.get(style, "photorealistic")
+
+    cmd = [sys.executable, _DREAMFORGE_SCRIPT, "generate",
+           "--prompt", prompt, "--art-style", art_style,
+           "--dimensions", dimensions, "--batch", str(count)]
+    if neg:
+        cmd += ["--negative-prompt", neg]
+    if seed >= 0:
+        cmd += ["--seed", str(seed)]
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        logger.warning("DreamForge: timed out")
+        return None
+    except Exception as e:
+        logger.warning("DreamForge exception: %s", e)
+        return None
+
+    output = proc.stdout.strip()
+    if proc.returncode != 0:
+        logger.warning("DreamForge failed: %s", proc.stderr.strip() or output)
+        return None
+
+    try:
+        result = json.loads(output)
+        if result.get("ok"):
+            result["provider"] = "dreamforge"
+            return result
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return None
+
+
+def _try_advanced_sdxl(prompt: str, style: str, shape: str, neg: str, seed: int, count: int) -> dict | None:
+    """Attempt Advanced SDXL generation via CLI script. Returns parsed result dict or None."""
+    # Map handler shapes to advanced_sdxl aspect ratios
+    shape_map = {"square": "square", "portrait": "portrait", "landscape": "landscape"}
+    aspect_ratio = shape_map.get(shape, "square")
+    # Map handler styles to advanced_sdxl style presets
+    style_map = {
+        "photorealistic": "photorealistic", "cinematic": "cinematic",
+        "anime": "anime", "fantasy": "fantasy",
+        "oil_painting": "oil-painting", "watercolor": "watercolor",
+        "pixel_art": "pixel-art", "cyberpunk": "cyberpunk",
+    }
+    sdxl_style = style_map.get(style, "none")
+
+    cmd = [sys.executable, _ADVANCED_SDXL_SCRIPT, "generate",
+           "--prompt", prompt, "--aspect-ratio", aspect_ratio,
+           "--batch-size", str(min(count, 4))]
+    if sdxl_style != "none":
+        cmd += ["--style", sdxl_style]
+    if neg:
+        cmd += ["--negative-prompt", neg]
+    if seed >= 0:
+        cmd += ["--seed", str(seed)]
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        logger.warning("Advanced SDXL: timed out")
+        return None
+    except Exception as e:
+        logger.warning("Advanced SDXL exception: %s", e)
+        return None
+
+    output = proc.stdout.strip()
+    if proc.returncode != 0:
+        logger.warning("Advanced SDXL failed: %s", proc.stderr.strip() or output)
+        return None
+
+    try:
+        result = json.loads(output)
+        if result.get("ok"):
+            result["provider"] = "advanced-sdxl"
             return result
     except (json.JSONDecodeError, TypeError):
         pass
@@ -261,6 +359,12 @@ def handle_generate_image(
         elif provider_pref == "perchance":
             result = _try_perchance(prompt, style, shape, count, neg, seed_str)
             tried.append("perchance" + (" ✅" if result else " ❌"))
+        elif provider_pref == "dreamforge":
+            result = _try_dreamforge(prompt, style, shape, neg, seed, num_images)
+            tried.append("dreamforge" + (" ✅" if result else " ❌"))
+        elif provider_pref == "advanced-sdxl":
+            result = _try_advanced_sdxl(prompt, style, shape, neg, seed, num_images)
+            tried.append("advanced-sdxl" + (" ✅" if result else " ❌"))
     else:
         # Multi-image path — loop for non-Perchance, native batch for Perchance
         if provider_pref == "perchance":
@@ -301,6 +405,20 @@ def handle_generate_image(
                 for i in range(len(result["images"])):
                     yield _output_event(tag_id, f"  ✅ Image {i+1}/{num_images}\n")
             tried.append("puter" + (" ✅" if result else " ❌"))
+        elif provider_pref == "dreamforge":
+            # DreamForge handles batch natively
+            result = _try_dreamforge(prompt, style, shape, neg, seed, num_images)
+            if result and result.get("images"):
+                for i in range(len(result["images"])):
+                    yield _output_event(tag_id, f"  ✅ Image {i+1}/{num_images}\n")
+            tried.append("dreamforge" + (" ✅" if result else " ❌"))
+        elif provider_pref == "advanced-sdxl":
+            # Advanced SDXL handles batch natively
+            result = _try_advanced_sdxl(prompt, style, shape, neg, seed, num_images)
+            if result and result.get("images"):
+                for i in range(len(result["images"])):
+                    yield _output_event(tag_id, f"  ✅ Image {i+1}/{num_images}\n")
+            tried.append("advanced-sdxl" + (" ✅" if result else " ❌"))
         elif provider_pref == "auto":
             # Auto with multi: try Cloudflare first (looped), then Pollinations, then Perchance batch
             all_images = []
