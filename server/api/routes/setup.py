@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -23,15 +24,25 @@ class SetPasswordRequest(BaseModel):
     password: str
 
 
+def _has_any_account() -> bool:
+    """Return True if at least one browser-data-accN profile exists."""
+    if not _SYSTEM_DIR.is_dir():
+        return False
+    for d in _SYSTEM_DIR.iterdir():
+        if d.is_dir() and re.match(r"browser-data-acc\d+$", d.name):
+            return True
+    return False
+
+
 @router.get("/api/setup/status")
 async def setup_status() -> dict[str, Any]:
     """Check if initial setup is needed (no auth token set yet)."""
     has_token = _AUTH_TOKEN_FILE.exists() and _AUTH_TOKEN_FILE.read_text(encoding="utf-8").strip() != ""
-    has_browser_profile = (_SYSTEM_DIR / "browser-data-acc1").is_dir()
+    has_account = _has_any_account()
     return {
         "needs_password": not has_token,
-        "needs_browser_login": not has_browser_profile,
-        "setup_complete": has_token and has_browser_profile,
+        "needs_setup": not has_account,
+        "setup_complete": has_token and has_account,
     }
 
 
@@ -52,99 +63,72 @@ async def set_password(payload: SetPasswordRequest) -> dict[str, str]:
     return {"status": "ok"}
 
 
-# Module-level handle so we can keep the browser alive across requests
-_setup_browser_context = None
+@router.get("/api/setup/available-browsers")
+async def available_browsers() -> dict[str, Any]:
+    """List available browsers for the setup flow (mirrors settings endpoint)."""
+    from engine.platform_paths import list_available_browsers
+    browsers = await asyncio.to_thread(list_available_browsers)
+    return {"browsers": browsers}
 
 
 @router.post("/api/setup/browser-login")
-async def browser_login() -> dict[str, Any]:
+async def browser_login(payload: dict[str, str] | None = None) -> dict[str, Any]:
     """Launch headed browser for Qwen login during first-run setup.
 
-    Unlike the old fire-and-forget approach, this now waits for the browser
-    to actually open before returning. Errors are returned to the frontend
-    instead of being silently swallowed.
+    Mirrors /api/settings/accounts/create — uses the same browser resolution,
+    extra args, and non-blocking task pattern so behaviour is identical.
     """
-    global _setup_browser_context
-    profile_path = _SYSTEM_DIR / "browser-data-acc1"
+    def _next_acc() -> int:
+        existing: set[int] = set()
+        if _SYSTEM_DIR.is_dir():
+            for d in _SYSTEM_DIR.iterdir():
+                m = re.match(r"browser-data-acc(\d+)$", d.name)
+                if m and d.is_dir():
+                    existing.add(int(m.group(1)))
+        n = 1
+        while n in existing:
+            n += 1
+        return n
+
+    acc_num = await asyncio.to_thread(_next_acc)
+    profile_name = f"browser-data-acc{acc_num}"
+    profile_path = _SYSTEM_DIR / profile_name
     profile_path.mkdir(parents=True, exist_ok=True)
 
-    try:
+    # Save user's browser choice
+    chosen_browser = (payload or {}).get("browser_path", "")
+    if chosen_browser:
+        from server.api.routes.settings import _set_account_browser
+        await asyncio.to_thread(_set_account_browser, profile_name, chosen_browser)
+
+    # Resolve actual binary to use (same as settings flow)
+    from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
+    resolved_browser = await asyncio.to_thread(resolve_browser_for_profile, profile_name)
+
+    async def _run_browser() -> None:
         from playwright.async_api import async_playwright
-    except ImportError as e:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"Playwright import failed: {e}\n\n"
-                f"This is a known Windows issue — greenlet's DLL needs the Visual C++ runtime.\n\n"
-                f"Fix (pick one):\n"
-                f"  A) Install VC++ Redistributable: https://aka.ms/vs/17/release/vc_redist.x64.exe\n"
-                f"  B) Pin older greenlet: uv pip install \"greenlet==1.1.3\"\n\n"
-                f"Then restart Sable."
-            ),
-        )
-
-    # WSL2 → launch Windows-side Chrome via CDP
-    try:
-        from engine.wsl_browser import launch_windows_chrome
-        wsl_session = launch_windows_chrome(
-            str(profile_path), port=9301, headless=False,
-            extra_args=[
-                "--disk-cache-size=2097152",
-                "--disable-gpu-shader-cache",
-                "--disable-component-update",
-            ],
-        )
-    except Exception:
-        wsl_session = None
-
-    if wsl_session is not None:
-        logger.info("WSL2: connected to Windows Chrome at %s", wsl_session.cdp_url)
         try:
-            pw = await async_playwright().start()
-            browser = await pw.chromium.connect_over_cdp(wsl_session.cdp_url)
-            context = browser.contexts[0] if browser.contexts else await browser.new_context()
-            page = context.pages[0] if context.pages else await context.new_page()
-            await page.goto("https://chat.qwen.ai")
-            _setup_browser_context = context  # keep alive
-            return {"status": "opened", "profile": "browser-data-acc1"}
+            launch_kwargs: dict[str, Any] = {
+                "user_data_dir": str(profile_path),
+                "headless": False,
+                "timeout": 0,
+                "args": [
+                    "--no-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disk-cache-size=2097152",
+                    "--disable-gpu-shader-cache",
+                    "--disable-component-update",
+                ] + extra_browser_args(resolved_browser),
+            }
+            if resolved_browser:
+                launch_kwargs["executable_path"] = resolved_browser
+            async with async_playwright() as p:
+                context = await p.chromium.launch_persistent_context(**launch_kwargs)
+                page = context.pages[0] if context.pages else await context.new_page()
+                await page.goto("https://chat.qwen.ai", timeout=120000)
+                await context.wait_for_event("close", timeout=0)
         except Exception as e:
-            logger.error("WSL2 browser login failed: %s", e)
-            raise HTTPException(status_code=500, detail=f"WSL2 browser launch failed: {e}")
+            logger.warning(f"Setup browser for {profile_name} exited: {e}")
 
-    # Native launch (Linux or Windows)
-    launch_args = [
-        "--disable-blink-features=AutomationControlled",
-        "--disk-cache-size=2097152",
-        "--disable-gpu-shader-cache",
-        "--disable-component-update",
-    ]
-    # --no-sandbox only on Linux; on Windows it's not needed and can cause issues
-    if not _IS_WINDOWS:
-        launch_args.insert(0, "--no-sandbox")
-
-    try:
-        pw = await async_playwright().start()
-        context = await pw.chromium.launch_persistent_context(
-            user_data_dir=str(profile_path),
-            headless=False,
-            timeout=30000,
-            args=launch_args,
-        )
-        page = context.pages[0] if context.pages else await context.new_page()
-        await page.goto("https://chat.qwen.ai", timeout=30000)
-        _setup_browser_context = context  # keep alive
-        logger.info("Setup browser opened successfully (profile=%s)", profile_path)
-        return {"status": "opened", "profile": "browser-data-acc1"}
-    except Exception as e:
-        logger.error("Setup browser login FAILED: %s", e, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"Failed to open browser: {e}\n\n"
-                f"Troubleshooting:\n"
-                f"1. Run 'uv run playwright install chromium' to ensure browsers are installed\n"
-                f"2. Check that no other process is using the profile: {profile_path}\n"
-                f"3. On Windows, ensure Playwright is installed in the same Python environment"
-            ),
-        )
-#
+    asyncio.create_task(_run_browser())
+    return {"status": "opened", "profile": profile_name}

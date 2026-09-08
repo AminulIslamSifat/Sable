@@ -2053,17 +2053,21 @@ async def chat(request: ChatRequest):
 
                             # Sync system instructions to new account before first message
                             yield sse({"type": "account_switch", "step": "syncing", "account": _next_acc})
+                            from engine.config import mark_sync_failed, clear_sync_failed
                             _sync_ok = False
                             try:
                                 _sync_result = await service.sync_context()
                                 if _sync_result is not False:
                                     _sync_ok = True
+                                    clear_sync_failed(_next_acc)
                                     logger.info("[auto-switch] sync_context completed for %s", _next_acc)
                                 else:
                                     logger.warning("[auto-switch] sync_context returned False for %s", _next_acc)
+                                    mark_sync_failed(_next_acc)
                                     yield sse({"type": "account_switch", "step": "syncing", "account": _next_acc, "error": "sync failed, will inject into first message"})
                             except Exception as _sync_exc:
                                 logger.warning("[auto-switch] sync_context failed for %s: %s", _next_acc, _sync_exc)
+                                mark_sync_failed(_next_acc)
                                 yield sse({"type": "account_switch", "step": "syncing", "account": _next_acc, "error": "sync failed, will inject into first message"})
 
                             # Build context for new account (with summarization if >500k)
@@ -2073,11 +2077,6 @@ async def chat(request: ChatRequest):
                             except Exception as _ctx_exc:
                                 logger.warning("[auto-switch] Context build failed: %s", _ctx_exc)
                                 _switch_ctx = current_message  # fallback to raw message
-
-                            # If sync_context failed, flag the service so stream_events
-                            # injects full instructions into the first message (Qwen only).
-                            if not _sync_ok:
-                                service._needs_instruction_fallback = True
 
                             # Create new upstream session on switched account
                             yield sse({"type": "account_switch", "step": "creating_session", "account": _next_acc})
