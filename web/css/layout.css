@@ -1469,30 +1469,7 @@
       50% { border-color: color-mix(in srgb, var(--warning, #f59e0b) 35%, transparent); }
     }
 
-    /* ---------- Transient switching status card ---------- */
 
-    .switching-status-card {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 14px;
-      border-radius: 8px;
-      background: color-mix(in srgb, var(--accent, #6366f1) 8%, transparent);
-      border: 1px solid color-mix(in srgb, var(--accent, #6366f1) 25%, transparent);
-      animation: ss-breathe 2s ease-in-out infinite;
-    }
-    .switching-status-card .ss-icon {
-      font-size: 16px;
-      animation: spin 1.5s linear infinite;
-    }
-    .switching-status-card .ss-text {
-      font-size: 13px;
-      color: var(--text, #ccc);
-    }
-    @keyframes ss-breathe {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.7; }
-    }
 
     /* ---------- Debug info inside error cards ---------- */
 

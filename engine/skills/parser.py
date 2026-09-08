@@ -294,16 +294,19 @@ def _build_calls(data: Any) -> list[dict[str, Any]]:
             if isinstance(val, str) and val.strip():
                 content = val
                 break
-        if not content and params:
-            content = json.dumps(params, ensure_ascii=False)
 
-        # Special case: chat_title uses title/text param as content
-        if tool_name == "chat_title" and not content:
+        # Special case: chat_title uses title/text param as content.
+        # Must run BEFORE the json.dumps fallback or the whole args dict
+        # gets serialized and stored as the literal title string.
+        if not content and tool_name == "chat_title":
             for key in ("title", "text"):
                 val = params.get(key)
                 if isinstance(val, str) and val.strip():
                     content = val
                     break
+
+        if not content and params:
+            content = json.dumps(params, ensure_ascii=False)
 
         calls.append({"name": tool_name, "attrs": attrs, "content": content})
 
