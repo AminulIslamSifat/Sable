@@ -267,7 +267,6 @@
       _atBottom = true;
     }
 
-<<<<<<< HEAD
     // ponytail: rAF throttle — coalesces dozens of per-line scroll calls during
     // fast tool output into one layout pass per frame. Upgrade to a time-based
     // throttle (e.g. 100ms interval) only if rAF still causes jank on low-end devices.
@@ -277,25 +276,18 @@
       // During history load, all DOM is built off-screen in a temp container.
       // Scrolling is meaningless until the fragment is attached to the real pane.
       if (window._historyLoading) return;
-=======
-    function scrollBottom(force) {
->>>>>>> origin/main
       if (!activePane) return;
       if (_scrollForChat !== activeChatId) {
         _atBottom = true;
         _scrollForChat = activeChatId;
       }
       if (!force && !_atBottom) return;
-<<<<<<< HEAD
       if (_scrollRafPending) return;
       _scrollRafPending = true;
       requestAnimationFrame(() => {
         _scrollRafPending = false;
         if (activePane) activePane.scrollTop = activePane.scrollHeight;
       });
-=======
-      activePane.scrollTop = activePane.scrollHeight;
->>>>>>> origin/main
     }
 
     function clearEmptyState() {
@@ -320,14 +312,11 @@
       }
     }
 
-<<<<<<< HEAD
     // Tracks Qwen response_id per chat for stop API requests
     const activeResponseIds = new Map();
     window.getActiveResponseId = (chatId) => activeResponseIds.get(chatId || activeChatId) || null;
     window.setActiveResponseId = (chatId, id) => { if (id) activeResponseIds.set(chatId, id); };
 
-=======
->>>>>>> origin/main
     function startStream(chatId) {
       resetScrollTracking();
       const controller = new AbortController();
@@ -338,10 +327,7 @@
     }
 
     function endStream(chatId) {
-<<<<<<< HEAD
       activeResponseIds.delete(chatId);
-=======
->>>>>>> origin/main
       if (activeStreams.has(chatId)) {
         activeStreams.delete(chatId);
       } else if (activeChatId !== chatId && activeStreams.has(activeChatId)) {
@@ -533,7 +519,6 @@
       return card;
     }
 
-<<<<<<< HEAD
     // ponytail: native DOM cap — no virtualization needed until a single tool
     // call legitimately needs >50K chars visible in one card.
     const SKILL_OUTPUT_CAP = 50_000;
@@ -555,10 +540,6 @@
         pre.textContent = pre.textContent.slice(0, SKILL_OUTPUT_CAP) + TRUNCATION_NOTE;
         pre.dataset.truncated = "1";
       }
-=======
-    function appendSkillCardOutput(card, text) {
-      card.querySelector(".skill-output").textContent += text || "";
->>>>>>> origin/main
     }
 
     // Expose skill card builders for agent panel history replay
@@ -794,18 +775,13 @@
           toolbar.appendChild(forkBtn);
 
           div.appendChild(toolbar);
-<<<<<<< HEAD
           // ponytail: Skip per-element icon scan during bulk history render
           if (!window._historyLoading) activateLucideIcons(toolbar);
-=======
-          activateLucideIcons(toolbar);
->>>>>>> origin/main
         }
       } else {
         const content = document.createElement("div");
         content.className = "md-content";
         content.innerHTML = renderMarkdown(text);
-<<<<<<< HEAD
         // ponytail: Skip heavy renders during bulk history load.
         // loadMessages does a single pane-wide pass after fragment attach.
         if (!window._historyLoading) {
@@ -813,11 +789,6 @@
           renderMathJax(content);
           activateLucideIcons(content);
         }
-=======
-        renderMermaidDiagrams(content);
-        renderMathJax(content);
-        activateLucideIcons(content);
->>>>>>> origin/main
         div.appendChild(content);
       }
       activePane.appendChild(div);

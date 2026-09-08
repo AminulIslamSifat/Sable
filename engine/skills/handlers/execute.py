@@ -134,7 +134,6 @@ def handle_execute_command(
 
     timer = threading.Timer(timeout, kill_process_group, args=(proc,))
     timer.start()
-<<<<<<< HEAD
     # Frontend/model protection: keep draining the subprocess pipe so the
     # child cannot block, but only emit a bounded amount of foreground output.
     # Lines are batched into ~4 KB chunks before yielding a single SSE event
@@ -195,17 +194,6 @@ def handle_execute_command(
         # Flush any remaining buffered output
         if not output_truncated:
             yield from _flush_batch()
-=======
-    try:
-        if proc.stdout is not None:
-            for line in proc.stdout:
-                yield _output_event(tag_id, line)
-                if editor_target is not None and editor_chars < _EDITOR_OUTPUT_CAP:
-                    remaining = _EDITOR_OUTPUT_CAP - editor_chars
-                    if remaining > 0:
-                        editor_chunks.append(line[:remaining])
-                        editor_chars += min(len(line), remaining)
->>>>>>> origin/main
         proc.wait()
     finally:
         timer.cancel()
