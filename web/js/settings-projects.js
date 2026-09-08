@@ -477,31 +477,67 @@
           return [];
         }
 
-        // Render messages sequentially in small batches, yielding to the
-        // browser between batches so GC can reclaim intermediate objects.
-        // This prevents RAM spikes from holding all DOM construction in one
-        // synchronous burst while still loading everything upfront.
-        const BATCH_SIZE = 10;
+        // Suppress per-message scrollBottom during history load — each
+        // addMessage call normally forces a layout recalc via scrollTop write.
+        // With hundreds of messages that's hundreds of forced reflows. We only
+        // scroll once after everything is rendered.
+        window._historyLoading = true;
+
+        // Use DocumentFragment to build DOM off-screen, then attach once.
+        // This prevents the browser from running layout/paint on every appendChild.
+        const frag = document.createDocumentFragment();
         const prevPane = activePane;
-        activePane = pane;
+        // Point activePane at a temporary container so addHistoryMessage
+        // appends to the fragment instead of the live DOM.
+        const tmpContainer = document.createElement("div");
+        activePane = tmpContainer;
+
+        const BATCH_SIZE = 10;
         for (let i = 0; i < messages.length; i += BATCH_SIZE) {
-          // Abort stale render — user switched to another chat
           if (generation !== _loadGeneration) {
             activePane = prevPane;
+            window._historyLoading = false;
             return [];
           }
           const batch = messages.slice(i, i + BATCH_SIZE);
           for (const msg of batch) addHistoryMessage(msg);
-          // Yield to browser every batch so it can GC and keep spinner animated
-          await new Promise(r => requestAnimationFrame(r));
+          // Yield to browser every batch so GC can run and spinner stays animated
+          await new Promise(r => setTimeout(r, 0));
+        }
+
+        // Move all children from temp container into fragment, then into real pane
+        while (tmpContainer.firstChild) {
+          frag.appendChild(tmpContainer.firstChild);
         }
         activePane = prevPane;
-        renderMathJax(pane);
+        pane.appendChild(frag);
+
+        // Single Mermaid pass for any diagrams that were skipped during batch
+        if (typeof renderMermaidDiagrams === "function") {
+          const mermaidEls = pane.querySelectorAll(".mermaid");
+          if (mermaidEls.length) renderMermaidDiagrams(pane);
+        }
+
+        // Single MathJax pass over the whole pane instead of per-message.
+        // Must be awaited — otherwise loadMessages returns before MathJax
+        // finishes, selectChat hides the loading overlay, and the user sees
+        // a half-rendered chat while MathJax eats RAM in the background.
+        await renderMathJax(pane);
+
+        // Activate Lucide icons once for the entire pane instead of per-element
+        if (typeof activateLucideIcons === "function") activateLucideIcons(pane);
+
+        // History loading is complete — clear the flag BEFORE scrolling
+        // so scrollBottom doesn't bail out early.
+        window._historyLoading = false;
+
+        // Single scroll after everything is truly rendered
         if (chatId === activeChatId) scrollBottom(true);
 
         return messages;
       } catch (err) {
         console.error("Failed to load messages:", err);
+        window._historyLoading = false;
         return [];
       }
     }

@@ -163,7 +163,11 @@
     }
     .tab-pane.active { display: flex; }
 
-    /* Loading overlay — transparent with blur so messages render visibly underneath */
+    /* Loading overlay — blurred translucent backdrop so the user can see
+       chat content loading underneath without the browser doing expensive
+       full-resolution paint on every DOM mutation. pointer-events:all blocks
+       interaction with the half-rendered chat. backdrop-filter does the blur
+       cheaply on the compositor thread instead of main thread layout. */
     .pane-loading {
       position: fixed;
       inset: 0;
@@ -171,9 +175,10 @@
       align-items: center;
       justify-content: center;
       z-index: 9999;
-      background: rgba(0, 0, 0, 0.15);
-      backdrop-filter: blur(2px);
-      pointer-events: none;
+      background: color-mix(in srgb, var(--bg-primary, #0e0e10) 60%, transparent);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      pointer-events: all;
     }
     .pane-loading .spinner {
       width: 24px;

@@ -28,7 +28,8 @@
             <div class="thinking-body">${escHtml(message.thinking)}</div>
           </details>`;
         activePane.appendChild(wrap);
-        activateLucideIcons(wrap);
+        // ponytail: Skip per-element icon scan during bulk history render
+        if (!window._historyLoading) activateLucideIcons(wrap);
       }
 
       // For assistant messages with round_text events, skip main content rendering —
@@ -192,7 +193,8 @@
           });
           toolbar.appendChild(forkBtn);
         }
-        activateLucideIcons(toolbar);
+        // ponytail: Skip per-element icon scan during bulk history render
+        if (!window._historyLoading) activateLucideIcons(toolbar);
       }
       // Attach toolbar to historical bot messages (or skip if round_text will handle it)
       if (message.role !== "user" && msgDiv) {
@@ -267,13 +269,32 @@
       toolbar.appendChild(copyBtn);
       toolbar.appendChild(ttsBtn);
       msgDiv.appendChild(toolbar);
-      activateLucideIcons(toolbar);
+      // ponytail: Skip per-element icon scan during bulk history render
+      if (!window._historyLoading) activateLucideIcons(toolbar);
     }
+
+    // ponytail: Cap stored skill_output text during history replay.
+    // Backend caps live streaming at 20K chars, but DB may hold unlimited
+    // output from before the cap existed. Prevents DOM explosion on load.
+    const HISTORY_SKILL_OUTPUT_CAP = 20000;
+
+    // ponytail: Max skill_output events rendered per card during history load.
+    // Prevents 800-event zip outputs from creating 800 DOM mutations on replay.
+    // Live streaming uses the backend batch+cap; this guards old DB records.
+    const HISTORY_MAX_OUTPUT_EVENTS_PER_CARD = 50;
 
     function _renderSkillEvents(events) {
       const cards = {};
+      const cardOutputCounts = {};
       let group = null;
       let _histSkillPath = "";
+      // During history load, skip per-event MathJax/Mermaid/Lucide —
+      // loadMessages does a single pass over the whole pane after all events
+      // are rendered. This avoids O(n) full-pane reflows for n events.
+      const isHistoryLoad = window._historyLoading;
+      // ponytail: No-op icon activation during bulk history render.
+      // Single activateLucideIcons(pane) call in loadMessages handles all.
+      const _actIcons = isHistoryLoad ? () => {} : activateLucideIcons;
       for (const evt of events) {
         if (evt.type === "round_thinking") {
           group = null;
@@ -285,7 +306,7 @@
               <div class="thinking-body">${escHtml(evt.text || "")}</div>
             </details>`;
           activePane.appendChild(wrap);
-          activateLucideIcons(wrap);
+          _actIcons(wrap);
         } else if (evt.type === "round_text") {
           if (evt.text && evt.text.trim()) {
             const textDiv = document.createElement("div");
@@ -293,9 +314,13 @@
             const content = document.createElement("div");
             content.className = "md-content";
             content.innerHTML = renderMarkdown(evt.text);
-            renderMermaidDiagrams(content);
-            renderMathJax(content);
-            activateLucideIcons(content);
+            // Skip heavy renders during history load — deferred to single
+            // pane-wide pass in loadMessages after fragment is attached.
+            if (!isHistoryLoad) {
+              renderMermaidDiagrams(content);
+              renderMathJax(content);
+            }
+            _actIcons(content);
             textDiv.appendChild(content);
             activePane.appendChild(textDiv);
             _attachBotToolbar(textDiv);
@@ -310,7 +335,7 @@
           }
           const card = createSkillCard(evt);
           group.appendChild(card);
-          activateLucideIcons(card);
+          _actIcons(card);
           cards[evt.id] = card;
           // Track path for history preview card
           if (evt.name === "create_file" || evt.name === "edit_file" || evt.name === "save_svg" || evt.name === "create_svg") {
@@ -327,7 +352,25 @@
             continue;
           }
           const card = cards[evt.id];
-          if (card) appendSkillCardOutput(card, evt.text);
+          if (card) {
+            let outText = evt.text || "";
+            // During history load, cap event count per card to prevent
+            // old uncapped DB records from flooding the DOM.
+            if (isHistoryLoad) {
+              const count = (cardOutputCounts[evt.id] || 0) + 1;
+              cardOutputCounts[evt.id] = count;
+              if (count > HISTORY_MAX_OUTPUT_EVENTS_PER_CARD) return; // skip excess events
+              if (count === HISTORY_MAX_OUTPUT_EVENTS_PER_CARD) {
+                outText += "\n⚠️ Output truncated (too many events).";
+              }
+            }
+            // Cap output text during history replay to prevent DOM explosion
+            // from pre-cap DB records with unlimited command output.
+            if (isHistoryLoad && outText.length > HISTORY_SKILL_OUTPUT_CAP) {
+              outText = outText.slice(0, HISTORY_SKILL_OUTPUT_CAP) + "\n⚠️ Output truncated for display.";
+            }
+            appendSkillCardOutput(card, outText);
+          }
         } else if (evt.type === "skill_end") {
           if (evt.name === "ask_user") continue;
           const card = cards[evt.id];
@@ -384,7 +427,7 @@
             <div class="critique-log"></div>
           `;
           activePane.appendChild(box);
-          activateLucideIcons(box);
+          _actIcons(box);
           cards[evt.id] = box;  // reuse cards map for critique_tool/done lookup
         } else if (evt.type === "critique_tool") {
           const box = cards[evt.id];
