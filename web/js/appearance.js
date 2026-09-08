@@ -1139,7 +1139,12 @@
     } else if (action === 'sync-context') {
       showToast('Syncing context…', 'info');
       try {
-        const res = await fetch('/api/sync-context', { method: 'POST' });
+        const mode = localStorage.getItem('sable_layout_mode') || 'agent';
+        const res = await fetch('/api/sync-context', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ layout_mode: mode })
+        });
         const d = await res.json();
         showToast(res.ok ? (d.message || 'Context synced') : (d.error || 'Sync failed'), res.ok ? 'success' : 'error');
       } catch { showToast('Sync failed', 'error'); }

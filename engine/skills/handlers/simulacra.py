@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Generator
@@ -43,7 +44,7 @@ def handle_run_simulacra(
             tf_path = tf.name
 
         result = subprocess.run(
-            ["python3", str(_SIM_ENGINE), tf_path],
+            [sys.executable, str(_SIM_ENGINE), tf_path],
             capture_output=True, text=True, timeout=30,
         )
 

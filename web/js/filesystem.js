@@ -1501,9 +1501,10 @@
 
   /* ---------- Open file at position (Problems panel jump) ---------- */
   window.openIdeFileAt = async function (filePath, line, col) {
-    if (document.body.dataset.mode !== "ide") {
-      const ideBtn = document.getElementById("layoutIde");
-      if (ideBtn) ideBtn.click();
+    // Switch to agent mode first if in chat mode
+    if (document.body.dataset.mode === "chat") {
+      const agentBtn = document.getElementById("layoutAgent");
+      if (agentBtn) agentBtn.click();
     }
     try {
       if (filePath && filePath !== currentFilePath) {

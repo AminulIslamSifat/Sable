@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -11,7 +12,7 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
-from engine.platform_paths import home_dir, tmp_path
+from engine.platform_paths import home_dir, tmp_path, IS_WINDOWS
 from engine.process_utils import popen_kwargs
 from engine.skills.handlers.common import (
     DEFAULT_TIMEOUT,
@@ -106,7 +107,8 @@ def handle_execute_command(
 
     yield _output_event(tag_id, f"$ {cmd}\n", "command")
 
-    use_sudo = cmd.lstrip().startswith("sudo ")
+    # sudo is POSIX-only; skip injection on Windows
+    use_sudo = (not IS_WINDOWS) and cmd.lstrip().startswith("sudo ")
     if use_sudo and "sudo -S" not in cmd:
         cmd = cmd.replace("sudo", "sudo -S -p ''", 1)
 

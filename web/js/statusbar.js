@@ -266,7 +266,7 @@
             await fetch("/api/personas/output-format-toggle", {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ enabled: newState })
+              body: JSON.stringify({ enabled: newState, layout_mode: localStorage.getItem('sable_layout_mode') || 'agent' })
             });
             fmtSwitch.classList.toggle("on", newState);
             fmtSwitch.textContent = newState ? "ON" : "OFF";
@@ -300,7 +300,7 @@
         await fetch("/api/personas/active", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name })
+          body: JSON.stringify({ name, layout_mode: localStorage.getItem('sable_layout_mode') || 'agent' })
         });
         personaDropdown.classList.remove("open");
         document.dispatchEvent(new CustomEvent("persona-changed"));
