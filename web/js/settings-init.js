@@ -210,6 +210,7 @@
           return;
         }
         pendingFiles[idx].path = data.path;
+        pendingFiles[idx].filename = data.filename || null;
         pendingFiles[idx].meta = data.meta || null;
         chip.classList.remove("uploading");
         const rm = document.createElement("button");
@@ -402,8 +403,8 @@
 
       // Collect image URLs for chat display BEFORE clearing pending chips
       const imageUrls = pendingFiles
-        .filter(p => p.path)
-        .map(p => "/system/uploads/" + p.path.split("/").pop());
+        .filter(p => p.filename || p.path)
+        .map(p => "/system/uploads/" + (p.filename || p.path.split("/").pop()));
 
       // Remove previous turn's file-edit summary card
       if (activePane) activePane.querySelectorAll(".file-edit-summary-card").forEach(el => el.remove());

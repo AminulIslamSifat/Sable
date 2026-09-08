@@ -29,4 +29,4 @@ async def upload(file: UploadFile = File(...)) -> dict[str, Any]:
             detail=f"File too large ({len(raw)} bytes, max {_MAX_UPLOAD_SIZE})",
         )
     target.write_bytes(raw)
-    return {"uploaded": True, "path": str(target)}
+    return {"uploaded": True, "path": str(target), "filename": stored_name}
