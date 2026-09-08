@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 class LoginRequest(BaseModel):
     token: str
@@ -13,7 +13,14 @@ class RevertRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     chat_id: str | None = None
-    parent_id: str | None = None
+    parent_id: str | int | None = None
+
+    @field_validator("parent_id", mode="before")
+    @classmethod
+    def _coerce_parent_id(cls, v: Any) -> str | None:
+        if v is None:
+            return None
+        return str(v)
     files: list[dict[str, Any]] | None = None
     model: str | None = None
     thinking_mode: str | None = None
@@ -22,6 +29,7 @@ class ChatRequest(BaseModel):
     cwd: str | None = None
     open_file: str | None = None
     skip_user_save: bool = False
+    layout_mode: str | None = None  # "agent" or "chat"
 
 class NewChatRequest(BaseModel):
     model: str | None = None

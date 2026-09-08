@@ -337,18 +337,23 @@ def dashboard_providers() -> dict[str, Any]:
     except Exception:
         providers.append({"name": "cloudflare", "label": "Cloudflare", "keys": []})
 
-    # --- Tavily ---
-    tavily_key = settings.get("tavily_api_key", "")
+    # --- Tavily (multi-key) ---
+    from engine.search.config import get_provider_keys as _gpk
+    tv_raw = settings.get("tavily_api_key", "")
+    tv_list = tv_raw if isinstance(tv_raw, list) else ([tv_raw] if isinstance(tv_raw, str) and tv_raw.strip() else [])
     tv_keys: list[dict[str, Any]] = []
-    if tavily_key:
-        tv_keys.append({"index": 0, "masked": "configured", "active": True})
+    for idx, k in enumerate(tv_list):
+        masked = f"...{k[-6:]}" if len(k) > 6 else "***"
+        tv_keys.append({"index": idx, "masked": masked, "active": idx == 0})
     providers.append({"name": "tavily", "label": "Tavily", "keys": tv_keys})
 
-    # --- Serper ---
-    serper_key = settings.get("serper_api_key", "")
+    # --- Serper (multi-key) ---
+    sp_raw = settings.get("serper_api_key", "")
+    sp_list = sp_raw if isinstance(sp_raw, list) else ([sp_raw] if isinstance(sp_raw, str) and sp_raw.strip() else [])
     sp_keys: list[dict[str, Any]] = []
-    if serper_key:
-        sp_keys.append({"index": 0, "masked": "configured", "active": True})
+    for idx, k in enumerate(sp_list):
+        masked = f"...{k[-6:]}" if len(k) > 6 else "***"
+        sp_keys.append({"index": idx, "masked": masked, "active": idx == 0})
     providers.append({"name": "serper", "label": "Serper", "keys": sp_keys})
 
     return {"providers": providers}
@@ -427,18 +432,20 @@ def dashboard_provider_status() -> dict[str, Any]:
     except Exception:
         pass
 
-    # Tavily
-    tavily_key = settings.get("tavily_api_key", "")
-    if tavily_key:
+    # Tavily (ping first key)
+    tv_raw = settings.get("tavily_api_key", "")
+    tv_first = tv_raw[0] if isinstance(tv_raw, list) and tv_raw else (tv_raw if isinstance(tv_raw, str) and tv_raw.strip() else None)
+    if tv_first:
         ping_tasks.append(("tavily", "https://api.tavily.com/search",
                            {"Content-Type": "application/json"}, "POST",
-                           {"api_key": tavily_key, "query": "test", "max_results": 1}))
+                           {"api_key": tv_first, "query": "test", "max_results": 1}))
 
-    # Serper
-    serper_key = settings.get("serper_api_key", "")
-    if serper_key:
+    # Serper (ping first key)
+    sp_raw = settings.get("serper_api_key", "")
+    sp_first = sp_raw[0] if isinstance(sp_raw, list) and sp_raw else (sp_raw if isinstance(sp_raw, str) and sp_raw.strip() else None)
+    if sp_first:
         ping_tasks.append(("serper", "https://google.serper.dev/search",
-                           {"X-API-KEY": serper_key, "Content-Type": "application/json"}, "POST",
+                           {"X-API-KEY": sp_first, "Content-Type": "application/json"}, "POST",
                            {"q": "test", "num": 1}))
 
     # Ping concurrently (max 6 tasks)

@@ -293,6 +293,54 @@ def handle_todo_complete(
     })
 
 
+def handle_teacher_guidance(
+    tag_id: str, name: str, attrs: dict[str, str], content: str,
+) -> Generator[dict[str, Any], None, None]:
+    """Handle teacher_guidance tool call from main chat.
+
+    Main chat (Maria) responds to a subagent's teacher escalation request
+    by calling this tool with guidance and optional todo updates.
+    The response is routed back to the waiting subagent via auto_turn engine.
+    """
+    import json as _json
+    started = time.time()
+
+    agent_id = attrs.get("agent_id", "").strip()
+    guidance = attrs.get("guidance", content.strip())
+    todo_updates_raw = attrs.get("todo_updates", "")
+
+    if not agent_id:
+        yield _output_event(tag_id, "ERROR: teacher_guidance requires agent_id")
+        yield _end_event(tag_id, name, False, started, error="Missing agent_id")
+        return
+
+    if not guidance:
+        yield _output_event(tag_id, "ERROR: teacher_guidance requires guidance text")
+        yield _end_event(tag_id, name, False, started, error="Missing guidance")
+        return
+
+    # Parse todo_updates if provided (JSON string)
+    todo_updates = None
+    if todo_updates_raw:
+        try:
+            todo_updates = _json.loads(todo_updates_raw)
+        except (ValueError, TypeError):
+            pass  # Ignore malformed todo_updates
+
+    # Route the guidance back to the waiting subagent
+    try:
+        from engine.agents.auto_turn import auto_turn
+        auto_turn.resolve_teacher_guidance(agent_id, guidance, todo_updates)
+        yield _output_event(tag_id, f"Teacher guidance delivered to agent {agent_id}.")
+        yield _end_event(tag_id, name, True, started, result={
+            "agent_id": agent_id,
+            "delivered": True,
+        })
+    except Exception as exc:
+        yield _output_event(tag_id, f"ERROR delivering guidance: {exc}")
+        yield _end_event(tag_id, name, False, started, error=str(exc))
+
+
 def handle_todo_skip(
     tag_id: str, name: str, attrs: dict[str, str], content: str,
     *, agent=None,

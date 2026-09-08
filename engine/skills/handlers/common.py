@@ -7,7 +7,7 @@ import html as html_lib
 import os
 import re
 import shutil
-import signal
+
 import subprocess
 import time
 import uuid
@@ -30,7 +30,6 @@ SESSIONS_DIR = OUTPUT_ROOT / "sessions"
 UPLOAD_DIR = SABLE_ROOT / "system" / "uploads"
 BACKUP_DIR = SABLE_ROOT / ".sable_backups"
 TOOLS_DIR = SABLE_ROOT / "tools"
-EDITOR_TOOLS = TOOLS_DIR / "code_editor" / "scripts" / "editor_tools.py"
 
 # --- Constants ---
 SUDO_PASSWORD = os.environ.get("SABLE_SUDO_PASSWORD", "")
@@ -67,7 +66,7 @@ def safe_under(base: Path, raw: str) -> Path:
 def is_ssd_tree_write(path: str) -> bool:
     """Return True if the resolved path falls inside the SSD live tree."""
     from engine.config import SSD_TREE
-    resolved = str(Path(path).resolve()) if not path.startswith("/") else path
+    resolved = str(Path(path).resolve()) if not os.path.isabs(path) else path
     return resolved.startswith(SSD_TREE)
 
 
@@ -79,7 +78,9 @@ def strip_html(text: str) -> str:
 def kill_process_group(proc: subprocess.Popen[str]) -> None:
     """Kill a process and its entire process group."""
     from engine.process_utils import kill_process_tree
-    kill_process_tree(proc.pid, sig=signal.SIGKILL)
+    # Don't pass sig — kill_process_tree handles platform defaults
+    # (taskkill /F on Windows, SIGTERM→SIGKILL fallback on POSIX)
+    kill_process_tree(proc.pid)
 
 
 def make_backup(path: str) -> str | None:
@@ -96,28 +97,6 @@ def make_backup(path: str) -> str | None:
         return str(backup)
     except Exception:
         return None
-
-
-def run_editor(args: list[str], stdin_data: str | None = None, timeout: int = DEFAULT_TIMEOUT) -> tuple[bool, str]:
-    """Run editor_tools.py with the given args. Returns (ok, output_text)."""
-    cmd = ["python3", str(EDITOR_TOOLS)] + args
-    try:
-        proc = subprocess.run(
-            cmd,
-            input=stdin_data,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            errors="replace",
-        )
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
-        output = stdout + (f"\n{stderr}" if stderr else "")
-        return proc.returncode == 0, output
-    except subprocess.TimeoutExpired:
-        return False, f"editor_tools timed out after {timeout}s"
-    except Exception as exc:
-        return False, f"{type(exc).__name__}: {exc}"
 
 
 def parse_editor_command(cmd: str) -> tuple[str, str] | None:

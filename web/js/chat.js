@@ -212,47 +212,81 @@
 
     /* ---------- end multi-tab ---------- */
 
-    // ── Smart auto-scroll: event-driven flag + rAF batching ──
-    // Pattern from Smashing Magazine / shadcn: track user intent via scroll
-    // event, batch writes with requestAnimationFrame, reset on new stream.
-    let _userScrolled = false;
-    let _scrollRafPending = false;
+    // ── Auto-scroll ──
+    // ponytail: ceiling = synchronous user-intent detection. Upgrade path: add smooth scroll animation if needed.
+    let _atBottom = true;
     let _scrollForChat = null;
 
-    // Attach scroll listener whenever activePane changes (idempotent)
     const _scrollBoundPanes = new WeakSet();
     function _bindScrollListener(pane) {
       if (!pane || _scrollBoundPanes.has(pane)) return;
       _scrollBoundPanes.add(pane);
+
+      // Synchronous intent detection — must set _atBottom BEFORE any
+      // scrollBottom() call that arrives in the same event loop tick.
+      // DOM mutations / programmatic scrollTop never fire these events.
+      pane.addEventListener("wheel", (e) => {
+        if (e.deltaY < 0) {
+          _atBottom = false;
+        } else {
+          // Scrolling down: check if we've reached the bottom
+          const gap = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
+          _atBottom = gap < 30;
+        }
+      }, { passive: true });
+
+      let _lastTouchY = 0;
+      pane.addEventListener("touchstart", (e) => {
+        _lastTouchY = e.touches[0].clientY;
+      }, { passive: true });
+      pane.addEventListener("touchmove", (e) => {
+        const dy = e.touches[0].clientY - _lastTouchY;
+        _lastTouchY = e.touches[0].clientY;
+        if (dy > 0) {
+          _atBottom = false;   // finger moving down = content scrolls up
+        } else {
+          const gap = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
+          _atBottom = gap < 30;
+        }
+      }, { passive: true });
+
+      // Scrollbar drag: track pointer on scrollbar track (right edge)
+      let _draggingScrollbar = false;
+      pane.addEventListener("pointerdown", (e) => {
+        if (e.offsetX > pane.clientWidth) _draggingScrollbar = true;
+      });
+      document.addEventListener("pointerup", () => { _draggingScrollbar = false; });
       pane.addEventListener("scroll", () => {
+        if (!_draggingScrollbar) return;
         const gap = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
-        _userScrolled = gap > 60;
+        _atBottom = gap < 30;
       }, { passive: true });
     }
 
-    // Call at stream start so previous scroll-up doesn't block new content
     function resetScrollTracking() {
-      _userScrolled = false;
-      _scrollRafPending = false;
+      _atBottom = true;
     }
 
+    // ponytail: rAF throttle — coalesces dozens of per-line scroll calls during
+    // fast tool output into one layout pass per frame. Upgrade to a time-based
+    // throttle (e.g. 100ms interval) only if rAF still causes jank on low-end devices.
+    let _scrollRafPending = false;
+
     function scrollBottom(force) {
+      // During history load, all DOM is built off-screen in a temp container.
+      // Scrolling is meaningless until the fragment is attached to the real pane.
+      if (window._historyLoading) return;
       if (!activePane) return;
-      if (_scrollForChat !== activeChatId) { _userScrolled = false; _scrollRafPending = false; }
-      _scrollForChat = activeChatId;
-      if (!force && _userScrolled) return;
+      if (_scrollForChat !== activeChatId) {
+        _atBottom = true;
+        _scrollForChat = activeChatId;
+      }
+      if (!force && !_atBottom) return;
       if (_scrollRafPending) return;
       _scrollRafPending = true;
       requestAnimationFrame(() => {
         _scrollRafPending = false;
-        if (!activePane) return;
-        // Re-check position at paint time — user may have scrolled up between
-        // the scrollBottom() call and this rAF firing (race during fast streaming)
-        if (!force) {
-          const gap = activePane.scrollHeight - activePane.scrollTop - activePane.clientHeight;
-          if (gap > 80) { _userScrolled = true; return; }
-        }
-        activePane.scrollTop = activePane.scrollHeight;
+        if (activePane) activePane.scrollTop = activePane.scrollHeight;
       });
     }
 
@@ -278,6 +312,11 @@
       }
     }
 
+    // Tracks Qwen response_id per chat for stop API requests
+    const activeResponseIds = new Map();
+    window.getActiveResponseId = (chatId) => activeResponseIds.get(chatId || activeChatId) || null;
+    window.setActiveResponseId = (chatId, id) => { if (id) activeResponseIds.set(chatId, id); };
+
     function startStream(chatId) {
       resetScrollTracking();
       const controller = new AbortController();
@@ -288,6 +327,7 @@
     }
 
     function endStream(chatId) {
+      activeResponseIds.delete(chatId);
       if (activeStreams.has(chatId)) {
         activeStreams.delete(chatId);
       } else if (activeChatId !== chatId && activeStreams.has(activeChatId)) {
@@ -479,9 +519,33 @@
       return card;
     }
 
+    // ponytail: native DOM cap — no virtualization needed until a single tool
+    // call legitimately needs >50K chars visible in one card.
+    const SKILL_OUTPUT_CAP = 50_000;
+    const TRUNCATION_NOTE = "\n[… output truncated for display …]";
+
     function appendSkillCardOutput(card, text) {
-      card.querySelector(".skill-output").textContent += text || "";
+      const pre = card.querySelector(".skill-output");
+      if (!pre || !text) return;
+      // Already marked as truncated — silently drop further appends to avoid
+      // unbounded string concatenation that freezes the main thread.
+      if (pre.dataset.truncated === "1") return;
+      if (pre.textContent.length >= SKILL_OUTPUT_CAP) {
+        pre.textContent += TRUNCATION_NOTE;
+        pre.dataset.truncated = "1";
+        return;
+      }
+      pre.textContent += text;
+      if (pre.textContent.length > SKILL_OUTPUT_CAP) {
+        pre.textContent = pre.textContent.slice(0, SKILL_OUTPUT_CAP) + TRUNCATION_NOTE;
+        pre.dataset.truncated = "1";
+      }
     }
+
+    // Expose skill card builders for agent panel history replay
+    window.createSkillCard = createSkillCard;
+    window.appendSkillCardOutput = appendSkillCardOutput;
+    window.finishSkillCard = finishSkillCard;
 
     function finishSkillCard(card, evt) {
       const status = card.querySelector(".skill-status");
@@ -711,15 +775,20 @@
           toolbar.appendChild(forkBtn);
 
           div.appendChild(toolbar);
-          activateLucideIcons(toolbar);
+          // ponytail: Skip per-element icon scan during bulk history render
+          if (!window._historyLoading) activateLucideIcons(toolbar);
         }
       } else {
         const content = document.createElement("div");
         content.className = "md-content";
         content.innerHTML = renderMarkdown(text);
-        renderMermaidDiagrams(content);
-        renderMathJax(content);
-        activateLucideIcons(content);
+        // ponytail: Skip heavy renders during bulk history load.
+        // loadMessages does a single pane-wide pass after fragment attach.
+        if (!window._historyLoading) {
+          renderMermaidDiagrams(content);
+          renderMathJax(content);
+          activateLucideIcons(content);
+        }
         div.appendChild(content);
       }
       activePane.appendChild(div);

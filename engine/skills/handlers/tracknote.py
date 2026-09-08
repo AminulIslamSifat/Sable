@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import time
 from collections.abc import Generator
 from pathlib import Path
@@ -16,9 +17,10 @@ _SCRIPT = str(Path(__file__).resolve().parent.parent.parent.parent / "tools" / "
 
 def _run_tracknote(section: str, command: str, cli_args: list[str]) -> tuple[bool, str]:
     """Run tracknote.py <section> <command> [args], return (ok, output)."""
-    cmd = ["python3", _SCRIPT, section, command] + cli_args
+    cmd = [sys.executable, _SCRIPT, section, command] + cli_args
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        # ponytail: stdlib encoding param; prevents UnicodeDecodeError on Windows CP1252
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
     except subprocess.TimeoutExpired:
         return False, "Error: tracknote timed out after 15s"
     except Exception as e:
@@ -64,6 +66,8 @@ def handle_tracknote(
         cli = ["--title", title, "--type", note_type]
         if attrs.get("content"):
             cli += ["--content", attrs["content"]]
+        if attrs.get("items"):
+            cli += ["--items", attrs["items"]]
         ok, out = _run_tracknote("notes", "add", cli)
 
     elif action == "add_todo":

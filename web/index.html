@@ -3,27 +3,80 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <title>Sable</title>
   <link rel="icon" type="image/svg+xml" href="/static/assets/sable_icon.svg?v=5">
 
-  <link rel="stylesheet" href="/static/css/variables.css?v=4">
-  <link rel="stylesheet" href="/static/css/base.css?v=5">
-  <link rel="stylesheet" href="/static/css/layout.css?v=60">
-  <link rel="stylesheet" href="/static/css/ide.css?v=5">
-  <link rel="stylesheet" href="/static/css/chat.css?v=35">
-  <link rel="stylesheet" href="/static/css/panels.css?v=56">
-  <link rel="stylesheet" href="/static/css/components.css?v=20">
-  <link rel="stylesheet" href="/static/css/responsive.css?v=6">
-  <link rel="stylesheet" href="/static/css/agents.css?v=36">
-  <link rel="stylesheet" href="/static/css/cookbook.css?v=1">
-  <link rel="stylesheet" href="/static/css/search-panel.css?v=2">
-  <link rel="stylesheet" href="/static/css/dashboard.css?v=1">
-  <link rel="stylesheet" href="/static/css/calendar.css?v=1">
-  <link rel="stylesheet" href="/static/css/knowledge.css?v=1">
+  <!-- Early boot: set data-mode and data-theme BEFORE any CSS parses.
+       This MUST come before <style> so html[data-mode="light"] selectors match
+       at initial parse time. Without this, Firefox/Zen won't re-evaluate inline
+       <style> rules when the attribute is added later by JS. -->
+  <script>
+    (function(){
+      try{
+        var r=document.documentElement;
+        var m=null;try{m=localStorage.getItem("sable_appearance_mode")}catch(x){}
+        var e=m==="light"?"light":m==="dark"?"dark":(window.matchMedia&&window.matchMedia("(prefers-color-scheme: light)").matches?"light":"dark");
+        r.setAttribute("data-mode",e);
+        /* Persist resolved mode so subsequent reloads don't depend on auto-detection */
+        if(!m){try{localStorage.setItem("sable_appearance_mode",e)}catch(x){}}
+        var t=null;try{t=localStorage.getItem("sable_theme")}catch(x){}
+        if(t&&t!=="sable")r.setAttribute("data-theme",t);
+      }catch(x){}
+    })();
+  </script>
+  <!-- Critical inline CSS — complete theme variables embedded to prevent ANY FOUC.
+       Both light and dark are defined here so the page is fully styled before
+       external stylesheets load. External sheets override these when they arrive. -->
+  <style>
+    /* Dark defaults */
+    :root{--bg:#0d0c0a;--sidebar:#12110e;--panel:#191714;--panel-2:#201d19;--border:#2a2720;--border-soft:#211e19;--text:#eaeaea;--text-dim:#c4c4c8;--muted:#85858c;--muted-2:#616167;--accent:#9a7d4a;--accent-dim:#9a7d4a0e;--accent-text:#c4a66b;--danger:#e5646a;--danger-bg:#e5646a15;--ok:#6fcf97;--bg-glow:#131008;--shadow-inner-glow:rgba(255,255,255,0.06);--shadow-inner-highlight:rgba(255,255,255,0.25);--shadow-outer:rgba(0,0,0,0.12);--shadow-outer-heavy:rgba(0,0,0,0.4);--scrollbar-thumb:#2a2a2e;--scrollbar-thumb-hover:#34343a;--radius:10px;--radius-lg:14px;--font-body:'Maple Mono',ui-monospace,monospace;--font-serif:'Maple Mono',ui-monospace,monospace;--font-mono:'Maple Mono',ui-monospace,monospace;--font-size-response:14.5px;--font-size-system:13px;--editor-font-size:13px;--ide-chat-font-size:13px}
+    /* Light overrides — applied immediately via data-mode set by early boot script above */
+    html[data-mode="light"]{--bg:#faf9f7;--sidebar:#f2f0ec;--panel:#ffffff;--panel-2:#f5f3ef;--border:#ddd8d0;--border-soft:#e8e4dc;--text:#1a1816;--text-dim:#4a4640;--muted:#7a756e;--muted-2:#a09a92;--accent:#9a7d4a;--accent-dim:#9a7d4a18;--accent-text:#7a6230;--danger:#d44048;--danger-bg:#d4404812;--ok:#2da44e;--bg-glow:#f5f0e8;--shadow-inner-glow:rgba(0,0,0,0.04);--shadow-inner-highlight:rgba(255,255,255,0.6);--shadow-outer:rgba(0,0,0,0.08);--shadow-outer-heavy:rgba(0,0,0,0.12);--scrollbar-thumb:#c8c4bc;--scrollbar-thumb-hover:#a8a49c}
+    html{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:var(--font-body)}
+    body{margin:0;height:100%;display:flex;-webkit-font-smoothing:antialiased}
+    *{box-sizing:border-box}
+    ::-webkit-scrollbar{width:8px}::-webkit-scrollbar-track{background:transparent}
+    ::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:8px}
+    a{color:inherit;text-decoration:none}
+    button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+    input,select,textarea{font-family:inherit;color:inherit;background:transparent;border:1px solid var(--border);border-radius:10px;padding:6px 10px}
+    .hidden{display:none!important}
+  </style>
+  <link rel="stylesheet" href="/static/css/variables.css?v=101">
+  <link rel="stylesheet" href="/static/css/base.css?v=100">
+  <link rel="stylesheet" href="/static/css/layout.css?v=100">
+  <link rel="stylesheet" href="/static/css/ide.css?v=100">
+  <link rel="stylesheet" href="/static/css/chat.css?v=101">
+  <link rel="stylesheet" href="/static/css/panels.css?v=100">
+  <link rel="stylesheet" href="/static/css/components.css?v=101">
+  <link rel="stylesheet" href="/static/css/responsive.css?v=100">
+  <link rel="stylesheet" href="/static/css/agents.css?v=101">
+  <link rel="stylesheet" href="/static/css/cookbook.css?v=101">
+  <link rel="stylesheet" href="/static/css/search-panel.css?v=100">
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=100">
+  <link rel="stylesheet" href="/static/css/calendar.css?v=100">
+  <link rel="stylesheet" href="/static/css/knowledge.css?v=100">
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v=2">
 
   <link rel="manifest" href="/static/assets/manifest.json">
   <meta name="theme-color" content="#0f0e17">
+
+  <!-- Force-kill any lingering ServiceWorker from previous versions.
+       The old SW cached root-relative paths that 404'd against /static/,
+       causing intermittent broken CSS/JS on reload. -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(function(rs) {
+        rs.forEach(function(r) { r.unregister(); });
+      });
+      caches.keys().then(function(ks) {
+        ks.forEach(function(k) { caches.delete(k); });
+      });
+    }
+  </script>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="apple-touch-icon" href="/static/assets/icon-192.png">
@@ -161,6 +214,9 @@
       <button class="rail-btn" data-rail="prompt" title="Prompt Generator">
         <span class="icon-emoji">✨</span><i data-lucide="sparkles" class="icon-lucide"></i>
       </button>
+      <button class="rail-btn" data-rail="ocr" title="OCR">
+        <span class="icon-emoji">👁</span><i data-lucide="eye" class="icon-lucide"></i>
+      </button>
       <div class="rail-sep"></div>
       <!-- Planning -->
       <button class="rail-btn" data-rail="notes" title="Notes">
@@ -213,11 +269,11 @@
       </div>
       <div class="sidebar-top-content">
                 <div class="mode-switcher" id="layoutSwitcher">
-          <button id="layoutAgent" class="active" title="Agent chat mode"><span class="icon-emoji">💬</span><i data-lucide="message-square" class="icon-lucide"></i> Agent</button>
-          <button id="layoutIde" title="IDE / editor mode"><span class="icon-emoji">🖥</span><i data-lucide="code-2" class="icon-lucide"></i> IDE</button>
+          <button id="layoutAgent" class="active" title="Agent chat mode"><span class="icon-emoji">💬</span>Agent</button>
+          <button id="layoutChat" title="Chat mode (no tools)"><span class="icon-emoji">💬</span>Chat</button>
         </div>
         <button id="sidebarNewChatBtn" class="sidebar-footer-btn" title="New Chat">
-          <span class="icon-emoji">✨</span><i data-lucide="square-pen" class="icon-lucide"></i> New Chat
+          <span class="icon-emoji">✨</span>New Chat
         </button>
         <div class="scraper-engine-wrap" id="scraperEngineWrap">
           <select id="scraperEngineSelect" title="Scraper engine"></select>
@@ -298,7 +354,7 @@
     <!-- Dashboard view (replaces chat area when active) -->
     <div id="dashboardView" class="dashboard-view hidden">
       <div class="dash-header">
-        <h2 class="dash-title"><i data-lucide="layout-dashboard" class="icon-lucide"></i> Dashboard</h2>
+        <h2 class="dash-title">Dashboard</h2>
         <button class="dash-refresh-btn" id="dashRefreshBtn" title="Refresh">↻</button>
       </div>
       <div class="dash-grid" id="dashGrid">
@@ -316,11 +372,14 @@
     <!-- Prompt Generator view (replaces chat area when active) -->
     <div id="promptgenView" class="promptgen-view hidden"></div>
 
+    <!-- OCR view (replaces chat area when active) -->
+    <div id="ocrView" class="ocr-view hidden"></div>
+
     <!-- Knowledge Base view (replaces chat area when active) -->
     <div id="knowledgeView" class="knowledge-view hidden">
       <!-- Header -->
       <div class="kb-header">
-        <h2 class="kb-title"><i data-lucide="brain" class="icon-lucide"></i> Knowledge Base</h2>
+        <h2 class="kb-title">Knowledge Base</h2>
         <div class="kb-header-actions">
           <div class="kb-mode-tabs">
             <button class="kb-mode-tab active" data-kb-mode="graph">Graph</button>
@@ -691,7 +750,7 @@
   <!-- Notes panel (left-sidebar hostable) -->
   <div id="notesPanel" class="tracknote-standalone hidden" aria-label="Notes">
     <div class="tracknote-standalone-header">
-      <span class="tracknote-standalone-title"><i data-lucide="file-text" class="icon-lucide"></i> Notes</span>
+      <span class="tracknote-standalone-title">Notes</span>
       <button id="notesAddToggle" class="tn-add-toggle" title="Add new note"><i data-lucide="plus" class="icon-lucide"></i></button>
     </div>
     <div class="tracknote-body">
@@ -714,7 +773,7 @@
   <!-- Todo panel (left-sidebar hostable) -->
   <div id="todoPanel" class="tracknote-standalone hidden" aria-label="Todo">
     <div class="tracknote-standalone-header">
-      <span class="tracknote-standalone-title"><i data-lucide="circle-check" class="icon-lucide"></i> Todo</span>
+      <span class="tracknote-standalone-title">Todo</span>
       <button id="tnAddToggle" class="tn-add-toggle" title="Add new todo"><i data-lucide="plus" class="icon-lucide"></i></button>
     </div>
     <div class="tracknote-body">
@@ -737,7 +796,7 @@
   <!-- Projects panel (left-sidebar hostable) -->
   <div id="projectsPanel" class="tracknote-standalone hidden" aria-label="Projects">
     <div class="tracknote-standalone-header">
-      <span class="tracknote-standalone-title"><i data-lucide="folder-open" class="icon-lucide"></i> Projects</span>
+      <span class="tracknote-standalone-title">Projects</span>
       <button id="projAddBtn" class="tn-add-toggle" title="New Project"><i data-lucide="plus" class="icon-lucide"></i></button>
     </div>
     <div class="tracknote-body">
@@ -771,7 +830,7 @@
   <!-- Tasks panel (left-sidebar hostable) -->
   <div id="tasksPanel" class="tracknote-standalone hidden" aria-label="Tasks">
     <div class="tracknote-standalone-header">
-      <span class="tracknote-standalone-title"><i data-lucide="bot" class="icon-lucide"></i> Tasks</span>
+      <span class="tracknote-standalone-title">Tasks</span>
       <button id="tnAgentAddToggle" class="tn-add-toggle" title="Add new task"><i data-lucide="plus" class="icon-lucide"></i></button>
     </div>
     <div class="tracknote-body">
@@ -793,7 +852,7 @@
   <!-- Files panel (left-sidebar hostable) -->
   <div id="filesPanel" class="tracknote-standalone hidden" aria-label="Files">
     <div class="tracknote-standalone-header">
-      <span class="tracknote-standalone-title"><i data-lucide="folder-tree" class="icon-lucide"></i> Files</span>
+      <span class="tracknote-standalone-title">Files</span>
       <button id="fsLeftOpenFolder" class="new-chat-icon sidebar-action-icon" title="Open Folder"><span class="icon-emoji">📂</span><i data-lucide="folder-open" class="icon-lucide"></i></button>
     </div>
     <div class="tracknote-body">
@@ -918,6 +977,14 @@
               style="width:18px;height:18px;cursor:pointer;accent-color:var(--accent);" />
           </div>
           <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+              <label style="font-size:13px;color:var(--text-dim);">Appearance</label>
+              <div id="modeToggle" class="mode-toggle" style="display:flex;background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+                <button class="mode-btn" data-mode="light" title="Light mode" style="padding:4px 10px;font-size:12px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-family:inherit;transition:all .15s;">☀️</button>
+                <button class="mode-btn active" data-mode="auto" title="Follow system" style="padding:4px 10px;font-size:12px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-family:inherit;transition:all .15s;">Auto</button>
+                <button class="mode-btn" data-mode="dark" title="Dark mode" style="padding:4px 10px;font-size:12px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-family:inherit;transition:all .15s;">🌙</button>
+              </div>
+            </div>
             <label style="font-size:13px;color:var(--text-dim);display:block;margin-bottom:8px;">Theme</label>
             <div id="themePicker" class="theme-picker">
               <button class="theme-swatch active" data-theme="sable" title="Sable">
@@ -969,7 +1036,7 @@
 
           <!-- Context Pass Settings -->
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
-            <label style="font-size:13px;color:var(--text-dim);font-weight:600;display:block;margin-bottom:10px;"><span class="icon-emoji">🔀</span><i data-lucide="arrow-right-left" class="icon-lucide"></i> Context Pass — Fallback Chain</label>
+            <label style="font-size:13px;color:var(--text-dim);font-weight:600;display:block;margin-bottom:10px;"><span class="icon-emoji">🔀</span>Context Pass — Fallback Chain</label>
             <!-- Primary model -->
             <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;">
               <label for="ctxPassModel" style="font-size:12px;color:var(--text-dim);">① Primary Model</label>
@@ -996,7 +1063,7 @@
 
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-              <label style="font-size:13px;color:var(--text-dim);font-weight:600;"><span class="icon-emoji">🐋</span><i data-lucide="database" class="icon-lucide"></i> DeepSeek API Token</label>
+              <label style="font-size:13px;color:var(--text-dim);font-weight:600;"><span class="icon-emoji">🐋</span>DeepSeek API Token</label>
               <button id="refreshDeepseekTokenBtn" class="icon-btn" title="Refresh DeepSeek token from browser profile" style="width:auto;padding:4px 10px;font-size:11px;">↻ Refresh Token</button>
             </div>
             <p class="muted" style="font-size:11px;margin:0 0 8px 0;">Re-reads the logged-in DeepSeek account from the shared browser profile. Use this after switching accounts.</p>
@@ -1004,7 +1071,7 @@
           </div>
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-              <label style="font-size:13px;color:var(--text-dim);font-weight:600;"><span class="icon-emoji">🌐</span><i data-lucide="globe" class="icon-lucide"></i> Browser Session</label>
+              <label style="font-size:13px;color:var(--text-dim);font-weight:600;"><span class="icon-emoji">🌐</span>Browser Session</label>
               <button id="refreshSessionBtn" class="icon-btn" title="Refresh session info" style="width:auto;padding:4px 10px;font-size:11px;">↻ Refresh</button>
             </div>
             <div id="browserSessionCard" style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;">
@@ -1012,7 +1079,7 @@
             </div>
           </div>
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
-            <button id="deleteAllChatsBtn" class="btn-danger" style="font-size:12px;padding:8px 16px;width:100%;"><span class="icon-emoji">🗑</span><i data-lucide="trash-2" class="icon-lucide"></i> Delete All Chats</button>
+            <button id="deleteAllChatsBtn" class="btn-danger" style="font-size:12px;padding:8px 16px;width:100%;"><span class="icon-emoji">🗑</span>Delete All Chats</button>
             <p class="muted" style="font-size:11px;margin-top:6px;">Permanently removes every chat and message. This cannot be undone.</p>
           </div>
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
@@ -1038,7 +1105,7 @@
           <!-- API Keys (unified) -->
           <div style="margin-bottom:20px;">
             <label style="font-size:14px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-              <span class="icon-emoji">🔑</span><i data-lucide="key-round" class="icon-lucide"></i> API Keys
+              <span class="icon-emoji">🔑</span>API Keys
             </label>
             <p style="font-size:11.5px;color:var(--text);margin:0 0 10px 0;">Multiple keys per provider — auto-rotates on rate limit or failure.</p>
             <div style="display:flex;gap:6px;margin-bottom:10px;align-items:center;">
@@ -1062,7 +1129,7 @@
           <!-- Custom Endpoints (saved OpenAI-compatible URLs) -->
           <div style="margin-bottom:20px;border-top:1px solid var(--border);padding-top:16px;">
             <label style="font-size:14px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-              <span class="icon-emoji">🔗</span><i data-lucide="link" class="icon-lucide"></i> Custom Endpoints
+              <span class="icon-emoji">🔗</span>Custom Endpoints
             </label>
             <p style="font-size:11.5px;color:var(--text);margin:0 0 10px 0;">Save an OpenAI-compatible URL once, then add unlimited models from it below — no re-typing.</p>
             <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;align-items:center;">
@@ -1079,7 +1146,7 @@
           <!-- Add Model -->
           <div style="margin-bottom:16px;border-top:1px solid var(--border);padding-top:16px;">
             <label style="font-size:14px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-              <span class="icon-emoji">🧩</span><i data-lucide="puzzle" class="icon-lucide"></i> Add Model
+              <span class="icon-emoji">🧩</span>Add Model
             </label>
             <p style="font-size:11.5px;color:var(--text);margin:0 0 10px 0;">Select a provider to browse available models. Requires an API key above.</p>
             <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;align-items:center;">
@@ -1127,7 +1194,7 @@
             <div id="customModelStatus" style="font-size:11px;color:var(--text-dim);margin-top:8px;"></div>
           </div>
           <!-- ═══ Search Engine ═══ -->
-          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🔍</span><i data-lucide="search" class="icon-lucide"></i> Search Engine</h3>
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🔍</span>Search Engine</h3>
           <p class="muted mem-desc">Configure web search provider, fallback chain, and caching. Used by Online Search skill and Deep Research.</p>
 
           <!-- Active Provider -->
@@ -1152,42 +1219,41 @@
             <div class="muted" style="font-size:11px;margin-top:4px;">Leave empty for default (localhost:8080).</div>
           </div>
 
-          <!-- API Keys Section -->
+          <!-- API Keys Section (multi-key per search provider) -->
           <div id="searchApiKeysSection" style="margin-bottom:16px;border-top:1px solid var(--border);padding-top:16px;">
-            <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:8px;">API Keys</label>
-
-            <div id="searchKeyBrave" class="search-key-row" style="margin-bottom:10px;display:none;">
-              <label class="muted" style="font-size:11px;display:block;margin-bottom:3px;">Brave API Key <span id="searchKeyBraveStatus" class="search-key-status"></span></label>
-              <input id="searchInputBrave" type="password" placeholder="Enter Brave API key…" class="mem-input" style="width:100%;max-width:400px;">
+            <label class="muted" style="font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:4px;">🔑 API Keys</label>
+            <p style="font-size:11.5px;color:var(--text);margin:0 0 10px 0;">Multiple keys per provider — auto-rotates on rate limit or failure.</p>
+            <div style="display:flex;gap:6px;margin-bottom:10px;align-items:center;">
+              <select id="searchKeyProviderSelect" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
+                <option value="">Select provider…</option>
+                <option value="tavily">Tavily</option>
+                <option value="serper">Serper</option>
+                <option value="brave">Brave Search</option>
+                <option value="google_pse">Google PSE</option>
+              </select>
+              <input id="searchApiKeyInput" type="password" placeholder="Paste API key…" style="flex:1;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
+              <button id="addSearchApiKeyBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">Add</button>
             </div>
-
-            <div id="searchKeyGooglePse" class="search-key-row" style="margin-bottom:10px;display:none;">
-              <label class="muted" style="font-size:11px;display:block;margin-bottom:3px;">Google PSE API Key <span id="searchKeyGooglePseStatus" class="search-key-status"></span></label>
-              <input id="searchInputGooglePse" type="password" placeholder="Enter Google PSE API key…" class="mem-input" style="width:100%;max-width:400px;">
-              <label class="muted" style="font-size:11px;display:block;margin-bottom:3px;margin-top:6px;">Google PSE CX (Search Engine ID)</label>
-              <input id="searchInputGooglePseCx" type="text" placeholder="Enter Google PSE CX…" class="mem-input" style="width:100%;max-width:400px;">
+            <div id="searchApiKeyList" style="display:flex;flex-direction:column;gap:6px;"></div>
+            <div id="searchApiKeyStatus" style="font-size:11px;color:var(--text);margin-top:8px;"></div>
+            <!-- Google PSE CX field (shown only when google_pse selected) -->
+            <div id="searchGooglePseCxRow" style="display:none;margin-top:10px;">
+              <label class="muted" style="font-size:11px;display:block;margin-bottom:3px;">Google PSE CX (Search Engine ID)</label>
+              <div style="display:flex;gap:6px;align-items:center;">
+                <input id="searchInputGooglePseCx" type="text" placeholder="Enter Google PSE CX…" style="flex:1;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
+                <button id="saveGooglePseCxBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">Save CX</button>
+              </div>
             </div>
-
-            <div id="searchKeyTavily" class="search-key-row" style="margin-bottom:10px;display:none;">
-              <label class="muted" style="font-size:11px;display:block;margin-bottom:3px;">Tavily API Key <span id="searchKeyTavilyStatus" class="search-key-status"></span></label>
-              <input id="searchInputTavily" type="password" placeholder="Enter Tavily API key…" class="mem-input" style="width:100%;max-width:400px;">
-            </div>
-
-            <div id="searchKeySerper" class="search-key-row" style="margin-bottom:10px;display:none;">
-              <label class="muted" style="font-size:11px;display:block;margin-bottom:3px;">Serper API Key <span id="searchKeySerperStatus" class="search-key-status"></span></label>
-              <input id="searchInputSerper" type="password" placeholder="Enter Serper API key…" class="mem-input" style="width:100%;max-width:400px;">
-            </div>
-
             <div id="searchNoKeyNeeded" class="muted" style="font-size:11px;display:none;"><i data-lucide="circle-check" class="icon-lucide" style="width:12px;height:12px;vertical-align:middle;color:var(--success);"></i> No API key required for this provider.</div>
           </div>
 
           <!-- Fallback Chain (multi-select) -->
           <div style="margin-bottom:16px;border-top:1px solid var(--border);padding-top:16px;">
             <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Fallback Chain</label>
-            <p class="muted" style="font-size:11px;margin:0 0 8px 0;">Select providers to try when primary fails (drag to reorder).</p>
+            <p class="muted" style="font-size:11px;margin:0 0 8px 0;">Click the dropdown to add fallback providers. They're tried in order when the primary fails.</p>
             <div id="searchFallbackDropdown" style="position:relative;width:100%;max-width:400px;">
               <div id="searchFallbackSelected" class="mem-input" style="min-height:36px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;padding:4px 8px;cursor:pointer;">
-                <span class="muted" style="font-size:11px;">Select providers…</span>
+                <span class="muted" style="font-size:11px;">Click to add fallback engines…</span>
               </div>
               <div id="searchFallbackOptions" style="display:none;z-index:9999;background:var(--panel);border:1px solid var(--border);border-radius:8px;max-height:200px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.3);"></div>
             </div>
@@ -1235,10 +1301,10 @@
               </div>
             </div>
             <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
-              <button id="searchSaveBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;"><i data-lucide="save" class="icon-lucide"></i> Save</button>
-              <button id="searchTestBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;"><i data-lucide="flask-conical" class="icon-lucide"></i> Test</button>
-              <button id="searchCompareBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;"><i data-lucide="git-compare" class="icon-lucide"></i> Compare</button>
-              <button id="searchClearCacheBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;"><i data-lucide="trash-2" class="icon-lucide"></i> Clear Cache</button>
+              <button id="searchSaveBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;">Save</button>
+              <button id="searchTestBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">Test</button>
+              <button id="searchCompareBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">Compare</button>
+              <button id="searchClearCacheBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">Clear Cache</button>
             </div>
             <!-- Compare provider selectors (hidden by default) -->
             <div id="searchCompareControls" style="display:none;margin-bottom:10px;padding:10px;border:1px solid var(--border);border-radius:8px;background:color-mix(in srgb, var(--panel) 60%, transparent);">
@@ -1267,7 +1333,7 @@
         <div id="tab-mcp" class="settings-tab-content">
           <div style="margin-bottom:20px;">
             <label style="font-size:14px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-              <span class="icon-emoji">🔌</span><i data-lucide="plug" class="icon-lucide"></i> MCP Servers
+              <span class="icon-emoji">🔌</span>MCP Servers
             </label>
             <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 12px 0;">Model Context Protocol — connect external tool servers (email, calendar, databases, etc.) to extend Sable's capabilities dynamically.</p>
 
@@ -1296,10 +1362,15 @@
         </div>
 
         <div id="tab-account" class="settings-tab-content">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
             <label style="font-size:14px;color:var(--text);font-weight:600;">Account Profiles</label>
-            <div style="display:flex;gap:6px;">
-              <button id="addAccountBtn" class="icon-btn" style="width:auto;padding:4px 10px;font-size:11px;">Add Account</button>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+              <button id="backupAllAccountsBtn" class="icon-btn" title="Backup all accounts" style="width:auto;padding:4px 10px;font-size:11px;">Backup All</button>
+              <button id="restoreAllAccountsBtn" class="icon-btn" title="Restore all accounts from backups" style="width:auto;padding:4px 10px;font-size:11px;">Restore All</button>
+              <div id="addAccountWrap" style="display:flex;gap:4px;align-items:center;">
+                <select id="addAccountBrowserSelect" style="padding:4px 6px;font-size:11px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:6px;outline:none;max-width:160px;"></select>
+                <button id="addAccountBtn" class="icon-btn" style="width:auto;padding:4px 10px;font-size:11px;">Add Account</button>
+              </div>
               <button id="refreshAccountsBtn" class="icon-btn" title="Refresh account list" style="width:auto;padding:4px 10px;font-size:11px;">↻ Refresh</button>
             </div>
           </div>
@@ -1310,16 +1381,16 @@
         </div>
         <div id="tab-personalization" class="settings-tab-content">
           <!-- ═══ Section 1: Personal Context (who you are) ═══ -->
-          <h3 class="mem-title"><span class="icon-emoji">👤</span><i data-lucide="user" class="icon-lucide"></i> Personal Context</h3>
+          <h3 class="mem-title"><span class="icon-emoji">👤</span>Personal Context</h3>
           <p class="muted mem-desc">Your name, preferences, hobbies, and context. Saved to instruction/personal.md and loaded into every conversation.</p>
-          <textarea id="personalContextArea" class="mem-input" style="width:100%;min-height:120px;font-family:var(--font-mono);font-size:12px;line-height:1.5;resize:vertical;padding:10px;border-radius:8px;background:var(--bg-secondary);color:var(--text);border:1px solid var(--border);" placeholder="Name, preferences, hobbies, context..."></textarea>
+          <textarea id="personalContextArea" class="mem-input" style="width:100%;min-height:120px;font-family:var(--font-mono);font-size:12px;line-height:1.5;resize:vertical;padding:10px;border-radius:8px;background:var(--panel);color:var(--text);border:1px solid var(--border);" placeholder="Name, preferences, hobbies, context..."></textarea>
           <div class="mem-input-row mem-save-row" style="margin-top:8px;">
-            <button id="personalSaveBtn" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">💾</span><i data-lucide="hard-drive" class="icon-lucide"></i> Save</button>
+            <button id="personalSaveBtn" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">💾</span>Save</button>
             <span id="personalStatus" class="muted mem-status"></span>
           </div>
 
           <!-- ═══ Section 2: Personas (identity) ═══ -->
-          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🎭</span><i data-lucide="masks" class="icon-lucide"></i> Personas &amp; Output Format</h3>
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🎭</span>Personas &amp; Output Format</h3>
           <p class="muted mem-desc">Choose who the AI becomes. Select one active character or none at all. Edit, create, or disable entries below.</p>
           <div id="personaGrid" class="persona-grid"></div>
           <div class="persona-actions-bar">
@@ -1343,19 +1414,19 @@
           </div>
 
           <!-- ═══ Tools ═══ -->
-          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🔧</span><i data-lucide="wrench" class="icon-lucide"></i> Tools</h3>
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🔧</span>Tools</h3>
           <p class="muted mem-desc">Toggle tools on/off. Tools are always-active capabilities injected into every conversation.</p>
           <div id="toolsToggleList" style="display:flex;flex-direction:column;gap:6px;margin-top:10px;"></div>
 
           <!-- ═══ Skills ═══ -->
-          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">⚡</span><i data-lucide="zap" class="icon-lucide"></i> Skills</h3>
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">⚡</span>Skills</h3>
           <p class="muted mem-desc">Toggle skills on/off. View details and instructions in Library > Skills.</p>
           <div id="skillsToggleList" style="display:flex;flex-direction:column;gap:6px;margin-top:10px;"></div>
 
         </div>
 
         <div id="tab-memory" class="settings-tab-content">
-          <h3 class="mem-title"><span class="icon-emoji">🧠</span><i data-lucide="brain" class="icon-lucide"></i> Memory Consolidation</h3>
+          <h3 class="mem-title"><span class="icon-emoji">🧠</span>Memory Consolidation</h3>
           <p class="muted mem-desc">Settings for automatic memory extraction when creating a new chat.</p>
 
           <div style="display:flex;flex-direction:column;gap:14px;margin-top:10px;">
@@ -1386,7 +1457,7 @@
 
           </div>
 
-          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">⚙️</span><i data-lucide="settings" class="icon-lucide"></i> Memory Engine Config</h3>
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">⚙️</span>Memory Engine Config</h3>
           <p class="muted mem-desc">Controls how memories are retrieved and injected into conversations. Changes here affect response quality.</p>
 
           <div style="display:flex;flex-direction:column;gap:14px;margin-top:10px;">
@@ -1424,13 +1495,13 @@
               <label class="muted" style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer;">
                 <input type="checkbox" id="msEnabled" checked style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;"> Memory search enabled
               </label>
-              <button id="msSaveBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;"><span class="icon-emoji">💾</span><i data-lucide="hard-drive" class="icon-lucide"></i> Save Config</button>
+              <button id="msSaveBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;"><span class="icon-emoji">💾</span>Save Config</button>
             </div>
 
             <p id="msInfo" class="muted" style="font-size:11px;margin:0;"></p>
 
             <div style="display:flex;align-items:center;gap:8px;">
-              <button id="msRefreshCache" class="icon-btn" style="width:auto;padding:6px 12px;font-size:12px;"><span class="icon-emoji">🔄</span><i data-lucide="refresh-cw" class="icon-lucide"></i> Rebuild Vector Cache</button>
+              <button id="msRefreshCache" class="icon-btn" style="width:auto;padding:6px 12px;font-size:12px;"><span class="icon-emoji">🔄</span>Rebuild Vector Cache</button>
               <span id="msCacheStatus" class="muted" style="font-size:11px;"></span>
             </div>
             <p class="muted" style="font-size:11px;margin:0;">Force-reindex all memories. Only needed after editing Memory.json manually or changing the embedding model.</p>
@@ -1439,7 +1510,7 @@
         </div>
         
         <div id="tab-ide" class="settings-tab-content">
-          <h3 class="mem-title"><span class="icon-emoji">💻</span><i data-lucide="code" class="icon-lucide"></i> IDE</h3>
+          <h3 class="mem-title"><span class="icon-emoji">💻</span>IDE</h3>
           <p class="muted mem-desc">Configure the built-in Monaco editor — font, theme, auto-save, and more.</p>
           <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
             <label for="editorFontSizeSelect" style="font-size:13px;color:var(--text-dim);">Editor Font Size</label>
@@ -1497,7 +1568,7 @@
 
         <div id="tab-voice" class="settings-tab-content">
           <!-- ═══ TTS Section ═══ -->
-          <h3 class="mem-title"><span class="icon-emoji">🔊</span><i data-lucide="volume-2" class="icon-lucide"></i> Text-to-Speech</h3>
+          <h3 class="mem-title"><span class="icon-emoji">🔊</span>Text-to-Speech</h3>
           <p class="muted mem-desc">Choose between offline Kokoro models or online Edge TTS (Microsoft neural voices).</p>
 
           <!-- Provider Selector -->
@@ -1520,8 +1591,8 @@
             </div>
 
             <div style="display:flex;gap:8px;margin-top:16px;">
-              <button id="ttsDownloadBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;"><i data-lucide="download" class="icon-lucide"></i> Download Models</button>
-              <button id="ttsDeleteBtn" class="btn-danger" style="font-size:13px;padding:8px 16px;" hidden><i data-lucide="trash-2" class="icon-lucide"></i> Remove Models</button>
+              <button id="ttsDownloadBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;">Download Models</button>
+              <button id="ttsDeleteBtn" class="btn-danger" style="font-size:13px;padding:8px 16px;" hidden>Remove Models</button>
             </div>
           </div>
 
@@ -1556,7 +1627,7 @@
           </div>
 
           <!-- ═══ STT Section ═══ -->
-          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🎙️</span><i data-lucide="mic" class="icon-lucide"></i> Speech-to-Text</h3>
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🎙️</span>Speech-to-Text</h3>
           <p class="muted mem-desc">Local Whisper model (small.en) for offline audio transcription. Runs on CPU with int8 quantization.</p>
 
           <!-- Model Status -->
@@ -1566,9 +1637,9 @@
 
           <!-- Actions -->
           <div style="display:flex;gap:8px;margin-top:16px;align-items:center;">
-            <button id="sttDownloadBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;display:none;"><i data-lucide="download" class="icon-lucide"></i> Download Model</button>
+            <button id="sttDownloadBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;display:none;">Download Model</button>
             <span id="sttDownloadProgress" class="muted" style="font-size:12px;display:none;"></span>
-            <button id="sttDeleteBtn" class="btn-danger" style="font-size:13px;padding:8px 16px;" hidden><i data-lucide="trash-2" class="icon-lucide"></i> Remove Model</button>
+            <button id="sttDeleteBtn" class="btn-danger" style="font-size:13px;padding:8px 16px;" hidden>Remove Model</button>
           </div>
 
           <!-- Preferences -->
@@ -1610,7 +1681,7 @@
 
             <div style="display:flex;gap:10px;align-items:center;margin-top:10px;">
               <button id="sttMicBtn" class="btn-primary" style="font-size:13px;padding:10px 20px;display:flex;align-items:center;gap:6px;">
-                <i data-lucide="mic" class="icon-lucide"></i> Record
+                Record
               </button>
               <span id="sttMicStatus" class="muted" style="font-size:12px;"></span>
               <canvas id="sttVisualizer" width="200" height="32" style="border-radius:4px;background:rgba(255,255,255,0.03);" hidden></canvas>
@@ -1642,7 +1713,7 @@
         </div>
 
         <div id="tab-cookbook" class="settings-tab-content">
-          <h3 class="mem-title"><span class="icon-emoji">📚</span><i data-lucide="book-open" class="icon-lucide"></i> Cookbook — Local Models</h3>
+          <h3 class="mem-title"><span class="icon-emoji">📚</span>Cookbook — Local Models</h3>
           <p class="muted mem-desc">Download, serve, and chat with local LLMs via llama.cpp. Models run entirely on your machine.</p>
 
           <!-- Hardware Info -->
@@ -1706,7 +1777,7 @@
             <div style="margin-bottom:12px;">
               <div style="display:flex;gap:8px;align-items:center;">
                 <input id="cbSearchInput" type="text" class="mem-input" data-no-save-track placeholder="Search models on HuggingFace (e.g. gemma 3n, llama 3 q4)" style="flex:1;">
-                <button id="cbSearchBtn" class="btn-primary" style="font-size:12px;padding:8px 14px;white-space:nowrap;"><i data-lucide="search" class="icon-lucide"></i> Search</button>
+                <button id="cbSearchBtn" class="btn-primary" style="font-size:12px;padding:8px 14px;white-space:nowrap;">Search</button>
               </div>
               <div id="cbSearchResults" style="margin-top:8px;"></div>
             </div>
@@ -1720,7 +1791,7 @@
                 <label class="muted" style="font-size:11px;display:block;margin-bottom:4px;">Include Pattern</label>
                 <input id="cbInclude" type="text" class="mem-input" placeholder="e.g. *q4_k_m*" style="width:100%;">
               </div>
-              <button id="cbDownloadBtn" class="btn-primary" style="font-size:12px;padding:8px 14px;white-space:nowrap;"><i data-lucide="download" class="icon-lucide"></i> Download</button>
+              <button id="cbDownloadBtn" class="btn-primary" style="font-size:12px;padding:8px 14px;white-space:nowrap;">Download</button>
             </div>
           </div>
 
@@ -1739,11 +1810,11 @@
           </div>
         </div>
         <div id="tab-agents" class="settings-tab-content">
-          <h3 class="mem-title"><span class="icon-emoji">🤖</span><i data-lucide="bot" class="icon-lucide"></i> Agent Roles</h3>
+          <h3 class="mem-title"><span class="icon-emoji">🤖</span>Agent Roles</h3>
           <p class="muted mem-desc">Define what each agent role does. These are injected into the system prompt when an agent is spawned with that role.</p>
           <div id="agentRolesContainer"></div>
 
-          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">⚙️</span><i data-lucide="settings" class="icon-lucide"></i> Runtime Configuration</h3>
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">⚙️</span>Runtime Configuration</h3>
           <p class="muted mem-desc">Controls concurrency, safety limits, and circuit breaker behavior. Changes apply immediately without restart.</p>
 
           <div class="mem-input-row" style="align-items:center;margin-top:10px;">
@@ -1788,23 +1859,14 @@
           </div>
 
           <h3 class="mem-title" style="margin-top:16px;">Loop Safety Limits</h3>
-          <p class="muted" style="font-size:11px;margin:-4px 0 8px;">Prevents runaway agents from looping forever or hammering tools endlessly.</p>
+          <p class="muted" style="font-size:11px;margin:-4px 0 8px;">Controls how many LLM cycles an agent gets before timing out.</p>
           <div style="display:flex;flex-direction:column;gap:12px;">
             <div>
               <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Max Iterations</label>
               <input type="number" id="agentMaxIter" class="mem-input" style="width:80px;" min="5" max="100" value="25">
               <p class="muted" style="font-size:11px;margin:3px 0 0;">Maximum LLM call cycles per agent task. Each iteration = one model response + optional tool calls. 25 handles most tasks.</p>
             </div>
-            <div>
-              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Max Consecutive Tool Calls</label>
-              <input type="number" id="agentMaxConsec" class="mem-input" style="width:80px;" min="3" max="50" value="15">
-              <p class="muted" style="font-size:11px;margin:3px 0 0;">Stops the agent if it calls tools this many times in a row without producing a text response. Catches stuck tool loops.</p>
-            </div>
-            <div>
-              <label class="muted" style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Max Total Tool Calls</label>
-              <input type="number" id="agentMaxTotal" class="mem-input" style="width:80px;" min="10" max="200" value="50">
-              <p class="muted" style="font-size:11px;margin:3px 0 0;">Hard cap on total tool invocations per task. Prevents infinite file reads or API calls even across multiple iterations.</p>
-            </div>
+
           </div>
 
           <h3 class="mem-title" style="margin-top:16px;">🎓 Teacher (Escalation)</h3>
@@ -1830,7 +1892,7 @@
           </div>
 
           <div class="mem-input-row mem-save-row" style="margin-top:20px;padding-top:14px;border-top:1px solid var(--border);">
-            <button id="agentConfigSave" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">💾</span><i data-lucide="hard-drive" class="icon-lucide"></i> &nbsp;Save Config</button>
+            <button id="agentConfigSave" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">💾</span>&nbsp;Save Config</button>
             <span id="agentConfigStatus" class="muted mem-status"></span>
           </div>
         </div>
@@ -1864,6 +1926,7 @@
           <div id="updateProgress" class="update-progress hidden">
             <div class="update-progress-bar"><div id="updateProgressBar" class="update-progress-fill"></div></div>
             <p id="updateProgressText" class="update-progress-text">Preparing…</p>
+            <div id="updateLog" class="update-log" style="display:none;max-height:200px;overflow-y:auto;margin-top:8px;padding:8px;background:var(--bg-base);border-radius:6px;font-family:var(--font-mono,monospace);font-size:11px;line-height:1.6;color:var(--text-muted,#888);"></div>
           </div>
           <div class="update-actions">
             <button id="updateCheckBtn" class="btn-primary" style="font-size:12px;padding:8px 18px;">Check for Updates</button>
@@ -1990,29 +2053,30 @@
   <script src="/static/js/core.js?v=1"></script>
   <script src="/static/js/tts.js?v=3"></script>
   <script src="/static/js/markdown.js?v=1"></script>
-  <script src="/static/js/chat.js?v=2"></script>
+  <script src="/static/js/chat.js?v=7"></script>
   <script src="/static/js/sidebar-host.js?v=10"></script>
   <script src="/static/js/tracknote.js?v=8"></script>
-  <script src="/static/js/sse.js?v=6"></script>
-  <script src="/static/js/sidebar.js?v=1"></script>
-  <script src="/static/js/statusbar.js?v=1"></script>
+  <script src="/static/js/sse.js?v=10"></script>
+  <script src="/static/js/sidebar.js?v=2"></script>
+  <script src="/static/js/statusbar.js?v=2"></script>
   <script src="/static/js/settings-projects.js?v=2"></script>
   <script src="/static/js/projects-panel.js?v=6"></script>
   <script src="/static/js/settings-init.js?v=4"></script>
-  <script src="/static/js/settings-ui.js?v=2"></script>
+  <script src="/static/js/settings-ui.js?v=4"></script>
   <script src="/static/js/settings-bot.js?v=1"></script>
   <script src="/static/js/library.js?v=2"></script>
   <script src="/static/js/telegram.js?v=4"></script>
   <script src="/static/js/memory-panel.js?v=1"></script>
-  <script src="/static/js/skills-panel.js?v=12"></script>
-  <script src="/static/js/appearance.js?v=2"></script>
+  <script src="/static/js/skills-panel.js?v=101"></script>
+  <script src="/static/js/appearance.js?v=4"></script>
   <script src="/static/src/research.js?v=10"></script>
   <script src="/static/js/research-panel.js?v=3"></script>
   <script src="/static/js/image-panel.js?v=1"></script>
   <script src="/static/js/prompt-panel.js?v=1"></script>
-  <script src="/static/js/agents.js?v=32"></script>
+  <script src="/static/js/ocr-panel.js?v=1"></script>
+  <script src="/static/js/agents.js?v=33"></script>
   <script src="/static/js/filesystem.js?v=32"></script>
-  <script src="/static/js/mode.js?v=20"></script>
+  <script src="/static/js/mode.js?v=21"></script>
   <script src="/static/js/resize-panels.js?v=3"></script>
   <script src="/static/js/terminal.js?v=9"></script>
   <script src="/static/js/cookbook.js?v=4"></script>

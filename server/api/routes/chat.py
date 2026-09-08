@@ -23,6 +23,61 @@ from connectors.deepseek.client import get_client as get_deepseek_client
 
 _skill_engine: SkillEngine | None = None
 
+
+def _auto_switch_enabled() -> bool:
+    """Check if account auto-switch is enabled in system settings."""
+    try:
+        from server.api.routes.settings import _read_system_settings
+        return _read_system_settings().get("account_auto_switch_enabled", True)
+    except Exception:
+        return True  # default to enabled on error
+
+
+def _build_account_debug_info() -> dict[str, Any]:
+    """Build debug info from the LIVE service singleton, not the config file.
+
+    This shows what the running ChatService is *actually* using — which may
+    differ from .active_account if the singleton wasn't properly updated.
+    """
+    try:
+        from server.api.dependencies import service
+        return service._get_debug_account_info()
+    except Exception as _dbg_exc:
+        return {"account": "unknown", "error": str(_dbg_exc)}
+
+
+def _reconstruct_message_content(msg: dict[str, Any]) -> str:
+    """Reconstruct full message content including skill event outputs.
+
+    For token counting, each assistant message's effective context includes
+    not just the text response but also all tool call results that were fed
+    back to the LLM. This rebuilds that full content from stored skill_events.
+    """
+    base_content = msg.get("content") or ""
+    events = msg.get("skill_events")
+    if not events:
+        return base_content
+
+    # Build tool feedback from skill events (same format as live feedback)
+    tool_text = build_tool_feedback(events)
+    if tool_text:
+        return f"{base_content}\n\n{tool_text}" if base_content else tool_text
+    return base_content
+
+
+def _load_history_with_skills(chat_id: str) -> list[dict[str, str]]:
+    """Load conversation history with skill event content for token counting."""
+    msgs = get_messages(chat_id, include_skill_events=True)
+    history = []
+    for m in msgs:
+        if m["role"] not in ("user", "assistant"):
+            continue
+        content = _reconstruct_message_content(m)
+        if content:
+            history.append({"role": m["role"], "content": content})
+    return history
+
+
 def _get_skill_engine() -> SkillEngine:
     """Lazy singleton — avoids re-discovering skills on every request."""
     global _skill_engine
@@ -135,7 +190,7 @@ _summarizer_semaphore: asyncio.Semaphore | None = None
 _summarizer_cache: dict[str, tuple[float, str]] = {}  # chat_id → (timestamp, result)
 
 import re as _re
-_tool_call_re = _re.compile(r'<tool_call[\s>]', _re.IGNORECASE)
+_tool_call_re = _re.compile(r'<\s*tool_calls?[\s>]', _re.IGNORECASE)
 _tool_result_re = _re.compile(r'<tool_result[\s>]', _re.IGNORECASE)
 
 
@@ -536,6 +591,7 @@ async def _run_summarizer(
 async def chat(request: ChatRequest):
     scraper_enabled = get_scraper_settings().get("enabled")
     active_chat_id = request.chat_id
+    _layout_mode = request.layout_mode or "agent"  # "agent" or "chat"
     _upstream_session_id: str | None = None
     if not active_chat_id and scraper_enabled:
         active_chat_id = f"browser-{uuid.uuid4().hex}"
@@ -733,6 +789,16 @@ async def chat(request: ChatRequest):
 
     if _local_use_utilities and parent_id is None and _msg_count <= 1:
         _context_parts.append('[SYSTEM: You MUST call the chat_title tool now to set a title for this new conversation. This is mandatory.]')
+        # Inject platform info so the model uses correct paths and commands
+        import platform as _plat
+        _sys = _plat.system()  # 'Linux', 'Windows', 'Darwin'
+        _plat_hints = {
+            'Linux': 'Use Linux paths (/home/user/..., /tmp/...) and commands (ls, cat, grep, etc.). Shell is typically bash/fish/zsh.',
+            'Windows': r'Use Windows paths (C:\Users\..., %TEMP%\...) and commands (dir, type, findstr, PowerShell cmdlets). Use backslashes or forward slashes.',
+            'Darwin': 'Use macOS paths (/Users/..., /tmp/...) and commands (ls, cat, grep). Shell is zsh by default. Homebrew is the common package manager.',
+        }
+        _hint = _plat_hints.get(_sys, f'Platform: {_sys}. Use appropriate paths and commands for this OS.')
+        _context_parts.append(f'[SYSTEM PLATFORM: The user is on {_sys}. {_hint}]')
         try:
             from server.database import get_upcoming_schedules
             _upcoming = get_upcoming_schedules(days=10)
@@ -769,8 +835,42 @@ async def chat(request: ChatRequest):
     resolved_files: list[dict[str, Any]] | None = None
     _backend = _resolve_api_backend(request.model) if _is_api_model(request.model) else None
     if request.files:
+        # --- Doc→Image conversion for models that accept images but not native docs ---
+        _model_caps = get_model_config(request.model).get("capabilities", {})
+        _should_convert_docs = (
+            _model_caps.get("image", False)
+            and not _model_caps.get("document", False)
+        )
+        # Also convert for Qwen models marked document=True since Qwen OSS
+        # only accepts images — the document flag just means "we handle docs"
+        _is_qwen_backend = _backend not in _DIRECT_READ_BACKENDS and _backend != "deepseek" and not scraper_enabled
+        if _is_qwen_backend and _model_caps.get("image", False):
+            _should_convert_docs = True
+
+        _expanded_files: list[dict[str, Any]] = []
+        if _should_convert_docs:
+            from connectors.common.media import is_convertible_doc, convert_doc_to_images
+            for f in request.files:
+                fpath = f.get("path", "")
+                if fpath and is_convertible_doc(fpath):
+                    _img_paths = convert_doc_to_images(fpath)
+                    if _img_paths:
+                        for _ip in _img_paths:
+                            _expanded_files.append({"path": _ip})
+                        logger.info(
+                            "Converted doc %s → %d images for model %s",
+                            Path(fpath).name, len(_img_paths), request.model,
+                        )
+                    else:
+                        # Conversion failed or too many pages — pass original through
+                        _expanded_files.append(f)
+                else:
+                    _expanded_files.append(f)
+        else:
+            _expanded_files = list(request.files)
+
         resolved_files = []
-        for f in request.files:
+        for f in _expanded_files:
             if scraper_enabled:
                 # Scraper mode: engine handles Playwright upload internally
                 if "path" in f or "url" in f:
@@ -853,8 +953,7 @@ async def chat(request: ChatRequest):
         _db_history = None
         if not _ephemeral and active_chat_id:
             try:
-                _db_msgs = get_messages(active_chat_id)
-                _db_history = [{"role": m["role"], "content": m["content"]} for m in _db_msgs if m["role"] in ("user", "assistant") and m["content"]]
+                _db_history = _load_history_with_skills(active_chat_id)
             except Exception:
                 pass
         _chat_kwargs: dict[str, Any] = dict(
@@ -1036,7 +1135,12 @@ async def chat(request: ChatRequest):
                             # Meta tags: intercept before skill dispatch
                             if item["name"] == "chat_title":
                                 _ct_id = str(uuid.uuid4())
-                                _title_text = str(item.get("content", "")).strip()
+                                _title_text = str(
+                                    item.get("content")
+                                    or item.get("attrs", {}).get("title")
+                                    or item.get("attrs", {}).get("text")
+                                    or ""
+                                ).strip()
                                 if _title_text:
                                     update_chat_title(active_chat_id, _title_text[:80])
                                     yield sse({"type": "chat_title", "title": _title_text[:80]})
@@ -1044,6 +1148,17 @@ async def chat(request: ChatRequest):
                                 # generates feedback → auto-loop continues → model sends real text
                                 round_skill_events.append({"type": "skill_start", "name": "chat_title", "id": _ct_id})
                                 round_skill_events.append({"type": "skill_end", "name": "chat_title", "ok": True, "id": _ct_id, "duration_ms": 0})
+                                continue
+
+                            # Chat mode: block all tools except web_search/online_search/chat_title
+                            if _layout_mode == "chat" and item["name"] not in (
+                                "online_search", "web_search", "web_fetch", "chat_title",
+                            ):
+                                _cm_id = str(uuid.uuid4())[:12]
+                                _cm_err = f"[Chat mode] Tool '{item['name']}' is disabled. Only web search is available."
+                                round_skill_events.append({"type": "skill_start", "name": item["name"], "id": _cm_id})
+                                round_skill_events.append({"type": "skill_end", "name": item["name"], "ok": False, "error": _cm_err, "id": _cm_id})
+                                yield sse({"type": "skill_end", "name": item["name"], "ok": False, "error": _cm_err, "id": _cm_id})
                                 continue
 
                             # Track command for loop detection (legacy MainChatGuard)
@@ -1097,13 +1212,17 @@ async def chat(request: ChatRequest):
                             for ev in engine.process_tag(
                                 item["name"], item.get("attrs", {}), item.get("content", ""),
                                 chat_id=active_chat_id,
+                                cwd=request.cwd,
                             ):
-                                if ev.get("type") in ("skill_start", "skill_output", "skill_end", "file_edit", "permission_request"):
+                                if ev.get("type") in ("skill_start", "skill_output", "skill_end", "file_edit", "permission_request", "cwd_warning"):
                                     round_skill_events.append(ev)
                                 yield sse(ev)
                                 # When permission is requested, emit a transient status (not saved as answer)
                                 if ev.get("type") == "permission_request":
                                     yield sse({"type": "approval_pending", "text": "⏳ Waiting for your approval on that command."})
+                                # When CWD warning is emitted, emit a transient status
+                                if ev.get("type") == "cwd_warning":
+                                    yield sse({"type": "cwd_warning_pending", "text": "⚠️ File operation outside project folder detected."})
                                 # Detect simulacra completion → emit sim_ready card
                                 if (ev.get("type") == "skill_end"
                                         and ev.get("name") == "run_simulacra"
@@ -1197,6 +1316,7 @@ async def chat(request: ChatRequest):
                 stream_error = False
                 _cmd_history_start = len(_guard._command_history)
                 _round_prompt_tokens = 0  # initialized before branching; set in each path
+                _qwen_chat_id = active_chat_id  # default; overridden in Qwen branch below
                 # Log user message to file
                 if round_index == 0:
                     _log_conversation(active_chat_id, request.model, "user", current_message)
@@ -1229,8 +1349,7 @@ async def chat(request: ChatRequest):
                     _db_history_s = None
                     if not _ephemeral and round_index == 0 and active_chat_id:
                         try:
-                            _db_msgs_s = get_messages(active_chat_id)
-                            _db_history_s = [{"role": m["role"], "content": m["content"]} for m in _db_msgs_s if m["role"] in ("user", "assistant") and m["content"]]
+                            _db_history_s = _load_history_with_skills(active_chat_id)
                         except Exception:
                             pass
                     _stream_kwargs: dict[str, Any] = dict(
@@ -1249,19 +1368,38 @@ async def chat(request: ChatRequest):
                         _stream_kwargs["max_session_chars"] = _max_session_chars_stream
                     if _inline_files:
                         _stream_kwargs['files'] = _inline_files
-                    # Native tool calling: load and pass tool schemas
+                    # Native tool calling: core/outer tier system
                     try:
-                        from engine.tools_loader import get_all_tool_schemas
+                        from engine.tools_loader import (
+                            get_all_tool_schemas,
+                            get_outer_tool_stubs,
+                            _build_load_tool_schema,
+                        )
                         from server.api.routes.misc import get_disabled_tools as _get_dt
                         _disabled = _get_dt().get('disabled', [])
-                        # For local models, filter to per-model configured tools
-                        _allowed_tools = None
-                        if _is_local_model:
-                            _model_tools = _cookbook_cfg.get("tools")
-                            if _model_tools is not None:
-                                # Explicit list (even empty) = use only those tools
-                                _allowed_tools = _model_tools if _model_tools else ["__none__"]
-                        _tool_schemas = get_all_tool_schemas(_disabled, allowed=_allowed_tools)
+
+                        if _layout_mode == "chat":
+                            # Chat mode: only web search + chat title, no tier filtering
+                            _chat_allowed = ["online_search", "chat_title"]
+                            _tool_schemas = get_all_tool_schemas(_disabled, allowed=_chat_allowed, tier=None)
+                        else:
+                            # Agent mode: full core/outer tier system
+                            # For local models, filter to per-model configured tools
+                            _allowed_tools = None
+                            if _is_local_model:
+                                _model_tools = _cookbook_cfg.get("tools")
+                                if _model_tools is not None:
+                                    # Explicit list (even empty) = use only those tools
+                                    _allowed_tools = _model_tools if _model_tools else ["__none__"]
+                            # Core tools: full schemas always loaded
+                            _core_schemas = get_all_tool_schemas(_disabled, allowed=_allowed_tools, tier="core")
+                            # Outer tools: stubs only (name + description)
+                            _outer_stubs = get_outer_tool_stubs(_disabled) if not _allowed_tools else []
+                            # load_tool: dynamic core tool for upgrading outer stubs
+                            _load_tool = _build_load_tool_schema(_disabled) if not _allowed_tools else None
+                            _tool_schemas = _core_schemas + _outer_stubs
+                            if _load_tool:
+                                _tool_schemas.append(_load_tool)
                         if _tool_schemas:
                             _stream_kwargs['tools'] = _tool_schemas
                     except Exception:
@@ -1288,9 +1426,14 @@ async def chat(request: ChatRequest):
                     round_event_source = _connector.stream_chat(**_stream_kwargs)
                 elif scraper_enabled:
                     # --- Token counting: prompt side (scraper) ---
+                    # Load DB history on every round so cumulative context is counted.
                     try:
+                        _scraper_history = []
+                        if active_chat_id:
+                            _scraper_history = _load_history_with_skills(active_chat_id)
                         _round_prompt_tokens = count_prompt_tokens(
                             system_instruction=_system_instruction_for_tokens,
+                            history=_scraper_history,
                             user_message=current_message,
                             memory_context=_memory_context if round_index == 0 else "",
                         )
@@ -1309,11 +1452,13 @@ async def chat(request: ChatRequest):
                     # active_chat_id is the local Sable UUID.
                     _qwen_chat_id = _upstream_session_id or active_chat_id
                     # --- Token counting: prompt side (Qwen) ---
+                    # On round > 0, Qwen's server-side session accumulates context
+                    # but we can't inspect it directly. Reconstruct from DB history
+                    # so prompt_tokens reflects the actual growing context window.
                     try:
                         _qwen_history = []
-                        if round_index == 0 and active_chat_id:
-                            _qwen_msgs = get_messages(active_chat_id)
-                            _qwen_history = [{"role": m["role"], "content": m["content"]} for m in _qwen_msgs if m["role"] in ("user", "assistant") and m["content"]]
+                        if active_chat_id:
+                            _qwen_history = _load_history_with_skills(active_chat_id)
                         _round_prompt_tokens = count_prompt_tokens(
                             system_instruction=_system_instruction_for_tokens,
                             history=_qwen_history,
@@ -1333,60 +1478,201 @@ async def chat(request: ChatRequest):
                         ),
                         label=f"stream_round_{round_index}",
                     )
-                # --- First-chunk timeout for main stream ---
-                # If no event arrives within 15s, retry once. On 2nd timeout, trigger auto-switch.
+                # --- Chunk timeout for main stream ---
+                # NOTE: first-chunk timeout starts AFTER "request_sent" sentinel,
+                # so session setup time (_ensure_headers, create_new_chat) is excluded.
+                print(f"[MAIN-STREAM] ▶ Starting main stream loop (first_chunk_timeout=15s, stall_timeout=30s)")
                 _MAIN_FIRST_CHUNK_TIMEOUT = 15.0
+                # Must exceed service.py's total retry budget (3 × 30s = 90s)
+                # to avoid racing with internal retries and orphaning generators.
+                _MAIN_STALL_TIMEOUT = 120.0
+                _EMPTY_RESPONSE_MAX_RETRIES = 3
+                _empty_response_retries = 0
                 _main_got_first = False
+                _main_request_sent = False
                 _main_timeout_retries = 0
+                _main_stall_retries = 0
                 _main_iter = round_event_source.__aiter__()
 
                 while True:
                     try:
-                        if not _main_got_first:
+                        if not _main_request_sent:
+                            # Pre-request phase: consume setup events without timeout pressure
+                            event = await _main_iter.__anext__()
+                            if event.get("type") == "request_sent":
+                                _main_request_sent = True
+                                print(f"[MAIN-STREAM]   ✓ request_sent — starting first-chunk timer ({_MAIN_FIRST_CHUNK_TIMEOUT}s)")
+                                continue
+                            # meta/status events during setup pass through normally
+                        elif not _main_got_first:
+                            print(f"[MAIN-STREAM]   ↳ waiting for first chunk (timeout={_MAIN_FIRST_CHUNK_TIMEOUT}s)...")
                             event = await asyncio.wait_for(
                                 _main_iter.__anext__(),
                                 timeout=_MAIN_FIRST_CHUNK_TIMEOUT,
                             )
                             _main_got_first = True
+                            print(f"[MAIN-STREAM]   ✓ first chunk received: type={event.get('type')}")
                         else:
-                            event = await _main_iter.__anext__()
-                    except asyncio.TimeoutError:
-                        _main_timeout_retries += 1
-                        logger.warning("[main-stream] First-chunk timeout (%ds), attempt %d/2 for chat %s",
-                                       _MAIN_FIRST_CHUNK_TIMEOUT, _main_timeout_retries, active_chat_id)
-                        if _main_timeout_retries >= 2:
-                            # Synthesize waf_blocked to trigger auto-switch
-                            yield sse({"type": "status", "message": "first_chunk_timeout_triggering_switch"})
-                            event = {"type": "waf_blocked", "message": "No response within 15s after 2 attempts — connection hung"}
-                            # Fall through to normal event handling below
-                        else:
-                            # Retry: close current service, re-create stream
-                            yield sse({"type": "status", "message": f"retrying_timeout_{_main_timeout_retries + 1}"})
-                            try:
-                                await service.close()
-                                await service._ensure_headers()
-                            except Exception as _retry_exc:
-                                logger.warning("[main-stream] Retry refresh failed: %s", _retry_exc)
-                            round_event_source = retry_stream(
-                                lambda: service.stream_events(
-                                    message=current_message,
-                                    chat_id=_qwen_chat_id,
-                                    parent_id=current_parent,
-                                    files=files_for_round,
-                                    model=request.model,
-                                    thinking_mode=request.thinking_mode,
-                                ),
-                                label=f"stream_round_{round_index}_retry{_main_timeout_retries}",
+                            event = await asyncio.wait_for(
+                                _main_iter.__anext__(),
+                                timeout=_MAIN_STALL_TIMEOUT,
                             )
-                            _main_iter = round_event_source.__aiter__()
-                            _main_got_first = False
-                            continue
+                    except asyncio.TimeoutError:
+                        if not _main_got_first:
+                            _main_timeout_retries += 1
+                            print(f"[MAIN-STREAM]   ⏰ FIRST-CHUNK TIMEOUT ({_MAIN_FIRST_CHUNK_TIMEOUT}s), attempt {_main_timeout_retries}/3")
+                            logger.warning("[main-stream] First-chunk timeout (%ds), attempt %d/3 for chat %s",
+                                           _MAIN_FIRST_CHUNK_TIMEOUT, _main_timeout_retries, active_chat_id)
+                            if _main_timeout_retries >= 3:
+                                # Synthesize waf_blocked to trigger auto-switch
+                                yield sse({"type": "status", "message": "first_chunk_timeout_triggering_switch"})
+                                event = {"type": "waf_blocked", "message": "No response within 15s after 3 attempts — connection hung", **_build_account_debug_info()}
+                                # Fall through to normal event handling below
+                            else:
+                                # Retry: close current service, re-create stream
+                                yield sse({"type": "status", "message": f"retrying_timeout_{_main_timeout_retries + 1}"})
+                                if _is_api_model(request.model):
+                                    # API backend (DeepSeek, Gemini, etc.) — retry via connector
+                                    try:
+                                        round_event_source = _connector.stream_chat(**_stream_kwargs)
+                                    except Exception as _retry_exc:
+                                        logger.warning("[main-stream] API retry failed: %s", _retry_exc)
+                                        event = {"type": "waf_blocked", "message": f"API retry failed: {_retry_exc}", **_build_account_debug_info()}
+                                else:
+                                    # Qwen scraper path
+                                    try:
+                                        await service.close()
+                                        await service._ensure_headers()
+                                    except Exception as _retry_exc:
+                                        logger.warning("[main-stream] Retry refresh failed: %s", _retry_exc)
+                                    round_event_source = retry_stream(
+                                        lambda: service.stream_events(
+                                            message=current_message,
+                                            chat_id=_qwen_chat_id,
+                                            parent_id=current_parent,
+                                            files=files_for_round,
+                                            model=request.model,
+                                            thinking_mode=request.thinking_mode,
+                                        ),
+                                        label=f"stream_round_{round_index}_retry{_main_timeout_retries}",
+                                    )
+                                _main_iter = round_event_source.__aiter__()
+                                _main_got_first = False
+                                _main_request_sent = False
+                                continue
+                        else:
+                            # Mid-stream stall — connection died after partial response
+                            _main_stall_retries += 1
+                            print(f"[MAIN-STREAM]   ⏰ STALL TIMEOUT ({_MAIN_STALL_TIMEOUT}s), attempt {_main_stall_retries}/3")
+                            logger.warning("[main-stream] Stall timeout (%ds) after first chunk for chat %s, attempt %d/3",
+                                           _MAIN_STALL_TIMEOUT, active_chat_id, _main_stall_retries)
+                            if _main_stall_retries >= 3:
+                                yield sse({"type": "status", "message": "stream_stall_timeout_triggering_switch"})
+                                event = {"type": "waf_blocked", "message": f"Stream stalled for {_MAIN_STALL_TIMEOUT}s mid-response after 3 attempts — connection died", **_build_account_debug_info()}
+                                # Fall through to auto-switch handler
+                            else:
+                                # Retry: drop connection and reconnect
+                                yield sse({"type": "status", "message": f"retrying_stall_{_main_stall_retries + 1}"})
+                                if _is_api_model(request.model):
+                                    try:
+                                        round_event_source = _connector.stream_chat(**_stream_kwargs)
+                                    except Exception as _retry_exc:
+                                        logger.warning("[main-stream] API stall-retry failed: %s", _retry_exc)
+                                        event = {"type": "waf_blocked", "message": f"API stall-retry failed: {_retry_exc}", **_build_account_debug_info()}
+                                else:
+                                    try:
+                                        await service.close()
+                                        await service._ensure_headers()
+                                    except Exception as _retry_exc:
+                                        logger.warning("[main-stream] Stall-retry refresh failed: %s", _retry_exc)
+                                    round_event_source = retry_stream(
+                                        lambda: service.stream_events(
+                                            message=current_message,
+                                            chat_id=_qwen_chat_id,
+                                            parent_id=current_parent,
+                                            files=files_for_round,
+                                            model=request.model,
+                                            thinking_mode=request.thinking_mode,
+                                        ),
+                                        label=f"stream_round_{round_index}_stall_retry{_main_stall_retries}",
+                                    )
+                                _main_iter = round_event_source.__aiter__()
+                                _main_got_first = False
+                                _main_request_sent = False
+                                continue
                     except StopAsyncIteration:
-                        break
+                        # --- Empty response detection & retry ---
+                        _got_answer_content = bool("".join(_round_raw_parts).strip())
+                        _should_break = True  # default: exit inner loop normally
+                        if not _got_answer_content and not stream_error:
+                            _empty_response_retries += 1
+                            if _empty_response_retries <= _EMPTY_RESPONSE_MAX_RETRIES:
+                                print(f"[MAIN-STREAM]   ⚠ EMPTY RESPONSE (retry {_empty_response_retries}/{_EMPTY_RESPONSE_MAX_RETRIES})")
+                                logger.warning("[main-stream] Empty response for chat %s, retry %d/%d",
+                                               active_chat_id, _empty_response_retries, _EMPTY_RESPONSE_MAX_RETRIES)
+                                yield sse({"type": "status", "message": f"empty_response_retry_{_empty_response_retries}"})
+                                await asyncio.sleep(2)
+                                if _is_api_model(request.model):
+                                    # API backend — retry via connector
+                                    try:
+                                        round_event_source = _connector.stream_chat(**_stream_kwargs)
+                                    except Exception as _retry_exc:
+                                        logger.warning("[main-stream] API empty-retry failed: %s", _retry_exc)
+                                        event = {"type": "empty_exhausted", "message": f"API retry failed: {_retry_exc}", **_build_account_debug_info()}
+                                else:
+                                    # Qwen scraper path
+                                    try:
+                                        await service.close()
+                                        await service._ensure_headers()
+                                    except Exception as _retry_exc:
+                                        logger.warning("[main-stream] Empty-response retry refresh failed: %s", _retry_exc)
+                                    round_event_source = retry_stream(
+                                        lambda: service.stream_events(
+                                            message=current_message,
+                                            chat_id=_qwen_chat_id,
+                                            parent_id=current_parent,
+                                            files=files_for_round,
+                                            model=request.model,
+                                            thinking_mode=request.thinking_mode,
+                                        ),
+                                        label=f"stream_round_{round_index}_empty_retry{_empty_response_retries}",
+                                    )
+                                _main_iter = round_event_source.__aiter__()
+                                _main_got_first = False
+                                _main_request_sent = False
+                                continue  # restart inner while with new stream
+                            else:
+                                # All empty-response retries exhausted
+                                if _auto_switch_enabled() and not _is_api_model(request.model):
+                                    # Auto-switch ON → escalate to account switching
+                                    print(f"[MAIN-STREAM]   ✗ ALL {_EMPTY_RESPONSE_MAX_RETRIES} EMPTY-RESPONSE RETRIES EXHAUSTED — triggering auto-switch")
+                                    logger.warning("[main-stream] All %d empty-response retries exhausted for chat %s, escalating to auto-switch",
+                                                   _EMPTY_RESPONSE_MAX_RETRIES, active_chat_id)
+                                    yield sse({"type": "status", "message": "empty_response_exhausted_triggering_switch"})
+                                    # Synthesize empty_exhausted event — triggers auto-switch WITHOUT
+                                    # marking captcha-blocked (empty ≠ captcha; could be transient)
+                                    event = {"type": "empty_exhausted", "message": f"Empty response after {_EMPTY_RESPONSE_MAX_RETRIES} retries — possible silent block", **_build_account_debug_info()}
+                                    _should_break = False  # don't break — let event handling below catch this
+                                else:
+                                    # Auto-switch OFF or API backend → just fail cleanly
+                                    print(f"[MAIN-STREAM]   ✗ ALL {_EMPTY_RESPONSE_MAX_RETRIES} EMPTY-RESPONSE RETRIES EXHAUSTED — no auto-switch")
+                                    logger.warning("[main-stream] All %d empty-response retries exhausted for chat %s, auto-switch disabled",
+                                                   _EMPTY_RESPONSE_MAX_RETRIES, active_chat_id)
+                                    error_message = f"Empty response after {_EMPTY_RESPONSE_MAX_RETRIES} retries."
+                                    stream_error = True
+                        if _should_break:
+                            break
 
                     event_type = event.get("type")
-                    # Suppress upstream meta events — local chat_id is authoritative
-                    if event_type == "meta":
+                    # Suppress internal/setup events
+                    if event_type in ("meta", "request_sent"):
+                        continue
+                    if event_type == "response_id":
+                        # Capture for CancelledError stop call, forward to frontend
+                        _rid = event.get("id")
+                        if _rid:
+                            final_parent = str(_rid)
+                        yield sse(event)
                         continue
                     if event_type == "answer":
                         pending_thinking.clear()
@@ -1468,8 +1754,8 @@ async def chat(request: ChatRequest):
                             # No meta event needed — local chat_id hasn't changed
                             async for _recovery_event in round_event_source:
                                 _rec_type = _recovery_event.get("type")
-                                if _rec_type == "meta":
-                                    # Suppress upstream meta, we already sent ours
+                                if _rec_type in ("meta", "request_sent"):
+                                    # Suppress internal/setup events
                                     continue
                                 if _rec_type == "answer":
                                     pending_thinking.clear()
@@ -1524,7 +1810,7 @@ async def chat(request: ChatRequest):
                         )
                         async for _recovery_event in round_event_source:
                             _rec_type = _recovery_event.get("type")
-                            if _rec_type == "meta":
+                            if _rec_type in ("meta", "request_sent"):
                                 continue
                             if _rec_type == "answer":
                                 pending_thinking.clear()
@@ -1560,29 +1846,170 @@ async def chat(request: ChatRequest):
                         async for _sse_line in _drain_sync_gen(emit_flush()):
                             yield _sse_line
                         error_message = str(event.get("message", "Unknown error"))
+                        # --- "Chat in progress" retry: 30s total, 3s delay between attempts ---
+                        _cip_lower = error_message.lower()
+                        _is_chat_in_progress = any(kw in _cip_lower for kw in (
+                            "chat in progress", "generation in progress", "already generating",
+                            "task in progress", "please wait", "busy", "concurrent request",
+                        ))
+                        if _is_chat_in_progress and not _is_api_model(request.model):
+                            # IMMEDIATELY call stop API — don't wait for retries
+                            print(f"[MAIN-STREAM]   🔨 'chat in progress' detected — calling stop API immediately")
+                            try:
+                                _stop_ok = await service._stop_upstream_generation(_qwen_chat_id)
+                                if _stop_ok:
+                                    print(f"[MAIN-STREAM]   ✓ Stop API succeeded on first detection")
+                                else:
+                                    print(f"[MAIN-STREAM]   ✗ Stop API returned failure on first detection")
+                            except Exception as _stop_exc:
+                                logger.warning("[main-stream] Immediate stop failed: %s", _stop_exc)
+                            _cip_max_retries = 10  # 10 × 3s = 30s
+                            _cip_retry = 0
+                            _cip_resolved = False
+                            while _cip_retry < _cip_max_retries:
+                                _cip_retry += 1
+                                print(f"[MAIN-STREAM]   ⏳ 'chat in progress' check {_cip_retry}/{_cip_max_retries} (waiting 3s)")
+                                logger.info("[main-stream] 'chat in progress' for chat %s, check %d/%d",
+                                            active_chat_id, _cip_retry, _cip_max_retries)
+                                yield sse({"type": "status", "message": f"chat_in_progress_retry_{_cip_retry}"})
+                                await asyncio.sleep(3)
+                                try:
+                                    await service.close()
+                                    await service._ensure_headers()
+                                except Exception as _cip_exc:
+                                    logger.warning("[main-stream] Chat-in-progress retry refresh failed: %s", _cip_exc)
+                                round_event_source = retry_stream(
+                                    lambda: service.stream_events(
+                                        message=current_message,
+                                        chat_id=_qwen_chat_id,
+                                        parent_id=current_parent,
+                                        files=files_for_round,
+                                        model=request.model,
+                                        thinking_mode=request.thinking_mode,
+                                    ),
+                                    label=f"stream_round_{round_index}_cip_retry{_cip_retry}",
+                                )
+                                _main_iter = round_event_source.__aiter__()
+                                _main_got_first = False
+                                _main_request_sent = False
+                                # Peek at first real event to check if still "chat in progress"
+                                try:
+                                    _peek_event = await asyncio.wait_for(
+                                        _main_iter.__anext__(),
+                                        timeout=_MAIN_FIRST_CHUNK_TIMEOUT,
+                                    )
+                                    _peek_type = _peek_event.get("type", "")
+                                    _peek_msg = str(_peek_event.get("message", "")).lower()
+                                    if _peek_type == "error" and any(kw in _peek_msg for kw in (
+                                        "chat in progress", "generation in progress", "already generating",
+                                        "task in progress", "please wait", "busy", "concurrent request",
+                                    )):
+                                        # Confirmed still busy → call stop reactively before next retry
+                                        print(f"[MAIN-STREAM]   🔨 Still busy after probe — calling stop API (check {_cip_retry})")
+                                        try:
+                                            _stop_ok = await service._stop_upstream_generation(_qwen_chat_id)
+                                            if _stop_ok:
+                                                print(f"[MAIN-STREAM]   ✓ Stop API succeeded on check {_cip_retry}")
+                                            else:
+                                                print(f"[MAIN-STREAM]   ✗ Stop API failed on check {_cip_retry}")
+                                        except Exception as _stop_exc:
+                                            logger.warning("[main-stream] Reactive stop failed: %s", _stop_exc)
+                                        continue  # Still in progress, retry again
+                                    else:
+                                        # Resolved! Process this event normally
+                                        _cip_resolved = True
+                                        event = _peek_event
+                                        event_type = event.get("type", "")
+                                        if event_type == "request_sent":
+                                            _main_request_sent = True
+                                            continue
+                                        break
+                                except asyncio.TimeoutError:
+                                    # Timeout waiting for first chunk after retry — treat as normal timeout
+                                    break
+                                except StopAsyncIteration:
+                                    # Empty stream — let empty-response handler deal with it
+                                    break
+                            if not _cip_resolved and _cip_retry >= _cip_max_retries:
+                                print(f"[MAIN-STREAM]   ✗ 'chat in progress' persisted after {_cip_max_retries} retries (30s)")
+                                logger.warning("[main-stream] 'chat in progress' persisted after %d retries for chat %s",
+                                               _cip_max_retries, active_chat_id)
+                                stream_error = True
+                            elif _cip_resolved:
+                                # Continue processing the resolved event through normal flow
+                                pass
+                            else:
+                                # Broke out of retry loop due to timeout/empty — fall through
+                                pass
+                            if _cip_resolved or _cip_retry >= _cip_max_retries:
+                                pass  # Fall through to normal event handling below
+                            else:
+                                continue  # Retry loop continues
+                        # FIX #7: Stricter keyword matching to avoid false positives.
+                        # Use phrase-level matching with context awareness instead of raw substrings.
+                        # "blocked" alone is too broad (e.g., "content blocked by filter" ≠ WAF).
+                        import re as _re
+                        _err_lower_check = error_message.lower()
+                        _is_rate_limit = any(kw in _err_lower_check for kw in (
+                            "ratelimit", "rate_limit", "rate limit", "too many requests",
+                            "daily usage", "usage limit", "quota exceeded", "429",
+                        ))
+                        _is_captcha = any(pat.search(_err_lower_check) for pat in (
+                            _re.compile(r'\bcaptcha\b'),
+                            _re.compile(r'\bwaf\b'),
+                            _re.compile(r'\brgv587\b'),
+                            _re.compile(r'\bverify.*identity\b'),
+                            _re.compile(r'\bsecurity.*check\b'),
+                            _re.compile(r'\baccess.*denied.*ip\b'),
+                            _re.compile(r'\bblocked.*request\b'),
+                        ))
+                        if _is_rate_limit or _is_captcha:
+                            print(f"[MAIN-STREAM]   ⚡ ESCALATING generic error to {'rate_limited' if _is_rate_limit else 'waf_blocked'}: {error_message[:100]}")
+                            logger.warning("[main-stream] Generic error looks like %s, escalating to auto-switch: %s",
+                                           "rate_limit" if _is_rate_limit else "captcha", error_message[:200])
+                            # Rewrite event type so the auto-switch block below catches it
+                            event = {**event, "type": "rate_limited" if _is_rate_limit else "waf_blocked", **_build_account_debug_info()}
+                            event_type = event["type"]
+                            # Fall through to rate_limited/waf_blocked handler below
+                        else:
+                            stream_error = True
+                    # Auto-switch is Qwen-only — browser account switching is meaningless
+                    # for native API backends (Gemini/Groq/DeepSeek) and scraper.
+                    _is_qwen_stream = not _is_api_model(request.model) and not scraper_enabled
+                    if event_type in ("rate_limited", "waf_blocked", "empty_exhausted") and not _is_qwen_stream:
+                        # Non-Qwen backend hit rate-limit/WAF — just report error, don't switch accounts
                         stream_error = True
-                    elif event_type in ("rate_limited", "waf_blocked"):
+                    elif event_type in ("rate_limited", "waf_blocked", "empty_exhausted") and _is_qwen_stream and _auto_switch_enabled():
+                        print(f"[AUTO-SWITCH] ▶ TRIGGERED by {event_type} — msg={str(event.get('message',''))[:100]}")
                         pending_thinking.clear()
                         async for _sse_line in _drain_sync_gen(emit_flush()):
                             yield _sse_line
-                        # --- Auto-switch to next available account (with retry loop) ---
-                        _switch_reason = "rate_limit" if event_type == "rate_limited" else "waf_block"
+                        # --- Auto-switch to next available account ---
+                        _switch_reason = "rate_limit" if event_type == "rate_limited" else ("empty_exhausted" if event_type == "empty_exhausted" else "waf_block")
                         logger.info("[auto-switch] Triggered by %s for chat %s", _switch_reason, active_chat_id)
                         yield sse({"type": "account_switch", "step": "triggered", "reason": _switch_reason})
 
                         from engine.config import (
                             get_next_available_account,
+                            set_active_account,
                             _resolve_active_account as _get_active,
                             mark_account_captcha_blocked,
+                            mark_account_exhausted,
+                            _SYSTEM as _SYS,
                         )
                         _current_acc = _get_active()
 
-                        # Mark captcha-blocked accounts so they're deprioritized
+                        # Mark the failing account so get_next_available_account skips it.
                         if event_type == "waf_blocked":
                             mark_account_captcha_blocked(_current_acc)
+                        elif event_type == "empty_exhausted":
+                            # Empty responses = silent rate-limit / dead session.
+                            # Mark as exhausted so we don't pick this account again.
+                            mark_account_exhausted(_current_acc)
+                            logger.info("[auto-switch] Marked %s as exhausted (empty_exhausted trigger)", _current_acc)
 
                         _tried_accounts: set[str] = {_current_acc}
-                        _switch_max_retries = 10
+                        _switch_max_retries = 5
                         _switch_attempt = 0
                         _switch_success = False
 
@@ -1608,24 +2035,16 @@ async def chat(request: ChatRequest):
                             logger.info("[auto-switch] Attempt %d: Switching from %s → %s", _switch_attempt, _current_acc, _next_acc)
                             yield sse({"type": "account_switch", "step": "switching", "from": _current_acc, "to": _next_acc, "attempt": _switch_attempt})
                             try:
-                                await service.switch_account(_next_acc)
-                                logger.info("[auto-switch] Service switched to %s", _next_acc)
-
-                                # Strip old profile in background (fire-and-forget, non-blocking)
-                                from pathlib import Path as _Path
-                                from engine.config import _SYSTEM as _SYS
-                                _old_profile = _SYS / _current_acc
-                                if _old_profile.is_dir():
-                                    from server.api.routes.settings import _spawn_bg, _strip_one_profile
-                                    async def _auto_strip_bg(profile: _Path) -> None:
-                                        try:
-                                            name, before, after = await asyncio.to_thread(_strip_one_profile, profile)
-                                            logger.info("[auto-switch] Stripped old profile %s: %.1fMB → %.1fMB", name, before, after)
-                                        except Exception as exc:
-                                            logger.warning("[auto-switch] Failed to strip old profile: %s", exc)
-                                    _spawn_bg(_auto_strip_bg(_old_profile))
+                                await service.close()
+                                set_active_account(_next_acc)
+                                # Update singleton service internals so subsequent
+                                # requests use the new account's browser profile.
+                                _next_path = _SYS / _next_acc
+                                service._browser.user_data_dir = str(_next_path)
+                                service._account_override = _next_acc
+                                logger.info("[auto-switch] Active account updated to %s", _next_acc)
                             except Exception as _sw_exc:
-                                logger.error("[auto-switch] Symlink switch failed: %s", _sw_exc)
+                                logger.error("[auto-switch] Account switch failed: %s", _sw_exc)
                                 yield sse({"type": "account_switch", "step": "failed", "error": str(_sw_exc)})
                                 error_message = f"Account switch failed: {_sw_exc}"
                                 stream_error = True
@@ -1679,171 +2098,68 @@ async def chat(request: ChatRequest):
 
                             yield sse({"type": "account_switch", "step": "complete", "account": _next_acc, "reason": _switch_reason})
 
-                            # Per-account retry: try up to 3 times on this account before switching to next
-                            _PER_ACCOUNT_MAX_RETRIES = 3
-                            _per_account_attempt = 0
-                            _per_account_success = False
-
-                            while _per_account_attempt < _PER_ACCOUNT_MAX_RETRIES and not _per_account_success:
-                                _per_account_attempt += 1
-                                _switch_msg = _switch_ctx if _switch_ctx else current_message
-
-                                if _per_account_attempt > 1:
-                                    logger.info("[auto-switch] Per-account retry %d/%d for %s",
-                                                _per_account_attempt, _PER_ACCOUNT_MAX_RETRIES, _next_acc)
-                                    yield sse({"type": "account_switch", "step": "retrying",
-                                               "account": _next_acc, "reason": "empty_response",
-                                               "attempt": _switch_attempt,
-                                               "per_account_attempt": _per_account_attempt})
-                                    # Brief pause before retry to let transient issues clear
-                                    await asyncio.sleep(2)
-
-                                round_event_source = service.stream_events(
-                                    message=_switch_msg,
-                                    chat_id=_upstream_session_id,
-                                    parent_id=None,
-                                    files=files_for_round,
-                                    model=request.model,
-                                    thinking_mode=request.thinking_mode,
-                                )
-
-                                # First-chunk timeout: if no event arrives within 15s,
-                                # treat as hung connection → mark account + retry next
-                                _FIRST_CHUNK_TIMEOUT = 15.0
-                                _got_first_event = False
-                                _restream_iter = round_event_source.__aiter__()
-                                _restream_timed_out = False
-                                _got_any_answer = False
-                                _skip_to_next_account = False
-
-                                while True:
-                                    try:
-                                        if not _got_first_event:
-                                            _sw_event = await asyncio.wait_for(
-                                                _restream_iter.__anext__(),
-                                                timeout=_FIRST_CHUNK_TIMEOUT,
-                                            )
-                                            _got_first_event = True
-                                        else:
-                                            _sw_event = await _restream_iter.__anext__()
-                                    except asyncio.TimeoutError:
-                                        # No data within timeout — connection hung
-                                        logger.warning("[auto-switch] First-chunk timeout (%ds) for %s, marking captcha-blocked",
-                                                       _FIRST_CHUNK_TIMEOUT, _next_acc)
-                                        mark_account_captcha_blocked(_next_acc)
-                                        _tried_accounts.add(_next_acc)
-                                        _restream_timed_out = True
-                                        _skip_to_next_account = True
-                                        yield sse({"type": "account_switch", "step": "retrying",
-                                                   "account": _next_acc, "reason": "timeout", "attempt": _switch_attempt})
-                                        _current_acc = _next_acc
-                                        break  # break inner while → skip to next account
-                                    except StopAsyncIteration:
-                                        break  # generator exhausted normally
-
-                                    _sw_type = _sw_event.get("type")
-                                    if _sw_type == "meta":
-                                        continue
-                                    if _sw_type == "answer":
-                                        _got_any_answer = True
-                                        pending_thinking.clear()
-                                        _raw_chunk = str(_sw_event.get("text", ""))
-                                        _raw_answer_parts.append(_raw_chunk)
-                                        _round_raw_parts.append(_raw_chunk)
-                                        async for _sse_line in _drain_sync_gen(emit_parsed(_raw_chunk)):
-                                            yield _sse_line
-                                        continue
-                                    if _sw_type == "thinking":
-                                        _chunk = str(_sw_event.get("text", ""))
-                                        thinking_parts.append(_chunk)
-                                        round_thinking_parts.append(_chunk)
-                                        pending_thinking.append(_chunk)
-                                        yield sse({"type": "thinking", "text": _chunk})
-                                        continue
-                                    if _sw_type == "done":
-                                        pending_thinking.clear()
-                                        async for _sse_line in _drain_sync_gen(emit_flush()):
-                                            yield _sse_line
-                                        final_parent = _sw_event.get("parent_id") or final_parent
-                                        current_parent = final_parent
-                                    elif _sw_type == "error":
-                                        pending_thinking.clear()
-                                        async for _sse_line in _drain_sync_gen(emit_flush()):
-                                            yield _sse_line
-                                        _err_msg = str(_sw_event.get("message", ""))
-                                        # Defense-in-depth: detect rate-limit/captcha in generic errors
-                                        _err_lower = _err_msg.lower()
-                                        if any(kw in _err_lower for kw in ("ratelimit", "rate_limit", "rate limit", "quota", "daily usage", "exceeded")):
-                                            logger.warning("[auto-switch] Generic error looks like rate-limit for %s: %s", _next_acc, _err_msg[:200])
-                                            from engine.config import mark_account_exhausted as _mark_exh
-                                            _mark_exh(_next_acc)
-                                            _tried_accounts.add(_next_acc)
-                                            _skip_to_next_account = True
-                                            yield sse({"type": "account_switch", "step": "retrying",
-                                                       "account": _next_acc, "reason": "rate_limited", "attempt": _switch_attempt})
-                                            _current_acc = _next_acc
-                                            break  # skip to next account
-                                        if any(kw in _err_lower for kw in ("captcha", "waf", "validate", "rgv587", "blocked")):
-                                            logger.warning("[auto-switch] Generic error looks like captcha/WAF for %s: %s", _next_acc, _err_msg[:200])
-                                            mark_account_captcha_blocked(_next_acc)
-                                            _tried_accounts.add(_next_acc)
-                                            _skip_to_next_account = True
-                                            yield sse({"type": "account_switch", "step": "retrying",
-                                                       "account": _next_acc, "reason": "waf_blocked", "attempt": _switch_attempt})
-                                            _current_acc = _next_acc
-                                            break  # skip to next account
-                                        # Non-fatal error: treat as retryable on same account
-                                        logger.warning("[auto-switch] Non-fatal error on %s (per-account attempt %d): %s",
-                                                       _next_acc, _per_account_attempt, _err_msg[:200])
-                                        error_message = _err_msg or "Unknown error after switch"
-                                        stream_error = True
-                                    elif _sw_type in ("rate_limited", "waf_blocked"):
-                                        # New account also blocked — mark and skip to next account
-                                        _tried_accounts.add(_next_acc)
-                                        if _sw_type == "waf_blocked":
-                                            mark_account_captcha_blocked(_next_acc)
-                                        else:
-                                            from engine.config import mark_account_exhausted as _mark_exh
-                                            _mark_exh(_next_acc)
-                                        logger.warning("[auto-switch] New account %s also blocked (%s), will retry", _next_acc, _sw_type)
-                                        pending_thinking.clear()
-                                        async for _sse_line in _drain_sync_gen(emit_flush()):
-                                            yield _sse_line
-                                        _skip_to_next_account = True
-                                        yield sse({"type": "account_switch", "step": "retrying", "account": _next_acc, "reason": _sw_type, "attempt": _switch_attempt})
-                                        _current_acc = _next_acc
-                                        break  # break inner while → skip to next account
-                                    yield sse(_sw_event)
-
-                                # Decide what to do after this per-account attempt
-                                if _skip_to_next_account:
-                                    # Fatal issue (timeout/rate-limit/captcha) → go to next account immediately
-                                    break  # break per-account loop → continue outer account loop
-
-                                if _got_any_answer and not stream_error:
-                                    # Got actual content — success!
-                                    _per_account_success = True
-                                    _switch_success = True
-                                    break  # break per-account loop → exit outer loop
-
-                                # Empty response or non-fatal error → retry on same account (if attempts remain)
-                                if _per_account_attempt < _PER_ACCOUNT_MAX_RETRIES:
-                                    logger.warning("[auto-switch] Empty/error response on %s (attempt %d/%d), retrying same account",
-                                                   _next_acc, _per_account_attempt, _PER_ACCOUNT_MAX_RETRIES)
-                                    # Reset stream_error for retry — only keep it if final attempt fails
-                                    stream_error = False
-                                    continue  # retry same account
-                                else:
-                                    # Exhausted per-account retries → move to next account
-                                    logger.warning("[auto-switch] All %d per-account retries exhausted for %s, moving to next account",
-                                                   _PER_ACCOUNT_MAX_RETRIES, _next_acc)
+                            # Re-stream with context + new session
+                            _switch_msg = _switch_ctx if _switch_ctx else current_message
+                            round_event_source = service.stream_events(
+                                message=_switch_msg,
+                                chat_id=_upstream_session_id,
+                                parent_id=None,
+                                files=files_for_round,
+                                model=request.model,
+                                thinking_mode=request.thinking_mode,
+                            )
+                            async for _sw_event in round_event_source:
+                                _sw_type = _sw_event.get("type")
+                                if _sw_type == "meta":
+                                    continue
+                                if _sw_type == "answer":
+                                    pending_thinking.clear()
+                                    _raw_chunk = str(_sw_event.get("text", ""))
+                                    _raw_answer_parts.append(_raw_chunk)
+                                    _round_raw_parts.append(_raw_chunk)
+                                    async for _sse_line in _drain_sync_gen(emit_parsed(_raw_chunk)):
+                                        yield _sse_line
+                                    continue
+                                if _sw_type == "thinking":
+                                    _chunk = str(_sw_event.get("text", ""))
+                                    thinking_parts.append(_chunk)
+                                    round_thinking_parts.append(_chunk)
+                                    pending_thinking.append(_chunk)
+                                    yield sse({"type": "thinking", "text": _chunk})
+                                    continue
+                                if _sw_type == "done":
+                                    pending_thinking.clear()
+                                    async for _sse_line in _drain_sync_gen(emit_flush()):
+                                        yield _sse_line
+                                    final_parent = _sw_event.get("parent_id") or final_parent
+                                    current_parent = final_parent
+                                elif _sw_type == "error":
+                                    pending_thinking.clear()
+                                    async for _sse_line in _drain_sync_gen(emit_flush()):
+                                        yield _sse_line
+                                    error_message = str(_sw_event.get("message", "Unknown error after switch"))
+                                    stream_error = True
+                                elif _sw_type in ("rate_limited", "waf_blocked"):
+                                    # New account also blocked — mark and retry with next account
                                     _tried_accounts.add(_next_acc)
+                                    if _sw_type == "waf_blocked":
+                                        mark_account_captcha_blocked(_next_acc)
+                                    logger.warning("[auto-switch] New account %s also blocked (%s), will retry", _next_acc, _sw_type)
+                                    pending_thinking.clear()
+                                    async for _sse_line in _drain_sync_gen(emit_flush()):
+                                        yield _sse_line
+                                    yield sse({"type": "account_switch", "step": "retrying", "account": _next_acc, "reason": _sw_type, "attempt": _switch_attempt})
                                     _current_acc = _next_acc
-                                    break  # break per-account loop → continue outer account loop
-
-                            if _per_account_success:
-                                break  # Exit outer while loop — we got a response
-                            # Otherwise continue outer while to try next account
+                                    continue  # continue while loop to try next account
+                                yield sse(_sw_event)
+                            # Re-stream completed without fatal error
+                            if not stream_error:
+                                _switch_success = True
+                                # Reset empty-response counter so the new account gets
+                                # its own fair retry budget instead of immediately
+                                # re-triggering auto-switch on the next empty response.
+                                _empty_response_retries = 0
+                            break  # Exit while loop (success or non-recoverable error)
 
                         # All retries exhausted without success
                         if not _switch_success and not stream_error:
@@ -1851,6 +2167,7 @@ async def chat(request: ChatRequest):
                             error_message = f"All {_switch_attempt} account switch attempts failed."
                             stream_error = True
                             yield sse(event)
+                            break  # Break inner while True — no point retrying same dead accounts
                     else:
                         yield sse(event)
                 round_thinking_text = "".join(round_thinking_parts)
@@ -1969,6 +2286,11 @@ async def chat(request: ChatRequest):
                     ev.get("type") == "permission_request"
                     for ev in round_skill_events
                 )
+                # cwd_warning pause: stop the stream so the user can approve/change folder
+                _cwd_pause = any(
+                    ev.get("type") == "cwd_warning"
+                    for ev in round_skill_events
+                )
                 # --- Guardrail warnings: LoopDetector (primary) + MainChatGuard (malformed only) ---
                 _guard_warnings: list[str] = []
                 _guard_warnings_injected = False
@@ -1982,18 +2304,46 @@ async def chat(request: ChatRequest):
                     _guard_warnings.append(_fail_warn)
                 # Check malformed/incomplete using RAW text (before parser strips tags)
                 _raw_round_text = "".join(_round_raw_parts)
-                _malform_warn = _guard.check_malformed_action(_raw_round_text)
-                if _malform_warn:
-                    _guard_warnings.append(_malform_warn)
-                # Only check incomplete if malformed didn't already catch it
-                if not _malform_warn:
-                    _incomplete_warn = _guard.check_incomplete_action(
-                        _raw_round_text,
-                        any(ev.get("type") == "skill_end" for ev in round_skill_events),
-                    )
-                    if _incomplete_warn:
-                        _guard_warnings.append(_incomplete_warn)
+                # Skip guard checks when waiting for user approval (permission or CWD)
+                # — the tool call is valid but paused; flagging it as malformed/incomplete
+                # causes the model to see an error and retry the same operation.
+                if not _permission_pause and not _cwd_pause:
+                    _malform_warn = _guard.check_malformed_action(_raw_round_text)
+                    if _malform_warn:
+                        _guard_warnings.append(_malform_warn)
+                    # Only check incomplete if malformed didn't already catch it
+                    if not _malform_warn:
+                        _incomplete_warn = _guard.check_incomplete_action(
+                            _raw_round_text,
+                            any(ev.get("type") == "skill_end" for ev in round_skill_events),
+                        )
+                        if _incomplete_warn:
+                            _guard_warnings.append(_incomplete_warn)
                 feedback = build_tool_feedback(round_skill_events)
+                # --- Critique report injection: prepend prominently so model acts on it ---
+                _critique_reports: list[str] = []
+                for _ev in round_skill_events:
+                    if _ev.get("type") == "skill_end" and _ev.get("name") == "critique" and _ev.get("ok"):
+                        _report = (_ev.get("result") or {}).get("report", "")
+                        if _report:
+                            _critique_reports.append(_report)
+                if _critique_reports:
+                    _critique_block = "\n\n---\n\n".join(_critique_reports)
+                    _critique_injection = (
+                        f"\n\n[CRITIQUE REPORT — Act on this]\n{_critique_block}\n[END CRITIQUE REPORT]"
+                    )
+                    feedback = (feedback + _critique_injection) if feedback else _critique_injection
+                # Flush pending teacher escalation requests mid-stream so Maria
+                # can respond with teacher_guidance tool call alongside tool results
+                try:
+                    from engine.agents.auto_turn import auto_turn as _at_flush
+                    _pending_teacher = _at_flush.get_pending_teacher_prompts(active_chat_id)
+                    if _pending_teacher:
+                        _teacher_block = "\n\n".join(_pending_teacher)
+                        feedback = (feedback + "\n\n" + _teacher_block) if feedback else _teacher_block
+                        logger.info("[chat %s] flushed %d pending teacher escalation(s) mid-stream", active_chat_id, len(_pending_teacher))
+                except Exception:
+                    pass
                 # Extract image paths from skill results for multimodal injection next round
                 for _ev in round_skill_events:
                     if _ev.get("type") == "skill_end" and _ev.get("ok"):
@@ -2011,7 +2361,7 @@ async def chat(request: ChatRequest):
                 if not feedback and _guard_warnings:
                     feedback = "\n\n".join(_guard_warnings)
                     _guard_warnings_injected = True
-                if stream_error or error_message or not feedback or _ask_user_pause or _permission_pause:
+                if stream_error or error_message or not feedback or _ask_user_pause or _permission_pause or _cwd_pause:
                     break
 
 
@@ -2102,6 +2452,16 @@ async def chat(request: ChatRequest):
                         "round": round_index,
                     }
                 )
+        except asyncio.CancelledError:
+            # Frontend disconnected (stop button / tab close) — kill upstream generation
+            logger.info("[event_stream] Client disconnected for chat %s — stopping upstream", active_chat_id)
+            try:
+                _svc = service if not _is_api_model(request.model) else None
+                if _svc and hasattr(_svc, '_stop_upstream_generation'):
+                    await _svc._stop_upstream_generation(active_chat_id, final_parent)
+            except Exception:
+                pass
+            raise  # re-raise so Starlette cleans up properly
         except Exception as exc:
             error_message = f"{type(exc).__name__}: {exc}"
             try:
@@ -2237,6 +2597,77 @@ async def deny_command(tag_id: str, request: Request):
         append_skill_event(chat_id, {
             "type": "skill_end", "id": tag_id, "name": pending.name,
             "ok": False, "error": "User denied this command",
+        })
+
+    return {"ok": True, "feedback": feedback}
+
+
+@router.post("/api/skills/cwd-approve/{tag_id}")
+async def cwd_approve_command(tag_id: str, request: Request):
+    """User approved a CWD warning — execute the tool with cwd_approved flag."""
+    from engine.security.middleware import consume_pending_cwd_warning, cache_session_permission
+
+    body = await request.json() if request else {}
+    chat_id = body.get("chat_id")
+    session = body.get("session", False)
+
+    # Cache session permission before consuming (so subsequent tools skip warning)
+    if session and chat_id:
+        cache_session_permission(chat_id, "cwd")
+
+    pending = consume_pending_cwd_warning(tag_id)
+    if pending is None:
+        return {"ok": False, "error": "CWD warning expired or not found"}
+
+    engine = _get_skill_engine()
+    attrs = {**pending.attrs, "cwd_approved": "true"}
+
+    loop = asyncio.get_event_loop()
+    def _run():
+        return list(engine.process_tag(
+            pending.name, attrs, pending.content,
+            chat_id=chat_id, cwd=pending.cwd,
+        ))
+    try:
+        events = await loop.run_in_executor(None, _run)
+    except Exception as exc:
+        events = [{"type": "skill_end", "id": tag_id, "name": pending.name, "ok": False, "error": str(exc)}]
+
+    from engine.skills.events import build_tool_feedback
+    has_start = any(ev.get("type") == "skill_start" for ev in events)
+    if not has_start:
+        events = [{"type": "skill_start", "id": tag_id, "name": pending.name}] + events
+    feedback = build_tool_feedback(events) or f"[{pending.name}] OK"
+
+    from server.database import append_skill_event
+    if chat_id:
+        for ev in events:
+            append_skill_event(chat_id, ev)
+
+    return {"ok": True, "feedback": feedback}
+
+
+@router.post("/api/skills/cwd-deny/{tag_id}")
+async def cwd_deny_command(tag_id: str, request: Request):
+    """User denied a CWD warning — return tool feedback without executing."""
+    from engine.security.middleware import consume_pending_cwd_warning
+
+    pending = consume_pending_cwd_warning(tag_id)
+    if pending is None:
+        return {"ok": False, "error": "CWD warning expired or not found"}
+
+    path_preview = pending.path[:200]
+    feedback = f"[{pending.name}] FAILED — User denied file operation outside project: {path_preview}"
+
+    from server.database import append_skill_event
+    chat_id = (await request.json()).get("chat_id") if request else None
+    if chat_id:
+        append_skill_event(chat_id, {
+            "type": "skill_start", "id": tag_id, "name": pending.name,
+        })
+        append_skill_event(chat_id, {
+            "type": "skill_end", "id": tag_id, "name": pending.name,
+            "ok": False, "error": "User denied file operation outside project",
         })
 
     return {"ok": True, "feedback": feedback}

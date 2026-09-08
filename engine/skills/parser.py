@@ -71,6 +71,8 @@ KNOWN_TAGS = (
     "web_fetch",
     "online_search",
     "chat_title",
+    "computer_use",
+    "load_tool",
 )
 
 # Params that map to the content field for handler compatibility.
@@ -283,7 +285,9 @@ def _build_calls(data: Any) -> list[dict[str, Any]]:
 
         attrs = _stringify_params(params)
 
-        # Extract content-bearing params into content field
+        # Extract content-bearing params into content field.
+        # If no known content key matches, serialize the full params dict so
+        # handlers that expect raw JSON args (e.g. critique) still receive them.
         content = ""
         for key in _CONTENT_PARAM_KEYS:
             val = params.get(key)
@@ -291,13 +295,18 @@ def _build_calls(data: Any) -> list[dict[str, Any]]:
                 content = val
                 break
 
-        # Special case: chat_title uses title/text param as content
-        if tool_name == "chat_title" and not content:
+        # Special case: chat_title uses title/text param as content.
+        # Must run BEFORE the json.dumps fallback or the whole args dict
+        # gets serialized and stored as the literal title string.
+        if not content and tool_name == "chat_title":
             for key in ("title", "text"):
                 val = params.get(key)
                 if isinstance(val, str) and val.strip():
                     content = val
                     break
+
+        if not content and params:
+            content = json.dumps(params, ensure_ascii=False)
 
         calls.append({"name": tool_name, "attrs": attrs, "content": content})
 
@@ -350,16 +359,56 @@ class SkillParser:
     for the engine to dispatch through the middleware pipeline.
     """
 
-    _ACTION_OPEN = re.compile(r"<\s*tool_call\s*>", re.I)
-    _ACTION_CLOSE = re.compile(r"<\s*/\s*tool_call\s*>", re.I)
+    # Supports both <tool_call (Hermes) and <action> (Qwen native) wrappers.
+    _ACTION_OPEN = re.compile(r"(?:<\s*tool_calls?\s*>|<\s*action\s*>)", re.I)
+    _ACTION_CLOSE = re.compile(r"(?:<\s*/\s*tool_calls?\s*>|<\s*/\s*action\s*>)", re.I)
     _TOOL_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
+
+    # DSML (DeepSeek Markup Language) patterns — tolerates missing leading ｜,
+    # underscore variants (dsml_tool_calls), ASCII pipe |, and mixed delimiters.
+    # DeepSeek sometimes uses ASCII | (U+007C) instead of fullwidth ｜ (U+FF5C).
+    _DSML_OPEN = re.compile(r"<[｜|_]?DSML[｜_|]tool_calls\s*>", re.I)
+    _DSML_CLOSE = re.compile(r"</[｜|_]?DSML[｜_|]tool_calls\s*>", re.I)
+    _DSML_INVOKE_RE = re.compile(
+        r'<[｜|_]?DSML[｜|_]invoke\s+name="([^"]+)"\s*>(.*?)</[｜|_]?DSML[｜|_]invoke\s*>',
+        re.DOTALL,
+    )
+    _DSML_PARAM_RE = re.compile(
+        r'<[｜|_]?DSML[｜|_]parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>(.*?)</[｜|_]?DSML[｜|_]parameter\s*>',
+        re.DOTALL,
+    )
+    # Legacy XML invoke/parameter (Qwen3 XML fallback, older DeepSeek drift)
+    _LEGACY_INVOKE_RE = re.compile(
+        r'<invoke\s+name="([^"]+)"\s*>(.*?)</invoke\s*>',
+        re.DOTALL,
+    )
+    _LEGACY_PARAM_RE = re.compile(
+        r'<parameter\s+name="([^"]+)"(?:\s+string="(?:true|false)")?\s*>(.*?)</parameter\s*>',
+        re.DOTALL,
+    )
+    _LEGACY_BLOCK_OPEN = re.compile(r"<tool_calls\s*>", re.I)
+    _LEGACY_BLOCK_CLOSE = re.compile(r"</tool_calls\s*>", re.I)
+
+    # Safety net regex for orphaned tags in bare-JSON prefix text.
+    # Also catches bare fragments like "action>" or "tool_call>" that result
+    # from </ being consumed by partial-tag detection in a prior chunk.
+    _ORPHAN_TAG_RE = re.compile(
+        r'(?:</?\s*(?:action|tool_calls?)\s*>|(?:^|(?<=[\s</]))(?:action|tool_calls?)\s*>)',
+        re.IGNORECASE,
+    )
 
     def __init__(self, known_tags: tuple[str, ...] | None = None) -> None:
         self._known_tags = set(known_tags or KNOWN_TAGS)
         self.buf = ""
         self._in_action = False
+        self._in_dsml = False
         self._pending_tag: str | None = None
         self._last_progress: tuple[int, int] = (0, 0)
+
+    @classmethod
+    def _strip_orphan_tags(cls, text: str) -> str:
+        """Remove orphaned action/tool_call tags from prose text."""
+        return cls._ORPHAN_TAG_RE.sub("", text)
 
     def feed(self, text: str) -> Generator[dict[str, Any], None, None]:
         """Feed a chunk of streamed text. Yields events as calls/prose are resolved."""
@@ -387,16 +436,74 @@ class SkillParser:
                 _stripped_buf = self.buf.strip()
                 if _stripped_buf and "<" not in _stripped_buf:
                     # Could be a fragment like "_call>", "call>", ">"
-                    _suffix_of_close = "</" + "tool_call>"
+                    _suffix_variants = ["</" + "tool_call>", "</" + "tool_calls>"]
                     _is_fragment = False
-                    for _flen in range(1, len(_suffix_of_close)):
-                        if _stripped_buf == _suffix_of_close[-_flen:] or _stripped_buf == _suffix_of_close[_flen:]:
-                            _is_fragment = True
+                    for _suffix_of_close in _suffix_variants:
+                        for _flen in range(1, len(_suffix_of_close)):
+                            if _stripped_buf == _suffix_of_close[-_flen:] or _stripped_buf == _suffix_of_close[_flen:]:
+                                _is_fragment = True
+                                break
+                        if _is_fragment:
                             break
                     if _is_fragment:
                         self.buf = ""
                         break
 
+
+                # --- DSML / Legacy XML detection (DeepSeek, Qwen3 XML) ---
+                # Check for DSML or legacy XML blocks before Hermes/bare JSON.
+                # These use invoke/parameter XML instead of JSON.
+                _dsml_open_m = self._DSML_OPEN.search(self.buf)
+                _legacy_open_m = self._LEGACY_BLOCK_OPEN.search(self.buf) if not _dsml_open_m else None
+                _xml_open_m = _dsml_open_m or _legacy_open_m
+                if _xml_open_m is not None:
+                    _is_dsml = _dsml_open_m is not None
+                    _xml_close = self._DSML_CLOSE if _is_dsml else self._LEGACY_BLOCK_CLOSE
+                    _close_m = _xml_close.search(self.buf, _xml_open_m.end())
+                    # Hybrid fallback: DSML open + legacy close (or vice versa)
+                    # DeepSeek sometimes mixes <DSML|tool_calls> with </tool_calls>
+                    if _close_m is None:
+                        _alt_close = self._LEGACY_BLOCK_CLOSE if _is_dsml else self._DSML_CLOSE
+                        _close_m = _alt_close.search(self.buf, _xml_open_m.end())
+                    if _close_m is not None:
+                        # Complete block found — extract and parse
+                        _before_xml = self.buf[:_xml_open_m.start()]
+                        _block_content = self.buf[_xml_open_m.start():_close_m.end()]
+                        _after_xml = self.buf[_close_m.end():]
+                        # Guard: if legacy <tool_calls> wraps JSON (not XML invoke tags),
+                        # skip XML extraction — let the Hermes handler parse it as JSON.
+                        _inner = _block_content[_xml_open_m.end() - _xml_open_m.start():_close_m.start() - _xml_open_m.start()].strip() if len(_block_content) > (_xml_open_m.end() - _xml_open_m.start()) else ""
+                        _inner_stripped = _block_content[len(_xml_open_m.group()):].lstrip()
+                        _is_json_in_legacy = (not _is_dsml and _inner_stripped and _inner_stripped[0] in ('{', '['))
+                        if _is_json_in_legacy:
+                            _plog(f"LEGACY_BLOCK_WITH_JSON: skipping XML extraction, falling through to Hermes handler")
+                            # Don't consume — let the Hermes _ACTION_OPEN handler below pick it up
+                            # But we need to avoid infinite loop: the legacy regex matches same position.
+                            # Solution: strip the legacy open tag and replace with _ACTION_OPEN-compatible form
+                            # Actually simpler: just don't enter this branch. Remove legacy match so Hermes gets it.
+                            _xml_open_m = None  # force fallthrough
+                        else:
+                            if _before_xml.strip():
+                                yield {"type": "text", "text": _before_xml}
+                            self.buf = _after_xml
+                            _plog(f"{'DSML' if _is_dsml else 'LEGACY_XML'}_BLOCK_FOUND: len={len(_block_content)}")
+                            yield from self._extract_dsml(_block_content)
+                            continue  # re-evaluate buffer
+                    else:
+                        # Open tag found but no close yet — hold buffer, wait for more
+                        _before_xml = self.buf[:_xml_open_m.start()]
+                        if _before_xml.strip():
+                            yield {"type": "text", "text": _before_xml}
+                            self.buf = self.buf[_xml_open_m.start():]
+                        # Emit pending indicator for first invoke if visible
+                        # Try both DSML and legacy invoke patterns (hybrid blocks)
+                        _inv_m = self._DSML_INVOKE_RE.search(self.buf) or self._LEGACY_INVOKE_RE.search(self.buf)
+                        if _inv_m:
+                            _tag_name = _inv_m.group(1).strip().lower()
+                            if _tag_name != self._pending_tag:
+                                self._pending_tag = _tag_name
+                                yield {"type": "tool_pending", "tag": _tag_name, "attrs": {}}
+                        break  # wait for closing tag
 
                 # --- Bare JSON detection (no <tool_call> wrapper) ---
                 # Models sometimes emit [{...}] or {...} directly without tags.
@@ -421,7 +528,7 @@ class SkillParser:
                                 if _bare_calls:
                                     _plog(f"BARE_JSON_TOOL_CALL: parsed {len(_bare_calls)} calls at offset {_scan_i}")
                                     if _scan_i > 0 and self.buf[:_scan_i].strip():
-                                        yield {"type": "text", "text": self.buf[:_scan_i]}
+                                        yield {"type": "text", "text": self._strip_orphan_tags(self.buf[:_scan_i])}
                                     self.buf = _candidate[_json_end_idx:]
                                     self._pending_tag = None
                                     self._last_progress = (0, 0)
@@ -448,7 +555,7 @@ class SkillParser:
                                     if _looks_like_tool_call:
                                         _plog(f"BARE_JSON_PARSE_ERROR: offset={_scan_i} len={len(_json_str)}")
                                         if _scan_i > 0 and self.buf[:_scan_i].strip():
-                                            yield {"type": "text", "text": self.buf[:_scan_i]}
+                                            yield {"type": "text", "text": self._strip_orphan_tags(self.buf[:_scan_i])}
                                         self.buf = _candidate[_json_end_idx:]
                                         yield {
                                             "type": "parse_error",
@@ -461,7 +568,7 @@ class SkillParser:
                                         # Not a tool call — treat as prose, skip past this bracket block
                                         _plog(f"BARE_JSON_NON_TOOL: offset={_scan_i} len={len(_json_str)} | preview={repr(_json_str[:80])}")
                                         if _scan_i > 0 and self.buf[:_scan_i].strip():
-                                            yield {"type": "text", "text": self.buf[:_scan_i]}
+                                            yield {"type": "text", "text": self._strip_orphan_tags(self.buf[:_scan_i])}
                                         # Emit the bracket content as text and continue scanning
                                         yield {"type": "text", "text": _json_str}
                                         self.buf = _candidate[_json_end_idx:]
@@ -470,7 +577,7 @@ class SkillParser:
                             else:
                                 # Incomplete JSON at _scan_i — emit preceding text, hold rest
                                 if _scan_i > 0:
-                                    yield {"type": "text", "text": self.buf[:_scan_i]}
+                                    yield {"type": "text", "text": self._strip_orphan_tags(self.buf[:_scan_i])}
                                     self.buf = self.buf[_scan_i:]
                                 _bare_hold = True
                                 break
@@ -486,18 +593,43 @@ class SkillParser:
                     idx = self.buf.rfind("<")
                     if idx >= 0 and ">" not in self.buf[idx:]:
                         tail = self.buf[idx:].lstrip("<").strip().lower()
+                        # Strip optional leading pipe (fullwidth ｜, ASCII |) or underscore
+                        _tail_norm = tail.lstrip("\uff5c|_")
                         # Check for partial opening OR closing tag
-                        _open_match = (tail == "" or "tool_call".startswith(tail))
+                        # Covers: <tool_call, <DSML|tool_calls, <|DSML|tool_calls,
+                        #         <dsml_tool_calls, <DSML_tool_calls, <DSML|..., <|, <|
+                        _dsml_prefixes = (
+                            "dsml", "dsml\uff5c", "\uff5cdsml", "dsml_", "_dsml",
+                            "dsml|", "|dsml", "dsml\uff5c", "\uff5cdsml",
+                        )
+                        # If tail is ONLY delimiter chars (｜, |, _) after stripping <,
+                        # it's a partial DSML tag like "<｜" or "<|" — hold it.
+                        _is_dsml_delimiters_only = bool(tail) and not _tail_norm and all(
+                            c in "\uff5c|_" for c in tail
+                        )
+                        _legacy_prefixes = ("action", "tool_call", "tool_calls", "invoke", "parameter")
+                        _open_match = (
+                            tail == ""
+                            or _is_dsml_delimiters_only
+                            or any(p.startswith(tail) or tail.startswith(p) for p in _legacy_prefixes if tail)
+                            or any(_tail_norm.startswith(p) or p.startswith(_tail_norm)
+                                   for p in _dsml_prefixes if _tail_norm)
+                        )
                         _close_tail = self.buf[idx:].lstrip("<").lstrip("/").strip().lower()
+                        _close_tail_norm = _close_tail.lstrip("\uff5c|_")
                         _close_match = ("/" in self.buf[idx:idx+2] and
-                                        (_close_tail == "" or "tool_call".startswith(_close_tail)))
+                                        (_close_tail == ""
+                                         or any(p.startswith(_close_tail) or _close_tail.startswith(p)
+                                                for p in _legacy_prefixes if _close_tail)
+                                         or any(_close_tail_norm.startswith(p) or p.startswith(_close_tail_norm)
+                                                for p in _dsml_prefixes if _close_tail_norm)))
                         if _open_match or _close_match:
                             if idx > 0:
                                 yield {"type": "text", "text": self.buf[:idx]}
                             self.buf = self.buf[idx:]
                             break
                     if self.buf:
-                        yield {"type": "text", "text": self.buf}
+                        yield {"type": "text", "text": self._strip_orphan_tags(self.buf)}
                         self.buf = ""
                     break
                 # Found action open — emit prose before it, validate JSON before entering action mode
@@ -514,6 +646,27 @@ class SkillParser:
                     # re-evaluated when more data arrives.
                     self.buf = m.group(0) + self.buf
                     break
+                # Strip markdown backtick wrappers models sometimes add around JSON
+                # Handles both single ` and triple ``` fences (with optional lang tag)
+                if stripped_ahead[0] == '`':
+                    _fence_len = 1
+                    while _fence_len < len(stripped_ahead) and stripped_ahead[_fence_len] == '`':
+                        _fence_len += 1
+                    # Find matching closing fence
+                    _close_fence = '`' * _fence_len
+                    _bt_end = stripped_ahead.find(_close_fence, _fence_len)
+                    if _bt_end > 0:
+                        _inner = stripped_ahead[_fence_len:_bt_end].strip()
+                        # Strip optional language tag like "json\n" from start of fence content
+                        if _inner and not _inner[0] in ('{', '['):
+                            _nl = _inner.find('\n')
+                            if _nl > 0 and _nl < 20:
+                                _inner = _inner[_nl+1:].strip()
+                        if _inner and _inner[0] in ('{', '['):
+                            # Reconstruct buffer with unwrapped JSON
+                            self.buf = _inner + stripped_ahead[_bt_end+_fence_len:].lstrip()
+                            stripped_ahead = self.buf
+                            _plog(f"STRIPPED_BACKTICK_WRAPPER: fence={_fence_len}, inner starts with {repr(_inner[:20])}")
                 if stripped_ahead[0] not in ('{', '['):
                     # Not JSON — preserve the ENTIRE sequence (tags + content) as visible text
                     # Use self.buf (not stripped_ahead) to preserve whitespace between tag and content
@@ -581,6 +734,94 @@ class SkillParser:
                 self._in_action = False
             break
 
+    @classmethod
+    def _parse_dsml_params(cls, inner: str) -> dict[str, Any]:
+        """Parse DSML parameter tags into a dict. Handles string="true|false" typing."""
+        attrs: dict[str, Any] = {}
+        for m in cls._DSML_PARAM_RE.finditer(inner):
+            pname, is_str, pval = m.group(1), m.group(2), m.group(3).strip()
+            if is_str == "true":
+                attrs[pname] = pval
+            else:
+                try:
+                    attrs[pname] = json.loads(pval)
+                except (json.JSONDecodeError, ValueError):
+                    attrs[pname] = pval
+        return attrs
+
+    # Extended legacy param regex that captures optional string="true|false"
+    _LEGACY_PARAM_TYPED_RE = re.compile(
+        r'<parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>(.*?)</parameter\s*>',
+        re.DOTALL,
+    )
+
+    @classmethod
+    def _parse_legacy_params(cls, inner: str) -> dict[str, Any]:
+        """Parse legacy XML <parameter> tags. Respects string="true|false" when present."""
+        attrs: dict[str, Any] = {}
+        for m in cls._LEGACY_PARAM_TYPED_RE.finditer(inner):
+            pname, is_str, pval = m.group(1), m.group(2), m.group(3).strip()
+            if is_str == "true":
+                attrs[pname] = pval
+            elif is_str == "false":
+                try:
+                    attrs[pname] = json.loads(pval)
+                except (json.JSONDecodeError, ValueError):
+                    attrs[pname] = pval
+            else:
+                # No type annotation — auto-detect
+                try:
+                    attrs[pname] = json.loads(pval)
+                except (json.JSONDecodeError, ValueError):
+                    attrs[pname] = pval
+        return attrs
+
+    def _extract_dsml(self, block: str) -> Generator[dict[str, Any], None, None]:
+        """Parse a complete DSML/legacy tool_calls block and yield tag_found events.
+        
+        Always tries BOTH DSML and legacy invoke patterns since DeepSeek can produce
+        hybrid blocks (e.g. <DSML|tool_calls> with plain <invoke> inside).
+        """
+        found = False
+        # Try DSML invoke pattern first
+        for m in self._DSML_INVOKE_RE.finditer(block):
+            name = m.group(1).strip()
+            params = self._parse_dsml_params(m.group(2))
+            content = ""
+            for ck in _CONTENT_PARAM_KEYS:
+                if ck in params:
+                    content = str(params[ck])
+                    break
+            str_attrs = _stringify_params(params)
+            _plog(f"DSML_TAG_FOUND: {name} | attrs_keys={list(str_attrs.keys())}")
+            yield {
+                "type": "tag_found",
+                "name": name,
+                "attrs": str_attrs,
+                "content": content,
+            }
+            found = True
+        # ALSO try legacy invoke/parameter format (handles hybrid blocks)
+        for m in self._LEGACY_INVOKE_RE.finditer(block):
+            name = m.group(1).strip()
+            params = self._parse_legacy_params(m.group(2))
+            content = ""
+            for ck in _CONTENT_PARAM_KEYS:
+                if ck in params:
+                    content = str(params[ck])
+                    break
+            str_attrs = _stringify_params(params)
+            _plog(f"LEGACY_XML_TAG_FOUND: {name} | attrs_keys={list(str_attrs.keys())}")
+            yield {
+                "type": "tag_found",
+                "name": name,
+                "attrs": str_attrs,
+                "content": content,
+            }
+            found = True
+        if not found:
+            _plog(f"DSML_PARSE_FAIL: no invokes found in block len={len(block)}")
+
     def _extract_json(self, raw: str, partial: bool) -> Generator[dict[str, Any], None, None]:
         """Attempt to parse tool_call content as JSON tool calls."""
         raw_stripped = raw.strip()
@@ -627,6 +868,12 @@ class SkillParser:
         # If content doesn't start with JSON delimiter, it's not a tool call — discard silently
         if raw_stripped[0] not in ('{', '['):
             _plog(f"NON_JSON_CONTENT: discarding {repr(raw_stripped[:50])}")
+            return
+
+        # Discard obvious placeholder/ellipsis content instead of surfacing parse_error.
+        # Models sometimes emit <action>[...]</action> when summarizing or truncating.
+        if re.fullmatch(r'\[?\s*\.{2,}\s*\]?', raw_stripped):
+            _plog(f"ELLIPSIS_PLACEHOLDER: discarding {repr(raw_stripped[:50])}")
             return
 
         # Log parse failure on final (non-partial) attempts
@@ -684,18 +931,49 @@ class SkillParser:
                 }
 
     def flush(self) -> Generator[dict[str, Any], None, None]:
-        """Flush remaining buffer. Extracts any complete tool_call blocks."""
+        """Flush remaining buffer. Extracts any complete tool_call or DSML blocks."""
         # Reset progress state so stale events don't emit after stream ends
         self._pending_tag = None
         self._last_progress = (0, 0)
         if self.buf:
+            # Try DSML/legacy extraction on remaining buffer
+            _dsml_m = self._DSML_OPEN.search(self.buf)
+            _legacy_m = self._LEGACY_BLOCK_OPEN.search(self.buf) if not _dsml_m else None
+            _xml_m = _dsml_m or _legacy_m
+            if _xml_m is not None:
+                _is_dsml = _dsml_m is not None
+                _xml_close = self._DSML_CLOSE if _is_dsml else self._LEGACY_BLOCK_CLOSE
+                _close_m = _xml_close.search(self.buf, _xml_m.end())
+                # Hybrid fallback: try alternate close tag
+                if _close_m is None:
+                    _alt_close = self._LEGACY_BLOCK_CLOSE if _is_dsml else self._DSML_CLOSE
+                    _close_m = _alt_close.search(self.buf, _xml_m.end())
+                if _close_m is not None:
+                    _block = self.buf[_xml_m.start():_close_m.end()]
+                    _before = self.buf[:_xml_m.start()]
+                    _after = self.buf[_close_m.end():]
+                    if _before.strip():
+                        yield {"type": "text", "text": _before}
+                    yield from self._extract_dsml(_block)
+                    self.buf = _after
+                else:
+                    # Incomplete DSML block at flush — try to parse what we have
+                    _plog(f"FLUSH_INCOMPLETE_DSML: buf_len={len(self.buf)}")
+                    yield from self._extract_dsml(self.buf[_xml_m.start():])
+                    self.buf = self.buf[:_xml_m.start()]
+
             if self._in_action:
-                _plog(f"FLUSH_IN_ACTION: buf_len={len(self.buf)} | first_100={repr(self.buf[:100])}")
-                yield from self._extract_json(self.buf, partial=False)
-            # Strip any remaining tool_call remnants
+                _flush_content = self._ACTION_CLOSE.sub("", self.buf).strip()
+                _plog(f"FLUSH_IN_ACTION: buf_len={len(self.buf)} | first_100={repr(_flush_content[:100])}")
+                yield from self._extract_json(_flush_content, partial=False)
+            # Strip any remaining tool_call / DSML remnants
             if self.buf:
                 cleaned = self._ACTION_OPEN.sub("", self.buf)
-                cleaned = self._ACTION_CLOSE.sub("", cleaned).strip()
+                cleaned = self._ACTION_CLOSE.sub("", cleaned)
+                cleaned = self._DSML_OPEN.sub("", cleaned)
+                cleaned = self._DSML_CLOSE.sub("", cleaned)
+                cleaned = self._LEGACY_BLOCK_OPEN.sub("", cleaned)
+                cleaned = self._LEGACY_BLOCK_CLOSE.sub("", cleaned).strip()
                 if cleaned:
                     _plog(f"FLUSH_TEXT_REMNANT: len={len(cleaned)} | preview={repr(cleaned[:150])}")
                     yield {"type": "text", "text": cleaned}

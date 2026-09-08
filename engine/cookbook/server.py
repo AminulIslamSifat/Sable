@@ -10,6 +10,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -228,10 +229,11 @@ class ServeManager:
         if not task or task.status != "running":
             return False
 
-        # Try graceful shutdown
+        # Try graceful shutdown (cross-platform)
+        from engine.process_utils import kill_process_tree
         try:
-            os.kill(task.pid, signal.SIGTERM)
-        except ProcessLookupError:
+            kill_process_tree(task.pid)
+        except Exception:
             pass
 
         # Wait up to 5s for graceful exit
@@ -240,7 +242,7 @@ class ServeManager:
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                os.kill(task.pid, signal.SIGKILL)
+                kill_process_tree(task.pid)
             self._processes.pop(task_id, None)
 
         task.status = "stopped"

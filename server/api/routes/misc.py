@@ -69,6 +69,9 @@ def models() -> dict[str, list[dict[str, Any]]]:
     if scraper_cfg.get("enabled") and scraper_cfg.get("engine_type") == "deepseek":
         return {"models": DEEPSEEK_MODELS}
     all_models = get_all_models()
+    if scraper_cfg.get("enabled") and scraper_cfg.get("engine_type") == "qwen":
+        # In Qwen scraper mode, only show native Qwen models (no api_backend)
+        all_models = [m for m in all_models if not m.get("api_backend")]
     return {
         "models": [
             {
@@ -151,13 +154,24 @@ async def set_disabled_tools(request: Request) -> dict[str, str]:
     return {"status": "ok"}
 
 @router.post("/api/sync-context")
-async def sync_context_route() -> dict[str, Any]:
+async def sync_context_route(request: Request) -> dict[str, Any]:
     from connectors.common.instruction_builder import invalidate_cache
     invalidate_cache()
-    success = await service.sync_context()
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    layout_mode = body.get("layout_mode") or None
+    try:
+        success = await service.sync_context(layout_mode=layout_mode)
+    except Exception as exc:
+        logger.warning("sync_context raised: %s: %s", type(exc).__name__, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
     if success:
         return {"status": "ok", "message": "Context synced successfully"}
-    raise HTTPException(status_code=500, detail="Failed to sync context")
+    # Not authenticated or skipped — not a server error
+    return {"status": "skipped", "message": "Sync skipped: not authenticated or no session"}
 
 @router.post("/api/file/revert")
 def revert_file(payload: RevertRequest) -> dict[str, str]:
@@ -176,10 +190,22 @@ def revert_file(payload: RevertRequest) -> dict[str, str]:
         raise HTTPException(status_code=500, detail=f"Revert failed: {exc}")
     return {"status": "ok"}
 
+# Cache index.html in memory to avoid disk I/O on every request.
+# Invalidated automatically on server restart (which is when code changes happen).
+_INDEX_CACHE: str | None = None
+
+def _get_index_html() -> str:
+    global _INDEX_CACHE
+    if _INDEX_CACHE is None:
+        if INDEX_FILE.exists():
+            _INDEX_CACHE = INDEX_FILE.read_text(encoding="utf-8")
+        else:
+            _INDEX_CACHE = "<html><body><h1>Sable</h1><p>index.html not found.</p></body></html>"
+    return _INDEX_CACHE
+
 @router.get("/", response_class=HTMLResponse)
 def index() -> str:
-    if INDEX_FILE.exists():
-        return INDEX_FILE.read_text(encoding="utf-8")
+    return _get_index_html()
 
 
 _INSTRUCTION_EXTRA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "instruction" / "extra"

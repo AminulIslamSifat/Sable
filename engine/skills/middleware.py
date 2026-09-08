@@ -33,6 +33,7 @@ class TagContext:
     error: str | None = None
     namespace: str = "default"
     chat_id: str | None = None
+    cwd: str | None = None
 
     def emit(self, event: dict[str, Any]) -> None:
         self.events.append(event)
@@ -102,6 +103,10 @@ class ExecutionMiddleware:
             ctx.error = f"No handler registered for '{ctx.name}'"
             yield end_event(ctx.tag_id, ctx.name, False, ctx.started, error=ctx.error)
             return
+
+        # Inject chat_id into attrs so handlers can access current chat context
+        if ctx.chat_id and "_chat_id" not in ctx.attrs:
+            ctx.attrs["_chat_id"] = ctx.chat_id
 
         # Emit start event
         start = start_event(ctx.tag_id, ctx.name, ctx.attrs, ctx.content)

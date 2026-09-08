@@ -26,6 +26,7 @@ from engine.skills.handlers.agents import (
     handle_agent_status,
     handle_kill_agent,
     handle_spawn_agent,
+    handle_teacher_guidance,
     handle_todo_complete,
     handle_todo_skip,
 )
@@ -39,9 +40,13 @@ from engine.skills.handlers.simulacra import handle_run_simulacra
 from engine.skills.handlers.tracknote import handle_tracknote
 from engine.skills.handlers.memory_manager import handle_memory
 from engine.skills.handlers.image_generator import handle_generate_image
+from engine.skills.handlers.computer_use import handle_computer_use
+from engine.skills.handlers.load_tool import handle_load_tool
 from engine.mcp.handler import handle_mcp_call
+from engine.skills.handlers.critique import handle_critique
 
 HANDLER_MAP: dict[str, object] = {
+    "critique": handle_critique,
     "execute_command": handle_execute_command,
     "get_file": handle_get_file,
     "read_file": handle_get_file,
@@ -64,6 +69,7 @@ HANDLER_MAP: dict[str, object] = {
     "kill_agent": handle_kill_agent,
     "todo_complete": handle_todo_complete,
     "todo_skip": handle_todo_skip,
+    "teacher_guidance": handle_teacher_guidance,
     "ask_user": handle_ask_user,
     "grep": handle_grep,
     "glob": handle_glob,
@@ -71,7 +77,10 @@ HANDLER_MAP: dict[str, object] = {
     "run_simulacra": handle_run_simulacra,
     "tracknote": handle_tracknote,
     "memory": handle_memory,
+    "memory_manager": handle_memory,
     "generate_image": handle_generate_image,
+    "computer_use": handle_computer_use,
+    "load_tool": handle_load_tool,
     "mcp_call": handle_mcp_call,
 }
 
@@ -93,6 +102,7 @@ __all__ = [
     "handle_spawn_agent",
     "handle_agent_status",
     "handle_kill_agent",
+    "handle_teacher_guidance",
     "handle_todo_complete",
     "handle_todo_skip",
     "handle_ask_user",
@@ -103,5 +113,7 @@ __all__ = [
     "handle_tracknote",
     "handle_memory",
     "handle_generate_image",
+    "handle_computer_use",
+    "handle_load_tool",
     "handle_mcp_call",
 ]

@@ -1,163 +1,620 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────────────
+#  Sable — Zero-Intervention Start Script (Linux / macOS)
+#  Handles: dependency install, Docker, SearXNG, Playwright, systemd,
+#           template bootstrap, error recovery, and launch.
+#  The user should never have to do anything after ./start
+# ─────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
 
-SERVICE="sable.service"
+# ── Globals ──────────────────────────────────────────────────────────────────
 SABLE_PORT="${SABLE_PORT:-61770}"
+SABLE_HOST="${SABLE_HOST:-0.0.0.0}"
 SABLE_URL="http://127.0.0.1:${SABLE_PORT}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-UV_BIN="$(command -v uv || true)"
+SERVICE_NAME="sable.service"
+BACKGROUND=0
+LOG_PREFIX="[Sable]"
+MAX_RETRIES=3
+RETRY_DELAY=2
 
-cd "$SCRIPT_DIR"
+for arg in "$@"; do
+    case "$arg" in
+        --background) BACKGROUND=1 ;;
+        --port=*)     SABLE_PORT="${arg#*=}"; SABLE_URL="http://127.0.0.1:${SABLE_PORT}" ;;
+        --help|-h)
+            echo "Usage: ./start [OPTIONS]"
+            echo "  --background   Run without browser/info box (used by service restarts)"
+            echo "  --port=PORT    Override default port (61770)"
+            echo "  --help         Show this message"
+            exit 0
+            ;;
+    esac
+done
 
-# ── First-run bootstrap (skipped if already done) ──────────────────────
+# ── Logging ──────────────────────────────────────────────────────────────────
+_log()  { printf "%s %s\n" "$LOG_PREFIX" "$*"; }
+_ok()   { printf "%s \033[32m✓\033[0m %s\n" "$LOG_PREFIX" "$*"; }
+_warn() { printf "%s \033[33m⚠\033[0m %s\n" "$LOG_PREFIX" "$*" >&2; }
+_err()  { printf "%s \033[31m✗\033[0m %s\n" "$LOG_PREFIX" "$*" >&2; }
+_info() { printf "%s \033[36m→\033[0m %s\n" "$LOG_PREFIX" "$*"; }
 
-# Playwright chromium (idempotent — skips if already installed)
-uv run playwright install chromium 2>/dev/null || true
+# ── Retry helper ─────────────────────────────────────────────────────────────
+retry() {
+    local attempt=1
+    while [ $attempt -le $MAX_RETRIES ]; do
+        if "$@"; then return 0; fi
+        _warn "Attempt $attempt/$MAX_RETRIES failed for: $*"
+        sleep "$RETRY_DELAY"
+        ((attempt++))
+    done
+    _err "All $MAX_RETRIES attempts failed for: $*"
+    return 1
+}
 
-# Template files
-if [ -f "instruction/Maria.md.example" ] && [ ! -f "instruction/Maria.md" ]; then
-    cp instruction/Maria.md.example instruction/Maria.md
-    echo "📝 Created instruction/Maria.md from template"
-fi
-if [ -f "Brain/Memory.json.example" ] && [ ! -f "Brain/Memory.json" ]; then
-    cp Brain/Memory.json.example Brain/Memory.json
-    echo "🧠 Created Brain/Memory.json from template"
-fi
+# ── Detect OS & Package Manager ─────────────────────────────────────────────
+detect_platform() {
+    OS="$(uname -s)"
+    DISTRO=""
+    PKG_MGR=""
+    SUDO=""
 
-# Browser profile symlink
-mkdir -p system
-if [ -d "system/browser-data" ] && [ ! -L "system/browser-data" ]; then
-    # Migrate legacy non-symlink dir
-    if [ ! -d "system/browser-data-acc1" ]; then
-        mv system/browser-data system/browser-data-acc1
-    else
-        rm -rf system/browser-data
+    if command -v sudo >/dev/null 2>&1 && [ "$(id -u)" -ne 0 ]; then
+        SUDO="sudo"
     fi
-fi
-if [ ! -e "system/browser-data" ]; then
-    ln -s browser-data-acc1 system/browser-data 2>/dev/null || true
-fi
 
-# SearXNG search backend (Docker, idempotent)
-if command -v docker >/dev/null 2>&1; then
-    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^searxng$'; then
-        # Remove stopped container if it exists
-        docker rm -f searxng >/dev/null 2>&1 || true
-        echo "🔍 Starting SearXNG search backend..."
-        if ! docker image inspect searxng/searxng:latest >/dev/null 2>&1; then
-            echo "   Pulling searxng/searxng:latest (first time only)..."
-            docker pull searxng/searxng:latest
+    case "$OS" in
+        Linux*)
+            if [ -f /etc/os-release ]; then
+                # shellcheck disable=SC1091
+                . /etc/os-release
+                DISTRO="${ID:-unknown}"
+            fi
+            if command -v apt-get >/dev/null 2>&1; then
+                PKG_MGR="apt"
+            elif command -v dnf >/dev/null 2>&1; then
+                PKG_MGR="dnf"
+            elif command -v pacman >/dev/null 2>&1; then
+                PKG_MGR="pacman"
+            elif command -v zypper >/dev/null 2>&1; then
+                PKG_MGR="zypper"
+            elif command -v apk >/dev/null 2>&1; then
+                PKG_MGR="apk"
+            else
+                PKG_MGR="unknown"
+            fi
+            ;;
+        Darwin*)
+            DISTRO="macos"
+            PKG_MGR="brew"
+            SUDO=""
+            ;;
+    esac
+    _ok "Platform: $OS ($DISTRO) via $PKG_MGR"
+}
+
+# ── Install a system package (cross-distro) ─────────────────────────────────
+install_pkg() {
+    local pkg="$1"
+    local arch_pkg="${2:-$pkg}"
+    local deb_pkg="${3:-$pkg}"
+    local fedora_pkg="${4:-$pkg}"
+    local brew_pkg="${5:-$pkg}"
+
+    _info "Installing: $pkg..."
+    case "$PKG_MGR" in
+        pacman) $SUDO pacman -Sy --noconfirm "$arch_pkg" 2>/dev/null || true ;;
+        apt)
+            $SUDO apt-get update -qq 2>/dev/null || true
+            $SUDO apt-get install -y -qq "$deb_pkg" 2>/dev/null || true
+            ;;
+        dnf)  $SUDO dnf install -y "$fedora_pkg" 2>/dev/null || true ;;
+        zypper) $SUDO zypper install -y "$pkg" 2>/dev/null || true ;;
+        apk)  $SUDO apk add --no-cache "$pkg" 2>/dev/null || true ;;
+        brew) brew install "$brew_pkg" 2>/dev/null || true ;;
+        *)    _warn "Cannot auto-install $pkg — unknown package manager" ;;
+    esac
+}
+
+# ── Ensure Python 3.12+ ─────────────────────────────────────────────────────
+ensure_python() {
+    _info "Checking Python version..."
+    local py_cmd=""
+    for cmd in python3.12 python3 python; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            py_cmd="$cmd"
+            break
         fi
-        docker run -d --name searxng \
-            -p 8080:8080 \
-            -e SEARXNG_BASE_URL=http://localhost:8080/ \
-            --restart unless-stopped \
-            searxng/searxng:latest >/dev/null 2>&1
-        # Enable JSON API format
-        sleep 2
-        docker exec searxng sh -c 'grep -q "formats:" /etc/searxng/settings.yml || cat >> /etc/searxng/settings.yml << SEOF
+    done
+
+    if [ -z "$py_cmd" ]; then
+        _warn "Python not found — attempting auto-install..."
+        case "$PKG_MGR" in
+            pacman) install_pkg "python" "python" ;;
+            apt)    install_pkg "python3.12" "python3.12" "python3.12 python3.12-venv" ;;
+            dnf)    install_pkg "python3.12" "python3.12" "python3.12" "python3.12" ;;
+            brew)   install_pkg "python@3.12" "" "" "" "python@3.12" ;;
+        esac
+        py_cmd="python3"
+    fi
+
+    local ver
+    ver=$("$py_cmd" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "0.0")
+    local major minor
+    major=$(echo "$ver" | cut -d. -f1)
+    minor=$(echo "$ver" | cut -d. -f2)
+
+    if [ "$major" -lt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -lt 12 ]; }; then
+        _err "Python 3.12+ required (found $ver). Please install it manually."
+        _err "  Arch:   sudo pacman -S python"
+        _err "  Debian: sudo apt install python3.12 python3.12-venv"
+        _err "  Fedora: sudo dnf install python3.12"
+        _err "  macOS:  brew install python@3.12"
+        exit 1
+    fi
+    _ok "Python $ver detected ($py_cmd)"
+}
+
+# ── Ensure uv ────────────────────────────────────────────────────────────────
+ensure_uv() {
+    if command -v uv >/dev/null 2>&1; then
+        _ok "uv found: $(uv --version 2>/dev/null || echo 'unknown version')"
+        return 0
+    fi
+
+    _info "Installing uv..."
+    if command -v curl >/dev/null 2>&1; then
+        curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null || true
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- https://astral.sh/uv/install.sh | sh 2>/dev/null || true
+    else
+        install_pkg "curl" "curl" "curl" "curl" "curl"
+        curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null || true
+    fi
+
+    # Source uv env for current session
+    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+    if [ -f "$HOME/.local/bin/env" ]; then
+        # shellcheck disable=SC1091
+        source "$HOME/.local/bin/env" 2>/dev/null || true
+    fi
+
+    if ! command -v uv >/dev/null 2>&1; then
+        _err "Failed to install uv. Install manually: https://docs.astral.sh/uv/"
+        exit 1
+    fi
+    _ok "uv installed successfully"
+}
+
+# ── Ensure git ───────────────────────────────────────────────────────────────
+ensure_git() {
+    if command -v git >/dev/null 2>&1; then
+        _ok "git available"
+        return 0
+    fi
+    _info "Installing git..."
+    install_pkg "git" "git" "git" "git" "git"
+    if ! command -v git >/dev/null 2>&1; then
+        _err "git is required but could not be installed"
+        exit 1
+    fi
+}
+
+# ── Ensure Docker ────────────────────────────────────────────────────────────
+ensure_docker() {
+    _info "Checking Docker..."
+
+    # Already working?
+    if docker info >/dev/null 2>&1; then
+        _ok "Docker daemon running"
+        return 0
+    fi
+
+    # CLI exists but daemon stopped
+    if command -v docker >/dev/null 2>&1; then
+        _info "Docker CLI found, starting daemon..."
+        if [ "$OS" = "Darwin" ]; then
+            open -a Docker 2>/dev/null || true
+            for i in $(seq 1 30); do
+                docker info >/dev/null 2>&1 && { _ok "Docker Desktop started"; return 0; }
+                sleep 2
+            done
+            _warn "Docker Desktop didn't start in time — SearXNG skipped"
+            return 1
+        fi
+        if $SUDO systemctl start docker 2>/dev/null; then
+            $SUDO systemctl enable docker 2>/dev/null || true
+            for i in $(seq 1 10); do
+                docker info >/dev/null 2>&1 && { _ok "Docker daemon started"; return 0; }
+                sleep 1
+            done
+        fi
+        _warn "Could not start Docker daemon"
+        return 1
+    fi
+
+    # Not installed at all
+    _info "Docker not installed — attempting auto-install..."
+    if [ "$OS" = "Darwin" ]; then
+        _warn "Install Docker Desktop manually: https://docs.docker.com/desktop/mac/install/"
+        return 1
+    fi
+
+    case "$PKG_MGR" in
+        pacman)
+            $SUDO pacman -Sy --noconfirm docker docker-compose 2>/dev/null || true
+            ;;
+        apt)
+            # Use official Docker install script for Debian/Ubuntu — more reliable
+            if command -v curl >/dev/null 2>&1; then
+                curl -fsSL https://get.docker.com | $SUDO sh 2>/dev/null || true
+            else
+                $SUDO apt-get update -qq 2>/dev/null || true
+                $SUDO apt-get install -y -qq docker.io docker-compose-plugin 2>/dev/null || true
+            fi
+            ;;
+        dnf)
+            $SUDO dnf install -y docker docker-compose-plugin 2>/dev/null || true
+            ;;
+        zypper)
+            $SUDO zypper install -y docker docker-compose 2>/dev/null || true
+            ;;
+        *)
+            _warn "Unsupported package manager — install Docker manually"
+            return 1
+            ;;
+    esac
+
+    # Add user to docker group (non-blocking, takes effect next login)
+    if command -v usermod >/dev/null 2>&1 && [ "$(id -u)" -ne 0 ]; then
+        $SUDO usermod -aG docker "$USER" 2>/dev/null || true
+    fi
+
+    $SUDO systemctl enable docker 2>/dev/null || true
+    $SUDO systemctl start docker 2>/dev/null || true
+
+    for i in $(seq 1 10); do
+        if docker info >/dev/null 2>&1; then
+            _ok "Docker installed and running"
+            return 0
+        fi
+        sleep 1
+    done
+    _warn "Docker installed but daemon failed to start — SearXNG skipped"
+    return 1
+}
+
+# ── SearXNG Container ───────────────────────────────────────────────────────
+setup_searxng() {
+    _info "Checking SearXNG search backend..."
+
+    if ! ensure_docker; then
+        _warn "Docker unavailable — SearXNG search backend skipped"
+        return 0
+    fi
+
+    # Check if already running
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^searxng$'; then
+        _ok "SearXNG already running"
+        return 0
+    fi
+
+    # Clean up stale container
+    docker rm -f searxng >/dev/null 2>&1 || true
+
+    # Pull image if needed
+    if ! docker image inspect searxng/searxng:latest >/dev/null 2>&1; then
+        _info "Pulling searxng/searxng:latest (first time only)..."
+        retry docker pull searxng/searxng:latest || {
+            _warn "Failed to pull SearXNG image — skipped"
+            return 0
+        }
+    fi
+
+    # Start container
+    docker run -d --name searxng \
+        -p 8080:8080 \
+        -e SEARXNG_BASE_URL=http://localhost:8080/ \
+        --restart unless-stopped \
+        searxng/searxng:latest >/dev/null 2>&1 || {
+        _warn "Failed to start SearXNG container"
+        return 0
+    }
+
+    # Wait for container to initialize
+    sleep 3
+
+    # Enable JSON API format (idempotent — only appends if missing)
+    docker exec searxng sh -c '
+        grep -q "formats:" /etc/searxng/settings.yml 2>/dev/null || cat >> /etc/searxng/settings.yml << SEOF
 
 search:
   formats:
     - html
     - json
 SEOF
-' 2>/dev/null
-        docker restart searxng >/dev/null 2>&1
-        echo "✅ SearXNG ready on http://localhost:8080"
-    else
-        echo "✅ SearXNG already running"
-    fi
-else
-    echo "⚠️  Docker not found — SearXNG search backend skipped"
-fi
+' 2>/dev/null || true
 
-# Systemd user service (one-time install)
-if ! systemctl --user cat "$SERVICE" >/dev/null 2>&1; then
+    docker restart searxng >/dev/null 2>&1 || true
+    sleep 2
+    _ok "SearXNG ready on http://localhost:8080"
+}
+
+# ── Playwright System Dependencies ──────────────────────────────────────────
+install_playwright_deps() {
+    _info "Checking Playwright system dependencies..."
+    case "$PKG_MGR" in
+        pacman)
+            # Arch: uv run playwright install-deps handles it, but ensure base libs
+            $SUDO pacman -Sy --noconfirm --needed nss atk cups libdbus libdrm \
+                libxkbcommon at-spi2-core pango cairo alsa-lib 2>/dev/null || true
+            ;;
+        apt)
+            $SUDO apt-get install -y -qq libnss3 libatk1.0-0 libcups2 \
+                libdbus-1-3 libdrm2 libxkbcommon0 libatspi2.0-0 \
+                libpango-1.0-0 libcairo2 libasound2 2>/dev/null || true
+            ;;
+        dnf)
+            $SUDO dnf install -y nss atk cups-libs dbus-libs libdrm \
+                libxkbcommon at-spi2-atk pango cairo alsa-lib 2>/dev/null || true
+            ;;
+    esac
+    # Let Playwright handle its own deps too
+    uv run playwright install-deps chromium 2>/dev/null || true
+}
+
+# ── Bootstrap Templates & Directories ────────────────────────────────────────
+bootstrap_files() {
+    _info "Bootstrapping project files..."
+
+    # Template files
+    if [ -f "instruction/Maria.md.example" ] && [ ! -f "instruction/Maria.md" ]; then
+        cp instruction/Maria.md.example instruction/Maria.md
+        _ok "Created instruction/Maria.md from template"
+    fi
+    if [ -f "Brain/Memory.json.example" ] && [ ! -f "Brain/Memory.json" ]; then
+        cp Brain/Memory.json.example Brain/Memory.json
+        _ok "Created Brain/Memory.json from template"
+    fi
+
+    # Browser profile directory
+    mkdir -p system/browser-data-acc1
+
+    # Legacy symlink migration
+    if [ -d "system/browser-data" ] && [ ! -L "system/browser-data" ]; then
+        _info "Migrating legacy browser-data directory..."
+        if [ ! -d "system/browser-data-acc1" ]; then
+            mv system/browser-data system/browser-data-acc1
+        else
+            rm -rf system/browser-data
+        fi
+    fi
+    if [ ! -e "system/browser-data" ]; then
+        ln -sf browser-data-acc1 system/browser-data 2>/dev/null || true
+    fi
+
+    _ok "Bootstrap complete"
+}
+
+# ── Sync Dependencies ───────────────────────────────────────────────────────
+sync_deps() {
+    _info "Synchronizing Python dependencies (uv sync)..."
+    retry uv sync || {
+        _err "uv sync failed after $MAX_RETRIES attempts"
+        _info "Attempting venv recreation..."
+        rm -rf .venv 2>/dev/null || true
+        retry uv sync || {
+            _err "Dependency sync failed. Check network or pyproject.toml."
+            exit 1
+        }
+    }
+    _ok "Dependencies synced"
+}
+
+# ── Install Playwright Chromium ──────────────────────────────────────────────
+setup_playwright() {
+    _info "Ensuring Playwright Chromium..."
+    retry uv run playwright install chromium 2>/dev/null || {
+        _warn "Playwright Chromium install failed — browser automation may not work"
+    }
+    _ok "Playwright check done"
+}
+
+# ── Systemd Service Management ──────────────────────────────────────────────
+is_systemd_available() {
+    command -v systemctl >/dev/null 2>&1 && \
+        systemctl --user show-environment >/dev/null 2>&1
+}
+
+install_systemd_service() {
+    if ! is_systemd_available; then
+        _warn "systemd user services not available — will run in foreground"
+        return 1
+    fi
+
+    if systemctl --user cat "$SERVICE_NAME" >/dev/null 2>&1; then
+        _ok "systemd service already installed"
+        return 0
+    fi
+
+    _info "Installing systemd user service..."
+    local uv_bin
+    uv_bin="$(command -v uv || echo "/usr/bin/env uv")"
+
     mkdir -p "${HOME}/.config/systemd/user"
-    cat > "${HOME}/.config/systemd/user/${SERVICE}" <<EOF
+    cat > "${HOME}/.config/systemd/user/${SERVICE_NAME}" <<EOF
 [Unit]
-Description=Sable chat server
+Description=Sable agentic chat platform
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=${SCRIPT_DIR}
-ExecStart=${UV_BIN:-/usr/bin/env uv} run python server.py
+ExecStart=${uv_bin} run python server.py
 Restart=on-failure
 RestartSec=3
 Environment=TERM=xterm-256color
+Environment=SABLE_PORT=${SABLE_PORT}
 
 [Install]
 WantedBy=default.target
 EOF
+
     systemctl --user daemon-reload 2>/dev/null || true
-    systemctl --user enable "$SERVICE" >/dev/null 2>&1 || true
-    echo "⚙️  Installed systemd user service: $SERVICE"
-fi
+    systemctl --user enable "$SERVICE_NAME" >/dev/null 2>&1 || true
 
-# ── Start ───────────────────────────────────────────────────────────────
+    # Enable linger so service survives logout
+    if command -v loginctl >/dev/null 2>&1; then
+        loginctl enable-linger "$USER" 2>/dev/null || true
+    fi
 
-echo "🔄 Synchronizing dependencies..."
-uv sync
-echo ""
+    _ok "Installed systemd service: $SERVICE_NAME"
+}
 
+start_via_systemd() {
+    if ! is_systemd_available; then return 1; fi
+    if ! systemctl --user cat "$SERVICE_NAME" >/dev/null 2>&1; then return 1; fi
+
+    _info "Starting via systemd..."
+    systemctl --user start "$SERVICE_NAME"
+    sleep 2
+
+    if systemctl --user is-active --quiet "$SERVICE_NAME"; then
+        _ok "Service is active!"
+        return 0
+    fi
+
+    # Recovery: clear stale browser profile and retry once
+    _warn "Service failed — clearing stale browser profile and retrying..."
+    rm -rf "${SCRIPT_DIR}/system/browser-data" 2>/dev/null || true
+    systemctl --user restart "$SERVICE_NAME"
+    sleep 2
+
+    if systemctl --user is-active --quiet "$SERVICE_NAME"; then
+        _ok "Service recovered after profile reset"
+        return 0
+    fi
+
+    _err "Service still failing after recovery"
+    _err "Logs: journalctl --user -u $SERVICE_NAME -n 30 --no-pager"
+    return 1
+}
+
+# ── Health Check ─────────────────────────────────────────────────────────────
+wait_for_server() {
+    local timeout=30
+    local elapsed=0
+    _info "Waiting for server to accept connections..."
+    while [ $elapsed -lt $timeout ]; do
+        if curl -sf "${SABLE_URL}/api/health" >/dev/null 2>&1 || \
+           curl -sf "${SABLE_URL}/" >/dev/null 2>&1; then
+            _ok "Server responding on $SABLE_URL"
+            return 0
+        fi
+        sleep 1
+        ((elapsed++))
+    done
+    _warn "Server didn't respond within ${timeout}s (may still be starting)"
+    return 1
+}
+
+# ── Open Browser ─────────────────────────────────────────────────────────────
+open_browser() {
+    [ "$BACKGROUND" -eq 1 ] && return 0
+    (
+        sleep 3
+        if command -v xdg-open >/dev/null 2>&1; then
+            xdg-open "$SABLE_URL" 2>/dev/null &
+        elif command -v open >/dev/null 2>&1; then
+            open "$SABLE_URL" 2>/dev/null &
+        elif command -v python3 >/dev/null 2>&1; then
+            python3 -c "import webbrowser; webbrowser.open('$SABLE_URL')" 2>/dev/null &
+        fi
+    ) &
+    disown 2>/dev/null || true
+}
+
+# ── Info Box ─────────────────────────────────────────────────────────────────
 print_info_box() {
-    local url="$1" port="$2" service="$3"
-    
-    # 54 horizontal box-drawing dashes
-    local line="──────────────────────────────────────────────────────"
-    
+    [ "$BACKGROUND" -eq 1 ] && return 0
+    local line="────────────────────────────────────────────────────────────"
     echo ""
     echo "╭${line}╮"
-    echo "│ 🚀 Sable is running!                                 │"
-    echo "│                                                      │"
-    printf "│ 🌐 URL:    %-41s │\n" "${url}"
-    printf "│ 📡 Port:   %-41s │\n" "${port}"
-    echo "│                                                      │"
-    printf "│ 📋 Status: systemctl --user status %-15s   │\n" "${service}"
-    printf "│ 📜 Logs:   journalctl --user -u %-15s -f   │\n" "${service}"
+    echo "│ 🦊 Sable is running!                                   │"
+    echo "│                                                        │"
+    printf "│ 🌐 URL:    %-47s │\n" "$SABLE_URL"
+    printf "│ 📡 Port:   %-47s │\n" "$SABLE_PORT"
+    echo "│                                                        │"
+    if is_systemd_available && systemctl --user cat "$SERVICE_NAME" >/dev/null 2>&1; then
+        printf "│ 📋 Status: systemctl --user status %-27s │\n" "$SERVICE_NAME"
+        printf "│ 📜 Logs:   journalctl --user -u %-30s │\n" "$SERVICE_NAME -f"
+    else
+        echo "│ 🛑 Stop:   Ctrl+C                                      │"
+    fi
     echo "╰${line}╯"
     echo ""
 }
 
-# Auto-open browser after server starts
-open_browser() {
-    sleep 5
-    if command -v xdg-open >/dev/null 2>&1; then
-        xdg-open "$SABLE_URL" 2>/dev/null &
-    elif command -v open >/dev/null 2>&1; then
-        open "$SABLE_URL" 2>/dev/null &
-    elif command -v python3 >/dev/null 2>&1; then
-        python3 -c "import webbrowser; webbrowser.open('$SABLE_URL')" 2>/dev/null &
+# ── Stale Process Cleanup ───────────────────────────────────────────────────
+cleanup_stale_pid() {
+    local pidfile="${SCRIPT_DIR}/.sable_server.pid"
+    if [ -f "$pidfile" ]; then
+        local old_pid
+        old_pid=$(cat "$pidfile" 2>/dev/null || echo "")
+        if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+            _info "Stopping previous instance (PID $old_pid)..."
+            kill "$old_pid" 2>/dev/null || true
+            sleep 1
+            # Force kill if still alive
+            kill -0 "$old_pid" 2>/dev/null && kill -9 "$old_pid" 2>/dev/null || true
+        fi
+        rm -f "$pidfile" 2>/dev/null || true
     fi
 }
 
-if systemctl --user cat "$SERVICE" >/dev/null 2>&1; then
-    echo "Starting Sable via systemd..."
-    systemctl --user start "$SERVICE"
-    sleep 1
-    if systemctl --user is-active --quiet "$SERVICE"; then
-        print_info_box "$SABLE_URL" "$SABLE_PORT" "$SERVICE"
-        open_browser
-    else
-        echo "⚠️  Service failed to start. Clearing stale browser profile and retrying..."
-        rm -rf "$SCRIPT_DIR/system/browser-data"
-        systemctl --user restart "$SERVICE"
-        sleep 1
-        if systemctl --user is-active --quiet "$SERVICE"; then
-            print_info_box "$SABLE_URL" "$SABLE_PORT" "$SERVICE"
+# ── Main ─────────────────────────────────────────────────────────────────────
+main() {
+    echo ""
+    _log "═══════════════════════════════════════════"
+    _log "  Sable — Agentic Chat Platform"
+    _log "═══════════════════════════════════════════"
+    echo ""
+
+    cd "$SCRIPT_DIR"
+
+    detect_platform
+    ensure_python
+    ensure_uv
+    ensure_git
+    cleanup_stale_pid
+    bootstrap_files
+    setup_playwright
+    install_playwright_deps
+    setup_searxng
+    sync_deps
+
+    if is_systemd_available; then
+        install_systemd_service
+        if start_via_systemd; then
+            wait_for_server
+            print_info_box
             open_browser
-        else
-            echo "❌ Still failing after profile reset. Check logs:"
-            echo "   journalctl --user -u $SERVICE -n 30 --no-pager"
-            exit 1
+            exit 0
         fi
+        _warn "Falling back to foreground mode..."
     fi
-else
-    echo "systemd user service not found — starting the server directly with uv..."
-    print_info_box "$SABLE_URL" "$SABLE_PORT" "(direct)"
-    open_browser &
+
+    # Foreground fallback
+    _info "Starting in foreground mode..."
+    print_info_box
+    open_browser
+    export TERM="${TERM:-xterm-256color}"
+    export SABLE_PORT
     exec uv run python server.py
-fi
+}
+
+# Trap unexpected exits
+trap '_err "Script interrupted"; exit 130' INT TERM
+
+main

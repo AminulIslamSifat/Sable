@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -11,7 +12,7 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
-from engine.platform_paths import home_dir, tmp_path
+from engine.platform_paths import home_dir, tmp_path, IS_WINDOWS
 from engine.process_utils import popen_kwargs
 from engine.skills.handlers.common import (
     DEFAULT_TIMEOUT,
@@ -106,7 +107,8 @@ def handle_execute_command(
 
     yield _output_event(tag_id, f"$ {cmd}\n", "command")
 
-    use_sudo = cmd.lstrip().startswith("sudo ")
+    # sudo is POSIX-only; skip injection on Windows
+    use_sudo = (not IS_WINDOWS) and cmd.lstrip().startswith("sudo ")
     if use_sudo and "sudo -S" not in cmd:
         cmd = cmd.replace("sudo", "sudo -S -p ''", 1)
 
@@ -132,15 +134,66 @@ def handle_execute_command(
 
     timer = threading.Timer(timeout, kill_process_group, args=(proc,))
     timer.start()
+    # Frontend/model protection: keep draining the subprocess pipe so the
+    # child cannot block, but only emit a bounded amount of foreground output.
+    # Lines are batched into ~4 KB chunks before yielding a single SSE event
+    # so that verbose commands (zip, find, tar) don't produce thousands of
+    # individual skill_output events that overwhelm the browser.
+    # Total emitted text is capped at RESULT_PREVIEW_CHARS (20 K).
+    emitted_chars = 0
+    output_truncated = False
+    output_cap = RESULT_PREVIEW_CHARS
+    _BATCH_SIZE = 4096
+    _batch_buf: list[str] = []
+    _batch_len = 0
+
+    def _flush_batch() -> Generator[dict[str, Any], None, None]:
+        nonlocal _batch_buf, _batch_len
+        if _batch_buf:
+            yield _output_event(tag_id, "".join(_batch_buf))
+            _batch_buf = []
+            _batch_len = 0
+
     try:
         if proc.stdout is not None:
             for line in proc.stdout:
-                yield _output_event(tag_id, line)
+                # Preserve editor command capture independently of UI output cap.
                 if editor_target is not None and editor_chars < _EDITOR_OUTPUT_CAP:
-                    remaining = _EDITOR_OUTPUT_CAP - editor_chars
-                    if remaining > 0:
-                        editor_chunks.append(line[:remaining])
-                        editor_chars += min(len(line), remaining)
+                    remaining_editor = _EDITOR_OUTPUT_CAP - editor_chars
+                    if remaining_editor > 0:
+                        editor_chunks.append(line[:remaining_editor])
+                        editor_chars += min(len(line), remaining_editor)
+
+                if output_truncated:
+                    continue
+
+                # Cap total emitted characters
+                remaining_cap = output_cap - emitted_chars
+                if remaining_cap <= 0:
+                    yield from _flush_batch()
+                    _trunc_msg = (
+                        f"\n[… output truncated after {output_cap:,} chars; "
+                        "command is still running, further output is hidden …]\n"
+                    )
+                    yield _output_event(tag_id, _trunc_msg, "stderr")
+                    output_truncated = True
+                    continue
+
+                # Truncate line if it would exceed the cap
+                if len(line) > remaining_cap:
+                    line = line[:remaining_cap]
+
+                _batch_buf.append(line)
+                _batch_len += len(line)
+                emitted_chars += len(line)
+
+                # Flush when batch buffer reaches target size
+                if _batch_len >= _BATCH_SIZE:
+                    yield from _flush_batch()
+
+        # Flush any remaining buffered output
+        if not output_truncated:
+            yield from _flush_batch()
         proc.wait()
     finally:
         timer.cancel()

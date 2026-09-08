@@ -1,11 +1,13 @@
 """Qwen Session & Authentication Manager — handles headers, WAF tokens, and server session creation."""
 
+import asyncio
 import os
 import time
 import uuid
 import base64
 import json
 from pathlib import Path
+from typing import Any
 
 import httpx
 from engine.config import COOKIES, BX_UA, BX_UMIDTOKEN, NEW_CHAT_URL, get_model_config
@@ -97,30 +99,23 @@ class BrowserManager:
             launch_num = _increment_playwright_counter()
             print(f"[DEBUG] Launching persistent browser context #{launch_num} (headless={self.headless})...")
             from playwright.async_api import async_playwright
+            from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
             self.playwright = await async_playwright().start()
-
-            # WSL2 → connect to Windows Chrome via CDP instead of local headed launch
-            from engine.wsl_browser import launch_windows_chrome
-            wsl_session = launch_windows_chrome(
-                self.user_data_dir, port=9302, headless=self.headless,
-                extra_args=["--disable-infobars", "--disable-gpu"],
+            profile_name = getattr(self, "profile_name", None) or Path(self.user_data_dir).name
+            exe_path = resolve_browser_for_profile(profile_name)
+            launch_kwargs: dict[str, Any] = dict(
+                user_data_dir=self.user_data_dir,
+                headless=self.headless,
+                args=[
+                    "--no-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-infobars",
+                    "--disable-gpu",
+                ] + extra_browser_args(exe_path),
             )
-            if wsl_session is not None:
-                print(f"[DEBUG] WSL2: connected to Windows Chrome at {wsl_session.cdp_url}")
-                self.browser = await self.playwright.chromium.connect_over_cdp(wsl_session.cdp_url)
-                self.context = self.browser.contexts[0] if self.browser.contexts else await self.browser.new_context()
-            else:
-                # Native Linux — original persistent context launch
-                self.context = await self.playwright.chromium.launch_persistent_context(
-                    user_data_dir=self.user_data_dir,
-                    headless=self.headless,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-infobars",
-                        "--disable-gpu",
-                    ],
-                )
+            if exe_path:
+                launch_kwargs["executable_path"] = exe_path
+            self.context = await self.playwright.chromium.launch_persistent_context(**launch_kwargs)
             self.page = await self.context.new_page()
             await self.page.goto("https://chat.qwen.ai", wait_until="domcontentloaded", timeout=15000)
 
@@ -188,8 +183,8 @@ class BrowserManager:
         finally:
             self.page.remove_listener("request", on_request)
 
-        cookies = await self.context.cookies()
-        cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies]) if cookies else None
+        all_cookies = await self.context.cookies()
+        cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in all_cookies]) if all_cookies else None
 
         missing = [key for key in ("bx-ua", "bx-umidtoken") if not captured.get(key)]
         if missing:
@@ -207,7 +202,7 @@ class BrowserManager:
         return build_headers(
             cookies=cookie_str,
             bx_ua=captured.get("bx-ua"),
-            bx_umidtoken=captured.get("bx-umidtoken")
+            bx_umidtoken=captured.get("bx-umidtoken"),
         )
 
     async def extract_deepseek_token(self) -> str:
@@ -351,16 +346,27 @@ class BrowserManager:
         print(f"[DEBUG] Image uploaded successfully! File ID: {file_id}")
         return file_obj
 
-    async def sync_context(self, headers: dict[str, str] | None = None, project_id: str | None = None) -> bool:
-        """Sync persona instructions to Qwen via settings/update API (no Playwright DOM)."""
+    async def sync_context(self, headers: dict[str, str] | None = None, project_id: str | None = None, custom_instructions: str | None = None, layout_mode: str | None = None) -> bool:
+        """Sync persona instructions to Qwen via settings/update API (no Playwright DOM).
+
+        Args:
+            custom_instructions: If provided, use this string directly instead of
+                building instructions via build_instructions(). Used by subagents
+                to push their own system prompt into Qwen's personalization slot.
+            layout_mode: "chat" strips tools/skills/MCP except web search + chat_title.
+        """
         if headers is None:
             await self.start()
 
         SETTINGS_URL = "https://chat.qwen.ai/api/v2/users/user/settings/update"
 
-        # Build instructions using shared builder (same as DeepSeek/all API connectors)
-        from connectors.common.instruction_builder import build_instructions
-        instructions = build_instructions(project_id=project_id)
+        if custom_instructions is not None:
+            instructions = custom_instructions
+        else:
+            # Build instructions using shared builder.
+            # provider="qwen" injects <action> tag format instructions (Qwen's native wrapper).
+            from connectors.common.instruction_builder import build_instructions
+            instructions = build_instructions(project_id=project_id, provider="qwen", layout_mode=layout_mode)
 
         MAX_CHARS = 40960
         if len(instructions) > MAX_CHARS:
@@ -370,6 +376,7 @@ class BrowserManager:
         if headers is None:
             headers = await self.get_fresh_headers()
         headers = dict(headers)  # copy to avoid mutating the cached dict
+
         headers.update({
             "Content-Type": "application/json",
             "Version": "0.2.80",
@@ -397,6 +404,9 @@ class BrowserManager:
                 }
                 r1 = await client.post(SETTINGS_URL, json=tools_payload, headers=headers)
                 d1 = r1.json()
+                if r1.status_code == 401 or d1.get("data", {}).get("code") == "Unauthorized":
+                    print(f"[WARN] sync_context: {r1.status_code} Unauthorized — response: {str(d1)[:300]}")
+                    return False
                 if not d1.get("success"):
                     raise Exception(f"Disable tools failed: {d1}")
                 print("[DEBUG] Qwen default tools disabled")
@@ -428,6 +438,7 @@ class BrowserManager:
 
     async def close(self):
         """Cleanly closes context, saving browser profile state."""
+        # Stop keepalive first
         # FIX: context.close() and playwright.stop() are coroutines in the async
         # API — the old sync `def close` never awaited them, so the browser
         # process was never actually torn down (silent leak + RuntimeWarning).

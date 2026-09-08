@@ -28,7 +28,8 @@
             <div class="thinking-body">${escHtml(message.thinking)}</div>
           </details>`;
         activePane.appendChild(wrap);
-        activateLucideIcons(wrap);
+        // ponytail: Skip per-element icon scan during bulk history render
+        if (!window._historyLoading) activateLucideIcons(wrap);
       }
 
       // For assistant messages with round_text events, skip main content rendering —
@@ -192,7 +193,8 @@
           });
           toolbar.appendChild(forkBtn);
         }
-        activateLucideIcons(toolbar);
+        // ponytail: Skip per-element icon scan during bulk history render
+        if (!window._historyLoading) activateLucideIcons(toolbar);
       }
       // Attach toolbar to historical bot messages (or skip if round_text will handle it)
       if (message.role !== "user" && msgDiv) {
@@ -267,13 +269,32 @@
       toolbar.appendChild(copyBtn);
       toolbar.appendChild(ttsBtn);
       msgDiv.appendChild(toolbar);
-      activateLucideIcons(toolbar);
+      // ponytail: Skip per-element icon scan during bulk history render
+      if (!window._historyLoading) activateLucideIcons(toolbar);
     }
+
+    // ponytail: Cap stored skill_output text during history replay.
+    // Backend caps live streaming at 20K chars, but DB may hold unlimited
+    // output from before the cap existed. Prevents DOM explosion on load.
+    const HISTORY_SKILL_OUTPUT_CAP = 20000;
+
+    // ponytail: Max skill_output events rendered per card during history load.
+    // Prevents 800-event zip outputs from creating 800 DOM mutations on replay.
+    // Live streaming uses the backend batch+cap; this guards old DB records.
+    const HISTORY_MAX_OUTPUT_EVENTS_PER_CARD = 50;
 
     function _renderSkillEvents(events) {
       const cards = {};
+      const cardOutputCounts = {};
       let group = null;
       let _histSkillPath = "";
+      // During history load, skip per-event MathJax/Mermaid/Lucide —
+      // loadMessages does a single pass over the whole pane after all events
+      // are rendered. This avoids O(n) full-pane reflows for n events.
+      const isHistoryLoad = window._historyLoading;
+      // ponytail: No-op icon activation during bulk history render.
+      // Single activateLucideIcons(pane) call in loadMessages handles all.
+      const _actIcons = isHistoryLoad ? () => {} : activateLucideIcons;
       for (const evt of events) {
         if (evt.type === "round_thinking") {
           group = null;
@@ -285,7 +306,7 @@
               <div class="thinking-body">${escHtml(evt.text || "")}</div>
             </details>`;
           activePane.appendChild(wrap);
-          activateLucideIcons(wrap);
+          _actIcons(wrap);
         } else if (evt.type === "round_text") {
           if (evt.text && evt.text.trim()) {
             const textDiv = document.createElement("div");
@@ -293,9 +314,13 @@
             const content = document.createElement("div");
             content.className = "md-content";
             content.innerHTML = renderMarkdown(evt.text);
-            renderMermaidDiagrams(content);
-            renderMathJax(content);
-            activateLucideIcons(content);
+            // Skip heavy renders during history load — deferred to single
+            // pane-wide pass in loadMessages after fragment is attached.
+            if (!isHistoryLoad) {
+              renderMermaidDiagrams(content);
+              renderMathJax(content);
+            }
+            _actIcons(content);
             textDiv.appendChild(content);
             activePane.appendChild(textDiv);
             _attachBotToolbar(textDiv);
@@ -310,7 +335,7 @@
           }
           const card = createSkillCard(evt);
           group.appendChild(card);
-          activateLucideIcons(card);
+          _actIcons(card);
           cards[evt.id] = card;
           // Track path for history preview card
           if (evt.name === "create_file" || evt.name === "edit_file" || evt.name === "save_svg" || evt.name === "create_svg") {
@@ -327,7 +352,25 @@
             continue;
           }
           const card = cards[evt.id];
-          if (card) appendSkillCardOutput(card, evt.text);
+          if (card) {
+            let outText = evt.text || "";
+            // During history load, cap event count per card to prevent
+            // old uncapped DB records from flooding the DOM.
+            if (isHistoryLoad) {
+              const count = (cardOutputCounts[evt.id] || 0) + 1;
+              cardOutputCounts[evt.id] = count;
+              if (count > HISTORY_MAX_OUTPUT_EVENTS_PER_CARD) return; // skip excess events
+              if (count === HISTORY_MAX_OUTPUT_EVENTS_PER_CARD) {
+                outText += "\n⚠️ Output truncated (too many events).";
+              }
+            }
+            // Cap output text during history replay to prevent DOM explosion
+            // from pre-cap DB records with unlimited command output.
+            if (isHistoryLoad && outText.length > HISTORY_SKILL_OUTPUT_CAP) {
+              outText = outText.slice(0, HISTORY_SKILL_OUTPUT_CAP) + "\n⚠️ Output truncated for display.";
+            }
+            appendSkillCardOutput(card, outText);
+          }
         } else if (evt.type === "skill_end") {
           if (evt.name === "ask_user") continue;
           const card = cards[evt.id];
@@ -344,6 +387,74 @@
           if (activePane) {
             const turn = activePane.querySelector('.turn:last-child');
             (turn || activePane).appendChild(note);
+          }
+        } else if (evt.type === "cwd_warning") {
+          // History replay: decision already made — show static note
+          const note = document.createElement('div');
+          note.className = 'cwd-warning-pending-note';
+          note.textContent = '⚠️ CWD warning: ' + (evt.data?.path || '').slice(0, 80);
+          if (activePane) {
+            const turn = activePane.querySelector('.turn:last-child');
+            (turn || activePane).appendChild(note);
+          }
+        } else if (evt.type === "critique_start") {
+          // History replay: render completed critique box
+          const box = document.createElement('div');
+          box.className = 'critique-box';
+          box.dataset.critiqueId = evt.id || '';
+          box.innerHTML = `
+            <div class="critique-header">
+              <div class="critique-header-left">
+                <span class="critique-icon"><i data-lucide="search-check"></i></span>
+                <span class="critique-title">Critique Session</span>
+                <span class="critique-badge" data-focus="${escHtml(evt.focus || 'general')}">${escHtml(evt.focus || 'general')}</span>
+              </div>
+              <div class="critique-status"><span style="color:var(--ok)">Complete</span></div>
+            </div>
+            <details class="critique-details">
+              <summary>Context & Criteria</summary>
+              <div class="critique-details-body">
+                <div class="critique-section">
+                  <div class="critique-label">Context</div>
+                  <div class="critique-text">${escHtml(evt.context || '')}</div>
+                </div>
+                <div class="critique-section">
+                  <div class="critique-label">Criteria</div>
+                  <div class="critique-text">${escHtml(evt.criteria || '')}</div>
+                </div>
+              </div>
+            </details>
+            <div class="critique-log"></div>
+          `;
+          activePane.appendChild(box);
+          _actIcons(box);
+          cards[evt.id] = box;  // reuse cards map for critique_tool/done lookup
+        } else if (evt.type === "critique_tool") {
+          const box = cards[evt.id];
+          if (box) {
+            const log = box.querySelector('.critique-log');
+            if (log) {
+              const entry = document.createElement('div');
+              entry.className = 'critique-tool-entry';
+              entry.innerHTML = `<span class="critique-tool-name">${escHtml(evt.tool || '')}</span><span class="critique-tool-output">${escHtml((evt.output || '').slice(0, 200))}</span>`;
+              log.appendChild(entry);
+            }
+          }
+        } else if (evt.type === "critique_done") {
+          const box = cards[evt.id];
+          if (box) {
+            const statusEl = box.querySelector('.critique-status');
+            if (evt.error) {
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Failed</span>';
+            } else {
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
+              const log = box.querySelector('.critique-log');
+              if (log) {
+                log.className = 'critique-report';
+                log.innerHTML = renderMarkdown(evt.report || '');
+              }
+              box.classList.add('critique-done');
+            }
           }
         } else if (evt.type === "agent_result") {
           if (typeof addAgentResultCard === "function") {
@@ -647,6 +758,209 @@
       activateLucideIcons(banner);
     }
 
+    function renderCwdWarningCard(evt, container) {
+      const { id, name, data } = evt;
+      const { path, cwd } = data;
+      const banner = document.getElementById('approvalBanner');
+      if (!banner) return;
+
+      const shortPath = path.length > 80 ? '…' + path.slice(-77) : path;
+
+      banner.className = 'approval-banner cwd-warning-banner';
+      banner.dataset.tagId = id;
+      banner.innerHTML = `
+        <div class="ab-icon"><i data-lucide="folder-alert"></i></div>
+        <div class="ab-body">
+          <div class="ab-title">File operation outside project folder</div>
+          <div class="ab-sub">${shortPath.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
+          <div class="ab-detail">Without making it the project folder, you can't recover in case of accidental damage.</div>
+        </div>
+        <div class="ab-actions">
+          <button class="ab-cwd-session"><i data-lucide="shield-check"></i> Allow for Session</button>
+          <button class="ab-cwd-continue"><i data-lucide="arrow-right"></i> Continue</button>
+          <button class="ab-cwd-open"><i data-lucide="folder-open"></i> Open Folder</button>
+          <button class="ab-cwd-deny"><i data-lucide="x"></i> Deny</button>
+        </div>
+      `;
+
+      const sessionBtn = banner.querySelector('.ab-cwd-session');
+      const continueBtn = banner.querySelector('.ab-cwd-continue');
+      const openBtn = banner.querySelector('.ab-cwd-open');
+      const denyBtn = banner.querySelector('.ab-cwd-deny');
+
+      function disableAllCwdBtns() {
+        if (sessionBtn) sessionBtn.disabled = true;
+        continueBtn.disabled = true;
+        openBtn.disabled = true;
+        if (denyBtn) denyBtn.disabled = true;
+      }
+
+      sessionBtn?.addEventListener('click', async () => {
+        disableAllCwdBtns();
+        activePane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
+        try {
+          const resp = await fetch('/api/skills/cwd-approve/' + id, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({chat_id: activeChatId, session: true}),
+          });
+          banner.classList.add('ab-resolved');
+          if (resp.ok && activePane) {
+            const card = createSkillCard({ name: name, data: { attrs: { path: path } } });
+            const status = card.querySelector('.skill-status');
+            status.textContent = 'allowed for session ✓';
+            status.style.color = 'var(--ok)';
+            const turn = activePane.querySelector('.turn:last-child');
+            const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
+            if (target) { target.appendChild(card); activateLucideIcons(card); }
+            activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
+          }
+          const result = await resp.json();
+          const st = document.createElement('span');
+          st.className = 'ab-status ok';
+          st.textContent = 'session allowed';
+          banner.querySelector('.ab-actions').replaceWith(st);
+          if (result.feedback) {
+            setTimeout(() => sendAutoTurnMessage(result.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
+          }
+        } catch(e) {
+          banner.classList.add('ab-resolved');
+          const st = document.createElement('span');
+          st.className = 'ab-status no';
+          st.textContent = 'error';
+          banner.querySelector('.ab-actions')?.replaceWith(st);
+        }
+        setTimeout(() => banner.classList.add('hidden'), 4000);
+      });
+
+      continueBtn.addEventListener('click', async () => {
+        disableAllCwdBtns();
+        activePane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
+        try {
+          const resp = await fetch('/api/skills/cwd-approve/' + id, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({chat_id: activeChatId}),
+          });
+          banner.classList.add('ab-resolved');
+          if (resp.ok && activePane) {
+            const card = createSkillCard({ name: name, data: { attrs: { path: path } } });
+            const status = card.querySelector('.skill-status');
+            status.textContent = 'approved ✓';
+            status.style.color = 'var(--ok)';
+            const turn = activePane.querySelector('.turn:last-child');
+            const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
+            if (target) { target.appendChild(card); activateLucideIcons(card); }
+            activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
+          }
+          const result = await resp.json();
+          const st = document.createElement('span');
+          st.className = 'ab-status ok';
+          st.textContent = 'done';
+          banner.querySelector('.ab-actions').replaceWith(st);
+          if (result.feedback) {
+            setTimeout(() => sendAutoTurnMessage(result.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
+          }
+        } catch(e) {
+          banner.classList.add('ab-resolved');
+          const st = document.createElement('span');
+          st.className = 'ab-status no';
+          st.textContent = 'error';
+          banner.querySelector('.ab-actions')?.replaceWith(st);
+        }
+        setTimeout(() => banner.classList.add('hidden'), 4000);
+      });
+
+      openBtn.addEventListener('click', async () => {
+        continueBtn.disabled = true;
+        openBtn.disabled = true;
+        activePane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
+        try {
+          const res = await fetch('/api/filesystem/pick-folder');
+          const pickData = await res.json();
+          if (pickData.path && window.pickFsRoot) {
+            window.pickFsRoot(pickData.path);
+            // After changing CWD, approve the operation with new context
+            const resp = await fetch('/api/skills/cwd-approve/' + id, {
+              method: 'POST',
+              headers: {'Content-Type':'application/json'},
+              body: JSON.stringify({chat_id: activeChatId}),
+            });
+            banner.classList.add('ab-resolved');
+            const result = await resp.json();
+            const st = document.createElement('span');
+            st.className = 'ab-status ok';
+            st.textContent = 'folder changed ✓';
+            banner.querySelector('.ab-actions').replaceWith(st);
+            if (result.feedback) {
+              setTimeout(() => sendAutoTurnMessage(result.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
+            }
+          } else {
+            // User cancelled folder picker — re-enable buttons
+            continueBtn.disabled = false;
+            openBtn.disabled = false;
+            return;
+          }
+        } catch(e) {
+          banner.classList.add('ab-resolved');
+          const st = document.createElement('span');
+          st.className = 'ab-status no';
+          st.textContent = 'error';
+          banner.querySelector('.ab-actions')?.replaceWith(st);
+        }
+        setTimeout(() => banner.classList.add('hidden'), 4000);
+      });
+
+      denyBtn?.addEventListener('click', async () => {
+        disableAllCwdBtns();
+        activePane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
+        banner.classList.add('ab-resolved');
+
+        const st = document.createElement('span');
+        st.className = 'ab-status no';
+        st.textContent = 'denied';
+
+        if (activePane) {
+          const card = createSkillCard({ name: name, data: { attrs: { path: path } } });
+          const status = card.querySelector('.skill-status');
+          if (status) {
+            status.textContent = 'denied ✗';
+            status.style.color = 'var(--danger)';
+          }
+          const output = card.querySelector('.skill-output');
+          if (output) output.textContent = '[denied by user]';
+
+          const turn = activePane.querySelector('.turn:last-child');
+          const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
+          if (target) { target.appendChild(card); activateLucideIcons(card); }
+          activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
+        }
+
+        banner.querySelector('.ab-actions')?.replaceWith(st);
+
+        try {
+          const resp = await fetch('/api/skills/cwd-deny/' + id, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({chat_id: activeChatId}),
+          });
+          const result = await resp.json();
+          if (result.feedback) {
+            setTimeout(() => sendAutoTurnMessage(result.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
+          } else {
+            setTimeout(() => sendAutoTurnMessage('[System: File operation outside project was denied by user.]', { skipUserBubble: true, skipUserSave: true }), 300);
+          }
+        } catch(e) {
+          console.error('[cwd-warning] deny error:', e);
+          setTimeout(() => sendAutoTurnMessage('[System: File operation outside project was denied by user.]', { skipUserBubble: true, skipUserSave: true }), 300);
+        }
+
+        setTimeout(() => banner.classList.add('hidden'), 3000);
+      });
+
+      activateLucideIcons(banner);
+    }
+
 
     // one "turn" holds everything for a single response: thinking, then any
     // skill/tool runs it made, then the final answer — all stacked in order,
@@ -837,9 +1151,20 @@
           activateLucideIcons(answerContent);
         }
         if (!_ansTimer) {
-          // Final render: produce proper mermaid-wrap so renderMermaidDiagrams can find them
+          // Final tick render: produce proper mermaid-wrap but defer heavy rendering
+          // to closeAnswer() which runs after stream truly ends or segment closes.
+          // This prevents partial math/mermaid from rendering mid-stream.
           answerContent.innerHTML = renderMarkdown(raw);
-          renderMermaidDiagrams(answerContent); renderMathJax(answerContent);
+          // Neutralize mermaid during streaming to prevent flicker
+          answerContent.querySelectorAll(".mermaid-wrap").forEach(wrap => {
+            const pre = wrap.querySelector("pre.mermaid");
+            if (!pre) return;
+            const code = pre.textContent;
+            const div = document.createElement("div");
+            div.className = "code-block";
+            div.innerHTML = `<pre><code class="language-mermaid">${escHtml(code)}</code></pre>`;
+            wrap.replaceWith(div);
+          });
         }
       }
       function _enqueueAnswer(text) {
@@ -851,9 +1176,9 @@
         if (_ansQueue && answerContent) {
           raw += _ansQueue;
           _ansQueue = "";
+          // Only do lightweight markdown render here; heavy mermaid/math rendering
+          // is deferred to closeAnswer() to avoid rendering partial content mid-stream.
           answerContent.innerHTML = renderMarkdown(raw);
-          renderMermaidDiagrams(answerContent);
-          renderMathJax(answerContent);
           activateLucideIcons(answerContent);
           scrollBottom();
         }
@@ -862,8 +1187,19 @@
       function closeAnswer() {
         _flushAnswerQueue();
         if (!answerEl) return;
+        // Skip markdown re-render for special cards (rate-limit, captcha) that
+        // already have their final HTML set via innerHTML.
+        const _isSpecialCard = raw === "__rate_limit_card__" || raw === "__captcha_block_card__";
+        // Final render with full mermaid + math support — only runs when this answer
+        // segment is truly done (stream end or skill interleave boundary).
+        if (answerContent && raw && !_isSpecialCard) {
+          answerContent.innerHTML = renderMarkdown(raw);
+          renderMermaidDiagrams(answerContent);
+          renderMathJax(answerContent);
+          activateLucideIcons(answerContent);
+        }
         answerEl.classList.remove("streaming");
-        if (!raw.trim()) answerEl.remove();
+        if (!_isSpecialCard && !raw.trim()) answerEl.remove();
         answerEl = null;
         answerContent = null;
         raw = "";
@@ -994,7 +1330,7 @@
             _enqueueAnswer(text);
           }
         },
-        replaceWithRateLimit(message, hours) {
+        replaceWithRateLimit(message, hours, debugInfo) {
           hidePending();
           // Kill typewriter queues immediately — don't flush partial content
           if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
@@ -1014,15 +1350,72 @@
           // Build persistent rate-limit card
           ensureAnswer();
           answerEl.classList.remove('streaming');
+          // Set raw so closeAnswer() doesn't remove this element on finalize
+          raw = "__rate_limit_card__";
           const h = hours || '?';
+          const dbg = debugInfo || {};
+          const debugHtml = dbg.account ? `
+              <div class="card-debug-info">
+                <span class="cdi-label">Service Account</span><span class="cdi-value">${dbg.account}</span>
+                <span class="cdi-label">Override</span><span class="cdi-value">${dbg.account_override || 'none'}</span>
+                <span class="cdi-label">Active File</span><span class="cdi-value">${dbg.active_account_file || '—'}</span>
+                <span class="cdi-label">Browser Data</span><span class="cdi-value cdi-path">${dbg.browser_data_dir || '—'}</span>
+                <span class="cdi-label">Cookie Snippet</span><span class="cdi-value cdi-cookies">${dbg.cookie_snippet || 'none'}</span>
+                <span class="cdi-label">bx_ua</span><span class="cdi-value">${dbg.has_bx_ua ? '✅' : '❌'}</span>
+                <span class="cdi-label">bx_umidtoken</span><span class="cdi-value">${dbg.has_bx_umidtoken ? '✅' : '❌'}</span>
+                ${dbg.error ? `<span class="cdi-label">Error</span><span class="cdi-value cdi-error">${dbg.error}</span>` : ''}
+              </div>` : '';
           answerContent.innerHTML = `
             <div class="rate-limit-card">
               <span class="rl-icon">⏳</span>
               <span class="rl-title">Daily Usage Limit Reached</span>
               <span class="rl-detail">${message || 'You have reached the upper limit for today\'s usage.'}</span>
               <span class="rl-timer">Try again in ~${h} hour${h === 1 ? '' : 's'}. This message will stay visible so you don't miss it.</span>
+              ${debugHtml}
             </div>`;
-          raw = "\u200B"; // non-empty so closeAnswer() won't remove the card
+          // raw already set to "__rate_limit_card__" above — do NOT overwrite
+          scrollBottom();
+        },
+        replaceWithCaptchaBlock(message, debugInfo) {
+          hidePending();
+          if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
+          _thinkQueue = "";
+          if (_ansTimer) { clearTimeout(_ansTimer); _ansTimer = null; }
+          _ansQueue = "";
+          currentThinkWrap = null;
+          currentThinkBody = null;
+          currentThinkSummary = null;
+          if (answerEl) {
+            answerEl.remove();
+            answerEl = null;
+            answerContent = null;
+            raw = "";
+          }
+          ensureAnswer();
+          answerEl.classList.remove('streaming');
+          // Set raw so closeAnswer() doesn't remove this element on finalize
+          raw = "__captcha_block_card__";
+          const dbg = debugInfo || {};
+          const debugHtml = dbg.account ? `
+              <div class="card-debug-info">
+                <span class="cdi-label">Service Account</span><span class="cdi-value">${dbg.account}</span>
+                <span class="cdi-label">Override</span><span class="cdi-value">${dbg.account_override || 'none'}</span>
+                <span class="cdi-label">Active File</span><span class="cdi-value">${dbg.active_account_file || '—'}</span>
+                <span class="cdi-label">Browser Data</span><span class="cdi-value cdi-path">${dbg.browser_data_dir || '—'}</span>
+                <span class="cdi-label">Cookie Snippet</span><span class="cdi-value cdi-cookies">${dbg.cookie_snippet || 'none'}</span>
+                <span class="cdi-label">bx_ua</span><span class="cdi-value">${dbg.has_bx_ua ? '✅' : '❌'}</span>
+                <span class="cdi-label">bx_umidtoken</span><span class="cdi-value">${dbg.has_bx_umidtoken ? '✅' : '❌'}</span>
+                ${dbg.error ? `<span class="cdi-label">Error</span><span class="cdi-value cdi-error">${dbg.error}</span>` : ''}
+              </div>` : '';
+          answerContent.innerHTML = `
+            <div class="captcha-block-card">
+              <span class="cb-icon">🛡️</span>
+              <span class="cb-title">Captcha / WAF Challenge Hit</span>
+              <span class="cb-detail">${message || 'Qwen rejected this request with a captcha or WAF validation challenge.'}</span>
+              <span class="cb-note">The request was stopped so you can switch/refresh the account or solve the challenge manually.</span>
+              ${debugHtml}
+            </div>`;
+          // raw already set to "__captcha_block_card__" above — do NOT overwrite
           scrollBottom();
         },
         trackFileEdit(evt) {
@@ -1128,7 +1521,18 @@
         finalize() {
           hidePending();
           closeCurrentThinking();
+          // If auto-switch didn't recover, render the permanent error card now.
+          // closeAnswer() will remove the transient switching-status card first.
+          const _prl = this._pendingRateLimit;
+          const _pcb = this._pendingCaptchaBlock;
           closeAnswer();
+          if (_prl) {
+            this.replaceWithRateLimit(_prl.message, _prl.hours, _prl.debug);
+            this._pendingRateLimit = null;
+          } else if (_pcb) {
+            this.replaceWithCaptchaBlock(_pcb.message, _pcb.debug);
+            this._pendingCaptchaBlock = null;
+          }
           // Cancel any pending exit timer from a tool that finished just before stop
           if (_tacExitTimer) { clearTimeout(_tacExitTimer); _tacExitTimer = null; }
           // Clean up any lingering tool activity card — mark as interrupted then fade out
@@ -1303,6 +1707,122 @@
       targetDiv.appendChild(resendBar);
     }
 
+
+    // Critique: fire a normal POST /api/chat turn, stream response into the critique card.
+    // Uses a separate chat_id so the critique session doesn't pollute the main conversation history.
+    // Everything else (model, provider, thinking_mode, system prompt, WAF) is identical.
+    async function _runCritiqueTurn(message, box, logEl, statusEl, critiqueId) {
+      if (!message || !activeChatId) return;
+      const critiqueChatId = activeChatId + "-critique-" + (critiqueId || Date.now().toString(36));
+      const controller = startStream(critiqueChatId);
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message,
+            chat_id: critiqueChatId,
+            parent_id: undefined,  // fresh session, no parent
+            model: selectedModel,
+            thinking_mode: selectedThinkingMode,
+            stream: true,
+          }),
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Failed</span>';
+          if (logEl) logEl.innerHTML += `<div class="critique-error">HTTP ${res.status}</div>`;
+          return;
+        }
+        // Stream SSE into the critique log
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        let answerBuf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() || "";
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const raw = line.slice(6).trim();
+            if (!raw) continue;
+            let evt;
+            try { evt = JSON.parse(raw); } catch (_) { continue; }
+            if (evt.type === "answer" && evt.text) {
+              answerBuf += evt.text;
+              if (logEl) {
+                logEl.innerHTML = renderMarkdown(answerBuf);
+                scrollBottom();
+              }
+            } else if (evt.type === "thinking" && evt.text) {
+              // Show thinking in a muted sub-block inside the card
+              if (logEl) {
+                let thinkEl = logEl.querySelector('.critique-thinking');
+                if (!thinkEl) {
+                  thinkEl = document.createElement('div');
+                  thinkEl.className = 'critique-thinking';
+                  logEl.prepend(thinkEl);
+                }
+                thinkEl.textContent += evt.text;
+              }
+            } else if (evt.type === "skill_start") {
+              if (logEl) {
+                const toolTag = document.createElement('div');
+                toolTag.className = 'critique-tool-entry';
+                toolTag.innerHTML = `<span class="critique-tool-name">⚡ ${escHtml(evt.name || '')}</span>`;
+                logEl.appendChild(toolTag);
+                scrollBottom();
+              }
+            } else if (evt.type === "skill_end") {
+              if (logEl) {
+                const entries = logEl.querySelectorAll('.critique-tool-entry');
+                const last = entries[entries.length - 1];
+                if (last && !last.dataset.done) {
+                  last.dataset.done = "1";
+                  const icon = evt.ok ? "✅" : "❌";
+                  last.innerHTML += ` <span>${icon}</span>`;
+                }
+              }
+            } else if (evt.type === "done") {
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
+              if (box) box.classList.add('critique-done');
+              if (logEl && answerBuf) logEl.innerHTML = renderMarkdown(answerBuf);
+              // Feed the critique report back into the main chat as a user message
+              if (answerBuf && typeof sendAutoTurnMessage === "function") {
+                const reportMsg = `[Critique Report]\n${answerBuf}`;
+                setTimeout(() => sendAutoTurnMessage(reportMsg, { skipUserBubble: false, skipUserSave: false }), 300);
+              }
+            } else if (evt.type === "error" || evt.type === "stream_error") {
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Error</span>';
+              if (logEl) logEl.innerHTML += `<div class="critique-error">${escHtml(evt.message || evt.error || 'Unknown error')}</div>`;
+            }
+          }
+        }
+        // If stream ended without explicit done event
+        if (statusEl && !box?.classList.contains('critique-done')) {
+          if (answerBuf) {
+            statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
+            if (box) box.classList.add('critique-done');
+            if (logEl) logEl.innerHTML = renderMarkdown(answerBuf);
+            if (typeof sendAutoTurnMessage === "function") {
+              const reportMsg = `[Critique Report]\n${answerBuf}`;
+              setTimeout(() => sendAutoTurnMessage(reportMsg, { skipUserBubble: false, skipUserSave: false }), 300);
+            }
+          } else {
+            statusEl.innerHTML = '<span style="color:var(--error)">No response</span>';
+          }
+        }
+      } catch (err) {
+        if (err.name !== "AbortError") {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Error</span>';
+          if (logEl) logEl.innerHTML += `<div class="critique-error">${escHtml(err.message)}</div>`;
+        }
+      }
+    }
+
     async function consumeChatStream(res, ui, userMsgDiv, streamChatId) {
       const reader  = res.body.getReader();
       const decoder = new TextDecoder();
@@ -1310,6 +1830,9 @@
       let gotAnswer = false;
       let gotDone = false;
       let gotError = false;
+      // Pending terminal cards stored on ui so finalize() can access them.
+      // Set when rate_limited/waf_blocked fires; cleared when answer arrives (recovery).
+      // If still set at finalize(), the permanent error card is rendered.
       let gotTitle = false;
       let _lastSkillPath = "";
       let _lastSkillName = "";
@@ -1362,11 +1885,28 @@
               }
               saveActiveChat();
             }
+          } else if (evt.type === "response_id") {
+            // Qwen stop API requires response_id. Backend emits this as soon as
+            // the first upstream SSE chunk exposes it.
+            if (evt.id && typeof window.setActiveResponseId === "function") {
+              window.setActiveResponseId(streamChatId, String(evt.id));
+              if (activeChatId === streamChatId) {
+                window.setActiveResponseId(activeChatId, String(evt.id));
+              }
+            }
           } else if (evt.type === "status") {
-            if (evt.message === "feeding_skill_results") ui.nextSkillRound();
+            if (evt.message === "feeding_skill_results") {
+              ui.nextSkillRound();
+            } else {
+              const _bsTurn = activePane.querySelector('.turn:last-child');
+              if (_bsTurn) handleBackendStatusEvent(evt, _bsTurn);
+            }
           } else if (evt.type === "account_switch") {
             const _ascTurn = activePane.querySelector('.turn:last-child');
             if (_ascTurn) handleAccountSwitchEvent(evt, _ascTurn);
+          } else if (evt.type === "token_rotation") {
+            const _trTurn = activePane.querySelector('.turn:last-child');
+            if (_trTurn) handleTokenRotationEvent(evt, _trTurn);
           } else if (evt.type === "user_message_id") {
             // Store DB message ID on the div and enable the fork button
             if (userMsgDiv && evt.id) {
@@ -1398,18 +1938,39 @@
             // Legacy fallback — backend no longer sends raw thinking tokens
             ui.appendThinking(evt.text || "");
           } else if (evt.type === "answer") {
-            if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
+            if (!gotAnswer) {
+              ui.closeThinking();
+              gotAnswer = true;
+              // Remove backend status cards from all previous turns; keep the current streaming one
+              const _allTurns = activePane.querySelectorAll('.turn');
+              for (let i = 0; i < _allTurns.length - 1; i++) {
+                _allTurns[i].querySelectorAll('.backend-status-card').forEach(c => c.remove());
+              }
+            }
+            // Recovery: backend auto-switched successfully — clear pending error cards
+            ui._pendingRateLimit = null;
+            ui._pendingCaptchaBlock = null;
             ui.appendAnswer(evt.text || "");
           } else if (evt.type === "done") {
             gotDone = true;
+            // Collapse backend status card when streaming finishes
+            const _lastTurn = activePane.querySelector('.turn:last-child');
+            if (_lastTurn) {
+              const _bsCard = _lastTurn.querySelector('.backend-status-card');
+              if (_bsCard && !_bsCard.classList.contains('collapsed')) _bsCard.classList.add('collapsed');
+            }
             if (activeChatId === streamChatId) {
               parentId = evt.parent_id || parentId;
               saveActiveChat();
             }
           } else if (evt.type === "rate_limited") {
-            gotError = true;
-            ui.replaceWithRateLimit(evt.message, evt.hours);
-            break;
+            // Don't break — backend auto-switches and emits account_switch events.
+            // The existing handleAccountSwitchEvent renders the proper card.
+            // If stream ends without recovery, finalize() renders the permanent card.
+            ui._pendingRateLimit = { message: evt.message, hours: evt.hours, debug: evt };
+          } else if (evt.type === "waf_blocked") {
+            // Don't break — backend auto-switches and emits account_switch events.
+            ui._pendingCaptchaBlock = { message: evt.message, debug: evt };
           } else if (evt.type === "error") {
             gotError = true;
             const msg = evt.message || "Unknown error";
@@ -1463,6 +2024,18 @@
               const turn = activePane.querySelector('.turn:last-child');
               (turn || activePane.querySelector('.messages')).appendChild(pending);
             }
+          } else if (evt.type === "cwd_warning") {
+            if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
+            renderCwdWarningCard(evt, activePane);
+          } else if (evt.type === "cwd_warning_pending") {
+            if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
+            const pending = document.createElement('div');
+            pending.className = 'cwd-warning-pending-note';
+            pending.textContent = evt.text || '⚠️ File operation outside project folder detected.';
+            if (activePane) {
+              const turn = activePane.querySelector('.turn:last-child');
+              (turn || activePane.querySelector('.messages')).appendChild(pending);
+            }
           } else if (evt.type === "sim_ready") {
             const fname = evt.filename || "simulation.html";
             const url = "/assets/" + encodeURIComponent(fname);
@@ -1478,6 +2051,101 @@
               target.appendChild(card);
               activateLucideIcons(card);
               scrollBottom();
+            }
+          } else if (evt.type === "critique_start") {
+            // Create inline critique box in the chat
+            if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
+            ui.showToolDone();
+            const pane = activePane;
+            if (pane) {
+              const turn = pane.querySelector('.turn:last-child') || pane.querySelector('.messages');
+              if (turn) {
+                const box = document.createElement('div');
+                box.className = 'critique-box';
+                box.dataset.critiqueId = evt.id || '';
+                box.innerHTML = `
+                  <div class="critique-header">
+                    <div class="critique-header-left">
+                      <span class="critique-icon"><i data-lucide="search-check"></i></span>
+                      <span class="critique-title">Critique Session</span>
+                      <span class="critique-badge" data-focus="${escHtml(evt.focus || 'general')}">${escHtml(evt.focus || 'general')}</span>
+                    </div>
+                    <div class="critique-status"><span class="critique-spinner"></span> Reviewing...</div>
+                  </div>
+                  <details class="critique-details">
+                    <summary>Context & Criteria</summary>
+                    <div class="critique-details-body">
+                      <div class="critique-section">
+                        <div class="critique-label">Context</div>
+                        <div class="critique-text">${escHtml(evt.context || '')}</div>
+                      </div>
+                      <div class="critique-section">
+                        <div class="critique-label">Criteria</div>
+                        <div class="critique-text">${escHtml(evt.criteria || '')}</div>
+                      </div>
+                    </div>
+                  </details>
+                  <div class="critique-log"></div>
+                `;
+                turn.appendChild(box);
+                activateLucideIcons(box);
+                scrollBottom();
+              }
+            }
+          } else if (evt.type === "critique_tool") {
+            // Append tool activity to the critique log
+            const pane = activePane;
+            if (pane) {
+              const box = pane.querySelector(`.critique-box[data-critique-id="${evt.id}"]`);
+              if (box) {
+                const log = box.querySelector('.critique-log');
+                if (log) {
+                  const entry = document.createElement('div');
+                  entry.className = 'critique-tool-entry';
+                  entry.innerHTML = `<span class="critique-tool-name">${escHtml(evt.tool || '')}</span><span class="critique-tool-output">${escHtml((evt.output || '').slice(0, 200))}</span>`;
+                  log.appendChild(entry);
+                  scrollBottom();
+                }
+              }
+            }
+          } else if (evt.type === "critique_trigger") {
+            // Fire a normal chat turn, stream response into the critique card
+            const pane = activePane;
+            if (pane && evt.message) {
+              const box = pane.querySelector(`.critique-box[data-critique-id="${evt.id}"]`);
+              if (box) {
+                box.dataset.turnActive = "1"; // prevent critique_done from racing
+                const log = box.querySelector('.critique-log');
+                const statusEl = box.querySelector('.critique-status');
+                if (statusEl) statusEl.innerHTML = '<span class="critique-spinner"></span> Running...';
+                _runCritiqueTurn(evt.message, box, log, statusEl, evt.id);
+              }
+            }
+          } else if (evt.type === "critique_done") {
+            // Backend skill_end fires immediately — if _runCritiqueTurn is still streaming,
+            // don't overwrite the "Running..." status. Only handle errors or fallback.
+            const pane = activePane;
+            if (pane) {
+              const box = pane.querySelector(`.critique-box[data-critique-id="${evt.id}"]`);
+              if (box && box.dataset.turnActive !== "1") {
+                const statusEl = box.querySelector('.critique-status');
+                if (evt.error) {
+                  if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Failed</span>';
+                  const log = box.querySelector('.critique-log');
+                  if (log) log.innerHTML += `<div class="critique-error">${escHtml(evt.error)}</div>`;
+                  box.classList.add('critique-done');
+                } else if (evt.report) {
+                  // Fallback: only render if no active turn handled it
+                  if (statusEl) statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
+                  const log = box.querySelector('.critique-log');
+                  if (log) {
+                    log.className = 'critique-report';
+                    log.innerHTML = renderMarkdown(evt.report);
+                  }
+                  box.classList.add('critique-done');
+                }
+                scrollBottom();
+              }
             }
           } else if (evt.type === "chat_title") {
             gotTitle = true;
@@ -1551,6 +2219,91 @@
         endStream(streamChatId);
       }
     }
+
+
+// ── Backend Status Card (retries, errors, recovery) ─────────────────────────
+const _BACKEND_STATUS_MAP = {
+  processing:                              { label: "Processing request…",              icon: "loader" },
+  first_chunk_timeout_triggering_switch:   { label: "No response after 3 attempts — switching…", icon: "triangle-alert" },
+  stream_stall_timeout_triggering_switch:  { label: "Stream stalled — switching…",      icon: "triangle-alert" },
+  empty_response_exhausted_triggering_switch: { label: "Empty responses exhausted — switching…", icon: "triangle-alert" },
+  recovering_session:                      { label: "Session expired — recovering…",    icon: "refresh-cw" },
+  recovering_parent:                       { label: "Parent message lost — recovering…", icon: "refresh-cw" },
+  waiting_for_agents:                      { label: "Waiting for agents…",              icon: "users" },
+  high_skill_round_count:                  { label: "High skill round count",           icon: "alert-circle" },
+};
+
+function _backendStatusIcon(name, size = 14) {
+  return `<i data-lucide="${name}" style="width:${size}px;height:${size}px"></i>`;
+}
+
+function handleBackendStatusEvent(evt, container) {
+  const msg = evt.message || "";
+  if (!msg) return;
+
+  // Parse retry patterns: retrying_timeout_2, retrying_stall_1, empty_response_retry_3, chat_in_progress_retry_5
+  let parsedLabel = null;
+  let parsedIcon = "refresh-cw";
+  const retryMatch = msg.match(/^(retrying_timeout|retrying_stall|empty_response_retry|chat_in_progress_retry)_(\d+)$/);
+  if (retryMatch) {
+    const kind = retryMatch[1];
+    const attempt = retryMatch[2];
+    const labels = {
+      retrying_timeout:       `Timeout — retry ${attempt}/3…`,
+      retrying_stall:         `Stream stall — retry ${attempt}/3…`,
+      empty_response_retry:   `Empty response — retry ${attempt}…`,
+      chat_in_progress_retry: `Chat in progress — check ${attempt}/10…`,
+    };
+    parsedLabel = labels[kind] || msg;
+    parsedIcon = kind.startsWith("empty") ? "ghost" : kind.startsWith("chat_in") ? "message-square" : "timer";
+  }
+
+  const mapped = _BACKEND_STATUS_MAP[msg];
+  const label = parsedLabel || (mapped ? mapped.label : msg.replace(/_/g, " "));
+  const icon = parsedLabel ? parsedIcon : (mapped ? mapped.icon : "info");
+
+  // Find or create the card
+  let card = container.querySelector(".backend-status-card");
+  if (!card) {
+    card = document.createElement("div");
+    card.className = "skill-card backend-status-card";
+    card.innerHTML = `
+      <div class="skill-header">
+        <div class="skill-header-left">
+          <span class="skill-arrow">${_backendStatusIcon("chevron-down")}</span>
+          <span class="skill-name">${_backendStatusIcon("terminal", 15)} Backend Status</span>
+        </div>
+        <div class="skill-header-right" style="display:flex;align-items:center;gap:8px;">
+          <span class="skill-status bs-status">working…</span>
+        </div>
+      </div>
+      <div class="bs-steps"></div>`;
+    card.querySelector(".skill-header").onclick = () => card.classList.toggle("collapsed");
+    container.appendChild(card);
+    if (typeof activateLucideIcons === "function") activateLucideIcons(card);
+  }
+
+  const stepsEl = card.querySelector(".bs-steps");
+  const statusEl = card.querySelector(".bs-status");
+
+  // Deactivate all previous rows
+  stepsEl.querySelectorAll(".bs-step-active").forEach(el => {
+    el.classList.remove("bs-step-active");
+    el.classList.add("bs-step-done");
+  });
+
+  // Add new row
+  const row = document.createElement("div");
+  row.className = "bs-step bs-step-active";
+  row.innerHTML = `<span class="bs-step-icon">${_backendStatusIcon(icon)}</span><span class="bs-step-label">${label}</span>`;
+  stepsEl.appendChild(row);
+
+  // Update header status text
+  if (statusEl) statusEl.textContent = label;
+
+  if (typeof activateLucideIcons === "function") activateLucideIcons(card);
+}
+
 
 // ── Account Switch Status Card ──────────────────────────────────────────────
 const _ACCOUNT_SWITCH_STEPS = [
@@ -1683,5 +2436,64 @@ function handleAccountSwitchEvent(evt, container) {
   const activeRow = stepsEl.querySelector(".asc-step-active, .asc-step-failed");
   if (activeRow) activeRow.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
+
+// ---------------------------------------------------------------------------
+// Token Rotation Card (DeepSeek API token switching)
+// ---------------------------------------------------------------------------
+
+const _TOKEN_ROTATION_REASONS = {
+  round_robin:    { label: "Round-robin rotation", icon: "refresh-cw" },
+  timeout:        { label: "Timeout failover",     icon: "clock" },
+  empty_response: { label: "Empty response",       icon: "circle-alert" },
+  "HTTP 401":     { label: "Auth failed (401)",    icon: "shield-alert" },
+  "HTTP 403":     { label: "Forbidden (403)",      icon: "shield-x" },
+  "HTTP 429":     { label: "Rate limited (429)",   icon: "gauge" },
+};
+
+function handleTokenRotationEvent(evt, container) {
+  let card = container.querySelector(".token-rotation-card");
+  if (!card) {
+    card = document.createElement("div");
+    card.className = "skill-card token-rotation-card";
+    card.innerHTML = `
+      <div class="skill-header">
+        <div class="skill-header-left">
+          <span class="skill-arrow"><i data-lucide="chevron-down" style="width:14px;height:14px"></i></span>
+          <span class="skill-name"><i data-lucide="repeat" style="width:15px;height:15px"></i> Token Rotation</span>
+        </div>
+        <div class="skill-header-right" style="display:flex;align-items:center;gap:8px;">
+          <span class="skill-status tr-status">switching…</span>
+        </div>
+      </div>
+      <div class="tr-details"></div>`;
+    card.querySelector(".skill-header").onclick = () => card.classList.toggle("collapsed");
+    container.appendChild(card);
+    if (typeof activateLucideIcons === "function") activateLucideIcons(card);
+  }
+
+  const detailsEl = card.querySelector(".tr-details");
+  const statusEl = card.querySelector(".tr-status");
+  const reasonMeta = _TOKEN_ROTATION_REASONS[evt.reason] || { label: evt.reason, icon: "arrow-right-left" };
+
+  // Build detail row
+  const row = document.createElement("div");
+  row.className = "tr-detail-row";
+  row.innerHTML = `
+    <span class="tr-reason"><i data-lucide="${reasonMeta.icon}" style="width:12px;height:12px"></i> ${reasonMeta.label}</span>
+    <span class="tr-token-from" title="Previous token">${evt.from_token || "???"}</span>
+    <span class="tr-arrow">→</span>
+    <span class="tr-token-to" title="New token">${evt.to_token || "???"}</span>
+    <span class="tr-index">#${evt.to_index + 1}/${evt.total_tokens}</span>`;
+  detailsEl.appendChild(row);
+
+  if (typeof activateLucideIcons === "function") activateLucideIcons(card);
+
+  // Update status
+  statusEl.textContent = `token #${evt.to_index + 1}/${evt.total_tokens}`;
+
+  // Auto-scroll
+  row.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
 
 

@@ -98,15 +98,22 @@ def save_injected_memory_keys(chat_id: str, keys: set[str]) -> None:
 
 
 def touch_chat(chat_id: str, parent_id: str | None = None) -> None:
-    """Update chat timestamp and optionally advance the cached tail pointer."""
+    """Update chat timestamp and optionally advance the cached tail pointer.
+
+    Only stores parent_id if it looks like an upstream token (not a bare integer
+    DB row ID). Bare integers leak from the fallback path when no upstream done
+    event arrives (errors, stops, WAF blocks) and cause context loss on next
+    request because chat.py rejects digit-only parent_ids.
+    """
     now = utcnow()
     with get_db() as conn:
-        if parent_id is None:
-            row = conn.execute(
-                "SELECT id FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 1",
-                (chat_id,),
-            ).fetchone()
-            parent_id = str(row["id"]) if row else None
+        # Guard: never store a bare integer as parent_id — it's a DB row ID,
+        # not an upstream conversation token. Storing it causes the next request
+        # to reject it (chat.py:761 .isdigit() check) and lose context.
+        if parent_id is not None:
+            parent_id = str(parent_id)
+        if parent_id is not None and parent_id.isdigit():
+            parent_id = None
         if parent_id is not None:
             conn.execute(
                 "UPDATE chats SET updated_at = ?, parent_id = ? WHERE id = ?",
@@ -138,12 +145,12 @@ def list_chats(project_id: str | None = None) -> list[dict[str, Any]]:
     with get_db() as conn:
         if project_id is not None:
             rows = conn.execute(
-                "SELECT id, title, parent_id, created_at, updated_at, provider, project_id FROM chats WHERE project_id = ? ORDER BY updated_at DESC",
+                "SELECT id, title, parent_id, created_at, updated_at, provider, project_id, mode FROM chats WHERE project_id = ? ORDER BY updated_at DESC",
                 (project_id,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, title, parent_id, created_at, updated_at, provider, project_id FROM chats ORDER BY updated_at DESC"
+                "SELECT id, title, parent_id, created_at, updated_at, provider, project_id, mode FROM chats ORDER BY updated_at DESC"
             ).fetchall()
         return [dict(row) for row in rows]
 

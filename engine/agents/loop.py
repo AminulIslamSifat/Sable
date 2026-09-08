@@ -18,7 +18,8 @@ from typing import Any
 
 from engine.agents.agent import Agent
 from engine.agents.resilience import CircuitBreaker, LoopDetector, TurnCapTracker
-from engine.agents.registry import get_role_config, get_account_pool
+from engine.agents.registry import get_role_config
+from engine.skills.parser import SkillParser
 
 logger = logging.getLogger("sable")
 
@@ -59,41 +60,6 @@ STUCK_MESSAGE = (
     "or try a completely different strategy."
 )
 
-FORMAT_REMINDERS: dict[str, str] = {
-    "analyst": "This is your FINAL response. Output ONLY a markdown document. For research: ## Topic, ## Findings, ## Sources, ## Summary, ## Confidence. For code review: ## File Reviewed, ## Critical Issues, ## Warnings, ## Info, ## Verdict. No JSON. No tool_call block.",
-    "coder": "This is your FINAL response. Output ONLY a markdown document with these sections: ## Description, ## Files Modified, ## Tests, ## Notes. No JSON. No tool_call block.",
-    "writer": "This is your FINAL response. Output ONLY a markdown document with these sections: ## Title, ## Document Path, ## Structure Overview, ## Word Count, ## Notes. No JSON. No tool_call block.",
-}
-
-_TAG_RE = re.compile(r"<\s*tool_call\s*>(.*?)<\s*/\s*tool_call\s*>", re.DOTALL | re.IGNORECASE)
-# Matches both <tag attrs>content</tag> and <tag attrs />
-_INNER_TAG_RE = re.compile(
-    r"<(\w+)\s*((?:[^>\"']|\"[^\"]*\"|'[^']*')*?)\s*(?:/>\s*$|>(.*?)</\1\s*>|>)",
-    re.DOTALL | re.MULTILINE,
-)
-
-# Warning messages injected as user messages when format violations are detected
-ACTION_WRAPPER_WARNING = (
-    "[FORMAT WARNING] You used a tool call without wrapping it in a <tool" + "_call> block. "
-    "All tool calls MUST be wrapped like this:\n"
-    "<tool" + "_call>{\"name\": \"tool_name\", \"arguments\": {...}}</tool" + "_call>\n"
-    "Please retry with the correct format."
-)
-
-ORPHAN_CLOSE_TAG_WARNING = (
-    "[FORMAT WARNING] Found a closing </tool" + "_call> tag without a matching opening <tool" + "_call> tag. "
-    "Make sure every tool call is properly wrapped:\n"
-    "<tool" + "_call>{\"name\": \"tool_name\", \"arguments\": {...}}</tool" + "_call>\n"
-    "Please retry with the correct format."
-)
-
-REPEAT_LOOP_WARNING = (
-    "[LOOP WARNING] The same command structure has been repeated 5+ times. "
-    "This approach is not working. Stop repeating and either:\n"
-    "1. Try a completely different strategy\n"
-    "2. Summarize what you have and provide your final answer\n"
-    "Do NOT repeat the same command again."
-)
 
 
 
@@ -195,13 +161,24 @@ def _build_tool_guide(allowed_tools: list[str], allowed_skills: list[str], *, na
             "",
         ])
 
-        from engine.tools_loader import get_all_tool_schemas
+        from engine.tools_loader import (
+            get_all_tool_schemas,
+            get_outer_tool_stubs,
+            _build_load_tool_schema,
+        )
         from server.api.routes.misc import get_disabled_tools
         disabled = get_disabled_tools().get("disabled", [])
-        schemas = get_all_tool_schemas(disabled=disabled, allowed=allowed_tools)
-        if schemas:
+        # Core tools: full schemas
+        core_schemas = get_all_tool_schemas(disabled=disabled, allowed=allowed_tools, tier="core")
+        # Outer tools: stubs only
+        outer_stubs = get_outer_tool_stubs(disabled) if not allowed_tools else []
+        load_tool = _build_load_tool_schema(disabled) if not allowed_tools else None
+        all_schemas = core_schemas + outer_stubs
+        if load_tool:
+            all_schemas.append(load_tool)
+        if all_schemas:
             lines.append("\n<tools>")
-            for s in schemas:
+            for s in all_schemas:
                 lines.append(json.dumps(s, ensure_ascii=False))
             lines.append("</tools>")
             lines.append("")
@@ -242,47 +219,34 @@ async def run_agent_llm_loop(
     breakers: dict[str, CircuitBreaker],
     limits: dict[str, int] | None = None,
 ) -> str:
-    """Execute the full agent loop. Returns final markdown answer text."""
+    """Execute the full agent loop using the SAME pipeline as main chat.
+
+    Same LLM call, same SkillParser, same DB schema (messages table with skill_events),
+    same guards (MainChatGuard), same format/todo warnings, same history loading.
+    Only difference: chat_id = agent.id, provider = 'agent', and timeout wrapping.
+    """
+    from engine.agents.resilience import MainChatGuard
+    from server.database import add_message, update_message, touch_chat, get_messages
+    from server.database import get_upstream_session_id, set_upstream_session_id
+    from engine.token_counter import count_prompt_tokens, count_completion_tokens
+
     role_cfg = get_role_config(agent.role)
     lim = limits or {}
     max_iterations = lim.get("max_iterations", MAX_ITERATIONS)
-    loop_detector = LoopDetector(
-        max_consecutive=lim.get("max_consecutive_tool_calls", 15),
-        max_total=lim.get("max_total_tool_calls", 50),
-    )
-    turn_caps = TurnCapTracker()  # Caps reset per run_agent_llm_loop invocation
 
-    # Initial breaker check (fallback chain handles mid-loop failures)
-    initial_breaker = _resolve_breaker(agent, breakers)
-    if not initial_breaker.can_execute():
-        # Check if any fallback model has a viable breaker
-        has_viable_fallback = False
-        if agent.model_chain:
-            for fb_model in agent.model_chain:
-                fb_key = _get_backend_key(fb_model)
-                fb_breaker = breakers.get(fb_key)
-                if fb_breaker and fb_breaker.can_execute():
-                    has_viable_fallback = True
-                    break
-                # No breaker registered for this backend = not tripped = viable
-                if fb_breaker is None:
-                    has_viable_fallback = True
-                    break
-        if not has_viable_fallback:
-            key = _get_backend_key(agent.model)
-            raise RuntimeError(f"Circuit breaker open for {key} — provider unavailable")
+    # --- Same guards as main chat ---
+    _guard = MainChatGuard(provider=_get_backend_type(agent.model))
+    _loop_detector = LoopDetector()
+    _turn_caps = TurnCapTracker()
 
     # Store allowed tool groups on agent for native tool passing to API backends
     agent.allowed_tool_groups = list(role_cfg.allowed_tools)
 
-    # Build first message: system prompt + tool guide + task
-    # Skip text-based tool instructions for backends with native tool calling support
+    # --- Build system prompt (same as before — shared instruction builder) ---
     from engine.config import get_model_config as _get_agent_model_cfg
     _agent_backend = _get_agent_model_cfg(agent.model).get("api_backend", "")
-    _use_native_tools = _agent_backend in _NATIVE_TOOL_BACKENDS
 
     system_prompt = role_cfg.system_prompt
-    system_prompt += _build_tool_guide(role_cfg.allowed_tools, role_cfg.allowed_skills, native_tools=_use_native_tools)
     if agent.instruction:
         system_prompt += f"\n\nSpecial instruction from orchestrator: {agent.instruction}"
 
@@ -308,11 +272,25 @@ async def run_agent_llm_loop(
 
     agent.system_prompt = system_prompt
 
-    first_message = system_prompt
-    if agent.context:
-        first_message += f"\n\nContext: {agent.context}\n\nTask: {agent.task}"
+    # --- Ensure chat exists in DB (same as main chat's ensure_chat) ---
+    from server.database import ensure_chat as _ensure_chat
+    _ensure_chat(agent.id, f"Agent: {agent.role}", mode="api", provider="agent")
+
+    # --- Load history from DB (SAME as main chat) ---
+    _history = get_messages(agent.id, include_skill_events=True)
+    agent.messages = []
+    if _history:
+        for msg in _history:
+            agent.messages.append({"role": msg["role"], "content": msg["content"]})
     else:
-        first_message += f"\n\nTask: {agent.task}"
+        # First run: save system + user messages to DB
+        agent.messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Context: {agent.context}\n\nTask: {agent.task}" if agent.context else agent.task},
+        ]
+        add_message(agent.id, "system", system_prompt)
+        add_message(agent.id, "user", agent.messages[1]["content"])
+        touch_chat(agent.id)
 
     # Emit initial todo state so panel sees it immediately
     if agent.todos and agent.todos.todos:
@@ -326,152 +304,390 @@ async def run_agent_llm_loop(
             ],
         })
 
-    # Track conversation for DB/history (not sent to API)
-    agent.messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Context: {agent.context}\n\nTask: {agent.task}" if agent.context else agent.task},
-    ]
-    await _persist_message(agent.id, "system", system_prompt)
-    await _persist_message(agent.id, "user", agent.messages[1]["content"])
-
-    # Session state
-    parent_id: str | None = None  # Qwen parent tracking
-    is_first_turn = True
+    # --- Session state ---
+    parent_id: str | None = get_upstream_session_id(agent.id)
+    is_first_turn = parent_id is None
     consecutive_failures = 0
     failure_threshold = _get_teacher_failure_threshold()
 
-    # Main loop
+    # --- Main loop ---
+    first_message = system_prompt
+    if agent.context:
+        first_message += f"\n\nContext: {agent.context}\n\nTask: {agent.task}"
+    else:
+        first_message += f"\n\nTask: {agent.task}"
+
     current_message = first_message
-    _pending_agent_images: list[str] = []  # image paths from get_file to inject next round
-    _round_tool_errors: dict[str, str] = {}  # persists across iterations for exact-failure detection
+    _pending_agent_images: list[str] = []
+    _round_tool_errors: dict[str, str] = {}
+    _saved_msg_id: int | None = None
+    _all_skill_events: list[dict[str, Any]] = []
+    _todo_stall_counter: int = 0  # Track iterations without todo progress
+    _last_todo_index: int = agent.todos.current_index if agent.todos else -1
+
+    # Skill event types to persist (same as main chat)
+    _SKILL_EVENT_TYPES = frozenset({
+        "skill_start", "skill_output", "skill_end",
+        "file_edit", "permission_request", "cwd_warning",
+        "round_thinking", "round_text",
+    })
 
     for iteration in range(max_iterations):
         agent.push_stream_event({"type": "iteration", "iteration": iteration + 1})
 
-        # Check for user-injected guidance messages
+        # --- Check for user-injected guidance messages ---
         if agent.pending_user_messages:
             guidance = "\n\n".join(agent.pending_user_messages)
             agent.pending_user_messages.clear()
             guidance_msg = f"[USER GUIDANCE]\n{guidance}"
             agent.messages.append({"role": "user", "content": guidance_msg})
-            await _persist_message(agent.id, "user", guidance_msg)
+            add_message(agent.id, "user", guidance_msg)
+            touch_chat(agent.id)
             current_message = guidance_msg
+            _guard.reset()  # Reset guards on new user input (same as main chat)
 
-        # Call LLM (inject pending skill images if model supports vision)
+        # --- Todo stall detection ---
+        if agent.todos and not agent.todos.all_done:
+            if agent.todos.current_index == _last_todo_index:
+                _todo_stall_counter += 1
+                if _todo_stall_counter >= 3:
+                    _stall_warn = (
+                        f"[GUARD][TODO WARNING] You have been on task {agent.todos.current.id} "
+                        f"('{agent.todos.current.content}') for {_todo_stall_counter} iterations without progress. "
+                        f"Either complete it with todo_complete, skip it with todo_skip, or try a different approach."
+                    )
+                    agent.messages.append({"role": "system", "content": _stall_warn})
+                    add_message(agent.id, "system", _stall_warn)
+                    agent.push_stream_event({"type": "guard_warning", "text": _stall_warn})
+            else:
+                _todo_stall_counter = 0
+                _last_todo_index = agent.todos.current_index
+
+        # --- Call LLM with SkillParser streaming (SAME as main chat) ---
         _files_for_round: list[str] | None = _pending_agent_images or None
         _pending_agent_images = []
-        response_text, new_parent_id = await _send_with_retry(
-            agent, current_message, parent_id, breakers, is_first_turn, files=_files_for_round
-        )
+
+        _parser = SkillParser()
+        _parser_events: list[dict[str, Any]] = []
+        _response_chunks: list[str] = []
+        _raw_chunks: list[str] = []  # Raw text before parser stripping (for guard checks)
+        _original_push = agent.push_stream_event
+
+        def _persist_skill_event(event: dict[str, Any]) -> None:
+            etype = event.get("type", "")
+            if etype not in _SKILL_EVENT_TYPES:
+                return
+            _all_skill_events.append(event)
+
+        # --- Get LLM event source with browser profile fallback (Qwen only) ---
+        _browser_retry_max = 3
+        _browser_retry_count = 0
+        _llm_success = False
+
+        while not _llm_success:
+            _event_source, _initial_pid, _instructions_synced = await _get_llm_event_source(
+                agent, current_message, parent_id, is_first_turn, files=_files_for_round
+            )
+
+            # If sync_context succeeded on first turn, Qwen already has the system
+            # prompt via personalization API — strip it from the message so we
+            # don't double-send instructions.
+            if is_first_turn and _instructions_synced:
+                if agent.context:
+                    current_message = f"Context: {agent.context}\n\nTask: {agent.task}"
+                else:
+                    current_message = agent.task
+            new_parent_id: str | None = _initial_pid
+            response_text = ""
+            _hit_blockable_error = False
+            _block_error_type = ""
+
+            # Iterate events directly — feed chunks through SkillParser inline
+            try:
+                async for event in _event_source:
+                    etype = event.get("type")
+
+                    if etype in ("chunk", "answer"):
+                        chunk_text = event.get("text", "")
+                        if chunk_text:
+                            _raw_chunks.append(chunk_text)
+                            for parsed_event in _parser.feed(chunk_text):
+                                _parser_events.append(parsed_event)
+                                _persist_skill_event(parsed_event)
+                                if parsed_event.get("type") == "text":
+                                    _response_chunks.append(parsed_event["text"])
+                                    _original_push({"type": "chunk", "text": parsed_event["text"]})
+                                elif parsed_event.get("type") == "tool_pending":
+                                    _original_push(parsed_event)
+
+                    elif etype == "thinking":
+                        chunk_text = event.get("text", "")
+                        if chunk_text:
+                            _original_push({"type": "thinking", "text": chunk_text})
+
+                    elif etype == "meta":
+                        sid = event.get("chat_id")
+                        if sid:
+                            agent.qwen_session_id = sid
+                            set_upstream_session_id(agent.chat_id, sid)
+                        pid = event.get("parent_id")
+                        if pid:
+                            new_parent_id = pid
+
+                    elif etype == "done":
+                        pid = event.get("parent_id")
+                        if pid:
+                            new_parent_id = pid
+
+                    elif etype == "error":
+                        _err_msg = str(event.get("message", "")).lower()
+                        # Chat-in-progress: IMMEDIATELY stop upstream, then retry with fresh session
+                        if any(kw in _err_msg for kw in (
+                            "chat in progress", "generation in progress", "already generating",
+                            "task in progress", "please wait", "busy", "concurrent request",
+                        )):
+                            logger.info("[agent %s] Chat-in-progress detected — calling stop API immediately", agent.id)
+                            _cip_svc = getattr(agent, '_qwen_service', None)
+                            if _cip_svc:
+                                try:
+                                    _cip_chat = agent.qwen_session_id or get_upstream_session_id(agent.chat_id)
+                                    if _cip_chat:
+                                        await _cip_svc._stop_upstream_generation(_cip_chat)
+                                except Exception as _cip_exc:
+                                    logger.warning("[agent %s] Stop API failed: %s", agent.id, _cip_exc)
+                            # Reset session so next attempt creates a fresh chat
+                            agent.qwen_session_id = None
+                            parent_id = None  # Reset parent_id to avoid stale reference
+                            is_first_turn = True  # Fresh session needs account setup
+                            try:
+                                set_upstream_session_id(agent.chat_id, None)
+                            except Exception:
+                                pass
+                            agent.push_stream_event({
+                                "type": "guard_warning",
+                                "text": "[CHAT IN PROGRESS] Stopped upstream generation, retrying with fresh session...",
+                            })
+                            # Clear parser state and retry on SAME profile (not a profile issue)
+                            _parser = SkillParser()
+                            _parser_events.clear()
+                            _response_chunks.clear()
+                            _raw_chunks.clear()
+                            await asyncio.sleep(3)
+                            continue  # Retry same iteration with fresh session
+                        raise RuntimeError(f"LLM error: {event.get('message', 'unknown')}")
+
+                    elif etype in ("rate_limited", "waf_blocked"):
+                        _hit_blockable_error = True
+                        _block_error_type = etype
+                        break  # Exit stream to retry with different profile
+
+                    elif etype in ("chat_not_found", "parent_not_found"):
+                        # Stale session/parent — reset and retry with fresh session
+                        logger.info("[agent %s] %s detected — resetting session for fresh start", agent.id, etype)
+                        agent.qwen_session_id = None
+                        parent_id = None
+                        is_first_turn = True  # Fresh session needs account setup
+                        try:
+                            set_upstream_session_id(agent.chat_id, None)
+                        except Exception:
+                            pass
+                        agent.push_stream_event({
+                            "type": "guard_warning",
+                            "text": f"[{etype.upper()}] Resetting session and retrying with fresh chat...",
+                        })
+                        _parser = SkillParser()
+                        _parser_events.clear()
+                        _response_chunks.clear()
+                        _raw_chunks.clear()
+                        continue  # Retry with fresh session
+
+                    # status, debug, request_sent — internal, skip
+
+            finally:
+                # Clean up Qwen service if created
+                _svc = getattr(agent, '_qwen_service', None)
+                if _svc:
+                    try:
+                        await _svc.close()
+                    except Exception:
+                        pass
+                    agent._qwen_service = None
+
+            # --- Browser profile fallback on rate_limited / waf_blocked ---
+            if _hit_blockable_error and _browser_retry_count < _browser_retry_max:
+                from engine.agents.registry import get_next_account
+                from engine.config import _SYSTEM as _AGENT_SYSTEM_DIR
+                from pathlib import PurePosixPath
+
+                _current_name = PurePosixPath(agent.browser_data_dir).name if agent.browser_data_dir else ""
+                _in_use = {_current_name}  # Skip current blocked profile
+                _next_profile = get_next_account(agent.role, _in_use)
+
+                if _next_profile:
+                    _browser_retry_count += 1
+                    _old_profile = agent.browser_data_dir
+                    _new_path = _AGENT_SYSTEM_DIR / _next_profile
+                    agent.browser_data_dir = str(_new_path) if _new_path.is_dir() else _next_profile
+
+                    # Reset upstream session so a NEW chat ID is created on the new profile
+                    agent.qwen_session_id = None
+                    parent_id = None  # Reset parent_id to avoid stale reference on new profile
+                    is_first_turn = True  # New profile needs fresh account setup
+                    try:
+                        set_upstream_session_id(agent.chat_id, None)
+                    except Exception:
+                        pass
+
+                    logger.info(
+                        "[agent %s] Browser profile fallback #%d: %s → %s (reason: %s)",
+                        agent.id, _browser_retry_count, _old_profile, agent.browser_data_dir, _block_error_type,
+                    )
+                    agent.push_stream_event({
+                        "type": "guard_warning",
+                        "text": f"[PROFILE SWITCH] {_block_error_type} on {_current_name}, switching to {_next_profile} (attempt {_browser_retry_count}/{_browser_retry_max})",
+                    })
+
+                    # Clear parser state for retry
+                    _parser = SkillParser()
+                    _parser_events.clear()
+                    _response_chunks.clear()
+                    _raw_chunks.clear()
+                    continue  # Retry with new profile
+                else:
+                    # No more profiles available — propagate the error
+                    raise RuntimeError(f"{_block_error_type}: all browser profiles exhausted")
+
+            elif _hit_blockable_error:
+                raise RuntimeError(f"{_block_error_type}: all browser profile retries exhausted")
+
+            _llm_success = True
+
+        # Flush remaining parser buffer
+        for parsed_event in _parser.flush():
+            _parser_events.append(parsed_event)
+            _persist_skill_event(parsed_event)
+            if parsed_event.get("type") == "text":
+                _response_chunks.append(parsed_event["text"])
+                _original_push({"type": "chunk", "text": parsed_event["text"]})
+
+        # --- Use parser-cleaned text (same as main chat) ---
+        _clean_response = "".join(_response_chunks)
+        _raw_round_text = "".join(_raw_chunks)
+        response_text = _clean_response
+        _original_push({"type": "answer", "text": _clean_response})
+
         if new_parent_id:
             parent_id = new_parent_id
+            set_upstream_session_id(agent.id, new_parent_id)
         is_first_turn = False
 
-        agent.messages.append({"role": "assistant", "content": response_text})
-        await _persist_message(agent.id, "assistant", response_text)
+        agent.messages.append({"role": "assistant", "content": _clean_response})
 
-        # Stream the response text to the panel (strip tool_call blocks + bare JSON calls)
-        _panel_text = re.sub(r"<tool_call>.*?</tool_call>", "", response_text, flags=re.DOTALL)
-        _panel_text = re.sub(
-            r'\{\s*"name"\s*:\s*"[\w-]+"\s*,\s*"arguments"\s*:\s*\{.*?\}\s*\}',
-            "", _panel_text, flags=re.DOTALL,
-        ).strip()
-        agent.push_stream_event({"type": "answer", "text": _panel_text})
+        # --- Persist to messages table ONLY (same as main chat, NO agent_messages) ---
+        try:
+            if _saved_msg_id is None:
+                _saved_msg_id = add_message(
+                    agent.id, "assistant", _clean_response,
+                    skill_events=_all_skill_events or None,
+                )
+            else:
+                update_message(
+                    _saved_msg_id, _clean_response,
+                    skill_events=_all_skill_events or None,
+                )
+            touch_chat(agent.id)
+        except Exception as exc:
+            logger.debug("Failed to persist agent assistant msg: %s", exc)
 
-        # Check for action wrapper format violations BEFORE parsing tags
-        format_warning = _check_action_wrapper_violations(response_text)
-        if format_warning:
-            agent.messages.append({"role": "user", "content": format_warning})
-            await _persist_message(agent.id, "user", format_warning)
-            response_text, new_parent_id = await _send_with_retry(
-                agent, format_warning, parent_id, breakers, False
-            )
-            if new_parent_id:
-                parent_id = new_parent_id
-            agent.messages.append({"role": "assistant", "content": response_text})
-            await _persist_message(agent.id, "assistant", response_text)
-            # Re-check after retry — if still bad, accept degraded
-            format_warning2 = _check_action_wrapper_violations(response_text)
-            if format_warning2:
-                return response_text  # Accept even if still malformed
+        # Extract parsed tool calls from SkillParser events
+        tags = [
+            {"name": ev["name"], "attrs": ev.get("attrs", {}), "content": ev.get("content", "")}
+            for ev in _parser_events
+            if ev.get("type") == "tag_found"
+        ]
 
-        # Parse skill tags
-        tags = _parse_skill_tags(response_text)
-
-        # Strip tool_call blocks from display text so raw tags never reach the frontend.
-        # Tags are already parsed above; the raw markup is just leftover garbage.
-        response_text = _TAG_RE.sub("", response_text)
-        response_text = re.sub(r'\n{3,}', '\n\n', response_text).strip()
+        # --- SAME guard checks as main chat (malformed + incomplete) ---
+        _guard_warnings: list[str] = []
+        _tools_executed = len(tags) > 0
+        _malform_warn = _guard.check_malformed_action(_raw_round_text)
+        if _malform_warn:
+            _guard_warnings.append(_malform_warn)
+        if not _malform_warn:
+            _incomplete_warn = _guard.check_incomplete_action(_raw_round_text, _tools_executed)
+            if _incomplete_warn:
+                _guard_warnings.append(_incomplete_warn)
 
         if not tags:
-            # No tool calls → validate as final markdown answer
+            # Inject any guard warnings before validation
+            if _guard_warnings:
+                _warn_msg = "\n\n".join(_guard_warnings)
+                agent.messages.append({"role": "system", "content": _warn_msg})
+                add_message(agent.id, "system", _warn_msg)
+
+            # If output is already valid markdown, we're done
             if _validate_markdown_output(response_text, role_cfg.required_sections):
                 return response_text
-            # Missing required sections or malformed → one re-prompt
-            base_reminder = FORMAT_REMINDERS.get(agent.role, "Provide a clean markdown document with the required sections as your final answer.")
-            reminder = f"{base_reminder}\n\nIMPORTANT: Output ONLY the markdown document. Do NOT include any JSON object, structured data block, or duplicate summary. Your entire response must be pure markdown with ## headers. No tool_call blocks."
-            agent.messages.append({"role": "user", "content": reminder})
-            await _persist_message(agent.id, "user", reminder)
-            response_text, new_parent_id = await _send_with_retry(
-                agent, reminder, parent_id, breakers, False
+
+            # Otherwise nudge: continue working OR provide final report
+            nudge = (
+                "Your last response did not include tool calls and does not look like a complete final report. "
+                "If the task is still incomplete, continue by calling the appropriate tools. "
+                "If you are finished, provide your final markdown report now."
             )
-            if new_parent_id:
-                parent_id = new_parent_id
-            agent.messages.append({"role": "assistant", "content": response_text})
-            await _persist_message(agent.id, "assistant", response_text)
+            agent.messages.append({"role": "system", "content": nudge})
+            add_message(agent.id, "system", nudge)
+            agent.push_stream_event({"type": "guard_warning", "text": nudge})
+            continue
 
-            return response_text  # Accept even if still malformed (degraded)
-
-        # Loop detection + per-turn caps
-        _loop_blocked_tools: set[int] = set()  # tool indices blocked by guards
+        # --- Loop detection + per-turn caps (same as main chat) ---
+        tool_results: list[str] = []
+        _loop_blocked_tools: set[int] = set()
         for _tag_idx, tag in enumerate(tags):
             _tag_name = tag["name"]
             _tag_args = str(tag.get("attrs", ""))
 
-            # Per-turn cap check (before execution)
-            _cap_warn = turn_caps.check_and_record(_tag_name)
+            # Record for MainChatGuard loop detection (same as main chat)
+            _guard.record_command(_tag_name, _tag_args)
+
+            # Per-turn cap check
+            _cap_warn = _turn_caps.check_and_record(_tag_name)
             if _cap_warn:
                 tool_results.append(_cap_warn)
                 _loop_blocked_tools.add(_tag_idx)
                 continue
 
-            # Loop detection with error context + recovery support
+            # LoopDetector with error context + recovery support
             _prev_err = _round_tool_errors.get(_tag_name, "")
-            _decision = loop_detector.check_decision(_tag_name, _tag_args, error_msg=_prev_err)
+            _decision = _loop_detector.check_decision(_tag_name, _tag_args, error_msg=_prev_err)
 
             if _decision.action == "block":
                 tool_results.append(_decision.message or f"[HARD STOP] {_tag_name} blocked.")
                 _loop_blocked_tools.add(_tag_idx)
 
             elif _decision.action == "recover":
-                # Recovery session: reset LLM state, inject recovery prompt
                 logger.info("[agent %s] Guardrail recovery triggered for '%s'", agent.id, _tag_name)
                 agent.push_stream_event({"type": "guardrail_recovery", "tool": _tag_name})
-                # Reset session state
                 agent.qwen_session_id = None
                 parent_id = None
                 is_first_turn = True
-                # Build recovery prompt with original task context
-                _recovery_prompt = loop_detector.get_recovery_prompt(
+                set_upstream_session_id(agent.id, None)
+                _recovery_prompt = _loop_detector.get_recovery_prompt(
                     _decision.recovery_key,
                     original_task=agent.task or "",
                 )
-                # Reset messages to system + task only (fresh context)
                 agent.messages = [
                     {"role": "system", "content": agent.messages[0]["content"]},
                     {"role": "user", "content": agent.messages[1]["content"]},
                 ]
-                # Inject recovery prompt as new user message
                 agent.messages.append({"role": "user", "content": _recovery_prompt})
-                await _persist_message(agent.id, "user", _recovery_prompt)
+                add_message(agent.id, "user", _recovery_prompt)
+                touch_chat(agent.id)
                 current_message = _recovery_prompt
-                # Block ALL tools this round — force model to re-think first
                 for _blk_idx in range(len(tags)):
                     _loop_blocked_tools.add(_blk_idx)
-                break  # Skip remaining tag checks; go straight to feedback
+                break
 
             elif _decision.action == "warn":
-                # Warning: try teacher escalation, then inject as context
                 teacher_guidance = await _try_teacher_escalation(
                     agent, "Agent is repeating the same tool calls with identical arguments."
                 )
@@ -479,11 +695,18 @@ async def run_agent_llm_loop(
                     warning_msg = f"[MENTOR INTERVENTION]\n{teacher_guidance}"
                 else:
                     warning_msg = _decision.message or ""
-                agent.messages.append({"role": "user", "content": warning_msg})
-                await _persist_message(agent.id, "user", warning_msg)
+                agent.messages.append({"role": "system", "content": warning_msg})
+                add_message(agent.id, "system", warning_msg)
 
-        # Execute skills
-        tool_results = []
+        # --- MainChatGuard loop/failure warnings (same as main chat) ---
+        _loop_warn = _guard.check_loop()
+        if _loop_warn:
+            _guard_warnings.append(_loop_warn)
+        _fail_warn = _guard.check_failures()
+        if _fail_warn:
+            _guard_warnings.append(_fail_warn)
+
+        # --- Execute skills ---
         _round_image_paths: list[str] = []
         for _exec_idx, tag in enumerate(tags):
             # Skip tools blocked by loop guard / turn caps
@@ -506,7 +729,7 @@ async def run_agent_llm_loop(
                 attrs_dict = parse_attrs(tag["attrs"])
                 content = tag.get("content", "")
 
-                # Stream skill_start to panel
+                # Stream skill_start to panel (handler events with matching id are persisted below)
                 agent.push_stream_event({"type": "skill_start", "name": tag_name, "attrs": tag.get("attrs", "")})
 
                 # Todo tools are dispatched directly with agent context (not via skill engine)
@@ -521,11 +744,13 @@ async def run_agent_llm_loop(
                         lambda: list(engine.process_tag(tag_name, attrs_dict, content, namespace=agent.id))
                     )
 
-                # Forward skill events to panel stream (skip duplicate skill_start —
-                # the explicit one above already created the live "running" card)
+                # Forward skill events to panel stream and persist for history replay
+                # (skip duplicate skill_start — the explicit one above already created the live card)
                 for evt in events:
-                    if isinstance(evt, dict) and evt.get("type") != "skill_start":
-                        agent.push_stream_event(evt)
+                    if isinstance(evt, dict):
+                        _persist_skill_event(evt)
+                        if evt.get("type") != "skill_start":
+                            agent.push_stream_event(evt)
 
                 # Collect image paths from skill results
                 for _evt in events:
@@ -535,8 +760,7 @@ async def run_agent_llm_loop(
                             _round_image_paths.append(_res["path"])
 
                 feedback = build_tool_feedback(events)
-                # Result stubbing + no-progress detection via LoopDetector
-                feedback = loop_detector.record_result(
+                feedback = _loop_detector.record_result(
                     tag_name, str(tag.get("attrs", "")), feedback or ""
                 )
                 # Truncate oversized tool output to protect context window
@@ -550,11 +774,13 @@ async def run_agent_llm_loop(
                 if tag_name not in agent.skills_used:
                     agent.skills_used.append(tag_name)
 
-                # Check if any skill_end event reported failure (ok=False)
+                # Track failures for MainChatGuard (same as main chat)
                 _tool_failed = any(
                     isinstance(_e, dict) and _e.get("type") == "skill_end" and not _e.get("ok", True)
                     for _e in events
                 )
+                _guard.record_result(not _tool_failed)
+
                 if _tool_failed:
                     consecutive_failures += 1
                     _last_err = next(
@@ -585,6 +811,7 @@ async def run_agent_llm_loop(
                 _round_tool_errors[tag_name] = f"{type(exc).__name__}: {exc}"
                 agent.error_recoveries += 1
                 consecutive_failures += 1
+                _guard.record_result(False)
                 if consecutive_failures >= failure_threshold:
                     guidance = await _try_teacher_escalation(
                         agent,
@@ -612,11 +839,18 @@ async def run_agent_llm_loop(
                     f"The image content is not accessible.]"
                 )
 
-        # Feed results back as next message
+        # --- Build feedback message (same as main chat) ---
         combined = "\n---\n".join(tool_results)
+
+        # If no tool feedback but guard warnings exist, use warnings as feedback
+        if not combined.strip() and _guard_warnings:
+            combined = "\n\n".join(_guard_warnings)
+        elif _guard_warnings:
+            combined += "\n\n" + "\n\n".join(_guard_warnings)
+
         current_message = f"<tool_response>\\n{combined}\\n</tool_response>"
 
-        # Append minimal TODO state (no rules — just facts)
+        # Append TODO state
         if agent.todos:
             state_line = agent.todos.format_state()
             if state_line:
@@ -624,39 +858,32 @@ async def run_agent_llm_loop(
 
         agent.messages.append({"role": "user", "content": current_message})
 
-        # Persist each tool call with clear structure for history viewing
-        for tag, result in zip(tags, tool_results):
-            import json as _j
-            _attrs = tag.get("attrs", {})
-            if isinstance(_attrs, str):
-                try:
-                    _attrs = _j.loads(_attrs) if _attrs else {}
-                except Exception:
-                    _attrs = {}
-            command_str = f'{{"name": "{tag['name']}", "arguments": {_j.dumps(_attrs)}}}' 
+        # --- Update assistant message with accumulated skill events ---
+        if _saved_msg_id is not None:
+            try:
+                update_message(_saved_msg_id, _clean_response, skill_events=_all_skill_events or None)
+            except Exception:
+                pass
 
-            tool_msg = (
-                f"## Tool\n"
-                f"**Name:** `{tag['name']}`\n"
-                f"**Command:**\n```\n{command_str}\n```\n"
-                f"**Output:**\n```\n{result[:2000]}\n```"
-            )
-            await _persist_message(agent.id, "tool", tool_msg)
-
-    # Hit max iterations — force final answer (no teacher; running out of steps isn't a failure)
+    # Hit max iterations — force final answer
     force_msg = "Maximum steps reached. Provide your final markdown answer NOW with whatever you have. Use proper ## headers for each section."
     agent.messages.append({"role": "user", "content": force_msg})
-    await _persist_message(agent.id, "user", force_msg)
-    response_text, _ = await _send_with_retry(agent, force_msg, parent_id, breakers, False)
+    add_message(agent.id, "user", force_msg)
+    touch_chat(agent.id)
+    response_text, _ = await _call_llm_simple(agent, force_msg, parent_id)
     return response_text
 
 
 async def _try_teacher_escalation(agent: Agent, stuck_reason: str) -> str | None:
-    """Attempt teacher intervention. Returns guidance text or None.
+    """Request teacher guidance from main chat (Maria) via auto_turn engine.
+
+    Instead of calling a separate LLM, this sends the escalation to the main
+    chat session. Maria responds using the teacher_guidance tool call, which
+    gets routed back to the waiting subagent.
 
     Respects the max intervention limit to avoid infinite escalation loops.
     """
-    from engine.agents.teacher import escalate_to_teacher, MAX_TEACHER_INTERVENTIONS
+    from engine.agents.teacher import MAX_TEACHER_INTERVENTIONS
 
     if agent.teacher_interventions >= MAX_TEACHER_INTERVENTIONS:
         return None
@@ -668,9 +895,31 @@ async def _try_teacher_escalation(agent: Agent, stuck_reason: str) -> str | None
         "reason": stuck_reason,
     })
 
-    guidance = await escalate_to_teacher(agent, stuck_reason)
+    # Build context snapshot for Maria
+    todo_snapshot = None
+    if agent.todos:
+        todo_snapshot = [
+            {"id": t.id, "content": t.content, "status": t.status, "result": t.result}
+            for t in agent.todos.todos
+        ]
+
+    recent_messages = agent.messages[-6:] if agent.messages else None
+
+    # Request guidance from main chat — blocks until Maria responds via tool call
+    from engine.agents.auto_turn import auto_turn
+    guidance = await auto_turn.request_teacher_guidance(
+        chat_id=agent.chat_id,
+        agent_id=agent.id,
+        role=agent.role,
+        task=agent.task,
+        stuck_reason=stuck_reason,
+        todo_snapshot=todo_snapshot,
+        context=agent.context,
+        recent_messages=recent_messages,
+    )
+
     if guidance:
-        logger.info("[agent %s] Teacher intervened (#%d)", agent.id, agent.teacher_interventions)
+        logger.info("[agent %s] Teacher (main chat) intervened (#%d)", agent.id, agent.teacher_interventions)
     return guidance
 
 
@@ -775,40 +1024,6 @@ async def _try_fallback_model(agent: Agent, failed_model: str) -> str | None:
     return None  # All fallbacks exhausted
 
 
-def _try_browser_fallback(agent: Agent) -> str | None:
-    """Try the next browser profile from the account pool (Qwen only).
-
-    Searches from the back (highest number first) to avoid competing with
-    main chat auto-switch which searches forward. Falls back to the global
-    reverse pool if the role-specific pool is empty or exhausted.
-
-    Returns the full path to the next available profile or None if exhausted.
-    """
-    from engine.config import _SYSTEM as _AGENT_SYSTEM_DIR, get_available_accounts_reverse
-
-    current_name = Path(agent.browser_data_dir).name if agent.browser_data_dir else ""
-
-    # Try role-specific pool first (reverse order)
-    pool = get_account_pool(agent.role)
-    if pool:
-        # Search pool in reverse, skipping current
-        for entry in reversed(pool):
-            if entry == current_name:
-                continue
-            acct_profile = _AGENT_SYSTEM_DIR / entry
-            if acct_profile.is_dir():
-                return str(acct_profile)
-
-    # Fall back to global reverse pool (highest number first, up to 5)
-    exclude = {current_name} if current_name else set()
-    for acc_name in get_available_accounts_reverse(exclude=exclude, limit=5):
-        acct_profile = _AGENT_SYSTEM_DIR / acc_name
-        if acct_profile.is_dir():
-            return str(acct_profile)
-
-    return None
-
-
 async def _clear_qwen_account_settings(headers: dict[str, str], agent_id: str) -> None:
     """Disable Qwen built-in tools and clear personalization for an agent account.
 
@@ -887,783 +1102,180 @@ def _get_backend_key(model: str) -> str:
     return backend or "qwen"
 
 
-def _resolve_breaker(agent: Agent, breakers: dict[str, CircuitBreaker]) -> CircuitBreaker:
-    """Get the correct circuit breaker for the agent's current model."""
-    key = _get_backend_key(agent.model)
-    return breakers.get(key, list(breakers.values())[0])
-
-
-async def _send_with_retry(
+async def _call_llm_simple(
     agent: Agent,
     message: str,
     parent_id: str | None,
-    breakers: dict[str, CircuitBreaker],
-    is_first_turn: bool,
-    max_retries: int = 3,
-    files: list[str] | None = None,
 ) -> tuple[str, str | None]:
-    """Send message to LLM with exponential backoff + model fallback chain.
+    """One-shot LLM call using the same event source as main chat.
 
-    On persistent failure (all retries exhausted OR circuit breaker open),
-    tries the next model in agent.model_chain with conversation migration.
-    Returns (response_text, new_parent_id).
+    Returns (accumulated_text, new_parent_id).
+    Used for format reminders and forced final answers.
     """
-    last_exc: Exception | None = None
-    breaker = _resolve_breaker(agent, breakers)
+    from server.database import set_upstream_session_id
 
-    logger.info("[FALLBACK-DEBUG] agent=%s model=%s model_chain=%s _fallback_index=%d",
-                agent.id, agent.model, agent.model_chain, agent._fallback_index)
-
-    for attempt in range(max_retries):
-        try:
-            text, new_pid = await _call_llm(agent, message, parent_id, is_first_turn, files=files)
-            breaker.record_success()
-            return text, new_pid
-        except Exception as exc:
-            last_exc = exc
-            breaker.record_failure()
-            logger.warning("[FALLBACK-DEBUG] agent=%s attempt=%d/%d FAILED: %s",
-                           agent.id, attempt + 1, max_retries, exc)
-            if attempt == max_retries - 1:
-                break  # Exhausted retries — try fallback below
-            delay = (2 ** attempt) + random.uniform(0, 1)
-            logger.warning("Agent %s retry %d/%d: %s (%.1fs)", agent.id, attempt + 1, max_retries, exc, delay)
-            await asyncio.sleep(delay)
-
-    # All retries failed with current model+profile.
-    backend_type = _get_backend_type(agent.model)
-    logger.info("[FALLBACK-DEBUG] agent=%s retries exhausted. backend_type=%s, attempting fallback",
-                agent.id, backend_type)
-    # Qwen: exhaust ALL browser profiles first, THEN switch model.
-    # Non-Qwen: go straight to model fallback.
-    if _get_backend_type(agent.model) == "qwen":
-        browser_profile = _try_browser_fallback(agent)
-        if browser_profile:
-            old_profile = agent.browser_data_dir or "default"
-            logger.info("[agent %s] Browser fallback: %s → %s", agent.id, old_profile, browser_profile)
-            agent.push_stream_event({
-                "type": "browser_fallback",
-                "from": old_profile,
-                "to": browser_profile,
-                "reason": str(last_exc)[:200] if last_exc else "retries exhausted",
-            })
-            agent.browser_data_dir = browser_profile
-            agent.qwen_session_id = None
-
-            # Clear stale settings on the fallback account (tools + instruction)
-            try:
-                fb_headers = await _get_agent_qwen_headers(agent)
-                await _clear_qwen_account_settings(fb_headers, agent.id)
-            except Exception as exc:
-                logger.warning("Agent %s: clear settings on fallback account %s failed: %s", agent.id, browser_profile, exc)
-            try:
-                from server.database import set_upstream_session_id as _set_usid
-                _set_usid(agent.chat_id, None)
-            except Exception:
-                pass
-            parent_id = None
-            is_first_turn = True
-
-            breaker = _resolve_breaker(agent, breakers)
-            for attempt in range(max_retries):
-                try:
-                    text, new_pid = await _call_llm(agent, message, parent_id, is_first_turn)
-                    breaker.record_success()
-                    logger.info("[agent %s] Browser fallback to %s succeeded", agent.id, browser_profile)
-                    return text, new_pid
-                except Exception as exc3:
-                    last_exc = exc3
-                    breaker.record_failure()
-                    if attempt == max_retries - 1:
-                        break
-                    delay = (2 ** attempt) + random.uniform(0, 1)
-                    logger.warning("Agent %s browser fallback retry %d/%d: %s (%.1fs)", agent.id, attempt + 1, max_retries, exc3, delay)
-                    await asyncio.sleep(delay)
-
-            # This browser profile also failed — try next one recursively
-            return await _send_with_retry(agent, message, parent_id, breakers, is_first_turn, max_retries)
-
-    # All browser profiles exhausted (or not Qwen) — try model fallback chain
-    logger.info("[FALLBACK-DEBUG] agent=%s entering model fallback section", agent.id)
-    fallback_model = await _try_fallback_model(agent, agent.model)
-    if fallback_model:
-        old_model = agent.model
-        logger.info("[agent %s] Falling back: %s → %s", agent.id, old_model, fallback_model)
-        agent.push_stream_event({
-            "type": "model_fallback",
-            "from": old_model,
-            "to": fallback_model,
-            "reason": str(last_exc)[:200] if last_exc else "unknown",
-        })
-
-        migration_ctx = await _migrate_conversation(agent, old_model, fallback_model)
-        agent.model = fallback_model
-
-        if _get_backend_type(fallback_model) == "qwen":
-            agent.qwen_session_id = None
-            try:
-                from server.database import set_upstream_session_id as _set_usid
-                _set_usid(agent.chat_id, None)
-            except Exception:
-                pass
-            parent_id = None
-            is_first_turn = True
-
-        if migration_ctx:
-            message = f"{migration_ctx}\n\n---\n\n{message}"
-
-        breaker = _resolve_breaker(agent, breakers)
-
-        for attempt in range(max_retries):
-            try:
-                text, new_pid = await _call_llm(agent, message, parent_id, is_first_turn)
-                breaker.record_success()
-                logger.info("[agent %s] Fallback to %s succeeded", agent.id, fallback_model)
-                return text, new_pid
-            except Exception as exc2:
-                last_exc = exc2
-                breaker.record_failure()
-                if attempt == max_retries - 1:
-                    break
-                delay = (2 ** attempt) + random.uniform(0, 1)
-                logger.warning("Agent %s fallback retry %d/%d: %s (%.1fs)", agent.id, attempt + 1, max_retries, exc2, delay)
-                await asyncio.sleep(delay)
-
-        # Model fallback also failed — try next in chain recursively
-        return await _send_with_retry(agent, message, parent_id, breakers, is_first_turn, max_retries)
-
-    # No fallbacks left at all — raise
-    logger.error("[FALLBACK-DEBUG] agent=%s NO FALLBACK AVAILABLE. Raising: %s", agent.id, last_exc)
-    raise last_exc or RuntimeError("All retries and fallbacks exhausted")
-
-
-async def _call_llm(
-    agent: Agent, message: str, parent_id: str | None, is_first_turn: bool,
-    files: list[str] | None = None,
-) -> tuple[str, str | None]:
-    """Route to the appropriate backend. Returns (accumulated_text, new_parent_id)."""
-    from engine.config import get_model_config
-
-    cfg = get_model_config(agent.model)
-    backend = cfg.get("api_backend")
-
-    # Debug: log every LLM dispatch to see what's actually being routed
-    try:
-        from engine.config import OUTPUT_ROOT as _out_root
-        _dbg = _out_root / "llm_dispatch_log.txt"
-        with open(_dbg, "a") as _df:
-            from datetime import datetime as _dt
-            _df.write(f"{_dt.now().isoformat()} | model={agent.model} | backend={backend} | msg_len={len(message)}\n")
-    except Exception:
-        pass
-
-    if backend == "deepseek":
-        return await _call_deepseek(agent, message)
-    if backend in ("gemini", "groq", "mistral", "openai", "cloudflare"):
-        return await _call_api_backend(agent, message, backend, system_instruction=agent.system_prompt, files=files)
-    if backend == "local":
-        return await _call_local(agent, message)
-    # Default: Qwen (no api_backend = scraper-based)
-    return await _call_qwen(agent, message, parent_id, is_first_turn)
-
-
-async def _call_deepseek(agent: Agent, message: str) -> tuple[str, str | None]:
-    """DeepSeek: client manages session + parent_id internally via chat_id=agent.id.
-
-    Resolves the account from agent.browser_data_dir. If that account has no
-    token, the client automatically falls back to any available account token.
-    """
-    from connectors.deepseek.client import get_client
-    from engine.config import get_model_config
-    from pathlib import Path
-
-    # Resolve account from agent's browser profile (or None → active symlink)
-    account: str | None = None
-    if agent.browser_data_dir:
-        # Extract account name robustly — handle trailing slashes, symlinks, nested paths
-        resolved = Path(agent.browser_data_dir).resolve()
-        account = resolved.name  # "browser-data-acc7"
-        # Validate it looks like a browser-data profile; fall back to None if not
-        if not account.startswith("browser-data"):
-            # Try parent dir (handles cases like /path/to/browser-data-acc7/user_data)
-            if resolved.parent.name.startswith("browser-data"):
-                account = resolved.parent.name
-            else:
-                logger.debug("[agent] Unrecognized browser_data_dir '%s', using default account", agent.browser_data_dir)
-                account = None
-
-    client = get_client(account=account)
-    accumulated = ""
-    # Resolve proper model_type from config (expert / None / vision)
-    ds_cfg = get_model_config(agent.model)
-    api_model_type = ds_cfg.get("api_model_type") if ds_cfg else None
-
-    async for event in client.stream_chat(
-        message,
-        model=api_model_type,
-        chat_id=f"agent-{agent.id}",  # unique session per agent
-        inject_instructions=False,  # agents have their own system prompt
-        system_instruction=agent.system_prompt,
-    ):
-        etype = event.get("type")
-        if etype == "answer":
-            chunk_text = event.get("text", "")
-            accumulated += chunk_text
-            if chunk_text:
-                agent.push_stream_event({"type": "chunk", "text": chunk_text})
-        elif etype == "error":
-            raise RuntimeError(f"DeepSeek: {event.get('message', 'unknown error')}")
-
-    if not accumulated.strip():
-        raise RuntimeError("DeepSeek returned empty response")
-    return accumulated, None  # DeepSeek client tracks parent internally
-
-
-async def _call_api_backend(agent: Agent, message: str, backend: str, *, system_instruction: str | None = None, files: list[str] | None = None) -> tuple[str, str | None]:
-    """Gemini / Groq / Mistral: stateless API call with internal key rotation.
-
-    These backends don't need browser tokens — they rotate API keys internally.
-    No account assignment needed. Native tool schemas are passed via the tools parameter.
-    """
-    from connectors import get_connector
-    from engine.config import get_model_config
-    from engine.tools_loader import get_all_tool_schemas
-    from server.api.routes.misc import get_disabled_tools
-
-    connector = get_connector(backend, model_id=agent.model)
-    cfg = get_model_config(agent.model)
-    api_model_type = cfg.get("api_model_type")
-
-    # Load native tool schemas for this agent's allowed tool groups
-    disabled = get_disabled_tools().get("disabled", [])
-    native_tools = get_all_tool_schemas(disabled=disabled, allowed=agent.allowed_tool_groups) or None
-
-    accumulated = ""
-    # Track native tool calls for agent.messages + conversation file
-    _native_tool_calls: list[dict[str, Any]] = []  # [{name, attrs, result, ok}]
-    _current_tool: dict[str, Any] | None = None
-
-    async for event in connector.stream_chat(
-        message,
-        model=api_model_type,
-        chat_id=f"agent-{agent.id}",
-        inject_instructions=False,
-        system_instruction=system_instruction,
-        files=files,
-        tools=native_tools,
-    ):
-        etype = event.get("type")
-        if etype == "answer":
-            chunk_text = event.get("text", "")
-            accumulated += chunk_text
-            if chunk_text:
-                agent.push_stream_event({"type": "chunk", "text": chunk_text})
-        elif etype == "error":
-            raise RuntimeError(f"{backend}: {event.get('message', 'unknown error')}")
-        elif etype == "skill_start":
-            # Native tool execution started — forward to panel and start tracking
-            agent.push_stream_event(event)
-            _current_tool = {
-                "name": event.get("name", ""),
-                "attrs": event.get("attrs", ""),
-                "result_parts": [],
-            }
-        elif etype == "skill_output":
-            # Forward output to panel and collect for conversation
-            agent.push_stream_event(event)
-            if _current_tool is not None:
-                _current_tool["result_parts"].append(event.get("text", ""))
-        elif etype == "skill_end":
-            # Forward end event and finalize tool tracking
-            agent.push_stream_event(event)
-            if _current_tool is not None:
-                _current_tool["ok"] = event.get("ok", True)
-                _current_tool["result"] = "".join(_current_tool["result_parts"])
-                _native_tool_calls.append(_current_tool)
-                _current_tool = None
-
-    # Append native tool calls/results to agent.messages for conversation file
-    import json as _j
-    for tc in _native_tool_calls:
-        attrs = tc["attrs"]
-        if isinstance(attrs, str):
-            try:
-                attrs = _j.loads(attrs) if attrs else {}
-            except Exception:
-                attrs = {}
-        command_str = _j.dumps({"name": tc["name"], "arguments": attrs}, ensure_ascii=False)
-        tool_msg = (
-            f"## Tool\n"
-            f"**Name:** `{tc['name']}`\n"
-            f"**Command:**\n```\n{command_str}\n```\n"
-            f"**Output:**\n```\n{tc['result'][:2000]}\n```"
-        )
-        agent.messages.append({"role": "tool", "content": tool_msg})
-        await _persist_message(agent.id, "tool", tool_msg)
-
-    if not accumulated.strip() and not _native_tool_calls:
-        raise RuntimeError(f"{backend} returned empty response")
-    return accumulated, None
-
-
-def _cookies_have_identity(cookies: str) -> bool:
-    """Check if cookie string contains user-identity cookies required for Qwen history.
-
-    Qwen requires `aui` or `cnaui` cookies to associate chats with an account.
-    Without these, requests pass WAF but are treated as anonymous (no history saved).
-    """
-    return "aui=" in cookies or "cnaui=" in cookies
-
-
-async def _get_agent_qwen_headers(agent: Agent) -> dict[str, str]:
-    """Resolve Qwen WAF headers for an agent based on its assigned browser account.
-
-    Priority: agent.browser_data_dir → role pool → shared service (active).
-    Uses cached per-account tokens when available. If no cached token exists
-    for the assigned account, launches a headless browser with that profile
-    to extract fresh tokens, then closes it.
-    Rejects anonymous tokens (missing aui/cnaui) — they pass WAF but don't save history.
-    """
-    from pathlib import Path as _Path
-
-    # Determine which account this agent should use
-    account: str | None = None
-    if agent.browser_data_dir:
-        account = _Path(agent.browser_data_dir).name
-    else:
-        from engine.agents.registry import get_next_account
-        account = get_next_account(agent.role)
-
-    if account:
-        from engine.config import get_qwen_tokens_for_account, _SYSTEM
-        from engine.session import build_headers
-
-        cached = get_qwen_tokens_for_account(account)
-        if cached and cached.get("cookies"):
-            cookies = cached["cookies"]
-            has_identity = _cookies_have_identity(cookies)
-            logger.info(
-                "[WAF-TOKEN] agent=%s account=%s cookies_len=%d has_identity=%s bx_ua=%s",
-                agent.id, account, len(cookies), has_identity,
-                "yes" if cached.get("bx_ua") else "no",
-            )
-            if not has_identity:
-                logger.warning(
-                    "[WAF-TOKEN] agent=%s account=%s: cookies lack aui/cnaui (anonymous). "
-                    "Launching browser to get authenticated tokens.",
-                    agent.id, account,
-                )
-                # Fall through to browser launch below
-            else:
-                return build_headers(
-                    cookies=cookies,
-                    bx_ua=cached.get("bx_ua"),
-                    bx_umidtoken=cached.get("bx_umidtoken"),
-                )
-
-        # No cached token — launch browser with this account's profile to get one
-        profile_dir = _SYSTEM / account
-        if profile_dir.is_dir():
-            logger.info("Agent %s: no cached token for %s, launching browser", agent.id, account)
-            try:
-                from engine.session import BrowserManager
-                from engine.config import save_qwen_tokens_for_account
-
-                bm = BrowserManager(user_data_dir=str(profile_dir))
-                await bm.start()
-                try:
-                    headers = await bm.get_fresh_headers()
-                    save_qwen_tokens_for_account(
-                        cookies=headers.get("Cookie", ""),
-                        bx_ua=headers.get("bx-ua", ""),
-                        bx_umidtoken=headers.get("bx-umidtoken", ""),
-                        account=account,
-                    )
-                    return headers
-                finally:
-                    await bm.close()
-            except Exception as exc:
-                logger.warning("Agent %s: browser token fetch for %s failed: %s", agent.id, account, exc)
-
-    # Fallback: shared service (active account)
-    from server.api.dependencies import service
-    return await service._ensure_headers()
-
-
-
-async def _call_local(agent: Agent, message: str) -> tuple[str, str | None]:
-    """Local/OpenAI-compatible cookbook model: full messages array per request.
-
-    llama-server is stateless — it needs the entire conversation every call.
-    We send agent.messages (system + all turns) to /v1/chat/completions.
-    """
-    import httpx
-    from engine.config import get_model_config
-
-    cfg = get_model_config(agent.model)
-    endpoint = cfg.get("local_endpoint", "http://127.0.0.1:8080/v1").rstrip("/")
-    api_model = cfg.get("api_model_type", agent.model)
-
-    # Full history — stateless API requires it
-    messages = list(agent.messages)
-
-    # Load native tool schemas for this agent's allowed tool groups
-    from engine.tools_loader import get_all_tool_schemas
-    from server.api.routes.misc import get_disabled_tools
-    disabled = get_disabled_tools().get("disabled", [])
-    native_tools = get_all_tool_schemas(disabled=disabled, allowed=agent.allowed_tool_groups)
-
-    payload = {
-        "model": api_model,
-        "messages": messages,
-        "stream": True,
-    }
-    if native_tools:
-        payload["tools"] = native_tools
-
-    # Debug: dump full payload to log file for local model inspection
-    try:
-        from engine.config import OUTPUT_ROOT as _out_root
-        _log_file = _out_root / "local_model_payload.txt"
-        _log_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(_log_file, "a", encoding="utf-8") as _f:
-            from datetime import datetime as _dt
-            _f.write(f"\n{'='*80}\n")
-            _f.write(f"TIMESTAMP: {_dt.now().isoformat()}\n")
-            _f.write(f"MODEL: {api_model}\n")
-            _f.write(f"ENDPOINT: {endpoint}\n")
-            _f.write(f"MESSAGE COUNT: {len(messages)}\n")
-            _f.write(f"{'='*80}\n")
-            _f.write(json.dumps(payload, indent=2, ensure_ascii=False))
-            _f.write("\n")
-    except Exception:
-        pass  # never let logging break inference
-
-    # Tool execution loop — mirrors main chat's LocalConnector
-    _max_tool_rounds = 20
-    _tool_round = 0
-    final_accumulated = ""
-
-    while _tool_round < _max_tool_rounds:
-        _tool_round += 1
-        accumulated = ""
-        _tc_buffers: dict[int, dict] = {}
-
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            async with client.stream(
-                "POST",
-                f"{endpoint}/chat/completions",
-                json=payload,
-                headers={"Authorization": "Bearer sable-local"},
-            ) as resp:
-                if resp.status_code != 200:
-                    body = await resp.aread()
-                    raise RuntimeError(f"Local model HTTP {resp.status_code}: {body.decode()[:300]}")
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    data = line[6:].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data)
-                        delta = chunk["choices"][0].get("delta", {})
-
-                        # Text content
-                        token = delta.get("content", "")
-                        if token:
-                            accumulated += token
-                            agent.push_stream_event({"type": "chunk", "text": token})
-
-                        # Native tool call deltas
-                        tc_deltas = delta.get("tool_calls")
-                        if tc_deltas:
-                            for tcd in tc_deltas:
-                                idx = tcd.get("index", 0)
-                                if idx not in _tc_buffers:
-                                    _tc_buffers[idx] = {"id": tcd.get("id", ""), "name": "", "args_str": ""}
-                                buf = _tc_buffers[idx]
-                                if tcd.get("id"):
-                                    buf["id"] = tcd["id"]
-                                fn = tcd.get("function", {})
-                                if fn.get("name"):
-                                    buf["name"] = fn["name"]
-                                if fn.get("arguments"):
-                                    buf["args_str"] += fn["arguments"]
-                    except (json.JSONDecodeError, KeyError, IndexError):
-                        pass
-
-        # If no native tool calls, we're done
-        if not _tc_buffers:
-            final_accumulated = accumulated
-            break
-
-        # Convert native tool calls to <tool_call> tags for the agent loop's parser
-        for idx in sorted(_tc_buffers.keys()):
-            buf = _tc_buffers[idx]
-            try:
-                args = json.loads(buf["args_str"]) if buf["args_str"] else {}
-            except json.JSONDecodeError:
-                args = {}
-
-            # Build <tool_call> tag matching Hermes format
-            args_json = json.dumps(args, ensure_ascii=False)
-            tag_block = f'<tool_call>{{"name": "{buf["name"]}", "arguments": {args_json}}}</tool_call>'
-            accumulated += "\n" + tag_block
-
-        # Save assistant message with tool_calls to messages for proper history
-        assistant_msg: dict[str, Any] = {"role": "assistant", "content": accumulated or None}
-        assistant_msg["tool_calls"] = [
-            {
-                "id": _tc_buffers[idx]["id"],
-                "type": "function",
-                "function": {
-                    "name": _tc_buffers[idx]["name"],
-                    "arguments": _tc_buffers[idx]["args_str"] or "{}",
-                },
-            }
-            for idx in sorted(_tc_buffers.keys())
-        ]
-        messages.append(assistant_msg)
-
-        # Execute each tool call and append results to messages
-        from engine.skills import get_skill_engine
-        from connectors.common.native_tools import native_call_to_tag_event, format_openai_tool_result
-        engine = get_skill_engine()
-
-        for idx in sorted(_tc_buffers.keys()):
-            buf = _tc_buffers[idx]
-            try:
-                args = json.loads(buf["args_str"]) if buf["args_str"] else {}
-            except json.JSONDecodeError:
-                args = {}
-
-            fc = {"name": buf["name"], "args": args, "id": buf["id"]}
-            tag_event = native_call_to_tag_event(fc)
-
-            agent.push_stream_event({"type": "skill_start", "name": buf["name"], "attrs": str(args)})
-
-            try:
-                events = await asyncio.to_thread(
-                    lambda: list(engine.process_tag(
-                        tag_event["name"], tag_event["attrs"],
-                        tag_event["content"], namespace=agent.id,
-                    ))
-                )
-            except Exception as exc:
-                events = [{"type": "skill_end", "name": buf["name"], "ok": False, "error": str(exc)}]
-
-            result_text = ""
-            ok = True
-            for evt in events:
-                if isinstance(evt, dict):
-                    if evt.get("type") == "skill_output":
-                        result_text += evt.get("text", "")
-                    elif evt.get("type") == "skill_end":
-                        ok = evt.get("ok", True)
-                    if evt.get("type") != "skill_start":
-                        agent.push_stream_event(evt)
-
-            tool_result = format_openai_tool_result(buf["name"], result_text, ok, buf["id"])
-            messages.append(tool_result)
-
-            # Also update agent.messages + persist for conversation file / side panel
-            _attrs_str = json.dumps(args, ensure_ascii=False)
-            _tool_msg = (
-                f"## Tool\n"
-                f"**Name:** `{buf['name']}`\n"
-                f"**Command:**\n```\n{_attrs_str}\n```\n"
-                f"**Output:**\n```\n{result_text[:2000]}\n```"
-            )
-            agent.messages.append({"role": "tool", "content": _tool_msg})
-            await _persist_message(agent.id, "tool", _tool_msg)
-
-            logger.info("Agent %s: native tool %s executed (ok=%s), continuing loop", agent.id, buf["name"], ok)
-
-        # Update payload with updated messages for next round
-        payload["messages"] = messages
-        # Don't accumulate across rounds — only the final text-only response matters
-        final_accumulated = accumulated
-
-    if not final_accumulated.strip():
-        raise RuntimeError("Local model returned empty response")
-    return final_accumulated, None
-
-
-async def _call_qwen(
-    agent: Agent, message: str, parent_id: str | None, is_first_turn: bool
-) -> tuple[str, str | None]:
-    """Qwen: single message + parent_id per turn. Server stores history."""
-    import httpx
-    from engine.config import URL
-    from engine.payloads import build_body
-    from engine.session import create_new_chat
-
-    # Get headers for this agent's assigned account
-    headers = await _get_agent_qwen_headers(agent)
-
-    # Diagnostic: print which WAF token is actually being used for this call
-    from pathlib import Path as _P
-    _acct = _P(agent.browser_data_dir).name if agent.browser_data_dir else "default"
-    _ck = headers.get("Cookie", "")
-    logger.info(
-        "[WAF-CALL] agent=%s account=%s model=%s is_first=%s cookies_len=%d has_aui=%s",
-        agent.id, _acct, agent.model, is_first_turn, len(_ck),
-        "aui=" in _ck or "cnaui=" in _ck,
-    )
-
-    # Create or reuse upstream Qwen session
-    # Prefer DB-stored upstream_session_id; fall back to in-memory cache
-    from server.database import get_upstream_session_id as _get_usid, set_upstream_session_id as _set_usid
-    chat_id = _get_usid(agent.chat_id) or agent.qwen_session_id
-    if is_first_turn or not chat_id:
-        # Disable Qwen built-in tools and clear personalization for the assigned account.
-        # Only if agent has its own browser profile — never touch Maria's active session.
-        if agent.browser_data_dir:
-            try:
-                await _clear_qwen_account_settings(headers, agent.id)
-            except Exception as exc:
-                logger.warning("Agent %s: clear account settings failed: %s", agent.id, exc)
-        chat_id = await create_new_chat(headers, model=agent.model)
-        if not chat_id:
-            # Retry with fresh headers (re-fetch from browser if needed)
-            headers = await _get_agent_qwen_headers(agent)
-            chat_id = await create_new_chat(headers, model=agent.model)
-        if not chat_id:
-            # Third attempt after brief backoff (transient API hiccup)
-            await asyncio.sleep(1.5)
-            chat_id = await create_new_chat(headers, model=agent.model)
-        if not chat_id:
-            raise RuntimeError("Could not create Qwen chat session for agent")
-        agent.qwen_session_id = chat_id
-        _set_usid(agent.chat_id, chat_id)
-
-    body = build_body(message, chat_id, parent_id, model=agent.model)
-    params = {"chat_id": chat_id}
+    event_source, _, _ = await _get_llm_event_source(agent, message, parent_id, is_first_turn=False)
     accumulated = ""
     new_parent_id: str | None = None
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15)) as client:
-        async with client.stream("POST", URL, headers=headers, json=body, params=params) as resp:
-            if resp.status_code in (401, 403):
-                raise RuntimeError(f"Qwen auth failed ({resp.status_code})")
-            if resp.status_code != 200:
-                raw = (await resp.aread()).decode(errors="replace")
-                raise RuntimeError(f"Qwen HTTP {resp.status_code}: {raw[:300]}")
-
-            buffer = ""
-            async for chunk in resp.aiter_bytes():
-                if not chunk:
-                    continue
-                buffer += chunk.decode("utf-8", errors="replace")
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    line = line.strip()
-                    if not line.startswith("data: "):
-                        continue
+    try:
+        async for event in event_source:
+            etype = event.get("type")
+            if etype in ("chunk", "answer"):
+                accumulated += event.get("text", "")
+            elif etype == "meta":
+                sid = event.get("chat_id")
+                if sid:
+                    agent.qwen_session_id = sid
+                    set_upstream_session_id(agent.chat_id, sid)
+                pid = event.get("parent_id")
+                if pid:
+                    new_parent_id = pid
+            elif etype == "done":
+                pid = event.get("parent_id")
+                if pid:
+                    new_parent_id = pid
+            elif etype == "error":
+                _err_msg = str(event.get("message", "")).lower()
+                if any(kw in _err_msg for kw in (
+                    "chat not found", "parent_not_found", "not exist",
+                )):
+                    # Stale session in simple call — reset and return empty
+                    agent.qwen_session_id = None
                     try:
-                        data = json.loads(line[6:])
-                    except json.JSONDecodeError:
-                        continue
+                        set_upstream_session_id(agent.chat_id, None)
+                    except Exception:
+                        pass
+                    break  # Return whatever we have (likely empty)
+                raise RuntimeError(f"LLM error: {event.get('message', 'unknown')}")
+            elif etype in ("rate_limited", "waf_blocked"):
+                raise RuntimeError(f"{etype}: {event.get('message', '')}")
+            elif etype in ("chat_not_found", "parent_not_found"):
+                # Stale session in simple call — reset and return empty
+                agent.qwen_session_id = None
+                try:
+                    set_upstream_session_id(agent.chat_id, None)
+                except Exception:
+                    pass
+                break  # Return whatever we have (likely empty)
+    finally:
+        _svc = getattr(agent, '_qwen_service', None)
+        if _svc:
+            try:
+                await _svc.close()
+            except Exception:
+                pass
+            agent._qwen_service = None
 
-                    # Track parent_id from response
-                    created = data.get("response.created")
-                    if isinstance(created, dict):
-                        rid = created.get("response_id")
-                        if isinstance(rid, str):
-                            new_parent_id = rid
-
-                    choices = data.get("choices", [])
-                    if not choices:
-                        continue
-                    delta = choices[0].get("delta", {})
-                    content = delta.get("content", "")
-                    if content:
-                        accumulated += content
-                        agent.push_stream_event({"type": "chunk", "text": content})
-
-    if not accumulated.strip():
-        raise RuntimeError("Qwen returned empty response")
     return accumulated, new_parent_id
 
 
-_SKIP_TAGS = frozenset(("action", "spawn_agent", "br", "hr", "json", "p", "div", "span"))
+async def _get_llm_event_source(
+    agent: Agent,
+    message: str,
+    parent_id: str | None,
+    is_first_turn: bool,
+    files: list[str] | None = None,
+) -> tuple[Any, str | None]:
+    """Get the same LLM event source as main chat.
 
-
-
-def _check_action_wrapper_violations(text: str) -> str | None:
-    """Check for tool_call format violations in LLM response.
-
-    Returns a warning message string if violations found, None otherwise.
-    Checks:
-    1. JSON tool calls not wrapped in tool_call blocks
-    2. Orphan closing tool_call tags without matching opener
+    Returns (async_generator_of_events, initial_parent_id).
+    The caller iterates the generator directly, feeding chunks through SkillParser.
+    This mirrors chat.py's round_event_source selection exactly.
     """
-    from engine.skills.parser import KNOWN_TAGS
+    from engine.config import get_model_config
+    from server.utils import _is_api_model, _resolve_api_backend
 
-    has_open = "<tool" + "_call>" in text
-    has_close = "</tool" + "_call>" in text
+    model = agent.model
+    cfg = get_model_config(model)
+    api_backend = cfg.get("api_backend") if cfg else None
 
-    # Check for orphan closing tag
-    if has_close and not has_open:
-        return ORPHAN_CLOSE_TAG_WARNING
+    # --- API backends (Gemini, DeepSeek, Groq, Mistral, OpenAI, Cloudflare, Local) ---
+    if _is_api_model(model):
+        from connectors import get_connector
 
-    # Check for JSON tool calls outside tool_call blocks
-    # Strip all proper tool_call blocks first
-    stripped = _TAG_RE.sub("", text)
+        backend = api_backend or _resolve_api_backend(model)
+        connector = get_connector(backend, model_id=model)
+        api_model = cfg.get("api_model_type", cfg["id"]) if cfg else model
 
-    # Check if any known tool names appear in JSON format outside blocks
-    tool_pat = re.compile(
-        r'"name"\s*:\s*"(' + '|'.join(re.escape(t) for t in KNOWN_TAGS) + r')"',
-        re.IGNORECASE
-    )
-    if tool_pat.search(stripped):
-        return ACTION_WRAPPER_WARNING
+        stream_kwargs: dict[str, Any] = dict(
+            message=message,
+            model=api_model,
+            chat_id=agent.id,
+            inject_instructions=False,  # agents have their own system prompt
+            project_id=None,
+        )
 
-    return None
+        # Pass system prompt for backends that support it
+        if agent.system_prompt:
+            stream_kwargs["system_instruction"] = agent.system_prompt
 
+        # Pass files if supported
+        if files:
+            stream_kwargs["files"] = files
 
-def _parse_skill_tags(text: str) -> list[dict[str, Any]]:
-    """Extract tool calls from LLM response (Hermes format).
+        # Native tool schemas: core/outer tier system
+        try:
+            from engine.tools_loader import (
+                get_all_tool_schemas,
+                get_outer_tool_stubs,
+                _build_load_tool_schema,
+            )
+            _core = get_all_tool_schemas([], tier="core")
+            _outer = get_outer_tool_stubs([])
+            _loader = _build_load_tool_schema([])
+            tool_schemas = _core + _outer
+            if _loader:
+                tool_schemas.append(_loader)
+            if tool_schemas:
+                stream_kwargs["tools"] = tool_schemas
+        except Exception:
+            pass
 
-    Parses JSON content from <tool_call>...</tool_call> blocks.
-    Falls back to legacy XML tag extraction if no JSON tool calls found.
-    """
-    import json as _json
-    from engine.skills.parser import _parse_action_payload
+        return connector.stream_chat(**stream_kwargs), None, False
 
-    tags = []
+    # --- Qwen (scraper-based) ---
+    from engine.service import ChatService
+    from server.database import get_upstream_session_id, set_upstream_session_id
 
-    # Parse JSON tool calls from <tool_call> blocks
-    for match in _TAG_RE.finditer(text):
-        content = match.group(1).strip()
-        if not content:
-            continue
-        calls = _parse_action_payload(content)
-        for call in calls:
-            tags.append({
-                "name": call["name"],
-                "attrs": call["attrs"],
-                "content": call.get("content", ""),
-                "raw": match.group(0),
-            })
+    svc = ChatService(user_data_dir=agent.browser_data_dir)
+    agent._qwen_service = svc  # store for cleanup
 
-    # Fallback: try legacy XML tag extraction if no JSON calls found
-    if not tags:
-        def _extract(source: str) -> None:
-            for m in _INNER_TAG_RE.finditer(source):
-                name = m.group(1)
-                if name in _SKIP_TAGS:
-                    continue
-                tags.append({
-                    "name": name,
-                    "attrs": m.group(2) or "",
-                    "content": m.group(3) or "",
-                    "raw": m.group(0),
-                })
-        _extract(text)
+    instructions_synced = False
 
-    return tags
+    # On first turn: try sync_context with agent's system prompt.
+    # If it succeeds, Qwen already has the instructions via personalization API
+    # and we don't need to embed them in the first message.
+    # If it fails, fall back to clearing settings — caller will include
+    # system prompt in the message text as before.
+    if is_first_turn and agent.browser_data_dir:
+        try:
+            synced = await svc.sync_context(custom_instructions=agent.system_prompt)
+            if synced:
+                instructions_synced = True
+                logger.info("Agent %s: sync_context succeeded — instructions pushed via personalization API", agent.id)
+            else:
+                logger.warning("Agent %s: sync_context returned False, falling back to clear settings", agent.id)
+                headers = await svc._ensure_headers()
+                await _clear_qwen_account_settings(headers, agent.id)
+        except Exception as exc:
+            logger.warning("Agent %s: sync_context failed (%s), falling back to clear settings", agent.id, exc)
+            try:
+                headers = await svc._ensure_headers()
+                await _clear_qwen_account_settings(headers, agent.id)
+            except Exception as exc2:
+                logger.warning("Agent %s: fallback clear also failed: %s", agent.id, exc2)
+
+    chat_id = get_upstream_session_id(agent.chat_id) or agent.qwen_session_id
+    if is_first_turn or not chat_id:
+        chat_id = None
+
+    return svc.stream_events(
+        message=message,
+        chat_id=chat_id,
+        parent_id=parent_id,
+        model=model,
+    ), None, instructions_synced
 
 
 def _validate_markdown_output(text: str, required_sections: list[str]) -> bool:
@@ -1700,10 +1312,16 @@ def _validate_markdown_output(text: str, required_sections: list[str]) -> bool:
     return "## " in stripped
 
 
-async def _persist_message(agent_id: str, role: str, content: str) -> None:
-    """Write to agent_messages table. Logs failures without crashing the loop."""
+async def _persist_message(
+    agent_id: str,
+    role: str,
+    content: str,
+    skill_events: list[dict[str, Any]] | None = None,
+) -> None:
+    """Write to messages table only (same as main chat). No separate agent_messages."""
     try:
-        from server.database import add_agent_message
-        add_agent_message(agent_id, role, content)
+        from server.database import add_message, touch_chat
+        add_message(chat_id=agent_id, role=role, content=content, skill_events=skill_events)
+        touch_chat(agent_id)
     except Exception as exc:
         logger.debug("Failed to persist agent message (%s/%s): %s", agent_id, role, exc)
