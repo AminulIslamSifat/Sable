@@ -44,20 +44,87 @@ It remembers. It learns. It roasts your code. It *grows*.
 
 ### Linux
 
-#### Prerequisites
+#### Step 1 — Install Python 3.12
 
-| Dependency | Required | Install |
-|:--|:--|:--|
-| **Python 3.12** | ✅ Yes | `sudo pacman -S python312` / `sudo apt install python3.12` |
-| **[uv](https://docs.astral.sh/uv/)** | ✅ Yes | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| **git** | ✅ Yes | Comes with most distros |
-| **systemd** | Optional | Most distros have it; without it, Sable runs as a foreground process |
-| **libnotify** (`notify-send`) | Optional | `sudo pacman -S libnotify` / `sudo apt install libnotify-bin` — for desktop notifications |
-| **xdg-utils** (`xdg-open`) | Optional | Almost always pre-installed — auto-opens browser on launch |
-| **Go** | Optional | Only if rebuilding the DeepSeek PoW solver |
+Sable runs on Python 3.12. Most distros ship an older version, so install it explicitly.
+
+```bash
+# Arch
+sudo pacman -S python312
+
+# Debian / Ubuntu
+sudo apt install python3.12 python3.12-venv
+
+# Fedora
+sudo dnf install python3.12
+```
+
+#### Step 2 — Install uv
+
+[uv](https://docs.astral.sh/uv/) is the package manager. It's stupid fast and replaces pip + venv.
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Restart your shell or `source ~/.bashrc` / `source ~/.zshrc` to pick up the PATH.
+
+#### Step 3 — Install git
+
+Probably already there. If not:
+
+```bash
+# Arch
+sudo pacman -S git
+
+# Debian / Ubuntu
+sudo apt install git
+
+# Fedora
+sudo dnf install git
+```
+
+#### Step 4 — Install Docker
+
+Sable uses Docker for sandboxed execution and containerized services.
+
+```bash
+# Arch
+sudo pacman -S docker docker-compose
+sudo systemctl enable --now docker
+
+# Debian / Ubuntu
+curl -fsSL https://get.docker.com | sh
+sudo systemctl enable --now docker
+
+# Fedora
+sudo dnf install docker docker-compose-plugin
+sudo systemctl enable --now docker
+```
+
+Add yourself to the `docker` group so you don't need `sudo` every time:
+
+```bash
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
+#### Step 5 — Install optional dependencies
+
+These aren't required but make life better:
+
+```bash
+# Desktop notifications
+sudo pacman -S libnotify          # Arch
+sudo apt install libnotify-bin    # Debian/Ubuntu
+
+# Go (only if rebuilding the DeepSeek PoW solver)
+sudo pacman -S go                 # Arch
+sudo apt install golang           # Debian/Ubuntu
+```
 
 > [!note] Playwright system libraries
-> Playwright bundles its own Chromium, but it needs system shared libraries (NSS, ATK, CUPS, DRM, etc.). On first run, if Chromium fails to launch, install them:
+> Playwright bundles its own Chromium but needs system shared libraries (NSS, ATK, CUPS, DRM, etc.). If Chromium fails to launch on first run:
 > ```bash
 > # Arch
 > uv run playwright install-deps chromium
@@ -71,7 +138,7 @@ It remembers. It learns. It roasts your code. It *grows*.
 >   at-spi2-atk pango cairo alsa-lib
 > ```
 
-#### Install & Run
+#### Step 6 — Clone and run
 
 ```bash
 git clone https://github.com/AminulIslamSifat/Sable.git
@@ -87,7 +154,7 @@ That's it. `./start` handles everything:
 - Sets up a **systemd user service** (`sable.service`) that auto-starts on login
 - Opens `http://127.0.0.1:61770` in your browser
 
-#### Managing the Service
+#### Managing the service
 
 ```bash
 # Check status
@@ -108,41 +175,70 @@ loginctl enable-linger $USER
 
 ### Windows
 
-#### Prerequisites
+#### Step 1 — Install Python 3.12
 
-| Dependency | Required | Install |
-|:--|:--|:--|
-| **Python 3.12** | ✅ Yes | [python.org](https://www.python.org/downloads/) or `winget install Python.Python.3.12` |
-| **[uv](https://docs.astral.sh/uv/)** | ✅ Yes | `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 \| iex"` |
-| **git** | ✅ Yes | [git-scm.com](https://git-scm.com/download/win) or `winget install Git.Git` |
-| **PowerShell 5.1+** | ✅ Yes | Pre-installed on Windows 10/11 |
-| **VC++ Redistributable** | ✅ Yes | `winget install Microsoft.VCRedist.2015+.x64` or [download](https://aka.ms/vs/17/release/vc_redist.x64.exe) |
-| **Go** | Optional | Only if rebuilding the DeepSeek PoW solver |
-
-> [!warning] VC++ Redistributable is required
-> Playwright depends on `greenlet`, a C extension that needs the Visual C++ runtime DLLs. Without it, you'll get `ImportError: DLL load failed while importing _greenlet`. This is a one-time install — run:
-> ```powershell
-> winget install Microsoft.VCRedist.2015+.x64
-> ```
-> Or download from https://aka.ms/vs/17/release/vc_redist.x64.exe
-
-> [!note] PowerShell execution policy
-> Fresh Windows installs block script execution by default. Before running `start.ps1`, enable it for your user:
-> ```powershell
-> Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-> ```
-> This only affects your user account and allows locally-created scripts to run. It does **not** require admin.
-
-> [!note] No admin required
-> Everything installs per-user. Task Scheduler task, BurntToast module, and all Python deps are user-scoped. The VC++ Redistributable is the only system-wide install.
-
-#### Install & Run
+Grab it from [python.org](https://www.python.org/downloads/) or use winget:
 
 ```powershell
-# One-time setup (if not already done):
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-winget install Microsoft.VCRedist.2015+.x64
+winget install Python.Python.3.12
+```
 
+> ⚠️ Check **"Add Python to PATH"** during the installer if you go the GUI route.
+
+#### Step 2 — Install uv
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Close and reopen your terminal to pick up the PATH.
+
+#### Step 3 — Install git
+
+```powershell
+winget install Git.Git
+```
+
+Or grab it from [git-scm.com](https://git-scm.com/download/win).
+
+#### Step 4 — Install Docker Desktop
+
+Sable uses Docker for sandboxed execution. Install Docker Desktop:
+
+```powershell
+winget install Docker.DockerDesktop
+```
+
+Or download from [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/). After install, reboot and make sure Docker Desktop is running (whale icon in system tray).
+
+> [!note] WSL2 backend
+> Docker Desktop on Windows uses WSL2. If you don't have it yet:
+> ```powershell
+> wsl --install
+> ```
+> Reboot when prompted. Docker will configure itself after that.
+
+#### Step 5 — Install VC++ Redistributable
+
+Playwright depends on `greenlet`, a C extension that needs the Visual C++ runtime DLLs. Without this you'll get `ImportError: DLL load failed while importing _greenlet`.
+
+```powershell
+winget install Microsoft.VCRedist.2015+.x64
+```
+
+Or download from https://aka.ms/vs/17/release/vc_redist.x64.exe
+
+#### Step 6 — Enable script execution
+
+Fresh Windows blocks `.ps1` scripts. Fix it for your user (no admin needed):
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+#### Step 7 — Clone and run
+
+```powershell
 git clone https://github.com/AminulIslamSifat/Sable.git
 cd Sable
 .\start.ps1
@@ -156,7 +252,7 @@ cd Sable
 - Registers a **Task Scheduler** task ("Sable Server") that auto-starts on login
 - Opens `http://127.0.0.1:61770` in your browser
 
-#### Auto-Start Details
+#### Auto-start details
 
 The scheduled task is created automatically on first run:
 - **Trigger:** At user logon
@@ -179,7 +275,7 @@ Unregister-ScheduledTask -TaskName "Sable Server" -Confirm:$false
 
 #### Notifications
 
-Native Windows toast notifications work automatically via the **BurntToast** PowerShell module (auto-installed by `start.ps1`). If BurntToast is unavailable, Sable falls back to a MessageBox dialog.
+Native Windows toast notifications work via **BurntToast** (auto-installed by `start.ps1`). If it's unavailable, Sable falls back to a MessageBox dialog.
 
 To reinstall manually:
 ```powershell
@@ -188,7 +284,7 @@ Install-Module BurntToast -Scope CurrentUser -Force
 
 ---
 
-### First Run Notes
+### First run notes
 
 Both platforms create these files on first run:
 - `instruction/Maria.md` — persona prompt (from `.example` template)

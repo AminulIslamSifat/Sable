@@ -1469,6 +1469,8 @@
       50% { border-color: color-mix(in srgb, var(--warning, #f59e0b) 35%, transparent); }
     }
 
+
+
     /* ---------- Debug info inside error cards ---------- */
 
     .card-debug-info {
