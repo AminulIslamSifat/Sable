@@ -28,8 +28,12 @@
             <div class="thinking-body">${escHtml(message.thinking)}</div>
           </details>`;
         activePane.appendChild(wrap);
+<<<<<<< HEAD
         // ponytail: Skip per-element icon scan during bulk history render
         if (!window._historyLoading) activateLucideIcons(wrap);
+=======
+        activateLucideIcons(wrap);
+>>>>>>> origin/main
       }
 
       // For assistant messages with round_text events, skip main content rendering —
@@ -193,8 +197,12 @@
           });
           toolbar.appendChild(forkBtn);
         }
+<<<<<<< HEAD
         // ponytail: Skip per-element icon scan during bulk history render
         if (!window._historyLoading) activateLucideIcons(toolbar);
+=======
+        activateLucideIcons(toolbar);
+>>>>>>> origin/main
       }
       // Attach toolbar to historical bot messages (or skip if round_text will handle it)
       if (message.role !== "user" && msgDiv) {
@@ -269,6 +277,7 @@
       toolbar.appendChild(copyBtn);
       toolbar.appendChild(ttsBtn);
       msgDiv.appendChild(toolbar);
+<<<<<<< HEAD
       // ponytail: Skip per-element icon scan during bulk history render
       if (!window._historyLoading) activateLucideIcons(toolbar);
     }
@@ -295,6 +304,15 @@
       // ponytail: No-op icon activation during bulk history render.
       // Single activateLucideIcons(pane) call in loadMessages handles all.
       const _actIcons = isHistoryLoad ? () => {} : activateLucideIcons;
+=======
+      activateLucideIcons(toolbar);
+    }
+
+    function _renderSkillEvents(events) {
+      const cards = {};
+      let group = null;
+      let _histSkillPath = "";
+>>>>>>> origin/main
       for (const evt of events) {
         if (evt.type === "round_thinking") {
           group = null;
@@ -306,7 +324,11 @@
               <div class="thinking-body">${escHtml(evt.text || "")}</div>
             </details>`;
           activePane.appendChild(wrap);
+<<<<<<< HEAD
           _actIcons(wrap);
+=======
+          activateLucideIcons(wrap);
+>>>>>>> origin/main
         } else if (evt.type === "round_text") {
           if (evt.text && evt.text.trim()) {
             const textDiv = document.createElement("div");
@@ -314,6 +336,7 @@
             const content = document.createElement("div");
             content.className = "md-content";
             content.innerHTML = renderMarkdown(evt.text);
+<<<<<<< HEAD
             // Skip heavy renders during history load — deferred to single
             // pane-wide pass in loadMessages after fragment is attached.
             if (!isHistoryLoad) {
@@ -321,6 +344,11 @@
               renderMathJax(content);
             }
             _actIcons(content);
+=======
+            renderMermaidDiagrams(content);
+            renderMathJax(content);
+            activateLucideIcons(content);
+>>>>>>> origin/main
             textDiv.appendChild(content);
             activePane.appendChild(textDiv);
             _attachBotToolbar(textDiv);
@@ -335,7 +363,11 @@
           }
           const card = createSkillCard(evt);
           group.appendChild(card);
+<<<<<<< HEAD
           _actIcons(card);
+=======
+          activateLucideIcons(card);
+>>>>>>> origin/main
           cards[evt.id] = card;
           // Track path for history preview card
           if (evt.name === "create_file" || evt.name === "edit_file" || evt.name === "save_svg" || evt.name === "create_svg") {
@@ -352,6 +384,7 @@
             continue;
           }
           const card = cards[evt.id];
+<<<<<<< HEAD
           if (card) {
             let outText = evt.text || "";
             // During history load, cap event count per card to prevent
@@ -371,6 +404,9 @@
             }
             appendSkillCardOutput(card, outText);
           }
+=======
+          if (card) appendSkillCardOutput(card, evt.text);
+>>>>>>> origin/main
         } else if (evt.type === "skill_end") {
           if (evt.name === "ask_user") continue;
           const card = cards[evt.id];
@@ -427,7 +463,11 @@
             <div class="critique-log"></div>
           `;
           activePane.appendChild(box);
+<<<<<<< HEAD
           _actIcons(box);
+=======
+          activateLucideIcons(box);
+>>>>>>> origin/main
           cards[evt.id] = box;  // reuse cards map for critique_tool/done lookup
         } else if (evt.type === "critique_tool") {
           const box = cards[evt.id];
@@ -1885,6 +1925,7 @@
               }
               saveActiveChat();
             }
+<<<<<<< HEAD
           } else if (evt.type === "response_id") {
             // Qwen stop API requires response_id. Backend emits this as soon as
             // the first upstream SSE chunk exposes it.
@@ -1894,6 +1935,8 @@
                 window.setActiveResponseId(activeChatId, String(evt.id));
               }
             }
+=======
+>>>>>>> origin/main
           } else if (evt.type === "status") {
             if (evt.message === "feeding_skill_results") {
               ui.nextSkillRound();

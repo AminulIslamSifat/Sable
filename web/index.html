@@ -269,11 +269,19 @@
       </div>
       <div class="sidebar-top-content">
                 <div class="mode-switcher" id="layoutSwitcher">
+<<<<<<< HEAD
           <button id="layoutAgent" class="active" title="Agent chat mode"><span class="icon-emoji">💬</span>Agent</button>
           <button id="layoutChat" title="Chat mode (no tools)"><span class="icon-emoji">💬</span>Chat</button>
         </div>
         <button id="sidebarNewChatBtn" class="sidebar-footer-btn" title="New Chat">
           <span class="icon-emoji">✨</span>New Chat
+=======
+          <button id="layoutAgent" class="active" title="Agent chat mode"><span class="icon-emoji">💬</span><i data-lucide="message-square" class="icon-lucide"></i> Agent</button>
+          <button id="layoutChat" title="Chat mode (no tools)"><span class="icon-emoji">💬</span><i data-lucide="message-circle" class="icon-lucide"></i> Chat</button>
+        </div>
+        <button id="sidebarNewChatBtn" class="sidebar-footer-btn" title="New Chat">
+          <span class="icon-emoji">✨</span><i data-lucide="square-pen" class="icon-lucide"></i> New Chat
+>>>>>>> origin/main
         </button>
         <div class="scraper-engine-wrap" id="scraperEngineWrap">
           <select id="scraperEngineSelect" title="Scraper engine"></select>
@@ -354,7 +362,11 @@
     <!-- Dashboard view (replaces chat area when active) -->
     <div id="dashboardView" class="dashboard-view hidden">
       <div class="dash-header">
+<<<<<<< HEAD
         <h2 class="dash-title">Dashboard</h2>
+=======
+        <h2 class="dash-title"><i data-lucide="layout-dashboard" class="icon-lucide"></i> Dashboard</h2>
+>>>>>>> origin/main
         <button class="dash-refresh-btn" id="dashRefreshBtn" title="Refresh">↻</button>
       </div>
       <div class="dash-grid" id="dashGrid">
@@ -379,7 +391,11 @@
     <div id="knowledgeView" class="knowledge-view hidden">
       <!-- Header -->
       <div class="kb-header">
+<<<<<<< HEAD
         <h2 class="kb-title">Knowledge Base</h2>
+=======
+        <h2 class="kb-title"><i data-lucide="brain" class="icon-lucide"></i> Knowledge Base</h2>
+>>>>>>> origin/main
         <div class="kb-header-actions">
           <div class="kb-mode-tabs">
             <button class="kb-mode-tab active" data-kb-mode="graph">Graph</button>
@@ -750,7 +766,11 @@
   <!-- Notes panel (left-sidebar hostable) -->
   <div id="notesPanel" class="tracknote-standalone hidden" aria-label="Notes">
     <div class="tracknote-standalone-header">
+<<<<<<< HEAD
       <span class="tracknote-standalone-title">Notes</span>
+=======
+      <span class="tracknote-standalone-title"><i data-lucide="file-text" class="icon-lucide"></i> Notes</span>
+>>>>>>> origin/main
       <button id="notesAddToggle" class="tn-add-toggle" title="Add new note"><i data-lucide="plus" class="icon-lucide"></i></button>
     </div>
     <div class="tracknote-body">
@@ -773,7 +793,11 @@
   <!-- Todo panel (left-sidebar hostable) -->
   <div id="todoPanel" class="tracknote-standalone hidden" aria-label="Todo">
     <div class="tracknote-standalone-header">
+<<<<<<< HEAD
       <span class="tracknote-standalone-title">Todo</span>
+=======
+      <span class="tracknote-standalone-title"><i data-lucide="circle-check" class="icon-lucide"></i> Todo</span>
+>>>>>>> origin/main
       <button id="tnAddToggle" class="tn-add-toggle" title="Add new todo"><i data-lucide="plus" class="icon-lucide"></i></button>
     </div>
     <div class="tracknote-body">
@@ -796,7 +820,11 @@
   <!-- Projects panel (left-sidebar hostable) -->
   <div id="projectsPanel" class="tracknote-standalone hidden" aria-label="Projects">
     <div class="tracknote-standalone-header">
+<<<<<<< HEAD
       <span class="tracknote-standalone-title">Projects</span>
+=======
+      <span class="tracknote-standalone-title"><i data-lucide="folder-open" class="icon-lucide"></i> Projects</span>
+>>>>>>> origin/main
       <button id="projAddBtn" class="tn-add-toggle" title="New Project"><i data-lucide="plus" class="icon-lucide"></i></button>
     </div>
     <div class="tracknote-body">
@@ -830,7 +858,11 @@
   <!-- Tasks panel (left-sidebar hostable) -->
   <div id="tasksPanel" class="tracknote-standalone hidden" aria-label="Tasks">
     <div class="tracknote-standalone-header">
+<<<<<<< HEAD
       <span class="tracknote-standalone-title">Tasks</span>
+=======
+      <span class="tracknote-standalone-title"><i data-lucide="bot" class="icon-lucide"></i> Tasks</span>
+>>>>>>> origin/main
       <button id="tnAgentAddToggle" class="tn-add-toggle" title="Add new task"><i data-lucide="plus" class="icon-lucide"></i></button>
     </div>
     <div class="tracknote-body">
@@ -852,7 +884,11 @@
   <!-- Files panel (left-sidebar hostable) -->
   <div id="filesPanel" class="tracknote-standalone hidden" aria-label="Files">
     <div class="tracknote-standalone-header">
+<<<<<<< HEAD
       <span class="tracknote-standalone-title">Files</span>
+=======
+      <span class="tracknote-standalone-title"><i data-lucide="folder-tree" class="icon-lucide"></i> Files</span>
+>>>>>>> origin/main
       <button id="fsLeftOpenFolder" class="new-chat-icon sidebar-action-icon" title="Open Folder"><span class="icon-emoji">📂</span><i data-lucide="folder-open" class="icon-lucide"></i></button>
     </div>
     <div class="tracknote-body">
@@ -1036,7 +1072,11 @@
 
           <!-- Context Pass Settings -->
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
+<<<<<<< HEAD
             <label style="font-size:13px;color:var(--text-dim);font-weight:600;display:block;margin-bottom:10px;"><span class="icon-emoji">🔀</span>Context Pass — Fallback Chain</label>
+=======
+            <label style="font-size:13px;color:var(--text-dim);font-weight:600;display:block;margin-bottom:10px;"><span class="icon-emoji">🔀</span><i data-lucide="arrow-right-left" class="icon-lucide"></i> Context Pass — Fallback Chain</label>
+>>>>>>> origin/main
             <!-- Primary model -->
             <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;">
               <label for="ctxPassModel" style="font-size:12px;color:var(--text-dim);">① Primary Model</label>
@@ -1063,7 +1103,11 @@
 
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+<<<<<<< HEAD
               <label style="font-size:13px;color:var(--text-dim);font-weight:600;"><span class="icon-emoji">🐋</span>DeepSeek API Token</label>
+=======
+              <label style="font-size:13px;color:var(--text-dim);font-weight:600;"><span class="icon-emoji">🐋</span><i data-lucide="database" class="icon-lucide"></i> DeepSeek API Token</label>
+>>>>>>> origin/main
               <button id="refreshDeepseekTokenBtn" class="icon-btn" title="Refresh DeepSeek token from browser profile" style="width:auto;padding:4px 10px;font-size:11px;">↻ Refresh Token</button>
             </div>
             <p class="muted" style="font-size:11px;margin:0 0 8px 0;">Re-reads the logged-in DeepSeek account from the shared browser profile. Use this after switching accounts.</p>
@@ -1071,7 +1115,11 @@
           </div>
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+<<<<<<< HEAD
               <label style="font-size:13px;color:var(--text-dim);font-weight:600;"><span class="icon-emoji">🌐</span>Browser Session</label>
+=======
+              <label style="font-size:13px;color:var(--text-dim);font-weight:600;"><span class="icon-emoji">🌐</span><i data-lucide="globe" class="icon-lucide"></i> Browser Session</label>
+>>>>>>> origin/main
               <button id="refreshSessionBtn" class="icon-btn" title="Refresh session info" style="width:auto;padding:4px 10px;font-size:11px;">↻ Refresh</button>
             </div>
             <div id="browserSessionCard" style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;">
@@ -1079,7 +1127,11 @@
             </div>
           </div>
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
+<<<<<<< HEAD
             <button id="deleteAllChatsBtn" class="btn-danger" style="font-size:12px;padding:8px 16px;width:100%;"><span class="icon-emoji">🗑</span>Delete All Chats</button>
+=======
+            <button id="deleteAllChatsBtn" class="btn-danger" style="font-size:12px;padding:8px 16px;width:100%;"><span class="icon-emoji">🗑</span><i data-lucide="trash-2" class="icon-lucide"></i> Delete All Chats</button>
+>>>>>>> origin/main
             <p class="muted" style="font-size:11px;margin-top:6px;">Permanently removes every chat and message. This cannot be undone.</p>
           </div>
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
@@ -1105,7 +1157,11 @@
           <!-- API Keys (unified) -->
           <div style="margin-bottom:20px;">
             <label style="font-size:14px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+<<<<<<< HEAD
               <span class="icon-emoji">🔑</span>API Keys
+=======
+              <span class="icon-emoji">🔑</span><i data-lucide="key-round" class="icon-lucide"></i> API Keys
+>>>>>>> origin/main
             </label>
             <p style="font-size:11.5px;color:var(--text);margin:0 0 10px 0;">Multiple keys per provider — auto-rotates on rate limit or failure.</p>
             <div style="display:flex;gap:6px;margin-bottom:10px;align-items:center;">
@@ -1129,7 +1185,11 @@
           <!-- Custom Endpoints (saved OpenAI-compatible URLs) -->
           <div style="margin-bottom:20px;border-top:1px solid var(--border);padding-top:16px;">
             <label style="font-size:14px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+<<<<<<< HEAD
               <span class="icon-emoji">🔗</span>Custom Endpoints
+=======
+              <span class="icon-emoji">🔗</span><i data-lucide="link" class="icon-lucide"></i> Custom Endpoints
+>>>>>>> origin/main
             </label>
             <p style="font-size:11.5px;color:var(--text);margin:0 0 10px 0;">Save an OpenAI-compatible URL once, then add unlimited models from it below — no re-typing.</p>
             <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;align-items:center;">
@@ -1146,7 +1206,11 @@
           <!-- Add Model -->
           <div style="margin-bottom:16px;border-top:1px solid var(--border);padding-top:16px;">
             <label style="font-size:14px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+<<<<<<< HEAD
               <span class="icon-emoji">🧩</span>Add Model
+=======
+              <span class="icon-emoji">🧩</span><i data-lucide="puzzle" class="icon-lucide"></i> Add Model
+>>>>>>> origin/main
             </label>
             <p style="font-size:11.5px;color:var(--text);margin:0 0 10px 0;">Select a provider to browse available models. Requires an API key above.</p>
             <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;align-items:center;">
@@ -1194,7 +1258,11 @@
             <div id="customModelStatus" style="font-size:11px;color:var(--text-dim);margin-top:8px;"></div>
           </div>
           <!-- ═══ Search Engine ═══ -->
+<<<<<<< HEAD
           <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🔍</span>Search Engine</h3>
+=======
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🔍</span><i data-lucide="search" class="icon-lucide"></i> Search Engine</h3>
+>>>>>>> origin/main
           <p class="muted mem-desc">Configure web search provider, fallback chain, and caching. Used by Online Search skill and Deep Research.</p>
 
           <!-- Active Provider -->
@@ -1301,10 +1369,17 @@
               </div>
             </div>
             <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+<<<<<<< HEAD
               <button id="searchSaveBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;">Save</button>
               <button id="searchTestBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">Test</button>
               <button id="searchCompareBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">Compare</button>
               <button id="searchClearCacheBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;">Clear Cache</button>
+=======
+              <button id="searchSaveBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;"><i data-lucide="save" class="icon-lucide"></i> Save</button>
+              <button id="searchTestBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;"><i data-lucide="flask-conical" class="icon-lucide"></i> Test</button>
+              <button id="searchCompareBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;"><i data-lucide="git-compare" class="icon-lucide"></i> Compare</button>
+              <button id="searchClearCacheBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;"><i data-lucide="trash-2" class="icon-lucide"></i> Clear Cache</button>
+>>>>>>> origin/main
             </div>
             <!-- Compare provider selectors (hidden by default) -->
             <div id="searchCompareControls" style="display:none;margin-bottom:10px;padding:10px;border:1px solid var(--border);border-radius:8px;background:color-mix(in srgb, var(--panel) 60%, transparent);">
@@ -1333,7 +1408,11 @@
         <div id="tab-mcp" class="settings-tab-content">
           <div style="margin-bottom:20px;">
             <label style="font-size:14px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+<<<<<<< HEAD
               <span class="icon-emoji">🔌</span>MCP Servers
+=======
+              <span class="icon-emoji">🔌</span><i data-lucide="plug" class="icon-lucide"></i> MCP Servers
+>>>>>>> origin/main
             </label>
             <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 12px 0;">Model Context Protocol — connect external tool servers (email, calendar, databases, etc.) to extend Sable's capabilities dynamically.</p>
 
@@ -1362,11 +1441,17 @@
         </div>
 
         <div id="tab-account" class="settings-tab-content">
+<<<<<<< HEAD
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
             <label style="font-size:14px;color:var(--text);font-weight:600;">Account Profiles</label>
             <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
               <button id="backupAllAccountsBtn" class="icon-btn" title="Backup all accounts" style="width:auto;padding:4px 10px;font-size:11px;">Backup All</button>
               <button id="restoreAllAccountsBtn" class="icon-btn" title="Restore all accounts from backups" style="width:auto;padding:4px 10px;font-size:11px;">Restore All</button>
+=======
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <label style="font-size:14px;color:var(--text);font-weight:600;">Account Profiles</label>
+            <div style="display:flex;gap:6px;">
+>>>>>>> origin/main
               <div id="addAccountWrap" style="display:flex;gap:4px;align-items:center;">
                 <select id="addAccountBrowserSelect" style="padding:4px 6px;font-size:11px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:6px;outline:none;max-width:160px;"></select>
                 <button id="addAccountBtn" class="icon-btn" style="width:auto;padding:4px 10px;font-size:11px;">Add Account</button>
@@ -1381,16 +1466,28 @@
         </div>
         <div id="tab-personalization" class="settings-tab-content">
           <!-- ═══ Section 1: Personal Context (who you are) ═══ -->
+<<<<<<< HEAD
           <h3 class="mem-title"><span class="icon-emoji">👤</span>Personal Context</h3>
           <p class="muted mem-desc">Your name, preferences, hobbies, and context. Saved to instruction/personal.md and loaded into every conversation.</p>
           <textarea id="personalContextArea" class="mem-input" style="width:100%;min-height:120px;font-family:var(--font-mono);font-size:12px;line-height:1.5;resize:vertical;padding:10px;border-radius:8px;background:var(--panel);color:var(--text);border:1px solid var(--border);" placeholder="Name, preferences, hobbies, context..."></textarea>
           <div class="mem-input-row mem-save-row" style="margin-top:8px;">
             <button id="personalSaveBtn" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">💾</span>Save</button>
+=======
+          <h3 class="mem-title"><span class="icon-emoji">👤</span><i data-lucide="user" class="icon-lucide"></i> Personal Context</h3>
+          <p class="muted mem-desc">Your name, preferences, hobbies, and context. Saved to instruction/personal.md and loaded into every conversation.</p>
+          <textarea id="personalContextArea" class="mem-input" style="width:100%;min-height:120px;font-family:var(--font-mono);font-size:12px;line-height:1.5;resize:vertical;padding:10px;border-radius:8px;background:var(--panel);color:var(--text);border:1px solid var(--border);" placeholder="Name, preferences, hobbies, context..."></textarea>
+          <div class="mem-input-row mem-save-row" style="margin-top:8px;">
+            <button id="personalSaveBtn" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">💾</span><i data-lucide="hard-drive" class="icon-lucide"></i> Save</button>
+>>>>>>> origin/main
             <span id="personalStatus" class="muted mem-status"></span>
           </div>
 
           <!-- ═══ Section 2: Personas (identity) ═══ -->
+<<<<<<< HEAD
           <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🎭</span>Personas &amp; Output Format</h3>
+=======
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🎭</span><i data-lucide="venetian-mask" class="icon-lucide"></i> Personas &amp; Output Format</h3>
+>>>>>>> origin/main
           <p class="muted mem-desc">Choose who the AI becomes. Select one active character or none at all. Edit, create, or disable entries below.</p>
           <div id="personaGrid" class="persona-grid"></div>
           <div class="persona-actions-bar">
@@ -1414,19 +1511,31 @@
           </div>
 
           <!-- ═══ Tools ═══ -->
+<<<<<<< HEAD
           <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🔧</span>Tools</h3>
+=======
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🔧</span><i data-lucide="wrench" class="icon-lucide"></i> Tools</h3>
+>>>>>>> origin/main
           <p class="muted mem-desc">Toggle tools on/off. Tools are always-active capabilities injected into every conversation.</p>
           <div id="toolsToggleList" style="display:flex;flex-direction:column;gap:6px;margin-top:10px;"></div>
 
           <!-- ═══ Skills ═══ -->
+<<<<<<< HEAD
           <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">⚡</span>Skills</h3>
+=======
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">⚡</span><i data-lucide="zap" class="icon-lucide"></i> Skills</h3>
+>>>>>>> origin/main
           <p class="muted mem-desc">Toggle skills on/off. View details and instructions in Library > Skills.</p>
           <div id="skillsToggleList" style="display:flex;flex-direction:column;gap:6px;margin-top:10px;"></div>
 
         </div>
 
         <div id="tab-memory" class="settings-tab-content">
+<<<<<<< HEAD
           <h3 class="mem-title"><span class="icon-emoji">🧠</span>Memory Consolidation</h3>
+=======
+          <h3 class="mem-title"><span class="icon-emoji">🧠</span><i data-lucide="brain" class="icon-lucide"></i> Memory Consolidation</h3>
+>>>>>>> origin/main
           <p class="muted mem-desc">Settings for automatic memory extraction when creating a new chat.</p>
 
           <div style="display:flex;flex-direction:column;gap:14px;margin-top:10px;">
@@ -1457,7 +1566,11 @@
 
           </div>
 
+<<<<<<< HEAD
           <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">⚙️</span>Memory Engine Config</h3>
+=======
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">⚙️</span><i data-lucide="settings" class="icon-lucide"></i> Memory Engine Config</h3>
+>>>>>>> origin/main
           <p class="muted mem-desc">Controls how memories are retrieved and injected into conversations. Changes here affect response quality.</p>
 
           <div style="display:flex;flex-direction:column;gap:14px;margin-top:10px;">
@@ -1495,13 +1608,21 @@
               <label class="muted" style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer;">
                 <input type="checkbox" id="msEnabled" checked style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;"> Memory search enabled
               </label>
+<<<<<<< HEAD
               <button id="msSaveBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;"><span class="icon-emoji">💾</span>Save Config</button>
+=======
+              <button id="msSaveBtn" class="icon-btn" style="width:auto;padding:6px 14px;font-size:12px;"><span class="icon-emoji">💾</span><i data-lucide="hard-drive" class="icon-lucide"></i> Save Config</button>
+>>>>>>> origin/main
             </div>
 
             <p id="msInfo" class="muted" style="font-size:11px;margin:0;"></p>
 
             <div style="display:flex;align-items:center;gap:8px;">
+<<<<<<< HEAD
               <button id="msRefreshCache" class="icon-btn" style="width:auto;padding:6px 12px;font-size:12px;"><span class="icon-emoji">🔄</span>Rebuild Vector Cache</button>
+=======
+              <button id="msRefreshCache" class="icon-btn" style="width:auto;padding:6px 12px;font-size:12px;"><span class="icon-emoji">🔄</span><i data-lucide="refresh-cw" class="icon-lucide"></i> Rebuild Vector Cache</button>
+>>>>>>> origin/main
               <span id="msCacheStatus" class="muted" style="font-size:11px;"></span>
             </div>
             <p class="muted" style="font-size:11px;margin:0;">Force-reindex all memories. Only needed after editing Memory.json manually or changing the embedding model.</p>
@@ -1510,7 +1631,11 @@
         </div>
         
         <div id="tab-ide" class="settings-tab-content">
+<<<<<<< HEAD
           <h3 class="mem-title"><span class="icon-emoji">💻</span>IDE</h3>
+=======
+          <h3 class="mem-title"><span class="icon-emoji">💻</span><i data-lucide="code" class="icon-lucide"></i> IDE</h3>
+>>>>>>> origin/main
           <p class="muted mem-desc">Configure the built-in Monaco editor — font, theme, auto-save, and more.</p>
           <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
             <label for="editorFontSizeSelect" style="font-size:13px;color:var(--text-dim);">Editor Font Size</label>
@@ -1568,7 +1693,11 @@
 
         <div id="tab-voice" class="settings-tab-content">
           <!-- ═══ TTS Section ═══ -->
+<<<<<<< HEAD
           <h3 class="mem-title"><span class="icon-emoji">🔊</span>Text-to-Speech</h3>
+=======
+          <h3 class="mem-title"><span class="icon-emoji">🔊</span><i data-lucide="volume-2" class="icon-lucide"></i> Text-to-Speech</h3>
+>>>>>>> origin/main
           <p class="muted mem-desc">Choose between offline Kokoro models or online Edge TTS (Microsoft neural voices).</p>
 
           <!-- Provider Selector -->
@@ -1591,8 +1720,13 @@
             </div>
 
             <div style="display:flex;gap:8px;margin-top:16px;">
+<<<<<<< HEAD
               <button id="ttsDownloadBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;">Download Models</button>
               <button id="ttsDeleteBtn" class="btn-danger" style="font-size:13px;padding:8px 16px;" hidden>Remove Models</button>
+=======
+              <button id="ttsDownloadBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;"><i data-lucide="download" class="icon-lucide"></i> Download Models</button>
+              <button id="ttsDeleteBtn" class="btn-danger" style="font-size:13px;padding:8px 16px;" hidden><i data-lucide="trash-2" class="icon-lucide"></i> Remove Models</button>
+>>>>>>> origin/main
             </div>
           </div>
 
@@ -1627,7 +1761,11 @@
           </div>
 
           <!-- ═══ STT Section ═══ -->
+<<<<<<< HEAD
           <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🎙️</span>Speech-to-Text</h3>
+=======
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🎙️</span><i data-lucide="mic" class="icon-lucide"></i> Speech-to-Text</h3>
+>>>>>>> origin/main
           <p class="muted mem-desc">Local Whisper model (small.en) for offline audio transcription. Runs on CPU with int8 quantization.</p>
 
           <!-- Model Status -->
@@ -1637,9 +1775,15 @@
 
           <!-- Actions -->
           <div style="display:flex;gap:8px;margin-top:16px;align-items:center;">
+<<<<<<< HEAD
             <button id="sttDownloadBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;display:none;">Download Model</button>
             <span id="sttDownloadProgress" class="muted" style="font-size:12px;display:none;"></span>
             <button id="sttDeleteBtn" class="btn-danger" style="font-size:13px;padding:8px 16px;" hidden>Remove Model</button>
+=======
+            <button id="sttDownloadBtn" class="btn-primary" style="font-size:13px;padding:8px 16px;display:none;"><i data-lucide="download" class="icon-lucide"></i> Download Model</button>
+            <span id="sttDownloadProgress" class="muted" style="font-size:12px;display:none;"></span>
+            <button id="sttDeleteBtn" class="btn-danger" style="font-size:13px;padding:8px 16px;" hidden><i data-lucide="trash-2" class="icon-lucide"></i> Remove Model</button>
+>>>>>>> origin/main
           </div>
 
           <!-- Preferences -->
@@ -1681,7 +1825,11 @@
 
             <div style="display:flex;gap:10px;align-items:center;margin-top:10px;">
               <button id="sttMicBtn" class="btn-primary" style="font-size:13px;padding:10px 20px;display:flex;align-items:center;gap:6px;">
+<<<<<<< HEAD
                 Record
+=======
+                <i data-lucide="mic" class="icon-lucide"></i> Record
+>>>>>>> origin/main
               </button>
               <span id="sttMicStatus" class="muted" style="font-size:12px;"></span>
               <canvas id="sttVisualizer" width="200" height="32" style="border-radius:4px;background:rgba(255,255,255,0.03);" hidden></canvas>
@@ -1713,7 +1861,11 @@
         </div>
 
         <div id="tab-cookbook" class="settings-tab-content">
+<<<<<<< HEAD
           <h3 class="mem-title"><span class="icon-emoji">📚</span>Cookbook — Local Models</h3>
+=======
+          <h3 class="mem-title"><span class="icon-emoji">📚</span><i data-lucide="book-open" class="icon-lucide"></i> Cookbook — Local Models</h3>
+>>>>>>> origin/main
           <p class="muted mem-desc">Download, serve, and chat with local LLMs via llama.cpp. Models run entirely on your machine.</p>
 
           <!-- Hardware Info -->
@@ -1777,7 +1929,11 @@
             <div style="margin-bottom:12px;">
               <div style="display:flex;gap:8px;align-items:center;">
                 <input id="cbSearchInput" type="text" class="mem-input" data-no-save-track placeholder="Search models on HuggingFace (e.g. gemma 3n, llama 3 q4)" style="flex:1;">
+<<<<<<< HEAD
                 <button id="cbSearchBtn" class="btn-primary" style="font-size:12px;padding:8px 14px;white-space:nowrap;">Search</button>
+=======
+                <button id="cbSearchBtn" class="btn-primary" style="font-size:12px;padding:8px 14px;white-space:nowrap;"><i data-lucide="search" class="icon-lucide"></i> Search</button>
+>>>>>>> origin/main
               </div>
               <div id="cbSearchResults" style="margin-top:8px;"></div>
             </div>
@@ -1791,7 +1947,11 @@
                 <label class="muted" style="font-size:11px;display:block;margin-bottom:4px;">Include Pattern</label>
                 <input id="cbInclude" type="text" class="mem-input" placeholder="e.g. *q4_k_m*" style="width:100%;">
               </div>
+<<<<<<< HEAD
               <button id="cbDownloadBtn" class="btn-primary" style="font-size:12px;padding:8px 14px;white-space:nowrap;">Download</button>
+=======
+              <button id="cbDownloadBtn" class="btn-primary" style="font-size:12px;padding:8px 14px;white-space:nowrap;"><i data-lucide="download" class="icon-lucide"></i> Download</button>
+>>>>>>> origin/main
             </div>
           </div>
 
@@ -1810,11 +1970,19 @@
           </div>
         </div>
         <div id="tab-agents" class="settings-tab-content">
+<<<<<<< HEAD
           <h3 class="mem-title"><span class="icon-emoji">🤖</span>Agent Roles</h3>
           <p class="muted mem-desc">Define what each agent role does. These are injected into the system prompt when an agent is spawned with that role.</p>
           <div id="agentRolesContainer"></div>
 
           <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">⚙️</span>Runtime Configuration</h3>
+=======
+          <h3 class="mem-title"><span class="icon-emoji">🤖</span><i data-lucide="bot" class="icon-lucide"></i> Agent Roles</h3>
+          <p class="muted mem-desc">Define what each agent role does. These are injected into the system prompt when an agent is spawned with that role.</p>
+          <div id="agentRolesContainer"></div>
+
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">⚙️</span><i data-lucide="settings" class="icon-lucide"></i> Runtime Configuration</h3>
+>>>>>>> origin/main
           <p class="muted mem-desc">Controls concurrency, safety limits, and circuit breaker behavior. Changes apply immediately without restart.</p>
 
           <div class="mem-input-row" style="align-items:center;margin-top:10px;">
@@ -1892,7 +2060,11 @@
           </div>
 
           <div class="mem-input-row mem-save-row" style="margin-top:20px;padding-top:14px;border-top:1px solid var(--border);">
+<<<<<<< HEAD
             <button id="agentConfigSave" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">💾</span>&nbsp;Save Config</button>
+=======
+            <button id="agentConfigSave" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">💾</span><i data-lucide="hard-drive" class="icon-lucide"></i> &nbsp;Save Config</button>
+>>>>>>> origin/main
             <span id="agentConfigStatus" class="muted mem-status"></span>
           </div>
         </div>

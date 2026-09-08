@@ -318,6 +318,7 @@
         // Await the stop API so upstream generation is actually halted before
         // the user can send a new message — eliminates CHAT_IN_PROGRESS race.
         try {
+<<<<<<< HEAD
           const _respId = typeof window.getActiveResponseId === "function"
             ? window.getActiveResponseId(activeChatId)
             : null;
@@ -325,6 +326,12 @@
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ chat_id: activeChatId, response_id: _respId }),
+=======
+          await fetch("/api/chat/stop", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: activeChatId }),
+>>>>>>> origin/main
           });
         } catch (_) {}
         // Small grace period for upstream to fully release the session
