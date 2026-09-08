@@ -34,7 +34,9 @@ def handle_get_file(
     tag_id: str, name: str, attrs: dict[str, str], content: str
 ) -> Generator[dict[str, Any], None, None]:
     started = time.time()
-    raw = content.strip() or attrs.get("path", "")
+    # ponytail: prefer explicit path attr over content — _build_calls serializes
+    # all params as JSON content fallback, which produces '{"path": "/foo"}' not a path
+    raw = attrs.get("path", "").strip() or content.strip()
     if not raw:
         yield _output_event(tag_id, "No path provided\n", "stderr")
         yield _end_event(tag_id, name, False, started, error="Empty path")
@@ -81,9 +83,9 @@ def handle_get_file(
     elif kind == "text":
         try:
             if size <= MAX_TEXT_BYTES:
-                text = path.read_text(errors="replace")
+                text = path.read_text(encoding="utf-8", errors="replace")
             else:
-                with path.open("r", errors="replace") as handle:
+                with path.open("r", encoding="utf-8", errors="replace") as handle:
                     text = handle.read(PREVIEW_BYTES)
                 result["truncated"] = True
             result["preview_chars"] = len(text)

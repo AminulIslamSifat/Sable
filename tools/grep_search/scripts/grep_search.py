@@ -2,6 +2,7 @@
 #!/usr/bin/env python3
 """Grep Search — ripgrep/glob/list_dir with path sandboxing."""
 
+import glob as _glob
 import json
 import os
 import re
@@ -50,6 +51,13 @@ def cmd_grep(args: dict) -> list[str]:
 
     # Try ripgrep first
     rg = shutil.which("rg")
+    if not rg and os.name == "nt":
+        # ponytail: WinGet fallback — running process may have stale PATH
+        winget_matches = _glob.glob(os.path.expandvars(
+            r"%LOCALAPPDATA%\Microsoft\WinGet\Packages\BurntSushi.ripgrep*\rg.exe"
+        ))
+        if winget_matches:
+            rg = winget_matches[0]
     if rg:
         cmd = [rg, "--json", "--max-count=1", f"--max-count={max_results}"]
         if ignore_case:
@@ -86,7 +94,7 @@ def cmd_grep(args: dict) -> list[str]:
         cmd.extend([pattern, str(search_path)])
 
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        proc = subprocess.run(cmd, capture_output=True, encoding="utf-8", timeout=30)
     except subprocess.TimeoutExpired:
         return ["Error: search timed out after 30s"]
     except Exception as e:
