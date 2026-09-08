@@ -1146,7 +1146,7 @@
         if (!answerEl) return;
         // Skip markdown re-render for special cards (rate-limit, captcha) that
         // already have their final HTML set via innerHTML.
-        const _isSpecialCard = raw === "__rate_limit_card__" || raw === "__captcha_block_card__" || raw === "__switching_status__";
+        const _isSpecialCard = raw === "__rate_limit_card__" || raw === "__captcha_block_card__";
         // Final render with full mermaid + math support — only runs when this answer
         // segment is truly done (stream end or skill interleave boundary).
         if (answerContent && raw && !_isSpecialCard) {
@@ -1286,30 +1286,6 @@
           } else {
             _enqueueAnswer(text);
           }
-        },
-        showSwitchingStatus(text) {
-          // Transient status shown while backend auto-switches accounts.
-          // Replaced by account_switch card or final answer. If stream ends
-          // without recovery, finalize() renders the permanent error card.
-          hidePending();
-          if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
-          _thinkQueue = "";
-          if (_ansTimer) { clearTimeout(_ansTimer); _ansTimer = null; }
-          _ansQueue = "";
-          currentThinkWrap = null;
-          currentThinkBody = null;
-          currentThinkSummary = null;
-          if (answerEl) {
-            answerEl.remove();
-            answerEl = null;
-            answerContent = null;
-            raw = "";
-          }
-          ensureAnswer();
-          answerEl.classList.remove('streaming');
-          raw = "__switching_status__";
-          answerContent.innerHTML = `<div class="switching-status-card"><span class="ss-icon">🔄</span><span class="ss-text">${text}</span></div>`;
-          scrollBottom();
         },
         replaceWithRateLimit(message, hours, debugInfo) {
           hidePending();
@@ -1867,7 +1843,12 @@
               saveActiveChat();
             }
           } else if (evt.type === "status") {
-            if (evt.message === "feeding_skill_results") ui.nextSkillRound();
+            if (evt.message === "feeding_skill_results") {
+              ui.nextSkillRound();
+            } else {
+              const _bsTurn = activePane.querySelector('.turn:last-child');
+              if (_bsTurn) handleBackendStatusEvent(evt, _bsTurn);
+            }
           } else if (evt.type === "account_switch") {
             const _ascTurn = activePane.querySelector('.turn:last-child');
             if (_ascTurn) handleAccountSwitchEvent(evt, _ascTurn);
@@ -1905,27 +1886,39 @@
             // Legacy fallback — backend no longer sends raw thinking tokens
             ui.appendThinking(evt.text || "");
           } else if (evt.type === "answer") {
-            if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
+            if (!gotAnswer) {
+              ui.closeThinking();
+              gotAnswer = true;
+              // Remove backend status cards from all previous turns; keep the current streaming one
+              const _allTurns = activePane.querySelectorAll('.turn');
+              for (let i = 0; i < _allTurns.length - 1; i++) {
+                _allTurns[i].querySelectorAll('.backend-status-card').forEach(c => c.remove());
+              }
+            }
             // Recovery: backend auto-switched successfully — clear pending error cards
             ui._pendingRateLimit = null;
             ui._pendingCaptchaBlock = null;
             ui.appendAnswer(evt.text || "");
           } else if (evt.type === "done") {
             gotDone = true;
+            // Collapse backend status card when streaming finishes
+            const _lastTurn = activePane.querySelector('.turn:last-child');
+            if (_lastTurn) {
+              const _bsCard = _lastTurn.querySelector('.backend-status-card');
+              if (_bsCard && !_bsCard.classList.contains('collapsed')) _bsCard.classList.add('collapsed');
+            }
             if (activeChatId === streamChatId) {
               parentId = evt.parent_id || parentId;
               saveActiveChat();
             }
           } else if (evt.type === "rate_limited") {
-            // Don't break — backend may auto-switch accounts and re-stream.
-            // Show transient status; account_switch events will replace it.
+            // Don't break — backend auto-switches and emits account_switch events.
+            // The existing handleAccountSwitchEvent renders the proper card.
             // If stream ends without recovery, finalize() renders the permanent card.
             ui._pendingRateLimit = { message: evt.message, hours: evt.hours, debug: evt };
-            ui.showSwitchingStatus("⏳ Rate limited — switching accounts...");
           } else if (evt.type === "waf_blocked") {
-            // Don't break — backend may auto-switch accounts and re-stream.
+            // Don't break — backend auto-switches and emits account_switch events.
             ui._pendingCaptchaBlock = { message: evt.message, debug: evt };
-            ui.showSwitchingStatus("🛡️ WAF/captcha hit — switching accounts...");
           } else if (evt.type === "error") {
             gotError = true;
             const msg = evt.message || "Unknown error";
@@ -2174,6 +2167,91 @@
         endStream(streamChatId);
       }
     }
+
+
+// ── Backend Status Card (retries, errors, recovery) ─────────────────────────
+const _BACKEND_STATUS_MAP = {
+  processing:                              { label: "Processing request…",              icon: "loader" },
+  first_chunk_timeout_triggering_switch:   { label: "No response after 3 attempts — switching…", icon: "triangle-alert" },
+  stream_stall_timeout_triggering_switch:  { label: "Stream stalled — switching…",      icon: "triangle-alert" },
+  empty_response_exhausted_triggering_switch: { label: "Empty responses exhausted — switching…", icon: "triangle-alert" },
+  recovering_session:                      { label: "Session expired — recovering…",    icon: "refresh-cw" },
+  recovering_parent:                       { label: "Parent message lost — recovering…", icon: "refresh-cw" },
+  waiting_for_agents:                      { label: "Waiting for agents…",              icon: "users" },
+  high_skill_round_count:                  { label: "High skill round count",           icon: "alert-circle" },
+};
+
+function _backendStatusIcon(name, size = 14) {
+  return `<i data-lucide="${name}" style="width:${size}px;height:${size}px"></i>`;
+}
+
+function handleBackendStatusEvent(evt, container) {
+  const msg = evt.message || "";
+  if (!msg) return;
+
+  // Parse retry patterns: retrying_timeout_2, retrying_stall_1, empty_response_retry_3, chat_in_progress_retry_5
+  let parsedLabel = null;
+  let parsedIcon = "refresh-cw";
+  const retryMatch = msg.match(/^(retrying_timeout|retrying_stall|empty_response_retry|chat_in_progress_retry)_(\d+)$/);
+  if (retryMatch) {
+    const kind = retryMatch[1];
+    const attempt = retryMatch[2];
+    const labels = {
+      retrying_timeout:       `Timeout — retry ${attempt}/3…`,
+      retrying_stall:         `Stream stall — retry ${attempt}/3…`,
+      empty_response_retry:   `Empty response — retry ${attempt}…`,
+      chat_in_progress_retry: `Chat in progress — check ${attempt}/10…`,
+    };
+    parsedLabel = labels[kind] || msg;
+    parsedIcon = kind.startsWith("empty") ? "ghost" : kind.startsWith("chat_in") ? "message-square" : "timer";
+  }
+
+  const mapped = _BACKEND_STATUS_MAP[msg];
+  const label = parsedLabel || (mapped ? mapped.label : msg.replace(/_/g, " "));
+  const icon = parsedLabel ? parsedIcon : (mapped ? mapped.icon : "info");
+
+  // Find or create the card
+  let card = container.querySelector(".backend-status-card");
+  if (!card) {
+    card = document.createElement("div");
+    card.className = "skill-card backend-status-card";
+    card.innerHTML = `
+      <div class="skill-header">
+        <div class="skill-header-left">
+          <span class="skill-arrow">${_backendStatusIcon("chevron-down")}</span>
+          <span class="skill-name">${_backendStatusIcon("terminal", 15)} Backend Status</span>
+        </div>
+        <div class="skill-header-right" style="display:flex;align-items:center;gap:8px;">
+          <span class="skill-status bs-status">working…</span>
+        </div>
+      </div>
+      <div class="bs-steps"></div>`;
+    card.querySelector(".skill-header").onclick = () => card.classList.toggle("collapsed");
+    container.appendChild(card);
+    if (typeof activateLucideIcons === "function") activateLucideIcons(card);
+  }
+
+  const stepsEl = card.querySelector(".bs-steps");
+  const statusEl = card.querySelector(".bs-status");
+
+  // Deactivate all previous rows
+  stepsEl.querySelectorAll(".bs-step-active").forEach(el => {
+    el.classList.remove("bs-step-active");
+    el.classList.add("bs-step-done");
+  });
+
+  // Add new row
+  const row = document.createElement("div");
+  row.className = "bs-step bs-step-active";
+  row.innerHTML = `<span class="bs-step-icon">${_backendStatusIcon(icon)}</span><span class="bs-step-label">${label}</span>`;
+  stepsEl.appendChild(row);
+
+  // Update header status text
+  if (statusEl) statusEl.textContent = label;
+
+  if (typeof activateLucideIcons === "function") activateLucideIcons(card);
+}
+
 
 // ── Account Switch Status Card ──────────────────────────────────────────────
 const _ACCOUNT_SWITCH_STEPS = [
