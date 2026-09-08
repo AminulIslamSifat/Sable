@@ -1111,9 +1111,13 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
             from connectors.common.instruction_builder import invalidate_cache
             invalidate_cache()
             try:
-                await service.sync_context()
+                _sync_result = await service.sync_context()
+                if _sync_result is False:
+                    logger.warning("sync_context returned False after manual switch")
+                    service._needs_instruction_fallback = True
             except Exception as exc:
                 logger.warning("sync_context after switch failed: %s", exc)
+                service._needs_instruction_fallback = True
         except Exception as exc:
             logger.warning("Post-switch warmup failed: %s: %s", type(exc).__name__, exc)
 

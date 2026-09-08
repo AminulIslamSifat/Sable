@@ -62,11 +62,11 @@
           const email = acc.label || acc.email || "unknown account";
           const size = acc.size_mb ? acc.size_mb + " MB" : "";
           const browserMissing = acc.browser_path && acc.browser_path !== 'default' && acc.browser_available === false;
-          const borderColor = browserMissing ? 'var(--danger)' : 'var(--border)';
+          const borderColor = browserMissing ? 'var(--danger)' : isActive ? '#4ade80' : 'var(--border)';
           const browserTitle = browserMissing ? 'Browser not found on disk: ' + (acc.browser_path || '') : (acc.browser_path || '');
           const hasBackup = acc.has_backup;
           const _badge = (txt, warn) => `<span style="font-size:10px;color:${warn ? 'var(--danger)' : 'var(--text-dim)'};border:1px solid ${warn ? 'var(--danger)' : 'var(--border)'};border-radius:4px;padding:1px 5px;">${txt}</span>`;
-          return `<div style="background:var(--panel);border:1px solid ${borderColor};border-radius:10px;padding:14px 18px;display:flex;flex-direction:column;gap:10px;">
+          return `<div style="background:var(--panel);border:${isActive ? '2px' : '1px'} solid ${borderColor};border-radius:10px;padding:${isActive ? '13px 17px' : '14px 18px'};display:flex;flex-direction:column;gap:10px;">
             <div style="min-width:0;">
               <div style="font-size:13px;font-weight:600;color:var(--text);">${email}</div>
               <div style="font-size:11px;color:var(--text-dim);margin-top:4px;display:flex;flex-wrap:wrap;align-items:center;gap:5px;">
