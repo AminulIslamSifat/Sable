@@ -354,6 +354,60 @@
             const turn = activePane.querySelector('.turn:last-child');
             (turn || activePane).appendChild(note);
           }
+        } else if (evt.type === "critique_start") {
+          // History replay: render completed critique box
+          const box = document.createElement('div');
+          box.className = 'critique-box';
+          box.dataset.critiqueId = evt.id || '';
+          box.innerHTML = `
+            <div class="critique-header">
+              <div class="critique-header-left">
+                <span class="critique-icon"><i data-lucide="search-check"></i></span>
+                <span class="critique-title">Critique Session</span>
+                <span class="critique-badge ${evt.focus || 'general'}">${evt.focus || 'general'}</span>
+              </div>
+              <div class="critique-status"><span style="color:var(--muted)">Reviewing...</span></div>
+            </div>
+            <div class="critique-context">
+              <div class="critique-label">Context</div>
+              <div class="critique-text">${escHtml(evt.context || '')}</div>
+            </div>
+            <div class="critique-criteria">
+              <div class="critique-label">Criteria</div>
+              <div class="critique-text">${escHtml(evt.criteria || '')}</div>
+            </div>
+            <div class="critique-log"></div>
+          `;
+          activePane.appendChild(box);
+          activateLucideIcons(box);
+          cards[evt.id] = box;  // reuse cards map for critique_tool/done lookup
+        } else if (evt.type === "critique_tool") {
+          const box = cards[evt.id];
+          if (box) {
+            const log = box.querySelector('.critique-log');
+            if (log) {
+              const entry = document.createElement('div');
+              entry.className = 'critique-tool-entry';
+              entry.innerHTML = `<span class="critique-tool-name">${escHtml(evt.tool || '')}</span><span class="critique-tool-output">${escHtml((evt.output || '').slice(0, 200))}</span>`;
+              log.appendChild(entry);
+            }
+          }
+        } else if (evt.type === "critique_done") {
+          const box = cards[evt.id];
+          if (box) {
+            const statusEl = box.querySelector('.critique-status');
+            if (evt.error) {
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Failed</span>';
+            } else {
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
+              const log = box.querySelector('.critique-log');
+              if (log) {
+                log.className = 'critique-report';
+                log.innerHTML = renderMarkdown(evt.report || '');
+              }
+              box.classList.add('critique-done');
+            }
+          }
         } else if (evt.type === "agent_result") {
           if (typeof addAgentResultCard === "function") {
             addAgentResultCard({
@@ -1788,6 +1842,81 @@
               target.appendChild(card);
               activateLucideIcons(card);
               scrollBottom();
+            }
+          } else if (evt.type === "critique_start") {
+            // Create inline critique box in the chat
+            if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
+            ui.showToolDone();
+            const pane = activePane;
+            if (pane) {
+              const turn = pane.querySelector('.turn:last-child') || pane.querySelector('.messages');
+              if (turn) {
+                const box = document.createElement('div');
+                box.className = 'critique-box';
+                box.dataset.critiqueId = evt.id || '';
+                box.innerHTML = `
+                  <div class="critique-header">
+                    <div class="critique-header-left">
+                      <span class="critique-icon"><i data-lucide="search-check"></i></span>
+                      <span class="critique-title">Critique Session</span>
+                      <span class="critique-badge ${evt.focus || 'general'}">${evt.focus || 'general'}</span>
+                    </div>
+                    <div class="critique-status"><span class="critique-spinner"></span> Reviewing...</div>
+                  </div>
+                  <div class="critique-context">
+                    <div class="critique-label">Context</div>
+                    <div class="critique-text">${escHtml(evt.context || '')}</div>
+                  </div>
+                  <div class="critique-criteria">
+                    <div class="critique-label">Criteria</div>
+                    <div class="critique-text">${escHtml(evt.criteria || '')}</div>
+                  </div>
+                  <div class="critique-log"></div>
+                `;
+                turn.appendChild(box);
+                activateLucideIcons(box);
+                scrollBottom();
+              }
+            }
+          } else if (evt.type === "critique_tool") {
+            // Append tool activity to the critique log
+            const pane = activePane;
+            if (pane) {
+              const box = pane.querySelector(`.critique-box[data-critique-id="${evt.id}"]`);
+              if (box) {
+                const log = box.querySelector('.critique-log');
+                if (log) {
+                  const entry = document.createElement('div');
+                  entry.className = 'critique-tool-entry';
+                  entry.innerHTML = `<span class="critique-tool-name">${escHtml(evt.tool || '')}</span><span class="critique-tool-output">${escHtml((evt.output || '').slice(0, 200))}</span>`;
+                  log.appendChild(entry);
+                  scrollBottom();
+                }
+              }
+            }
+          } else if (evt.type === "critique_done") {
+            // Replace critique box content with final report or error
+            const pane = activePane;
+            if (pane) {
+              const box = pane.querySelector(`.critique-box[data-critique-id="${evt.id}"]`);
+              if (box) {
+                const statusEl = box.querySelector('.critique-status');
+                if (evt.error) {
+                  if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Failed</span>';
+                  const log = box.querySelector('.critique-log');
+                  if (log) log.innerHTML += `<div class="critique-error">${escHtml(evt.error)}</div>`;
+                } else {
+                  if (statusEl) statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
+                  // Replace log with rendered report
+                  const log = box.querySelector('.critique-log');
+                  if (log) {
+                    log.className = 'critique-report';
+                    log.innerHTML = renderMarkdown(evt.report || '');
+                  }
+                  box.classList.add('critique-done');
+                }
+                scrollBottom();
+              }
             }
           } else if (evt.type === "chat_title") {
             gotTitle = true;
