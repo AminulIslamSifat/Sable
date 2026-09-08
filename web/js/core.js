@@ -81,6 +81,7 @@
 
     // Inject the bearer token into every API request; bounce to login on 401.
     let _authBounced = false;
+    let _authReady = false; // Prevents 401 bounce during initial setup flow
     const _origFetch = window.fetch.bind(window);
     window.fetch = async (url, init = {}) => {
       const token = getToken();
@@ -88,7 +89,7 @@
         init.headers = Object.assign({}, init.headers, { Authorization: "Bearer " + token });
       }
       const res = await _origFetch(url, init);
-      if (res.status === 401 && typeof url === "string" && !url.includes("/api/login") && !_authBounced) {
+      if (res.status === 401 && typeof url === "string" && !url.includes("/api/login") && !url.includes("/api/setup/") && _authReady && !_authBounced) {
         _authBounced = true;
         clearToken();
         showPhase(loginOverlay);
@@ -143,6 +144,7 @@
 
     function ensureAuth() {
       if (getToken()) {
+        _authReady = true;
         showPhase(null);
         return Promise.resolve();
       }
@@ -155,6 +157,7 @@
             const status = await statusRes.json();
             if (status.needs_password) {
               // === PHASE 1: Set Password ===
+              _authReady = true;
               showPhase(phasePassword);
               setupPasswordIn.focus();
 
@@ -327,6 +330,7 @@
         }
 
         // === PHASE 3: Normal login flow ===
+        _authReady = true;
         showPhase(loginOverlay);
         loginTokenIn.focus();
         return waitForLogin();
