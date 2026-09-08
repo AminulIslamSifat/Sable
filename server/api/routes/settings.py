@@ -1035,7 +1035,10 @@ async def list_accounts() -> dict[str, Any]:
                     "browser_path": browser_path,
                     "browser_label": _browser_label(browser_path),
                     "browser_available": browser_available,
+<<<<<<< HEAD
                     "has_backup": (_SYSTEM_DIR / f"{entry.name}.bak").is_dir(),
+=======
+>>>>>>> origin/main
                 })
         accounts.sort(key=lambda a: a["num"])
         return accounts
@@ -1260,6 +1263,7 @@ async def delete_account(payload: dict[str, str]) -> dict[str, Any]:
     return {"status": "ok", "deleted": target_name}
 
 
+<<<<<<< HEAD
 @router.post("/api/settings/accounts/backup")
 async def backup_account(payload: dict[str, str]) -> dict[str, Any]:
     """Backup browser-data-accN to browser-data-accN.bak (replaces existing .bak)."""
@@ -1359,6 +1363,8 @@ async def restore_all_accounts() -> dict[str, Any]:
     return {"status": "ok", "restored": restored, "skipped": skipped}
 
 
+=======
+>>>>>>> origin/main
 @router.post("/api/settings/accounts/open")
 async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
     """Launch a headful browser with the specified profile."""

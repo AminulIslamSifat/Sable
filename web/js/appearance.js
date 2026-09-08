@@ -62,6 +62,7 @@
           const email = acc.label || acc.email || "unknown account";
           const size = acc.size_mb ? acc.size_mb + " MB" : "";
           const browserMissing = acc.browser_path && acc.browser_path !== 'default' && acc.browser_available === false;
+<<<<<<< HEAD
           const borderColor = browserMissing ? 'var(--danger)' : 'var(--border)';
           const browserTitle = browserMissing ? 'Browser not found on disk: ' + (acc.browser_path || '') : (acc.browser_path || '');
           const hasBackup = acc.has_backup;
@@ -89,11 +90,34 @@
               <div style="flex:1;"></div>
               ${isActive ? '' : `<button class="icon-btn account-switch-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Switch</button>`}
               ${isActive ? '' : `<button class="icon-btn account-delete-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;color:var(--danger);">Delete</button>`}
+=======
+          const borderColor = browserMissing ? '#ef4444' : (isActive ? 'var(--accent)' : 'var(--border)');
+          const browserBadgeColor = browserMissing ? '#ef4444' : '#a78bfa';
+          const browserTitle = browserMissing ? '⚠️ Browser not found on disk! ' + (acc.browser_path || '') : (acc.browser_path || '');
+          return `<div style="display:flex;align-items:center;justify-content:space-between;background:var(--panel);border:1px solid ${borderColor};border-radius:10px;padding:10px 14px;">
+            <div style="min-width:0;">
+              <div style="font-size:12px;font-weight:600;color:var(--text);">${email}</div>
+              <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">${acc.name}${size ? ' · ' + size : ''}${isActive ? ' · <span style="color:var(--accent);">active</span>' : ''}
+                ${acc.browser_label ? `<span style="display:inline-block;font-size:10px;font-weight:600;color:${browserBadgeColor};border:1px solid ${browserBadgeColor};border-radius:4px;padding:1px 5px;margin-left:4px;${browserMissing ? 'background:rgba(239,68,68,0.1);' : ''}" title="${browserTitle.replace(/"/g, '&quot;')}">${acc.browser_label}${browserMissing ? ' ⚠️' : ''}</span>` : ''}
+                ${acc.has_waf ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#22c55e;border:1px solid #22c55e;border-radius:4px;padding:1px 5px;margin-left:6px;">qwen</span>' : ''}
+                ${acc.has_ds ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#22c55e;border:1px solid #22c55e;border-radius:4px;padding:1px 5px;margin-left:4px;">ds</span>' : ''}
+                ${acc.exhausted ? '<span style="display:inline-block;font-size:10px;font-weight:600;color:#ef4444;border:1px solid #ef4444;background:rgba(239,68,68,0.1);border-radius:4px;padding:1px 5px;margin-left:4px;">Exhausted</span>' : ''}
+              </div>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
+              <button class="icon-btn account-rename-btn" data-profile="${acc.name}" data-current-label="${(acc.label || acc.email || '').replace(/"/g, '&quot;')}" style="width:auto;padding:5px 10px;font-size:11px;white-space:nowrap;">Rename</button>
+              <button class="icon-btn account-open-btn" data-profile="${acc.name}" style="width:auto;padding:5px 12px;font-size:11px;white-space:nowrap;">Open</button>
+              ${isActive ? '' : `<button class="icon-btn account-switch-btn" data-profile="${acc.name}" style="width:auto;padding:5px 12px;font-size:11px;white-space:nowrap;">Switch</button>`}
+              ${isActive ? '' : `<button class="icon-btn account-delete-btn" data-profile="${acc.name}" style="width:auto;padding:5px 10px;font-size:11px;white-space:nowrap;color:var(--danger);border-color:var(--danger);">Delete</button>`}
+>>>>>>> origin/main
             </div>
           </div>`;
         }).join("");
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> origin/main
         // Auto-switch toggle handler
         const autoSwitchToggle = document.getElementById("autoSwitchToggle");
         if (autoSwitchToggle) {
@@ -239,6 +263,7 @@
             btn.textContent = "Open";
           });
         });
+<<<<<<< HEAD
 
         // Per-account backup handlers
         accountProfileCards.querySelectorAll(".account-backup-btn").forEach((btn) => {
@@ -300,6 +325,8 @@
             }
           });
         });
+=======
+>>>>>>> origin/main
       } catch (e) {
         accountProfileCards.innerHTML = `<p class="muted" style="font-size:12px;margin:0;color:var(--danger);">Failed to load: ${e.message}</p>`;
       }
@@ -309,6 +336,7 @@
       refreshAccountsBtn.addEventListener("click", loadAccountProfiles);
     }
 
+<<<<<<< HEAD
     // Backup All / Restore All header buttons
     const backupAllBtn = document.getElementById("backupAllAccountsBtn");
     if (backupAllBtn) {
@@ -357,6 +385,8 @@
       });
     }
 
+=======
+>>>>>>> origin/main
 
     const addAccountBtn = document.getElementById("addAccountBtn");
     if (addAccountBtn) {

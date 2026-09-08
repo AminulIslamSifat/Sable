@@ -477,6 +477,7 @@
           return [];
         }
 
+<<<<<<< HEAD
         // Suppress per-message scrollBottom during history load — each
         // addMessage call normally forces a layout recalc via scrollTop write.
         // With hundreds of messages that's hundreds of forced reflows. We only
@@ -497,10 +498,24 @@
           if (generation !== _loadGeneration) {
             activePane = prevPane;
             window._historyLoading = false;
+=======
+        // Render messages sequentially in small batches, yielding to the
+        // browser between batches so GC can reclaim intermediate objects.
+        // This prevents RAM spikes from holding all DOM construction in one
+        // synchronous burst while still loading everything upfront.
+        const BATCH_SIZE = 10;
+        const prevPane = activePane;
+        activePane = pane;
+        for (let i = 0; i < messages.length; i += BATCH_SIZE) {
+          // Abort stale render — user switched to another chat
+          if (generation !== _loadGeneration) {
+            activePane = prevPane;
+>>>>>>> origin/main
             return [];
           }
           const batch = messages.slice(i, i + BATCH_SIZE);
           for (const msg of batch) addHistoryMessage(msg);
+<<<<<<< HEAD
           // Yield to browser every batch so GC can run and spinner stays animated
           await new Promise(r => setTimeout(r, 0));
         }
@@ -532,12 +547,22 @@
         window._historyLoading = false;
 
         // Single scroll after everything is truly rendered
+=======
+          // Yield to browser every batch so it can GC and keep spinner animated
+          await new Promise(r => requestAnimationFrame(r));
+        }
+        activePane = prevPane;
+        renderMathJax(pane);
+>>>>>>> origin/main
         if (chatId === activeChatId) scrollBottom(true);
 
         return messages;
       } catch (err) {
         console.error("Failed to load messages:", err);
+<<<<<<< HEAD
         window._historyLoading = false;
+=======
+>>>>>>> origin/main
         return [];
       }
     }
