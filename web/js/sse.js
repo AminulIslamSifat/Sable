@@ -364,18 +364,23 @@
               <div class="critique-header-left">
                 <span class="critique-icon"><i data-lucide="search-check"></i></span>
                 <span class="critique-title">Critique Session</span>
-                <span class="critique-badge ${evt.focus || 'general'}">${evt.focus || 'general'}</span>
+                <span class="critique-badge" data-focus="${escHtml(evt.focus || 'general')}">${escHtml(evt.focus || 'general')}</span>
               </div>
-              <div class="critique-status"><span style="color:var(--muted)">Reviewing...</span></div>
+              <div class="critique-status"><span style="color:var(--ok)">Complete</span></div>
             </div>
-            <div class="critique-context">
-              <div class="critique-label">Context</div>
-              <div class="critique-text">${escHtml(evt.context || '')}</div>
-            </div>
-            <div class="critique-criteria">
-              <div class="critique-label">Criteria</div>
-              <div class="critique-text">${escHtml(evt.criteria || '')}</div>
-            </div>
+            <details class="critique-details">
+              <summary>Context & Criteria</summary>
+              <div class="critique-details-body">
+                <div class="critique-section">
+                  <div class="critique-label">Context</div>
+                  <div class="critique-text">${escHtml(evt.context || '')}</div>
+                </div>
+                <div class="critique-section">
+                  <div class="critique-label">Criteria</div>
+                  <div class="critique-text">${escHtml(evt.criteria || '')}</div>
+                </div>
+              </div>
+            </details>
             <div class="critique-log"></div>
           `;
           activePane.appendChild(box);
@@ -1141,7 +1146,7 @@
         if (!answerEl) return;
         // Skip markdown re-render for special cards (rate-limit, captcha) that
         // already have their final HTML set via innerHTML.
-        const _isSpecialCard = raw === "__rate_limit_card__" || raw === "__captcha_block_card__";
+        const _isSpecialCard = raw === "__rate_limit_card__" || raw === "__captcha_block_card__" || raw === "__switching_status__";
         // Final render with full mermaid + math support — only runs when this answer
         // segment is truly done (stream end or skill interleave boundary).
         if (answerContent && raw && !_isSpecialCard) {
@@ -1281,6 +1286,30 @@
           } else {
             _enqueueAnswer(text);
           }
+        },
+        showSwitchingStatus(text) {
+          // Transient status shown while backend auto-switches accounts.
+          // Replaced by account_switch card or final answer. If stream ends
+          // without recovery, finalize() renders the permanent error card.
+          hidePending();
+          if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
+          _thinkQueue = "";
+          if (_ansTimer) { clearTimeout(_ansTimer); _ansTimer = null; }
+          _ansQueue = "";
+          currentThinkWrap = null;
+          currentThinkBody = null;
+          currentThinkSummary = null;
+          if (answerEl) {
+            answerEl.remove();
+            answerEl = null;
+            answerContent = null;
+            raw = "";
+          }
+          ensureAnswer();
+          answerEl.classList.remove('streaming');
+          raw = "__switching_status__";
+          answerContent.innerHTML = `<div class="switching-status-card"><span class="ss-icon">🔄</span><span class="ss-text">${text}</span></div>`;
+          scrollBottom();
         },
         replaceWithRateLimit(message, hours, debugInfo) {
           hidePending();
@@ -1473,7 +1502,18 @@
         finalize() {
           hidePending();
           closeCurrentThinking();
+          // If auto-switch didn't recover, render the permanent error card now.
+          // closeAnswer() will remove the transient switching-status card first.
+          const _prl = this._pendingRateLimit;
+          const _pcb = this._pendingCaptchaBlock;
           closeAnswer();
+          if (_prl) {
+            this.replaceWithRateLimit(_prl.message, _prl.hours, _prl.debug);
+            this._pendingRateLimit = null;
+          } else if (_pcb) {
+            this.replaceWithCaptchaBlock(_pcb.message, _pcb.debug);
+            this._pendingCaptchaBlock = null;
+          }
           // Cancel any pending exit timer from a tool that finished just before stop
           if (_tacExitTimer) { clearTimeout(_tacExitTimer); _tacExitTimer = null; }
           // Clean up any lingering tool activity card — mark as interrupted then fade out
@@ -1648,6 +1688,122 @@
       targetDiv.appendChild(resendBar);
     }
 
+
+    // Critique: fire a normal POST /api/chat turn, stream response into the critique card.
+    // Uses a separate chat_id so the critique session doesn't pollute the main conversation history.
+    // Everything else (model, provider, thinking_mode, system prompt, WAF) is identical.
+    async function _runCritiqueTurn(message, box, logEl, statusEl, critiqueId) {
+      if (!message || !activeChatId) return;
+      const critiqueChatId = activeChatId + "-critique-" + (critiqueId || Date.now().toString(36));
+      const controller = startStream(critiqueChatId);
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message,
+            chat_id: critiqueChatId,
+            parent_id: undefined,  // fresh session, no parent
+            model: selectedModel,
+            thinking_mode: selectedThinkingMode,
+            stream: true,
+          }),
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Failed</span>';
+          if (logEl) logEl.innerHTML += `<div class="critique-error">HTTP ${res.status}</div>`;
+          return;
+        }
+        // Stream SSE into the critique log
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        let answerBuf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() || "";
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const raw = line.slice(6).trim();
+            if (!raw) continue;
+            let evt;
+            try { evt = JSON.parse(raw); } catch (_) { continue; }
+            if (evt.type === "answer" && evt.text) {
+              answerBuf += evt.text;
+              if (logEl) {
+                logEl.innerHTML = renderMarkdown(answerBuf);
+                scrollBottom();
+              }
+            } else if (evt.type === "thinking" && evt.text) {
+              // Show thinking in a muted sub-block inside the card
+              if (logEl) {
+                let thinkEl = logEl.querySelector('.critique-thinking');
+                if (!thinkEl) {
+                  thinkEl = document.createElement('div');
+                  thinkEl.className = 'critique-thinking';
+                  logEl.prepend(thinkEl);
+                }
+                thinkEl.textContent += evt.text;
+              }
+            } else if (evt.type === "skill_start") {
+              if (logEl) {
+                const toolTag = document.createElement('div');
+                toolTag.className = 'critique-tool-entry';
+                toolTag.innerHTML = `<span class="critique-tool-name">⚡ ${escHtml(evt.name || '')}</span>`;
+                logEl.appendChild(toolTag);
+                scrollBottom();
+              }
+            } else if (evt.type === "skill_end") {
+              if (logEl) {
+                const entries = logEl.querySelectorAll('.critique-tool-entry');
+                const last = entries[entries.length - 1];
+                if (last && !last.dataset.done) {
+                  last.dataset.done = "1";
+                  const icon = evt.ok ? "✅" : "❌";
+                  last.innerHTML += ` <span>${icon}</span>`;
+                }
+              }
+            } else if (evt.type === "done") {
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
+              if (box) box.classList.add('critique-done');
+              if (logEl && answerBuf) logEl.innerHTML = renderMarkdown(answerBuf);
+              // Feed the critique report back into the main chat as a user message
+              if (answerBuf && typeof sendAutoTurnMessage === "function") {
+                const reportMsg = `[Critique Report]\n${answerBuf}`;
+                setTimeout(() => sendAutoTurnMessage(reportMsg, { skipUserBubble: false, skipUserSave: false }), 300);
+              }
+            } else if (evt.type === "error" || evt.type === "stream_error") {
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Error</span>';
+              if (logEl) logEl.innerHTML += `<div class="critique-error">${escHtml(evt.message || evt.error || 'Unknown error')}</div>`;
+            }
+          }
+        }
+        // If stream ended without explicit done event
+        if (statusEl && !box?.classList.contains('critique-done')) {
+          if (answerBuf) {
+            statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
+            if (box) box.classList.add('critique-done');
+            if (logEl) logEl.innerHTML = renderMarkdown(answerBuf);
+            if (typeof sendAutoTurnMessage === "function") {
+              const reportMsg = `[Critique Report]\n${answerBuf}`;
+              setTimeout(() => sendAutoTurnMessage(reportMsg, { skipUserBubble: false, skipUserSave: false }), 300);
+            }
+          } else {
+            statusEl.innerHTML = '<span style="color:var(--error)">No response</span>';
+          }
+        }
+      } catch (err) {
+        if (err.name !== "AbortError") {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Error</span>';
+          if (logEl) logEl.innerHTML += `<div class="critique-error">${escHtml(err.message)}</div>`;
+        }
+      }
+    }
+
     async function consumeChatStream(res, ui, userMsgDiv, streamChatId) {
       const reader  = res.body.getReader();
       const decoder = new TextDecoder();
@@ -1655,6 +1811,9 @@
       let gotAnswer = false;
       let gotDone = false;
       let gotError = false;
+      // Pending terminal cards stored on ui so finalize() can access them.
+      // Set when rate_limited/waf_blocked fires; cleared when answer arrives (recovery).
+      // If still set at finalize(), the permanent error card is rendered.
       let gotTitle = false;
       let _lastSkillPath = "";
       let _lastSkillName = "";
@@ -1747,6 +1906,9 @@
             ui.appendThinking(evt.text || "");
           } else if (evt.type === "answer") {
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
+            // Recovery: backend auto-switched successfully — clear pending error cards
+            ui._pendingRateLimit = null;
+            ui._pendingCaptchaBlock = null;
             ui.appendAnswer(evt.text || "");
           } else if (evt.type === "done") {
             gotDone = true;
@@ -1755,13 +1917,15 @@
               saveActiveChat();
             }
           } else if (evt.type === "rate_limited") {
-            gotError = true;
-            ui.replaceWithRateLimit(evt.message, evt.hours, evt);
-            break;
+            // Don't break — backend may auto-switch accounts and re-stream.
+            // Show transient status; account_switch events will replace it.
+            // If stream ends without recovery, finalize() renders the permanent card.
+            ui._pendingRateLimit = { message: evt.message, hours: evt.hours, debug: evt };
+            ui.showSwitchingStatus("⏳ Rate limited — switching accounts...");
           } else if (evt.type === "waf_blocked") {
-            gotError = true;
-            ui.replaceWithCaptchaBlock(evt.message, evt);
-            break;
+            // Don't break — backend may auto-switch accounts and re-stream.
+            ui._pendingCaptchaBlock = { message: evt.message, debug: evt };
+            ui.showSwitchingStatus("🛡️ WAF/captcha hit — switching accounts...");
           } else if (evt.type === "error") {
             gotError = true;
             const msg = evt.message || "Unknown error";
@@ -1859,18 +2023,23 @@
                     <div class="critique-header-left">
                       <span class="critique-icon"><i data-lucide="search-check"></i></span>
                       <span class="critique-title">Critique Session</span>
-                      <span class="critique-badge ${evt.focus || 'general'}">${evt.focus || 'general'}</span>
+                      <span class="critique-badge" data-focus="${escHtml(evt.focus || 'general')}">${escHtml(evt.focus || 'general')}</span>
                     </div>
                     <div class="critique-status"><span class="critique-spinner"></span> Reviewing...</div>
                   </div>
-                  <div class="critique-context">
-                    <div class="critique-label">Context</div>
-                    <div class="critique-text">${escHtml(evt.context || '')}</div>
-                  </div>
-                  <div class="critique-criteria">
-                    <div class="critique-label">Criteria</div>
-                    <div class="critique-text">${escHtml(evt.criteria || '')}</div>
-                  </div>
+                  <details class="critique-details">
+                    <summary>Context & Criteria</summary>
+                    <div class="critique-details-body">
+                      <div class="critique-section">
+                        <div class="critique-label">Context</div>
+                        <div class="critique-text">${escHtml(evt.context || '')}</div>
+                      </div>
+                      <div class="critique-section">
+                        <div class="critique-label">Criteria</div>
+                        <div class="critique-text">${escHtml(evt.criteria || '')}</div>
+                      </div>
+                    </div>
+                  </details>
                   <div class="critique-log"></div>
                 `;
                 turn.appendChild(box);
@@ -1894,24 +2063,39 @@
                 }
               }
             }
+          } else if (evt.type === "critique_trigger") {
+            // Fire a normal chat turn, stream response into the critique card
+            const pane = activePane;
+            if (pane && evt.message) {
+              const box = pane.querySelector(`.critique-box[data-critique-id="${evt.id}"]`);
+              if (box) {
+                box.dataset.turnActive = "1"; // prevent critique_done from racing
+                const log = box.querySelector('.critique-log');
+                const statusEl = box.querySelector('.critique-status');
+                if (statusEl) statusEl.innerHTML = '<span class="critique-spinner"></span> Running...';
+                _runCritiqueTurn(evt.message, box, log, statusEl, evt.id);
+              }
+            }
           } else if (evt.type === "critique_done") {
-            // Replace critique box content with final report or error
+            // Backend skill_end fires immediately — if _runCritiqueTurn is still streaming,
+            // don't overwrite the "Running..." status. Only handle errors or fallback.
             const pane = activePane;
             if (pane) {
               const box = pane.querySelector(`.critique-box[data-critique-id="${evt.id}"]`);
-              if (box) {
+              if (box && box.dataset.turnActive !== "1") {
                 const statusEl = box.querySelector('.critique-status');
                 if (evt.error) {
                   if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Failed</span>';
                   const log = box.querySelector('.critique-log');
                   if (log) log.innerHTML += `<div class="critique-error">${escHtml(evt.error)}</div>`;
-                } else {
+                  box.classList.add('critique-done');
+                } else if (evt.report) {
+                  // Fallback: only render if no active turn handled it
                   if (statusEl) statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
-                  // Replace log with rendered report
                   const log = box.querySelector('.critique-log');
                   if (log) {
                     log.className = 'critique-report';
-                    log.innerHTML = renderMarkdown(evt.report || '');
+                    log.innerHTML = renderMarkdown(evt.report);
                   }
                   box.classList.add('critique-done');
                 }
