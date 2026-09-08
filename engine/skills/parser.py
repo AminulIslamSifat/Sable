@@ -285,13 +285,17 @@ def _build_calls(data: Any) -> list[dict[str, Any]]:
 
         attrs = _stringify_params(params)
 
-        # Extract content-bearing params into content field
+        # Extract content-bearing params into content field.
+        # If no known content key matches, serialize the full params dict so
+        # handlers that expect raw JSON args (e.g. critique) still receive them.
         content = ""
         for key in _CONTENT_PARAM_KEYS:
             val = params.get(key)
             if isinstance(val, str) and val.strip():
                 content = val
                 break
+        if not content and params:
+            content = json.dumps(params, ensure_ascii=False)
 
         # Special case: chat_title uses title/text param as content
         if tool_name == "chat_title" and not content:
