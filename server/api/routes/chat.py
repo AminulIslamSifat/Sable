@@ -2053,11 +2053,22 @@ async def chat(request: ChatRequest):
 
                             # Sync system instructions to new account before first message
                             yield sse({"type": "account_switch", "step": "syncing", "account": _next_acc})
+                            from engine.config import mark_sync_failed, clear_sync_failed
+                            _sync_ok = False
                             try:
-                                await service.sync_context()
-                                logger.info("[auto-switch] sync_context completed for %s", _next_acc)
+                                _sync_result = await service.sync_context()
+                                if _sync_result is not False:
+                                    _sync_ok = True
+                                    clear_sync_failed(_next_acc)
+                                    logger.info("[auto-switch] sync_context completed for %s", _next_acc)
+                                else:
+                                    logger.warning("[auto-switch] sync_context returned False for %s", _next_acc)
+                                    mark_sync_failed(_next_acc)
+                                    yield sse({"type": "account_switch", "step": "syncing", "account": _next_acc, "error": "sync failed, will inject into first message"})
                             except Exception as _sync_exc:
                                 logger.warning("[auto-switch] sync_context failed for %s: %s", _next_acc, _sync_exc)
+                                mark_sync_failed(_next_acc)
+                                yield sse({"type": "account_switch", "step": "syncing", "account": _next_acc, "error": "sync failed, will inject into first message"})
 
                             # Build context for new account (with summarization if >500k)
                             yield sse({"type": "account_switch", "step": "summarizing", "account": _next_acc})

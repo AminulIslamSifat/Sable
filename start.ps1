@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-#  Sable — Zero-Intervention Start Script (Windows)
+#  Sable - Zero-Intervention Start Script (Windows)
 #  Handles: Python, uv, git, Docker, VCRedist, Playwright, SearXNG,
 #           BurntToast, Task Scheduler auto-start, error recovery, and launch.
 #  The user should never have to do anything after .\start.ps1
@@ -20,10 +20,10 @@ Set-Location $SCRIPT_DIR
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 function Write-Log  { param($msg) Write-Host "[Sable] $msg" }
-function Write-Ok   { param($msg) Write-Host "[Sable] ✓ $msg" -ForegroundColor Green }
-function Write-Warn { param($msg) Write-Host "[Sable] ⚠ $msg" -ForegroundColor Yellow }
-function Write-Err  { param($msg) Write-Host "[Sable] ✗ $msg" -ForegroundColor Red }
-function Write-Info { param($msg) Write-Host "[Sable] → $msg" -ForegroundColor Cyan }
+function Write-Ok   { param($msg) Write-Host "[Sable] OK  $msg" -ForegroundColor Green }
+function Write-Warn { param($msg) Write-Host "[Sable] WARN $msg" -ForegroundColor Yellow }
+function Write-Err  { param($msg) Write-Host "[Sable] ERR  $msg" -ForegroundColor Red }
+function Write-Info { param($msg) Write-Host "[Sable] INFO $msg" -ForegroundColor Cyan }
 
 # ── Retry Helper ─────────────────────────────────────────────────────────────
 function Invoke-WithRetry {
@@ -56,7 +56,7 @@ function Ensure-ExecutionPolicy {
             Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
             Write-Ok "Execution policy set to RemoteSigned (CurrentUser)"
         } catch {
-            Write-Warn "Could not set execution policy — script may fail on fresh installs"
+            Write-Warn "Could not set execution policy - script may fail on fresh installs"
         }
     } else {
         Write-Ok "Execution policy OK ($policy)"
@@ -77,7 +77,7 @@ function Ensure-Python {
     }
 
     if (-not $pyCmd) {
-        Write-Warn "Python not found — attempting install via winget..."
+        Write-Warn "Python not found - attempting install via winget..."
         if (Test-Command "winget") {
             winget install Python.Python.3.12 --accept-source-agreements --accept-package-agreements 2>$null
             # Refresh PATH
@@ -108,7 +108,7 @@ function Ensure-Python {
         }
         Write-Ok "Python $verStr detected ($pyCmd)"
     } catch {
-        Write-Warn "Could not verify Python version — proceeding anyway"
+        Write-Warn "Could not verify Python version - proceeding anyway"
     }
 }
 
@@ -179,7 +179,7 @@ function Ensure-Docker {
     Write-Info "Checking Docker..."
 
     if (Test-Command "docker") {
-        # CLI exists — check if daemon is responsive
+        # CLI exists - check if daemon is responsive
         try {
             $null = docker info 2>&1
             if ($LASTEXITCODE -eq 0) {
@@ -188,8 +188,8 @@ function Ensure-Docker {
             }
         } catch {}
 
-        # Daemon not running — try to start Docker Desktop
-        Write-Info "Docker CLI found but daemon not responding — starting Docker Desktop..."
+        # Daemon not running - try to start Docker Desktop
+        Write-Info "Docker CLI found but daemon not responding - starting Docker Desktop..."
         $ddPath = Join-Path $env:ProgramFiles "Docker\Docker\Docker Desktop.exe"
         if (-not (Test-Path $ddPath)) {
             $ddPath = Join-Path ${env:ProgramFiles(x86)} "Docker\Docker\Docker Desktop.exe"
@@ -208,16 +208,16 @@ function Ensure-Docker {
                 } catch {}
             }
         }
-        Write-Warn "Docker daemon not responding — SearXNG will be skipped"
+        Write-Warn "Docker daemon not responding - SearXNG will be skipped"
         Write-Warn "Make sure Docker Desktop is running (whale icon in system tray)"
         return $false
     }
 
     # Not installed
-    Write-Info "Docker not found — attempting install via winget..."
+    Write-Info "Docker not found - attempting install via winget..."
     if (Test-Command "winget") {
         winget install Docker.DockerDesktop --accept-source-agreements --accept-package-agreements 2>$null
-        Write-Warn "Docker Desktop installed — you may need to REBOOT and start Docker Desktop once."
+        Write-Warn "Docker Desktop installed - you may need to REBOOT and start Docker Desktop once."
         Write-Warn "After reboot, run this script again. SearXNG skipped for now."
     } else {
         Write-Warn "Install Docker Desktop: https://www.docker.com/products/docker-desktop/"
@@ -231,7 +231,7 @@ function Setup-SearXNG {
 
     $dockerReady = Ensure-Docker
     if (-not $dockerReady) {
-        Write-Warn "Docker unavailable — SearXNG search backend skipped"
+        Write-Warn "Docker unavailable - SearXNG search backend skipped"
         return
     }
 
@@ -258,7 +258,7 @@ function Setup-SearXNG {
         Write-Info "Pulling searxng/searxng:latest (first time only)..."
         $pullOk = Invoke-WithRetry -Action { docker pull searxng/searxng:latest } -Name "Docker pull"
         if (-not $pullOk) {
-            Write-Warn "Failed to pull SearXNG image — skipped"
+            Write-Warn "Failed to pull SearXNG image - skipped"
             return
         }
     }
@@ -330,7 +330,7 @@ function Sync-Dependencies {
     } -Name "uv sync"
 
     if (-not $syncOk) {
-        Write-Warn "uv sync failed — attempting venv recreation..."
+        Write-Warn "uv sync failed - attempting venv recreation..."
         Remove-Item -Recurse -Force ".venv" -ErrorAction SilentlyContinue
         $retryOk = Invoke-WithRetry -Action {
             cmd /c "uv sync --extra windows 2>&1"
@@ -350,7 +350,7 @@ function Setup-Playwright {
     try {
         cmd /c "uv run playwright install chromium 2>&1"
     } catch {
-        Write-Warn "Playwright Chromium install had issues — browser automation may not work"
+        Write-Warn "Playwright Chromium install had issues - browser automation may not work"
     }
     Write-Ok "Playwright check done"
 }
@@ -488,26 +488,26 @@ function Open-Browser {
 # ── Info Box ─────────────────────────────────────────────────────────────────
 function Show-InfoBox {
     param($Url, $Port)
-    $line = "─" * 58
+    $line = "-" * 58
     Write-Host ""
-    Write-Host "╭$line╮"
-    Write-Host "│ 🦊 Sable is running!                                     │"
-    Write-Host "│                                                          │"
-    Write-Host ("│ 🌐 URL:    {0,-47} │" -f $Url)
-    Write-Host ("│ 📡 Port:   {0,-47} │" -f $Port)
-    Write-Host "│                                                          │"
-    Write-Host "│ 📋 Manage: Get-ScheduledTask -TaskName 'Sable Server'   │"
-    Write-Host "│ 🛑 Stop:   Ctrl+C                                        │"
-    Write-Host "╰$line╯"
+    Write-Host "+$line+"
+    Write-Host "| Sable is running!                                        |"
+    Write-Host "|                                                          |"
+    Write-Host ("| URL:     {0,-47} |" -f $Url)
+    Write-Host ("| Port:    {0,-47} |" -f $Port)
+    Write-Host "|                                                          |"
+    Write-Host "| Manage: Get-ScheduledTask -TaskName 'Sable Server'      |"
+    Write-Host "| Stop:   Ctrl+C                                           |"
+    Write-Host "+$line+"
     Write-Host ""
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 function Main {
     Write-Host ""
-    Write-Log "═══════════════════════════════════════════"
-    Write-Log "  Sable — Agentic Chat Platform (Windows)"
-    Write-Log "═══════════════════════════════════════════"
+    Write-Log "==========================================="
+    Write-Log "  Sable - Agentic Chat Platform (Windows)"
+    Write-Log "==========================================="
     Write-Host ""
 
     Ensure-ExecutionPolicy

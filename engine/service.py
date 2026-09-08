@@ -367,6 +367,20 @@ class ChatService:
         yield {"type": "meta", "chat_id": active_chat_id, "parent_id": parent_id}
         yield {"type": "status", "message": "calling_upstream"}
 
+        # If sync_context has been failing for this account, inject full instructions
+        # into every first message until sync succeeds again. Mirrors DeepSeek's
+        # [SYSTEM INSTRUCTION] injection pattern. Persisted per-account in config.
+        from engine.config import needs_instruction_fallback
+        if needs_instruction_fallback(self._account_override):
+            try:
+                from connectors.common.instruction_builder import build_instructions
+                _fb_instr = build_instructions(provider="qwen")
+                if _fb_instr:
+                    message = f"[SYSTEM INSTRUCTION]\n{_fb_instr}\n\n[USER MESSAGE]\n{message}"
+                    print(f"[STREAM] Injected fallback instructions ({len(_fb_instr)} chars) for sync-failed account")
+            except Exception as _fb_exc:
+                print(f"[STREAM] Failed to build fallback instructions: {_fb_exc}")
+
         body = build_body(message, active_chat_id, parent_id, files=files, model=model, thinking_mode=thinking_mode)
         params = {"chat_id": active_chat_id}
         print(f"[STREAM] ↳ entering _stream_request() attempt loop...")

@@ -64,6 +64,7 @@ system/cookbook_model_settings.json
 system/uploads/
 system/models/
 system/fastembed_cache/
+system/.sync_failed_accounts
 
 
 # ═══════════════════════════════════════════

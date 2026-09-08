@@ -29,7 +29,7 @@
 
     // Phase elements
     const phasePassword  = document.getElementById("phasePassword");
-    const phaseBrowser   = document.getElementById("phaseBrowser");
+    const phaseSetup     = document.getElementById("phaseSetup");
     const loginOverlay   = document.getElementById("loginOverlay");
 
     const loginForm    = document.getElementById("loginForm");
@@ -41,23 +41,47 @@
     const setupPasswordIn   = document.getElementById("setupPassword");
     const setupPasswordBtn  = document.getElementById("setupPasswordBtn");
     const setupPasswordErr  = document.getElementById("setupPasswordError");
-    const setupBrowserBtn   = document.getElementById("setupBrowserBtn");
+
+    // Setup phase 2 elements
+    const setupTabApiKey   = document.getElementById("setupTabApiKey");
+    const setupTabBrowser  = document.getElementById("setupTabBrowser");
+    const setupPanelApiKey = document.getElementById("setupPanelApiKey");
+    const setupPanelBrowser= document.getElementById("setupPanelBrowser");
+    const setupProviderSelect = document.getElementById("setupProviderSelect");
+    const setupApiKeyInput = document.getElementById("setupApiKeyInput");
+    const setupAddKeyBtn   = document.getElementById("setupAddKeyBtn");
+    const setupApiKeyStatus= document.getElementById("setupApiKeyStatus");
+    const setupBrowserSelect = document.getElementById("setupBrowserSelect");
+    const setupBrowserBtn  = document.getElementById("setupBrowserBtn");
     const setupBrowserStatus = document.getElementById("setupBrowserStatus");
+    const setupSkipBtn     = document.getElementById("setupSkipBtn");
 
     const getToken = () => localStorage.getItem(TOKEN_KEY);
     const setToken = (t) => localStorage.setItem(TOKEN_KEY, t);
     const clearToken = () => localStorage.removeItem(TOKEN_KEY);
 
+    // Provider API base map for setup key flow
+    const _setupProviderMeta = {
+      gemini:     { apiBase: "/api/settings/gemini",     placeholder: "Paste API key (AIza…)" },
+      groq:       { apiBase: "/api/settings/groq",       placeholder: "Paste API key (gsk_…)" },
+      mistral:    { apiBase: "/api/settings/mistral",    placeholder: "Paste API key (key: …)" },
+      openai:     { apiBase: "/api/settings/openai",     placeholder: "Paste API key (sk-…)" },
+      deepseek:   { apiBase: "/api/settings/deepseek",   placeholder: "Paste API key (sk-…)" },
+      puter:      { apiBase: "/api/settings/puter",      placeholder: "Paste Puter token (eyJ…)" },
+      cloudflare: { apiBase: "/api/settings/cloudflare", placeholder: "Paste API token (cfat_…)", singleToken: true },
+    };
+
     // Hide all phases, then show one
     function showPhase(phase) {
       phasePassword.classList.add("hidden");
-      phaseBrowser.classList.add("hidden");
+      phaseSetup.classList.add("hidden");
       loginOverlay.classList.add("hidden");
       if (phase) phase.classList.remove("hidden");
     }
 
     // Inject the bearer token into every API request; bounce to login on 401.
     let _authBounced = false;
+    let _authReady = false; // Prevents 401 bounce during initial setup flow
     const _origFetch = window.fetch.bind(window);
     window.fetch = async (url, init = {}) => {
       const token = getToken();
@@ -65,7 +89,7 @@
         init.headers = Object.assign({}, init.headers, { Authorization: "Bearer " + token });
       }
       const res = await _origFetch(url, init);
-      if (res.status === 401 && typeof url === "string" && !url.includes("/api/login") && !_authBounced) {
+      if (res.status === 401 && typeof url === "string" && !url.includes("/api/login") && !url.includes("/api/setup/") && _authReady && !_authBounced) {
         _authBounced = true;
         clearToken();
         showPhase(loginOverlay);
@@ -120,6 +144,7 @@
 
     function ensureAuth() {
       if (getToken()) {
+        _authReady = true;
         showPhase(null);
         return Promise.resolve();
       }
@@ -132,6 +157,7 @@
             const status = await statusRes.json();
             if (status.needs_password) {
               // === PHASE 1: Set Password ===
+              _authReady = true;
               showPhase(phasePassword);
               setupPasswordIn.focus();
 
@@ -165,41 +191,131 @@
                 }, { once: true });
               });
 
-              // === PHASE 2: Browser Login ===
-              showPhase(phaseBrowser);
+              // === PHASE 2: Setup — API Key or Browser Login ===
+              showPhase(phaseSetup);
+
+              // Load available browsers for the dropdown
+              try {
+                const bRes = await _origFetch("/api/setup/available-browsers");
+                if (bRes.ok) {
+                  const bData = await bRes.json();
+                  const browsers = bData.browsers || [];
+                  if (browsers.length && setupBrowserSelect) {
+                    setupBrowserSelect.innerHTML = browsers.map(b =>
+                      `<option value="${b.path.replace(/"/g, '&quot;')}">${b.name} (${b.type})</option>`
+                    ).join("");
+                  }
+                }
+              } catch {}
+
+              // Update placeholder when provider changes
+              if (setupProviderSelect) {
+                setupProviderSelect.addEventListener("change", () => {
+                  const meta = _setupProviderMeta[setupProviderSelect.value];
+                  if (meta && setupApiKeyInput) setupApiKeyInput.placeholder = meta.placeholder;
+                });
+              }
+
+              // Tab switching
+              function switchSetupTab(tab) {
+                if (tab === "apikey") {
+                  setupTabApiKey.style.background = "var(--accent)";
+                  setupTabApiKey.style.color = "#fff";
+                  setupTabBrowser.style.background = "transparent";
+                  setupTabBrowser.style.color = "var(--text)";
+                  setupPanelApiKey.style.display = "";
+                  setupPanelBrowser.style.display = "none";
+                } else {
+                  setupTabBrowser.style.background = "var(--accent)";
+                  setupTabBrowser.style.color = "#fff";
+                  setupTabApiKey.style.background = "transparent";
+                  setupTabApiKey.style.color = "var(--text)";
+                  setupPanelBrowser.style.display = "";
+                  setupPanelApiKey.style.display = "none";
+                }
+              }
+              if (setupTabApiKey) setupTabApiKey.addEventListener("click", () => switchSetupTab("apikey"));
+              if (setupTabBrowser) setupTabBrowser.addEventListener("click", () => switchSetupTab("browser"));
 
               await new Promise((resolve) => {
-                setupBrowserBtn.addEventListener("click", async () => {
-                  setupBrowserBtn.disabled = true;
-                  setupBrowserStatus.textContent = "Opening browser...";
-                  setupBrowserStatus.classList.remove("hidden");
-                  try {
-                    const res = await _origFetch("/api/setup/browser-login", {
-                      method: "POST",
-                      headers: { Authorization: "Bearer " + getToken() },
-                    });
-                    if (res.ok) {
-                      setupBrowserStatus.textContent = "Browser opened! Complete login there, then close it.";
-                      setupBrowserStatus.style.color = "";
-                      setTimeout(resolve, 3000);
-                    } else {
-                      let errMsg = "Failed to open browser.";
-                      try {
-                        const body = await res.json();
-                        if (body.detail) errMsg = body.detail.split("\n")[0];
-                      } catch {}
-                      setupBrowserStatus.textContent = "❌ " + errMsg;
-                      setupBrowserStatus.style.color = "#ff6b6b";
-                      console.error("Browser login failed:", errMsg);
+                // --- API Key flow ---
+                if (setupAddKeyBtn) {
+                  setupAddKeyBtn.addEventListener("click", async () => {
+                    const provider = setupProviderSelect?.value;
+                    const key = setupApiKeyInput?.value?.trim();
+                    if (!key) {
+                      if (setupApiKeyStatus) { setupApiKeyStatus.textContent = "⚠️ Paste an API key first"; setupApiKeyStatus.style.color = "#ff6b6b"; }
+                      return;
                     }
-                  } catch (e) {
-                    setupBrowserStatus.textContent = "❌ Connection error: " + (e.message || e);
-                    setupBrowserStatus.style.color = "#ff6b6b";
-                    console.error("Browser login error:", e);
-                  } finally {
-                    setupBrowserBtn.disabled = false;
-                  }
-                }, { once: true });
+                    const meta = _setupProviderMeta[provider];
+                    if (!meta) return;
+                    setupAddKeyBtn.disabled = true;
+                    setupAddKeyBtn.textContent = "Saving…";
+                    try {
+                      let res;
+                      if (meta.singleToken) {
+                        res = await _origFetch(`${meta.apiBase}/credentials`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ api_token: key }),
+                        });
+                      } else {
+                        res = await _origFetch(`${meta.apiBase}/api-key`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ key }),
+                        });
+                      }
+                      if (res.ok) {
+                        if (setupApiKeyStatus) { setupApiKeyStatus.textContent = "✅ Key saved! You can add more in Settings later."; setupApiKeyStatus.style.color = "#4ade80"; }
+                        setupApiKeyInput.value = "";
+                        setTimeout(resolve, 1500);
+                      } else {
+                        const err = await res.json().catch(() => ({}));
+                        if (setupApiKeyStatus) { setupApiKeyStatus.textContent = "❌ " + (err.detail || "Failed to save key"); setupApiKeyStatus.style.color = "#ff6b6b"; }
+                      }
+                    } catch (e) {
+                      if (setupApiKeyStatus) { setupApiKeyStatus.textContent = "❌ Connection error"; setupApiKeyStatus.style.color = "#ff6b6b"; }
+                    } finally {
+                      setupAddKeyBtn.disabled = false;
+                      setupAddKeyBtn.textContent = "Add API Key";
+                    }
+                  });
+                }
+
+                // --- Browser login flow ---
+                if (setupBrowserBtn) {
+                  setupBrowserBtn.addEventListener("click", async () => {
+                    setupBrowserBtn.disabled = true;
+                    setupBrowserBtn.textContent = "Opening…";
+                    if (setupBrowserStatus) { setupBrowserStatus.textContent = "Launching browser…"; setupBrowserStatus.style.color = "var(--text-dim)"; }
+                    try {
+                      const browserPath = setupBrowserSelect ? setupBrowserSelect.value : "";
+                      const res = await _origFetch("/api/setup/browser-login", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ browser_path: browserPath }),
+                      });
+                      if (res.ok) {
+                        if (setupBrowserStatus) { setupBrowserStatus.textContent = "✅ Browser opened! Sign in there, then close it to continue."; setupBrowserStatus.style.color = "#4ade80"; }
+                        setTimeout(resolve, 3000);
+                      } else {
+                        const body = await res.json().catch(() => ({}));
+                        if (setupBrowserStatus) { setupBrowserStatus.textContent = "❌ " + (body.detail || "Failed to open browser").split("\n")[0]; setupBrowserStatus.style.color = "#ff6b6b"; }
+                      }
+                    } catch (e) {
+                      if (setupBrowserStatus) { setupBrowserStatus.textContent = "❌ Connection error"; setupBrowserStatus.style.color = "#ff6b6b"; }
+                    } finally {
+                      setupBrowserBtn.disabled = false;
+                      setupBrowserBtn.textContent = "Open Browser";
+                    }
+                  });
+                }
+
+                // --- Skip button ---
+                if (setupSkipBtn) {
+                  setupSkipBtn.addEventListener("click", () => resolve(), { once: true });
+                }
               });
 
               // === PHASE 3: Auto-login after setup ===
@@ -214,6 +330,7 @@
         }
 
         // === PHASE 3: Normal login flow ===
+        _authReady = true;
         showPhase(loginOverlay);
         loginTokenIn.focus();
         return waitForLogin();
