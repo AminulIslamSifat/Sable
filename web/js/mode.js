@@ -1,7 +1,6 @@
 
 /**
- * mode.js — Layout mode switching (Agent ↔ IDE)
- * Scaffolded for future IDE mode implementation.
+ * mode.js — Layout mode switching (Agent ↔ Chat)
  */
 (function () {
   'use strict';
@@ -11,7 +10,7 @@
 
   // Elements
   const layoutAgentBtn = document.getElementById('layoutAgent');
-  const layoutIdeBtn = document.getElementById('layoutIde');
+  const layoutChatBtn = document.getElementById('layoutChat');
   const sidebarToggle = document.getElementById('sidebarToggle');
   const chatCompact = document.getElementById('chatCompact');
   const chatCompactInput = document.getElementById('chatCompactInput');
@@ -26,20 +25,16 @@
     // Update switcher buttons
     if (mode === 'agent') {
       layoutAgentBtn.classList.add('active');
-      layoutIdeBtn.classList.remove('active');
+      if (layoutChatBtn) layoutChatBtn.classList.remove('active');
     } else {
       layoutAgentBtn.classList.remove('active');
-      layoutIdeBtn.classList.add('active');
+      if (layoutChatBtn) layoutChatBtn.classList.add('active');
     }
 
-    // In IDE mode, ensure diff sidebar (file browser) is visible
-    if (mode === 'ide') {
-      body.classList.add('diff-open');
+    // Chat mode: close any IDE panels, no tools
+    if (mode === 'chat') {
+      body.classList.remove('diff-open');
       body.classList.remove('ide-sidebar-open');
-      // Restore last session (folder + file)
-      if (window.restoreIdeSession) window.restoreIdeSession();
-      // Sync compact status bar from main controls
-      setTimeout(syncCompactStatusBar, 100);
     } else {
       // Leaving IDE mode: close the right sidebar
       body.classList.remove('diff-open');
@@ -63,6 +58,15 @@
 
     // Re-render lucide icons for newly visible elements
     if (window.lucide) window.lucide.createIcons();
+
+    // Sync context to Qwen with current layout_mode so tools are updated
+    try {
+      fetch('/api/sync-context', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ layout_mode: mode })
+      }).catch(() => {});
+    } catch (_) {}
   }
 
   // ─── VS Code Embed Detection ───
@@ -75,8 +79,8 @@
       if (!_isVscodeEmbed) {
         _isVscodeEmbed = true;
         document.body.classList.add('vscode-embed');
-        // Force IDE mode — VS Code sidebar uses compact chat at full width
-        setLayoutMode('ide');
+        // Force chat mode — VS Code sidebar uses compact chat at full width
+        setLayoutMode('chat');
       }
       // Always ack so extension stops retrying
       try { window.parent.postMessage({ type: 'vscode-embed-ack' }, '*'); } catch(err) {}
@@ -100,7 +104,7 @@
 
     sidebarToggle.addEventListener('click', function (e) {
       const mode = body.getAttribute('data-mode');
-      if (mode === 'ide') {
+      if (mode === 'chat') {
         e.stopPropagation();
         e.preventDefault();
         const isOpen = body.classList.contains('ide-sidebar-open');
@@ -341,7 +345,7 @@
     clearTimeout(mirrorRafId);
     mirrorRafId = setTimeout(() => {
       mirrorRafId = null;
-      if (body.getAttribute('data-mode') === 'ide') {
+      if (body.getAttribute('data-mode') === 'chat') {
         mirrorMessages();
         syncPendingIndicator();
       }
@@ -397,7 +401,7 @@
     if (!mainSend || sendBtnObserver) return;
 
     sendBtnObserver = new MutationObserver(() => {
-      if (body.getAttribute('data-mode') === 'ide') {
+      if (body.getAttribute('data-mode') === 'chat') {
         syncStopMode(mainSend.classList.contains('stop-mode'));
       }
     });
@@ -431,7 +435,7 @@
   // Syncs compact status bar controls from the main input area
 
   function syncCompactStatusBar() {
-    if (body.getAttribute('data-mode') !== 'ide') return;
+    if (body.getAttribute('data-mode') !== 'chat') return;
 
     // Thinking mode label + visibility
     const mainThinkingLabel = document.getElementById('statusThinkingLabel');
@@ -498,9 +502,9 @@
         setLayoutMode('agent');
       });
     }
-    if (layoutIdeBtn) {
-      layoutIdeBtn.addEventListener('click', function () {
-        setLayoutMode('ide');
+    if (layoutChatBtn) {
+      layoutChatBtn.addEventListener('click', function () {
+        setLayoutMode('chat');
       });
     }
   }
@@ -703,19 +707,11 @@
     startChatObserver();
     startSendBtnObserver();
     startStatusBarObserver();
-    // Initial mirror if starting in IDE mode
-    if (saved === 'ide') {
-      setTimeout(mirrorMessages, 500);
-      setTimeout(syncCompactStatusBar, 600);
-      // Restore IDE session (folder + file) after DOM settles
-      setTimeout(() => {
-        if (window.restoreIdeSession) window.restoreIdeSession();
-      }, 300);
-    }
+    // Chat mode doesn't need IDE session restore
   }
 
-  // ─── CWD + Open File Injection into /api/chat ───
-  // Patches fetch to auto-inject IDE context (cwd + open file) into chat requests.
+  // ─── CWD + Layout Mode Injection into /api/chat ───
+  // Patches fetch to auto-inject layout_mode and IDE context into chat requests.
   const _origFetch = window.fetch;
   window.fetch = function (url, opts) {
     if (
@@ -725,11 +721,14 @@
     ) {
       try {
         const body = JSON.parse(opts.body);
-        const cwd = window.getIdeCwd ? window.getIdeCwd() : '';
         let changed = false;
-        if (cwd && !body.cwd) { body.cwd = cwd; changed = true; }
-        // Only inject open_file in IDE mode
-        if (document.body.dataset.mode === 'ide') {
+        // Always inject current layout mode
+        const mode = localStorage.getItem('sable_layout_mode') || 'agent';
+        if (!body.layout_mode) { body.layout_mode = mode; changed = true; }
+        // Inject IDE context only in agent mode
+        if (mode === 'agent') {
+          const cwd = window.getIdeCwd ? window.getIdeCwd() : '';
+          if (cwd && !body.cwd) { body.cwd = cwd; changed = true; }
           const openFile = window.getIdeOpenFile ? window.getIdeOpenFile() : '';
           if (openFile && !body.open_file) { body.open_file = openFile; changed = true; }
         }

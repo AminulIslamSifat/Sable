@@ -1,0 +1,95 @@
+[
+  {
+    "name": "computer_use",
+    "description": "Control the computer: take screenshots, move/click mouse, type text, press keys, manage windows, read/write clipboard. Works on Windows and Linux (X11 + Wayland).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "screenshot",
+            "mouse_click",
+            "mouse_move",
+            "mouse_drag",
+            "mouse_scroll",
+            "keyboard_type",
+            "keyboard_key",
+            "window_list",
+            "window_focus",
+            "window_resize",
+            "window_close",
+            "clipboard_get",
+            "clipboard_set",
+            "screen_info",
+            "screen_parse"
+          ],
+          "description": "The action to perform."
+        },
+        "x": {
+          "type": "integer",
+          "description": "X coordinate (pixels from left). For screenshot region, mouse_move, mouse_click, mouse_drag start."
+        },
+        "y": {
+          "type": "integer",
+          "description": "Y coordinate (pixels from top). For screenshot region, mouse_move, mouse_click, mouse_drag start."
+        },
+        "x2": {
+          "type": "integer",
+          "description": "End X for mouse_drag or width for screenshot region / window_resize."
+        },
+        "y2": {
+          "type": "integer",
+          "description": "End Y for mouse_drag or height for screenshot region / window_resize."
+        },
+        "button": {
+          "type": "string",
+          "enum": ["left", "right", "middle"],
+          "description": "Mouse button for click. Default: left."
+        },
+        "clicks": {
+          "type": "integer",
+          "description": "Number of clicks (2 = double-click). Default: 1."
+        },
+        "text": {
+          "type": "string",
+          "description": "Text to type (keyboard_type) or clipboard content (clipboard_set)."
+        },
+        "keys": {
+          "type": "string",
+          "description": "Key combo for keyboard_key, e.g. 'ctrl+c', 'alt+Tab', 'super+d', 'Return', 'F11'."
+        },
+        "direction": {
+          "type": "string",
+          "enum": ["up", "down", "left", "right"],
+          "description": "Scroll direction. Default: down."
+        },
+        "amount": {
+          "type": "integer",
+          "description": "Scroll amount in clicks/steps. Default: 3."
+        },
+        "window_id": {
+          "type": "string",
+          "description": "Window ID or title for window_focus, window_resize, window_close."
+        },
+        "save_path": {
+          "type": "string",
+          "description": "File path to save screenshot. Default: auto-generated in output dir."
+        },
+        "fullscreen": {
+          "type": "boolean",
+          "description": "Screenshot entire screen (true) or use x/y/x2/y2 region. Default: true."
+        },
+        "filter_type": {
+          "type": "string",
+          "description": "For screen_parse: filter elements by control type (e.g. 'Button', 'Edit', 'Text'). Omit for all."
+        },
+        "max_elements": {
+          "type": "integer",
+          "description": "For screen_parse: max elements to return. Default: 50."
+        }
+      },
+      "required": ["action"]
+    }
+  }
+]

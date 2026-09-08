@@ -40,6 +40,8 @@ from engine.skills.handlers.simulacra import handle_run_simulacra
 from engine.skills.handlers.tracknote import handle_tracknote
 from engine.skills.handlers.memory_manager import handle_memory
 from engine.skills.handlers.image_generator import handle_generate_image
+from engine.skills.handlers.computer_use import handle_computer_use
+from engine.skills.handlers.load_tool import handle_load_tool
 from engine.mcp.handler import handle_mcp_call
 
 HANDLER_MAP: dict[str, object] = {
@@ -75,6 +77,8 @@ HANDLER_MAP: dict[str, object] = {
     "memory": handle_memory,
     "memory_manager": handle_memory,
     "generate_image": handle_generate_image,
+    "computer_use": handle_computer_use,
+    "load_tool": handle_load_tool,
     "mcp_call": handle_mcp_call,
 }
 
@@ -107,5 +111,7 @@ __all__ = [
     "handle_tracknote",
     "handle_memory",
     "handle_generate_image",
+    "handle_computer_use",
+    "handle_load_tool",
     "handle_mcp_call",
 ]

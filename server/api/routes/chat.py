@@ -591,6 +591,7 @@ async def _run_summarizer(
 async def chat(request: ChatRequest):
     scraper_enabled = get_scraper_settings().get("enabled")
     active_chat_id = request.chat_id
+    _layout_mode = request.layout_mode or "agent"  # "agent" or "chat"
     _upstream_session_id: str | None = None
     if not active_chat_id and scraper_enabled:
         active_chat_id = f"browser-{uuid.uuid4().hex}"
@@ -788,6 +789,16 @@ async def chat(request: ChatRequest):
 
     if _local_use_utilities and parent_id is None and _msg_count <= 1:
         _context_parts.append('[SYSTEM: You MUST call the chat_title tool now to set a title for this new conversation. This is mandatory.]')
+        # Inject platform info so the model uses correct paths and commands
+        import platform as _plat
+        _sys = _plat.system()  # 'Linux', 'Windows', 'Darwin'
+        _plat_hints = {
+            'Linux': 'Use Linux paths (/home/user/..., /tmp/...) and commands (ls, cat, grep, etc.). Shell is typically bash/fish/zsh.',
+            'Windows': r'Use Windows paths (C:\Users\..., %TEMP%\...) and commands (dir, type, findstr, PowerShell cmdlets). Use backslashes or forward slashes.',
+            'Darwin': 'Use macOS paths (/Users/..., /tmp/...) and commands (ls, cat, grep). Shell is zsh by default. Homebrew is the common package manager.',
+        }
+        _hint = _plat_hints.get(_sys, f'Platform: {_sys}. Use appropriate paths and commands for this OS.')
+        _context_parts.append(f'[SYSTEM PLATFORM: The user is on {_sys}. {_hint}]')
         try:
             from server.database import get_upcoming_schedules
             _upcoming = get_upcoming_schedules(days=10)
@@ -1139,6 +1150,17 @@ async def chat(request: ChatRequest):
                                 round_skill_events.append({"type": "skill_end", "name": "chat_title", "ok": True, "id": _ct_id, "duration_ms": 0})
                                 continue
 
+                            # Chat mode: block all tools except web_search/online_search/chat_title
+                            if _layout_mode == "chat" and item["name"] not in (
+                                "online_search", "web_search", "web_fetch", "chat_title",
+                            ):
+                                _cm_id = str(uuid.uuid4())[:12]
+                                _cm_err = f"[Chat mode] Tool '{item['name']}' is disabled. Only web search is available."
+                                round_skill_events.append({"type": "skill_start", "name": item["name"], "id": _cm_id})
+                                round_skill_events.append({"type": "skill_end", "name": item["name"], "ok": False, "error": _cm_err, "id": _cm_id})
+                                yield sse({"type": "skill_end", "name": item["name"], "ok": False, "error": _cm_err, "id": _cm_id})
+                                continue
+
                             # Track command for loop detection (legacy MainChatGuard)
                             _guard.record_command(item["name"], item.get("content", ""))
                             # LoopDetector: error-aware check with recovery support
@@ -1346,19 +1368,38 @@ async def chat(request: ChatRequest):
                         _stream_kwargs["max_session_chars"] = _max_session_chars_stream
                     if _inline_files:
                         _stream_kwargs['files'] = _inline_files
-                    # Native tool calling: load and pass tool schemas
+                    # Native tool calling: core/outer tier system
                     try:
-                        from engine.tools_loader import get_all_tool_schemas
+                        from engine.tools_loader import (
+                            get_all_tool_schemas,
+                            get_outer_tool_stubs,
+                            _build_load_tool_schema,
+                        )
                         from server.api.routes.misc import get_disabled_tools as _get_dt
                         _disabled = _get_dt().get('disabled', [])
-                        # For local models, filter to per-model configured tools
-                        _allowed_tools = None
-                        if _is_local_model:
-                            _model_tools = _cookbook_cfg.get("tools")
-                            if _model_tools is not None:
-                                # Explicit list (even empty) = use only those tools
-                                _allowed_tools = _model_tools if _model_tools else ["__none__"]
-                        _tool_schemas = get_all_tool_schemas(_disabled, allowed=_allowed_tools)
+
+                        if _layout_mode == "chat":
+                            # Chat mode: only web search + chat title, no tier filtering
+                            _chat_allowed = ["online_search", "chat_title"]
+                            _tool_schemas = get_all_tool_schemas(_disabled, allowed=_chat_allowed, tier=None)
+                        else:
+                            # Agent mode: full core/outer tier system
+                            # For local models, filter to per-model configured tools
+                            _allowed_tools = None
+                            if _is_local_model:
+                                _model_tools = _cookbook_cfg.get("tools")
+                                if _model_tools is not None:
+                                    # Explicit list (even empty) = use only those tools
+                                    _allowed_tools = _model_tools if _model_tools else ["__none__"]
+                            # Core tools: full schemas always loaded
+                            _core_schemas = get_all_tool_schemas(_disabled, allowed=_allowed_tools, tier="core")
+                            # Outer tools: stubs only (name + description)
+                            _outer_stubs = get_outer_tool_stubs(_disabled) if not _allowed_tools else []
+                            # load_tool: dynamic core tool for upgrading outer stubs
+                            _load_tool = _build_load_tool_schema(_disabled) if not _allowed_tools else None
+                            _tool_schemas = _core_schemas + _outer_stubs
+                            if _load_tool:
+                                _tool_schemas.append(_load_tool)
                         if _tool_schemas:
                             _stream_kwargs['tools'] = _tool_schemas
                     except Exception:

@@ -299,11 +299,11 @@ class ChatService:
             thinking_enabled=thinking_enabled,
         )
 
-    async def sync_context(self, project_id: str | None = None, custom_instructions: str | None = None) -> bool:
+    async def sync_context(self, project_id: str | None = None, custom_instructions: str | None = None, layout_mode: str | None = None) -> bool:
         # Reuse cached headers from warmup to avoid a redundant browser launch
         if self._headers:
-            return await self._browser.sync_context(headers=self._headers, project_id=project_id, custom_instructions=custom_instructions)
-        return await self._browser.sync_context(project_id=project_id, custom_instructions=custom_instructions)
+            return await self._browser.sync_context(headers=self._headers, project_id=project_id, custom_instructions=custom_instructions, layout_mode=layout_mode)
+        return await self._browser.sync_context(project_id=project_id, custom_instructions=custom_instructions, layout_mode=layout_mode)
 
     async def _stop_upstream_generation(self, chat_id: str, response_id: str | None = None) -> bool:
         """Call Qwen's stop API to halt server-side token generation.

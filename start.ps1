@@ -12,7 +12,7 @@ Set-Location $SCRIPT_DIR
 
 # Playwright chromium (idempotent)
 try {
-    & uv run playwright install chromium 2>$null
+    cmd /c "uv run playwright install chromium 2>&1"
 } catch {}
 
 # Template files
@@ -160,8 +160,7 @@ try {
 
 #  Sync dependencies 
 
-Write-Host " Synchronizing dependencies..."
-& uv sync --extra windows
+cmd /c "uv sync --extra windows 2>&1"
 Write-Host ""
 
 #  Info box 
@@ -205,5 +204,4 @@ function Open-Browser {
 Show-InfoBox $SABLE_URL $SABLE_PORT
 Start-Job -ScriptBlock { param($u) Open-Browser $u } -ArgumentList $SABLE_URL | Out-Null
 
-$env:TERM = "xterm-256color"
-& uv run python server.py
+cmd /c "uv run python server.py 2>&1"

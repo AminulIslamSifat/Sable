@@ -212,48 +212,69 @@
 
     /* ---------- end multi-tab ---------- */
 
-    // ── Smart auto-scroll: event-driven flag + rAF batching ──
-    // Pattern from Smashing Magazine / shadcn: track user intent via scroll
-    // event, batch writes with requestAnimationFrame, reset on new stream.
-    let _userScrolled = false;
-    let _scrollRafPending = false;
+    // ── Auto-scroll ──
+    // ponytail: ceiling = synchronous user-intent detection. Upgrade path: add smooth scroll animation if needed.
+    let _atBottom = true;
     let _scrollForChat = null;
 
-    // Attach scroll listener whenever activePane changes (idempotent)
     const _scrollBoundPanes = new WeakSet();
     function _bindScrollListener(pane) {
       if (!pane || _scrollBoundPanes.has(pane)) return;
       _scrollBoundPanes.add(pane);
+
+      // Synchronous intent detection — must set _atBottom BEFORE any
+      // scrollBottom() call that arrives in the same event loop tick.
+      // DOM mutations / programmatic scrollTop never fire these events.
+      pane.addEventListener("wheel", (e) => {
+        if (e.deltaY < 0) {
+          _atBottom = false;
+        } else {
+          // Scrolling down: check if we've reached the bottom
+          const gap = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
+          _atBottom = gap < 30;
+        }
+      }, { passive: true });
+
+      let _lastTouchY = 0;
+      pane.addEventListener("touchstart", (e) => {
+        _lastTouchY = e.touches[0].clientY;
+      }, { passive: true });
+      pane.addEventListener("touchmove", (e) => {
+        const dy = e.touches[0].clientY - _lastTouchY;
+        _lastTouchY = e.touches[0].clientY;
+        if (dy > 0) {
+          _atBottom = false;   // finger moving down = content scrolls up
+        } else {
+          const gap = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
+          _atBottom = gap < 30;
+        }
+      }, { passive: true });
+
+      // Scrollbar drag: track pointer on scrollbar track (right edge)
+      let _draggingScrollbar = false;
+      pane.addEventListener("pointerdown", (e) => {
+        if (e.offsetX > pane.clientWidth) _draggingScrollbar = true;
+      });
+      document.addEventListener("pointerup", () => { _draggingScrollbar = false; });
       pane.addEventListener("scroll", () => {
+        if (!_draggingScrollbar) return;
         const gap = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
-        _userScrolled = gap > 60;
+        _atBottom = gap < 30;
       }, { passive: true });
     }
 
-    // Call at stream start so previous scroll-up doesn't block new content
     function resetScrollTracking() {
-      _userScrolled = false;
-      _scrollRafPending = false;
+      _atBottom = true;
     }
 
     function scrollBottom(force) {
       if (!activePane) return;
-      if (_scrollForChat !== activeChatId) { _userScrolled = false; _scrollRafPending = false; }
-      _scrollForChat = activeChatId;
-      if (!force && _userScrolled) return;
-      if (_scrollRafPending) return;
-      _scrollRafPending = true;
-      requestAnimationFrame(() => {
-        _scrollRafPending = false;
-        if (!activePane) return;
-        // Re-check position at paint time — user may have scrolled up between
-        // the scrollBottom() call and this rAF firing (race during fast streaming)
-        if (!force) {
-          const gap = activePane.scrollHeight - activePane.scrollTop - activePane.clientHeight;
-          if (gap > 80) { _userScrolled = true; return; }
-        }
-        activePane.scrollTop = activePane.scrollHeight;
-      });
+      if (_scrollForChat !== activeChatId) {
+        _atBottom = true;
+        _scrollForChat = activeChatId;
+      }
+      if (!force && !_atBottom) return;
+      activePane.scrollTop = activePane.scrollHeight;
     }
 
     function clearEmptyState() {

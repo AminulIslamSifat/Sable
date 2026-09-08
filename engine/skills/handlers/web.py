@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import time
 from collections.abc import Generator
 from typing import Any
@@ -13,29 +12,18 @@ import httpx
 
 from engine.skills.handlers.common import (
     RESULT_PREVIEW_CHARS,
-    TOOLS_DIR,
     _end_event,
     _output_event,
     strip_html,
 )
-
-
 from engine.security.prompt_guard import wrap_untrusted
 
-_SEARCH_SCRIPT = TOOLS_DIR / "online_search" / "scripts" / "online_search.py"
-
-
-def _run_search_script(query: str, extra_args: list[str] | None = None) -> dict[str, Any]:
-    """Run the search script with a query and optional extra CLI args."""
-    cmd = ["python3", str(_SEARCH_SCRIPT), "--json"]
-    if query:
-        cmd.append(query)
-    if extra_args:
-        cmd.extend(extra_args)
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
-    if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip()[:500])
-    return json.loads(proc.stdout)
+# ponytail: direct import instead of subprocess — these already use engine.search internally
+from tools.online_search.scripts.online_search import (
+    search_only as _search_only,
+    fetch_specific_urls as _fetch_urls,
+    comprehensive_web_search as _comprehensive_search,
+)
 
 
 def handle_online_search(
@@ -77,7 +65,7 @@ def handle_online_search(
         yield _output_event(tag_id, "\n")
 
         try:
-            data = _run_search_script("", fetch_args)
+            data = _fetch_urls(url_list, max_chars=max_chars or 10000)
             items = data.get("pages", [])
             fetched_count = sum(1 for it in items if it.get("success"))
             yield _output_event(tag_id, f"✓ Fetched {fetched_count}/{len(items)} page(s)\n\n")
@@ -99,14 +87,8 @@ def handle_online_search(
         yield _end_event(tag_id, name, False, started, error="Empty query")
         return
 
-    max_results = attrs.get("max_results", "")
-    time_filter = attrs.get("time_filter", "")
-
-    extra_args: list[str] = ["--search-only"]
-    if max_results:
-        extra_args.append(f"--max-results={max_results}")
-    if time_filter:
-        extra_args.append(f"--time-filter={time_filter}")
+    max_results = int(attrs.get("max_results", "15") or 15)
+    time_filter = attrs.get("time_filter") or None
 
     # Show what we're doing before the blocking call
     yield _output_event(tag_id, f"🔍 Search: {query}\n")
@@ -115,39 +97,26 @@ def handle_online_search(
     yield _output_event(tag_id, "\n")
 
     try:
-        data = _run_search_script(query, extra_args)
-        items = data.get("items", [])
-        if not items:
+        data = _search_only(query, max_results=max_results, time_filter=time_filter)
+        results = data.get("results", [])
+        if not results:
             yield _output_event(tag_id, "No results found.\n")
             yield _end_event(tag_id, name, True, started, {"query": query, "results": []})
             return
 
-        ok_count = sum(1 for it in items if it.get("ok"))
-        yield _output_event(tag_id, f"✓ {ok_count} result(s)\n\n")
+        yield _output_event(tag_id, f"✓ {len(results)} result(s)\n\n")
 
-        for item in items:
-            if not item.get("ok"):
-                yield _output_event(tag_id, f"✗ {item.get('error', 'unknown')}\n", "stderr")
-                continue
-            # search-only returns results array with title/url/snippet
-            results = item.get("results", [])
-            lines: list[str] = []
-            for r in results:
-                lines.append(f"[{r['index']}] {r['title']}")
-                lines.append(f"    URL: {r['url']}")
-                if r.get("snippet"):
-                    lines.append(f"    Snippet: {r['snippet']}")
-                lines.append("")
-            yield _output_event(tag_id, wrap_untrusted("\n".join(lines), source="web_search") + "\n")
+        lines: list[str] = []
+        for r in results:
+            lines.append(f"[{r['index']}] {r['title']}")
+            lines.append(f"    URL: {r['url']}")
+            if r.get("snippet"):
+                lines.append(f"    Snippet: {r['snippet']}")
+            lines.append("")
+        yield _output_event(tag_id, wrap_untrusted("\n".join(lines), source="web_search") + "\n")
 
-        yield _end_event(tag_id, name, True, started, {"query": query, "results": items})
+        yield _end_event(tag_id, name, True, started, {"query": query, "results": results})
 
-    except subprocess.TimeoutExpired:
-        yield _output_event(tag_id, "Search timed out (60s)\n", "stderr")
-        yield _end_event(tag_id, name, False, started, error="Search timed out")
-    except json.JSONDecodeError as exc:
-        yield _output_event(tag_id, f"Failed to parse search output: {exc}\n", "stderr")
-        yield _end_event(tag_id, name, False, started, error=str(exc))
     except Exception as exc:
         yield _output_event(tag_id, f"Search error: {exc}\n", "stderr")
         yield _end_event(tag_id, name, False, started, error=str(exc))
@@ -181,23 +150,13 @@ def handle_openweb(
             return
         yield _output_event(tag_id, f"OpenWeb search: {query}\n\n")
         try:
-            proc = subprocess.run(
-                ["python3", str(_SEARCH_SCRIPT), "--json", query],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            if proc.returncode != 0:
-                yield _output_event(tag_id, f"Search failed: {proc.stderr.strip()}\n", "stderr")
-                yield _end_event(tag_id, name, False, started, error=proc.stderr.strip()[:500])
-                return
-            data = json.loads(proc.stdout)
-            items = data.get("items", [])
-            for item in items:
-                context = item.get("context", "")
+            data = _comprehensive_search(query, max_pages=5, max_chars=10000)
+            results = data.get("results", [])
+            for item in results:
+                context = item.get("context", "") or item.get("snippet", "")
                 if context:
                     yield _output_event(tag_id, wrap_untrusted(context, source="web_search") + "\n")
-            yield _end_event(tag_id, name, True, started, {"site": site, "op": op, "results": items})
+            yield _end_event(tag_id, name, True, started, {"site": site, "op": op, "results": results})
         except Exception as exc:
             yield _output_event(tag_id, f"Search error: {exc}\n", "stderr")
             yield _end_event(tag_id, name, False, started, error=str(exc))
