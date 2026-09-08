@@ -835,6 +835,8 @@ class ChatService:
                                         if chosen_response_id is None:
                                             chosen_response_id = response_id
                                             new_parent_id = response_id
+                                            # Emit immediately so frontend can use it for stop requests
+                                            yield {"type": "response_id", "id": response_id}
                                         elif response_id != chosen_response_id:
                                             continue
 

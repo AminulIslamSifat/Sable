@@ -299,6 +299,11 @@
       }
     }
 
+    // Tracks Qwen response_id per chat for stop API requests
+    const activeResponseIds = new Map();
+    window.getActiveResponseId = (chatId) => activeResponseIds.get(chatId || activeChatId) || null;
+    window.setActiveResponseId = (chatId, id) => { if (id) activeResponseIds.set(chatId, id); };
+
     function startStream(chatId) {
       resetScrollTracking();
       const controller = new AbortController();
@@ -309,6 +314,7 @@
     }
 
     function endStream(chatId) {
+      activeResponseIds.delete(chatId);
       if (activeStreams.has(chatId)) {
         activeStreams.delete(chatId);
       } else if (activeChatId !== chatId && activeStreams.has(activeChatId)) {

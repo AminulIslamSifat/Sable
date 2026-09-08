@@ -1842,6 +1842,15 @@
               }
               saveActiveChat();
             }
+          } else if (evt.type === "response_id") {
+            // Qwen stop API requires response_id. Backend emits this as soon as
+            // the first upstream SSE chunk exposes it.
+            if (evt.id && typeof window.setActiveResponseId === "function") {
+              window.setActiveResponseId(streamChatId, String(evt.id));
+              if (activeChatId === streamChatId) {
+                window.setActiveResponseId(activeChatId, String(evt.id));
+              }
+            }
           } else if (evt.type === "status") {
             if (evt.message === "feeding_skill_results") {
               ui.nextSkillRound();
