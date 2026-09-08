@@ -1667,7 +1667,6 @@ async def chat(request: ChatRequest):
                     # Suppress internal/setup events
                     if event_type in ("meta", "request_sent"):
                         continue
-<<<<<<< HEAD
                     if event_type == "response_id":
                         # Capture for CancelledError stop call, forward to frontend
                         _rid = event.get("id")
@@ -1675,8 +1674,6 @@ async def chat(request: ChatRequest):
                             final_parent = str(_rid)
                         yield sse(event)
                         continue
-=======
->>>>>>> origin/main
                     if event_type == "answer":
                         pending_thinking.clear()
                         _raw_chunk = str(event.get("text", ""))
