@@ -109,6 +109,54 @@ def set_active_account(name: str) -> None:
         logger.warning("Failed to write active account file: %s", exc)
 
 
+# ── Sync-fallback tracking ──────────────────────────────────────────────────
+# When sync_context fails for an account, we persist the account name here so
+# every subsequent chat on that account gets [SYSTEM INSTRUCTION] injected into
+# the first message until sync_context succeeds again.
+_SYNC_FAILED_FILE = _SYSTEM / ".sync_failed_accounts"
+
+
+def mark_sync_failed(account: str) -> None:
+    """Flag an account as needing instruction fallback injection."""
+    try:
+        existing = set()
+        if _SYNC_FAILED_FILE.exists():
+            existing = {l.strip() for l in _SYNC_FAILED_FILE.read_text(encoding="utf-8").splitlines() if l.strip()}
+        if account not in existing:
+            existing.add(account)
+            _SYNC_FAILED_FILE.write_text("\n".join(existing) + "\n", encoding="utf-8")
+            logger.info("Marked %s as sync-failed (instruction fallback enabled)", account)
+    except OSError as exc:
+        logger.warning("Failed to write sync-failed file: %s", exc)
+
+
+def clear_sync_failed(account: str) -> None:
+    """Remove sync-failed flag after a successful sync_context."""
+    try:
+        if not _SYNC_FAILED_FILE.exists():
+            return
+        lines = [l.strip() for l in _SYNC_FAILED_FILE.read_text(encoding="utf-8").splitlines() if l.strip() and l.strip() != account]
+        if lines:
+            _SYNC_FAILED_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        else:
+            _SYNC_FAILED_FILE.unlink(missing_ok=True)
+        logger.info("Cleared sync-failed flag for %s", account)
+    except OSError as exc:
+        logger.warning("Failed to update sync-failed file: %s", exc)
+
+
+def needs_instruction_fallback(account: str | None = None) -> bool:
+    """Check if the given (or currently active) account needs instruction injection."""
+    if account is None:
+        account = get_active_account()
+    try:
+        if not _SYNC_FAILED_FILE.exists():
+            return False
+        return any(l.strip() == account for l in _SYNC_FAILED_FILE.read_text(encoding="utf-8").splitlines())
+    except OSError:
+        return False
+
+
 def get_browser_data_dir() -> Path:
     """Return the browser data directory for the currently active account."""
     return _SYSTEM / get_active_account()
