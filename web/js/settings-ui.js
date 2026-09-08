@@ -570,6 +570,52 @@ document.getElementById("updateCheckBtn")?.addEventListener("click", async () =>
 
 document.getElementById("updateApplyBtn")?.addEventListener("click", applyUpdate);
 
+    // ── Change Password ─────────────────────────────────────────────────────
+    const changePasswordBtn = document.getElementById("changePasswordBtn");
+    if (changePasswordBtn) {
+      changePasswordBtn.addEventListener("click", async () => {
+        const currentPw = document.getElementById("currentPasswordInput")?.value?.trim() || "";
+        const newPw = document.getElementById("newPasswordInput")?.value?.trim() || "";
+        const confirmPw = document.getElementById("confirmPasswordInput")?.value?.trim() || "";
+        const statusEl = document.getElementById("changePasswordStatus");
+
+        const setStatus = (msg, color) => {
+          if (statusEl) { statusEl.textContent = msg; statusEl.style.color = color; }
+        };
+
+        if (!currentPw || !newPw || !confirmPw) return setStatus("⚠️ Fill in all fields", "#ff6b6b");
+        if (newPw !== confirmPw) return setStatus("⚠️ New passwords don't match", "#ff6b6b");
+        if (newPw.length < 4) return setStatus("⚠️ Password must be at least 4 characters", "#ff6b6b");
+
+        changePasswordBtn.disabled = true;
+        changePasswordBtn.textContent = "Changing…";
+        try {
+          const res = await fetch("/api/settings/change-password", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ current_password: currentPw, new_password: newPw }),
+          });
+          if (res.ok) {
+            setStatus("✅ Password changed! You're still signed in.", "#4ade80");
+            document.getElementById("currentPasswordInput").value = "";
+            document.getElementById("newPasswordInput").value = "";
+            document.getElementById("confirmPasswordInput").value = "";
+            // Update stored token so future requests stay authenticated
+            localStorage.setItem("sable_token", newPw);
+          } else {
+            const err = await res.json().catch(() => ({}));
+            setStatus("❌ " + (err.detail || "Failed to change password"), "#ff6b6b");
+          }
+        } catch {
+          setStatus("❌ Connection error", "#ff6b6b");
+        } finally {
+          changePasswordBtn.disabled = false;
+          changePasswordBtn.textContent = "Change Password";
+        }
+      });
+    }
+
+
 // Auto-check on load + every 30 min
 (async () => {
   await checkForUpdates(false);

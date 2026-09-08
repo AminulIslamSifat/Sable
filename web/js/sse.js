@@ -2270,7 +2270,6 @@ function handleBackendStatusEvent(evt, container) {
     card.innerHTML = `
       <div class="skill-header">
         <div class="skill-header-left">
-          <span class="skill-arrow">${_backendStatusIcon("chevron-down")}</span>
           <span class="skill-name">${_backendStatusIcon("terminal", 15)} Backend Status</span>
         </div>
         <div class="skill-header-right" style="display:flex;align-items:center;gap:8px;">
