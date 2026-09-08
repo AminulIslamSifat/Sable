@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import time
 from collections.abc import Generator
 from pathlib import Path
@@ -16,7 +17,7 @@ _SCRIPT = str(Path(__file__).resolve().parent.parent.parent.parent / "tools" / "
 
 def _run_memory(cli_args: list[str]) -> tuple[bool, str]:
     """Run memory_manager.py with args, return (ok, output)."""
-    cmd = ["python3", _SCRIPT] + cli_args
+    cmd = [sys.executable, _SCRIPT] + cli_args
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
     except subprocess.TimeoutExpired:

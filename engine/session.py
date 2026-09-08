@@ -346,13 +346,14 @@ class BrowserManager:
         print(f"[DEBUG] Image uploaded successfully! File ID: {file_id}")
         return file_obj
 
-    async def sync_context(self, headers: dict[str, str] | None = None, project_id: str | None = None, custom_instructions: str | None = None) -> bool:
+    async def sync_context(self, headers: dict[str, str] | None = None, project_id: str | None = None, custom_instructions: str | None = None, layout_mode: str | None = None) -> bool:
         """Sync persona instructions to Qwen via settings/update API (no Playwright DOM).
 
         Args:
             custom_instructions: If provided, use this string directly instead of
                 building instructions via build_instructions(). Used by subagents
                 to push their own system prompt into Qwen's personalization slot.
+            layout_mode: "chat" strips tools/skills/MCP except web search + chat_title.
         """
         if headers is None:
             await self.start()
@@ -365,7 +366,7 @@ class BrowserManager:
             # Build instructions using shared builder.
             # provider="qwen" injects <action> tag format instructions (Qwen's native wrapper).
             from connectors.common.instruction_builder import build_instructions
-            instructions = build_instructions(project_id=project_id, provider="qwen")
+            instructions = build_instructions(project_id=project_id, provider="qwen", layout_mode=layout_mode)
 
         MAX_CHARS = 40960
         if len(instructions) > MAX_CHARS:

@@ -405,12 +405,12 @@ class ScraperLifecycle:
                     from engine.process_utils import kill_process_tree
                     pid = chrome_proc.pid
                     os.kill(pid, 0)  # check alive
-                    kill_process_tree(pid, sig=signal.SIGTERM)
+                    kill_process_tree(pid)  # cross-platform: SIGTERM on POSIX, taskkill on Windows
                     killed_pid = pid
                     await asyncio.sleep(3.0)
                     try:
                         os.kill(pid, 0)
-                        kill_process_tree(pid, sig=signal.SIGKILL)
+                        kill_process_tree(pid)  # escalate: already forceful on Windows
                     except (ProcessLookupError, OSError):
                         pass
                 except (ProcessLookupError, PermissionError, OSError):

@@ -187,6 +187,7 @@ def build_instructions(
     agent_role: str | None = None,
     agent_tools: list[str] | None = None,
     agent_skills: list[str] | None = None,
+    layout_mode: str | None = None,
 ) -> str:
     """Build full system instruction with optional project overrides.
 
@@ -206,6 +207,8 @@ def build_instructions(
                     as persona, skips project/git/facts sections.
         agent_tools: Tool group keys for subagent (filters tool schemas).
         agent_skills: Skill keys for subagent (filters skill registry).
+        layout_mode: "chat" strips all tools/skills/MCP except web search
+                     and chat_title. "agent" or None = full tool access.
     """
     proj = None if agent_role else _get_project(project_id)
     parts: list[str] = []
@@ -289,76 +292,95 @@ def build_instructions(
             git_lines.append(f"- Branch: {proj['git_branch']}")
         parts.append("\n".join(git_lines))
 
-    # --- Skill Registry ---
-    from engine.skills import SkillEngine
-    from engine.skills.handlers import HANDLER_MAP
+    # --- Chat mode: strip all tools/skills/MCP except web search + chat_title ---
+    _is_chat_mode = layout_mode == "chat"
 
-    # --- Skill Registry ---
-    # Subagents: only include explicitly allowed skills
-    # Main chat: include all skills minus disabled ones
-    _disabled_skills: list[str] = []
-    if agent_role and agent_skills is not None:
-        # For subagents, disable everything NOT in the allowed list
-        from engine.skills.registry import discover_skills as _discover_all_skills
-        _all_skill_keys = [s.key for s in _discover_all_skills(_SKILLS_DIR)]
-        _disabled_skills = [k for k in _all_skill_keys if k not in agent_skills]
-    else:
-        _global_disabled_path = _PROJECT_ROOT / "Brain" / "disabled_skills.json"
-        if _global_disabled_path.exists():
-            try:
-                _gd = json.loads(_global_disabled_path.read_text(encoding="utf-8"))
-                if isinstance(_gd, list):
-                    _disabled_skills.extend(_gd)
-            except Exception:
-                pass
-        if proj and proj.get("skills_config"):
-            _disabled_skills.extend([k for k, v in proj["skills_config"].items() if not v])
+    if not _is_chat_mode:
+        # --- Skill Registry ---
+        from engine.skills import SkillEngine
+        from engine.skills.handlers import HANDLER_MAP
 
-    _engine = SkillEngine(
-        skills_dir=_SKILLS_DIR,
-        handlers=HANDLER_MAP,
-        agent_id="maria" if not agent_role else f"agent-{agent_role}",
-        disabled=_disabled_skills or None,
-    )
-    skills_prompt = _engine.get_registry_prompt()
-    if skills_prompt.strip():
-        parts.append(skills_prompt)
-
-    # --- ⚠️ TOOL CALL FORMAT PRIMER (BEFORE tool schemas) ---
-    # Injected FIRST so the model knows HOW to call tools before seeing WHAT tools exist.
-    # This is the highest-weighted instruction via dual placement (primer + recency).
-    if provider and provider in _PROVIDER_TOOL_FORMATS:
-        parts.append(_PROVIDER_TOOL_FORMATS[provider])
-
-    # --- Tool Schemas ---
-    try:
-        from engine.tools_loader import get_tools_prompt_section
-        _disabled_tools: list[str] = []
-        if agent_role and agent_tools is not None:
-            # For subagents, disable everything NOT in the allowed tool groups
-            from engine.tools_loader import browse_tools as _browse_all_tools
-            _all_tool_keys = [g["key"] for g in _browse_all_tools()]
-            _disabled_tools = [k for k in _all_tool_keys if k not in agent_tools]
+        # --- Skill Registry ---
+        # Subagents: only include explicitly allowed skills
+        # Main chat: include all skills minus disabled ones
+        _disabled_skills: list[str] = []
+        if agent_role and agent_skills is not None:
+            # For subagents, disable everything NOT in the allowed list
+            from engine.skills.registry import discover_skills as _discover_all_skills
+            _all_skill_keys = [s.key for s in _discover_all_skills(_SKILLS_DIR)]
+            _disabled_skills = [k for k in _all_skill_keys if k not in agent_skills]
         else:
-            _disabled_tools_path = _PROJECT_ROOT / "Brain" / "disabled_tools.json"
-            if _disabled_tools_path.exists():
-                _dt = json.loads(_disabled_tools_path.read_text(encoding="utf-8"))
-                if isinstance(_dt, list):
-                    _disabled_tools = _dt
-        tools_section = get_tools_prompt_section(disabled=_disabled_tools, provider=provider)
-        if tools_section:
-            parts.append(tools_section)
-    except Exception:
-        pass
+            _global_disabled_path = _PROJECT_ROOT / "Brain" / "disabled_skills.json"
+            if _global_disabled_path.exists():
+                try:
+                    _gd = json.loads(_global_disabled_path.read_text(encoding="utf-8"))
+                    if isinstance(_gd, list):
+                        _disabled_skills.extend(_gd)
+                except Exception:
+                    pass
+            if proj and proj.get("skills_config"):
+                _disabled_skills.extend([k for k, v in proj["skills_config"].items() if not v])
 
-    # --- MCP Tools ---
-    try:
-        from engine.mcp.manager import get_mcp_manager
-        mcp_section = get_mcp_manager().get_prompt_section()
-        if mcp_section:
-            parts.append(mcp_section)
-    except Exception:
-        pass
+        _engine = SkillEngine(
+            skills_dir=_SKILLS_DIR,
+            handlers=HANDLER_MAP,
+            agent_id="maria" if not agent_role else f"agent-{agent_role}",
+            disabled=_disabled_skills or None,
+        )
+        skills_prompt = _engine.get_registry_prompt()
+        if skills_prompt.strip():
+            parts.append(skills_prompt)
+
+        # --- ⚠️ TOOL CALL FORMAT PRIMER (BEFORE tool schemas) ---
+        # Injected FIRST so the model knows HOW to call tools before seeing WHAT tools exist.
+        # This is the highest-weighted instruction via dual placement (primer + recency).
+        if provider and provider in _PROVIDER_TOOL_FORMATS:
+            parts.append(_PROVIDER_TOOL_FORMATS[provider])
+
+        # --- Tool Schemas ---
+        try:
+            from engine.tools_loader import get_tools_prompt_section
+            _disabled_tools: list[str] = []
+            if agent_role and agent_tools is not None:
+                # For subagents, disable everything NOT in the allowed tool groups
+                from engine.tools_loader import browse_tools as _browse_all_tools
+                _all_tool_keys = [g["key"] for g in _browse_all_tools()]
+                _disabled_tools = [k for k in _all_tool_keys if k not in agent_tools]
+            else:
+                _disabled_tools_path = _PROJECT_ROOT / "Brain" / "disabled_tools.json"
+                if _disabled_tools_path.exists():
+                    _dt = json.loads(_disabled_tools_path.read_text(encoding="utf-8"))
+                    if isinstance(_dt, list):
+                        _disabled_tools = _dt
+            tools_section = get_tools_prompt_section(disabled=_disabled_tools, provider=provider)
+            if tools_section:
+                parts.append(tools_section)
+        except Exception:
+            pass
+
+        # --- MCP Tools ---
+        try:
+            from engine.mcp.manager import get_mcp_manager
+            mcp_section = get_mcp_manager().get_prompt_section()
+            if mcp_section:
+                parts.append(mcp_section)
+        except Exception:
+            pass
+    else:
+        # Chat mode: only web_search + chat_title, no skills, no MCP, no format primer
+        try:
+            from engine.tools_loader import get_all_tool_schemas
+            _chat_allowed = ["online_search", "chat_title"]
+            _chat_schemas = get_all_tool_schemas([], allowed=_chat_allowed, tier=None)
+            if _chat_schemas:
+                import json as _json
+                lines = ["<tools>"]
+                for s in _chat_schemas:
+                    lines.append(_json.dumps(s, ensure_ascii=False))
+                lines.append("</tools>")
+                parts.append("\n".join(lines))
+        except Exception:
+            pass
 
     # --- Output Directory (always injected, not toggleable) ---
     from engine.config import OUTPUT_ROOT as _OUT

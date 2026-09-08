@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import time
 from collections.abc import Generator
 from pathlib import Path
@@ -63,7 +64,7 @@ def handle_computer_use(
 
     try:
         proc = subprocess.run(
-            ["python3", str(_COMPUTER_USE_SCRIPT), payload],
+            [sys.executable, str(_COMPUTER_USE_SCRIPT), payload],
             capture_output=True,
             text=True,
             timeout=timeout,
