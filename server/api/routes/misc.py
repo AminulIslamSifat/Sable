@@ -62,16 +62,93 @@ async def stream_logs():
                 yield sse({"type": "ping"})
     return StreamingResponse(generator(), media_type="text/event-stream")
 
+def _get_available_backends() -> set[str]:
+    """Determine which backends have valid credentials configured.
+
+    Returns a set of backend names that are ready to use.
+    'qwen' = browser-based Qwen (has WAF tokens or browser profiles).
+    'deepseek' = has JWT tokens in the per-account store.
+    Others = have at least one API key saved.
+    Always includes 'local' (custom endpoints are user-managed).
+    """
+    import importlib
+
+    available: set[str] = {"local"}
+
+    # Qwen: check for WAF tokens or browser profiles
+    try:
+        from engine.config import load_qwen_token_store, _SYSTEM as _sys_dir
+        token_store = load_qwen_token_store()
+        has_qwen_tokens = any(entries for entries in token_store.values() if entries)
+        has_profiles = any(
+            d.is_dir() and d.name.startswith("browser-data-acc")
+            for d in _sys_dir.iterdir()
+        ) if _sys_dir.is_dir() else False
+        if has_qwen_tokens or has_profiles:
+            available.add("qwen")
+    except Exception as exc:
+        logger.debug("Backend qwen unavailable: %s", exc)
+
+    # DeepSeek: check for JWT tokens
+    try:
+        from connectors.deepseek.client import get_token_for_account
+        if get_token_for_account():
+            available.add("deepseek")
+    except Exception as exc:
+        logger.debug("Backend deepseek unavailable: %s", exc)
+
+    # API-key-based providers
+    _key_providers = {
+        "gemini": "connectors.gemini.client",
+        "groq": "connectors.groq.client",
+        "mistral": "connectors.mistral.client",
+        "openai": "connectors.openai.client",
+    }
+    for backend, module_path in _key_providers.items():
+        try:
+            mod = importlib.import_module(module_path)
+            client = mod.get_client()
+            if client.is_available:
+                available.add(backend)
+        except Exception as exc:
+            logger.debug("Backend %s unavailable: %s", backend, exc)
+
+    # Cloudflare: check for saved credentials
+    try:
+        from connectors.cloudflare.client import get_client as get_cf_client
+        if get_cf_client().is_available:
+            available.add("cloudflare")
+    except Exception as exc:
+        logger.debug("Backend cloudflare unavailable: %s", exc)
+
+    return available
+
+
 @router.get("/api/models")
 def models() -> dict[str, list[dict[str, Any]]]:
     from engine.config import get_all_models
     scraper_cfg = get_scraper_settings()
     if scraper_cfg.get("enabled") and scraper_cfg.get("engine_type") == "deepseek":
         return {"models": DEEPSEEK_MODELS}
+
     all_models = get_all_models()
+
     if scraper_cfg.get("enabled") and scraper_cfg.get("engine_type") == "qwen":
-        # In Qwen scraper mode, only show native Qwen models (no api_backend)
         all_models = [m for m in all_models if not m.get("api_backend")]
+    else:
+        # Dynamic filtering: only show models whose backend has credentials
+        available = _get_available_backends()
+        filtered = []
+        for m in all_models:
+            backend = m.get("api_backend")
+            if backend is None:
+                # Qwen native model — only show if qwen backend is available
+                if "qwen" in available:
+                    filtered.append(m)
+            elif backend in available:
+                filtered.append(m)
+        all_models = filtered
+
     return {
         "models": [
             {

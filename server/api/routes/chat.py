@@ -592,6 +592,7 @@ async def chat(request: ChatRequest):
     scraper_enabled = get_scraper_settings().get("enabled")
     active_chat_id = request.chat_id
     _layout_mode = request.layout_mode or "agent"  # "agent" or "chat"
+    bdd = request.browser_data_dir  # scoped browser profile for isolated streams
     _upstream_session_id: str | None = None
     if not active_chat_id and scraper_enabled:
         active_chat_id = f"browser-{uuid.uuid4().hex}"
@@ -603,7 +604,7 @@ async def chat(request: ChatRequest):
             # Qwen model — create upstream session and store separately
             try:
                 _upstream_session_id = await retry_async(
-                    lambda: service.create_chat(model=request.model),
+                    lambda: service.create_chat(model=request.model, bdd=bdd),
                     label="create_chat",
                 )
             except Exception as exc:
@@ -787,7 +788,10 @@ async def chat(request: ChatRequest):
         "SELECT COUNT(*) as c FROM messages WHERE chat_id = ?", (active_chat_id,)
     ).fetchone()["c"]
 
-    if _local_use_utilities and parent_id is None and _msg_count <= 1:
+    # ponytail: skip chat_title injection for critique sub-chats — they're ephemeral
+    # and forcing a title tool call wastes a round on every critique turn
+    _is_critique_chat = "-critique-" in active_chat_id
+    if _local_use_utilities and parent_id is None and _msg_count <= 1 and not _is_critique_chat:
         _context_parts.append('[SYSTEM: You MUST call the chat_title tool now to set a title for this new conversation. This is mandatory.]')
         # Inject platform info so the model uses correct paths and commands
         import platform as _plat
@@ -1475,6 +1479,7 @@ async def chat(request: ChatRequest):
                             files=files_for_round,
                             model=request.model,
                             thinking_mode=request.thinking_mode,
+                            bdd=bdd,
                         ),
                         label=f"stream_round_{round_index}",
                     )
@@ -1541,8 +1546,11 @@ async def chat(request: ChatRequest):
                                 else:
                                     # Qwen scraper path
                                     try:
-                                        await service.close()
-                                        await service._ensure_headers()
+                                        if bdd:
+                                            await service.close_scoped(bdd)
+                                        else:
+                                            await service.close()
+                                        await service._ensure_headers(bdd)
                                     except Exception as _retry_exc:
                                         logger.warning("[main-stream] Retry refresh failed: %s", _retry_exc)
                                     round_event_source = retry_stream(
@@ -1553,6 +1561,7 @@ async def chat(request: ChatRequest):
                                             files=files_for_round,
                                             model=request.model,
                                             thinking_mode=request.thinking_mode,
+                                            bdd=bdd,
                                         ),
                                         label=f"stream_round_{round_index}_retry{_main_timeout_retries}",
                                     )
@@ -1581,8 +1590,11 @@ async def chat(request: ChatRequest):
                                         event = {"type": "waf_blocked", "message": f"API stall-retry failed: {_retry_exc}", **_build_account_debug_info()}
                                 else:
                                     try:
-                                        await service.close()
-                                        await service._ensure_headers()
+                                        if bdd:
+                                            await service.close_scoped(bdd)
+                                        else:
+                                            await service.close()
+                                        await service._ensure_headers(bdd)
                                     except Exception as _retry_exc:
                                         logger.warning("[main-stream] Stall-retry refresh failed: %s", _retry_exc)
                                     round_event_source = retry_stream(
@@ -1593,6 +1605,7 @@ async def chat(request: ChatRequest):
                                             files=files_for_round,
                                             model=request.model,
                                             thinking_mode=request.thinking_mode,
+                                            bdd=bdd,
                                         ),
                                         label=f"stream_round_{round_index}_stall_retry{_main_stall_retries}",
                                     )
@@ -1622,8 +1635,11 @@ async def chat(request: ChatRequest):
                                 else:
                                     # Qwen scraper path
                                     try:
-                                        await service.close()
-                                        await service._ensure_headers()
+                                        if bdd:
+                                            await service.close_scoped(bdd)
+                                        else:
+                                            await service.close()
+                                        await service._ensure_headers(bdd)
                                     except Exception as _retry_exc:
                                         logger.warning("[main-stream] Empty-response retry refresh failed: %s", _retry_exc)
                                     round_event_source = retry_stream(
@@ -1634,6 +1650,7 @@ async def chat(request: ChatRequest):
                                             files=files_for_round,
                                             model=request.model,
                                             thinking_mode=request.thinking_mode,
+                                            bdd=bdd,
                                         ),
                                         label=f"stream_round_{round_index}_empty_retry{_empty_response_retries}",
                                     )
@@ -1700,10 +1717,10 @@ async def chat(request: ChatRequest):
                         from engine.session import create_new_chat as _create_qwen_chat
                         logger.warning("[session-recovery] CHAT_NOT_FOUND triggered for chat_id=%s (upstream=%s)", active_chat_id, _upstream_session_id)
                         yield sse({"type": "status", "message": "recovering_session"})
-                        _new_headers = await service._ensure_headers()
+                        _new_headers = await service._ensure_headers(bdd)
                         _new_qwen_id = await _create_qwen_chat(_new_headers, model=request.model)
                         if not _new_qwen_id:
-                            _new_headers = await service._refresh_headers()
+                            _new_headers = await service._refresh_headers(bdd)
                             _new_qwen_id = await _create_qwen_chat(_new_headers, model=request.model)
                         if _new_qwen_id:
                             logger.info("[session-recovery] New upstream session: %s -> %s (local chat stays %s)", _upstream_session_id, _new_qwen_id, active_chat_id)
@@ -1750,6 +1767,7 @@ async def chat(request: ChatRequest):
                                 files=files_for_round,
                                 model=request.model,
                                 thinking_mode=request.thinking_mode,
+                                bdd=bdd,
                             )
                             # No meta event needed — local chat_id hasn't changed
                             async for _recovery_event in round_event_source:
@@ -1807,6 +1825,7 @@ async def chat(request: ChatRequest):
                             files=files_for_round,
                             model=request.model,
                             thinking_mode=request.thinking_mode,
+                            bdd=bdd,
                         )
                         async for _recovery_event in round_event_source:
                             _rec_type = _recovery_event.get("type")
@@ -1874,8 +1893,11 @@ async def chat(request: ChatRequest):
                                 yield sse({"type": "status", "message": f"chat_in_progress_retry_{_cip_retry}"})
                                 await asyncio.sleep(3)
                                 try:
-                                    await service.close()
-                                    await service._ensure_headers()
+                                    if bdd:
+                                        await service.close_scoped(bdd)
+                                    else:
+                                        await service.close()
+                                    await service._ensure_headers(bdd)
                                 except Exception as _cip_exc:
                                     logger.warning("[main-stream] Chat-in-progress retry refresh failed: %s", _cip_exc)
                                 round_event_source = retry_stream(
@@ -1886,6 +1908,7 @@ async def chat(request: ChatRequest):
                                         files=files_for_round,
                                         model=request.model,
                                         thinking_mode=request.thinking_mode,
+                                        bdd=bdd,
                                     ),
                                     label=f"stream_round_{round_index}_cip_retry{_cip_retry}",
                                 )
@@ -2035,14 +2058,22 @@ async def chat(request: ChatRequest):
                             logger.info("[auto-switch] Attempt %d: Switching from %s → %s", _switch_attempt, _current_acc, _next_acc)
                             yield sse({"type": "account_switch", "step": "switching", "from": _current_acc, "to": _next_acc, "attempt": _switch_attempt})
                             try:
-                                await service.close()
-                                set_active_account(_next_acc)
-                                # Update singleton service internals so subsequent
-                                # requests use the new account's browser profile.
                                 _next_path = _SYS / _next_acc
-                                service._browser.user_data_dir = str(_next_path)
-                                service._account_override = _next_acc
-                                logger.info("[auto-switch] Active account updated to %s", _next_acc)
+                                if bdd:
+                                    # Isolated stream: switch only the scoped browser
+                                    _scoped_browser = service._get_browser(bdd)
+                                    await _scoped_browser.close()
+                                    _scoped_browser.user_data_dir = str(_next_path)
+                                    service._scoped_headers.pop(bdd, None)
+                                    service._scoped_accounts[bdd] = _next_acc
+                                    logger.info("[auto-switch] Scoped account updated to %s (bdd=%s)", _next_acc, bdd)
+                                else:
+                                    # Default stream: existing behavior untouched
+                                    await service.close()
+                                    set_active_account(_next_acc)
+                                    service._browser.user_data_dir = str(_next_path)
+                                    service._account_override = _next_acc
+                                    logger.info("[auto-switch] Active account updated to %s", _next_acc)
                             except Exception as _sw_exc:
                                 logger.error("[auto-switch] Account switch failed: %s", _sw_exc)
                                 yield sse({"type": "account_switch", "step": "failed", "error": str(_sw_exc)})
@@ -2056,7 +2087,7 @@ async def chat(request: ChatRequest):
                             from engine.config import mark_sync_failed, clear_sync_failed
                             _sync_ok = False
                             try:
-                                _sync_result = await service.sync_context()
+                                _sync_result = await service.sync_context(bdd=bdd)
                                 if _sync_result is not False:
                                     _sync_ok = True
                                     clear_sync_failed(_next_acc)
@@ -2118,6 +2149,7 @@ async def chat(request: ChatRequest):
                                 files=files_for_round,
                                 model=request.model,
                                 thinking_mode=request.thinking_mode,
+                                bdd=bdd,
                             )
                             async for _sw_event in round_event_source:
                                 _sw_type = _sw_event.get("type")

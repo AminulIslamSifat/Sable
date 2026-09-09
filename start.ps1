@@ -175,18 +175,37 @@ function Ensure-VCRedist {
 }
 
 # ── Ensure Docker (Desktop) ─────────────────────────────────────────────────
+function Test-DockerAlive {
+    <#
+    .SYNOPSIS
+        Runs `docker info` with a hard timeout.
+        Without this, docker info hangs FOREVER on Windows when the daemon
+        pipe (//./pipe/docker_engine) exists but isn't responding yet.
+    #>
+    param([int]$TimeoutSec = 5)
+    try {
+        $proc = Start-Process -FilePath "docker" -ArgumentList "info" `
+            -NoNewWindow -PassThru -RedirectStandardOutput $null -RedirectStandardError $null
+        $exited = $proc.WaitForExit($TimeoutSec * 1000)
+        if (-not $exited) {
+            $proc.Kill()
+            return $false
+        }
+        return ($proc.ExitCode -eq 0)
+    } catch {
+        return $false
+    }
+}
+
 function Ensure-Docker {
     Write-Info "Checking Docker..."
 
     if (Test-Command "docker") {
-        # CLI exists - check if daemon is responsive
-        try {
-            $null = docker info 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                Write-Ok "Docker daemon running"
-                return $true
-            }
-        } catch {}
+        # CLI exists - check if daemon is responsive (with timeout!)
+        if (Test-DockerAlive -TimeoutSec 5) {
+            Write-Ok "Docker daemon running"
+            return $true
+        }
 
         # Daemon not running - try to start Docker Desktop
         Write-Info "Docker CLI found but daemon not responding - starting Docker Desktop..."
@@ -199,13 +218,10 @@ function Ensure-Docker {
             Write-Info "Waiting for Docker Desktop to start (up to 60s)..."
             for ($i = 0; $i -lt 30; $i++) {
                 Start-Sleep -Seconds 2
-                try {
-                    $null = docker info 2>&1
-                    if ($LASTEXITCODE -eq 0) {
-                        Write-Ok "Docker Desktop started"
-                        return $true
-                    }
-                } catch {}
+                if (Test-DockerAlive -TimeoutSec 5) {
+                    Write-Ok "Docker Desktop started"
+                    return $true
+                }
             }
         }
         Write-Warn "Docker daemon not responding - SearXNG will be skipped"
@@ -225,9 +241,65 @@ function Ensure-Docker {
     return $false
 }
 
+# ── Docker Preference (first-run prompt) ─────────────────────────────────────
+$DOCKER_PREF_FILE = Join-Path $SCRIPT_DIR "system" ".searxng_pref"
+
+function Get-DockerPreference {
+    <#
+    .SYNOPSIS
+        On first run, asks the user if they want Docker/SearXNG.
+        Persists the answer to system/.searxng_pref so it never asks again.
+    #>
+    if (Test-Path $DOCKER_PREF_FILE) {
+        $pref = (Get-Content $DOCKER_PREF_FILE -Raw).Trim()
+        return ($pref -eq "yes")
+    }
+
+    # First run — ask the user
+    Write-Host ""
+    Write-Host "  SearXNG is an optional self-hosted search engine that improves" -ForegroundColor White
+    Write-Host "  Sable's web research quality. It requires Docker Desktop on Windows." -ForegroundColor White
+    Write-Host ""
+    Write-Host "  ⚠️  Docker Desktop on Windows is HEAVY:" -ForegroundColor Yellow
+    Write-Host "      • ~1-2 GB RAM (runs a full WSL2 Linux VM underneath)" -ForegroundColor DarkGray
+    Write-Host "      • Noticeable CPU usage even when idle" -ForegroundColor DarkGray
+    Write-Host "      • Requires Docker Hub account signup" -ForegroundColor DarkGray
+    Write-Host "      • Can take several minutes to start on cold boot" -ForegroundColor DarkGray
+    Write-Host "      • GPU passthrough detection adds startup overhead" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "  Without SearXNG, Sable still works fine using API-based search" -ForegroundColor White
+    Write-Host "  (Tavily, etc.) or direct web fetching." -ForegroundColor White
+    Write-Host ""
+
+    $answer = $null
+    while ($answer -ne 'y' -and $answer -ne 'n') {
+        $answer = (Read-Host "  Enable Docker + SearXNG? [y/N]").ToLower().Trim()
+        if ([string]::IsNullOrWhiteSpace($answer)) { $answer = 'n' }
+    }
+
+    # Persist choice
+    $sysDir = Join-Path $SCRIPT_DIR "system"
+    if (-not (Test-Path $sysDir)) { New-Item -ItemType Directory -Path $sysDir | Out-Null }
+    if ($answer -eq 'y') {
+        Set-Content -Path $DOCKER_PREF_FILE -Value "yes" -NoNewline
+        Write-Ok "Docker + SearXNG enabled (saved preference)"
+        return $true
+    } else {
+        Set-Content -Path $DOCKER_PREF_FILE -Value "no" -NoNewline
+        Write-Ok "Docker + SearXNG skipped (saved preference)"
+        return $false
+    }
+}
+
 # ── Setup SearXNG Container ─────────────────────────────────────────────────
 function Setup-SearXNG {
     Write-Info "Checking SearXNG search backend..."
+
+    $wantDocker = Get-DockerPreference
+    if (-not $wantDocker) {
+        Write-Info "SearXNG disabled by preference (delete system\.searxng_pref to re-prompt)"
+        return
+    }
 
     $dockerReady = Ensure-Docker
     if (-not $dockerReady) {
@@ -355,6 +427,69 @@ function Setup-Playwright {
     Write-Ok "Playwright check done"
 }
 
+# ── GitHub MCP Server (native binary, no Docker) ───────────────────────────
+$GITHUB_MCP_VERSION = "v1.12.1"
+
+function Setup-GitHubMcp {
+    Write-Info "Checking GitHub MCP server..."
+
+    # Check if already on PATH
+    if (Test-Command "github-mcp-server") {
+        Write-Ok "github-mcp-server already installed"
+        return
+    }
+
+    # Check project-local install
+    $localBin = Join-Path $SCRIPT_DIR "system" "github-mcp-server.exe"
+    if (Test-Path $localBin) {
+        Write-Ok "github-mcp-server found in system/"
+        return
+    }
+
+    $arch = $env:PROCESSOR_ARCHITECTURE
+    $assetArch = switch ($arch) {
+        "AMD64" { "x86_64" }
+        "ARM64" { "arm64" }
+        default { $null }
+    }
+
+    if (-not $assetArch) {
+        Write-Warn "Unsupported architecture ($arch) - GitHub MCP skipped"
+        return
+    }
+
+    $assetName = "github-mcp-server_Windows_${assetArch}.zip"
+    $downloadUrl = "https://github.com/github/github-mcp-server/releases/download/${GITHUB_MCP_VERSION}/${assetName}"
+
+    Write-Info "Downloading GitHub MCP server ${GITHUB_MCP_VERSION} (Windows/${assetArch})..."
+    $tmpZip = Join-Path $env:TEMP $assetName
+    $tmpDir = Join-Path $env:TEMP "github-mcp-extract"
+
+    try {
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpZip -UseBasicParsing -ErrorAction Stop
+    } catch {
+        Write-Warn "Failed to download GitHub MCP server - skipped"
+        return
+    }
+
+    if (Test-Path $tmpDir) { Remove-Item -Recurse -Force $tmpDir }
+    Expand-Archive -Path $tmpZip -DestinationPath $tmpDir -Force
+
+    $exe = Get-ChildItem -Path $tmpDir -Filter "github-mcp-server.exe" -Recurse | Select-Object -First 1
+    if ($exe) {
+        $sysDir = Join-Path $SCRIPT_DIR "system"
+        if (-not (Test-Path $sysDir)) { New-Item -ItemType Directory -Path $sysDir | Out-Null }
+        Copy-Item $exe.FullName $localBin -Force
+        $env:Path += ";$sysDir"
+        Write-Ok "GitHub MCP server installed to system/github-mcp-server.exe"
+    } else {
+        Write-Warn "Extracted archive but exe not found - skipped"
+    }
+
+    Remove-Item $tmpZip -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+}
+
 # ── Install BurntToast Notifications ────────────────────────────────────────
 function Setup-BurntToast {
     Write-Info "Checking BurntToast notification module..."
@@ -444,9 +579,35 @@ function Setup-AutoStart {
                 | Out-Null
             Write-Ok "Installed auto-start task: $TASK_NAME (runs hidden on login)"
         } else {
-            # Update working directory + args in case install moved
-            Set-ScheduledTask -TaskName $TASK_NAME -Action $action | Out-Null
-            Write-Ok "Auto-start task already configured"
+            # Check if the existing task points to THIS Sable installation
+            $existingAction = $existingTask.Actions | Select-Object -First 1
+            $existingWorkDir = $existingAction.WorkingDirectory
+            $needsUpdate = $false
+
+            if ($existingWorkDir -and $existingWorkDir.TrimEnd('\') -ne $SCRIPT_DIR.TrimEnd('\')) {
+                Write-Warn "Auto-start task points to different location: $existingWorkDir"
+                Write-Info "Updating to current location: $SCRIPT_DIR"
+                $needsUpdate = $true
+            }
+
+            # Also check if the bat path changed
+            $expectedArg = "/c `"$startBat`" --background"
+            if ($existingAction.Arguments -ne $expectedArg) {
+                $needsUpdate = $true
+            }
+
+            if ($needsUpdate) {
+                # Must pass Principal when updating, otherwise elevated (Admin)
+                # sessions fail with Access Denied on tasks owned by the normal user
+                $updatePrincipal = New-ScheduledTaskPrincipal `
+                    -UserId $env:USERNAME `
+                    -LogonType Interactive `
+                    -RunLevel Limited
+                Set-ScheduledTask -TaskName $TASK_NAME -Action $action -Principal $updatePrincipal | Out-Null
+                Write-Ok "Auto-start task updated to current location"
+            } else {
+                Write-Ok "Auto-start task already configured"
+            }
         }
     } catch {
         Write-Warn "Could not configure auto-start: $_"
@@ -518,17 +679,35 @@ function Main {
     Cleanup-StaleProcess
     Bootstrap-Files
     Setup-Playwright
+    Setup-GitHubMcp
     Setup-SearXNG
     Sync-Dependencies
     Setup-BurntToast
     Setup-AutoStart
 
     Show-InfoBox $SABLE_URL $SABLE_PORT
-    Open-Browser $SABLE_URL
 
+    # Start server in background, wait for readiness, THEN open browser.
+    # Previously the browser opened before server.py even launched, causing
+    # loadChats() to fail silently and the sidebar to render empty.
     Write-Info "Starting server..."
     $env:TERM = "xterm-256color"
-    cmd /c "uv run python server.py 2>&1"
+    $serverJob = Start-Job -ScriptBlock {
+        param($dir)
+        Set-Location $dir
+        cmd /c "uv run python server.py 2>&1"
+    } -ArgumentList $SCRIPT_DIR
+
+    $ready = Wait-ForServer
+    if ($ready) {
+        Open-Browser $SABLE_URL
+    } else {
+        Write-Warn "Opening browser anyway — server may still be starting"
+        Open-Browser $SABLE_URL
+    }
+
+    # Keep the main thread alive streaming server output
+    Receive-Job -Job $serverJob -Wait
 }
 
 Main

@@ -79,11 +79,19 @@ class ChatService:
         else:
             self._account_override = None
 
-    def _get_debug_account_info(self) -> dict:
+        # Scoped browser registry for isolated streams (e.g. critique agents)
+        # Each bdd path gets its own BrowserManager + header cache, completely
+        # independent from the default self._browser / self._headers.
+        self._scoped_browsers: dict[str, BrowserManager] = {}
+        self._scoped_headers: dict[str, dict[str, str]] = {}
+        self._scoped_accounts: dict[str, str] = {}
+
+    def _get_debug_account_info(self, bdd: str | None = None) -> dict:
         """Return debug info about which account/browser profile is actually being used."""
         from engine.config import _resolve_active_account
-        account = self._account_override or _resolve_active_account()
-        browser_dir = str(self._browser.user_data_dir) if self._browser else "unknown"
+        account = self._resolve_account(bdd)
+        browser = self._get_browser(bdd)
+        browser_dir = str(browser.user_data_dir) if browser else "unknown"
         # Get cached token snippet (first 40 chars of cookies for identification)
         from engine.config import get_qwen_tokens_for_account
         tok = get_qwen_tokens_for_account(account)
@@ -122,55 +130,114 @@ class ChatService:
     def browser_headless(self) -> bool:
         return self._browser.headless
 
-    async def _ensure_headers(self) -> dict[str, str]:
+    def _get_browser(self, bdd: str | None) -> BrowserManager:
+        """Return the right BrowserManager. bdd=None → default self._browser."""
+        if not bdd:
+            return self._browser
+        if bdd not in self._scoped_browsers:
+            self._scoped_browsers[bdd] = BrowserManager(user_data_dir=bdd)
+        return self._scoped_browsers[bdd]
+
+    def _resolve_account(self, bdd: str | None) -> str:
+        """Resolve account name for a given browser data dir."""
+        import re as _re
         from engine.config import _resolve_active_account
-        account = self._account_override or _resolve_active_account()
-        # Fast path: headers for THIS account already in memory
-        if self._headers and self._headers_account == account:
-            return self._headers
-        # Medium path: check per-account token cache before launching browser
+        if bdd:
+            basename = Path(bdd).name
+            if _re.match(r"browser-data-acc\d+$", basename):
+                return basename
+        return self._account_override or _resolve_active_account()
+
+    async def close_scoped(self, bdd: str) -> None:
+        """Close and clean up a scoped browser instance."""
+        if bdd in self._scoped_browsers:
+            async with self._lock:
+                await self._scoped_browsers[bdd].close()
+                self._scoped_browsers.pop(bdd, None)
+                self._scoped_headers.pop(bdd, None)
+                self._scoped_accounts.pop(bdd, None)
+
+    async def _ensure_headers(self, bdd: str | None = None) -> dict[str, str]:
+        account = self._resolve_account(bdd)
+
+        # ── Default path (bdd=None): existing behavior, untouched ──
+        if not bdd:
+            if self._headers and self._headers_account == account:
+                return self._headers
+            cached = get_qwen_tokens_for_account(account)
+            if cached and cached.get("cookies"):
+                from engine.session import build_headers
+                self._headers = build_headers(
+                    cookies=cached["cookies"],
+                    bx_ua=cached.get("bx_ua"),
+                    bx_umidtoken=cached.get("bx_umidtoken"),
+                )
+                self._headers_account = account
+                logger.info("Loaded cached Qwen WAF tokens for %s", account)
+                return self._headers
+            async with self._lock:
+                if not self._headers or self._headers_account != account:
+                    await self._browser.start()
+                    self._headers = await self._browser.get_fresh_headers()
+                    self._headers_account = account
+                    save_qwen_tokens_for_account(
+                        cookies=self._headers.get("Cookie", ""),
+                        bx_ua=self._headers.get("bx-ua", ""),
+                        bx_umidtoken=self._headers.get("bx-umidtoken", ""),
+                        account=account,
+                    )
+                return self._headers
+
+        # ── Scoped path (bdd set): isolated browser + header cache ──
+        if bdd in self._scoped_headers and self._scoped_accounts.get(bdd) == account:
+            return self._scoped_headers[bdd]
         cached = get_qwen_tokens_for_account(account)
         if cached and cached.get("cookies"):
             from engine.session import build_headers
-            self._headers = build_headers(
+            headers = build_headers(
                 cookies=cached["cookies"],
                 bx_ua=cached.get("bx_ua"),
                 bx_umidtoken=cached.get("bx_umidtoken"),
             )
-            self._headers_account = account
-            logger.info("Loaded cached Qwen WAF tokens for %s", account)
-            return self._headers
-        # Slow path: launch browser to fetch fresh headers
-        # (BrowserManager.start() guards against missing profiles)
+            self._scoped_headers[bdd] = headers
+            self._scoped_accounts[bdd] = account
+            logger.info("Loaded cached Qwen WAF tokens for %s (scoped: %s)", account, bdd)
+            return headers
         async with self._lock:
-            if not self._headers or self._headers_account != account:
-                await self._browser.start()
-                self._headers = await self._browser.get_fresh_headers()
-                self._headers_account = account
-                # Save to per-account cache
-                save_qwen_tokens_for_account(
-                    cookies=self._headers.get("Cookie", ""),
-                    bx_ua=self._headers.get("bx-ua", ""),
-                    bx_umidtoken=self._headers.get("bx-umidtoken", ""),
-                    account=account,
-                )
-            return self._headers
-
-    async def _refresh_headers(self) -> dict[str, str]:
-        async with self._lock:
-            await self._browser.start()
-            self._headers = await self._browser.get_fresh_headers()
-            # Save refreshed tokens to per-account cache
-            from engine.config import _resolve_active_account
-            account = self._account_override or _resolve_active_account()
-            self._headers_account = account
+            if bdd in self._scoped_headers and self._scoped_accounts.get(bdd) == account:
+                return self._scoped_headers[bdd]
+            browser = self._get_browser(bdd)
+            await browser.start()
+            headers = await browser.get_fresh_headers()
+            self._scoped_headers[bdd] = headers
+            self._scoped_accounts[bdd] = account
             save_qwen_tokens_for_account(
-                cookies=self._headers.get("Cookie", ""),
-                bx_ua=self._headers.get("bx-ua", ""),
-                bx_umidtoken=self._headers.get("bx-umidtoken", ""),
+                cookies=headers.get("Cookie", ""),
+                bx_ua=headers.get("bx-ua", ""),
+                bx_umidtoken=headers.get("bx-umidtoken", ""),
                 account=account,
             )
-            return self._headers
+            return headers
+
+    async def _refresh_headers(self, bdd: str | None = None) -> dict[str, str]:
+        account = self._resolve_account(bdd)
+        browser = self._get_browser(bdd)
+        async with self._lock:
+            await browser.start()
+            headers = await browser.get_fresh_headers()
+            if not bdd:
+                self._headers = headers
+                self._headers_account = account
+            else:
+                self._scoped_headers[bdd] = headers
+                self._scoped_accounts[bdd] = account
+            save_qwen_tokens_for_account(
+                cookies=headers.get("Cookie", ""),
+                bx_ua=headers.get("bx-ua", ""),
+                bx_umidtoken=headers.get("bx-umidtoken", ""),
+                account=account,
+            )
+            return headers
 
     async def warmup(self, account: str | None = None) -> None:
         """Pre-load WAF headers. Never launches a browser when the target
@@ -267,11 +334,11 @@ class ChatService:
                 if opened_here:
                     await self._browser.close()
 
-    async def create_chat(self, model: str | None = None) -> str | None:
-        headers = await self._ensure_headers()
+    async def create_chat(self, model: str | None = None, bdd: str | None = None) -> str | None:
+        headers = await self._ensure_headers(bdd)
         chat_id = await create_new_chat(headers, model=model)
         if not chat_id:
-            headers = await self._refresh_headers()
+            headers = await self._refresh_headers(bdd)
             chat_id = await create_new_chat(headers, model=model)
         return chat_id
 
@@ -299,11 +366,12 @@ class ChatService:
             thinking_enabled=thinking_enabled,
         )
 
-    async def sync_context(self, project_id: str | None = None, custom_instructions: str | None = None, layout_mode: str | None = None) -> bool:
-        # Reuse cached headers from warmup to avoid a redundant browser launch
-        if self._headers:
-            return await self._browser.sync_context(headers=self._headers, project_id=project_id, custom_instructions=custom_instructions, layout_mode=layout_mode)
-        return await self._browser.sync_context(project_id=project_id, custom_instructions=custom_instructions, layout_mode=layout_mode)
+    async def sync_context(self, project_id: str | None = None, custom_instructions: str | None = None, layout_mode: str | None = None, bdd: str | None = None) -> bool:
+        browser = self._get_browser(bdd)
+        headers = self._scoped_headers.get(bdd) if bdd else self._headers
+        if headers:
+            return await browser.sync_context(headers=headers, project_id=project_id, custom_instructions=custom_instructions, layout_mode=layout_mode)
+        return await browser.sync_context(project_id=project_id, custom_instructions=custom_instructions, layout_mode=layout_mode)
 
     async def _stop_upstream_generation(self, chat_id: str, response_id: str | None = None) -> bool:
         """Call Qwen's stop API to halt server-side token generation.
@@ -337,11 +405,12 @@ class ChatService:
         files: list[dict[str, Any]] | None = None,
         model: str | None = None,
         thinking_mode: str | None = None,
+        bdd: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        print(f"[STREAM] ▶ stream_events START chat_id={chat_id} msg_len={len(message)}")
+        print(f"[STREAM] ▶ stream_events START chat_id={chat_id} msg_len={len(message)} bdd={bdd}")
         try:
-            print(f"[STREAM]   ↳ _ensure_headers()...")
-            headers = await self._ensure_headers()
+            print(f"[STREAM]   ↳ _ensure_headers(bdd={bdd})...")
+            headers = await self._ensure_headers(bdd)
             print(f"[STREAM]   ✓ headers ready (keys={list(headers.keys())[:3]}...)")
             active_chat_id = chat_id
 
@@ -350,7 +419,7 @@ class ChatService:
                 active_chat_id = await create_new_chat(headers, model=model)
                 if not active_chat_id:
                     print(f"[STREAM]   ↳ create_new_chat() failed, refreshing headers...")
-                    headers = await self._refresh_headers()
+                    headers = await self._refresh_headers(bdd)
                     active_chat_id = await create_new_chat(headers, model=model)
 
             if not active_chat_id:
@@ -371,7 +440,8 @@ class ChatService:
         # into every first message until sync succeeds again. Mirrors DeepSeek's
         # [SYSTEM INSTRUCTION] injection pattern. Persisted per-account in config.
         from engine.config import needs_instruction_fallback
-        if needs_instruction_fallback(self._account_override):
+        _stream_account = self._resolve_account(bdd)
+        if needs_instruction_fallback(_stream_account):
             try:
                 from connectors.common.instruction_builder import build_instructions
                 _fb_instr = build_instructions(provider="qwen")
@@ -398,6 +468,7 @@ class ChatService:
                 parent_id=parent_id,
                 files=files,
                 is_retry=False,
+                bdd=bdd,
             ):
                 yield event
         except httpx.ConnectError as exc:
@@ -501,6 +572,7 @@ class ChatService:
         parent_id: str | None,
         files: list[dict[str, Any]] | None,
         is_retry: bool,
+        bdd: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         max_attempts = 3
         last_error_msg: str | None = None
@@ -555,7 +627,7 @@ class ChatService:
                                             "message": "Chat still in progress after 30s — upstream may be stuck",
                                         }
                                         return
-                                    headers = await self._refresh_headers()
+                                    headers = await self._refresh_headers(bdd)
                                     continue
                                 # ── End early detection ───────────────────────────────────
                                 if err_data.get("success") is False:
@@ -564,13 +636,13 @@ class ChatService:
                                     if code == "RateLimited":
                                         hours = inner.get("num", "?")
                                         details = inner.get("details", "Daily usage limit reached.")
-                                        self._mark_exhausted()
+                                        mark_account_exhausted(self._resolve_account(bdd))
                                         yield {
                                             "type": "rate_limited",
                                             "message": details,
                                             "hours": hours,
                                             "template": inner.get("template", ""),
-                                            **self._get_debug_account_info(),
+                                            **self._get_debug_account_info(bdd),
                                         }
                                         return
                                     if code == "CHAT_NOT_FOUND":
@@ -599,7 +671,7 @@ class ChatService:
                                             }
                                             return
                                         # Cleared — refresh headers and retry
-                                        headers = await self._refresh_headers()
+                                        headers = await self._refresh_headers(bdd)
                                         continue
                                     yield {
                                         "type": "error",
@@ -621,7 +693,7 @@ class ChatService:
                                         "message": "Chat still in progress after 30s — upstream may be stuck",
                                     }
                                     return
-                                headers = await self._refresh_headers()
+                                headers = await self._refresh_headers(bdd)
                                 continue
                             last_error_msg = f"HTTP {res.status_code}: {raw[:500]}"
                             continue
@@ -704,7 +776,7 @@ class ChatService:
                                                             "message": "Chat still in progress after 30s — upstream may be stuck",
                                                         }
                                                         return
-                                                    headers = await self._refresh_headers()
+                                                    headers = await self._refresh_headers(bdd)
                                                     break  # exit chunk loop → retry
                                                 # ── End early detection ──────────────────────────
                                                 if err_data.get("success") is False:
@@ -713,13 +785,13 @@ class ChatService:
                                                     if code == "RateLimited":
                                                         hours = inner.get("num", "?")
                                                         details = inner.get("details", "Daily usage limit reached.")
-                                                        self._mark_exhausted()
+                                                        mark_account_exhausted(self._resolve_account(bdd))
                                                         yield {
                                                             "type": "rate_limited",
                                                             "message": details,
                                                             "hours": hours,
                                                             "template": inner.get("template", ""),
-                                                            **self._get_debug_account_info(),
+                                                            **self._get_debug_account_info(bdd),
                                                         }
                                                         return
                                                     if code == "CHAT_NOT_FOUND":
@@ -747,7 +819,7 @@ class ChatService:
                                                                 "message": "Chat still in progress after 30s — upstream may be stuck",
                                                             }
                                                             return
-                                                        headers = await self._refresh_headers()
+                                                        headers = await self._refresh_headers(bdd)
                                                         break  # exit chunk loop → retry
                                                     # Other API errors
                                                     yield {
@@ -788,7 +860,7 @@ class ChatService:
                                                 "message": "Chat still in progress after 30s — upstream may be stuck",
                                             }
                                             return
-                                        headers = await self._refresh_headers()
+                                        headers = await self._refresh_headers(bdd)
                                         break  # exit chunk loop → retry
 
                                     # Catch top-level "error" field in SSE data lines.
@@ -809,7 +881,7 @@ class ChatService:
                                                 if not cleared:
                                                     yield {"type": "error", "message": "Chat still in progress after 30s"}
                                                     return
-                                                headers = await self._refresh_headers()
+                                                headers = await self._refresh_headers(bdd)
                                                 break
                                             # Other error codes
                                             if _err_code:
@@ -937,7 +1009,7 @@ class ChatService:
                 if attempt < max_attempts:
                     yield {"type": "status", "message": f"retrying_attempt_{attempt + 1}"}
                     yield {"type": "debug", "message": f"Chunk timeout on attempt {attempt}. Retrying."}
-                    headers = await self._refresh_headers()
+                    headers = await self._refresh_headers(bdd)
                     await asyncio.sleep(1 * attempt)
                     continue
                 else:
@@ -981,7 +1053,7 @@ class ChatService:
                                     if not cleared:
                                         yield {"type": "error", "message": "Chat still in progress after 30s"}
                                         return
-                                    headers = await self._refresh_headers()
+                                    headers = await self._refresh_headers(bdd)
                                     continue  # retry
                                 if _lo_code:
                                     last_error_msg = f"API error [{_lo_code}]: {_lo_msg or 'Unknown'}"
@@ -1004,7 +1076,7 @@ class ChatService:
                             if not cleared:
                                 yield {"type": "error", "message": "Chat still in progress after 30s"}
                                 return
-                            headers = await self._refresh_headers()
+                            headers = await self._refresh_headers(bdd)
                             continue  # retry
                         if err_data.get("success") is False:
                             inner = err_data.get("data", {})
@@ -1012,13 +1084,13 @@ class ChatService:
                             if code == "RateLimited":
                                 hours = inner.get("num", "?")
                                 details = inner.get("details", "Daily usage limit reached.")
-                                self._mark_exhausted()
+                                mark_account_exhausted(self._resolve_account(bdd))
                                 yield {
                                     "type": "rate_limited",
                                     "message": details,
                                     "hours": hours,
                                     "template": inner.get("template", ""),
-                                    **self._get_debug_account_info(),
+                                    **self._get_debug_account_info(bdd),
                                 }
                                 return
                             if code == "CHAT_NOT_FOUND":
@@ -1047,7 +1119,7 @@ class ChatService:
             print(f"[STREAM]     ↳ post-attempt check: last_error={last_error_msg[:100] if last_error_msg else 'None'}")
             if any(kw in _fail_lower for kw in ("ratelimit", "rate_limit", "rate limit", "quota", "daily usage", "exceeded", "429")):
                 print(f"[STREAM]     ⚡ FAST-FAIL rate_limit on attempt {attempt} — skipping retries")
-                self._mark_exhausted()
+                mark_account_exhausted(self._resolve_account(bdd))
                 logger.warning("Rate-limit detected on attempt %d — skipping remaining retries", attempt)
                 yield {"type": "rate_limited", "message": last_error_msg, "hours": "?"}
                 return
@@ -1055,7 +1127,7 @@ class ChatService:
                 logger.warning("Attempt %d failed: %s. Refreshing headers and retrying...", attempt, last_error_msg)
                 yield {"type": "status", "message": f"retrying_attempt_{attempt + 1}"}
                 yield {"type": "debug", "message": f"Attempt {attempt} failed: {last_error_msg}. Refreshing session."}
-                headers = await self._refresh_headers()
+                headers = await self._refresh_headers(bdd)
                 await asyncio.sleep(1 * attempt)
                 continue
 
@@ -1064,7 +1136,7 @@ class ChatService:
         _fail_lower = (last_error_msg or "").lower()
         if any(kw in _fail_lower for kw in ("ratelimit", "rate_limit", "rate limit", "quota", "daily usage", "exceeded", "429")):
             print(f"[STREAM]   ⚡ DEFENSE-IN-DEPTH rate_limit detected")
-            self._mark_exhausted()
+            mark_account_exhausted(self._resolve_account(bdd))
             yield {"type": "rate_limited", "message": last_error_msg, "hours": "?"}
         elif any(kw in _fail_lower for kw in ("captcha", "waf", "validate", "rgv587", "blocked", "forbidden")):
             print(f"[STREAM]   ⚡ DEFENSE-IN-DEPTH captcha/waf detected")

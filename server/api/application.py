@@ -140,12 +140,16 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     from engine.agents import get_runtime as _get_rt_startup
     _get_rt_startup()._loop = _aio.get_running_loop()
 
-    # Auto-connect enabled MCP servers in the background
-    try:
-        from engine.mcp.manager import get_mcp_manager
-        _aio.create_task(get_mcp_manager().connect_all_enabled())
-    except Exception as exc:
-        logger.warning("MCP auto-connect failed: %s: %s", type(exc).__name__, exc)
+    # Auto-connect enabled MCP servers in the background.
+    # Keep a strong reference to prevent silent GC and log any runtime errors.
+    async def _mcp_startup() -> None:
+        try:
+            from engine.mcp.manager import get_mcp_manager
+            await get_mcp_manager().connect_all_enabled()
+        except Exception as exc:
+            logger.error("MCP auto-connect failed: %s: %s", type(exc).__name__, exc)
+
+    app.state._mcp_startup_task = _aio.create_task(_mcp_startup())
 
     init_db()
     # One-time migration: move skill_events from messages column to dedicated table

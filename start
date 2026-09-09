@@ -340,6 +340,70 @@ SEOF
     _ok "SearXNG ready on http://localhost:8080"
 }
 
+# ── GitHub MCP Server (native binary, no Docker) ───────────────────────────
+GITHUB_MCP_VERSION="v1.12.1"
+
+setup_github_mcp() {
+    _info "Checking GitHub MCP server..."
+
+    if command -v github-mcp-server >/dev/null 2>&1; then
+        _ok "github-mcp-server already installed: $(github-mcp-server --version 2>/dev/null || echo 'unknown')"
+        return 0
+    fi
+
+    local arch
+    arch="$(uname -m)"
+    local asset_arch=""
+    case "$arch" in
+        x86_64|amd64) asset_arch="x86_64" ;;
+        aarch64|arm64) asset_arch="arm64" ;;
+        *)
+            _warn "Unsupported architecture ($arch) — GitHub MCP skipped"
+            return 0
+            ;;
+    esac
+
+    local os_name=""
+    case "$OS" in
+        Linux*)  os_name="Linux" ;;
+        Darwin*) os_name="Darwin" ;;
+    esac
+
+    local archive_ext="tar.gz"
+    local asset_name="github-mcp-server_${os_name}_${asset_arch}.${archive_ext}"
+    local download_url="https://github.com/github/github-mcp-server/releases/download/${GITHUB_MCP_VERSION}/${asset_name}"
+
+    _info "Downloading GitHub MCP server ${GITHUB_MCP_VERSION} (${os_name}/${asset_arch})..."
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+
+    if ! retry curl -fsSL "$download_url" -o "${tmp_dir}/${asset_name}"; then
+        _warn "Failed to download GitHub MCP server — skipped"
+        rm -rf "$tmp_dir"
+        return 0
+    fi
+
+    tar xzf "${tmp_dir}/${asset_name}" -C "$tmp_dir" 2>/dev/null || true
+
+    if [ -f "${tmp_dir}/github-mcp-server" ]; then
+        # Try system-wide install first, fall back to project-local
+        if $SUDO mv "${tmp_dir}/github-mcp-server" /usr/local/bin/github-mcp-server 2>/dev/null && \
+           $SUDO chmod +x /usr/local/bin/github-mcp-server 2>/dev/null; then
+            _ok "GitHub MCP server installed to /usr/local/bin/"
+        else
+            mkdir -p "${SCRIPT_DIR}/system"
+            mv "${tmp_dir}/github-mcp-server" "${SCRIPT_DIR}/system/github-mcp-server"
+            chmod +x "${SCRIPT_DIR}/system/github-mcp-server"
+            export PATH="${SCRIPT_DIR}/system:$PATH"
+            _ok "GitHub MCP server installed to system/github-mcp-server (local)"
+        fi
+    else
+        _warn "Extracted archive but binary not found — skipped"
+    fi
+
+    rm -rf "$tmp_dir"
+}
+
 # ── Playwright System Dependencies ──────────────────────────────────────────
 install_playwright_deps() {
     _info "Checking Playwright system dependencies..."
@@ -591,6 +655,7 @@ main() {
     bootstrap_files
     setup_playwright
     install_playwright_deps
+    setup_github_mcp
     setup_searxng
     sync_deps
 

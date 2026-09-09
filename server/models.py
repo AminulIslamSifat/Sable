@@ -30,6 +30,7 @@ class ChatRequest(BaseModel):
     open_file: str | None = None
     skip_user_save: bool = False
     layout_mode: str | None = None  # "agent" or "chat"
+    browser_data_dir: str | None = None  # scoped browser profile for isolated streams (e.g. critique)
 
 class NewChatRequest(BaseModel):
     model: str | None = None

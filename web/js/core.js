@@ -247,29 +247,30 @@
                       if (setupApiKeyStatus) { setupApiKeyStatus.textContent = "⚠️ Paste an API key first"; setupApiKeyStatus.style.color = "#ff6b6b"; }
                       return;
                     }
-                    const meta = _setupProviderMeta[provider];
-                    if (!meta) return;
+                    if (!provider) {
+                      if (setupApiKeyStatus) { setupApiKeyStatus.textContent = "⚠️ Select a provider first"; setupApiKeyStatus.style.color = "#ff6b6b"; }
+                      return;
+                    }
                     setupAddKeyBtn.disabled = true;
-                    setupAddKeyBtn.textContent = "Saving…";
+                    setupAddKeyBtn.textContent = "Saving & fetching models…";
                     try {
-                      let res;
-                      if (meta.singleToken) {
-                        res = await _origFetch(`${meta.apiBase}/credentials`, {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ api_token: key }),
-                        });
-                      } else {
-                        res = await _origFetch(`${meta.apiBase}/api-key`, {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ key }),
-                        });
-                      }
+                      // Use the unified setup endpoint that saves key + auto-registers models
+                      const res = await _origFetch("/api/setup/api-key", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ provider, api_key: key }),
+                      });
                       if (res.ok) {
-                        if (setupApiKeyStatus) { setupApiKeyStatus.textContent = "✅ Key saved! You can add more in Settings later."; setupApiKeyStatus.style.color = "#4ade80"; }
+                        const data = await res.json();
+                        const count = data.models_registered || 0;
+                        const msg = count > 0
+                          ? `✅ Key saved! Auto-registered ${count} model${count > 1 ? 's' : ''}.`
+                          : "✅ Key saved! Models are ready.";
+                        if (setupApiKeyStatus) { setupApiKeyStatus.textContent = msg; setupApiKeyStatus.style.color = "#4ade80"; }
                         setupApiKeyInput.value = "";
-                        setTimeout(resolve, 1500);
+                        // Reload models so the dropdown updates immediately
+                        if (window.loadModels) await window.loadModels();
+                        setTimeout(resolve, 2000);
                       } else {
                         const err = await res.json().catch(() => ({}));
                         if (setupApiKeyStatus) { setupApiKeyStatus.textContent = "❌ " + (err.detail || "Failed to save key"); setupApiKeyStatus.style.color = "#ff6b6b"; }
