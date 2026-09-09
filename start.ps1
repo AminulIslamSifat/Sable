@@ -440,7 +440,7 @@ function Setup-GitHubMcp {
     }
 
     # Check project-local install
-    $localBin = Join-Path $SCRIPT_DIR "system" "github-mcp-server.exe"
+    $localBin = Join-Path (Join-Path $SCRIPT_DIR "system") "github-mcp-server.exe"
     if (Test-Path $localBin) {
         Write-Ok "github-mcp-server found in system/"
         return
