@@ -600,6 +600,81 @@ open_browser() {
     disown 2>/dev/null || true
 }
 
+# ── Desktop Shortcut (.desktop) ─────────────────────────────────────────────
+install_desktop_file() {
+    [ "$OS" != "Linux"* ] && return 0
+    [ "$BACKGROUND" -eq 1 ] && return 0
+
+    local app_dir="${HOME}/.local/share/applications"
+    local desktop_file="${app_dir}/sable.desktop"
+    local launcher="${SCRIPT_DIR}/sable-launch.sh"
+
+    # Create the smart launcher script that checks port before starting
+    cat > "$launcher" << 'LAUNCHER_EOF'
+#!/usr/bin/env bash
+# Sable smart launcher — checks if server is running, starts if needed, opens browser
+SABLE_PORT="${SABLE_PORT:-61770}"
+SABLE_URL="http://127.0.0.1:${SABLE_PORT}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+is_server_running() {
+    curl -sf --max-time 2 "${SABLE_URL}/api/health" >/dev/null 2>&1 || \
+    curl -sf --max-time 2 "${SABLE_URL}/" >/dev/null 2>&1
+}
+
+open_browser() {
+    if command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$SABLE_URL" 2>/dev/null &
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c "import webbrowser; webbrowser.open('${SABLE_URL}')" 2>/dev/null &
+    fi
+}
+
+if is_server_running; then
+    open_browser
+else
+    # Start server in background via the main start script, wait, then open
+    cd "$SCRIPT_DIR" || exit 1
+    nohup bash "$SCRIPT_DIR/start" --background >/dev/null 2>&1 &
+
+    # Wait up to 30s for server to come up
+    elapsed=0
+    while [ $elapsed -lt 30 ]; do
+        sleep 1
+        ((elapsed++))
+        if is_server_running; then
+            open_browser
+            exit 0
+        fi
+    done
+
+    # Timeout — try opening anyway
+    open_browser
+fi
+LAUNCHER_EOF
+    chmod +x "$launcher"
+
+    mkdir -p "$app_dir"
+    cat > "$desktop_file" << EOF
+[Desktop Entry]
+Type=Application
+Name=Sable
+Comment=Sable Agentic Chat Platform
+Exec=${launcher}
+Icon=utilities-terminal
+Terminal=false
+Categories=Development;Utility;
+StartupNotify=true
+EOF
+
+    # Refresh desktop database so it shows up in app launchers
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$app_dir" 2>/dev/null || true
+    fi
+
+    _ok "Desktop shortcut installed (~/.local/share/applications/sable.desktop)"
+}
+
 # ── Info Box ─────────────────────────────────────────────────────────────────
 print_info_box() {
     [ "$BACKGROUND" -eq 1 ] && return 0
@@ -659,6 +734,7 @@ main() {
     setup_github_mcp
     setup_searxng
     sync_deps
+    install_desktop_file
 
     if is_systemd_available; then
         install_systemd_service
