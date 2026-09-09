@@ -92,6 +92,18 @@
       if (res.status === 401 && typeof url === "string" && !url.includes("/api/login") && !url.includes("/api/setup/") && _authReady && !_authBounced) {
         _authBounced = true;
         clearToken();
+        // Check if setup is needed before showing login screen
+        try {
+          const sRes = await _origFetch("/api/setup/status");
+          if (sRes.ok) {
+            const sData = await sRes.json();
+            if (sData.needs_password) {
+              showPhase(phasePassword);
+              setupPasswordIn.focus();
+              return res;
+            }
+          }
+        } catch {}
         showPhase(loginOverlay);
         loginTokenIn.focus();
       }
@@ -125,6 +137,19 @@
             loadAllPanels();
           }
         } else {
+          // Check if server needs setup (no password set) — redirect to Phase 1
+          try {
+            const sRes = await _origFetch("/api/setup/status");
+            if (sRes.ok) {
+              const sData = await sRes.json();
+              if (sData.needs_password) {
+                clearToken();
+                showPhase(phasePassword);
+                setupPasswordIn.focus();
+                return;
+              }
+            }
+          } catch {}
           loginError.textContent = "Invalid token. Try again.";
           loginError.classList.remove("hidden");
           loginTokenIn.value = "";
@@ -144,14 +169,33 @@
 
     function ensureAuth() {
       if (getToken()) {
-        _authReady = true;
-        showPhase(null);
-        return Promise.resolve();
+        // Validate cached token against server before trusting it
+        return (async () => {
+          try {
+            const checkRes = await _origFetch("/api/login", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ token: getToken() }),
+            });
+            if (checkRes.ok) {
+              _authReady = true;
+              showPhase(null);
+              return;
+            }
+          } catch {}
+          // Token invalid — clear it and fall through to setup/login flow
+          clearToken();
+        })().then(() => {
+          if (getToken()) return; // validated above, already resolved
+          return _runSetupOrLogin();
+        });
       }
+      return _runSetupOrLogin();
+    }
 
+    async function _runSetupOrLogin() {
       // Check if first-run setup is needed
-      return (async () => {
-        try {
+      try {
           const statusRes = await _origFetch("/api/setup/status");
           if (statusRes.ok) {
             const status = await statusRes.json();
@@ -326,16 +370,15 @@
               return waitForLogin();
             }
           }
-        } catch {
-          // Setup status check failed — fall through to normal login
-        }
+      } catch {
+        // Setup status check failed — fall through to normal login
+      }
 
-        // === PHASE 3: Normal login flow ===
-        _authReady = true;
-        showPhase(loginOverlay);
-        loginTokenIn.focus();
-        return waitForLogin();
-      })();
+      // === PHASE 3: Normal login flow ===
+      _authReady = true;
+      showPhase(loginOverlay);
+      loginTokenIn.focus();
+      return waitForLogin();
     }
 
     const ACTIVE_CHAT_KEY = "sable_active_chat";
