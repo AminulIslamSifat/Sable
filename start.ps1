@@ -646,6 +646,43 @@ function Open-Browser {
     } -ArgumentList $Url | Out-Null
 }
 
+# ── Desktop Shortcut (.lnk) ─────────────────────────────────────────────────
+function Create-DesktopShortcut {
+    Write-Info "Checking desktop shortcut..."
+    $desktopPath = [Environment]::GetFolderPath("Desktop")
+    $shortcutPath = Join-Path $desktopPath "Sable.lnk"
+    $startBat = Join-Path $SCRIPT_DIR "start.bat"
+
+    $needsUpdate = $true
+    if (Test-Path $shortcutPath) {
+        try {
+            $shell = New-Object -ComObject WScript.Shell
+            $existing = $shell.CreateShortcut($shortcutPath)
+            if ($existing.TargetPath -eq $startBat) {
+                $needsUpdate = $false
+            }
+        } catch {}
+    }
+
+    if (-not $needsUpdate) {
+        Write-Ok "Desktop shortcut already exists"
+        return
+    }
+
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($shortcutPath)
+        $shortcut.TargetPath = $startBat
+        $shortcut.WorkingDirectory = $SCRIPT_DIR
+        $shortcut.Description = "Launch Sable Agentic Chat Platform"
+        $shortcut.WindowStyle = 1  # Normal window
+        $shortcut.Save()
+        Write-Ok "Desktop shortcut created: $shortcutPath"
+    } catch {
+        Write-Warn "Could not create desktop shortcut: $_"
+    }
+}
+
 # ── Info Box ─────────────────────────────────────────────────────────────────
 function Show-InfoBox {
     param($Url, $Port)
@@ -684,6 +721,7 @@ function Main {
     Sync-Dependencies
     Setup-BurntToast
     Setup-AutoStart
+    Create-DesktopShortcut
 
     Show-InfoBox $SABLE_URL $SABLE_PORT
 
