@@ -725,62 +725,14 @@ function Main {
 
     Show-InfoBox $SABLE_URL $SABLE_PORT
 
-    # Start server in background. Open browser once it responds.
-    # uv run on Windows can take 20-40s (venv activation + imports),
-    # so we poll inside the background job instead of blocking Main.
+    # No waiting/polling here. It was blocking Windows startup behavior.
+    # Open browser immediately, then run the server in the foreground.
+    Write-Info "Opening browser..."
+    try { Start-Process $SABLE_URL } catch {}
+
     Write-Info "Starting server..."
     $env:TERM = "xterm-256color"
-    $serverJob = Start-Job -ScriptBlock {
-        param($dir, $url)
-        Set-Location $dir
-
-        # Launch server in its own process so we can poll independently
-        $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c uv run python server.py" `
-            -WorkingDirectory $dir -PassThru -NoNewWindow -RedirectStandardOutput "$dir\.sable_stdout.log" `
-            -RedirectStandardError "$dir\.sable_stderr.log"
-
-        # Poll until server responds (up to 90s -- uv is slow on cold start)
-        $deadline = (Get-Date).AddSeconds(90)
-        $opened = $false
-        while ((Get-Date) -lt $deadline) {
-            try {
-                $null = Invoke-WebRequest -Uri "$url/api/health" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
-                $opened = $true; break
-            } catch {
-                try {
-                    $null = Invoke-WebRequest -Uri "$url/" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
-                    $opened = $true; break
-                } catch {}
-            }
-            # If the server process died, stop waiting
-            if ($proc.HasExited) { break }
-            Start-Sleep -Milliseconds 800
-        }
-
-        if ($opened) {
-            try { Start-Process $url } catch {}
-        } else {
-            # Last resort -- open anyway, user can refresh
-            try { Start-Process $url } catch {}
-        }
-
-        # Stream server output to this job's stdout so Receive-Job picks it up
-        $logFile = "$dir\.sable_stdout.log"
-        $errFile = "$dir\.sable_stderr.log"
-        while (-not $proc.HasExited) {
-            if (Test-Path $logFile) { Get-Content $logFile -Tail 5 -ErrorAction SilentlyContinue }
-            if (Test-Path $errFile) { Get-Content $errFile -Tail 5 -ErrorAction SilentlyContinue }
-            Start-Sleep -Seconds 2
-        }
-        # Final flush
-        if (Test-Path $logFile) { Get-Content $logFile -Tail 20 -ErrorAction SilentlyContinue }
-        if (Test-Path $errFile) { Get-Content $errFile -Tail 20 -ErrorAction SilentlyContinue }
-    } -ArgumentList $SCRIPT_DIR, $SABLE_URL
-
-    Write-Info "Server starting in background - browser will open when ready (up to 90s)..."
-
-    # Keep the main thread alive streaming server output
-    Receive-Job -Job $serverJob -Wait
+    cmd /c "uv run python server.py 2>&1"
 }
 
 Main
