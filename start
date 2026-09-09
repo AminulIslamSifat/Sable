@@ -478,7 +478,8 @@ sync_deps() {
 # ── Install Playwright Chromium ──────────────────────────────────────────────
 setup_playwright() {
     _info "Ensuring Playwright Chromium..."
-    retry uv run playwright install chromium 2>/dev/null || {
+    # ponytail: don't swallow stderr, that's where the progress bar lives
+    retry uv run playwright install chromium || {
         _warn "Playwright Chromium install failed — browser automation may not work"
     }
     _ok "Playwright check done"
