@@ -602,7 +602,7 @@ open_browser() {
 
 # ── Desktop Shortcut (.desktop) ─────────────────────────────────────────────
 install_desktop_file() {
-    [ "$OS" != "Linux"* ] && return 0
+    [[ "$OS" != Linux* ]] && return 0
     [ "$BACKGROUND" -eq 1 ] && return 0
 
     local app_dir="${HOME}/.local/share/applications"

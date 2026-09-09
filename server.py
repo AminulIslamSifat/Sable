@@ -1,6 +1,13 @@
 import os
+import sys
 import signal
 import threading
+
+# ponytail: Windows cp1252 can't encode unicode in print() — force UTF-8
+if sys.platform == "win32":
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
 
 from server import app
 import uvicorn
