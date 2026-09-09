@@ -200,16 +200,16 @@ ensure_git() {
     fi
 }
 
-# -- Ensure ffmpeg (webcam capture via beacon) ---------------------------------
+
 ensure_ffmpeg() {
     if command -v ffmpeg >/dev/null 2>&1; then
         _ok "ffmpeg available"
         return 0
     fi
-    _info "Installing ffmpeg (needed for webcam/camera)..."
+    _info "Installing ffmpeg ..."
     install_pkg "ffmpeg" "ffmpeg" "ffmpeg" "ffmpeg" "ffmpeg"
     if ! command -v ffmpeg >/dev/null 2>&1; then
-        _warn "ffmpeg not found — webcam features will be unavailable"
+        _warn "ffmpeg not found"
         _warn "Install manually: https://ffmpeg.org/download.html"
     else
         _ok "ffmpeg installed"
