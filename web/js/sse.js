@@ -1788,6 +1788,9 @@
             } else if (evt.type === "skill_end") {
               // No-op: tool counter already updated on skill_start
             } else if (evt.type === "done") {
+              // NOTE: In agentic/tool-loop streams, "done" fires per-round,
+              // not just at the end. Don't send the report here — wait until
+              // the reader stream actually closes below.
               if (statusEl) statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
               if (box) {
                 box.classList.add('critique-done');
@@ -1795,30 +1798,37 @@
                 if (sb) sb.style.display = 'none';
               }
               _renderFinalReport();
-              // ponytail: removed sendAutoTurnMessage here — it was firing a full new
-              // agent turn on the main chat just to deliver the report text, causing
-              // the main agent to react to [Critique Report] as a user message and
-              // loop endlessly. The report is rendered in the critique card; if the
-              // main agent needs it, the backend injection path should handle it.
             } else if (evt.type === "error" || evt.type === "stream_error") {
               if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Error</span>';
               if (logEl) logEl.innerHTML += `<div class="critique-error">${escHtml(evt.message || evt.error || 'Unknown error')}</div>`;
             }
           }
         }
-        // If stream ended without explicit done event (or was aborted)
+        // Stream fully closed — reader.read() returned { done: true }.
+        // This is the ONLY place we send the report back to the main chat,
+        // because inner "done" SSE events fire per-round during tool loops.
         if (controller.signal.aborted) {
           if (statusEl) statusEl.innerHTML = '<span style="color:var(--warn)">Stopped</span>';
           if (box) box.classList.add('critique-done');
           if (logEl && answerBuf) _renderFinalReport();
-        } else if (statusEl && !box?.classList.contains('critique-done')) {
+        } else {
+          if (!box?.classList.contains('critique-done')) {
             if (answerBuf) {
-            statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
-            if (box) box.classList.add('critique-done');
-            _renderFinalReport();
-            // ponytail: same fix — no sendAutoTurnMessage on stream-end fallback
-          } else {
-            statusEl.innerHTML = '<span style="color:var(--error)">No response</span>';
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
+              if (box) box.classList.add('critique-done');
+              _renderFinalReport();
+            } else {
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">No response</span>';
+            }
+          }
+          // Send the final report to the main chat as a normal user message.
+          // Only send if we actually got a structured report (has **Mark:**).
+          if (answerBuf && typeof sendAutoTurnMessage === "function") {
+            const report = _extractReport(answerBuf);
+            const hasStructuredReport = answerBuf.includes("**Mark:**") || /^Mark:/m.test(answerBuf);
+            if (hasStructuredReport) {
+              setTimeout(() => sendAutoTurnMessage(`[Critique Report]\n${report}`), 300);
+            }
           }
         }
       } catch (err) {
