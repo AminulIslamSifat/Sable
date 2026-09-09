@@ -357,8 +357,13 @@
       } else {
         try {
           const data = await fetch("/api/models").then(r => r.json());
-          if (Array.isArray(data.models) && data.models.length > 0) {
-            models = data.models;
+          if (Array.isArray(data.models)) {
+            if (data.models.length > 0) {
+              models = data.models;
+            } else {
+              // No providers configured yet — show a placeholder option
+              models = [{ id: "__none__", label: "⚠️ Add a provider in Settings → Providers" }];
+            }
           }
         } catch (err) {
           console.warn("Could not load /api/models, using fallback list:", err);
@@ -376,6 +381,7 @@
 
       selectedModel = (savedModel && models.some(m => m.id === savedModel)) ? savedModel : models[0].id;
 
+      if (!modelSelectEl) return; // element not yet in DOM (e.g. during setup phase)
       modelSelectEl.innerHTML = "";
       for (const m of models) {
         const opt = document.createElement("option");
@@ -390,7 +396,7 @@
       updateAttachUI();
     }
 
-    modelSelectEl.addEventListener("change", async () => {
+    if (modelSelectEl) modelSelectEl.addEventListener("change", async () => {
       const scraper = _isScraperMode();
 
       if (!scraper) {

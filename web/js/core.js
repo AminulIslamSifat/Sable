@@ -92,6 +92,18 @@
       if (res.status === 401 && typeof url === "string" && !url.includes("/api/login") && !url.includes("/api/setup/") && _authReady && !_authBounced) {
         _authBounced = true;
         clearToken();
+        // Check if setup is needed before showing login screen
+        try {
+          const sRes = await _origFetch("/api/setup/status");
+          if (sRes.ok) {
+            const sData = await sRes.json();
+            if (sData.needs_password) {
+              showPhase(phasePassword);
+              setupPasswordIn.focus();
+              return res;
+            }
+          }
+        } catch {}
         showPhase(loginOverlay);
         loginTokenIn.focus();
       }
@@ -125,6 +137,19 @@
             loadAllPanels();
           }
         } else {
+          // Check if server needs setup (no password set) — redirect to Phase 1
+          try {
+            const sRes = await _origFetch("/api/setup/status");
+            if (sRes.ok) {
+              const sData = await sRes.json();
+              if (sData.needs_password) {
+                clearToken();
+                showPhase(phasePassword);
+                setupPasswordIn.focus();
+                return;
+              }
+            }
+          } catch {}
           loginError.textContent = "Invalid token. Try again.";
           loginError.classList.remove("hidden");
           loginTokenIn.value = "";
@@ -144,14 +169,33 @@
 
     function ensureAuth() {
       if (getToken()) {
-        _authReady = true;
-        showPhase(null);
-        return Promise.resolve();
+        // Validate cached token against server before trusting it
+        return (async () => {
+          try {
+            const checkRes = await _origFetch("/api/login", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ token: getToken() }),
+            });
+            if (checkRes.ok) {
+              _authReady = true;
+              showPhase(null);
+              return;
+            }
+          } catch {}
+          // Token invalid — clear it and fall through to setup/login flow
+          clearToken();
+        })().then(() => {
+          if (getToken()) return; // validated above, already resolved
+          return _runSetupOrLogin();
+        });
       }
+      return _runSetupOrLogin();
+    }
 
+    async function _runSetupOrLogin() {
       // Check if first-run setup is needed
-      return (async () => {
-        try {
+      try {
           const statusRes = await _origFetch("/api/setup/status");
           if (statusRes.ok) {
             const status = await statusRes.json();
@@ -247,29 +291,30 @@
                       if (setupApiKeyStatus) { setupApiKeyStatus.textContent = "⚠️ Paste an API key first"; setupApiKeyStatus.style.color = "#ff6b6b"; }
                       return;
                     }
-                    const meta = _setupProviderMeta[provider];
-                    if (!meta) return;
+                    if (!provider) {
+                      if (setupApiKeyStatus) { setupApiKeyStatus.textContent = "⚠️ Select a provider first"; setupApiKeyStatus.style.color = "#ff6b6b"; }
+                      return;
+                    }
                     setupAddKeyBtn.disabled = true;
-                    setupAddKeyBtn.textContent = "Saving…";
+                    setupAddKeyBtn.textContent = "Saving & fetching models…";
                     try {
-                      let res;
-                      if (meta.singleToken) {
-                        res = await _origFetch(`${meta.apiBase}/credentials`, {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ api_token: key }),
-                        });
-                      } else {
-                        res = await _origFetch(`${meta.apiBase}/api-key`, {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ key }),
-                        });
-                      }
+                      // Use the unified setup endpoint that saves key + auto-registers models
+                      const res = await _origFetch("/api/setup/api-key", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ provider, api_key: key }),
+                      });
                       if (res.ok) {
-                        if (setupApiKeyStatus) { setupApiKeyStatus.textContent = "✅ Key saved! You can add more in Settings later."; setupApiKeyStatus.style.color = "#4ade80"; }
+                        const data = await res.json();
+                        const count = data.models_registered || 0;
+                        const msg = count > 0
+                          ? `✅ Key saved! Auto-registered ${count} model${count > 1 ? 's' : ''}.`
+                          : "✅ Key saved! Models are ready.";
+                        if (setupApiKeyStatus) { setupApiKeyStatus.textContent = msg; setupApiKeyStatus.style.color = "#4ade80"; }
                         setupApiKeyInput.value = "";
-                        setTimeout(resolve, 1500);
+                        // Reload models so the dropdown updates immediately
+                        if (window.loadModels) await window.loadModels();
+                        setTimeout(resolve, 2000);
                       } else {
                         const err = await res.json().catch(() => ({}));
                         if (setupApiKeyStatus) { setupApiKeyStatus.textContent = "❌ " + (err.detail || "Failed to save key"); setupApiKeyStatus.style.color = "#ff6b6b"; }
@@ -325,16 +370,15 @@
               return waitForLogin();
             }
           }
-        } catch {
-          // Setup status check failed — fall through to normal login
-        }
+      } catch {
+        // Setup status check failed — fall through to normal login
+      }
 
-        // === PHASE 3: Normal login flow ===
-        _authReady = true;
-        showPhase(loginOverlay);
-        loginTokenIn.focus();
-        return waitForLogin();
-      })();
+      // === PHASE 3: Normal login flow ===
+      _authReady = true;
+      showPhase(loginOverlay);
+      loginTokenIn.focus();
+      return waitForLogin();
     }
 
     const ACTIVE_CHAT_KEY = "sable_active_chat";

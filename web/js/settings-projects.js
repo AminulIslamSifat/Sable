@@ -432,25 +432,41 @@
       setTimeout(() => document.addEventListener('click', closeHandler, true), 0);
     }
 
-    async function loadChats(mode) {
+    async function loadChats(mode, _attempt = 0) {
+      const MAX_RETRIES = 4;
+      const RETRY_DELAYS = [500, 1000, 2000, 4000]; // exponential backoff
       try {
-        // skeleton loading placeholders
-        chatsEl.innerHTML = '';
-        for (let i = 0; i < 3; i++) {
-          const skel = document.createElement('div');
-          skel.className = 'skeleton-chat';
-          chatsEl.appendChild(skel);
+        // skeleton loading placeholders (only on first attempt)
+        if (_attempt === 0) {
+          chatsEl.innerHTML = '';
+          for (let i = 0; i < 3; i++) {
+            const skel = document.createElement('div');
+            skel.className = 'skeleton-chat';
+            chatsEl.appendChild(skel);
+          }
         }
         const params = new URLSearchParams();
         if (mode) params.set('mode', mode);
         if (activeProjectId) params.set('project_id', activeProjectId);
         const qs = params.toString();
         const url = qs ? `/api/chats?${qs}` : "/api/chats";
-        const data = await fetch(url).then(r => r.json());
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
         chatList = data.chats || [];
         renderChats();
       } catch (err) {
-        console.error("Failed to load chats:", err);
+        if (_attempt < MAX_RETRIES) {
+          const delay = RETRY_DELAYS[_attempt] || 2000;
+          console.warn(`loadChats failed (attempt ${_attempt + 1}/${MAX_RETRIES + 1}), retrying in ${delay}ms:`, err.message || err);
+          await new Promise(r => setTimeout(r, delay));
+          return loadChats(mode, _attempt + 1);
+        }
+        console.error("Failed to load chats after", MAX_RETRIES + 1, "attempts:", err);
+        // Show a retry button instead of leaving skeletons forever
+        if (chatsEl) {
+          chatsEl.innerHTML = `<div class="chat-group-label" style="cursor:pointer;text-align:center;padding:12px" onclick="loadChats('${mode || ''}')">⚠️ Failed to load chats — click to retry</div>`;
+        }
       }
     }
 

@@ -1323,6 +1323,28 @@
 .critique-badge.visual { background: rgba(139, 92, 246, 0.12); color: #a78bfa; }
 .critique-badge.code { background: rgba(59, 130, 246, 0.12); color: #60a5fa; }
 .critique-badge.security { background: rgba(239, 68, 68, 0.12); color: #f87171; }
+.critique-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.critique-stop-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 4px;
+  background: rgba(239, 68, 68, 0.1);
+  color: #f87171;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.critique-stop-btn:hover {
+  background: rgba(239, 68, 68, 0.25);
+}
+.critique-stop-btn svg { width: 12px; height: 12px; }
 .critique-status {
   font-size: 11px;
   color: var(--muted, #888);

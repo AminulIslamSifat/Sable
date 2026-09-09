@@ -48,13 +48,27 @@ class MCPServerConnection:
             return
 
         try:
+            import shutil
+
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client
 
             self._exit_stack = contextlib.AsyncExitStack()
 
+            # Resolve command: prefer project-local system/ binary so it works
+            # on Windows without relying on the start script mutating PATH.
+            raw_cmd: str = self.config["command"]
+            resolved_cmd = raw_cmd
+            if not Path(raw_cmd).is_absolute() and shutil.which(raw_cmd) is None:
+                project_root = Path(__file__).resolve().parents[2]
+                local_bin = project_root / "system" / raw_cmd
+                if local_bin.is_file():
+                    resolved_cmd = str(local_bin)
+                elif (project_root / "system" / f"{raw_cmd}.exe").is_file():
+                    resolved_cmd = str(project_root / "system" / f"{raw_cmd}.exe")
+
             server_params = StdioServerParameters(
-                command=self.config["command"],
+                command=resolved_cmd,
                 args=self.config.get("args", []),
                 env=self.config.get("env") or None,
             )
