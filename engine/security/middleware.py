@@ -188,12 +188,33 @@ def check_permission_required(content: str) -> tuple[str, str] | None:
     return None
 
 
+def _get_allowed_extra_roots() -> list[str]:
+    """Return resolved paths that are always allowed despite being outside CWD."""
+    from engine.config import OUTPUT_ROOT
+    roots = [os.path.realpath(str(OUTPUT_ROOT))]
+    # Also allow /tmp for transient files
+    tmp = os.path.realpath("/tmp")
+    if tmp not in roots:
+        roots.append(tmp)
+    return roots
+
+
 def _is_path_outside_cwd(path: str, cwd: str) -> bool:
-    """Check if a resolved file path is outside the CWD directory."""
+    """Check if a resolved file path is outside the CWD directory.
+
+    Paths under sable_output (OUTPUT_ROOT) and /tmp are always permitted
+    even though they live outside the project tree.
+    """
     try:
         real_path = os.path.realpath(os.path.expanduser(path))
         real_cwd = os.path.realpath(cwd)
-        return not real_path.startswith(real_cwd + os.sep) and real_path != real_cwd
+        if real_path.startswith(real_cwd + os.sep) or real_path == real_cwd:
+            return False
+        # Allow explicitly whitelisted extra roots
+        for extra in _get_allowed_extra_roots():
+            if real_path.startswith(extra + os.sep) or real_path == extra:
+                return False
+        return True
     except (OSError, ValueError):
         return True  # If we can't resolve, treat as outside
 

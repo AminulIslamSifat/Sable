@@ -1711,22 +1711,26 @@
     // Critique: fire a normal POST /api/chat turn, stream response into the critique card.
     // Uses a separate chat_id so the critique session doesn't pollute the main conversation history.
     // Everything else (model, provider, thinking_mode, system prompt, WAF) is identical.
-    async function _runCritiqueTurn(message, box, logEl, statusEl, critiqueId) {
+    async function _runCritiqueTurn(message, box, logEl, statusEl, critiqueId, browserDataDir) {
       if (!message || !activeChatId) return;
       const critiqueChatId = activeChatId + "-critique-" + (critiqueId || Date.now().toString(36));
       const controller = startStream(critiqueChatId);
+      // Store controller on the box element so the stop button can abort it
+      if (box) box._critiqueController = controller;
       try {
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        const body = {
             message,
             chat_id: critiqueChatId,
             parent_id: undefined,  // fresh session, no parent
             model: selectedModel,
             thinking_mode: selectedThinkingMode,
             stream: true,
-          }),
+        };
+        if (browserDataDir) body.browser_data_dir = browserDataDir;
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
           signal: controller.signal,
         });
         if (!res.ok) {
@@ -1739,7 +1743,28 @@
         const decoder = new TextDecoder();
         let buf = "";
         let answerBuf = "";
+        let toolCount = 0;
+        // Helper: extract only the structured report from the full answer
+        function _extractReport(text) {
+          // Look for **Mark:** as the start of the structured report
+          const idx = text.indexOf("**Mark:**");
+          if (idx !== -1) return text.slice(idx);
+          // Fallback: look for Mark: without bold
+          const idx2 = text.search(/^Mark:/m);
+          if (idx2 !== -1) return text.slice(idx2);
+          // No structured report found — return everything
+          return text;
+        }
+        // Helper: render final report into the card
+        function _renderFinalReport() {
+          if (!answerBuf || !logEl) return;
+          const report = _extractReport(answerBuf);
+          logEl.className = 'critique-report';
+          logEl.innerHTML = renderMarkdown(report);
+        }
         while (true) {
+          // Check if this critique was stopped by the user
+          if (controller.signal.aborted) break;
           const { done, value } = await reader.read();
           if (done) break;
           buf += decoder.decode(value, { stream: true });
@@ -1752,65 +1777,46 @@
             let evt;
             try { evt = JSON.parse(raw); } catch (_) { continue; }
             if (evt.type === "answer" && evt.text) {
+              // Accumulate silently — don't render intermediate narration
               answerBuf += evt.text;
-              if (logEl) {
-                logEl.innerHTML = renderMarkdown(answerBuf);
-                scrollBottom();
-              }
             } else if (evt.type === "thinking" && evt.text) {
-              // Show thinking in a muted sub-block inside the card
-              if (logEl) {
-                let thinkEl = logEl.querySelector('.critique-thinking');
-                if (!thinkEl) {
-                  thinkEl = document.createElement('div');
-                  thinkEl.className = 'critique-thinking';
-                  logEl.prepend(thinkEl);
-                }
-                thinkEl.textContent += evt.text;
-              }
+              // Suppress thinking output in critique cards entirely
             } else if (evt.type === "skill_start") {
-              if (logEl) {
-                const toolTag = document.createElement('div');
-                toolTag.className = 'critique-tool-entry';
-                toolTag.innerHTML = `<span class="critique-tool-name">⚡ ${escHtml(evt.name || '')}</span>`;
-                logEl.appendChild(toolTag);
-                scrollBottom();
-              }
+              // Show a compact tool counter instead of every tool name
+              toolCount++;
+              if (statusEl) statusEl.innerHTML = `<span class="critique-spinner"></span> Inspecting... (${toolCount} tools)`;
             } else if (evt.type === "skill_end") {
-              if (logEl) {
-                const entries = logEl.querySelectorAll('.critique-tool-entry');
-                const last = entries[entries.length - 1];
-                if (last && !last.dataset.done) {
-                  last.dataset.done = "1";
-                  const icon = evt.ok ? "✅" : "❌";
-                  last.innerHTML += ` <span>${icon}</span>`;
-                }
-              }
+              // No-op: tool counter already updated on skill_start
             } else if (evt.type === "done") {
               if (statusEl) statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
-              if (box) box.classList.add('critique-done');
-              if (logEl && answerBuf) logEl.innerHTML = renderMarkdown(answerBuf);
-              // Feed the critique report back into the main chat as a user message
-              if (answerBuf && typeof sendAutoTurnMessage === "function") {
-                const reportMsg = `[Critique Report]\n${answerBuf}`;
-                setTimeout(() => sendAutoTurnMessage(reportMsg, { skipUserBubble: false, skipUserSave: false }), 300);
+              if (box) {
+                box.classList.add('critique-done');
+                const sb = box.querySelector('.critique-stop-btn');
+                if (sb) sb.style.display = 'none';
               }
+              _renderFinalReport();
+              // ponytail: removed sendAutoTurnMessage here — it was firing a full new
+              // agent turn on the main chat just to deliver the report text, causing
+              // the main agent to react to [Critique Report] as a user message and
+              // loop endlessly. The report is rendered in the critique card; if the
+              // main agent needs it, the backend injection path should handle it.
             } else if (evt.type === "error" || evt.type === "stream_error") {
               if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Error</span>';
               if (logEl) logEl.innerHTML += `<div class="critique-error">${escHtml(evt.message || evt.error || 'Unknown error')}</div>`;
             }
           }
         }
-        // If stream ended without explicit done event
-        if (statusEl && !box?.classList.contains('critique-done')) {
-          if (answerBuf) {
+        // If stream ended without explicit done event (or was aborted)
+        if (controller.signal.aborted) {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--warn)">Stopped</span>';
+          if (box) box.classList.add('critique-done');
+          if (logEl && answerBuf) _renderFinalReport();
+        } else if (statusEl && !box?.classList.contains('critique-done')) {
+            if (answerBuf) {
             statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
             if (box) box.classList.add('critique-done');
-            if (logEl) logEl.innerHTML = renderMarkdown(answerBuf);
-            if (typeof sendAutoTurnMessage === "function") {
-              const reportMsg = `[Critique Report]\n${answerBuf}`;
-              setTimeout(() => sendAutoTurnMessage(reportMsg, { skipUserBubble: false, skipUserSave: false }), 300);
-            }
+            _renderFinalReport();
+            // ponytail: same fix — no sendAutoTurnMessage on stream-end fallback
           } else {
             statusEl.innerHTML = '<span style="color:var(--error)">No response</span>';
           }
@@ -2070,7 +2076,10 @@
                       <span class="critique-title">Critique Session</span>
                       <span class="critique-badge" data-focus="${escHtml(evt.focus || 'general')}">${escHtml(evt.focus || 'general')}</span>
                     </div>
-                    <div class="critique-status"><span class="critique-spinner"></span> Reviewing...</div>
+                    <div class="critique-header-right">
+                      <button class="critique-stop-btn" title="Stop critique"><i data-lucide="square"></i></button>
+                      <div class="critique-status"><span class="critique-spinner"></span> Reviewing...</div>
+                    </div>
                   </div>
                   <details class="critique-details">
                     <summary>Context & Criteria</summary>
@@ -2087,6 +2096,28 @@
                   </details>
                   <div class="critique-log"></div>
                 `;
+                // Wire stop button to abort the critique stream + tell server to stop
+                const stopBtn = box.querySelector('.critique-stop-btn');
+                if (stopBtn) {
+                  stopBtn.addEventListener('click', async () => {
+                    const ctrl = box._critiqueController;
+                    if (ctrl && !ctrl.signal.aborted) {
+                      stopBtn.style.display = 'none';
+                      const statusEl = box.querySelector('.critique-status');
+                      if (statusEl) statusEl.innerHTML = '<span style="color:var(--warn)">Stopping...</span>';
+                      // Tell the server to stop upstream generation first
+                      try {
+                        await fetch('/api/chat/stop', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ chat_id: activeChatId + '-critique-' + (box.dataset.critiqueId || '') }),
+                        });
+                      } catch (_) {}
+                      // Then abort the client-side stream
+                      ctrl.abort();
+                    }
+                  });
+                }
                 turn.appendChild(box);
                 activateLucideIcons(box);
                 scrollBottom();
@@ -2118,7 +2149,7 @@
                 const log = box.querySelector('.critique-log');
                 const statusEl = box.querySelector('.critique-status');
                 if (statusEl) statusEl.innerHTML = '<span class="critique-spinner"></span> Running...';
-                _runCritiqueTurn(evt.message, box, log, statusEl, evt.id);
+                _runCritiqueTurn(evt.message, box, log, statusEl, evt.id, evt.browser_data_dir);
               }
             }
           } else if (evt.type === "critique_done") {

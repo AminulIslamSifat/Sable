@@ -337,6 +337,13 @@
       let message = inputEl.value.trim();
       if (!message) return;
 
+      // Block sending if no provider is configured
+      const selModel = modelSelectEl?.value || selectedModel;
+      if (selModel === "__none__") {
+        showToast("No AI provider configured yet. Add one in Settings → Providers.", "error");
+        return;
+      }
+
       // Inject speech interruption note if user spoke over TTS
       if (typeof window.takeSpeechInterrupted === 'function' && window.takeSpeechInterrupted()) {
         message = '[Note: the user interrupted your previous spoken reply]\n\n' + message;

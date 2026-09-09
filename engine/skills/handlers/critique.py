@@ -45,14 +45,22 @@ def handle_critique(
         yield _end_event(tag_id, name, False, started, error="Missing context or criteria")
         return
 
-    # Build the user message — same instructions the main chat would get
+    # Build the user message — override persona so the model acts as a focused
+    # code reviewer instead of trying to be conversational/Maria during critique.
+    # ponytail: without this, the model gets Maria's system prompt but a clinical
+    # evaluation request, gets confused, outputs one sentence, and stops.
     message = (
+        f"[SYSTEM OVERRIDE: You are a strict, thorough code reviewer. Drop all "
+        f"persona, roleplay, and conversational behavior. Your ONLY job is to "
+        f"evaluate the context below against the criteria. Use tools aggressively "
+        f"(read files, search code, run commands) to inspect the actual codebase "
+        f"before writing your report. Do NOT respond conversationally. Do NOT "
+        f"stop after one sentence. Do the actual work.]\n\n"
         f"## Context to Evaluate\n{context}\n\n"
         f"## Evaluation Criteria\n{criteria}\n\n"
         f"## Focus Area\n{focus}\n\n"
-        f"Inspect the work described above. Use any tools you need to verify "
-        f"the claims (read files, run commands, check the browser). "
-        f"Then produce your structured critique report.\n\n"
+        f"Use tools NOW to inspect the codebase. Read the relevant files. "
+        f"Search for patterns. Then produce your structured critique report.\n\n"
         f"### Report Format\n"
         f"**Mark:** [X/10]\n"
         f"**Why:** (Detailed explanation)\n"
@@ -60,6 +68,21 @@ def handle_critique(
     )
     if cwd:
         message += f"\n\nWorking directory: {cwd}"
+
+    # Resolve a separate browser profile for critique so it doesn't share
+    # the main chat's browser data (prevents recursive tool access, WAF
+    # contention, and auto-switch collisions).
+    browser_data_dir: str | None = None
+    try:
+        from engine.agents.registry import get_next_account
+        from engine.config import _SYSTEM as _SYS
+        assigned = get_next_account("critique")
+        if assigned:
+            _path = _SYS / assigned
+            if _path.is_dir():
+                browser_data_dir = str(_path)
+    except Exception as _bdd_exc:
+        logger.warning("Failed to resolve scoped browser for critique: %s", _bdd_exc)
 
     # Frontend creates the critique card
     yield {
@@ -71,12 +94,16 @@ def handle_critique(
         "focus": focus,
     }
 
-    # Frontend fires POST /api/chat with this message, streams response into the card
-    yield {
+    # Frontend fires POST /api/chat with this message + browser_data_dir,
+    # streams response into the card using an isolated browser profile.
+    trigger: dict[str, Any] = {
         "type": "critique_trigger",
         "id": tag_id,
         "message": message,
     }
+    if browser_data_dir:
+        trigger["browser_data_dir"] = browser_data_dir
+    yield trigger
 
     # skill_end so the main loop knows the tool call completed
     yield _end_event(tag_id, name, True, started, result={"triggered": True})

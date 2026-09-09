@@ -35,7 +35,11 @@ def handle_mcp_call(
         yield _end_event(tag_id, name, False, started, error="Missing 'tool' attribute")
         return
 
-    # Parse JSON arguments from the tag body
+    # Parse JSON arguments from the tag body.
+    # The parser's _build_calls serialises the full params dict (including
+    # routing keys like "server"/"tool") into `content` when no dedicated
+    # content key matches.  Unwrap the nested "args" key if present so the
+    # MCP server only receives actual tool arguments.
     body = content.strip()
     if body:
         try:
@@ -46,6 +50,11 @@ def handle_mcp_call(
             return
     else:
         arguments = {}
+
+    if isinstance(arguments, dict) and "args" in arguments:
+        arguments = arguments["args"]
+        if arguments is None:
+            arguments = {}
 
     if not isinstance(arguments, dict):
         yield _output_event(tag_id, "Arguments must be a JSON object\n", "stderr")
