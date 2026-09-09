@@ -157,19 +157,19 @@ function Ensure-Git {
     Write-Ok "git installed"
 }
 
-# -- Ensure ffmpeg (webcam capture via beacon) --------------------------------
+
 function Ensure-FFmpeg {
     if (Test-Command "ffmpeg") {
         Write-Ok "ffmpeg available"
         return
     }
-    Write-Info "Installing ffmpeg (needed for webcam/camera)..."
+    Write-Info "Installing ffmpeg ..."
     if (Test-Command "winget") {
         winget install Gyan.FFmpeg --accept-source-agreements --accept-package-agreements 2>$null
         $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
     }
     if (-not (Test-Command "ffmpeg")) {
-        Write-Warn "ffmpeg not found - webcam features will be unavailable"
+        Write-Warn "ffmpeg not found"
         Write-Warn "Install manually: https://www.gyan.dev/ffmpeg/builds/"
     } else {
         Write-Ok "ffmpeg installed"
