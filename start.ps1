@@ -157,6 +157,25 @@ function Ensure-Git {
     Write-Ok "git installed"
 }
 
+
+function Ensure-FFmpeg {
+    if (Test-Command "ffmpeg") {
+        Write-Ok "ffmpeg available"
+        return
+    }
+    Write-Info "Installing ffmpeg ..."
+    if (Test-Command "winget") {
+        winget install Gyan.FFmpeg --accept-source-agreements --accept-package-agreements 2>$null
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    }
+    if (-not (Test-Command "ffmpeg")) {
+        Write-Warn "ffmpeg not found"
+        Write-Warn "Install manually: https://www.gyan.dev/ffmpeg/builds/"
+    } else {
+        Write-Ok "ffmpeg installed"
+    }
+}
+
 # -- Ensure VC++ Redistributable (for greenlet / Playwright) -----------------
 function Ensure-VCRedist {
     Write-Info "Checking Visual C++ Redistributable..."
@@ -712,6 +731,7 @@ function Main {
     Ensure-Python
     Ensure-Uv
     Ensure-Git
+    Ensure-FFmpeg
     Ensure-VCRedist
     Cleanup-StaleProcess
     Bootstrap-Files
@@ -725,27 +745,14 @@ function Main {
 
     Show-InfoBox $SABLE_URL $SABLE_PORT
 
-    # Start server in background, wait for readiness, THEN open browser.
-    # Previously the browser opened before server.py even launched, causing
-    # loadChats() to fail silently and the sidebar to render empty.
+    # No waiting/polling here. It was blocking Windows startup behavior.
+    # Open browser immediately, then run the server in the foreground.
+    Write-Info "Opening browser..."
+    try { Start-Process $SABLE_URL } catch {}
+
     Write-Info "Starting server..."
     $env:TERM = "xterm-256color"
-    $serverJob = Start-Job -ScriptBlock {
-        param($dir)
-        Set-Location $dir
-        cmd /c "uv run python server.py 2>&1"
-    } -ArgumentList $SCRIPT_DIR
-
-    $ready = Wait-ForServer
-    if ($ready) {
-        Open-Browser $SABLE_URL
-    } else {
-        Write-Warn "Opening browser anyway - server may still be starting"
-        Open-Browser $SABLE_URL
-    }
-
-    # Keep the main thread alive streaming server output
-    Receive-Job -Job $serverJob -Wait
+    cmd /c "uv run python server.py 2>&1"
 }
 
 Main

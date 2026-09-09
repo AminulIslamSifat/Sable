@@ -200,6 +200,22 @@ ensure_git() {
     fi
 }
 
+
+ensure_ffmpeg() {
+    if command -v ffmpeg >/dev/null 2>&1; then
+        _ok "ffmpeg available"
+        return 0
+    fi
+    _info "Installing ffmpeg ..."
+    install_pkg "ffmpeg" "ffmpeg" "ffmpeg" "ffmpeg" "ffmpeg"
+    if ! command -v ffmpeg >/dev/null 2>&1; then
+        _warn "ffmpeg not found"
+        _warn "Install manually: https://ffmpeg.org/download.html"
+    else
+        _ok "ffmpeg installed"
+    fi
+}
+
 # ── Ensure Docker ────────────────────────────────────────────────────────────
 ensure_docker() {
     _info "Checking Docker..."
@@ -602,7 +618,7 @@ open_browser() {
 
 # ── Desktop Shortcut (.desktop) ─────────────────────────────────────────────
 install_desktop_file() {
-    [ "$OS" != "Linux"* ] && return 0
+    [[ "$OS" != Linux* ]] && return 0
     [ "$BACKGROUND" -eq 1 ] && return 0
 
     local app_dir="${HOME}/.local/share/applications"
@@ -727,6 +743,7 @@ main() {
     ensure_python
     ensure_uv
     ensure_git
+    ensure_ffmpeg
     cleanup_stale_pid
     bootstrap_files
     setup_playwright
