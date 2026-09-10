@@ -307,6 +307,8 @@
         _stopInFlight = true;
         const ctrl = activeStreams.get(activeChatId);
         if (ctrl) ctrl.abort();
+        // Nuclear stop: abort all active agent sub-streams for this chat
+        if (typeof window._abortAllAgents === "function") window._abortAllAgents();
         // Fallback: if abort doesn't end the stream within 3s, force-clean
         const _stuckId = activeChatId;
         setTimeout(() => {
@@ -360,13 +362,24 @@
           inputEl.value = "";
           autoResize();
           hideMentionPopup();
+
+          // Add user's @mention message to chat UI so it's visible
+          const originalMsg = message;
+          if (typeof addMessage === "function") {
+            addMessage("user", originalMsg);
+          }
+
           showToast(`${mention.role === "researcher" ? "🔍" : mention.role === "coder" ? "💻" : mention.role === "reviewer" ? "📋" : mention.role === "writer" ? "✍️" : "⚙️"} Spawning ${mention.role}…`, "info");
           try {
             const result = await spawnAgentFromMention(mention.role, mention.task, activeChatId);
             if (result.error) {
               showToast(`Agent spawn failed: ${result.error}`, "error");
             } else {
-              showToast(`✅ ${mention.role} spawned (${result.model})`, "success");
+              showToast(`✅ ${mention.role} spawned (${result.model || result.agent_id})`, "success");
+              // Auto-open agent panel if available
+              if (typeof AgentPanel !== "undefined" && AgentPanel.open) {
+                AgentPanel.open(result.agent_id);
+              }
             }
           } catch (e) {
             showToast(`Agent spawn error: ${e.message}`, "error");

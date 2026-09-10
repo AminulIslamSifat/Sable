@@ -16,6 +16,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
 from engine.config import AGENT_CONFIG_PATH
+from engine.agents.registry import get_role_config
 
 router = APIRouter()
 
@@ -217,18 +218,6 @@ async def get_agent_config():
     return config
 
 
-@router.get("/api/agents/available-tools")
-async def get_available_tools():
-    """Return list of tool group keys (same as Settings > Tools panel)."""
-    from engine.tools_loader import browse_tools
-    groups = browse_tools()
-    tools = [
-        {"key": g["key"], "name": g["name"], "functions": len(g["tools"])}
-        for g in groups
-    ]
-    return {"tools": tools}
-
-
 @router.get("/api/agents/available-skills")
 async def get_available_skills():
     """Return list of all discovered skill keys with metadata."""
@@ -387,11 +376,6 @@ async def get_agent_history(agent_id: str):
         result["browser_data_dir"] = agent.browser_data_dir
         if agent.completed_at:
             result["completed_at"] = agent.completed_at
-        if agent.todos and agent.todos.todos:
-            result["todos"] = [
-                {"id": t.id, "content": t.content, "status": t.status, "subtasks": t.subtasks, "result": t.result}
-                for t in agent.todos.todos
-            ]
     return result
 
 
@@ -488,9 +472,15 @@ async def send_agent_message(agent_id: str, request: Request):
 
 @router.post("/api/agents/spawn")
 async def spawn_agent(request: Request):
-    """Manually spawn an agent from the chat UI (@ mention)."""
+    """Manually spawn an agent from the chat UI (@ mention).
+
+    Uses the main chat pipeline (critique pattern): emits agent_start + agent_trigger
+    events so the frontend fires POST /api/chat with the agent's chat_id.
+    No separate LLM loop — the main chat handles everything.
+    """
     from engine.agents import get_runtime
     from engine.agents.protocol import TaskAssignment
+    from engine.agents.registry import AGENT_ROLES, get_role_config
 
     body = await request.json()
     role = body.get("role", "").strip().lower()
@@ -500,16 +490,18 @@ async def spawn_agent(request: Request):
     if not role or not task or not chat_id:
         return {"error": "role, task, and chat_id are required"}
 
-    from engine.agents.registry import AGENT_ROLES
     valid_roles = tuple(AGENT_ROLES.keys())
     if role not in valid_roles:
         return {"error": f"Invalid role '{role}'. Must be one of: {', '.join(valid_roles)}"}
 
     rt = get_runtime()
+    role_cfg = get_role_config(role)
+    agent_model = body.get("model") or role_cfg.default_model
+
     assignment = TaskAssignment(
         task=task,
         role=role,
-        model=body.get("model") or None,  # None → registry default
+        model=agent_model,
         context=body.get("context") or None,
     )
     try:
@@ -517,7 +509,34 @@ async def spawn_agent(request: Request):
     except RuntimeError as exc:
         return {"error": str(exc)}
 
-    return {"status": "spawned", "agent_id": agent.id, "role": role, "model": agent.model}
+    # Build system prompt from role instruction
+    system_prompt = role_cfg.system_prompt or f"You are a {role} agent. Task: {task}"
+    if assignment.context:
+        agent_message = f"Context: {assignment.context}\n\nTask: {task}"
+    else:
+        agent_message = f"Task: {task}"
+
+    # Emit agent_start — frontend creates the UI card
+    push_agent_event(chat_id, {
+        "type": "agent_start",
+        "id": agent.id,
+        "role": role,
+        "task": task[:500],
+        "model": agent_model,
+    })
+
+    # Emit agent_trigger — frontend fires POST /api/chat through main pipeline
+    push_agent_event(chat_id, {
+        "type": "agent_trigger",
+        "id": agent.id,
+        "message": agent_message,
+        "system_prompt": system_prompt,
+        "model": agent_model,
+        "browser_data_dir": agent.browser_data_dir or None,
+        "collect": False,
+    })
+
+    return {"status": "spawned", "agent_id": agent.id, "role": role, "model": agent_model}
 
 
 

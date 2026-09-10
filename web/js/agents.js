@@ -674,6 +674,137 @@ const AgentPanel = {
     }
   },
 
+  // ── New streaming API (main chat pipeline, 2026-09-10) ──────────────────
+  // These methods are called by _runAgentTurn in sse.js to stream agent output
+  // into the panel body using the same POST /api/chat pipeline as critique.
+
+  openForStream(agentId, role, task, model, todos) {
+    // Prepare panel state but do NOT auto-open — user clicks topbar card to view
+    this.init();
+    this.currentAgentId = agentId;
+    this._userScrolled = false;
+    this._isRunning = true;
+    this.el.querySelector(".agent-panel-title").textContent = role || "agent";
+    this.el.querySelector(".agent-panel-model").textContent = model || "";
+    this.el.querySelector(".agent-panel-status").textContent = task ? task.slice(0, 50) : agentId;
+    this.bodyEl.innerHTML = "";
+    this._clearTodos();
+    if (todos && todos.length) this._renderTodos(todos);
+    const stopBtn = this.el.querySelector(".agent-panel-stop");
+    if (stopBtn) { stopBtn.classList.remove("hidden"); stopBtn.disabled = false; }
+    this._startTimer(null, null);
+  },
+
+  appendAnswer(agentId, text) {
+    if (this.currentAgentId !== agentId) return;
+    // Find or create current streaming answer element
+    let el = this.bodyEl.querySelector(".ap-streaming-answer");
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "msg bot ap-streaming-answer";
+      el.innerHTML = '<div class="md-content"><span class="ap-raw"></span></div>';
+      this.bodyEl.appendChild(el);
+    }
+    const raw = el.querySelector(".ap-raw");
+    if (raw) raw.textContent += text;
+    this._scrollBottom();
+  },
+
+  appendThinking(agentId, text) {
+    if (this.currentAgentId !== agentId) return;
+    let wrap = this.bodyEl.querySelector(".ap-thinking-active");
+    if (!wrap) {
+      wrap = document.createElement("div");
+      wrap.className = "thinking-wrap ap-thinking-active";
+      wrap.innerHTML = '<details class="thinking" open><summary><i data-lucide="chevron-right" class="thinking-chevron"></i>Thinking</summary><div class="thinking-body"></div></details>';
+      this.bodyEl.appendChild(wrap);
+      if (typeof activateLucideIcons === "function") activateLucideIcons(wrap);
+    }
+    const body = wrap.querySelector(".thinking-body");
+    if (body) body.textContent += text;
+    this._scrollBottom();
+  },
+
+  addSkillStart(agentId, evt) {
+    if (this.currentAgentId !== agentId) return;
+    // Finalize any active streaming answer
+    const streaming = this.bodyEl.querySelector(".ap-streaming-answer");
+    if (streaming) {
+      streaming.classList.remove("ap-streaming-answer");
+      const raw = streaming.querySelector(".ap-raw");
+      if (raw && typeof renderMarkdown === "function") {
+        const md = document.createElement("div");
+        md.className = "md-content";
+        md.innerHTML = renderMarkdown(raw.textContent);
+        streaming.replaceChild(md, raw);
+      }
+    }
+    // Close thinking
+    const thinking = this.bodyEl.querySelector(".ap-thinking-active");
+    if (thinking) thinking.classList.remove("ap-thinking-active");
+
+    if (typeof window.createSkillCard === "function") {
+      let group = this.bodyEl.querySelector(".skill-stack:last-of-type");
+      if (!group || group.dataset.closed === "1") {
+        group = document.createElement("div");
+        group.className = "skill-stack";
+        group.style.display = "flex";
+        this.bodyEl.appendChild(group);
+      }
+      const card = window.createSkillCard(evt);
+      group.appendChild(card);
+      if (typeof activateLucideIcons === "function") activateLucideIcons(card);
+      card.dataset.skillId = evt.id || "";
+    }
+    this._scrollBottom();
+  },
+
+  addSkillOutput(agentId, evt) {
+    if (this.currentAgentId !== agentId) return;
+    const card = this.bodyEl.querySelector(`[data-skill-id="${evt.id}"]`);
+    if (card && typeof window.appendSkillCardOutput === "function") {
+      window.appendSkillCardOutput(card, evt.text);
+    }
+    this._scrollBottom();
+  },
+
+  addSkillEnd(agentId, evt) {
+    if (this.currentAgentId !== agentId) return;
+    const card = this.bodyEl.querySelector(`[data-skill-id="${evt.id}"]`);
+    if (card && typeof window.finishSkillCard === "function") {
+      window.finishSkillCard(card, evt);
+    }
+    // Mark last skill-stack as closed so next tool starts a new one
+    const group = this.bodyEl.querySelector(".skill-stack:last-of-type");
+    if (group) group.dataset.closed = "1";
+  },
+
+  appendError(agentId, message) {
+    if (this.currentAgentId !== agentId) return;
+    const div = document.createElement("div");
+    div.className = "ap-system-note ap-error-note";
+    div.textContent = "✗ " + message;
+    this.bodyEl.appendChild(div);
+    this._scrollBottom(true);
+  },
+
+  markDone(agentId, status) {
+    if (this.currentAgentId !== agentId) return;
+    // Finalize streaming answer
+    const streaming = this.bodyEl.querySelector(".ap-streaming-answer");
+    if (streaming) {
+      streaming.classList.remove("ap-streaming-answer");
+      const raw = streaming.querySelector(".ap-raw");
+      if (raw && typeof renderMarkdown === "function") {
+        const md = document.createElement("div");
+        md.className = "md-content";
+        md.innerHTML = renderMarkdown(raw.textContent);
+        streaming.replaceChild(md, raw);
+      }
+    }
+    this._setDone(status);
+  },
+
   _setDone(status) {
     const stopBtn = this.el.querySelector(".agent-panel-stop");
     if (stopBtn) { stopBtn.classList.add("hidden"); stopBtn.disabled = false; stopBtn.textContent = "■ stop"; }
@@ -1021,7 +1152,6 @@ document.addEventListener("DOMContentLoaded", () => {
 const AgentSettings = {
   loaded: false,
   _roles: {},             // current role data from API
-  _allTools: [],          // all available tool groups [{key, name, functions}] (from API)
   _allSkills: [],         // all available skill keys (from API)
   _skillMeta: {},         // skill key → {name, trigger} metadata
   _availableModels: [],   // all models from /api/models (for dropdown)
@@ -1070,22 +1200,16 @@ const AgentSettings = {
       }
       document.getElementById("teacherBrowserData").value = teacher.browser_data_dir || "";
 
-      // Fetch available tools and skills from API
+      // Fetch available skills from API
       try {
-        const [toolsRes, skillsRes] = await Promise.all([
-          fetch("/api/agents/available-tools"),
-          fetch("/api/agents/available-skills"),
-        ]);
-        const toolsData = toolsRes.ok ? await toolsRes.json() : { tools: [] };
+        const skillsRes = await fetch("/api/agents/available-skills");
         const skillsData = skillsRes.ok ? await skillsRes.json() : { skills: [] };
-        this._allTools = (toolsData.tools || []).sort((a, b) => a.name.localeCompare(b.name));
         this._allSkills = (skillsData.skills || []).map((s) => s.key).sort();
         this._skillMeta = {};
         for (const s of (skillsData.skills || [])) {
           this._skillMeta[s.key] = s;
         }
       } catch {
-        this._allTools = [{ key: "code_editor", name: "Code Editor", functions: 4 }];
         this._allSkills = [];
         this._skillMeta = {};
       }
@@ -1140,10 +1264,6 @@ const AgentSettings = {
             `<code class="arc-output-fmt">${escHtml(data.output_format || "—")}</code>` +
           `</div>` +
           `<div class="arc-field">` +
-            `<label>Allowed Tools <span class="arc-hint">(handler functions available via tool_call)</span></label>` +
-            `<div class="arc-skills-list arc-allowed-tools"></div>` +
-          `</div>` +
-          `<div class="arc-field">` +
             `<label>Allowed Skills <span class="arc-hint">(read instruction.md before use)</span></label>` +
             `<div class="arc-skills-list arc-allowed-skills"></div>` +
           `</div>` +
@@ -1162,8 +1282,7 @@ const AgentSettings = {
           `</div>` +
         `</div>`;
 
-      // Render tool and skill chips
-      this._renderToolChips(card.querySelector(".arc-allowed-tools"), data.allowed_tools || [], role + ":tools");
+      // Render skill chips
       this._renderSkillChips(card.querySelector(".arc-allowed-skills"), data.allowed_skills || [], role + ":skills");
 
       // Helper: create removable chip
@@ -1226,53 +1345,12 @@ const AgentSettings = {
     }
   },
 
-  _getToolArray(key) {
-    // key format: "role:tools" e.g. "coder:tools"
-    const role = key.split(":")[0];
-    if (!this._roles[role]) return [];
-    if (!this._roles[role].allowed_tools) this._roles[role].allowed_tools = [];
-    return this._roles[role].allowed_tools;
-  },
-
   _getSkillArray(key) {
     // key format: "role:skills" e.g. "coder:skills"
     const role = key.split(":")[0];
     if (!this._roles[role]) return [];
     if (!this._roles[role].allowed_skills) this._roles[role].allowed_skills = [];
     return this._roles[role].allowed_skills;
-  },
-
-  _toolGroupName(key) {
-    const g = (this._allTools || []).find((t) => t.key === key);
-    return g ? g.name : key;
-  },
-
-  _renderToolChips(container, tools, roleKey) {
-    container.innerHTML = "";
-    const wrap = document.createElement("div");
-    wrap.className = "arc-chips-wrap";
-    for (const toolKey of tools) {
-      const chip = document.createElement("span");
-      chip.className = "arc-skill-chip";
-      chip.dataset.toolKey = toolKey;
-      chip.innerHTML = `${escHtml(this._toolGroupName(toolKey))}<button class="arc-chip-x" title="Remove">×</button>`;
-      chip.querySelector(".arc-chip-x").onclick = (e) => {
-        e.stopPropagation();
-        const arr = this._getToolArray(roleKey);
-        const idx = arr.indexOf(toolKey);
-        if (idx > -1) arr.splice(idx, 1);
-        chip.remove();
-        this._markDirty();
-      };
-      wrap.appendChild(chip);
-    }
-    container.appendChild(wrap);
-
-    const addBtn = document.createElement("button");
-    addBtn.className = "arc-skill-add";
-    addBtn.textContent = "+ add tool";
-    addBtn.onclick = () => this._showItemPicker(container, roleKey, "tools");
-    container.appendChild(addBtn);
   },
 
   _renderSkillChips(container, skills, roleKey) {
@@ -1298,44 +1376,26 @@ const AgentSettings = {
     const addBtn = document.createElement("button");
     addBtn.className = "arc-skill-add";
     addBtn.textContent = "+ add skill";
-    addBtn.onclick = () => this._showItemPicker(container, roleKey, "skills");
+    addBtn.onclick = () => this._showItemPicker(container, roleKey);
     container.appendChild(addBtn);
   },
 
-  _showItemPicker(container, roleKey, type) {
+  _showItemPicker(container, roleKey) {
     // Remove existing picker
     const existing = container.querySelector(".arc-skill-picker");
     if (existing) { existing.remove(); return; }
 
-    const isTools = type === "tools";
-    const current = isTools ? this._getToolArray(roleKey) : this._getSkillArray(roleKey);
-
-    let available;
-    if (isTools) {
-      // _allTools is [{key, name, functions}], filter by key
-      available = (this._allTools || []).filter((g) => !current.includes(g.key));
-    } else {
-      available = (this._allSkills || []).filter((s) => !current.includes(s)).sort();
-    }
+    const current = this._getSkillArray(roleKey);
+    const available = (this._allSkills || []).filter((s) => !current.includes(s)).sort();
     if (!available.length) return;
 
     const picker = document.createElement("div");
     picker.className = "arc-skill-picker";
-    if (isTools) {
-      picker.innerHTML = available.map((g) => `<button class="arc-pick-item" data-item="${escAttr(g.key)}">${escHtml(g.name)} <small>(${g.functions})</small></button>`).join("");
-    } else {
-      picker.innerHTML = available.map((s) => `<button class="arc-pick-item" data-item="${escAttr(s)}">${escHtml(s)}</button>`).join("");
-    }
+    picker.innerHTML = available.map((s) => `<button class="arc-pick-item" data-item="${escAttr(s)}">${escHtml(s)}</button>`).join("");
     picker.querySelectorAll(".arc-pick-item").forEach((btn) => {
       btn.onclick = () => {
-        const item = btn.dataset.item;
-        const arr = isTools ? this._getToolArray(roleKey) : this._getSkillArray(roleKey);
-        arr.push(item);
-        if (isTools) {
-          this._renderToolChips(container, arr, roleKey);
-        } else {
-          this._renderSkillChips(container, arr, roleKey);
-        }
+        current.push(btn.dataset.item);
+        this._renderSkillChips(container, current, roleKey);
         this._markDirty();
       };
     });
@@ -1352,7 +1412,6 @@ const AgentSettings = {
       const modelSel = card.querySelector(".arc-model");
       roles[role] = {
         output_format: this._roles[role]?.output_format || "",
-        allowed_tools: this._roles[role]?.allowed_tools || [],
         allowed_skills: this._roles[role]?.allowed_skills || [],
         default_model: modelSel.value.trim(),
         default_timeout: parseInt(card.querySelector(".arc-timeout").value) || 90,

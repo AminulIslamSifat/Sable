@@ -136,6 +136,30 @@ async def _fire_agent_op(op: dict[str, Any]) -> None:
 
     try:
         agent = await runtime.spawn(assignment, sched_chat_id)
+        
+        # Actually execute the agent loop (spawn only creates the DB record)
+        from engine.agents.loop import run_agent_llm_loop
+        from server.database import update_agent_status
+        
+        async def _run_with_timeout():
+            try:
+                result = await asyncio.wait_for(
+                    run_agent_llm_loop(agent, runtime._breakers, runtime._limits),
+                    timeout=assignment.timeout or 600,
+                )
+                logger.info("Agent op '%s' completed: %s", op["name"], result[:100])
+            except asyncio.TimeoutError:
+                logger.error("Agent op '%s' timed out after %ds", op["name"], assignment.timeout or 600)
+                agent.mark_failed(f"Timeout after {assignment.timeout or 600}s")
+                update_agent_status(agent.id, "failed", error=f"Timeout after {assignment.timeout or 600}s")
+            except Exception as loop_exc:
+                logger.error("Agent op '%s' loop failed: %s", op["name"], loop_exc)
+                agent.mark_failed(str(loop_exc))
+                update_agent_status(agent.id, "failed", error=str(loop_exc))
+        
+        # Fire and forget — don't block the scheduler
+        asyncio.create_task(_run_with_timeout(), name=f"agent-loop-{agent.id}")
+        
         last_run = utcnow()
         next_run = compute_next_run(
             op.get("schedule_type", "daily"),

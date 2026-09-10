@@ -107,11 +107,26 @@
 
     // --- Tools tab: load and toggle tools ---
     let toolsLoaded = false;
+    const DISABLED_TOOLS_KEY = "sable_disabled_tools";
+    let _disabledToolsCache = null;
     function getDisabledTools() {
-      try { return JSON.parse(localStorage.getItem("sable_disabled_tools") || "[]"); } catch { return []; }
+      if (_disabledToolsCache) return _disabledToolsCache;
+      try { return JSON.parse(localStorage.getItem(DISABLED_TOOLS_KEY) || "[]"); } catch { return []; }
     }
+    // Fetch disabled tools from backend on load (sync with server truth)
+    (async () => {
+      try {
+        const res = await fetch("/api/settings/disabled-tools");
+        const data = await res.json();
+        if (Array.isArray(data.disabled)) {
+          _disabledToolsCache = data.disabled;
+          localStorage.setItem(DISABLED_TOOLS_KEY, JSON.stringify(data.disabled));
+        }
+      } catch(e) {}
+    })();
     function setDisabledTools(arr) {
-      localStorage.setItem("sable_disabled_tools", JSON.stringify(arr));
+      _disabledToolsCache = arr;
+      try { localStorage.setItem(DISABLED_TOOLS_KEY, JSON.stringify(arr)); } catch (e) {}
     }
 
     async function loadTools() {

@@ -1,8 +1,8 @@
+"""Teacher escalation — when an agent is stuck, Maria or a stronger model intervenes.
 
-"""Teacher escalation — when an agent is stuck, a stronger model intervenes.
-
-The teacher reviews the agent's task, todo list, and recent attempts,
-then provides guidance and optionally restructures the todo list.
+Simplified: no todo management. The teacher reviews the agent's task and recent
+attempts, then provides actionable guidance text that gets injected into the
+agent's conversation via auto_turn engine.
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import json
 import logging
 from typing import Any
 
-from engine.agents.agent import Agent, AgentTodoList, TodoItem
+from engine.agents.agent import Agent
 
 logger = logging.getLogger("sable")
 
@@ -28,17 +28,10 @@ then respond with a JSON object:
 
 {
   "diagnosis": "What the agent is doing wrong (1-2 sentences)",
-  "guidance": "Specific actionable instructions for the agent (2-4 sentences)",
-  "todo_updates": [
-    {"action": "add", "content": "new step to add"},
-    {"action": "remove", "id": 3},
-    {"action": "replace", "id": 2, "content": "replacement text"},
-    {"action": "skip", "id": 4}
-  ]
+  "guidance": "Specific actionable instructions for the agent (2-4 sentences)"
 }
 
 Rules:
-- todo_updates is optional. Only include it if the plan itself is flawed.
 - Keep guidance concrete and actionable. No vague "try harder" advice.
 - If the agent is looping on the same approach, tell it exactly what to try instead.
 - Respond ONLY with the JSON object. No markdown, no explanation outside it.
@@ -65,18 +58,6 @@ def _build_teacher_prompt(agent: Agent, stuck_reason: str) -> str:
     if agent.context:
         parts.append(f"CONTEXT: {agent.context}")
 
-    if agent.todos and agent.todos.todos:
-        todo_lines = []
-        for t in agent.todos.todos:
-            status_icon = {"completed": "✅", "in_progress": "🔧", "pending": "❌", "skipped": "⏭️"}.get(t.status, "?")
-            line = f"  {status_icon} [{t.id}] {t.content}"
-            if t.result:
-                line += f" → {t.result}"
-            for sub in t.subtasks:
-                line += f"\n     • {sub}"
-            todo_lines.append(line)
-        parts.append("TODO LIST:\n" + "\n".join(todo_lines))
-
     # Include last few messages for context (truncated)
     recent = agent.messages[-6:] if len(agent.messages) > 6 else agent.messages
     msg_lines = []
@@ -89,96 +70,10 @@ def _build_teacher_prompt(agent: Agent, stuck_reason: str) -> str:
     return "\n\n".join(parts)
 
 
-def _apply_todo_updates(agent: Agent, updates: list[dict[str, Any]]) -> None:
-    """Apply the teacher's todo modifications to the agent's todo list."""
-    if not agent.todos or not updates:
-        return
-
-    for upd in updates:
-        action = upd.get("action", "").lower()
-
-        if action == "add":
-            content = upd.get("content", "").strip()
-            if content:
-                new_id = max((t.id for t in agent.todos.todos), default=0) + 1
-                agent.todos.todos.append(TodoItem(id=new_id, content=content, status="pending"))
-                logger.info("[teacher] Added todo #%d: %s", new_id, content)
-
-        elif action == "remove":
-            tid = upd.get("id")
-            agent.todos.todos = [t for t in agent.todos.todos if t.id != tid]
-            logger.info("[teacher] Removed todo #%s", tid)
-
-        elif action == "replace":
-            tid = upd.get("id")
-            content = upd.get("content", "").strip()
-            if content:
-                for t in agent.todos.todos:
-                    if t.id == tid:
-                        t.content = content
-                        logger.info("[teacher] Replaced todo #%d: %s", tid, content)
-                        break
-
-        elif action == "skip":
-            tid = upd.get("id")
-            for t in agent.todos.todos:
-                if t.id == tid:
-                    t.status = "skipped"
-                    logger.info("[teacher] Skipped todo #%d", tid)
-                    break
-
-    # Post-update fixup: remove skipped items that are AFTER current position,
-    # keep skipped items before/at current (for progress display).
-    # Use positional index, not ID, to determine "before current".
-    current_id = agent.todos.todos[agent.todos.current_index].id if (
-        0 <= agent.todos.current_index < len(agent.todos.todos)
-    ) else None
-
-    filtered = []
-    for pos, t in enumerate(agent.todos.todos):
-        if t.status == "skipped" and pos > agent.todos.current_index:
-            continue  # Drop skipped items ahead of current position
-        filtered.append(t)
-    agent.todos.todos = filtered
-
-    # Re-locate current_index by finding the item that was current
-    if current_id is not None:
-        for i, t in enumerate(agent.todos.todos):
-            if t.id == current_id:
-                agent.todos.current_index = i
-                break
-        else:
-            # Current item was removed — clamp to valid range
-            agent.todos.current_index = min(agent.todos.current_index, len(agent.todos.todos) - 1)
-    else:
-        agent.todos.current_index = 0
-
-    # Handle empty list after removals
-    if not agent.todos.todos:
-        agent.todos.current_index = 0  # all_done will be True (empty list check)
-        return
-
-    # Clamp index to valid range
-    if agent.todos.current_index >= len(agent.todos.todos):
-        agent.todos.current_index = len(agent.todos.todos) - 1
-
-    # Auto-advance past skipped items at current position
-    while agent.todos.current and agent.todos.current.status == "skipped":
-        agent.todos.current_index += 1
-    if agent.todos.current_index >= len(agent.todos.todos):
-        agent.todos.current_index = len(agent.todos.todos)  # all_done = True
-        return
-
-    # Ensure current item is in_progress
-    if agent.todos.current and agent.todos.current.status == "pending":
-        agent.todos.current.status = "in_progress"
-
-
 async def escalate_to_teacher(agent: Agent, stuck_reason: str) -> str | None:
-    """Call the teacher model for intervention. Returns guidance text or None on failure.
+    """Call a stronger model to analyze why the agent is stuck.
 
-    The teacher analyzes the agent's state and returns structured guidance.
-    If todo_updates are provided, they're applied to the agent's todo list.
+    Returns guidance text to inject into the agent's conversation, or None on failure.
     """
     teacher_cfg = _load_teacher_config()
     if not teacher_cfg.get("enabled", True):
@@ -210,8 +105,7 @@ async def escalate_to_teacher(agent: Agent, stuck_reason: str) -> str | None:
         if not response or not response.strip():
             return None
 
-        # Parse the teacher's JSON response
-        guidance = _parse_teacher_response(agent, response)
+        guidance = _parse_teacher_response(response)
         return guidance
 
     except Exception as exc:
@@ -242,7 +136,6 @@ async def _call_teacher_qwen(prompt: str, model: str, browser_data_dir: str | No
             )
 
     if not headers:
-        # Fall back to default tokens
         from engine.session import get_headers
         headers = await get_headers()
 
@@ -258,7 +151,6 @@ async def _call_teacher_qwen(prompt: str, model: str, browser_data_dir: str | No
         resp = await client.post(URL, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
-        # Qwen returns content in the response
         return data.get("content", "") or data.get("message", {}).get("content", "")
 
 
@@ -321,12 +213,10 @@ async def _call_teacher_api(prompt: str, model: str, backend: str) -> str:
     return accumulated
 
 
-def _parse_teacher_response(agent: Agent, response: str) -> str | None:
-    """Parse the teacher's JSON response, apply todo updates, return guidance text."""
+def _parse_teacher_response(response: str) -> str | None:
+    """Parse the teacher's JSON response, return guidance text."""
     try:
-        # Try to extract JSON from the response
         text = response.strip()
-        # Handle case where model wraps JSON in markdown code fences
         if "```" in text:
             start = text.find("{")
             end = text.rfind("}") + 1
@@ -335,25 +225,16 @@ def _parse_teacher_response(agent: Agent, response: str) -> str | None:
 
         data = json.loads(text)
     except json.JSONDecodeError:
-        # If JSON parsing fails, return the raw response as guidance
         logger.warning("[teacher] Could not parse teacher JSON, using raw response")
         return response[:2000]
 
     diagnosis = data.get("diagnosis", "")
     guidance = data.get("guidance", "")
-    todo_updates = data.get("todo_updates", [])
 
-    # Apply todo modifications
-    if todo_updates:
-        _apply_todo_updates(agent, todo_updates)
-
-    # Build the guidance message to inject into the agent
     parts = []
     if diagnosis:
         parts.append(f"DIAGNOSIS: {diagnosis}")
     if guidance:
         parts.append(f"GUIDANCE: {guidance}")
-    if todo_updates:
-        parts.append("Your todo list has been updated. Check the progress tracker below.")
 
     return "\n".join(parts) if parts else None

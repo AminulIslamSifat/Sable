@@ -31,6 +31,7 @@ class ChatRequest(BaseModel):
     skip_user_save: bool = False
     layout_mode: str | None = None  # "agent" or "chat"
     browser_data_dir: str | None = None  # scoped browser profile for isolated streams (e.g. critique)
+    system_prompt: str | None = None  # override system prompt for agent sub-chats
 
 class NewChatRequest(BaseModel):
     model: str | None = None
