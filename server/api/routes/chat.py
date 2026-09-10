@@ -788,10 +788,10 @@ async def chat(request: ChatRequest):
         "SELECT COUNT(*) as c FROM messages WHERE chat_id = ?", (active_chat_id,)
     ).fetchone()["c"]
 
-    # ponytail: skip chat_title injection for critique sub-chats — they're ephemeral
-    # and forcing a title tool call wastes a round on every critique turn
-    _is_critique_chat = "-critique-" in active_chat_id
-    if _local_use_utilities and parent_id is None and _msg_count <= 1 and not _is_critique_chat:
+    # ponytail: skip chat_title injection for critique/agent sub-chats — they're ephemeral
+    # and forcing a title tool call wastes a round on every sub-chat turn
+    _is_sub_chat = "-critique-" in active_chat_id or "-agent-" in active_chat_id
+    if _local_use_utilities and parent_id is None and _msg_count <= 1 and not _is_sub_chat:
         _context_parts.append('[SYSTEM: You MUST call the chat_title tool now to set a title for this new conversation. This is mandatory.]')
         # Inject platform info so the model uses correct paths and commands
         import platform as _plat
@@ -934,12 +934,16 @@ async def chat(request: ChatRequest):
     except Exception:
         pass
     # Build system instruction for token counting (includes persona + tools schema)
+    # Agent sub-chats override the system prompt entirely (no Maria persona)
     _system_instruction_for_tokens = ""
-    try:
-        from connectors.common.instruction_builder import build_instructions
-        _system_instruction_for_tokens = build_instructions(project_id=_project_id)
-    except Exception:
-        pass
+    if request.system_prompt:
+        _system_instruction_for_tokens = request.system_prompt
+    else:
+        try:
+            from connectors.common.instruction_builder import build_instructions
+            _system_instruction_for_tokens = build_instructions(project_id=_project_id)
+        except Exception:
+            pass
     if not request.stream and _is_api_model(request.model):
         # _backend already resolved above at file resolution stage
         _api_backend = _backend or _resolve_api_backend(request.model)
@@ -1366,6 +1370,9 @@ async def chat(request: ChatRequest):
                         project_id=_project_id,
                         db_history=_db_history_s,
                     )
+                    # Agent sub-chats override system prompt (skip Maria persona)
+                    if request.system_prompt:
+                        _stream_kwargs["system_instruction"] = request.system_prompt
                     if _api_backend == "local":
                         _stream_kwargs["model_id"] = request.model
                     if _max_session_chars_stream:
@@ -2402,7 +2409,7 @@ async def chat(request: ChatRequest):
                         if _res.get("kind") == "image" and _res.get("path"):
                             _pending_skill_images.append(_res["path"])
                 # Truncate oversized tool output to protect context window
-                from engine.agents.loop import _get_max_tool_output_chars
+                from engine.config import get_max_tool_output_chars as _get_max_tool_output_chars
                 from engine.skills.events import middle_truncate
                 _tool_cap = _get_max_tool_output_chars()
                 if feedback and len(feedback) > _tool_cap:

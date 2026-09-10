@@ -1896,6 +1896,176 @@
       }
     }
 
+    // ── Agent Streaming (main chat pipeline for subagents) ──────────────────
+    // ponytail: modeled on _runCritiqueTurn — uses POST /api/chat with agent's
+    // chat_id, model, and system_prompt. Streams into AgentPanel body.
+    // On completion, auto-sends result back to main chat via sendAutoTurnMessage.
+    const _activeAgentControllers = new Map(); // agentId -> AbortController
+
+    async function _runAgentTurn(message, agentId, systemPrompt, model, browserDataDir, collect) {
+      if (!message || !agentId) return;
+      const controller = startStream(agentId);
+      _activeAgentControllers.set(agentId, controller);
+
+      let answerBuf = "";
+
+      // Save current chat context so we can restore after streaming
+      const savedParentChatId = activeChatId;
+      const savedPane = activePane;
+
+      // Refresh sidebar so the agent chat appears, then select its tab
+      if (typeof window._sableLoadChats === "function") {
+        await window._sableLoadChats();
+      }
+      if (typeof window._sableSelectChat === "function") {
+        await window._sableSelectChat(agentId);
+      }
+
+      // Get the agent's pane (should now be active)
+      const agentPane = activePane;
+      if (!agentPane) {
+        console.error("[AgentTurn] No pane found for agent", agentId);
+        if (typeof AgentTopBar !== "undefined") AgentTopBar.failCard(agentId, "No pane");
+        endStream(agentId);
+        _activeAgentControllers.delete(agentId);
+        return;
+      }
+
+      // Add a bot streaming bubble into the agent's own pane
+      const ui = addBotStreaming();
+
+      try {
+        const body = {
+          message,
+          chat_id: agentId,
+          parent_id: savedParentChatId || undefined,
+          model: model || selectedModel,
+          thinking_mode: selectedThinkingMode,
+          stream: true,
+        };
+        if (systemPrompt) body.system_prompt = systemPrompt;
+        if (browserDataDir) body.browser_data_dir = browserDataDir;
+
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+
+        if (!res.ok) {
+          let detail = "";
+          try { detail = await res.text(); } catch (_) {}
+          ui.appendAnswer(`[error] HTTP ${res.status}: ${detail.slice(0, 200)}`);
+          ui.finalize();
+          if (typeof AgentTopBar !== "undefined") AgentTopBar.failCard(agentId, `HTTP ${res.status}`);
+          endStream(agentId);
+          _activeAgentControllers.delete(agentId);
+          return;
+        }
+
+        // Consume SSE stream into the agent's pane (same as normal chat)
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+
+        while (true) {
+          if (controller.signal.aborted) break;
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() || "";
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const raw = line.slice(6).trim();
+            if (!raw) continue;
+            let evt;
+            try { evt = JSON.parse(raw); } catch (_) { continue; }
+
+            if (evt.type === "answer" && evt.text) {
+              answerBuf += evt.text;
+              ui.appendAnswer(evt.text);
+            } else if (evt.type === "thinking" && evt.text) {
+              ui.appendThinking(evt.text);
+            } else if (evt.type === "skill_start") {
+              ui.addSkillStart(evt);
+            } else if (evt.type === "skill_output") {
+              ui.appendSkillOutput(evt);
+            } else if (evt.type === "skill_end") {
+              ui.finishSkill(evt);
+            } else if (evt.type === "file_edit") {
+              ui.trackFileEdit(evt);
+              if (typeof handleFileEdit === "function") handleFileEdit(evt, false);
+            } else if (evt.type === "error" || evt.type === "stream_error") {
+              ui.appendAnswer(`[error] ${evt.message || evt.error || "Unknown error"}`);
+            } else if (evt.type === "done") {
+              // Per-round done — keep streaming
+            }
+          }
+        }
+
+        // Stream fully closed
+        if (!controller.signal.aborted && answerBuf) {
+          ui.finalize(answerBuf);
+          if (typeof AgentTopBar !== "undefined") AgentTopBar.finishCard(agentId, answerBuf.slice(0, 60));
+        } else if (controller.signal.aborted) {
+          ui.appendAnswer("[stopped]");
+          ui.finalize();
+          if (typeof AgentTopBar !== "undefined") AgentTopBar.failCard(agentId, "Stopped");
+        }
+      } catch (err) {
+        if (err.name !== "AbortError") {
+          ui.appendAnswer(`[error] ${err.message}`);
+          ui.finalize();
+          if (typeof AgentTopBar !== "undefined") AgentTopBar.failCard(agentId, err.message);
+        }
+      } finally {
+        endStream(agentId);
+        _activeAgentControllers.delete(agentId);
+        // Restore parent chat tab
+        if (savedParentChatId && typeof window._sableSelectChat === "function") {
+          await window._sableSelectChat(savedParentChatId);
+        }
+      }
+    }
+
+    // Helper: look up agent role from topbar data
+    function _getAgentRole(agentId) {
+      const card = document.querySelector(`.agent-card[data-agent-id="${agentId}"]`);
+      return card ? (card.dataset.role || "agent") : "agent";
+    }
+
+    // Nuclear stop: abort all agent sub-streams + critique streams for this chat
+    window._abortAllAgents = function() {
+      // Abort all agent controllers
+      for (const [id, ctrl] of _activeAgentControllers) {
+        if (!ctrl.signal.aborted) ctrl.abort();
+        // Also tell server to stop each agent's upstream generation
+        fetch("/api/chat/stop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: id }),
+        }).catch(() => {});
+      }
+      _activeAgentControllers.clear();
+
+      // Abort all critique controllers (stored on .critique-box elements)
+      document.querySelectorAll(".critique-box[data-turn-active]").forEach(box => {
+        const ctrl = box._abortController;
+        if (ctrl && !ctrl.signal.aborted) ctrl.abort();
+        const critiqueId = box.dataset.critiqueId;
+        if (critiqueId) {
+          const critiqueChatId = `${activeChatId}-critique-${critiqueId}`;
+          fetch("/api/chat/stop", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: critiqueChatId }),
+          }).catch(() => {});
+        }
+      });
+    };
+
     async function consumeChatStream(res, ui, userMsgDiv, streamChatId) {
       const reader  = res.body.getReader();
       const decoder = new TextDecoder();
@@ -2248,6 +2418,27 @@
                 }
                 scrollBottom();
               }
+            }
+          } else if (evt.type === "agent_start") {
+            // Backend spawned an agent — create topbar status card + refresh sidebar
+            if (typeof AgentTopBar !== "undefined" && AgentTopBar.addCard) {
+              AgentTopBar.addCard(evt.id, evt.role, evt.task, evt.model);
+            }
+            // Refresh sidebar to show the new agent chat entry as live-streaming
+            if (typeof window._sableLoadChats === "function") {
+              window._sableLoadChats();
+            }
+          } else if (evt.type === "agent_trigger") {
+            // Stream agent turn into the main chat history (like critique)
+            if (evt.message && evt.id) {
+              _runAgentTurn(
+                evt.message,
+                evt.id,
+                evt.system_prompt || "",
+                evt.model || selectedModel,
+                evt.browser_data_dir || null,
+                evt.collect || false,
+              );
             }
           } else if (evt.type === "chat_title") {
             gotTitle = true;

@@ -185,7 +185,6 @@ def build_instructions(
     project_id: str | None = None,
     provider: str | None = None,
     agent_role: str | None = None,
-    agent_tools: list[str] | None = None,
     agent_skills: list[str] | None = None,
     layout_mode: str | None = None,
 ) -> str:
@@ -205,7 +204,7 @@ def build_instructions(
         agent_role: If set, build instructions for a subagent role instead of
                     the main chat persona. Loads instruction/agents/{role}.md
                     as persona, skips project/git/facts sections.
-        agent_tools: Tool group keys for subagent (filters tool schemas).
+
         agent_skills: Skill keys for subagent (filters skill registry).
         layout_mode: "chat" strips all tools/skills/MCP except web search
                      and chat_title. "agent" or None = full tool access.
@@ -301,25 +300,19 @@ def build_instructions(
         from engine.skills.handlers import HANDLER_MAP
 
         # --- Skill Registry ---
-        # Subagents: only include explicitly allowed skills
-        # Main chat: include all skills minus disabled ones
+        # All chats (main + subagent) get the same full skill set.
+        # No skill filtering for subagents — they use the main chat pipeline.
         _disabled_skills: list[str] = []
-        if agent_role and agent_skills is not None:
-            # For subagents, disable everything NOT in the allowed list
-            from engine.skills.registry import discover_skills as _discover_all_skills
-            _all_skill_keys = [s.key for s in _discover_all_skills(_SKILLS_DIR)]
-            _disabled_skills = [k for k in _all_skill_keys if k not in agent_skills]
-        else:
-            _global_disabled_path = _PROJECT_ROOT / "Brain" / "disabled_skills.json"
-            if _global_disabled_path.exists():
-                try:
-                    _gd = json.loads(_global_disabled_path.read_text(encoding="utf-8"))
-                    if isinstance(_gd, list):
-                        _disabled_skills.extend(_gd)
-                except Exception:
-                    pass
-            if proj and proj.get("skills_config"):
-                _disabled_skills.extend([k for k, v in proj["skills_config"].items() if not v])
+        _global_disabled_path = _PROJECT_ROOT / "Brain" / "disabled_skills.json"
+        if _global_disabled_path.exists():
+            try:
+                _gd = json.loads(_global_disabled_path.read_text(encoding="utf-8"))
+                if isinstance(_gd, list):
+                    _disabled_skills.extend(_gd)
+            except Exception:
+                pass
+        if proj and proj.get("skills_config"):
+            _disabled_skills.extend([k for k, v in proj["skills_config"].items() if not v])
 
         _engine = SkillEngine(
             skills_dir=_SKILLS_DIR,
@@ -341,17 +334,11 @@ def build_instructions(
         try:
             from engine.tools_loader import get_tools_prompt_section
             _disabled_tools: list[str] = []
-            if agent_role and agent_tools is not None:
-                # For subagents, disable everything NOT in the allowed tool groups
-                from engine.tools_loader import browse_tools as _browse_all_tools
-                _all_tool_keys = [g["key"] for g in _browse_all_tools()]
-                _disabled_tools = [k for k in _all_tool_keys if k not in agent_tools]
-            else:
-                _disabled_tools_path = _PROJECT_ROOT / "Brain" / "disabled_tools.json"
-                if _disabled_tools_path.exists():
-                    _dt = json.loads(_disabled_tools_path.read_text(encoding="utf-8"))
-                    if isinstance(_dt, list):
-                        _disabled_tools = _dt
+            _disabled_tools_path = _PROJECT_ROOT / "Brain" / "disabled_tools.json"
+            if _disabled_tools_path.exists():
+                _dt = json.loads(_disabled_tools_path.read_text(encoding="utf-8"))
+                if isinstance(_dt, list):
+                    _disabled_tools = _dt
             tools_section = get_tools_prompt_section(disabled=_disabled_tools, provider=provider)
             if tools_section:
                 parts.append(tools_section)

@@ -944,4 +944,25 @@ def auto_switch_account(
         return get_next_available_account(exclude=_exclude)
 
 
+# --------------------------------------------------------------------------
+# Tool output limits
+# --------------------------------------------------------------------------
+DEFAULT_MAX_TOOL_OUTPUT_CHARS = 100_000
+
+
+def get_max_tool_output_chars() -> int:
+    """Read tool output cap from system/settings.json (default 100k)."""
+    try:
+        import json as _json
+        p = _SYSTEM / "settings.json"
+        if p.is_file():
+            data = _json.loads(p.read_text(encoding="utf-8"))
+            val = data.get("max_tool_output_chars")
+            if isinstance(val, int) and val > 0:
+                return val
+    except Exception:
+        pass
+    return DEFAULT_MAX_TOOL_OUTPUT_CHARS
+
+
 

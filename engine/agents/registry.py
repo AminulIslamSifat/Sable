@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 @dataclass(frozen=True)
 class RoleConfig:
     system_prompt: str              # Built lazily via shared instruction builder
-    allowed_tools: list[str]        # Tool group keys (execute_command, grep_search, etc.)
     allowed_skills: list[str]       # Skill keys from /skills/ (telegram, system_repair, etc.)
     output_format: str              # Markdown section requirements for final answer
     default_model: str
@@ -19,16 +18,9 @@ class RoleConfig:
 # Fallback chain applied to ANY role that has no explicit model_chain configured.
 _DEFAULT_MODEL_CHAIN: list[str] = ["deepseek-expert", "gemini-2.5-flash"]
 
-_ALL_TOOL_GROUPS = [
-    "ask_user", "chat_title", "code_editor", "execute_command",
-    "file_uploader", "grep_search", "image_generator", "mcp",
-    "memory_manager", "multi_agent", "online_search", "tracknote_manager",
-]
-
 AGENT_ROLES: dict[str, RoleConfig] = {
     "analyst": RoleConfig(
         system_prompt="",
-        allowed_tools=list(_ALL_TOOL_GROUPS),
         allowed_skills=[],
         output_format="",
         default_model="qwen3.8-max",
@@ -41,7 +33,6 @@ AGENT_ROLES: dict[str, RoleConfig] = {
     ),
     "coder": RoleConfig(
         system_prompt="",
-        allowed_tools=list(_ALL_TOOL_GROUPS),
         allowed_skills=[],
         output_format="",
         default_model="qwen3.8-max",
@@ -52,7 +43,6 @@ AGENT_ROLES: dict[str, RoleConfig] = {
 
     "writer": RoleConfig(
         system_prompt="",
-        allowed_tools=list(_ALL_TOOL_GROUPS),
         allowed_skills=[],
         output_format="",
         default_model="mistral-large-latest",
@@ -66,7 +56,6 @@ AGENT_ROLES: dict[str, RoleConfig] = {
     # ------------------------------------------------------------------
     "sysutil": RoleConfig(
         system_prompt="",
-        allowed_tools=list(_ALL_TOOL_GROUPS),
         allowed_skills=["system_repair", "phone_control", "youtube_downloader"],
         output_format="",
         default_model="qwen3.8-max",
@@ -76,7 +65,6 @@ AGENT_ROLES: dict[str, RoleConfig] = {
     ),
     "docs": RoleConfig(
         system_prompt="",
-        allowed_tools=list(_ALL_TOOL_GROUPS),
         allowed_skills=["document_skills", "text_humanizer"],
         output_format="",
         default_model="qwen3.8-max",
@@ -86,7 +74,6 @@ AGENT_ROLES: dict[str, RoleConfig] = {
     ),
     "visuals": RoleConfig(
         system_prompt="",
-        allowed_tools=list(_ALL_TOOL_GROUPS),
         allowed_skills=["graph_master", "svg_creator", "frontend_design", "simulacra_engine"],
         output_format="",
         default_model="qwen3.8-max",
@@ -96,7 +83,6 @@ AGENT_ROLES: dict[str, RoleConfig] = {
     ),
     "tester": RoleConfig(
         system_prompt="",
-        allowed_tools=list(_ALL_TOOL_GROUPS),
         allowed_skills=["testing_debugging"],
         output_format="",
         default_model="qwen3.8-max",
@@ -108,7 +94,6 @@ AGENT_ROLES: dict[str, RoleConfig] = {
     # Scheduled agent ops — broad skill set for autonomous tasks
     "scheduled": RoleConfig(
         system_prompt="",
-        allowed_tools=list(_ALL_TOOL_GROUPS),
         allowed_skills=["telegram", "email"],
         output_format="",
         default_model="qwen3.8-max",
@@ -120,7 +105,6 @@ AGENT_ROLES: dict[str, RoleConfig] = {
     # Maria — full persona from instruction/agents/maria.md, all tools & skills
     "maria": RoleConfig(
         system_prompt="",
-        allowed_tools=list(_ALL_TOOL_GROUPS),
         allowed_skills=[],
         output_format="",
         default_model="qwen3.8-max",
@@ -245,23 +229,8 @@ def get_role_config(role: str) -> RoleConfig:
     if not chain:
         chain = list(_DEFAULT_MODEL_CHAIN)  # Never leave a role without fallback
 
-    # Resolve effective tools/skills (override > base)
-    known_tools = {"execute_command", "view_file", "edit_file", "create_file", "insert_file",
-                   "get_file", "grep", "glob", "list_dir", "online_search", "web_search",
-                   "web_fetch", "check_command", "spawn_agent", "agent_status", "kill_agent",
-                   "todo_complete", "todo_skip", "ask_user", "generate_image", "mcp_call",
-                   "memory", "tracknote", "read_file", "openweb", "create_note",
-                   "list_checkpoints", "restore_checkpoint", "run_simulacra"}
-
-    ov_tools = ov.get("allowed_tools", None) if ov else None
+    # Resolve effective skills (override > base)
     ov_skills = ov.get("allowed_skills", None) if ov else None
-
-    # If old-style allowed_skills exists but no allowed_tools, auto-split
-    if ov_tools is None and ov_skills is not None:
-        ov_tools = [s for s in ov_skills if s in known_tools]
-        ov_skills = [s for s in ov_skills if s not in known_tools]
-
-    eff_tools = ov_tools if ov_tools is not None else base.allowed_tools
     eff_skills = ov_skills if ov_skills is not None else base.allowed_skills
     eff_output = ov.get("output_format", base.output_format) if ov else base.output_format
 
@@ -283,7 +252,6 @@ def get_role_config(role: str) -> RoleConfig:
         pass
     system_prompt = build_instructions(
         agent_role=role,
-        agent_tools=eff_tools,
         agent_skills=eff_skills,
         provider=_provider,
     )
@@ -293,7 +261,6 @@ def get_role_config(role: str) -> RoleConfig:
 
     return RoleConfig(
         system_prompt=system_prompt,
-        allowed_tools=eff_tools,
         allowed_skills=eff_skills,
         output_format=eff_output,
         default_model=ov.get("default_model", base.default_model) if ov else base.default_model,
@@ -312,7 +279,6 @@ def export_roles() -> dict[str, dict]:
         result[name] = {
             "system_prompt": cfg.system_prompt,
             "output_format": cfg.output_format,
-            "allowed_tools": cfg.allowed_tools,
             "allowed_skills": cfg.allowed_skills,
             "default_model": cfg.default_model,
             "default_timeout": cfg.default_timeout,
