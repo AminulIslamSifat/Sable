@@ -280,6 +280,8 @@
         personaMenu.appendChild(fmtRow);
       } catch {
         statusPersonaEl.textContent = "Default";
+        // Retry once after short delay — server may not be ready on cold start
+        setTimeout(() => syncStatusPersona(), 1500);
       }
     }
 

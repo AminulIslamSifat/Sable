@@ -1540,11 +1540,19 @@ async def strip_browser_profiles() -> dict[str, Any]:
     def _strip_all() -> list[tuple[str, float, float]]:
         results = []
         for entry in sorted(_SYSTEM_DIR.iterdir()):
-            if entry.is_dir() and (
-                entry.name.startswith("browser-data-acc")
-                or entry.name in ("browser-scraper-data", "automation-browser-data")
+            if not entry.is_dir():
+                continue
+            # Skip .bak directories — they're backups, not live profiles
+            if entry.name.endswith(".bak"):
+                continue
+            if entry.name.startswith("browser-data-acc") or entry.name in (
+                "browser-scraper-data",
+                "automation-browser-data",
             ):
-                results.append(_strip_one_profile(entry))
+                try:
+                    results.append(_strip_one_profile(entry))
+                except Exception as exc:
+                    logger.warning("Failed to strip profile %s: %s", entry.name, exc)
         return results
 
     results = await asyncio.to_thread(_strip_all)

@@ -2362,6 +2362,21 @@ async def chat(request: ChatRequest):
                         )
                         if _incomplete_warn:
                             _guard_warnings.append(_incomplete_warn)
+                # ponytail: if the only tools this round were chat_title and the model
+                # already sent real answer text, don't inject [chat_title] OK back —
+                # the model doesn't need a confirmation nudge when it's already talking.
+                _only_chat_title = (
+                    bool(round_skill_events)
+                    and all(
+                        _ev.get("name") == "chat_title"
+                        for _ev in round_skill_events
+                        if _ev.get("type") == "skill_end"
+                    )
+                )
+                _has_answer_text = bool("".join(round_answer_parts).strip())
+                if _only_chat_title and _has_answer_text:
+                    round_skill_events.clear()
+
                 feedback = build_tool_feedback(round_skill_events)
                 # --- Critique report injection: prepend prominently so model acts on it ---
                 _critique_reports: list[str] = []

@@ -397,11 +397,11 @@
       const card = document.createElement("div");
       card.className = "skill-card";
       const name = evt.name || "skill";
-      let initial = evt.data && evt.data.content ? String(evt.data.content) : "";
-      // For tags without content (view_file, insert_file, etc.), show the
-      // key attributes so the card isn't just a blank "⚡ view_file" box.
-      // Backend nests attrs under data.attrs — check both levels.
-      if (!initial && evt.data) {
+      // Always prefer structured attribute extraction over raw content JSON.
+      // Backend serializes full params as content for tools without a body/command
+      // param, which causes grep/view_file cards to dump raw JSON.
+      let initial = "";
+      if (evt.data) {
         const d = evt.data.attrs || evt.data;
         const parts = [];
         if (name === "spawn_agent") {
@@ -409,7 +409,30 @@
           if (d.model) parts.push(`model: ${d.model}`);
           if (d.collect === "true") parts.push("collect: true");
           if (d.timeout) parts.push(`timeout: ${d.timeout}s`);
+        } else if (name === "grep") {
+          if (d.pattern) parts.push(`/${d.pattern}/`);
+          if (d.path) parts.push(d.path);
+          if (d.glob) parts.push(`glob: ${d.glob}`);
+          if (d.exclude) parts.push(`exclude: ${d.exclude}`);
+          if (d.ignore_case === "true" || d.ignore_case === true) parts.push("-i");
+          if (d.max_results) parts.push(`max: ${d.max_results}`);
+        } else if (name === "glob") {
+          if (d.pattern) parts.push(d.pattern);
+          if (d.path) parts.push(d.path);
+        } else if (name === "execute_command") {
+          if (d.command) parts.push(d.command);
+          if (d.bg === "true" || d.bg === true) parts.push("(bg)");
+        } else if (name === "web_search") {
+          if (d.query) parts.push(d.query);
+          if (d.max_results) parts.push(`max: ${d.max_results}`);
+        } else if (name === "web_fetch") {
+          if (d.urls) parts.push(Array.isArray(d.urls) ? d.urls.join(", ") : String(d.urls));
+        } else if (name === "ask_user") {
+          if (d.question) parts.push(d.question.slice(0, 80));
+        } else if (name === "chat_title") {
+          if (d.title) parts.push(d.title);
         } else {
+          // File-based tools: view_file, edit_file, create_file, insert_file, get_file
           if (d.path) parts.push(d.path);
           if (d.start != null) parts.push(`L${d.start}`);
           if (d.end != null) parts.push(`–${d.end}`);
@@ -418,6 +441,11 @@
           if (d.full === "true" || d.full === true) parts.push("(full)");
         }
         if (parts.length) initial = parts.join("\n");
+      }
+      // Fallback: use raw content only if no structured attrs were extracted
+      // ponytail: ceiling = per-tool formatting above; upgrade path = registry-driven schema
+      if (!initial && evt.data && evt.data.content) {
+        initial = String(evt.data.content);
       }
 
       const header = document.createElement("div");

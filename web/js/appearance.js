@@ -1,4 +1,24 @@
-    // ---------- Account Profile Switcher ----------
+    // ---------- Safe Clipboard Copy (works on non-HTTPS / Windows HTTP) ----------
+window.safeCopy = async function(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+  // Fallback for non-secure contexts (e.g. http://192.168.x.x on Windows)
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch {}
+  document.body.removeChild(ta);
+  return ok;
+};
+
+// ---------- Account Profile Switcher ----------
     const accountProfileCards = document.getElementById("accountProfileCards");
     const refreshAccountsBtn = document.getElementById("refreshAccountsBtn");
     const addAccountBrowserSelect = document.getElementById("addAccountBrowserSelect");
@@ -1208,7 +1228,8 @@
     const block = btn.closest('.code-block');
     const codeEl = block?.querySelector('pre code');
     if (!codeEl) return;
-    navigator.clipboard.writeText(codeEl.textContent).then(() => {
+    safeCopy(codeEl.textContent).then((ok) => {
+      if (!ok) return;
       btn.classList.add('copied');
       btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
       setTimeout(() => {
