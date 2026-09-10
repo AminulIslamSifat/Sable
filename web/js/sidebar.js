@@ -1,4 +1,6 @@
-        async function renderChats() {
+        let _renderChatsToken = 0;
+    async function renderChats() {
+      const token = ++_renderChatsToken;
       chatsEl.innerHTML = '';
       chatsEl.classList.remove('has-project-banner');
 
@@ -43,6 +45,7 @@
       }
       // ── Project folder / banner at top of chat list ──
       await loadProjects();
+      if (token !== _renderChatsToken) return; // stale call, newer render started
       // Show/hide project menu button based on active project
       const projectMenuBtn = document.getElementById('projectMenuBtn');
       if (projectMenuBtn) projectMenuBtn.style.display = activeProjectId ? '' : 'none';

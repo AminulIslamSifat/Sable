@@ -1114,8 +1114,8 @@ ${task}`;
         const text = outputEl.textContent;
         if (!text) return;
         const originalHTML = copyBtn.innerHTML;
-        navigator.clipboard.writeText(text).then(
-          () => {
+        safeCopy(text).then((ok) => {
+          if (ok) {
             copyBtn.innerHTML = '<i data-lucide="check" style="width:13px;height:13px;display:inline;vertical-align:-2px;margin-right:4px;"></i> Copied';
             copyBtn.classList.add("promptgen-copy-success");
             if (window.lucide) lucide.createIcons({ nodes: [copyBtn] });
@@ -1124,8 +1124,7 @@ ${task}`;
               copyBtn.classList.remove("promptgen-copy-success");
               if (window.lucide) lucide.createIcons({ nodes: [copyBtn] });
             }, 2000);
-          },
-          () => {
+          } else {
             copyBtn.innerHTML = '<i data-lucide="x" style="width:13px;height:13px;display:inline;vertical-align:-2px;margin-right:4px;"></i> Failed';
             if (window.lucide) lucide.createIcons({ nodes: [copyBtn] });
             setTimeout(() => {
@@ -1133,7 +1132,7 @@ ${task}`;
               if (window.lucide) lucide.createIcons({ nodes: [copyBtn] });
             }, 2000);
           }
-        );
+        });
       });
 
       useBtn.addEventListener("click", () => {

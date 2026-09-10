@@ -614,9 +614,8 @@
         fit,
         mk("Toggle fullscreen", _mmIcon(I.full), () => mwrap.classList.toggle("mm-full")),
         mk("Copy source", _mmIcon(I.copy), b => {
-          (navigator.clipboard ? navigator.clipboard.writeText(code) : Promise.reject())
-            .catch(() => {})
-            .finally(() => { b.classList.add("mm-ok"); setTimeout(() => b.classList.remove("mm-ok"), 900); });
+          safeCopy(code)
+            .then(() => { b.classList.add("mm-ok"); setTimeout(() => b.classList.remove("mm-ok"), 900); });
         })
       );
       const pad = document.createElement("div");

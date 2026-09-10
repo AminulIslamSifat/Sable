@@ -598,24 +598,26 @@
       allowBtn.addEventListener('click', async () => {
         allowBtn.disabled = true;
         denyBtn.disabled = true;
+        allowSessionBtn.disabled = true;
         // Remove transient "waiting" note
         activePane?.querySelectorAll('.approval-pending-note').forEach(el => el.remove());
         try {
           console.log('[approval] allow clicked, id:', id);
           const resp = await fetch('/api/skills/approve/' + id, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({chat_id: activeChatId}) });
           console.log('[approval] response status:', resp.status);
-          banner.classList.add('ab-resolved');
-          if (resp.ok && activePane) {
-            const card = createSkillCard({ name: name, data: { content: command } });
-            const status = card.querySelector('.skill-status');
-            status.textContent = 'approved \u2713';
-            status.style.color = 'var(--ok)';
-            const turn = activePane.querySelector('.turn:last-child');
-            const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
-            if (target) { target.appendChild(card); activateLucideIcons(card); }
-            activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
-          }
+
           if (resp.headers.get('content-type')?.includes('text/event-stream')) {
+            banner.classList.add('ab-resolved');
+            if (activePane) {
+              const card = createSkillCard({ name: name, data: { content: command } });
+              const status = card.querySelector('.skill-status');
+              status.textContent = 'approved \u2713';
+              status.style.color = 'var(--ok)';
+              const turn = activePane.querySelector('.turn:last-child');
+              const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
+              if (target) { target.appendChild(card); activateLucideIcons(card); }
+              activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
+            }
             const reader = resp.body.getReader();
             const dec = new TextDecoder();
             let buf = '';
@@ -645,7 +647,6 @@
               out.className = 'ab-output';
               out.textContent = output.slice(0, 500);
               banner.appendChild(out);
-              // Also fill the skill card output in the chat
               if (activePane) {
                 const lastCard = activePane.querySelector('.turn:last-child .skill-card:last-of-type');
                 if (lastCard) {
@@ -655,16 +656,50 @@
                 }
               }
             }
-            // Auto-trigger model turn so it sees the result
             setTimeout(() => sendAutoTurnMessage('[System: Command was approved and executed. Continue.]', { skipUserBubble: true, skipUserSave: true }), 300);
           } else {
             const data = await resp.json();
+            // Check application-level success, not just HTTP status
+            if (!data.ok) {
+              banner.classList.add('ab-resolved');
+              const st = document.createElement('span');
+              st.className = 'ab-status no';
+              st.textContent = data.error || 'expired';
+              banner.querySelector('.ab-actions').replaceWith(st);
+              // Re-enable buttons so user sees the failure state
+              allowBtn.disabled = false;
+              denyBtn.disabled = false;
+              allowSessionBtn.disabled = false;
+              return; // Don't hide banner or send auto-turn
+            }
+            banner.classList.add('ab-resolved');
+            if (activePane) {
+              const card = createSkillCard({ name: name, data: { content: command } });
+              const status = card.querySelector('.skill-status');
+              status.textContent = 'approved \u2713';
+              status.style.color = 'var(--ok)';
+              const turn = activePane.querySelector('.turn:last-child');
+              const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
+              if (target) { target.appendChild(card); activateLucideIcons(card); }
+              activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
+            }
             const st = document.createElement('span');
             st.className = 'ab-status ok';
             st.textContent = 'done';
             banner.querySelector('.ab-actions').replaceWith(st);
             if (data.feedback) {
+              if (activePane) {
+                const lastCard = activePane.querySelector('.turn:last-child .skill-card:last-of-type');
+                if (lastCard) {
+                  lastCard.querySelector('.skill-output').textContent = String(data.feedback).slice(0, 2000);
+                  const cst = lastCard.querySelector('.skill-status');
+                  if (cst) { cst.textContent = 'done \u2713'; cst.style.color = 'var(--ok)'; }
+                }
+              }
               setTimeout(() => sendAutoTurnMessage(data.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
+            } else {
+              // No feedback but command succeeded — still tell the model to continue
+              setTimeout(() => sendAutoTurnMessage('[System: Command was approved and executed. Continue.]', { skipUserBubble: true, skipUserSave: true }), 300);
             }
           }
         } catch(e) {
@@ -685,8 +720,21 @@
         activePane?.querySelectorAll('.approval-pending-note').forEach(el => el.remove());
         try {
           const resp = await fetch('/api/skills/approve/' + id, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({chat_id: activeChatId, session: true}) });
+          const data = await resp.json();
+          // Check application-level success before creating any UI
+          if (!data.ok) {
+            banner.classList.add('ab-resolved');
+            const st = document.createElement('span');
+            st.className = 'ab-status no';
+            st.textContent = data.error || 'expired';
+            banner.querySelector('.ab-actions').replaceWith(st);
+            allowBtn.disabled = false;
+            allowSessionBtn.disabled = false;
+            denyBtn.disabled = false;
+            return;
+          }
           banner.classList.add('ab-resolved');
-          if (resp.ok && activePane) {
+          if (activePane) {
             const card = createSkillCard({ name: name, data: { content: command } });
             const status = card.querySelector('.skill-status');
             status.textContent = 'approved (session) \u2713';
@@ -696,13 +744,22 @@
             if (target) { target.appendChild(card); activateLucideIcons(card); }
             activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
           }
-          const data = await resp.json();
           const st = document.createElement('span');
           st.className = 'ab-status ok';
           st.textContent = 'session ✓';
           banner.querySelector('.ab-actions').replaceWith(st);
           if (data.feedback) {
+            if (activePane) {
+              const lastCard = activePane.querySelector('.turn:last-child .skill-card:last-of-type');
+              if (lastCard) {
+                lastCard.querySelector('.skill-output').textContent = String(data.feedback).slice(0, 2000);
+                const cst = lastCard.querySelector('.skill-status');
+                if (cst) { cst.textContent = 'done \u2713'; cst.style.color = 'var(--ok)'; }
+              }
+            }
             setTimeout(() => sendAutoTurnMessage(data.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
+          } else {
+            setTimeout(() => sendAutoTurnMessage('[System: Command was approved and executed. Continue.]', { skipUserBubble: true, skipUserSave: true }), 300);
           }
         } catch(e) {
           banner.classList.add('ab-resolved');
@@ -1993,9 +2050,13 @@
             showToast(msg, "error");
             ui.appendAnswer(`\n[error] ${msg}`);
           } else if (evt.type === "tool_call") {
-            ui.addEvent(`⚙ tool: ${JSON.stringify(evt.data).slice(0, 300)}`);
+            const _tcName = evt.data?.name || "unknown";
+            const _tcAttrs = evt.data?.attrs || {};
+            const _tcSummary = _tcAttrs.path || _tcAttrs.pattern || _tcAttrs.command || _tcAttrs.query || _tcAttrs.title || "";
+            ui.addEvent(`⚙ ${_tcName}${_tcSummary ? ": " + String(_tcSummary).slice(0, 120) : ""}`);
           } else if (evt.type === "tool_result") {
-            ui.addEvent(`✓ result: ${JSON.stringify(evt.data).slice(0, 300)}`);
+            const _trText = evt.data?.text || evt.data?.output || "";
+            ui.addEvent(`✓ result: ${String(_trText).slice(0, 300)}`);
           } else if (evt.type === "tool_pending") {
             ui.showToolPending(evt);
           } else if (evt.type === "tool_progress") {
