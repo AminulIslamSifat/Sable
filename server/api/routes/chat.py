@@ -100,7 +100,7 @@ from server.database import (
     touch_chat, save_chat_url, get_chat_url,
     add_message, update_message, get_messages, list_chats, delete_chat, get_parent_id, get_db,
 )
-from server.utils import retry_async, retry_stream, make_title, _is_deepseek_api_model, _resolve_api_backend, _is_api_model, logger
+from server.utils import retry_async, make_title, _is_deepseek_api_model, _resolve_api_backend, _is_api_model, logger
 from engine.token_counter import count_prompt_tokens, count_completion_tokens
 from server.models import ChatRequest
 from ..dependencies import service, sse
@@ -1471,17 +1471,18 @@ async def chat(request: ChatRequest):
                         )
                     except Exception:
                         _round_prompt_tokens = 0
-                    round_event_source = retry_stream(
-                        lambda: service.stream_events(
-                            message=current_message,
-                            chat_id=_qwen_chat_id,
-                            parent_id=current_parent,
-                            files=files_for_round,
-                            model=request.model,
-                            thinking_mode=request.thinking_mode,
-                            bdd=bdd,
-                        ),
-                        label=f"stream_round_{round_index}",
+                    # ponytail: removed retry_stream wrapper — _stream_request() already
+                    # retries 3× internally, and the outer main-stream loop handles
+                    # timeout-based reconnection. Triple-nesting caused 9-27 HTTP calls
+                    # per user message.
+                    round_event_source = service.stream_events(
+                        message=current_message,
+                        chat_id=_qwen_chat_id,
+                        parent_id=current_parent,
+                        files=files_for_round,
+                        model=request.model,
+                        thinking_mode=request.thinking_mode,
+                        bdd=bdd,
                     )
                 # --- Chunk timeout for main stream ---
                 # NOTE: first-chunk timeout starts AFTER "request_sent" sentinel,
@@ -1553,17 +1554,15 @@ async def chat(request: ChatRequest):
                                         await service._ensure_headers(bdd)
                                     except Exception as _retry_exc:
                                         logger.warning("[main-stream] Retry refresh failed: %s", _retry_exc)
-                                    round_event_source = retry_stream(
-                                        lambda: service.stream_events(
-                                            message=current_message,
-                                            chat_id=_qwen_chat_id,
-                                            parent_id=current_parent,
-                                            files=files_for_round,
-                                            model=request.model,
-                                            thinking_mode=request.thinking_mode,
-                                            bdd=bdd,
-                                        ),
-                                        label=f"stream_round_{round_index}_retry{_main_timeout_retries}",
+                                    # ponytail: removed retry_stream wrapper (see L1475)
+                                    round_event_source = service.stream_events(
+                                        message=current_message,
+                                        chat_id=_qwen_chat_id,
+                                        parent_id=current_parent,
+                                        files=files_for_round,
+                                        model=request.model,
+                                        thinking_mode=request.thinking_mode,
+                                        bdd=bdd,
                                     )
                                 _main_iter = round_event_source.__aiter__()
                                 _main_got_first = False
@@ -1597,17 +1596,15 @@ async def chat(request: ChatRequest):
                                         await service._ensure_headers(bdd)
                                     except Exception as _retry_exc:
                                         logger.warning("[main-stream] Stall-retry refresh failed: %s", _retry_exc)
-                                    round_event_source = retry_stream(
-                                        lambda: service.stream_events(
-                                            message=current_message,
-                                            chat_id=_qwen_chat_id,
-                                            parent_id=current_parent,
-                                            files=files_for_round,
-                                            model=request.model,
-                                            thinking_mode=request.thinking_mode,
-                                            bdd=bdd,
-                                        ),
-                                        label=f"stream_round_{round_index}_stall_retry{_main_stall_retries}",
+                                    # ponytail: removed retry_stream wrapper (see L1475)
+                                    round_event_source = service.stream_events(
+                                        message=current_message,
+                                        chat_id=_qwen_chat_id,
+                                        parent_id=current_parent,
+                                        files=files_for_round,
+                                        model=request.model,
+                                        thinking_mode=request.thinking_mode,
+                                        bdd=bdd,
                                     )
                                 _main_iter = round_event_source.__aiter__()
                                 _main_got_first = False
@@ -1642,17 +1639,15 @@ async def chat(request: ChatRequest):
                                         await service._ensure_headers(bdd)
                                     except Exception as _retry_exc:
                                         logger.warning("[main-stream] Empty-response retry refresh failed: %s", _retry_exc)
-                                    round_event_source = retry_stream(
-                                        lambda: service.stream_events(
-                                            message=current_message,
-                                            chat_id=_qwen_chat_id,
-                                            parent_id=current_parent,
-                                            files=files_for_round,
-                                            model=request.model,
-                                            thinking_mode=request.thinking_mode,
-                                            bdd=bdd,
-                                        ),
-                                        label=f"stream_round_{round_index}_empty_retry{_empty_response_retries}",
+                                    # ponytail: removed retry_stream wrapper (see L1475)
+                                    round_event_source = service.stream_events(
+                                        message=current_message,
+                                        chat_id=_qwen_chat_id,
+                                        parent_id=current_parent,
+                                        files=files_for_round,
+                                        model=request.model,
+                                        thinking_mode=request.thinking_mode,
+                                        bdd=bdd,
                                     )
                                 _main_iter = round_event_source.__aiter__()
                                 _main_got_first = False
@@ -1900,17 +1895,15 @@ async def chat(request: ChatRequest):
                                     await service._ensure_headers(bdd)
                                 except Exception as _cip_exc:
                                     logger.warning("[main-stream] Chat-in-progress retry refresh failed: %s", _cip_exc)
-                                round_event_source = retry_stream(
-                                    lambda: service.stream_events(
-                                        message=current_message,
-                                        chat_id=_qwen_chat_id,
-                                        parent_id=current_parent,
-                                        files=files_for_round,
-                                        model=request.model,
-                                        thinking_mode=request.thinking_mode,
-                                        bdd=bdd,
-                                    ),
-                                    label=f"stream_round_{round_index}_cip_retry{_cip_retry}",
+                                # ponytail: removed retry_stream wrapper (see L1475)
+                                round_event_source = service.stream_events(
+                                    message=current_message,
+                                    chat_id=_qwen_chat_id,
+                                    parent_id=current_parent,
+                                    files=files_for_round,
+                                    model=request.model,
+                                    thinking_mode=request.thinking_mode,
+                                    bdd=bdd,
                                 )
                                 _main_iter = round_event_source.__aiter__()
                                 _main_got_first = False

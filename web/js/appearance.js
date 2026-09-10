@@ -1250,7 +1250,40 @@ window.safeCopy = async function(text) {
     closeCtx();
     const action = item.dataset.action;
 
-    if (action === 'new-chat') {
+    if (action === 'copy') {
+      const sel = window.getSelection()?.toString() || '';
+      if (sel) {
+        await safeCopy(sel);
+        showToast('Copied', 'success');
+      } else {
+        showToast('Nothing selected', 'error');
+      }
+    } else if (action === 'paste') {
+      try {
+        const text = await navigator.clipboard.readText();
+        const active = document.activeElement;
+        if (active && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT' || active.isContentEditable)) {
+          active.setRangeText?.(text, active.selectionStart, active.selectionEnd, 'end') ?? active.insertAdjacentText?.('beforeend', text);
+          active.dispatchEvent(new Event('input', { bubbles: true }));
+        } else if (typeof inputEl !== 'undefined' && inputEl) {
+          inputEl.value += text;
+          inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+        } else {
+          showToast('No active input to paste into', 'error');
+        }
+      } catch { showToast('Clipboard read denied', 'error'); }
+    } else if (action === 'select-all') {
+      const target = e.target.closest('.message-content, .chat-area, #chatMessages, main');
+      if (target) {
+        const range = document.createRange();
+        range.selectNodeContents(target);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } else {
+        document.execCommand('selectAll');
+      }
+    } else if (action === 'new-chat') {
       document.getElementById('newChat')?.click();
     } else if (action === 'settings') {
       (document.getElementById('railSettingsBtn') || document.getElementById('settingsBtn'))?.click();

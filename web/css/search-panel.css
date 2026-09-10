@@ -322,3 +322,13 @@ body.search-open #searchView { display: flex !important; }
   .search-card-head { flex-direction: column; gap: 2px; }
   .search-card-meta { align-self: flex-start; }
 }
+
+/* ── Message highlight flash after search navigation ── */
+@keyframes search-highlight-flash {
+  0%   { background-color: rgba(var(--accent-rgb, 99,102,241), 0.3); }
+  100% { background-color: transparent; }
+}
+.search-highlight-flash {
+  animation: search-highlight-flash 2s ease-out forwards;
+  border-radius: var(--radius-md, 8px);
+}
