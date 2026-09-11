@@ -440,8 +440,15 @@
           if (d.question) parts.push(d.question.slice(0, 80));
         } else if (name === "chat_title") {
           if (d.title) parts.push(d.title);
+        } else if (name === "edit_file" || name === "create_file") {
+          // Show actual content (SEARCH/REPLACE diff or file body) not just path
+          if (evt.data.content) {
+            initial = String(evt.data.content);
+          } else {
+            if (d.path) parts.push(d.path);
+          }
         } else {
-          // File-based tools: view_file, edit_file, create_file, insert_file, get_file
+          // File-based tools: view_file, insert_file, get_file
           if (d.path) parts.push(d.path);
           if (d.start != null) parts.push(`L${d.start}`);
           if (d.end != null) parts.push(`–${d.end}`);

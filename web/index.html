@@ -1395,7 +1395,7 @@
 
         <div id="tab-account" class="settings-tab-content">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
-            <label style="font-size:14px;color:var(--text);font-weight:600;">Account Profiles</label>
+            <label style="font-size:14px;color:var(--text);font-weight:600;">Accounts & Keys</label>
             <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
               <button id="backupAllAccountsBtn" class="icon-btn" title="Backup all accounts" style="width:auto;padding:4px 10px;font-size:11px;">Backup All</button>
               <button id="restoreAllAccountsBtn" class="icon-btn" title="Restore all accounts from backups" style="width:auto;padding:4px 10px;font-size:11px;">Restore All</button>
@@ -1406,10 +1406,12 @@
               <button id="refreshAccountsBtn" class="icon-btn" title="Refresh account list" style="width:auto;padding:4px 10px;font-size:11px;">↻ Refresh</button>
             </div>
           </div>
+          <!-- Provider filter buttons -->
+          <div id="providerFilterBar" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px;"></div>
           <div id="accountProfileCards" style="display:flex;flex-direction:column;gap:8px;">
             <p class="muted" style="font-size:12px;margin:0;">Loading accounts…</p>
           </div>
-          <p class="muted" style="font-size:11px;margin-top:10px;">Switches the API browser profile symlink. Browser restarts automatically after switch.<br>Profiles live in <code>system/browser-data-acc*</code> — each one is a full Chromium profile logged into a different account.</p>
+          <p class="muted" style="font-size:11px;margin-top:10px;">Browser profiles live in <code>system/browser-data-acc*</code> — each one is a full Chromium profile logged into a different account. API keys are managed per-provider.</p>
         </div>
         <div id="tab-personalization" class="settings-tab-content">
           <!-- ═══ Section 1: Personal Context (who you are) ═══ -->
@@ -2096,15 +2098,15 @@
   <script src="/static/js/core.js?v=3"></script>
   <script src="/static/js/tts.js?v=3"></script>
   <script src="/static/js/markdown.js?v=1"></script>
-  <script src="/static/js/chat.js?v=7"></script>
+  <script src="/static/js/chat.js?v=8"></script>
   <script src="/static/js/sidebar-host.js?v=10"></script>
   <script src="/static/js/tracknote.js?v=8"></script>
-  <script src="/static/js/sse.js?v=11"></script>
+  <script src="/static/js/sse.js?v=13"></script>
   <script src="/static/js/sidebar.js?v=2"></script>
   <script src="/static/js/statusbar.js?v=2"></script>
   <script src="/static/js/settings-projects.js?v=3"></script>
   <script src="/static/js/projects-panel.js?v=6"></script>
-  <script src="/static/js/settings-init.js?v=6"></script>
+  <script src="/static/js/settings-init.js?v=7"></script>
   <script src="/static/js/settings-ui.js?v=5"></script>
   <script src="/static/js/settings-bot.js?v=1"></script>
   <script src="/static/js/library.js?v=2"></script>

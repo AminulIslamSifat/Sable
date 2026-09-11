@@ -303,7 +303,7 @@
       // Block sends while a stop is being processed — prevents CHAT_IN_PROGRESS race
       if (_stopInFlight) return;
 
-      if (isStreaming() && !opts.controller) {
+      if (isStreaming()) {
         _stopInFlight = true;
         const ctrl = activeStreams.get(activeChatId);
         if (ctrl) ctrl.abort();

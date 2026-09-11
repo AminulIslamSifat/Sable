@@ -31,6 +31,7 @@ dependencies = [
     "python-pptx>=1.0.0",
     "pypdf>=5.0.0",
     "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
     "six>=1.16.0",
     "websockets>=14.0",
     "beautifulsoup4>=4.12.0",
@@ -44,12 +45,21 @@ dependencies = [
     # Windows ConPTY backend for the in-browser terminal (no-op on Linux/macOS)
     "pywinpty>=2.0; sys_platform == 'win32'",
     "pymupdf>=1.28.2",
+    "curl-cffi>=0.16.3",
+    "trafilatura>=2.2.0",
 ]
 
 [project.optional-dependencies]
 # Kept for backward compatibility — pywinpty is now auto-installed on Windows
 # via the platform marker above. `uv sync --extra windows` still works.
 windows = ["pywinpty>=2.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "live: marks tests requiring live browser/accounts (deselect with '-m \"not live\"')",
+]
 
 [tool.uv]
 package = false

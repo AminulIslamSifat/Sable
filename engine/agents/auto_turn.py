@@ -267,6 +267,10 @@ class AutoTurnEngine:
             msg_lines = [f"[{m.get('role', '?')}]: {m.get('content', '')[:400]}" for m in recent_messages[-6:]]
             recent_section = "\nRecent conversation:\n" + "\n".join(msg_lines)
 
+        # Use a placeholder that won't collide with real agent IDs or break JSON transport.
+        # The main chat model reads this and calls teacher_guidance via normal tool_call format.
+        _tc_open = chr(60) + "tool_call" + chr(62)
+        _tc_close = chr(60) + "/tool_call" + chr(62)
         escalation_prompt = (
             f"[TEACHER ESCALATION REQUEST]\n"
             f"Agent {agent_id} ({role}) is stuck and needs your guidance.\n\n"
@@ -274,13 +278,12 @@ class AutoTurnEngine:
             f"Stuck reason: {stuck_reason}\n"
             f"{context_section}{recent_section}\n\n"
             f"Please analyze what the agent is doing wrong and provide guidance.\n"
-            f"Respond using the teacher_guidance tool:\n\n"
-            f'<action>\n'
-            f'[{{"name": "teacher_guidance", "arguments": {{\n'
-            f'  "agent_id": "{agent_id}",\n'
-            f'  "guidance": "your specific actionable guidance here"\n'
-            f'}}}}]\n'
-            f'</action>'
+            f"Respond using the teacher_guidance tool like this:\n\n"
+            f"{_tc_open}\n"
+            + '{"name": "teacher_guidance", "arguments": {"agent_id": "'
+            + agent_id
+            + '", "guidance": "your specific actionable guidance here"}}'
+            + f"\n{_tc_close}"
         )
 
         # Queue it like agent completion — gets delivered on next available turn

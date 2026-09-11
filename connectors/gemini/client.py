@@ -44,6 +44,21 @@ _KEYS_PATH = _SYSTEM_DIR / ".gemini_api_keys.json"
 _LEGACY_KEY_PATH = _SYSTEM_DIR / ".gemini_api_key"
 
 
+def _auto_rotate_enabled(provider: str) -> bool:
+    """Check if auto-rotation is enabled for a provider via settings.json."""
+    try:
+        path = _SYSTEM_DIR / "settings.json"
+        if not path.is_file():
+            return True
+        settings = json.loads(path.read_text(encoding="utf-8"))
+        per_provider = settings.get("account_auto_switch")
+        if isinstance(per_provider, dict) and provider in per_provider:
+            return bool(per_provider[provider])
+        return bool(settings.get("account_auto_switch_enabled", True))
+    except Exception:
+        return True
+
+
 
 # Max chars for session history (sliding window by character count)
 _MAX_SESSION_CHARS = 100_000
@@ -187,6 +202,9 @@ class GeminiClient:
     def _rotate_key(self) -> str | None:
         """Rotate to next key. Returns the new current key or None if exhausted."""
         if len(self._keys) <= 1:
+            return self._current_key
+        if not _auto_rotate_enabled("gemini"):
+            logger.info("[Gemini] Auto-rotate disabled — staying on current key")
             return self._current_key
         self._key_index = (self._key_index + 1) % len(self._keys)
         return self._keys[self._key_index]

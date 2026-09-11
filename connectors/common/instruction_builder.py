@@ -17,6 +17,10 @@ _INSTRUCTION_DIR = Path(__file__).resolve().parent.parent.parent / "instruction"
 _SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills"
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
+# Tools that must NEVER be available to subagents (agent_role != None).
+# Subagents operate autonomously — no interactive user prompts or nested multiagent spawns.
+_SUBAGENT_BLOCKED_TOOLS = frozenset({"ask_user", "multi_agent"})
+
 # Cache-busting version counter — incremented on persona/instruction changes
 # so all connectors (Gemini, DeepSeek, Mistral/OpenAI-compat) detect stale caches.
 _instruction_version: int = 0
@@ -229,6 +233,19 @@ def build_instructions(
         personal_path = _INSTRUCTION_DIR / "personal.md"
         if personal_path.exists():
             parts.append(personal_path.read_text(encoding="utf-8").strip())
+
+        # Teacher escalation awareness — agents know they can get help when stuck
+        parts.append(
+            "# Stuck Recovery\n"
+            "If you find yourself repeatedly failing the same tool call, getting identical "
+            "errors, or unable to make progress after 2-3 attempts:\n"
+            "1. Stop repeating the same approach immediately.\n"
+            "2. Try a fundamentally different strategy or tool.\n"
+            "3. If you are still stuck after trying alternatives, the system will automatically "
+            "request guidance from the orchestrator. You will receive a [TEACHER GUIDANCE] block "
+            "with specific instructions — follow them exactly.\n"
+            "4. Do NOT ignore teacher guidance or repeat the same failed approach after receiving it."
+        )
     else:
         # Main chat mode: original persona logic
         project_instruction = None
@@ -339,6 +356,9 @@ def build_instructions(
                 _dt = json.loads(_disabled_tools_path.read_text(encoding="utf-8"))
                 if isinstance(_dt, list):
                     _disabled_tools = _dt
+            # Block interactive/multiagent tools for subagents
+            if agent_role:
+                _disabled_tools = list(set(_disabled_tools) | _SUBAGENT_BLOCKED_TOOLS)
             tools_section = get_tools_prompt_section(disabled=_disabled_tools, provider=provider)
             if tools_section:
                 parts.append(tools_section)

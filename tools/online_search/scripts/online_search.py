@@ -33,6 +33,9 @@ from typing import Any, Iterable
 
 from lxml import html as lxml_html
 
+from curl_cffi import requests as cffi_requests
+import trafilatura
+
 # Add project root to sys.path so we can import engine.search
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent.parent)
 if _PROJECT_ROOT not in sys.path:
@@ -194,19 +197,34 @@ def infer_time_filter(query: str) -> str | None:
     return None
 
 
-def http_get(url: str, *, params: dict[str, Any] | None = None, timeout: int = 15) -> tuple[int, str, str]:
+# Browser profiles curl_cffi can impersonate. Rotated on retry so a block
+# against one fingerprint doesn't doom every subsequent request.
+_IMPERSONATE_PROFILES = ("chrome", "chrome131", "firefox", "safari", "edge")
+
+
+def http_get(
+    url: str,
+    *,
+    params: dict[str, Any] | None = None,
+    timeout: int = 15,
+    impersonate: str = "chrome",
+) -> tuple[int, str, str]:
+    """GET a URL with a real browser TLS/HTTP2 fingerprint via curl_cffi.
+
+    Raw urllib/httpx send Python's fixed TLS fingerprint, which Cloudflare,
+    Akamai and friends flag at the handshake — before any HTML is served.
+    curl_cffi impersonates a real browser so passive fingerprint checks pass.
+    """
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        body = response.read()
-        content_type = response.headers.get_content_type()
-        charset = response.headers.get_content_charset() or "utf-8"
-        try:
-            text = body.decode(charset, errors="replace")
-        except Exception:
-            text = body.decode("utf-8", errors="replace")
-        return response.status, content_type, text
+    resp = cffi_requests.get(
+        url,
+        impersonate=impersonate,
+        timeout=timeout,
+        allow_redirects=True,
+    )
+    content_type = resp.headers.get("content-type", "text/html").split(";")[0].strip()
+    return resp.status_code, content_type, resp.text
 
 
 def extract_visible_text(html_text: str) -> tuple[str, str]:
@@ -401,42 +419,149 @@ def _normalize_url(raw_url: str) -> str:
     return url
 
 
-def fetch_webpage_content(url: str, *, timeout: int = 10, max_chars: int = 5000) -> dict[str, Any]:
-    url = _normalize_url(url)
+# Signals that a response is an anti-bot JS challenge (not real content).
+_JS_CHALLENGE_MARKERS = (
+    "just a moment",
+    "checking your browser",
+    "enable javascript and cookies",
+    "cf_clearance",
+    "challenge-platform",
+    "turnstile",
+    "ddos protection by",
+    "attention required! | cloudflare",
+)
+
+
+def _looks_like_js_challenge(status_code: int, text: str) -> bool:
+    if status_code in (403, 429, 503):
+        head = text[:6000].lower()
+        if any(marker in head for marker in _JS_CHALLENGE_MARKERS):
+            return True
+        # A tiny 403/503 body is almost always a challenge wall, not content.
+        if status_code in (403, 503) and len(text) < 1500:
+            return True
+    return False
+
+
+def _extract_with_trafilatura(html_text: str, url: str) -> tuple[str, str]:
+    """Return (title, markdown_body) via trafilatura; empty strings on failure."""
+    title = ""
     try:
-        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            status_code = response.status
-            body = response.read()
-            content_type = response.headers.get_content_type()
-            charset = response.headers.get_content_charset() or "utf-8"
-            try:
-                text = body.decode(charset, errors="replace")
-            except Exception:
-                text = body.decode("utf-8", errors="replace")
-            if content_type == "text/html" or "<html" in text[:2000].lower():
-                title, visible = extract_main_content(text)
-                if not title:
-                    m = re.search(r"<title[^>]*>(.*?)</title>", text, re.I | re.S)
-                    title = html.unescape(re.sub(r"<.*?>", "", m.group(1), flags=re.S)).strip() if m else ""
-                return {
-                    "success": True,
-                    "url": url,
-                    "title": title,
-                    "content": truncate(visible, max_chars),
-                    "status_code": status_code,
-                }
+        metadata = trafilatura.extract_metadata(html_text, default_url=url)
+        if metadata and metadata.title:
+            title = metadata.title.strip()
+    except Exception:
+        pass
+    body = ""
+    try:
+        body = trafilatura.extract(
+            html_text,
+            url=url,
+            output_format="markdown",
+            include_links=True,
+            include_tables=True,
+            include_comments=False,
+            favor_recall=True,
+        ) or ""
+    except Exception:
+        body = ""
+    return title, body
+
+
+def _playwright_fetch(url: str, *, timeout: int = 25, max_chars: int = 10000) -> dict[str, Any]:
+    """Last-resort render for JS challenges. Only used when curl_cffi is walled."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:
+        return {"success": False, "url": url, "error": f"playwright unavailable: {exc}", "content": "", "title": "", "status_code": 0}
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(
+                user_agent=USER_AGENT,
+                viewport={"width": 1280, "height": 900},
+            )
+            page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
+            page.wait_for_timeout(2500)
+            html_text = page.content()
+            browser.close()
+        title, body = _extract_with_trafilatura(html_text, url)
+        return {
+            "success": bool(body),
+            "url": url,
+            "title": title,
+            "content": truncate(body, max_chars),
+            "status_code": 200,
+            "rendered": True,
+        }
+    except Exception as exc:
+        return {"success": False, "url": url, "error": f"playwright: {exc}", "content": "", "title": "", "status_code": 0}
+
+
+def fetch_webpage_content(
+    url: str,
+    *,
+    timeout: int = 12,
+    max_chars: int = 5000,
+    allow_render_fallback: bool = True,
+) -> dict[str, Any]:
+    """Fetch a page with a browser-grade TLS fingerprint and extract main content.
+
+    Order of attack:
+      1. curl_cffi with browser impersonation (Chrome, then rotated profiles).
+      2. trafilatura markdown extraction (benchmark-best F1, clean for LLMs).
+      3. playwright render fallback ONLY when an anti-bot JS challenge is detected.
+    """
+    url = _normalize_url(url)
+    last_error = ""
+
+    for impersonate in _IMPERSONATE_PROFILES:
+        try:
+            status_code, content_type, text = http_get(url, timeout=timeout, impersonate=impersonate)
+        except Exception as exc:
+            last_error = f"{impersonate}: {exc}"
+            continue
+
+        if _looks_like_js_challenge(status_code, text):
+            last_error = f"{impersonate}: JS challenge (HTTP {status_code})"
+            continue  # try next fingerprint; if all fail, we render below
+
+        is_html = content_type == "text/html" or "<html" in text[:2000].lower()
+        if is_html:
+            title, body = _extract_with_trafilatura(text, url)
+            if not body:
+                # trafilatura found nothing — fall back to the DOM scorer.
+                title, body = extract_main_content(text)
+            if not title:
+                m = re.search(r"<title[^>]*>(.*?)</title>", text, re.I | re.S)
+                title = html.unescape(re.sub(r"<.*?>", "", m.group(1), flags=re.S)).strip() if m else ""
             return {
                 "success": True,
                 "url": url,
-                "title": "",
-                "content": truncate(text.strip(), max_chars),
+                "title": title,
+                "content": truncate(body, max_chars),
                 "status_code": status_code,
+                "impersonate": impersonate,
             }
-    except urllib.error.HTTPError as e:
-        return {"success": False, "url": url, "error": str(e), "content": "", "title": "", "status_code": e.code}
-    except Exception as e:
-        return {"success": False, "url": url, "error": str(e), "content": "", "title": "", "status_code": 0}
+
+        # Non-HTML (JSON, plain text, etc.) — return raw, no extraction.
+        return {
+            "success": True,
+            "url": url,
+            "title": "",
+            "content": truncate(text.strip(), max_chars),
+            "status_code": status_code,
+            "impersonate": impersonate,
+        }
+
+    # Every fingerprint was walled — escalate to a real browser if allowed.
+    if allow_render_fallback:
+        rendered = _playwright_fetch(url, timeout=max(timeout, 25), max_chars=max_chars)
+        if rendered.get("success"):
+            return rendered
+        last_error = rendered.get("error", last_error)
+
+    return {"success": False, "url": url, "error": last_error or "all fingerprints blocked", "content": "", "title": "", "status_code": 0}
 
 
 def comprehensive_web_search(query: str, *, max_pages: int = 5, max_chars: int = 10000, time_filter: str | None = None) -> dict[str, Any]:

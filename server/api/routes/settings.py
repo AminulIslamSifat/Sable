@@ -1023,13 +1023,18 @@ async def list_accounts() -> dict[str, Any]:
                 browser_available = True
                 if browser_path and browser_path != "default":
                     browser_available = os.path.isfile(browser_path)
+                # Check for actual tokens (not just key presence — empty lists mean no tokens)
+                _waf_list = waf_tokens.get(entry.name, [])
+                _ds_list = ds_tokens.get(entry.name, [])
+                _has_waf = bool(_waf_list) if isinstance(_waf_list, list) else bool(_waf_list)
+                _has_ds = bool(_ds_list) if isinstance(_ds_list, list) else bool(_ds_list)
                 accounts.append({
                     "name": entry.name,
                     "num": int(m.group(1)),
                     "email": _read_profile_email(entry),
                     "size_mb": _dir_size_mb(entry),
-                    "has_waf": entry.name in waf_tokens,
-                    "has_ds": entry.name in ds_tokens,
+                    "has_waf": _has_waf,
+                    "has_ds": _has_ds,
                     "exhausted": exhaustion.get(entry.name, False),
                     "captcha_blocked": captcha_blocks.get(entry.name, False),
                     "browser_path": browser_path,
@@ -1051,12 +1056,243 @@ async def list_accounts() -> dict[str, Any]:
 
 @router.post("/api/settings/accounts/auto-switch-toggle")
 async def toggle_auto_switch(payload: dict[str, Any]) -> dict[str, Any]:
-    """Toggle account auto-switch on/off."""
+    """Toggle account auto-switch on/off (legacy global — sets all providers)."""
     enabled = payload.get("enabled", True)
     _settings = _read_system_settings()
     _settings["account_auto_switch_enabled"] = bool(enabled)
+    # Also update per-provider map so new UI stays in sync
+    per_provider = _settings.get("account_auto_switch", {})
+    if not isinstance(per_provider, dict):
+        per_provider = {}
+    for prov in ("qwen", "deepseek", "gemini", "groq", "mistral", "openai", "puter", "cloudflare"):
+        per_provider[prov] = bool(enabled)
+    _settings["account_auto_switch"] = per_provider
     _write_system_settings(_settings)
     return {"auto_switch_enabled": bool(enabled)}
+
+
+# --- Per-provider account/key listing & auto-switch ---
+
+# Providers that use browser profiles (accounts) vs API keys
+_BROWSER_PROVIDERS = ("qwen", "deepseek")
+_API_KEY_PROVIDERS = ("gemini", "groq", "mistral", "openai", "puter")
+
+# Map provider → (module_path, client_class_or_getter)
+_API_KEY_PROVIDER_MODULES: dict[str, tuple[str, str]] = {
+    "gemini": ("connectors.gemini.client", "get_client"),
+    "groq": ("connectors.groq.client", "get_client"),
+    "mistral": ("connectors.mistral.client", "get_client"),
+    "openai": ("connectors.openai.client", "get_client"),
+    "puter": ("connectors.puter.client", "get_client"),
+}
+
+
+def _get_api_key_client(provider: str):
+    """Lazy-import and return the singleton client for an API key provider."""
+    import importlib
+    mod_path, func_name = _API_KEY_PROVIDER_MODULES[provider]
+    mod = importlib.import_module(mod_path)
+    return getattr(mod, func_name)()
+
+
+def get_auto_switch_for_provider(provider: str) -> bool:
+    """Check if auto-switch is enabled for a specific provider.
+
+    Falls back to legacy global `account_auto_switch_enabled` if per-provider
+    setting doesn't exist yet (migration path).
+    """
+    try:
+        settings = _read_system_settings()
+        per_provider = settings.get("account_auto_switch")
+        if isinstance(per_provider, dict) and provider in per_provider:
+            return bool(per_provider[provider])
+        # Fallback to legacy global setting
+        return bool(settings.get("account_auto_switch_enabled", True))
+    except Exception:
+        return True
+
+
+@router.get("/api/settings/accounts/by-provider")
+async def list_accounts_by_provider() -> dict[str, Any]:
+    """Return all providers with their accounts/keys, active status, and auto-switch state."""
+    from engine.config import get_active_account as _get_active
+    active_account = _get_active()
+    _settings = _read_system_settings()
+    per_provider_switch = _settings.get("account_auto_switch", {})
+    if not isinstance(per_provider_switch, dict):
+        per_provider_switch = {}
+    legacy_switch = _settings.get("account_auto_switch_enabled", True)
+
+    def _auto_sw(prov: str) -> bool:
+        if prov in per_provider_switch:
+            return bool(per_provider_switch[prov])
+        return bool(legacy_switch)
+
+    providers: dict[str, Any] = {}
+
+    # --- Browser-based providers (Qwen, DeepSeek) ---
+    waf_tokens: dict = {}
+    ds_tokens: dict = {}
+    try:
+        waf_tokens = json.loads((_SYSTEM_DIR / ".qwen_tokens.json").read_text())
+    except Exception:
+        pass
+    try:
+        ds_tokens = json.loads((_SYSTEM_DIR / ".deepseek_tokens.json").read_text())
+    except Exception:
+        pass
+
+    from engine.config import get_all_exhaustion_status, get_all_captcha_block_status
+    exhaustion = get_all_exhaustion_status()
+    captcha_blocks = get_all_captcha_block_status()
+    acc_cfg = _read_accounts_config()
+
+    def _browser_label(path: str) -> str:
+        if not path:
+            return "Playwright"
+        if path == "default":
+            return "Default"
+        bname = Path(path).stem.lower()
+        for kw in ("chrome", "chromium", "thorium", "helium", "brave", "vivaldi", "msedge", "edge"):
+            if kw in bname:
+                return kw.capitalize() if kw != "msedge" else "Edge"
+        return Path(path).stem
+
+    def _scan_browser_accounts() -> list[dict[str, Any]]:
+        accounts: list[dict[str, Any]] = []
+        for entry in _SYSTEM_DIR.iterdir():
+            m = re.match(r"browser-data-acc(\d+)$", entry.name)
+            if entry.is_dir() and m:
+                browser_path = acc_cfg.get(entry.name, {}).get("browser_path", "")
+                browser_available = True
+                if browser_path and browser_path != "default":
+                    browser_available = os.path.isfile(browser_path)
+                _waf_list = waf_tokens.get(entry.name, [])
+                _ds_list = ds_tokens.get(entry.name, [])
+                _has_waf = bool(_waf_list) if isinstance(_waf_list, list) else bool(_waf_list)
+                _has_ds = bool(_ds_list) if isinstance(_ds_list, list) else bool(_ds_list)
+                accounts.append({
+                    "name": entry.name,
+                    "num": int(m.group(1)),
+                    "email": _read_profile_email(entry),
+                    "size_mb": _dir_size_mb(entry),
+                    "has_waf": _has_waf,
+                    "has_ds": _has_ds,
+                    "exhausted": exhaustion.get(entry.name, False),
+                    "captcha_blocked": captcha_blocks.get(entry.name, False),
+                    "browser_path": browser_path,
+                    "browser_label": _browser_label(browser_path),
+                    "browser_available": browser_available,
+                    "has_backup": (_SYSTEM_DIR / f"{entry.name}.bak").is_dir(),
+                })
+        accounts.sort(key=lambda a: a["num"])
+        return accounts
+
+    browser_accounts = await asyncio.to_thread(_scan_browser_accounts)
+
+    # Qwen: accounts that have WAF tokens
+    qwen_accounts = [a for a in browser_accounts if a["has_waf"]]
+    providers["qwen"] = {
+        "type": "browser",
+        "label": "Qwen",
+        "accounts": qwen_accounts,
+        "active": active_account if any(a["name"] == active_account for a in qwen_accounts) else None,
+        "auto_switch_enabled": _auto_sw("qwen"),
+    }
+
+    # DeepSeek: accounts that have DS tokens
+    ds_accounts = [a for a in browser_accounts if a["has_ds"]]
+    providers["deepseek"] = {
+        "type": "browser",
+        "label": "DeepSeek",
+        "accounts": ds_accounts,
+        "active": active_account if any(a["name"] == active_account for a in ds_accounts) else None,
+        "auto_switch_enabled": _auto_sw("deepseek"),
+    }
+
+    # --- API key providers ---
+    for prov_id in _API_KEY_PROVIDERS:
+        try:
+            client = _get_api_key_client(prov_id)
+            keys = client.list_keys()
+            active_idx = next((k["index"] for k in keys if k.get("active")), None)
+            providers[prov_id] = {
+                "type": "api_key",
+                "label": prov_id.capitalize(),
+                "keys": keys,
+                "active_index": active_idx,
+                "available": client.is_available,
+                "auto_switch_enabled": _auto_sw(prov_id),
+            }
+        except Exception as exc:
+            providers[prov_id] = {
+                "type": "api_key",
+                "label": prov_id.capitalize(),
+                "keys": [],
+                "active_index": None,
+                "available": False,
+                "auto_switch_enabled": _auto_sw(prov_id),
+                "error": str(exc),
+            }
+
+    # Cloudflare: single credential
+    try:
+        from connectors.cloudflare.client import get_client as get_cf_client
+        cf = get_cf_client()
+        providers["cloudflare"] = {
+            "type": "credential",
+            "label": "Cloudflare",
+            "available": cf.is_available,
+            "auto_switch_enabled": _auto_sw("cloudflare"),
+        }
+    except Exception:
+        providers["cloudflare"] = {
+            "type": "credential",
+            "label": "Cloudflare",
+            "available": False,
+            "auto_switch_enabled": _auto_sw("cloudflare"),
+        }
+
+    return {
+        "providers": providers,
+        "active_account": active_account,
+    }
+
+
+@router.post("/api/settings/accounts/auto-switch-toggle/{provider}")
+async def toggle_auto_switch_per_provider(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Toggle auto-switch for a specific provider."""
+    provider = provider.lower().strip()
+    enabled = bool(payload.get("enabled", True))
+    _settings = _read_system_settings()
+    per_provider = _settings.get("account_auto_switch", {})
+    if not isinstance(per_provider, dict):
+        per_provider = {}
+    per_provider[provider] = enabled
+    _settings["account_auto_switch"] = per_provider
+    _write_system_settings(_settings)
+    return {"provider": provider, "auto_switch_enabled": enabled}
+
+
+@router.post("/api/settings/{provider}/switch-key")
+async def switch_api_key(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Manually switch to a specific API key by index for an API key provider."""
+    provider = provider.lower().strip()
+    if provider not in _API_KEY_PROVIDER_MODULES:
+        raise HTTPException(status_code=400, detail=f"Provider '{provider}' does not support key switching")
+    index = payload.get("index")
+    if index is None or not isinstance(index, int):
+        raise HTTPException(status_code=400, detail="Missing or invalid 'index' field")
+    try:
+        client = _get_api_key_client(provider)
+        if index < 0 or index >= len(client._keys):
+            raise HTTPException(status_code=404, detail="Key index out of range")
+        client._key_index = index
+        return {"status": "ok", "keys": client.list_keys()}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Switch failed: {exc}")
 
 @router.post("/api/settings/accounts/switch")
 async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
@@ -1097,7 +1333,7 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
         try:
             # Always launch browser to collect fresh WAF tokens (non-blocking)
             await service.force_refresh_waf(account=account)
-            from connectors.deepseek.client import get_token_for_account as get_ds_token
+            from connectors.deepseek.client import get_own_token_for_account as get_ds_token
             ds_cached = get_ds_token(account)
             if ds_cached:
                 get_deepseek_client().set_token(ds_cached, account=account)
@@ -1105,7 +1341,19 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
             else:
                 try:
                     ds_token = await service.refresh_deepseek_token()
-                    get_deepseek_client().set_token(ds_token, account=account)
+                    # Persist ONLY if a fresh token was actually extracted for
+                    # THIS account. Otherwise use it in-memory (persist=False)
+                    # so we don't smear a foreign token under this account key.
+                    own = get_ds_token(account)
+                    if own and own == ds_token:
+                        get_deepseek_client().set_token(ds_token, account=account)
+                    else:
+                        get_deepseek_client().set_token(ds_token, account=account, persist=False)
+                        logger.info(
+                            "Using DeepSeek token in-memory for %s (not persisted: "
+                            "no account-specific capture)",
+                            account,
+                        )
                 except Exception as exc:
                     logger.warning("DeepSeek token extraction failed for %s: %s", account, exc)
             from connectors.common.instruction_builder import invalidate_cache

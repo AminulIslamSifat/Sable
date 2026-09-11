@@ -22,6 +22,22 @@ logger = logging.getLogger("sable.puter")
 
 _SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
 _KEYS_PATH = _SYSTEM_DIR / ".puter_api_keys.json"
+
+
+def _auto_rotate_enabled(provider: str) -> bool:
+    """Check if auto-rotation is enabled for a provider via settings.json."""
+    try:
+        path = _SYSTEM_DIR / "settings.json"
+        if not path.is_file():
+            return True
+        import json as _json
+        settings = _json.loads(path.read_text(encoding="utf-8"))
+        per_provider = settings.get("account_auto_switch")
+        if isinstance(per_provider, dict) and provider in per_provider:
+            return bool(per_provider[provider])
+        return bool(settings.get("account_auto_switch_enabled", True))
+    except Exception:
+        return True
 _DRIVER_URL = "https://api.puter.com/drivers/call"
 _USAGE_URL = "https://api.puter.com/metering/usage"
 from engine.config import ASSETS_DIR as _OUTPUT_DIR
@@ -123,6 +139,8 @@ class PuterClient:
 
     def _rotate(self) -> str | None:
         if len(self._keys) <= 1:
+            return self._current_key
+        if not _auto_rotate_enabled("puter"):
             return self._current_key
         self._key_index = (self._key_index + 1) % len(self._keys)
         return self._keys[self._key_index]

@@ -49,6 +49,25 @@ _SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
 _MAX_SESSION_CHARS = 100_000
 
 
+def _auto_rotate_enabled(provider: str) -> bool:
+    """Check if auto-rotation is enabled for a provider via settings.json.
+
+    Reads the file directly to avoid circular imports with server.api.routes.
+    Falls back to True if file missing or unreadable.
+    """
+    try:
+        path = _SYSTEM_DIR / "settings.json"
+        if not path.is_file():
+            return True
+        settings = json.loads(path.read_text(encoding="utf-8"))
+        per_provider = settings.get("account_auto_switch")
+        if isinstance(per_provider, dict) and provider in per_provider:
+            return bool(per_provider[provider])
+        return bool(settings.get("account_auto_switch_enabled", True))
+    except Exception:
+        return True
+
+
 def _msg_chars(msg: dict[str, Any]) -> int:
     """Estimate character count of an OpenAI-format message."""
     content = msg.get('content', '')
@@ -229,6 +248,9 @@ class OpenAICompatClient:
 
     def _rotate_key(self) -> str | None:
         if len(self._keys) <= 1:
+            return self._current_key
+        if not _auto_rotate_enabled(self.NAME.lower()):
+            logger.info("[%s] Auto-rotate disabled — staying on current key", self.NAME)
             return self._current_key
         self._key_index = (self._key_index + 1) % len(self._keys)
         return self._keys[self._key_index]
