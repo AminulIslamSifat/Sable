@@ -69,6 +69,7 @@ class CheckpointManager:
         self._ensure_shadow_repo()
 
     def _git(self, *args: str, timeout: int = 30) -> subprocess.CompletedProcess:
+        from engine.process_utils import popen_kwargs
         cmd = [
             "git",
             f"--git-dir={self.git_dir}",
@@ -76,16 +77,17 @@ class CheckpointManager:
             *args,
         ]
         return subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout
+            cmd, capture_output=True, text=True, timeout=timeout, **popen_kwargs()
         )
 
     def _ensure_shadow_repo(self) -> None:
+        from engine.process_utils import popen_kwargs
         if not os.path.exists(self.git_dir):
             os.makedirs(os.path.dirname(self.git_dir), exist_ok=True)
             # Init bare repo — use posix path so git doesn't choke on backslashes
             result = subprocess.run(
                 ["git", "init", "--bare", self.git_dir],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, timeout=10, **popen_kwargs(),
             )
             if result.returncode != 0:
                 logger.error("Failed to init shadow repo at %s: %s", self.git_dir, result.stderr[:300])
