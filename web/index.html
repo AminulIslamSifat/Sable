@@ -356,9 +356,7 @@
         <div class="header-cell header-icon-cell header-right-pair">
           <button id="runFileBtn" class="icon-btn" title="Run current file"><span class="icon-emoji">▶</span><i data-lucide="play" class="icon-lucide"></i></button>
         </div>
-        <div class="header-cell header-icon-cell header-right-pair">
-          <button id="diffToggleBtn" class="icon-btn" title="Toggle file edit sidebar"><span class="icon-emoji">✎</span><i data-lucide="file-pen-line" class="icon-lucide"></i></button>
-        </div>
+
       </div>
     </header>
 
@@ -893,38 +891,27 @@
     </div>
   </div>
 
-  <!-- Files panel (left-sidebar hostable) -->
+  <!-- Files panel (left-sidebar hostable, with Files/Diff tabs) -->
   <div id="filesPanel" class="tracknote-standalone hidden" aria-label="Files">
     <div class="tracknote-standalone-header">
-      <span class="tracknote-standalone-title">Files</span>
-      <button id="fsLeftOpenFolder" class="new-chat-icon sidebar-action-icon" title="Open Folder"><span class="icon-emoji">📂</span><i data-lucide="folder-open" class="icon-lucide"></i></button>
+      <div class="sidebar-mode-pill fs-left-pill" id="fsLeftPill" style="--n:2;--i:0;">
+        <button class="active" data-panel="files">Files</button>
+        <button data-panel="diff">Diff</button>
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <button id="fsLeftOpenFolder" class="new-chat-icon sidebar-action-icon" title="Open Folder"><span class="icon-emoji">📂</span><i data-lucide="folder-open" class="icon-lucide"></i></button>
+        <button id="diffClear" class="new-chat-icon sidebar-action-icon" title="Clear diff"><span class="icon-emoji">🗑</span><i data-lucide="trash-2" class="icon-lucide"></i></button>
+      </div>
     </div>
     <div class="tracknote-body">
-      <div id="fsLeftTree" class="fs-sidebar-tree"></div>
+      <div id="fsLeftFilesView" class="fs-left-view active">
+        <div id="fsLeftTree" class="fs-sidebar-tree"></div>
+      </div>
+      <div id="fsLeftDiffView" class="fs-left-view">
+        <div id="diffCards"></div>
+      </div>
     </div>
   </div>
-
-  <aside id="diffSidebar" class="diff-sidebar" aria-label="File sidebar">
-    <div class="diff-sidebar-header">
-      <div style="display: flex; align-items: center; gap: 6px;">
-        <div class="sidebar-mode-pill fs-mode-pill" id="fsModePill" style="--n:2;--i:0;">
-          <button class="active" data-panel="files">Files</button>
-          <button data-panel="diff">Diff</button>
-        </div>
-        <button id="sbOpenFolderBtn" class="new-chat-icon sidebar-action-icon" title="Open Folder"><span class="icon-emoji">📂</span><i data-lucide="folder-open" class="icon-lucide"></i></button>
-      </div>
-      <div style="display: flex; align-items: center; gap: 6px;">
-        <button id="diffClear" class="new-chat-icon sidebar-action-icon" title="Clear"><span class="icon-emoji">🗑</span><i data-lucide="trash-2" class="icon-lucide"></i></button>
-        <button id="diffClose" class="new-chat-icon sidebar-close-icon" title="Close"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
-      </div>
-    </div>
-    <div id="sidebarFilesPanel" class="fs-sidebar-panel active">
-      <div id="fsSidebarTree" class="fs-sidebar-tree"></div>
-    </div>
-    <div id="sidebarDiffPanel" class="fs-sidebar-panel">
-      <div id="diffCards"></div>
-    </div>
-  </aside>
 
   <!-- Settings Panel -->
   <div id="settingsOverlay" class="settings-overlay hidden">

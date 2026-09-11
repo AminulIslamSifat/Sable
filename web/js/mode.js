@@ -33,17 +33,11 @@
 
     // Chat mode: close any IDE panels, no tools
     if (mode === 'chat') {
-      body.classList.remove('diff-open');
       body.classList.remove('ide-sidebar-open');
     } else {
       // Leaving IDE mode: close the right sidebar
-      body.classList.remove('diff-open');
       // Clear inline sizes set by IDE resize handles so agent-mode CSS
-      // defaults (325px sidebar / 331px main margin) stay in sync —
-      // otherwise a custom IDE width leaks into agent mode and creates
-      // a gap or overlap between .main and the right panel.
-      const diffSidebar = document.getElementById('diffSidebar');
-      if (diffSidebar) diffSidebar.style.width = '';
+      // defaults stay in sync.
       const chatCompactEl = document.getElementById('chatCompact');
       if (chatCompactEl) {
         chatCompactEl.style.width = '';

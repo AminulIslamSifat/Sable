@@ -1,49 +1,11 @@
-    // ---------- file edit sidebar ----------
-    const diffSidebarEl = document.getElementById("diffSidebar");
+    // ---------- file edit diff cards (now in left files panel) ----------
     const diffCardsEl = document.getElementById("diffCards");
-    const diffCloseBtn = document.getElementById("diffClose");
-    const diffClearBtn = document.getElementById("diffClear");
-    const diffToggleBtn = document.getElementById("diffToggleBtn");
     const MAX_DIFF_CARDS = 12;
-
-    if (diffCloseBtn) diffCloseBtn.addEventListener("click", () => {
-      if (_libReaderDocked && _libReaderTempHidden) {
-        // File viewer was temporarily shown — close it, restore markdown reader
-        _restoreLibReaderContent();
-        document.body.classList.remove("diff-open");
-      } else if (_libReaderDocked) {
-        undockLibraryReader();
-      } else {
-        document.body.classList.remove("diff-open");
-      }
-    });
-    if (diffClearBtn) diffClearBtn.addEventListener("click", () => { if (diffCardsEl) diffCardsEl.innerHTML = ""; });
-    if (diffToggleBtn) diffToggleBtn.addEventListener("click", () => {
-      if (_libReaderDocked && !_libReaderTempHidden) {
-        // Temporarily show file viewer, hide markdown reader
-        _tempShowFileViewer();
-      } else if (_libReaderDocked && _libReaderTempHidden) {
-        // Restore markdown reader
-        _restoreLibReaderContent();
-      } else {
-        const opening = !document.body.classList.contains("diff-open");
-        document.body.classList.toggle("diff-open");
-        if (opening) {
-          // Close notes/todo/tasks panels if open in sidebar
-          if (window.sidebarHost) {
-            const cur = window.sidebarHost.getCurrent();
-            if (cur === 'notes' || cur === 'todo' || cur === 'tasks') window.sidebarHost.closePanel(cur);
-          }
-          if (typeof AgentPanel !== "undefined") AgentPanel.close();
-        }
-      }
-    });
 
     // ---------- Notes, Todo & Tasks: register as left-sidebar hostable panels ----------
     const trackNoteBtn = document.getElementById("trackNoteBtn");
 
     function closeOtherPanels() {
-      document.body.classList.remove("diff-open");
       document.body.classList.remove("calendar-open");
       const calView = document.getElementById("calendarView");
       if (calView) calView.classList.add("hidden");
@@ -326,7 +288,7 @@
       const models = (typeof window.SABLE_MODELS !== "undefined" ? window.SABLE_MODELS : null) || [
         { id: "qwen3.7-max", label: "Qwen3.7 Max" },
         { id: "qwen3.8-max", label: "Qwen3.8 Max" },
-        { id: "deepseek-expert", label: "DeepSeek Expert" },
+        { id: "deepseek-instant", label: "DeepSeek" },
       ];
       tnAgentModelSel.innerHTML = "";
       models.forEach(m => {
@@ -449,7 +411,7 @@
         const modelOpts = (typeof window.SABLE_MODELS !== "undefined" ? window.SABLE_MODELS : [
           { id: "qwen3.7-max", label: "Qwen3.7 Max" },
           { id: "qwen3.8-max", label: "Qwen3.8 Max" },
-          { id: "deepseek-expert", label: "DeepSeek Expert" },
+          { id: "deepseek-instant", label: "DeepSeek" },
         ]).map(m => `<option value="${m.id}"${m.id===item.model?" selected":""}>${m.label||m.id}</option>`).join("");
         const time12 = item.schedule_time ? (() => { const [h,m] = item.schedule_time.split(":"); const hr = parseInt(h,10); const ampm = hr >= 12 ? "PM" : "AM"; const h12 = hr % 12 || 12; return `${h12}:${m} ${ampm}`; })() : "";
         body.innerHTML = `<label>Name<input type="text" id="tnEditName" value="${esc(item.name)}" /></label><label>Prompt<textarea id="tnEditPrompt" rows="4">${esc(item.prompt)}</textarea></label><label>Model<select id="tnEditModel">${modelOpts}</select></label><label>Schedule Type<select id="tnEditSchedType"><option value="daily"${item.schedule_type==="daily"?" selected":""}>Daily</option><option value="weekly"${item.schedule_type==="weekly"?" selected":""}>Weekly</option><option value="cron"${item.schedule_type==="cron"?" selected":""}>Cron</option></select></label><label>Time<input type="time" id="tnEditTime" value="${item.schedule_time||""}" /><span class="tn-time-preview">${time12}</span></label><label>Cron Expression<input type="text" id="tnEditCron" value="${esc(item.cron_expression||"")}" placeholder="e.g. 0 */6 * * *" /></label>`;
@@ -540,7 +502,11 @@
         diffCardsEl.lastElementChild.remove();
       }
       if (autoOpen) {
-        document.body.classList.add("diff-open");
+        // Open files panel in left sidebar with Diff tab active
+        if (window.sidebarHost) {
+          window.sidebarHost.open('files');
+          if (typeof window.setFsLeftMode === 'function') window.setFsLeftMode('diff');
+        }
         if (typeof AgentPanel !== "undefined") AgentPanel.close();
       }
     }
