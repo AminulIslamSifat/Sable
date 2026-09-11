@@ -696,6 +696,14 @@
 
     .account-switch-card.collapsed .asc-steps { display: none; }
 
+    /* Fade-out used when the switch card auto-dismisses after completing */
+    .account-switch-card.asc-exit {
+      opacity: 0;
+      transform: translateY(-4px);
+      transition: opacity 0.3s ease, transform 0.3s ease;
+      pointer-events: none;
+    }
+
     @keyframes asc-pulse {
       0%, 100% { opacity: 1; transform: scale(1); }
       50% { opacity: 0.5; transform: scale(0.92); }
