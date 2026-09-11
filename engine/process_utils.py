@@ -28,8 +28,12 @@ def popen_kwargs() -> dict:
     On Windows this is ``{"creationflags": CREATE_NEW_PROCESS_GROUP}``.
     """
     if IS_WINDOWS:
-        # CREATE_NEW_PROCESS_GROUP = 0x00000200
-        return {"creationflags": 0x00000200}
+        # CREATE_NEW_PROCESS_GROUP = 0x00000200  (independent group for tree-kill)
+        # CREATE_NO_WINDOW         = 0x08000000  (NO visible console — this is
+        #                                          what stops the cmd.exe popup
+        #                                          every time the engine runs a
+        #                                          shell command on Windows)
+        return {"creationflags": 0x00000200 | 0x08000000}
     return {"preexec_fn": os.setsid}
 
 
