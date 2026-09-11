@@ -13,10 +13,9 @@ router = APIRouter()
 @router.post("/api/deepseek/upload-file")
 async def deepseek_upload_file(
     file: UploadFile = File(...),
-    model_type: str = Query("vision"),
     thinking_enabled: bool = Query(False),
 ) -> dict[str, Any]:
-    """Upload a file for DeepSeek Vision via shared browser context."""
+    """Upload a file for DeepSeek (unified model) via shared browser context."""
     suffix = _Path(file.filename or "image.png").suffix
     dest = UPLOAD_DIR / f"ds_{_uuid.uuid4().hex}{suffix}"
     content = await file.read()
@@ -24,7 +23,6 @@ async def deepseek_upload_file(
     try:
         meta = await service.upload_deepseek_file(
             str(dest),
-            model_type=model_type,
             thinking_enabled=thinking_enabled,
         )
         return {

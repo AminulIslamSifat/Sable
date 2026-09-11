@@ -166,10 +166,7 @@ class DeepSeekEngine(BaseScraperEngine):
             await self.page.goto(PLATFORM["url"])
             await asyncio.sleep(3)
 
-        if reapply_model and self.current_model_type != "default":
-            if await self._click_model_button(self.current_model_type):
-                label = {"expert": "Expert", "vision": "Vision"}.get(self.current_model_type, self.current_model_type)
-                console.print(f"[dim]{label} mode restored after new chat[/dim] 🚀")
+        # ponytail: DeepSeek unified — no model reapplication needed
 
     # ------------------------------------------------------------------
     # Stop generation

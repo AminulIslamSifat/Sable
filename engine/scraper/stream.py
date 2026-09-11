@@ -210,7 +210,8 @@ class ScraperEngine(ScraperLifecycle):
                         engine = await self._ensure_engine(settings)
                         yield {"type": "status", "message": "browser_scraper_reconnected"}
 
-                    if model in ("default", "expert", "vision") and hasattr(engine, "current_model_type"):
+                    # ponytail: DeepSeek unified — only "default" remains
+                    if model == "default" and hasattr(engine, "current_model_type"):
                         engine.current_model_type = model
 
                     if chat_id and chat_id != self.active_chat_id:

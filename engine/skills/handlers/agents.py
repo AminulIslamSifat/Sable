@@ -30,6 +30,7 @@ def handle_spawn_agent(
     POST /api/chat) SSE events. The frontend handles streaming exactly like
     a normal chat turn.
     """
+    logger.warning("[AGENT_DEBUG] handle_spawn_agent CALLED tag_id=%s attrs=%s content_len=%d", tag_id, attrs, len(content))
     started = time.time()
 
     task_text = attrs.get("task", content.strip())
@@ -139,17 +140,22 @@ def handle_spawn_agent(
         else:
             agent_message = f"Task: {task_text}"
 
-        # Emit agent_start - frontend creates the UI card in top bar
-        yield {
+        # Push agent_start + agent_trigger to the agent-events SSE queue.
+        # These are handled exclusively by the dedicated EventSource in agents.js,
+        # NOT by the main chat consumeChatStream (which ignores them to prevent
+        # double-triggering).
+        from server.api.routes.agents import push_agent_event
+        _start_evt = {
             "type": "agent_start",
             "id": agent.id,
             "role": role,
             "task": task_text[:500],
             "model": agent_model,
         }
+        push_agent_event(parent_chat_id, _start_evt)
+        logger.warning("[AGENT_DEBUG] pushed agent_start to agent-events SSE: %s", agent.id)
 
-        # Emit agent_trigger - frontend fires POST /api/chat for this agent
-        yield {
+        _trigger_evt = {
             "type": "agent_trigger",
             "id": agent.id,
             "message": agent_message,
@@ -158,8 +164,11 @@ def handle_spawn_agent(
             "browser_data_dir": browser_data or None,
             "collect": collect,
         }
+        push_agent_event(parent_chat_id, _trigger_evt)
+        logger.warning("[AGENT_DEBUG] pushed agent_trigger to agent-events SSE: id=%s", agent.id)
 
         # Signal skill_end so the main chat tool loop continues
+        logger.warning("[AGENT_DEBUG] yielding skill_end for spawn_agent %s", agent.id)
         yield _end_event(tag_id, name, True, started, result={
             "agent_id": agent.id,
             "role": role,

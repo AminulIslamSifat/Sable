@@ -102,21 +102,29 @@ def _save_keys(keys: list[str]) -> None:
 _instruction_cache: str | None = None
 _cached_project_id: str | None = "__none__"
 _cached_version: int = -1
+_cached_layout_mode: str | None = "__none__"
 
 
-def _load_instructions(project_id: str | None = None) -> str:
+def _load_instructions(project_id: str | None = None, layout_mode: str = "agent") -> str:
     """Load instruction context. Project-aware via shared builder."""
-    global _instruction_cache, _cached_project_id, _cached_version
+    global _instruction_cache, _cached_project_id, _cached_version, _cached_layout_mode
     from connectors.common.instruction_builder import get_instruction_version
     current_version = get_instruction_version()
-    if project_id != _cached_project_id or current_version != _cached_version:
+    if (
+        project_id != _cached_project_id
+        or current_version != _cached_version
+        or layout_mode != _cached_layout_mode
+    ):
         _instruction_cache = None
         _cached_project_id = project_id
         _cached_version = current_version
+        _cached_layout_mode = layout_mode
     if _instruction_cache is not None:
         return _instruction_cache
     from connectors.common.instruction_builder import build_instructions
-    _instruction_cache = build_instructions(project_id=project_id, provider="none")
+    _instruction_cache = build_instructions(
+        project_id=project_id, provider="none", layout_mode=layout_mode
+    )
     return _instruction_cache
 
 
@@ -284,6 +292,7 @@ class GeminiClient:
         system_instruction: str | None = None,
         max_session_chars: int | None = None,
         project_id: str | None = None,
+        layout_mode: str = "agent",
     ) -> list[dict[str, Any]]:
         """Get existing session history or create a new one (sliding window)."""
         # Store per-session max chars if provided
@@ -300,7 +309,7 @@ class GeminiClient:
 
         history: list[dict[str, Any]] = []
         # Explicit system_instruction takes priority over default inject
-        instructions = system_instruction if system_instruction else (_load_instructions(project_id=project_id) if inject_instructions else None)
+        instructions = system_instruction if system_instruction else (_load_instructions(project_id=project_id, layout_mode=layout_mode) if inject_instructions else None)
         if instructions:
             history.append({
                     "role": "user",
@@ -344,7 +353,8 @@ class GeminiClient:
         system_instruction = kwargs.pop("system_instruction", None)
         project_id = kwargs.pop("project_id", None)
         db_history = kwargs.pop("db_history", None)
-        history = self._get_or_create_session(chat_id, inject_instructions, system_instruction=system_instruction, max_session_chars=max_session_chars, project_id=project_id)
+        layout_mode = kwargs.pop("layout_mode", "agent")
+        history = self._get_or_create_session(chat_id, inject_instructions, system_instruction=system_instruction, max_session_chars=max_session_chars, project_id=project_id, layout_mode=layout_mode)
         # Seed from DB when session is fresh (cross-provider switch)
         if db_history and chat_id and len(history) <= 2:
             for _m in db_history:

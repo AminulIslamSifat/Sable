@@ -251,7 +251,7 @@
       if (cur === 'files') {
         window.sidebarHost.closePanel('files');
       } else {
-        window.sidebarHost.open('files');
+        window.sidebarHost.openPanel('files');
         if (typeof window.setFsLeftMode === 'function') window.setFsLeftMode('files');
         if (typeof AgentPanel !== "undefined") AgentPanel.close();
       }
@@ -1197,7 +1197,7 @@
     openRoot(path);
     // Open left files panel when picking a folder
     if (window.sidebarHost) {
-      window.sidebarHost.open('files');
+      window.sidebarHost.openPanel('files');
       if (typeof window.setFsLeftMode === 'function') window.setFsLeftMode('files');
       if (typeof AgentPanel !== "undefined") AgentPanel.close();
     }
@@ -1362,11 +1362,17 @@
     openFS();
     await loadTree();
     // Highlight the opened file in the overlay tree
-    const overlayRow = treeEl.querySelector(`.fs-item[data-path="${path}"]`);
+    const overlayRow = treeEl ? treeEl.querySelector(`.fs-item[data-path="${path}"]`) : null;
     if (overlayRow) {
       if (activeFileEl) activeFileEl.classList.remove("fs-active");
       overlayRow.classList.add("fs-active");
       activeFileEl = overlayRow;
+    }
+    // Also highlight in the left panel tree
+    if (leftTree) {
+      leftTree.querySelectorAll(".fs-item.fs-active").forEach(el => el.classList.remove("fs-active"));
+      const leftRow = leftTree.querySelector(`.fs-item[data-path="${CSS.escape(path)}"]`);
+      if (leftRow) leftRow.classList.add("fs-active");
     }
     if (diffData) {
       renderDiffReview(data, diffData);
@@ -1376,16 +1382,19 @@
   }
 
   function highlightSidebarFile(path) {
-    sidebarTree.querySelectorAll(".fs-item.fs-active").forEach(el => el.classList.remove("fs-active"));
-    const row = sidebarTree.querySelector(`.fs-item[data-path="${path}"]`);
+    const tree = leftTree || sidebarTree;
+    if (!tree) return;
+    tree.querySelectorAll(".fs-item.fs-active").forEach(el => el.classList.remove("fs-active"));
+    const row = tree.querySelector(`.fs-item[data-path="${path}"]`);
     if (row) row.classList.add("fs-active");
   }
 
   function syncSidebarDirty() {
-    // Hide all dots first, then show only if current file is dirty
-    sidebarTree.querySelectorAll(".fs-dirty-dot").forEach(d => d.style.display = "none");
+    const tree = leftTree || sidebarTree;
+    if (!tree) return;
+    tree.querySelectorAll(".fs-dirty-dot").forEach(d => d.style.display = "none");
     if (isDirty && currentFilePath) {
-      const row = sidebarTree.querySelector(`.fs-item[data-path="${CSS.escape(currentFilePath)}"]`);
+      const row = tree.querySelector(`.fs-item[data-path="${CSS.escape(currentFilePath)}"]`);
       if (row) {
         const dot = row.querySelector(".fs-dirty-dot");
         if (dot) dot.style.display = "inline";
@@ -1848,7 +1857,7 @@
     window.sidebarHost.savePosition('files', 'left');
     window.sidebarHost.register('files', {
       panelId: 'filesPanel',
-      onOpen: () => {
+      onOpen: (el, pos, opts) => {
         document.body.classList.remove("calendar-open");
         const calView = document.getElementById("calendarView");
         if (calView) calView.classList.add("hidden");
@@ -1861,8 +1870,8 @@
         leftExpanded.clear();
         leftExpanded.add(defaultRoot);
         loadLeftTree();
-        // Default to Files tab when opening
-        setFsLeftMode("files");
+        // Default to Files tab when opening, unless caller asked for a mode
+        setFsLeftMode(opts?.mode || "files");
       },
       onClose: () => {},
     });

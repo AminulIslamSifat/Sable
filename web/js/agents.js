@@ -81,6 +81,8 @@ const AgentTopBar = {
   addCard(agentId, role, task, model) {
     // Dedup: never create two cards for the same agent
     if (this.cards.has(agentId)) return;
+    // Clean up any completed/failed cards before adding a new one
+    this._sweepFinished();
     this.init();
     this._show();
     const card = document.createElement("div");
@@ -112,7 +114,8 @@ const AgentTopBar = {
     card.innerHTML = `<span class="agent-check">${lucideIcon("✓")}</span><span class="agent-role">${escHtml(role)}</span>`;
     activateLucideIcons(card);
     card.onclick = () => AgentPanel.open(agentId, role);
-    setTimeout(() => this.removeCard(agentId), 60000);
+    // ponytail: 5s instead of 60s — completed cards shouldn't clutter the topbar
+    setTimeout(() => this.removeCard(agentId), 5000);
   },
 
   failCard(agentId, error) {
@@ -124,7 +127,8 @@ const AgentTopBar = {
     activateLucideIcons(card);
     card.title = error || "Failed";
     card.onclick = () => AgentPanel.open(agentId, role);
-    setTimeout(() => this.removeCard(agentId), 60000);
+    // ponytail: 8s for failures so user can read the error tooltip
+    setTimeout(() => this.removeCard(agentId), 8000);
   },
 
   removeCard(agentId) {
@@ -142,6 +146,15 @@ const AgentTopBar = {
     this.cards.forEach((card) => card.remove());
     this.cards.clear();
     this._hide();
+  },
+
+  /** Remove any cards that are no longer running (completed/failed). */
+  _sweepFinished() {
+    for (const [id, card] of this.cards) {
+      if (!card.classList.contains("running")) {
+        this.removeCard(id);
+      }
+    }
   },
 };
 
@@ -402,10 +415,6 @@ const AgentPanel = {
       stopBtn.disabled = false;
       stopBtn.textContent = "■ stop";
     }
-
-
-    // Then: subscribe to live stream
-    this._connectStream(agentId);
   },
 
   _renderHistory(messages) {
@@ -734,7 +743,7 @@ const AgentPanel = {
     if (streaming) {
       streaming.classList.remove("ap-streaming-answer");
       const raw = streaming.querySelector(".ap-raw");
-      if (raw && typeof renderMarkdown === "function") {
+      if (raw && raw.parentNode === streaming && typeof renderMarkdown === "function") {
         const md = document.createElement("div");
         md.className = "md-content";
         md.innerHTML = renderMarkdown(raw.textContent);
@@ -797,7 +806,7 @@ const AgentPanel = {
     if (streaming) {
       streaming.classList.remove("ap-streaming-answer");
       const raw = streaming.querySelector(".ap-raw");
-      if (raw && typeof renderMarkdown === "function") {
+      if (raw && raw.parentNode === streaming && typeof renderMarkdown === "function") {
         const md = document.createElement("div");
         md.className = "md-content";
         md.innerHTML = renderMarkdown(raw.textContent);
@@ -824,7 +833,13 @@ const AgentPanel = {
     const btn = this.el.querySelector(".agent-panel-stop");
     if (btn) { btn.disabled = true; btn.textContent = "…"; }
     try {
+      // Agents use POST /api/chat pipeline, so stop both the agent and its chat stream
       await fetch(`/api/agents/${this.currentAgentId}/kill`, { method: "POST" });
+      await fetch("/api/chat/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: this.currentAgentId }),
+      });
       if (btn) { btn.textContent = "stopped"; }
     } catch {
       if (btn) { btn.disabled = false; btn.textContent = "■ stop"; }
@@ -964,6 +979,7 @@ function handleAgentEvent(ev) {
     case "agent_spawned":
       console.log("[AgentDebug] agent_spawned → calling addCard", ev.agent_id, ev.data);
       AgentTopBar.addCard(ev.agent_id, ev.data?.role || "agent", ev.data?.task || "", ev.data?.model || "");
+      if (typeof window._sableLoadChats === "function") window._sableLoadChats();
       // Capture todos for spawn-card injection
       if (ev.data?.todos && ev.data.todos.length) {
         _agentTodosRaw.set(ev.agent_id, ev.data.todos.map(t => t.content).join(" | "));
@@ -989,10 +1005,13 @@ function handleAgentEvent(ev) {
     case "agent_completed":
       AgentTopBar.finishCard(ev.agent_id, ev.data?.summary || "");
       addAgentResultCard(ev);
+      // Refresh sidebar so agent chat rows update their status indicator
+      if (typeof window._sableLoadChats === "function") window._sableLoadChats();
       break;
     case "agent_failed":
       AgentTopBar.failCard(ev.agent_id, ev.data?.error || "");
       addAgentResultCard(ev);
+      if (typeof window._sableLoadChats === "function") window._sableLoadChats();
       break;
     // --- Events from POST /api/agents/spawn (manual @-mention spawn) ---
     // These use a different naming convention than the runtime events above.

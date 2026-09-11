@@ -26,8 +26,8 @@ from typing import Any, Callable, Coroutine
 
 logger = logging.getLogger(__name__)
 
-# Signal function: async (chat_id, message_text) -> None
-SignalFn = Callable[[str, str], Coroutine[Any, Any, None]]
+# Signal function: async (chat_id, message_text, parent_chat_id?) -> None
+SignalFn = Callable[..., Coroutine[Any, Any, None]]
 
 
 @dataclass
@@ -222,7 +222,7 @@ class AutoTurnEngine:
         logger.info("[auto_turn] signalling frontend for chat %s", chat_id)
 
         try:
-            await self._signal_fn(chat_id, prompt)
+            await self._signal_fn(chat_id, prompt, chat_id)
         except Exception as exc:
             logger.error("[auto_turn] signal failed for chat %s: %s", chat_id, exc)
             state.busy = False

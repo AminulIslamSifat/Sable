@@ -1022,16 +1022,16 @@
     // one "turn" holds everything for a single response: thinking, then any
     // skill/tool runs it made, then the final answer — all stacked in order,
     // scoped to just this response (not shared globally).
-    function addBotStreaming() {
-      clearEmptyState();
+    function addBotStreaming(pane = activePane, chatId = activeChatId) {
+      clearPaneEmptyState(pane);
 
       // Capture the chat this turn belongs to — typewriter ticks and scroll
       // calls will bail if the user has switched away before they fire.
-      const turnChatId = activeChatId;
+      const turnChatId = chatId;
 
       const turn = document.createElement("div");
       turn.className = "turn";
-      activePane.appendChild(turn);
+      pane.appendChild(turn);
 
       // Immediate feedback that the message was sent and a response is on
       // its way — removed as soon as any real content (thinking, a skill
@@ -1487,8 +1487,7 @@
             card.addEventListener("click", () => {
             // Open files panel in left sidebar with Diff tab
             if (window.sidebarHost) {
-              window.sidebarHost.open('files');
-              if (typeof window.setFsLeftMode === 'function') window.setFsLeftMode('diff');
+              window.sidebarHost.openPanel('files', { mode: 'diff' });
             }
             if (typeof AgentPanel !== "undefined") AgentPanel.close();
           });
@@ -1889,229 +1888,48 @@
           }
         }
       } catch (err) {
-        if (err.name !== "AbortError") {
+        if (err.name === "AbortError" || controller.signal.aborted) {
+          // Stream was aborted — update UI to show stopped state
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--warn)">Stopped</span>';
+          if (box) box.classList.add('critique-done');
+          const sb = box?.querySelector('.critique-stop-btn');
+          if (sb) sb.style.display = 'none';
+          if (logEl && answerBuf) _renderFinalReport();
+        } else {
           if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Error</span>';
           if (logEl) logEl.innerHTML += `<div class="critique-error">${escHtml(err.message)}</div>`;
         }
+      } finally {
+        // Always clean up activeStreams entry and stream indicator for the critique chat
+        if (typeof endStream === "function") endStream(critiqueChatId);
+        if (box) delete box._critiqueController;
       }
     }
 
     // ── Background Stream UI Adapter ───────────────────────────────────
-    // Creates a minimal streaming UI that writes into a non-visible pane.
-    // Avoids addBotStreaming() which mutates activePane and requires the
-    // target chat to be the currently visible tab.
-    function _createBackgroundStreamUI(pane) {
-      const turn = document.createElement("div");
-      turn.className = "turn agent-bg-turn";
-      pane.appendChild(turn);
-
-      const answerEl = document.createElement("div");
-      answerEl.className = "msg bot";
-      const contentEl = document.createElement("div");
-      contentEl.className = "md-content";
-      answerEl.appendChild(contentEl);
-      turn.appendChild(answerEl);
-
-      let _finalized = false;
-      return {
-        appendAnswer(text) {
-          if (!_finalized && text) contentEl.textContent += text;
-        },
-        appendThinking(text) {
-          // Silently consume thinking in background — don't render
-        },
-        addSkillStart(evt) {
-          // Silently consume skill events in background
-        },
-        appendSkillOutput(evt) {},
-        finishSkill(evt) {},
-        trackFileEdit(evt) {},
-        finalize(buf) {
-          if (_finalized) return;
-          _finalized = true;
-          // Render markdown if available
-          if (buf && typeof marked !== "undefined") {
-            try {
-              contentEl.innerHTML = typeof DOMPurify !== "undefined"
-                ? DOMPurify.sanitize(marked.parse(buf))
-                : marked.parse(buf);
-            } catch { /* keep textContent */ }
-          }
-        },
-      };
-    }
-
     // ── Agent Streaming (main chat pipeline for subagents) ──────────────────
-    // ponytail: modeled on _runCritiqueTurn — uses POST /api/chat with agent's
-    // chat_id, model, and system_prompt. Streams into AgentPanel body.
-    // On completion, auto-sends result back to main chat via sendAutoTurnMessage.
     const _activeAgentControllers = new Map(); // agentId -> AbortController
 
     async function _runAgentTurn(message, agentId, systemPrompt, model, browserDataDir, collect) {
-      console.log("[AGENT_DEBUG] _runAgentTurn CALLED", { agentId, message: message?.slice(0,80), model, hasSystemPrompt: !!systemPrompt, collect });
-      if (!message || !agentId) { console.warn("[AGENT_DEBUG] BAIL: missing message or agentId", { message: !!message, agentId }); return; }
-
-      // Prevent duplicate streams for the same agent
-      if (_activeAgentControllers.has(agentId)) {
-        console.warn("[AGENT_DEBUG] BAIL: agent already streaming", agentId);
-        return;
-      }
-
-      console.log("[AGENT_DEBUG] calling startStream for", agentId);
+      if (!message || !agentId || typeof sendAutoTurnMessage !== "function") return;
+      if (_activeAgentControllers.has(agentId)) return;
       const controller = startStream(agentId);
       _activeAgentControllers.set(agentId, controller);
-
-      let answerBuf = "";
-
-      // Capture the parent chat context BEFORE any async work.
-      // We NEVER switch the visible tab — agents stream in the background.
-      const parentChatId = activeChatId;
-
-      // Create a hidden background pane for the agent without switching to it.
-      // ensurePane creates the DOM element but doesn't make it visible.
-      let agentPane = null;
-      if (typeof window._sableEnsurePane === "function") {
-        agentPane = window._sableEnsurePane(agentId);
-      }
-      if (!agentPane) {
-        console.error("[AGENT_DEBUG] BAIL: could not create pane for agent", agentId);
-        if (typeof AgentTopBar !== "undefined") AgentTopBar.failCard(agentId, "No pane");
-        endStream(agentId);
-        _activeAgentControllers.delete(agentId);
-        return;
-      }
-
-      // Build a minimal streaming UI target that writes into the agent's
-      // background pane without touching the visible UI.
-      const ui = _createBackgroundStreamUI(agentPane);
-
       try {
-        const body = {
-          message,
-          chat_id: agentId,
-          parent_id: parentChatId || undefined,
-          model: model || selectedModel,
-          thinking_mode: selectedThinkingMode,
-          stream: true,
-          skip_user_save: true,  // don't render task instruction as visible user bubble
-        };
-        if (systemPrompt) body.system_prompt = systemPrompt;
-        if (browserDataDir) body.browser_data_dir = browserDataDir;
-        console.log("[AGENT_DEBUG] POST /api/chat body:", JSON.stringify({ chat_id: body.chat_id, model: body.model, has_system_prompt: !!body.system_prompt, msg_len: body.message?.length }));
-
-        console.log("[AGENT_DEBUG] firing fetch POST /api/chat for agent", agentId);
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-          signal: controller.signal,
+        await sendAutoTurnMessage(message, {
+          targetChatId: agentId,
+          model,
+          systemPrompt,
+          browserDataDir,
+          controller,
         });
-
-        console.log("[AGENT_DEBUG] fetch returned, status:", res.status, res.ok ? "OK" : "FAILED");
-        if (!res.ok) {
-          let detail = "";
-          try { detail = await res.text(); } catch (_) {}
-          console.error("[AGENT_DEBUG] HTTP error response:", res.status, detail.slice(0, 300));
-          ui.appendAnswer(`[error] HTTP ${res.status}: ${detail.slice(0, 200)}`);
-          ui.finalize();
-          if (typeof AgentTopBar !== "undefined") AgentTopBar.failCard(agentId, `HTTP ${res.status}`);
-          endStream(agentId);
-          _activeAgentControllers.delete(agentId);
-          return;
-        }
-
-        console.log("[AGENT_DEBUG] starting SSE read loop for agent", agentId);
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = "";
-        let _chunkCount = 0;
-        let _evtCount = 0;
-        const _AGENT_STREAM_TIMEOUT_MS = 5 * 60 * 1000; // 5 min max per agent turn
-        let _lastChunkTime = Date.now();
-
-        while (true) {
-          if (controller.signal.aborted) { console.log("[AGENT_DEBUG] controller aborted mid-stream for", agentId); break; }
-          // Timeout guard — abort if no data for 5 minutes
-          if (Date.now() - _lastChunkTime > _AGENT_STREAM_TIMEOUT_MS) {
-            console.error("[AGENT_DEBUG] agent stream TIMEOUT after", _AGENT_STREAM_TIMEOUT_MS / 1000, "s of silence for", agentId);
-            ui.appendAnswer(`\n\n[timeout] Agent stream stalled after ${_AGENT_STREAM_TIMEOUT_MS / 60000} min — aborting.`);
-            ui.finalize();
-            if (typeof AgentTopBar !== "undefined") AgentTopBar.failCard(agentId, "Stream timeout");
-            controller.abort();
-            break;
-          }
-          const { done, value } = await reader.read();
-          _lastChunkTime = Date.now();
-          if (done) { console.log("[AGENT_DEBUG] SSE stream done for agent", agentId, "chunks:", _chunkCount, "events:", _evtCount); break; }
-          _chunkCount++;
-          buf += decoder.decode(value, { stream: true });
-          const lines = buf.split("\n");
-          buf = lines.pop() || "";
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const raw = line.slice(6).trim();
-            if (!raw) continue;
-            let evt;
-            try { evt = JSON.parse(raw); } catch (_) { continue; }
-
-            _evtCount++;
-            if (_evtCount <= 5 || _evtCount % 20 === 0) console.log("[AGENT_DEBUG] agent SSE event:", evt.type, "chunk:", _chunkCount, "evt:", _evtCount);
-            if (evt.type === "answer" && evt.text) {
-              answerBuf += evt.text;
-              ui.appendAnswer(evt.text);
-            } else if (evt.type === "thinking" && evt.text) {
-              ui.appendThinking(evt.text);
-            } else if (evt.type === "skill_start") {
-              console.log("[AGENT_DEBUG] agent skill_start:", evt.name || evt.tag_id);
-              ui.addSkillStart(evt);
-            } else if (evt.type === "skill_output") {
-              ui.appendSkillOutput(evt);
-            } else if (evt.type === "skill_end") {
-              console.log("[AGENT_DEBUG] agent skill_end:", evt.name || evt.tag_id, "ok:", evt.ok);
-              ui.finishSkill(evt);
-            } else if (evt.type === "file_edit") {
-              ui.trackFileEdit(evt);
-              if (typeof handleFileEdit === "function") handleFileEdit(evt, false);
-            } else if (evt.type === "error" || evt.type === "stream_error") {
-              console.error("[AGENT_DEBUG] agent stream error:", evt.message || evt.error);
-              ui.appendAnswer(`[error] ${evt.message || evt.error || "Unknown error"}`);
-            } else if (evt.type === "done") {
-              console.log("[AGENT_DEBUG] agent got 'done' event");
-            } else {
-              console.log("[AGENT_DEBUG] agent unhandled event type:", evt.type);
-            }
-          }
-        }
-
-        console.log("[AGENT_DEBUG] exiting read loop, aborted:", controller.signal.aborted, "answerLen:", answerBuf.length);
-        if (!controller.signal.aborted) {
-          ui.finalize(answerBuf || "");
-          if (answerBuf) {
-            if (typeof AgentTopBar !== "undefined") AgentTopBar.finishCard(agentId, answerBuf.slice(0, 60));
-          } else {
-            // Agent completed but produced no text (tool-only turn) — still mark done
-            console.log("[AGENT_DEBUG] agent completed with empty answer");
-            if (typeof AgentTopBar !== "undefined") AgentTopBar.finishCard(agentId, "completed");
-          }
-        } else {
-          console.log("[AGENT_DEBUG] agent was aborted");
-          ui.appendAnswer("[stopped]");
-          ui.finalize();
-          if (typeof AgentTopBar !== "undefined") AgentTopBar.failCard(agentId, "Stopped");
-        }
-      } catch (err) {
-        console.error("[AGENT_DEBUG] exception in _runAgentTurn:", err.name, err.message);
-        if (err.name !== "AbortError") {
-          ui.appendAnswer(`[error] ${err.message}`);
-          ui.finalize();
-          if (typeof AgentTopBar !== "undefined") AgentTopBar.failCard(agentId, err.message);
-        }
+        if (typeof AgentTopBar !== "undefined") AgentTopBar.finishCard(agentId, "completed");
+      } catch (error) {
+        if (typeof AgentTopBar !== "undefined") AgentTopBar.failCard(agentId, error.message || "failed");
+        throw error;
       } finally {
-        console.log("[AGENT_DEBUG] finally block: cleaning up agent", agentId);
-        endStream(agentId);
         _activeAgentControllers.delete(agentId);
-        // NO chat restoration — we never left the parent chat.
-        console.log("[AGENT_DEBUG] _runAgentTurn COMPLETE for", agentId);
+        if (typeof endStream === "function") endStream(agentId);
       }
     }
 
@@ -2140,7 +1958,7 @@
 
       // Abort all critique controllers (stored on .critique-box elements)
       document.querySelectorAll(".critique-box[data-turn-active]").forEach(box => {
-        const ctrl = box._abortController;
+        const ctrl = box._critiqueController;
         if (ctrl && !ctrl.signal.aborted) ctrl.abort();
         const critiqueId = box.dataset.critiqueId;
         if (critiqueId) {
@@ -2154,7 +1972,7 @@
       });
     };
 
-    async function consumeChatStream(res, ui, userMsgDiv, streamChatId) {
+    async function consumeChatStream(res, ui, userMsgDiv, streamChatId, streamPane = activePane) {
       const reader  = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -2166,6 +1984,19 @@
       // If still set at finalize(), the permanent error card is rendered.
       let gotTitle = false;
       let _lastSkillPath = "";
+
+      // Mirror stream events to AgentPanel if this stream belongs to a subagent
+      const _isAgentStream = typeof _activeAgentControllers !== "undefined" && _activeAgentControllers.has(streamChatId);
+      function _mirrorToPanel(evt) {
+        if (!_isAgentStream || typeof AgentPanel === "undefined" || AgentPanel.currentAgentId !== streamChatId) return;
+        if (evt.type === "round_thinking") AgentPanel.appendThinking(streamChatId, evt.text || "");
+        else if (evt.type === "answer") AgentPanel.appendAnswer(streamChatId, evt.text || "");
+        else if (evt.type === "skill_start") AgentPanel.addSkillStart(streamChatId, evt);
+        else if (evt.type === "skill_output") AgentPanel.addSkillOutput(streamChatId, evt);
+        else if (evt.type === "skill_end") AgentPanel.addSkillEnd(streamChatId, evt);
+        else if (evt.type === "done") AgentPanel.markDone(streamChatId, "completed");
+        else if (evt.type === "error") AgentPanel.appendError(streamChatId, evt.message || "Unknown error");
+      }
       let _lastSkillName = "";
 
       while (true) {
@@ -2183,6 +2014,9 @@
           let evt;
           try { evt = JSON.parse(line.slice(6)); }
           catch { continue; }
+
+          // Forward agent-relevant events to the panel (no-op if not an agent stream)
+          _mirrorToPanel(evt);
 
           if (evt.type === "meta") {
             // Only adopt parent_id if the user is still viewing this stream's
@@ -2229,14 +2063,14 @@
             if (evt.message === "feeding_skill_results") {
               ui.nextSkillRound();
             } else {
-              const _bsTurn = activePane.querySelector('.turn:last-child');
+              const _bsTurn = streamPane?.querySelector('.turn:last-child');
               if (_bsTurn) handleBackendStatusEvent(evt, _bsTurn);
             }
           } else if (evt.type === "account_switch") {
-            const _ascTurn = activePane.querySelector('.turn:last-child');
+            const _ascTurn = streamPane?.querySelector('.turn:last-child');
             if (_ascTurn) handleAccountSwitchEvent(evt, _ascTurn);
           } else if (evt.type === "token_rotation") {
-            const _trTurn = activePane.querySelector('.turn:last-child');
+            const _trTurn = streamPane?.querySelector('.turn:last-child');
             if (_trTurn) handleTokenRotationEvent(evt, _trTurn);
           } else if (evt.type === "user_message_id") {
             // Store DB message ID on the div and enable the fork button
@@ -2273,7 +2107,7 @@
               ui.closeThinking();
               gotAnswer = true;
               // Remove backend status cards from all previous turns; keep the current streaming one
-              const _allTurns = activePane.querySelectorAll('.turn');
+              const _allTurns = streamPane?.querySelectorAll('.turn') || [];
               for (let i = 0; i < _allTurns.length - 1; i++) {
                 _allTurns[i].querySelectorAll('.backend-status-card').forEach(c => c.remove());
               }
@@ -2285,7 +2119,7 @@
           } else if (evt.type === "done") {
             gotDone = true;
             // Collapse backend status card when streaming finishes
-            const _lastTurn = activePane.querySelector('.turn:last-child');
+            const _lastTurn = streamPane?.querySelector('.turn:last-child');
             if (_lastTurn) {
               const _bsCard = _lastTurn.querySelector('.backend-status-card');
               if (_bsCard && !_bsCard.classList.contains('collapsed')) _bsCard.classList.add('collapsed');
@@ -2348,33 +2182,33 @@
 
           } else if (evt.type === "permission_request") {
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
-            renderApprovalCard(evt, activePane);
+            renderApprovalCard(evt, streamPane);
           } else if (evt.type === "approval_pending") {
             // Transient "waiting" indicator — removed after approve/deny
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
             const pending = document.createElement('div');
             pending.className = 'approval-pending-note';
             pending.textContent = evt.text || '⏳ Waiting for your approval…';
-            if (activePane) {
-              const turn = activePane.querySelector('.turn:last-child');
-              (turn || activePane.querySelector('.messages')).appendChild(pending);
+            if (streamPane) {
+              const turn = streamPane.querySelector('.turn:last-child');
+              (turn || streamPane.querySelector('.messages')).appendChild(pending);
             }
           } else if (evt.type === "cwd_warning") {
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
-            renderCwdWarningCard(evt, activePane);
+            renderCwdWarningCard(evt, streamPane);
           } else if (evt.type === "cwd_warning_pending") {
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
             const pending = document.createElement('div');
             pending.className = 'cwd-warning-pending-note';
             pending.textContent = evt.text || '⚠️ File operation outside project folder detected.';
-            if (activePane) {
-              const turn = activePane.querySelector('.turn:last-child');
-              (turn || activePane.querySelector('.messages')).appendChild(pending);
+            if (streamPane) {
+              const turn = streamPane.querySelector('.turn:last-child');
+              (turn || streamPane.querySelector('.messages')).appendChild(pending);
             }
           } else if (evt.type === "sim_ready") {
             const fname = evt.filename || "simulation.html";
             const url = "/assets/" + encodeURIComponent(fname);
-            const pane = activePane;
+            const pane = streamPane;
             if (pane) {
               const stack = pane.querySelector(".turn:last-child .skill-stack:last-of-type");
               const target = stack || pane.querySelector(".turn:last-child") || pane;
@@ -2391,7 +2225,7 @@
             // Create inline critique box in the chat
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
             ui.showToolDone();
-            const pane = activePane;
+            const pane = streamPane;
             if (pane) {
               const turn = pane.querySelector('.turn:last-child') || pane.querySelector('.messages');
               if (turn) {
@@ -2436,10 +2270,14 @@
                       if (statusEl) statusEl.innerHTML = '<span style="color:var(--warn)">Stopping...</span>';
                       // Tell the server to stop upstream generation first
                       try {
+                        const critiqueChatId = activeChatId + '-critique-' + (box.dataset.critiqueId || '');
+                        const _respId = typeof window.getActiveResponseId === "function"
+                          ? window.getActiveResponseId(critiqueChatId)
+                          : null;
                         await fetch('/api/chat/stop', {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ chat_id: activeChatId + '-critique-' + (box.dataset.critiqueId || '') }),
+                          body: JSON.stringify({ chat_id: critiqueChatId, response_id: _respId }),
                         });
                       } catch (_) {}
                       // Then abort the client-side stream
@@ -2454,7 +2292,7 @@
             }
           } else if (evt.type === "critique_tool") {
             // Append tool activity to the critique log
-            const pane = activePane;
+            const pane = streamPane;
             if (pane) {
               const box = pane.querySelector(`.critique-box[data-critique-id="${evt.id}"]`);
               if (box) {
@@ -2470,7 +2308,7 @@
             }
           } else if (evt.type === "critique_trigger") {
             // Fire a normal chat turn, stream response into the critique card
-            const pane = activePane;
+            const pane = streamPane;
             if (pane && evt.message) {
               const box = pane.querySelector(`.critique-box[data-critique-id="${evt.id}"]`);
               if (box) {
@@ -2484,7 +2322,7 @@
           } else if (evt.type === "critique_done") {
             // Backend skill_end fires immediately — if _runCritiqueTurn is still streaming,
             // don't overwrite the "Running..." status. Only handle errors or fallback.
-            const pane = activePane;
+            const pane = streamPane;
             if (pane) {
               const box = pane.querySelector(`.critique-box[data-critique-id="${evt.id}"]`);
               if (box && box.dataset.turnActive !== "1") {

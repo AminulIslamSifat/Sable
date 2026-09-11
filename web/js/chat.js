@@ -152,6 +152,9 @@
       openTabs.set(chatId, { pane, title: meta?.title || "New chat" });
       return pane;
     }
+    window._sableEnsurePane = ensurePane;
+    window._sableAddMessage = addMessage;
+    window._sableScrollBottom = scrollBottom;
 
     /* ---------- Pane loading overlay ---------- */
     function showPaneLoading(pane) {
@@ -293,6 +296,12 @@
     function clearEmptyState() {
       if (!activePane) return;
       const empty = activePane.querySelector(".empty");
+      if (empty) empty.remove();
+    }
+
+    function clearPaneEmptyState(pane) {
+      if (!pane) return;
+      const empty = pane.querySelector(".empty");
       if (empty) empty.remove();
     }
 
@@ -631,8 +640,8 @@
       }
     }
 
-    function addMessage(kind, text, images) {
-      clearEmptyState();
+    function addMessage(kind, text, images, pane = activePane) {
+      clearPaneEmptyState(pane);
       const div = document.createElement("div");
       div.className = `msg ${kind}`;
       if (kind === "user") {
@@ -819,7 +828,7 @@
         }
         div.appendChild(content);
       }
-      activePane.appendChild(div);
+      pane.appendChild(div);
       scrollBottom(true);
       return div;
     }
