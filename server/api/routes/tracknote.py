@@ -291,7 +291,171 @@ def get_calendar_events(year: int | None = None, month: int | None = None) -> di
                 "schedule_type": op.get("schedule_type", "daily"),
             })
 
+    # 4. Online schedule sources (MongoDB-backed, configured via settings)
+    for item in _fetch_online_schedules():
+        d_str = item.get("date", "").strip()
+        if not d_str:
+            continue
+        try:
+            d = date.fromisoformat(d_str[:10])
+        except (ValueError, TypeError):
+            continue
+        if first_day <= d <= last_day:
+            add_event(d, {
+                "id": f"online-{item.get('_source', 'x')}-{d_str}-{item.get('subject', '')}",
+                "title": item.get("subject", "Untitled"),
+                "time": item.get("time") or None,
+                "type": "online_schedule",
+                "description": "",
+                "schedule_type": None,
+                "phantom_type": item.get("type", ""),
+                "teacher": item.get("teacher", ""),
+                "topic": item.get("topic", ""),
+                "syllabus": item.get("syllabus", ""),
+                "source_name": item.get("_source", ""),
+            })
+
     return {"events": events, "year": y, "month": m}
+
+
+# ── Online Schedule Sources ─────────────────────────────────────────────────
+
+from server.config import _SYSTEM_DIR
+
+_ONLINE_SOURCES_PATH = _SYSTEM_DIR / "online_schedule_sources.json"
+_ONLINE_CACHE: dict[str, Any] = {"data": [], "expires_at": 0.0}
+
+_DEFAULT_SOURCES: list[dict[str, Any]] = [
+    {
+        "id": "src-default-ruet-cse",
+        "name": "RUET CSE",
+        "uri": "https://phantom-bot-1-yn9t.onrender.com/panel/api/public/schedule",
+        "enabled": True,
+    }
+]
+
+
+def _load_online_sources() -> list[dict[str, Any]]:
+    if not _ONLINE_SOURCES_PATH.exists():
+        # Seed defaults for new users
+        _save_online_sources(_DEFAULT_SOURCES)
+        return list(_DEFAULT_SOURCES)
+    try:
+        import json as _json
+        return _json.loads(_ONLINE_SOURCES_PATH.read_text())
+    except Exception:
+        return list(_DEFAULT_SOURCES)
+
+
+def _save_online_sources(sources: list[dict[str, Any]]) -> None:
+    import json as _json
+    _ONLINE_SOURCES_PATH.write_text(_json.dumps(sources, indent=2))
+    _ONLINE_CACHE["data"] = []
+    _ONLINE_CACHE["expires_at"] = 0.0
+
+
+def _fetch_online_schedules() -> list[dict[str, Any]]:
+    """Fetch schedules from all configured sources (MongoDB or HTTP). Cached 5 min."""
+    import time
+    now = time.time()
+    if _ONLINE_CACHE["data"] and _ONLINE_CACHE["expires_at"] > now:
+        return _ONLINE_CACHE["data"]
+
+    sources = _load_online_sources()
+    all_items: list[dict[str, Any]] = []
+
+    for src in sources:
+        if not src.get("enabled", True):
+            continue
+        uri = src.get("uri", "")
+        if not uri:
+            continue
+        name = src.get("name", "")
+        try:
+            if uri.startswith("mongodb"):
+                all_items.extend(_fetch_mongo_source(uri, src.get("db_name", "schedule"), name))
+            else:
+                all_items.extend(_fetch_http_source(uri, name))
+        except Exception as e:
+            logger.debug("Online schedule source '%s' failed: %s", name, e)
+
+    _ONLINE_CACHE["data"] = all_items
+    _ONLINE_CACHE["expires_at"] = now + 300
+    return all_items
+
+
+def _fetch_mongo_source(uri: str, db_name: str, source_name: str) -> list[dict[str, Any]]:
+    """Read all non-system collections from a MongoDB database."""
+    from pymongo import MongoClient
+    items: list[dict[str, Any]] = []
+    client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+    try:
+        db = client[db_name]
+        cols = [c for c in db.list_collection_names() if not c.startswith("system.")]
+        for col_name in cols:
+            for doc in db[col_name].find():
+                doc.pop("_id", None)
+                doc["_source"] = source_name
+                items.append(doc)
+    finally:
+        client.close()
+    return items
+
+
+def _fetch_http_source(url: str, source_name: str) -> list[dict[str, Any]]:
+    """Fetch a JSON array from an HTTP endpoint."""
+    import json
+    import urllib.request
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        data = json.loads(resp.read().decode())
+    if not isinstance(data, list):
+        return []
+    for item in data:
+        item["_source"] = source_name
+    return data
+
+
+@router.get("/api/online-schedule-sources")
+def get_online_sources() -> dict[str, Any]:
+    return {"sources": _load_online_sources()}
+
+
+@router.post("/api/online-schedule-sources")
+def add_online_source(body: dict[str, Any]) -> dict[str, Any]:
+    sources = _load_online_sources()
+    entry = {
+        "id": f"src-{len(sources)+1}-{int(__import__('time').time())}",
+        "name": body.get("name", "Untitled"),
+        "uri": body.get("uri", ""),
+        "db_name": body.get("db_name", "schedule"),
+        "enabled": body.get("enabled", True),
+    }
+    if not entry["uri"]:
+        raise HTTPException(status_code=400, detail="uri is required")
+    sources.append(entry)
+    _save_online_sources(sources)
+    return {"ok": True, "source": entry}
+
+
+@router.put("/api/online-schedule-sources/{source_id}")
+def update_online_source(source_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    sources = _load_online_sources()
+    for s in sources:
+        if s["id"] == source_id:
+            for k in ("name", "uri", "db_name", "enabled"):
+                if k in body:
+                    s[k] = body[k]
+            _save_online_sources(sources)
+            return {"ok": True}
+    raise HTTPException(status_code=404, detail="Source not found")
+
+
+@router.delete("/api/online-schedule-sources/{source_id}")
+def delete_online_source(source_id: str) -> dict[str, Any]:
+    sources = [s for s in _load_online_sources() if s["id"] != source_id]
+    _save_online_sources(sources)
+    return {"ok": True}
 
 
 # ── Agent Ops ───────────────────────────────────────────────────────────────

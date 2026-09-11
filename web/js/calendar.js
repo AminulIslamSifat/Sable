@@ -54,8 +54,8 @@
     // Current month days
     for (let d = 1; d <= lastDayNum; d++) {
       const dateStr = `${currentYear}-${String(currentMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-      // Only show schedules on the grid (todos stay in sidebar)
-      const dayEvents = (eventsCache[dateStr] || []).filter(e => e.type === 'schedule');
+      // Show local schedules + online schedules on grid
+      const dayEvents = (eventsCache[dateStr] || []).filter(e => e.type === 'schedule' || e.type === 'online_schedule');
       const isToday = dateStr === todayStr;
       const isSelected = dateStr === selectedDate;
       const cell = createCell(d, false, dayEvents, dateStr, isToday, isSelected);
@@ -160,8 +160,8 @@
       return;
     }
 
-    // Only show schedules in calendar sidebar (todos are in their own rail)
-    const events = (eventsCache[dateStr] || []).filter(e => e.type === 'schedule');
+    // Show local schedules + online schedules in sidebar
+    const events = (eventsCache[dateStr] || []).filter(e => e.type === 'schedule' || e.type === 'online_schedule');
     const d = new Date(dateStr + 'T00:00:00');
     const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 
@@ -199,19 +199,32 @@
       html += '<div class="cal-event-list">';
       sorted.forEach(evt => {
         const timeStr = evt.time || 'All day';
-        const descHtml = evt.description ? `<div class="cal-evt-desc">${escHtml(evt.description)}</div>` : '';
-        const typeLabel = evt.schedule_type === 'daily' ? 'Daily' : evt.schedule_type === 'weekly' ? 'Weekly' : 'One-time';
-        html += `<div class="cal-evt-item" data-id="${evt.id}">
-          <div class="cal-evt-time">${timeStr}</div>
-          <div class="cal-evt-body">
-            <div class="cal-evt-title"><i data-lucide="calendar-days" class="icon-lucide"></i> ${escHtml(evt.title)}</div>
-            <div class="cal-evt-meta">${typeLabel}${descHtml ? ' · ' + escHtml(evt.description) : ''}</div>
-          </div>
-          <div class="cal-evt-actions">
-            <button class="cal-evt-edit" data-id="${evt.id}" title="Edit">✎</button>
-            <button class="cal-evt-del" data-id="${evt.id}" title="Delete">✕</button>
-          </div>
-        </div>`;
+        const isOnline = evt.type === 'online_schedule';
+        if (isOnline) {
+          const badge = evt.phantom_type ? `<span class="cal-online-badge">${escHtml(evt.phantom_type)}</span>` : '';
+          const srcBadge = evt.source_name ? `<span class="cal-online-badge cal-online-src">${escHtml(evt.source_name)}</span>` : '';
+          html += `<div class="cal-evt-item cal-evt-online" data-online='${JSON.stringify(evt).replace(/'/g, "&#39;")}'>
+            <div class="cal-evt-time">${timeStr}</div>
+            <div class="cal-evt-body">
+              <div class="cal-evt-title">📌 ${escHtml(evt.title)}</div>
+              <div class="cal-evt-meta">${srcBadge}${badge} Click for details</div>
+            </div>
+          </div>`;
+        } else {
+          const descHtml = evt.description ? `<div class="cal-evt-desc">${escHtml(evt.description)}</div>` : '';
+          const typeLabel = evt.schedule_type === 'daily' ? 'Daily' : evt.schedule_type === 'weekly' ? 'Weekly' : 'One-time';
+          html += `<div class="cal-evt-item" data-id="${evt.id}">
+            <div class="cal-evt-time">${timeStr}</div>
+            <div class="cal-evt-body">
+              <div class="cal-evt-title"><i data-lucide="calendar-days" class="icon-lucide"></i> ${escHtml(evt.title)}</div>
+              <div class="cal-evt-meta">${typeLabel}${descHtml ? ' · ' + escHtml(evt.description) : ''}</div>
+            </div>
+            <div class="cal-evt-actions">
+              <button class="cal-evt-edit" data-id="${evt.id}" title="Edit">✎</button>
+              <button class="cal-evt-del" data-id="${evt.id}" title="Delete">✕</button>
+            </div>
+          </div>`;
+        }
       });
       html += '</div>';
     }
@@ -270,6 +283,54 @@
         }
       });
     });
+
+    // ── Wire up online schedule clicks → detail popup ──
+    container.querySelectorAll('.cal-evt-online').forEach(item => {
+      item.addEventListener('click', () => {
+        try {
+          const data = JSON.parse(item.dataset.online);
+          showOnlinePopup(data);
+        } catch (e) {
+          console.error('[Calendar] online popup parse failed:', e);
+        }
+      });
+    });
+  }
+
+  /* ── Online schedule detail popup ── */
+  function showOnlinePopup(evt) {
+    let overlay = document.getElementById('calOnlineOverlay');
+    if (overlay) overlay.remove();
+
+    overlay = document.createElement('div');
+    overlay.id = 'calOnlineOverlay';
+    overlay.className = 'cal-popup-overlay';
+
+    const rows = [];
+    if (evt.source_name) rows.push(['Source', evt.source_name]);
+    if (evt.phantom_type) rows.push(['Type', evt.phantom_type]);
+    if (evt.date) rows.push(['Date', evt.date]);
+    if (evt.time) rows.push(['Time', evt.time]);
+    if (evt.teacher) rows.push(['Teacher', evt.teacher]);
+    if (evt.topic) rows.push(['Topic', evt.topic]);
+    if (evt.syllabus) rows.push(['Syllabus', evt.syllabus]);
+
+    const rowsHtml = rows.map(([label, val]) =>
+      `<div class="cal-popup-row"><span class="cal-popup-label">${escHtml(label)}</span><span class="cal-popup-val">${escHtml(val)}</span></div>`
+    ).join('');
+
+    overlay.innerHTML = `
+      <div class="cal-popup">
+        <div class="cal-popup-header">
+          <h3>📌 ${escHtml(evt.title)}</h3>
+          <button class="cal-popup-close" title="Close">✕</button>
+        </div>
+        <div class="cal-popup-body">${rowsHtml}</div>
+      </div>`;
+
+    overlay.querySelector('.cal-popup-close').addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
   }
 
   function escHtml(s) {

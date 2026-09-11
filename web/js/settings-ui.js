@@ -275,6 +275,7 @@
         else if (tabName === 'cookbook') { if (window._cbInit) window._cbInit(); }
         else if (tabName === 'personalization') { if (window._personaInit) window._personaInit(); }
         else if (tabName === 'bot') { if (window._botSettingsInit) window._botSettingsInit(); }
+        else if (tabName === 'schedules') { if (window._schedulesSettingsInit) window._schedulesSettingsInit(); }
         else if (tabName === 'shortcuts') renderShortcutsTab();
         else if (tabName === 'updates') loadUpdatesTab();
       });
