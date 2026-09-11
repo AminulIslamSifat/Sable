@@ -476,21 +476,69 @@ function Bootstrap-Files {
     Write-Ok "Bootstrap complete"
 }
 
+# -- Hidden command runner (no console window for the child) -----------------
+# Use this for ANY external tool (uv, docker, git, playwright ...) so its
+# console-subsystem binary never pops a visible window, and neither do its
+# children. Output is captured and streamed to Write-Host.
+function Invoke-HiddenCommand {
+    param(
+        [Parameter(Mandatory=$true)][string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [string]$WorkingDirectory = $SCRIPT_DIR
+    )
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName               = $FilePath
+    if ($ArgumentList.Count -gt 0) {
+        $psi.Arguments = ($ArgumentList | ForEach-Object {
+            if ($_ -match '\s') { '"' + ($_ -replace '"','\"') + '"' } else { $_ }
+        }) -join ' '
+    }
+    $psi.WorkingDirectory       = $WorkingDirectory
+    $psi.UseShellExecute        = $false
+    $psi.CreateNoWindow         = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError  = $true
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+
+    # Async pumps so pipes never fill and block the child.
+    $outAct = Register-ObjectEvent -InputObject $proc -EventName OutputDataReceived -Action {
+        if ($EventArgs.Data -ne $null) { Write-Host $EventArgs.Data }
+    }
+    $errAct = Register-ObjectEvent -InputObject $proc -EventName ErrorDataReceived -Action {
+        if ($EventArgs.Data -ne $null) { Write-Host $EventArgs.Data }
+    }
+
+    $proc.Start() | Out-Null
+    $proc.BeginOutputReadLine()
+    $proc.BeginErrorReadLine()
+    $proc.WaitForExit()
+
+    Unregister-Event -SourceIdentifier $outAct.Name -ErrorAction SilentlyContinue
+    Unregister-Event -SourceIdentifier $errAct.Name -ErrorAction SilentlyContinue
+
+    $script:LASTEXITCODE = $proc.ExitCode
+    return $proc.ExitCode
+}
+
 # -- Sync Dependencies -------------------------------------------------------
 function Sync-Dependencies {
     Write-Info "Synchronizing Python dependencies (uv sync)..."
-    # Run uv directly (not via `cmd /c`) so no extra console window flashes.
+    $uvPath = (Get-Command uv -ErrorAction SilentlyContinue).Source
+    if (-not $uvPath) { $uvPath = "uv" }
+
     $syncOk = Invoke-WithRetry -Action {
-        & uv sync --extra windows 2>&1 | ForEach-Object { Write-Host $_ }
-        if ($LASTEXITCODE -ne 0) { throw "uv sync exited with code $LASTEXITCODE" }
+        $code = Invoke-HiddenCommand -FilePath $uvPath -ArgumentList @("sync", "--extra", "windows")
+        if ($code -ne 0) { throw "uv sync exited with code $code" }
     } -Name "uv sync"
 
     if (-not $syncOk) {
         Write-Warn "uv sync failed - attempting venv recreation..."
         Remove-Item -Recurse -Force ".venv" -ErrorAction SilentlyContinue
         $retryOk = Invoke-WithRetry -Action {
-            & uv sync --extra windows 2>&1 | ForEach-Object { Write-Host $_ }
-            if ($LASTEXITCODE -ne 0) { throw "uv sync exited with code $LASTEXITCODE" }
+            $code = Invoke-HiddenCommand -FilePath $uvPath -ArgumentList @("sync", "--extra", "windows")
+            if ($code -ne 0) { throw "uv sync exited with code $code" }
         } -Name "uv sync (retry)"
         if (-not $retryOk) {
             Write-Err "Dependency sync failed. Check network or pyproject.toml."
@@ -503,8 +551,11 @@ function Sync-Dependencies {
 # -- Setup Playwright Chromium ------------------------------------------------
 function Setup-Playwright {
     Write-Info "Ensuring Playwright Chromium..."
+    $uvPath = (Get-Command uv -ErrorAction SilentlyContinue).Source
+    if (-not $uvPath) { $uvPath = "uv" }
     try {
-        & uv run playwright install chromium 2>&1 | ForEach-Object { Write-Host $_ }
+        $code = Invoke-HiddenCommand -FilePath $uvPath -ArgumentList @("run", "playwright", "install", "chromium")
+        if ($code -ne 0) { Write-Warn "playwright install exited with code $code" }
     } catch {
         Write-Warn "Playwright Chromium install had issues - browser automation may not work"
     }
@@ -621,7 +672,12 @@ function Cleanup-StaleProcess {
 # -- Task Scheduler Auto-Start -----------------------------------------------
 function Setup-AutoStart {
     Write-Info "Checking auto-start configuration..."
-    $startBat = Join-Path $SCRIPT_DIR "start.bat"
+    # Launch via wscript + start_silent.vbs. wscript.exe is a GUI-subsystem
+    # binary that NEVER allocates a console, and the VBS runs PowerShell
+    # with window flag 0. This is the only way to guarantee ZERO popup at
+    # logon — `-WindowStyle Hidden` alone still briefly materializes a
+    # console that child processes (uv, etc.) can leak as a visible window.
+    $silentVbs = Join-Path $SCRIPT_DIR "start_silent.vbs"
 
     # Clean up legacy registry Run key
     try {
@@ -635,11 +691,10 @@ function Setup-AutoStart {
     try {
         $existingTask = Get-ScheduledTask -TaskName $TASK_NAME -ErrorAction SilentlyContinue
 
-        # Launch via hidden PowerShell instead of a bare cmd.exe so the login
-        # task never flashes a console window. Delegates to the same start.bat.
+        # Launch via wscript (GUI subsystem, no console) -> VBS -> hidden PS.
         $action = New-ScheduledTaskAction `
-            -Execute "powershell.exe" `
-            -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$SCRIPT_DIR\start.ps1`"" `
+            -Execute "wscript.exe" `
+            -Argument "//nologo `"$silentVbs`"" `
             -WorkingDirectory $SCRIPT_DIR
 
         if (-not $existingTask) {
@@ -676,9 +731,10 @@ function Setup-AutoStart {
                 $needsUpdate = $true
             }
 
-            # Also check if the bat path changed
-            $expectedArg = "/c `"$startBat`""
-            if ($existingAction.Arguments -ne $expectedArg) {
+            # Also check if the launch command changed (must be wscript + this vbs)
+            $expectedExe = "wscript.exe"
+            $expectedArg = "//nologo `"$silentVbs`""
+            if ($existingAction.Execute -notlike "*$expectedExe*" -or $existingAction.Arguments -ne $expectedArg) {
                 $needsUpdate = $true
             }
 
@@ -819,26 +875,30 @@ function Main {
 
     Write-Info "Starting server in background (hidden console)..."
 
-    # Resolve uv path
-    $uvPath = Get-Command uv -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
-    if (-not $uvPath) { $uvPath = "uv" }
+    # CRITICAL: launch `.venv\Scripts\python.exe server.py` DIRECTLY.
+    #
+    # Do NOT use `uv run python server.py` here. `uv.exe` is a console-
+    # subsystem binary; when it re-execs the child python on Windows it
+    # can allocate a fresh VISIBLE console (the "C:\...\Sable\engine"
+    # popup window). Bypassing uv entirely removes that whole link.
+    #
+    # Also use `python.exe`, NOT `pythonw.exe`. pythonw (GUI subsystem)
+    # has NO console, so every child it spawns (git.exe from checkpoints,
+    # cmd.exe from execute_command, taskkill, ...) gets its OWN new
+    # visible console -> popup spam. python.exe + CreateNoWindow=$true
+    # gives the server ONE invisible console the whole child tree
+    # inherits. Zero popups anywhere.
+    $venvPython = Join-Path $SCRIPT_DIR ".venv\Scripts\python.exe"
+    if (-not (Test-Path $venvPython)) {
+        Write-Err "Venv python not found at $venvPython - run 'uv sync' first"
+        exit 1
+    }
 
-    # CRITICAL: use `python.exe`, NOT `pythonw.exe`.
-    #
-    # pythonw (GUI subsystem) has NO console, so every child process it
-    # spawns (git.exe from the checkpoint system, cmd.exe from
-    # execute_command, taskkill, ...) gets its OWN brand-new VISIBLE
-    # console window -> the popup spam.
-    #
-    # python.exe + CreateNoWindow=$true gives the server ONE *invisible*
-    # console that the entire child tree inherits. No child ever allocates
-    # its own window. This is the exact CREATE_NO_WINDOW behavior from
-    # Win32, which Start-Process cannot express but ProcessStartInfo can.
     $serverEnv = @{ "TERM" = "xterm-256color" }
     try {
         $proc = Start-SableServerProcess `
-            -FilePath $uvPath `
-            -ArgumentList @("run", "python", "server.py") `
+            -FilePath $venvPython `
+            -ArgumentList @("server.py") `
             -WorkingDirectory $SCRIPT_DIR `
             -StdOutLog (Join-Path $SCRIPT_DIR "sable.log") `
             -StdErrLog (Join-Path $SCRIPT_DIR "sable_error.log") `
