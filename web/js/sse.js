@@ -464,6 +464,9 @@
               data: evt.data || {},
             });
           }
+          // Clear streaming flag so the sidebar running-dot drops immediately.
+          if (typeof window._finishAgentStream === "function") window._finishAgentStream(evt.agent_id);
+          if (typeof window._sableLoadChats === "function") window._sableLoadChats();
         } else if (evt.type === "file_edit") {
           handleFileEdit(evt, false);
         } else if (evt.type === "memory_used") {
@@ -1920,6 +1923,23 @@
 
     // Expose for agents.js EventSource handler
     window._runAgentTurn = _runAgentTurn;
+
+    // Called when an agent completes or fails so the sidebar running-dot
+    // clears immediately instead of waiting on the 600s safety timer.
+    // NOTE: we do NOT abort by default — endStream() is owned by
+    // sendAutoTurnMessage's finally block. Aborting here can truncate the
+    // last answer/done frames if the server hasn't flushed yet. Only pass
+    // { abort: true } for hard cancellation (e.g. agent_failed).
+    window._finishAgentStream = function(agentId, { abort = false } = {}) {
+      if (!agentId) return;
+      if (abort) {
+        const ctrl = _activeAgentControllers.get(agentId);
+        if (ctrl && !ctrl.signal.aborted) {
+          try { ctrl.abort(); } catch (_) {}
+        }
+      }
+      _activeAgentControllers.delete(agentId);
+    };
 
     // Helper: look up agent role from topbar data
     function _getAgentRole(agentId) {
