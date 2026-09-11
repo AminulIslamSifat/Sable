@@ -1335,6 +1335,23 @@
       100% { background-position: -100% 0; }
     }
 
+    /* Agent running indicator dot in sidebar */
+    .agent-running-dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--ok, #4ade80);
+      margin-left: 6px;
+      flex-shrink: 0;
+      animation: agent-pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes agent-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.7); }
+    }
+
+
 
 
     /* skeleton loading for chat list */

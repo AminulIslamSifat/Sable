@@ -71,6 +71,7 @@ KNOWN_TAGS = (
     "chat_title",
     "computer_use",
     "load_tool",
+    "teacher_guidance",
 )
 
 # Params that map to the content field for handler compatibility.

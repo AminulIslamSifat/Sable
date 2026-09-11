@@ -24,11 +24,11 @@ from connectors.deepseek.client import get_client as get_deepseek_client
 _skill_engine: SkillEngine | None = None
 
 
-def _auto_switch_enabled() -> bool:
-    """Check if account auto-switch is enabled in system settings."""
+def _auto_switch_enabled(provider: str = "qwen") -> bool:
+    """Check if account auto-switch is enabled for a specific provider."""
     try:
-        from server.api.routes.settings import _read_system_settings
-        return _read_system_settings().get("account_auto_switch_enabled", True)
+        from server.api.routes.settings import get_auto_switch_for_provider
+        return get_auto_switch_for_provider(provider)
     except Exception:
         return True  # default to enabled on error
 
@@ -1109,7 +1109,12 @@ async def chat(request: ChatRequest):
                 except Exception:
                     _agent_run = None
 
+            # Teacher escalation state — set inside sync _dispatch_events,
+            # consumed in async context after dispatch completes.
+            _pending_teacher_escalation: dict[str, Any] = {"needed": False}
+
             while True:
+                _pending_teacher_escalation = {"needed": False}  # Reset each round
                 round_skill_events: list[dict[str, Any]] = []
                 round_thinking_parts: list[str] = []
                 round_answer_parts: list[str] = []
@@ -1200,6 +1205,16 @@ async def chat(request: ChatRequest):
                                 yield sse({"type": "skill_end", "name": item["name"], "ok": False, "error": _cm_err, "id": _cm_id})
                                 continue
 
+                            # Subagent guard: block interactive/multiagent tools
+                            _SUBAGENT_BLOCKED = frozenset({"ask_user", "multi_agent", "spawn_agent"})
+                            if "-agent-" in str(active_chat_id) and item["name"] in _SUBAGENT_BLOCKED:
+                                _sa_block_id = str(uuid.uuid4())[:12]
+                                _sa_err = f"[GUARD] Tool '{item['name']}' is blocked for subagents. Subagents cannot prompt users or spawn nested agents."
+                                round_skill_events.append({"type": "skill_start", "name": item["name"], "id": _sa_block_id})
+                                round_skill_events.append({"type": "skill_end", "name": item["name"], "ok": False, "error": _sa_err, "id": _sa_block_id})
+                                yield sse({"type": "skill_end", "name": item["name"], "ok": False, "error": _sa_err, "id": _sa_block_id})
+                                continue
+
                             # Track command for loop detection (legacy MainChatGuard)
                             _guard.record_command(item["name"], item.get("content", ""))
                             # LoopDetector: error-aware check with recovery support
@@ -1225,6 +1240,17 @@ async def chat(request: ChatRequest):
                                     _decision.recovery_key,
                                     original_task=api_message or "",
                                 )
+
+                                # Flag for teacher escalation — collected here (sync),
+                                # executed after _dispatch_events returns (async context).
+                                if _agent_run:
+                                    _pending_teacher_escalation["needed"] = True
+                                    _pending_teacher_escalation["tool_name"] = item["name"]
+                                    _pending_teacher_escalation["reason"] = (
+                                        _decision.message or "repeated failures"
+                                    )
+                                    _pending_teacher_escalation["recovery_prompt"] = _recovery_prompt
+
                                 # Block this tool and all remaining tools this round
                                 _lp_id = str(uuid.uuid4())[:12]
                                 round_skill_events.append({"type": "skill_start", "name": item["name"], "id": _lp_id})
@@ -1704,7 +1730,7 @@ async def chat(request: ChatRequest):
                                 continue  # restart inner while with new stream
                             else:
                                 # All empty-response retries exhausted
-                                if _auto_switch_enabled() and not _is_api_model(request.model):
+                                if _auto_switch_enabled("qwen") and not _is_api_model(request.model):
                                     # Auto-switch ON → escalate to account switching
                                     print(f"[MAIN-STREAM]   ✗ ALL {_EMPTY_RESPONSE_MAX_RETRIES} EMPTY-RESPONSE RETRIES EXHAUSTED — triggering auto-switch")
                                     logger.warning("[main-stream] All %d empty-response retries exhausted for chat %s, escalating to auto-switch",
@@ -2058,7 +2084,7 @@ async def chat(request: ChatRequest):
                     if event_type in ("rate_limited", "waf_blocked", "empty_exhausted") and not _is_qwen_stream:
                         # Non-Qwen backend hit rate-limit/WAF — just report error, don't switch accounts
                         stream_error = True
-                    elif event_type in ("rate_limited", "waf_blocked", "empty_exhausted") and _is_qwen_stream and _auto_switch_enabled():
+                    elif event_type in ("rate_limited", "waf_blocked", "empty_exhausted") and _is_qwen_stream and _auto_switch_enabled("qwen"):
                         print(f"[AUTO-SWITCH] ▶ TRIGGERED by {event_type} — msg={str(event.get('message',''))[:100]}")
                         pending_thinking.clear()
                         async for _sse_line in _drain_sync_gen(emit_flush()):
@@ -2434,6 +2460,84 @@ async def chat(request: ChatRequest):
                     round_skill_events.clear()
 
                 feedback = build_tool_feedback(round_skill_events)
+
+                # --- Teacher escalation for stuck subagents (async, after dispatch) ---
+                # _dispatch_events flagged a guardrail recovery; now we can await the
+                # parent chat's guidance from this async context.
+                if _pending_teacher_escalation.get("needed") and _agent_run:
+                    try:
+                        from engine.config import AGENT_CONFIG_PATH as _tcp
+                        import json as _json
+                        _tcfg = {}
+                        try:
+                            _tcfg = _json.loads(_tcp.read_text(encoding="utf-8")).get("teacher", {})
+                        except Exception:
+                            pass
+                        _teacher_on = _tcfg.get("enabled", True)
+                        _max_interventions = 2
+                        if _teacher_on and _agent_run.teacher_interventions < _max_interventions:
+                            from engine.agents.auto_turn import auto_turn as _at
+                            _parent_cid = _agent_run.chat_id
+                            if _parent_cid:
+                                _stuck_reason = (
+                                    f"Guardrail recovery on "
+                                    f"'{_pending_teacher_escalation.get('tool_name', '?')}': "
+                                    f"{_pending_teacher_escalation.get('reason', 'repeated failures')}"
+                                )
+                                _recent_msgs = []
+                                if hasattr(_agent_run, "messages"):
+                                    _recent_msgs = (
+                                        _agent_run.messages[-6:]
+                                        if len(_agent_run.messages) > 6
+                                        else list(_agent_run.messages)
+                                    )
+                                logger.info(
+                                    "[agent %s] requesting teacher escalation (%d/%d)",
+                                    _agent_run.id,
+                                    _agent_run.teacher_interventions + 1,
+                                    _max_interventions,
+                                )
+                                yield sse({"type": "status", "message": "requesting_teacher_guidance"})
+                                _guidance = await _at.request_teacher_guidance(
+                                    chat_id=_parent_cid,
+                                    agent_id=_agent_run.id,
+                                    role=_agent_run.role,
+                                    task=_agent_run.task,
+                                    stuck_reason=_stuck_reason,
+                                    context=_agent_run.context,
+                                    recent_messages=_recent_msgs,
+                                )
+                                if _guidance:
+                                    _agent_run.teacher_interventions += 1
+                                    _teacher_block = (
+                                        f"[TEACHER GUIDANCE — Intervention "
+                                        f"{_agent_run.teacher_interventions}/{_max_interventions}]\n"
+                                        f"{_guidance}\n[END TEACHER GUIDANCE]"
+                                    )
+                                    feedback = (_teacher_block + "\n\n" + feedback) if feedback else _teacher_block
+                                    logger.info(
+                                        "[agent %s] teacher guidance injected (%d chars)",
+                                        _agent_run.id, len(_guidance),
+                                    )
+                                else:
+                                    logger.info(
+                                        "[agent %s] teacher guidance not received (timeout/unavailable)",
+                                        _agent_run.id,
+                                    )
+                        else:
+                            if not _teacher_on:
+                                logger.info("[agent %s] teacher escalation disabled in config", _agent_run.id)
+                            else:
+                                logger.info(
+                                    "[agent %s] max teacher interventions reached (%d)",
+                                    _agent_run.id, _agent_run.teacher_interventions,
+                                )
+                    except Exception as _te_exc:
+                        logger.warning(
+                            "[agent %s] teacher escalation failed: %s",
+                            _agent_run.id if _agent_run else "?", _te_exc,
+                        )
+
                 # --- Critique report injection: prepend prominently so model acts on it ---
                 _critique_reports: list[str] = []
                 for _ev in round_skill_events:

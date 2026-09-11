@@ -53,6 +53,21 @@ _SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
 TOKEN_STORE_PATH = _SYSTEM_DIR / ".deepseek_tokens.json"
 MAX_TOKENS_PER_ACCOUNT = 10
 
+
+def _auto_rotate_enabled(provider: str) -> bool:
+    """Check if auto-rotation is enabled for a provider via settings.json."""
+    try:
+        path = _SYSTEM_DIR / "settings.json"
+        if not path.is_file():
+            return True
+        settings = json.loads(path.read_text(encoding="utf-8"))
+        per_provider = settings.get("account_auto_switch")
+        if isinstance(per_provider, dict) and provider in per_provider:
+            return bool(per_provider[provider])
+        return bool(settings.get("account_auto_switch_enabled", True))
+    except Exception:
+        return True
+
 # Legacy single-token cache (migrated on first access)
 _LEGACY_TOKEN_CACHE = Path(__file__).resolve().parent / ".token_cache.json"
 _LEGACY_MIGRATED = False  # guard so migration only runs once
@@ -133,8 +148,24 @@ def _save_token_store(store: dict[str, list[str]]) -> None:
         logger.warning("Could not save token store: %s", exc)
 
 
+def get_own_token_for_account(account: str) -> str | None:
+    """Strict lookup — ONLY returns a token actually captured FOR this account.
+
+    Unlike get_token_for_account(), this NEVER falls back to another account.
+    Use this for capture/refresh paths so we never persist a foreign token
+    under the wrong account key (the bug that smeared 'ds' badges everywhere).
+    """
+    store = _load_token_store()
+    tokens = [t for t in store.get(account, []) if t and t != "None"]
+    return tokens[-1] if tokens else None
+
+
 def get_token_for_account(account: str | None = None) -> str | None:
     """Get the most recent token for an account, falling back to any available.
+
+    READ-ONLY helper for chat/API calls. The cross-account fallback is
+    intentional here: any live token beats none. Do NOT use this as the
+    source value for save_token_for_account() — use get_own_token_for_account().
 
     Returns the last token in the list (most recently added) since tokens
     don't expire and newer ones are preferred.
@@ -329,20 +360,38 @@ class DeepSeekClient:
         """Whether the connector has valid credentials."""
         return self.token is not None
 
-    def set_token(self, token: str, account: str | None = None) -> None:
-        """Set and persist token under the given account."""
+    def set_token(self, token: str, account: str | None = None, *, persist: bool = True) -> None:
+        """Set and (optionally) persist token under the given account.
+
+        Pass persist=False when the token came from a cross-account fallback
+        (e.g. rotation handoff) so it is used in-memory but NOT written under
+        an account it doesn't belong to.
+        """
         self._token = token
-        save_token_for_account(token, account or self._account)
+        # Invalidate rotation cache so next request picks up the new token
+        self._rotate_tokens = []
+        self._rotate_idx = 0
+        if persist and token:
+            save_token_for_account(token, account or self._account)
 
     # ------------------------------------------------------------------
     # Token rotation (automatic round-robin + failover, like Gemini/Mistral)
     # ------------------------------------------------------------------
 
     def _init_rotation(self) -> None:
-        """Load unique tokens from store for rotation."""
-        self._rotate_tokens = get_unique_tokens()
+        """Use exactly one token: the selected account's token.
+
+        DeepSeek tokens are browser-session-bound JWTs — they work like API
+        keys, not a rotatable pool. Use only the token for the currently
+        selected account (from settings). No cross-account pooling, no
+        multi-token rotation.
+        """
+        # Prefer explicitly set token, then resolve from account store (strict, no fallback)
+        tok = self._token or get_own_token_for_account(self.account)
+        self._rotate_tokens = [tok] if tok else []
         self._rotate_idx = 0
-        logger.info("Token rotation initialized: %d unique tokens", len(self._rotate_tokens))
+        logger.info("[DeepSeek] Using single token for account %s: %s",
+                     self.account, self._mask_token(tok) if tok else "NONE")
 
     @property
     def _current_rotate_token(self) -> str | None:
@@ -358,8 +407,12 @@ class DeepSeekClient:
         return f"{token[:8]}…{token[-4:]}"
 
     def _advance_rotation(self) -> None:
-        if self._rotate_tokens:
-            self._rotate_idx = (self._rotate_idx + 1) % len(self._rotate_tokens)
+        if not self._rotate_tokens:
+            return
+        if not _auto_rotate_enabled("deepseek"):
+            logger.info("[DeepSeek] Auto-rotate disabled — staying on current token")
+            return
+        self._rotate_idx = (self._rotate_idx + 1) % len(self._rotate_tokens)
 
     def _auth_headers_for(self, token: str) -> dict[str, str]:
         return {"Authorization": f"Bearer {token}", **CLIENT_HEADERS}
@@ -916,7 +969,11 @@ class DeepSeekClient:
             self._init_rotation()
 
         # Try each token with round-robin rotation + per-token retry + failover
-        attempts = max(1, len(self._rotate_tokens))
+        # When auto-rotate is disabled, only try the current token (no failover)
+        if not _auto_rotate_enabled("deepseek"):
+            attempts = 1
+        else:
+            attempts = max(1, len(self._rotate_tokens))
         last_err = "unknown"
         _MAX_RETRIES_PER_TOKEN = 3
         _RETRY_DELAY_SECS = 2.0

@@ -1766,21 +1766,52 @@
 
     // Critique: fire a normal POST /api/chat turn, stream response into the critique card.
     // Uses a separate chat_id so the critique session doesn't pollute the main conversation history.
-    // Everything else (model, provider, thinking_mode, system prompt, WAF) is identical.
+    // Renders identically to a normal chat (thinking, skills, live answer streaming) using
+    // the standard addBotStreaming + consumeChatStream pipeline inside the critique log container.
     async function _runCritiqueTurn(message, box, logEl, statusEl, critiqueId, browserDataDir) {
       if (!message || !activeChatId) return;
       const critiqueChatId = activeChatId + "-critique-" + (critiqueId || Date.now().toString(36));
       const controller = startStream(critiqueChatId);
-      // Store controller on the box element so the stop button can abort it
       if (box) box._critiqueController = controller;
+
+      // Helper: extract only the structured report from the full answer text
+      function _extractReport(text) {
+        const idx = text.indexOf("**Mark:**");
+        if (idx !== -1) return text.slice(idx);
+        const idx2 = text.search(/^Mark:/m);
+        if (idx2 !== -1) return text.slice(idx2);
+        return text;
+      }
+
+      // Use the critique log as the rendering pane, but pass activeChatId
+      // so the typewriter animation doesn't bail (user is viewing this chat).
+      const ui = addBotStreaming(logEl, activeChatId);
+      let fullAnswer = "";
+
+      // Intercept appendAnswer to also accumulate raw text for report extraction
+      const _origAppend = ui.appendAnswer.bind(ui);
+      ui.appendAnswer = function(text) {
+        if (text) fullAnswer += text;
+        _origAppend(text);
+      };
+
+      // Update status when skills fire
+      const _origSkillStart = ui.addSkillStart.bind(ui);
+      let toolCount = 0;
+      ui.addSkillStart = function(evt) {
+        toolCount++;
+        if (statusEl) statusEl.innerHTML = `<span class="critique-spinner"></span> Inspecting... (${toolCount} tools)`;
+        _origSkillStart(evt);
+      };
+
       try {
         const body = {
-            message,
-            chat_id: critiqueChatId,
-            parent_id: undefined,  // fresh session, no parent
-            model: selectedModel,
-            thinking_mode: selectedThinkingMode,
-            stream: true,
+          message,
+          chat_id: critiqueChatId,
+          parent_id: undefined,
+          model: selectedModel,
+          thinking_mode: selectedThinkingMode,
+          stream: true,
         };
         if (browserDataDir) body.browser_data_dir = browserDataDir;
         const res = await fetch("/api/chat", {
@@ -1789,118 +1820,57 @@
           body: JSON.stringify(body),
           signal: controller.signal,
         });
+
         if (!res.ok) {
           if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Failed</span>';
-          if (logEl) logEl.innerHTML += `<div class="critique-error">HTTP ${res.status}</div>`;
+          ui.appendAnswer(`\n[error] HTTP ${res.status}`);
+          ui.finalize();
           return;
         }
-        // Stream SSE into the critique log
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = "";
-        let answerBuf = "";
-        let toolCount = 0;
-        // Helper: extract only the structured report from the full answer
-        function _extractReport(text) {
-          // Look for **Mark:** as the start of the structured report
-          const idx = text.indexOf("**Mark:**");
-          if (idx !== -1) return text.slice(idx);
-          // Fallback: look for Mark: without bold
-          const idx2 = text.search(/^Mark:/m);
-          if (idx2 !== -1) return text.slice(idx2);
-          // No structured report found — return everything
-          return text;
-        }
-        // Helper: render final report into the card
-        function _renderFinalReport() {
-          if (!answerBuf || !logEl) return;
-          const report = _extractReport(answerBuf);
-          logEl.className = 'critique-report';
-          logEl.innerHTML = renderMarkdown(report);
-        }
-        while (true) {
-          // Check if this critique was stopped by the user
-          if (controller.signal.aborted) break;
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          const lines = buf.split("\n");
-          buf = lines.pop() || "";
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const raw = line.slice(6).trim();
-            if (!raw) continue;
-            let evt;
-            try { evt = JSON.parse(raw); } catch (_) { continue; }
-            if (evt.type === "answer" && evt.text) {
-              // Accumulate silently — don't render intermediate narration
-              answerBuf += evt.text;
-            } else if (evt.type === "thinking" && evt.text) {
-              // Suppress thinking output in critique cards entirely
-            } else if (evt.type === "skill_start") {
-              // Show a compact tool counter instead of every tool name
-              toolCount++;
-              if (statusEl) statusEl.innerHTML = `<span class="critique-spinner"></span> Inspecting... (${toolCount} tools)`;
-            } else if (evt.type === "skill_end") {
-              // No-op: tool counter already updated on skill_start
-            } else if (evt.type === "done") {
-              // NOTE: In agentic/tool-loop streams, "done" fires per-round,
-              // not just at the end. Don't send the report here — wait until
-              // the reader stream actually closes below.
-              if (statusEl) statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
-              if (box) {
-                box.classList.add('critique-done');
-                const sb = box.querySelector('.critique-stop-btn');
-                if (sb) sb.style.display = 'none';
-              }
-              _renderFinalReport();
-            } else if (evt.type === "error" || evt.type === "stream_error") {
-              if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Error</span>';
-              if (logEl) logEl.innerHTML += `<div class="critique-error">${escHtml(evt.message || evt.error || 'Unknown error')}</div>`;
-            }
-          }
-        }
-        // Stream fully closed — reader.read() returned { done: true }.
-        // This is the ONLY place we send the report back to the main chat,
-        // because inner "done" SSE events fire per-round during tool loops.
+
+        // Live-stream through the standard pipeline — thinking, skills, answer all render
+        const { gotError } = await consumeChatStream(res, ui, null, critiqueChatId, logEl);
+        ui.finalize();
+
         if (controller.signal.aborted) {
           if (statusEl) statusEl.innerHTML = '<span style="color:var(--warn)">Stopped</span>';
           if (box) box.classList.add('critique-done');
-          if (logEl && answerBuf) _renderFinalReport();
-        } else {
-          if (!box?.classList.contains('critique-done')) {
-            if (answerBuf) {
-              if (statusEl) statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
-              if (box) box.classList.add('critique-done');
-              _renderFinalReport();
-            } else {
-              if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">No response</span>';
-            }
+        } else if (!gotError) {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
+          if (box) {
+            box.classList.add('critique-done');
+            const sb = box.querySelector('.critique-stop-btn');
+            if (sb) sb.style.display = 'none';
           }
           // Send the final report to the main chat as a normal user message.
-          // Only send if we actually got a structured report (has **Mark:**).
-          if (answerBuf && typeof sendAutoTurnMessage === "function") {
-            const report = _extractReport(answerBuf);
-            const hasStructuredReport = answerBuf.includes("**Mark:**") || /^Mark:/m.test(answerBuf);
+          if (fullAnswer && typeof sendAutoTurnMessage === "function") {
+            const hasStructuredReport = fullAnswer.includes("**Mark:**") || /^Mark:/m.test(fullAnswer);
             if (hasStructuredReport) {
+              const report = _extractReport(fullAnswer);
               setTimeout(() => sendAutoTurnMessage(`[Critique Report]\n${report}`), 300);
             }
+          }
+        } else {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Error</span>';
+          if (box) {
+            box.classList.add('critique-done');
+            const sb = box.querySelector('.critique-stop-btn');
+            if (sb) sb.style.display = 'none';
           }
         }
       } catch (err) {
         if (err.name === "AbortError" || controller.signal.aborted) {
-          // Stream was aborted — update UI to show stopped state
           if (statusEl) statusEl.innerHTML = '<span style="color:var(--warn)">Stopped</span>';
           if (box) box.classList.add('critique-done');
           const sb = box?.querySelector('.critique-stop-btn');
           if (sb) sb.style.display = 'none';
-          if (logEl && answerBuf) _renderFinalReport();
+          ui.finalize();
         } else {
           if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Error</span>';
-          if (logEl) logEl.innerHTML += `<div class="critique-error">${escHtml(err.message)}</div>`;
+          ui.appendAnswer(`\n[client error] ${err.message}`);
+          ui.finalize();
         }
       } finally {
-        // Always clean up activeStreams entry and stream indicator for the critique chat
         if (typeof endStream === "function") endStream(critiqueChatId);
         if (box) delete box._critiqueController;
       }
@@ -1915,6 +1885,16 @@
       if (_activeAgentControllers.has(agentId)) return;
       const controller = startStream(agentId);
       _activeAgentControllers.set(agentId, controller);
+
+      // Lifecycle is driven entirely by SSE events:
+      // - agent_spawned → addCard (running)
+      // - agent_completed → finishCard
+      // - agent_failed → failCard
+      // We do NOT call finishCard here because sendAutoTurnMessage may
+      // return immediately (setTimeout retry when parent is streaming),
+      // which previously caused instant false "done" state.
+      // endStream is handled by sendAutoTurnMessage's own finally block
+      // when the actual stream completes.
       try {
         await sendAutoTurnMessage(message, {
           targetChatId: agentId,
@@ -1923,14 +1903,19 @@
           browserDataDir,
           controller,
         });
-        if (typeof AgentTopBar !== "undefined") AgentTopBar.finishCard(agentId, "completed");
       } catch (error) {
-        if (typeof AgentTopBar !== "undefined") AgentTopBar.failCard(agentId, error.message || "failed");
-        throw error;
-      } finally {
-        _activeAgentControllers.delete(agentId);
-        if (typeof endStream === "function") endStream(agentId);
+        // Hard failure before stream even started — SSE won't fire
+        if (error.name !== "AbortError" && typeof AgentTopBar !== "undefined") {
+          AgentTopBar.failCard(agentId, error.message || "failed");
+        }
       }
+
+      // Safety cleanup for _activeAgentControllers only.
+      // endStream is managed by sendAutoTurnMessage's finally block.
+      // Use a long timeout as agents can run for minutes.
+      setTimeout(() => {
+        _activeAgentControllers.delete(agentId);
+      }, 600_000);
     }
 
     // Expose for agents.js EventSource handler
@@ -2318,6 +2303,10 @@
                 if (statusEl) statusEl.innerHTML = '<span class="critique-spinner"></span> Running...';
                 _runCritiqueTurn(evt.message, box, log, statusEl, evt.id, evt.browser_data_dir);
               }
+            }
+            // Refresh sidebar so the critique sub-chat appears live
+            if (typeof window._sableLoadChats === "function") {
+              window._sableLoadChats();
             }
           } else if (evt.type === "critique_done") {
             // Backend skill_end fires immediately — if _runCritiqueTurn is still streaming,
