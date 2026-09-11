@@ -139,4 +139,4 @@ async def upload_file_via_browser_manager(
     thinking_enabled: bool = False,
 ) -> dict[str, Any]:
     """Legacy wrapper. Ignores browser_manager, uses pure httpx."""
-    return await upload_file(file_path, model_type=model_type, thinking_enabled=thinking_enabled)
+    return await upload_file(file_path, thinking_enabled=thinking_enabled)

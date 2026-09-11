@@ -905,6 +905,22 @@ async def chat(request: ChatRequest):
                     resolved_files.append(meta)
                 else:
                     logger.warning("Could not resolve file: %s", f["path"])
+
+        # Derive ref_file_ids from freshly uploaded files. The frontend only sends
+        # `ref_file_ids` for already-uploaded files (e.g. re-sent history); a brand
+        # new upload returns its id in resolved_files and MUST be forwarded or the
+        # model receives no attachment reference at all.
+        _uploaded_file_ids = [
+            str(rf["file_id"]) for rf in resolved_files
+            if rf.get("file_id") and str(rf["file_id"]).strip()
+        ]
+        if _uploaded_file_ids:
+            _merged = list(request.ref_file_ids or [])
+            for _fid in _uploaded_file_ids:
+                if _fid not in _merged:
+                    _merged.append(_fid)
+            request.ref_file_ids = _merged
+            logger.info("Attaching %d uploaded file(s) to request: %s", len(_uploaded_file_ids), _uploaded_file_ids)
     if not request.stream and scraper_enabled:
         result = await scraper_service.chat(
             message=api_message,

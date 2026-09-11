@@ -1005,12 +1005,17 @@ function handleAgentEvent(ev) {
     case "agent_completed":
       AgentTopBar.finishCard(ev.agent_id, ev.data?.summary || "");
       addAgentResultCard(ev);
+      // Clear the streaming flag so the sidebar running-dot disappears now,
+      // not after the 600s safety timer.
+      if (typeof window._finishAgentStream === "function") window._finishAgentStream(ev.agent_id);
       // Refresh sidebar so agent chat rows update their status indicator
       if (typeof window._sableLoadChats === "function") window._sableLoadChats();
       break;
     case "agent_failed":
       AgentTopBar.failCard(ev.agent_id, ev.data?.error || "");
       addAgentResultCard(ev);
+      // Hard-cancel on failure — a failed agent shouldn't keep streaming.
+      if (typeof window._finishAgentStream === "function") window._finishAgentStream(ev.agent_id, { abort: true });
       if (typeof window._sableLoadChats === "function") window._sableLoadChats();
       break;
     // --- Events from POST /api/agents/spawn (manual @-mention spawn) ---
