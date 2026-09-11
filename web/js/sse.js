@@ -1485,12 +1485,12 @@
             const card = document.createElement("div");
             card.className = "file-edit-summary-card";
             card.addEventListener("click", () => {
-            document.body.classList.add("diff-open");
-            if (typeof AgentPanel !== "undefined") AgentPanel.close();
-            // Switch sidebar tab to Diff mode
-            if (typeof window.setFsSidebarMode === "function") {
-              window.setFsSidebarMode("diff");
+            // Open files panel in left sidebar with Diff tab
+            if (window.sidebarHost) {
+              window.sidebarHost.open('files');
+              if (typeof window.setFsLeftMode === 'function') window.setFsLeftMode('diff');
             }
+            if (typeof AgentPanel !== "undefined") AgentPanel.close();
           });
             fileEditSummary.card = card;
           }
@@ -1896,6 +1896,51 @@
       }
     }
 
+    // ── Background Stream UI Adapter ───────────────────────────────────
+    // Creates a minimal streaming UI that writes into a non-visible pane.
+    // Avoids addBotStreaming() which mutates activePane and requires the
+    // target chat to be the currently visible tab.
+    function _createBackgroundStreamUI(pane) {
+      const turn = document.createElement("div");
+      turn.className = "turn agent-bg-turn";
+      pane.appendChild(turn);
+
+      const answerEl = document.createElement("div");
+      answerEl.className = "msg bot";
+      const contentEl = document.createElement("div");
+      contentEl.className = "md-content";
+      answerEl.appendChild(contentEl);
+      turn.appendChild(answerEl);
+
+      let _finalized = false;
+      return {
+        appendAnswer(text) {
+          if (!_finalized && text) contentEl.textContent += text;
+        },
+        appendThinking(text) {
+          // Silently consume thinking in background — don't render
+        },
+        addSkillStart(evt) {
+          // Silently consume skill events in background
+        },
+        appendSkillOutput(evt) {},
+        finishSkill(evt) {},
+        trackFileEdit(evt) {},
+        finalize(buf) {
+          if (_finalized) return;
+          _finalized = true;
+          // Render markdown if available
+          if (buf && typeof marked !== "undefined") {
+            try {
+              contentEl.innerHTML = typeof DOMPurify !== "undefined"
+                ? DOMPurify.sanitize(marked.parse(buf))
+                : marked.parse(buf);
+            } catch { /* keep textContent */ }
+          }
+        },
+      };
+    }
+
     // ── Agent Streaming (main chat pipeline for subagents) ──────────────────
     // ponytail: modeled on _runCritiqueTurn — uses POST /api/chat with agent's
     // chat_id, model, and system_prompt. Streams into AgentPanel body.
@@ -1903,49 +1948,58 @@
     const _activeAgentControllers = new Map(); // agentId -> AbortController
 
     async function _runAgentTurn(message, agentId, systemPrompt, model, browserDataDir, collect) {
-      if (!message || !agentId) return;
+      console.log("[AGENT_DEBUG] _runAgentTurn CALLED", { agentId, message: message?.slice(0,80), model, hasSystemPrompt: !!systemPrompt, collect });
+      if (!message || !agentId) { console.warn("[AGENT_DEBUG] BAIL: missing message or agentId", { message: !!message, agentId }); return; }
+
+      // Prevent duplicate streams for the same agent
+      if (_activeAgentControllers.has(agentId)) {
+        console.warn("[AGENT_DEBUG] BAIL: agent already streaming", agentId);
+        return;
+      }
+
+      console.log("[AGENT_DEBUG] calling startStream for", agentId);
       const controller = startStream(agentId);
       _activeAgentControllers.set(agentId, controller);
 
       let answerBuf = "";
 
-      // Save current chat context so we can restore after streaming
-      const savedParentChatId = activeChatId;
-      const savedPane = activePane;
+      // Capture the parent chat context BEFORE any async work.
+      // We NEVER switch the visible tab — agents stream in the background.
+      const parentChatId = activeChatId;
 
-      // Refresh sidebar so the agent chat appears, then select its tab
-      if (typeof window._sableLoadChats === "function") {
-        await window._sableLoadChats();
+      // Create a hidden background pane for the agent without switching to it.
+      // ensurePane creates the DOM element but doesn't make it visible.
+      let agentPane = null;
+      if (typeof window._sableEnsurePane === "function") {
+        agentPane = window._sableEnsurePane(agentId);
       }
-      if (typeof window._sableSelectChat === "function") {
-        await window._sableSelectChat(agentId);
-      }
-
-      // Get the agent's pane (should now be active)
-      const agentPane = activePane;
       if (!agentPane) {
-        console.error("[AgentTurn] No pane found for agent", agentId);
+        console.error("[AGENT_DEBUG] BAIL: could not create pane for agent", agentId);
         if (typeof AgentTopBar !== "undefined") AgentTopBar.failCard(agentId, "No pane");
         endStream(agentId);
         _activeAgentControllers.delete(agentId);
         return;
       }
 
-      // Add a bot streaming bubble into the agent's own pane
-      const ui = addBotStreaming();
+      // Build a minimal streaming UI target that writes into the agent's
+      // background pane without touching the visible UI.
+      const ui = _createBackgroundStreamUI(agentPane);
 
       try {
         const body = {
           message,
           chat_id: agentId,
-          parent_id: savedParentChatId || undefined,
+          parent_id: parentChatId || undefined,
           model: model || selectedModel,
           thinking_mode: selectedThinkingMode,
           stream: true,
+          skip_user_save: true,  // don't render task instruction as visible user bubble
         };
         if (systemPrompt) body.system_prompt = systemPrompt;
         if (browserDataDir) body.browser_data_dir = browserDataDir;
+        console.log("[AGENT_DEBUG] POST /api/chat body:", JSON.stringify({ chat_id: body.chat_id, model: body.model, has_system_prompt: !!body.system_prompt, msg_len: body.message?.length }));
 
+        console.log("[AGENT_DEBUG] firing fetch POST /api/chat for agent", agentId);
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1953,9 +2007,11 @@
           signal: controller.signal,
         });
 
+        console.log("[AGENT_DEBUG] fetch returned, status:", res.status, res.ok ? "OK" : "FAILED");
         if (!res.ok) {
           let detail = "";
           try { detail = await res.text(); } catch (_) {}
+          console.error("[AGENT_DEBUG] HTTP error response:", res.status, detail.slice(0, 300));
           ui.appendAnswer(`[error] HTTP ${res.status}: ${detail.slice(0, 200)}`);
           ui.finalize();
           if (typeof AgentTopBar !== "undefined") AgentTopBar.failCard(agentId, `HTTP ${res.status}`);
@@ -1964,15 +2020,30 @@
           return;
         }
 
-        // Consume SSE stream into the agent's pane (same as normal chat)
+        console.log("[AGENT_DEBUG] starting SSE read loop for agent", agentId);
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buf = "";
+        let _chunkCount = 0;
+        let _evtCount = 0;
+        const _AGENT_STREAM_TIMEOUT_MS = 5 * 60 * 1000; // 5 min max per agent turn
+        let _lastChunkTime = Date.now();
 
         while (true) {
-          if (controller.signal.aborted) break;
+          if (controller.signal.aborted) { console.log("[AGENT_DEBUG] controller aborted mid-stream for", agentId); break; }
+          // Timeout guard — abort if no data for 5 minutes
+          if (Date.now() - _lastChunkTime > _AGENT_STREAM_TIMEOUT_MS) {
+            console.error("[AGENT_DEBUG] agent stream TIMEOUT after", _AGENT_STREAM_TIMEOUT_MS / 1000, "s of silence for", agentId);
+            ui.appendAnswer(`\n\n[timeout] Agent stream stalled after ${_AGENT_STREAM_TIMEOUT_MS / 60000} min — aborting.`);
+            ui.finalize();
+            if (typeof AgentTopBar !== "undefined") AgentTopBar.failCard(agentId, "Stream timeout");
+            controller.abort();
+            break;
+          }
           const { done, value } = await reader.read();
-          if (done) break;
+          _lastChunkTime = Date.now();
+          if (done) { console.log("[AGENT_DEBUG] SSE stream done for agent", agentId, "chunks:", _chunkCount, "events:", _evtCount); break; }
+          _chunkCount++;
           buf += decoder.decode(value, { stream: true });
           const lines = buf.split("\n");
           buf = lines.pop() || "";
@@ -1983,52 +2054,69 @@
             let evt;
             try { evt = JSON.parse(raw); } catch (_) { continue; }
 
+            _evtCount++;
+            if (_evtCount <= 5 || _evtCount % 20 === 0) console.log("[AGENT_DEBUG] agent SSE event:", evt.type, "chunk:", _chunkCount, "evt:", _evtCount);
             if (evt.type === "answer" && evt.text) {
               answerBuf += evt.text;
               ui.appendAnswer(evt.text);
             } else if (evt.type === "thinking" && evt.text) {
               ui.appendThinking(evt.text);
             } else if (evt.type === "skill_start") {
+              console.log("[AGENT_DEBUG] agent skill_start:", evt.name || evt.tag_id);
               ui.addSkillStart(evt);
             } else if (evt.type === "skill_output") {
               ui.appendSkillOutput(evt);
             } else if (evt.type === "skill_end") {
+              console.log("[AGENT_DEBUG] agent skill_end:", evt.name || evt.tag_id, "ok:", evt.ok);
               ui.finishSkill(evt);
             } else if (evt.type === "file_edit") {
               ui.trackFileEdit(evt);
               if (typeof handleFileEdit === "function") handleFileEdit(evt, false);
             } else if (evt.type === "error" || evt.type === "stream_error") {
+              console.error("[AGENT_DEBUG] agent stream error:", evt.message || evt.error);
               ui.appendAnswer(`[error] ${evt.message || evt.error || "Unknown error"}`);
             } else if (evt.type === "done") {
-              // Per-round done — keep streaming
+              console.log("[AGENT_DEBUG] agent got 'done' event");
+            } else {
+              console.log("[AGENT_DEBUG] agent unhandled event type:", evt.type);
             }
           }
         }
 
-        // Stream fully closed
-        if (!controller.signal.aborted && answerBuf) {
-          ui.finalize(answerBuf);
-          if (typeof AgentTopBar !== "undefined") AgentTopBar.finishCard(agentId, answerBuf.slice(0, 60));
-        } else if (controller.signal.aborted) {
+        console.log("[AGENT_DEBUG] exiting read loop, aborted:", controller.signal.aborted, "answerLen:", answerBuf.length);
+        if (!controller.signal.aborted) {
+          ui.finalize(answerBuf || "");
+          if (answerBuf) {
+            if (typeof AgentTopBar !== "undefined") AgentTopBar.finishCard(agentId, answerBuf.slice(0, 60));
+          } else {
+            // Agent completed but produced no text (tool-only turn) — still mark done
+            console.log("[AGENT_DEBUG] agent completed with empty answer");
+            if (typeof AgentTopBar !== "undefined") AgentTopBar.finishCard(agentId, "completed");
+          }
+        } else {
+          console.log("[AGENT_DEBUG] agent was aborted");
           ui.appendAnswer("[stopped]");
           ui.finalize();
           if (typeof AgentTopBar !== "undefined") AgentTopBar.failCard(agentId, "Stopped");
         }
       } catch (err) {
+        console.error("[AGENT_DEBUG] exception in _runAgentTurn:", err.name, err.message);
         if (err.name !== "AbortError") {
           ui.appendAnswer(`[error] ${err.message}`);
           ui.finalize();
           if (typeof AgentTopBar !== "undefined") AgentTopBar.failCard(agentId, err.message);
         }
       } finally {
+        console.log("[AGENT_DEBUG] finally block: cleaning up agent", agentId);
         endStream(agentId);
         _activeAgentControllers.delete(agentId);
-        // Restore parent chat tab
-        if (savedParentChatId && typeof window._sableSelectChat === "function") {
-          await window._sableSelectChat(savedParentChatId);
-        }
+        // NO chat restoration — we never left the parent chat.
+        console.log("[AGENT_DEBUG] _runAgentTurn COMPLETE for", agentId);
       }
     }
+
+    // Expose for agents.js EventSource handler
+    window._runAgentTurn = _runAgentTurn;
 
     // Helper: look up agent role from topbar data
     function _getAgentRole(agentId) {
@@ -2420,26 +2508,14 @@
               }
             }
           } else if (evt.type === "agent_start") {
-            // Backend spawned an agent — create topbar status card + refresh sidebar
-            if (typeof AgentTopBar !== "undefined" && AgentTopBar.addCard) {
-              AgentTopBar.addCard(evt.id, evt.role, evt.task, evt.model);
-            }
-            // Refresh sidebar to show the new agent chat entry as live-streaming
+            // Handled exclusively by the agent-events EventSource in agents.js.
+            // Ignoring here prevents double-triggering.
             if (typeof window._sableLoadChats === "function") {
               window._sableLoadChats();
             }
           } else if (evt.type === "agent_trigger") {
-            // Stream agent turn into the main chat history (like critique)
-            if (evt.message && evt.id) {
-              _runAgentTurn(
-                evt.message,
-                evt.id,
-                evt.system_prompt || "",
-                evt.model || selectedModel,
-                evt.browser_data_dir || null,
-                evt.collect || false,
-              );
-            }
+            // Handled exclusively by the agent-events EventSource in agents.js.
+            // Ignoring here prevents double-triggering.
           } else if (evt.type === "chat_title") {
             gotTitle = true;
             const newTitle = (evt.title || "").trim();

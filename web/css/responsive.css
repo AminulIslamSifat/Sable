@@ -64,11 +64,10 @@
       body.mobile-menu-open .activity-rail { display: flex !important; }
 
       .sidebar-section { background: color-mix(in srgb, var(--panel) 91%, transparent); }
-      .diff-sidebar { background: color-mix(in srgb, var(--panel) 91%, transparent); }
       .agent-panel { background: color-mix(in srgb, var(--panel) 82%, transparent); }
 
-      /* Hide IDE mode switcher + agent layout toggle on mobile — pure chat only */
-      #layoutSwitcher { display: none !important; }
+      /* Hide IDE mode switcher on mobile — pure chat only.
+         #layoutSwitcher (Agent/Chat) is intentionally kept visible on mobile. */
       #modeSwitcher { display: none !important; }
 
       /* Hide model dropdown in compact status bar — keep only thinking + context */

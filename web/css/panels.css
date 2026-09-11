@@ -2000,8 +2000,7 @@ textarea:disabled {
   flex-direction: column;
 }
 
-.library-reader-panel .settings-header,
-.diff-sidebar-header:has(+ .library-reader-content) {
+.library-reader-panel .settings-header {
   position: relative;
   z-index: 3;
 }

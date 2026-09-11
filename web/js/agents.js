@@ -79,11 +79,14 @@ const AgentTopBar = {
   },
 
   addCard(agentId, role, task, model) {
+    // Dedup: never create two cards for the same agent
+    if (this.cards.has(agentId)) return;
     this.init();
     this._show();
     const card = document.createElement("div");
     card.className = "agent-card running";
     card.dataset.agentId = agentId;
+    card.dataset.role = role || "agent";
     card.innerHTML =
       `<span class="agent-spinner"></span>` +
       `<span class="agent-role">${escHtml(role)}</span>` +
@@ -348,8 +351,7 @@ const AgentPanel = {
     this.el.querySelector(".agent-panel-title").textContent = `${role || "agent"}`;
     this.el.querySelector(".agent-panel-model").textContent = "";
     this.el.querySelector(".agent-panel-status").textContent = task ? task.slice(0, 50) : agentId;
-    // Close diff viewer if open (mutual exclusion)
-    document.body.classList.remove("diff-open");
+
     this.el.classList.remove("hidden");
     document.body.classList.add("agent-panel-open");
     this.bodyEl.innerHTML = "";
@@ -932,6 +934,16 @@ function connectAgentEvents(chatId) {
 
   _agentEventSource.onerror = (err) => {
     console.error("[AgentDebug] SSE connection error:", err, "readyState:", _agentEventSource?.readyState);
+    // Auto-reconnect after 3s if the connection dropped
+    if (_agentEventSource && _agentEventSource.readyState === EventSource.CLOSED) {
+      console.log("[AgentDebug] SSE closed — scheduling reconnect in 3s for chat:", chatId);
+      setTimeout(() => {
+        if (_agentEventChatId === chatId) {
+          _agentEventSource = null; // force fresh connection
+          connectAgentEvents(chatId);
+        }
+      }, 3000);
+    }
   };
 }
 
@@ -966,10 +978,12 @@ function handleAgentEvent(ev) {
       break;
     case "auto_turn_trigger":
       // Agent completed — fire a normal chat turn via the standard /api/chat pipeline.
-      // sendAutoTurnMessage (sse.js) handles the user bubble, bot streaming, skill
-      // cards, stop button, markdown, and history replay — identical to a typed message.
+      // Explicitly target the parent chat so results go to the right place
+      // even if the user switched tabs while the agent was running.
       if (typeof sendAutoTurnMessage === "function" && ev.data?.message) {
-        sendAutoTurnMessage(ev.data.message);
+        sendAutoTurnMessage(ev.data.message, {
+          targetChatId: ev.data?.parent_chat_id || _agentEventChatId || activeChatId,
+        });
       }
       break;
     case "agent_completed":
@@ -979,6 +993,33 @@ function handleAgentEvent(ev) {
     case "agent_failed":
       AgentTopBar.failCard(ev.agent_id, ev.data?.error || "");
       addAgentResultCard(ev);
+      break;
+    // --- Events from POST /api/agents/spawn (manual @-mention spawn) ---
+    // These use a different naming convention than the runtime events above.
+    case "agent_start":
+      console.log("[AgentDebug] agent_start → addCard", ev.id, ev.role, ev.task?.slice(0,60));
+      if (typeof AgentTopBar !== "undefined" && AgentTopBar.addCard) {
+        AgentTopBar.addCard(ev.id, ev.role, ev.task || "", ev.model || "");
+      }
+      if (typeof window._sableLoadChats === "function") {
+        window._sableLoadChats();
+      }
+      break;
+    case "agent_trigger":
+      console.log("[AgentDebug] agent_trigger → _runAgentTurn", ev.id, ev.message?.slice(0,60));
+      // Single-trigger: SSE is the only path now, no dedup needed
+      if (ev.message && ev.id && typeof window._runAgentTurn === "function") {
+        window._runAgentTurn(
+          ev.message,
+          ev.id,
+          ev.system_prompt || "",
+          ev.model || undefined,
+          ev.browser_data_dir || null,
+          ev.collect || false,
+        );
+      } else {
+        console.warn("[AgentDebug] agent_trigger missing fields or _runAgentTurn unavailable", { hasMsg: !!ev.message, id: ev.id, hasFn: typeof window._runAgentTurn === "function" });
+      }
       break;
   }
 }
@@ -990,7 +1031,12 @@ function handleAgentEvent(ev) {
 // Called when a chat is selected/opened
 function onChatOpened(chatId) {
   console.log("[AgentDebug] onChatOpened called, chatId:", chatId);
-  AgentTopBar.clear();
+  // Don't clear topbar cards on every tab switch — only clear if
+  // genuinely navigating to a different parent chat context.
+  // Cards manage their own lifecycle via finishCard/failCard/removeCard.
+  if (_agentEventChatId !== chatId) {
+    AgentTopBar.clear();
+  }
   connectAgentEvents(chatId);
   // Load any active agents for this chat
   fetch(`/api/agents/active?chat_id=${encodeURIComponent(chatId)}`)
@@ -1099,14 +1145,20 @@ function parseAgentMention(text) {
   return { role, task: m[2].trim() };
 }
 
-/** Spawn agent via API. Returns response JSON. */
-async function spawnAgentFromMention(role, task, chatId) {
+/** Spawn agent via API. Returns response JSON.
+ *  Single-trigger architecture: the backend emits agent_spawned + agent_trigger
+ *  via SSE. We rely solely on the SSE path to fire _runAgentTurn — no direct
+ *  trigger here, eliminating the race condition that caused double-streaming.
+ */
+async function spawnAgentFromMention(role, task, chatId, rawMessage) {
   const res = await fetch("/api/agents/spawn", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ role, task, chat_id: chatId }),
+    body: JSON.stringify({ role, task, chat_id: chatId, raw_message: rawMessage || "" }),
   });
-  return res.json();
+  const result = await res.json();
+  // SSE agent_trigger event will handle _runAgentTurn — no direct call needed.
+  return result;
 }
 
 // Wire up input listener

@@ -477,7 +477,7 @@
     window.sidebarHost.register('projects', {
       panelId: 'projectsPanel',
       onOpen: () => {
-        document.body.classList.remove('diff-open', 'calendar-open');
+        document.body.classList.remove('calendar-open');
         const calView = $('calendarView');
         if (calView) calView.classList.add('hidden');
         if (typeof AgentPanel !== 'undefined') AgentPanel.close();

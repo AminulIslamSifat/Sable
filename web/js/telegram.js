@@ -709,92 +709,38 @@
     }
     window.openLibraryReader = openLibraryReader;
 
-    let _libReaderDocked = false;
-    let _libReaderTempHidden = false;
-    let _diffSidebarOriginalHTML = "";
-    let _libReaderCurrentHTML = "";
-    // Expose for filesystem.js Ctrl+B handler
+    // ponytail: Library reader docking now uses an overlay instead of hijacking #diffSidebar (removed).
+    // Upgrade path: if sidebarHost gains a dedicated 'reader' slot, move this there.
+    let _libReaderOverlay = null;
     window._libReaderDocked = false;
     window._libReaderTempHidden = false;
     window._tempShowFileViewer = null;
     window._restoreLibReaderContent = null;
 
     function dockLibraryToSidebar(title, htmlContent) {
-      const diffSidebar = document.getElementById("diffSidebar");
-      if (!diffSidebar) return;
-
-      if (!_libReaderDocked) {
-        _diffSidebarOriginalHTML = diffSidebar.innerHTML;
-      }
-
-      _libReaderDocked = true;
-      _libReaderTempHidden = false;
-      window._libReaderDocked = true;
-      window._libReaderTempHidden = false;
-      _libReaderCurrentHTML = `
-        <div class="diff-sidebar-header">
-          <span class="diff-sidebar-title">${escHtml(title)}</span>
-          <button class="new-chat-icon sidebar-close-icon" id="libReaderSidebarClose" title="Close"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
+      if (_libReaderOverlay) _libReaderOverlay.remove();
+      _libReaderOverlay = document.createElement("div");
+      _libReaderOverlay.className = "settings-overlay";
+      _libReaderOverlay.style.zIndex = "300";
+      _libReaderOverlay.innerHTML = `
+        <div class="settings-panel" style="max-width:640px;max-height:85vh;display:flex;flex-direction:column;">
+          <div class="settings-header">
+            <h2>${escHtml(title)}</h2>
+            <button class="icon-btn" id="libReaderOverlayClose" title="Close"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
+          </div>
+          <div class="library-reader-content" style="flex:1;overflow-y:auto;padding:12px;">${htmlContent}</div>
         </div>
-        <div class="library-reader-content" style="flex:1;overflow-y:auto;padding:12px;">${htmlContent}</div>
       `;
-      diffSidebar.innerHTML = _libReaderCurrentHTML;
-      document.body.classList.add("diff-open");
-      diffSidebar.querySelector("#libReaderSidebarClose").addEventListener("click", () => undockLibraryReader());
-      lucide.createIcons({ nodes: diffSidebar.querySelectorAll("[data-lucide]") });
+      document.body.appendChild(_libReaderOverlay);
+      _libReaderOverlay.querySelector("#libReaderOverlayClose").addEventListener("click", () => undockLibraryReader());
+      _libReaderOverlay.addEventListener("click", (e) => { if (e.target === _libReaderOverlay) undockLibraryReader(); });
+      lucide.createIcons({ nodes: _libReaderOverlay.querySelectorAll("[data-lucide]") });
     }
 
-    window._tempShowFileViewer = function _tempShowFileViewer() {
-      const diffSidebar = document.getElementById("diffSidebar");
-      if (!diffSidebar) return;
-      _libReaderTempHidden = true;
-      window._libReaderTempHidden = true;
-      diffSidebar.innerHTML = _diffSidebarOriginalHTML;
-      // Re-bind file viewer buttons
-      const newCloseBtn = diffSidebar.querySelector("#diffClose");
-      const newClearBtn = diffSidebar.querySelector("#diffClear");
-      if (newCloseBtn) newCloseBtn.addEventListener("click", () => {
-        _restoreLibReaderContent();
-        document.body.classList.remove("diff-open");
-      });
-      if (newClearBtn) newClearBtn.addEventListener("click", () => { const dc = document.getElementById("diffCards"); if (dc) dc.innerHTML = ""; });
-      const fsPill = diffSidebar.querySelector("#fsModePill");
-      if (fsPill && typeof initFsModePill === "function") initFsModePill();
-    }
-
-    window._restoreLibReaderContent = function _restoreLibReaderContent() {
-      const diffSidebar = document.getElementById("diffSidebar");
-      if (!diffSidebar || !_libReaderDocked) return;
-      _libReaderTempHidden = false;
-      window._libReaderTempHidden = false;
-      diffSidebar.innerHTML = _libReaderCurrentHTML;
-      diffSidebar.querySelector("#libReaderSidebarClose").addEventListener("click", () => undockLibraryReader());
-      lucide.createIcons({ nodes: diffSidebar.querySelectorAll("[data-lucide]") });
-    }
-
-    function undockLibraryReader(closeAfter = true) {
-      const diffSidebar = document.getElementById("diffSidebar");
-      if (!diffSidebar || !_libReaderDocked) return;
-
-      diffSidebar.innerHTML = _diffSidebarOriginalHTML;
-      _diffSidebarOriginalHTML = "";
-      _libReaderDocked = false;
-      _libReaderTempHidden = false;
-      window._libReaderDocked = false;
-      window._libReaderTempHidden = false;
-      _libReaderCurrentHTML = "";
-
-      const newCloseBtn = diffSidebar.querySelector("#diffClose");
-      const newClearBtn = diffSidebar.querySelector("#diffClear");
-      if (newCloseBtn) newCloseBtn.addEventListener("click", () => {
-        if (_libReaderDocked) { undockLibraryReader(); } else { document.body.classList.remove("diff-open"); }
-      });
-      if (newClearBtn) newClearBtn.addEventListener("click", () => { const dc = document.getElementById("diffCards"); if (dc) dc.innerHTML = ""; });
-      const fsPill = diffSidebar.querySelector("#fsModePill");
-      if (fsPill && typeof initFsModePill === "function") initFsModePill();
-
-      if (closeAfter) {
-        document.body.classList.remove("diff-open");
+    function undockLibraryReader() {
+      if (_libReaderOverlay) {
+        _libReaderOverlay.remove();
+        _libReaderOverlay = null;
       }
     }
 

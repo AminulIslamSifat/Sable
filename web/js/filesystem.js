@@ -242,28 +242,18 @@
     if (e.target === overlay) closeFS();
   });
 
-  // Ctrl/Cmd+B toggles the right-side file sidebar.
+  // Ctrl/Cmd+B toggles the left files panel via sidebarHost.
   window.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
       e.preventDefault();
-      const isOpen = document.body.classList.contains("diff-open");
-      if (isOpen) {
-        if (window._libReaderDocked && window._libReaderTempHidden && window._restoreLibReaderContent) {
-          window._restoreLibReaderContent();
-        }
-        document.body.classList.remove("diff-open");
+      if (!window.sidebarHost) return;
+      const cur = window.sidebarHost.getCurrent();
+      if (cur === 'files') {
+        window.sidebarHost.closePanel('files');
       } else {
-        if (window._libReaderDocked && window._tempShowFileViewer) {
-          window._tempShowFileViewer();
-        }
-        document.body.classList.add("diff-open");
-        // Close todo/tasks panels if open in sidebar
-        if (window.sidebarHost) {
-          const cur = window.sidebarHost.getCurrent();
-          if (cur === 'todo' || cur === 'tasks') window.sidebarHost.closePanel(cur);
-        }
+        window.sidebarHost.open('files');
+        if (typeof window.setFsLeftMode === 'function') window.setFsLeftMode('files');
         if (typeof AgentPanel !== "undefined") AgentPanel.close();
-        if (typeof setFsSidebarMode === "function") setFsSidebarMode("files");
       }
     }
   });
@@ -1205,17 +1195,12 @@
     window.dispatchEvent(new Event('cwd-changed'));
     loadSidebarTree();
     openRoot(path);
-    // Ensure right panel is visible when picking a folder
-    if (!document.body.classList.contains("diff-open")) {
-      document.body.classList.add("diff-open");
-      // Close todo/tasks panels if open in sidebar
-      if (window.sidebarHost) {
-        const cur = window.sidebarHost.getCurrent();
-        if (cur === 'todo' || cur === 'tasks') window.sidebarHost.closePanel(cur);
-      }
+    // Open left files panel when picking a folder
+    if (window.sidebarHost) {
+      window.sidebarHost.open('files');
+      if (typeof window.setFsLeftMode === 'function') window.setFsLeftMode('files');
       if (typeof AgentPanel !== "undefined") AgentPanel.close();
     }
-    if (typeof setFsSidebarMode === "function") setFsSidebarMode("files");
   }
 
   async function loadSidebarTree() {
@@ -1599,55 +1584,45 @@
     }
   };
 
-  /* ---------- Sidebar header: Open Folder button ---------- */
-  const sbHeaderOpenBtn = document.getElementById("sbOpenFolderBtn");
-  if (sbHeaderOpenBtn) {
-    sbHeaderOpenBtn.addEventListener("click", async () => {
-      sbHeaderOpenBtn.disabled = true;
-      try {
-        const res = await fetch(SB_BASE + "/pick-folder");
-        const data = await res.json();
-        if (data.path) pickSidebarRoot(data.path);
-        else if (data.error && window.showToast) window.showToast(data.error, "error");
-      } catch (err) {
-        console.error("[SidebarFS] pick-folder failed:", err);
-        if (window.showToast) window.showToast("Folder picker request failed", "error");
-      }
-      sbHeaderOpenBtn.disabled = false;
-    });
-  }
+  /* ---------- Left panel tab switching (Files / Diff pill) ---------- */
+  const fsLeftPill = document.getElementById("fsLeftPill");
+  const leftFilesView = document.getElementById("fsLeftFilesView");
+  const leftDiffView = document.getElementById("fsLeftDiffView");
+  const diffClearBtn = document.getElementById("diffClear");
 
-  /* ---------- Sidebar tab switching (pill style) ---------- */
-  const fsModePill = document.getElementById("fsModePill");
-  const filesPanel = document.getElementById("sidebarFilesPanel");
-  const diffPanel = document.getElementById("sidebarDiffPanel");
-
-  function setFsMode(panel) {
-    if (!fsModePill) return;
-    const btns = fsModePill.querySelectorAll("button");
+  function setFsLeftMode(panel) {
+    if (!fsLeftPill) return;
+    const btns = fsLeftPill.querySelectorAll("button");
     let idx = 0;
     btns.forEach((b, i) => {
       const isActive = b.dataset.panel === panel;
       b.classList.toggle("active", isActive);
       if (isActive) idx = i;
     });
-    fsModePill.style.setProperty("--i", idx);
-    if (filesPanel) filesPanel.classList.toggle("active", panel === "files");
-    if (diffPanel) diffPanel.classList.toggle("active", panel === "diff");
-    if (panel === "files") {
-      sidebarRoot ? loadSidebarTree() : showSidebarPicker();
-    }
+    fsLeftPill.style.setProperty("--i", idx);
+    if (leftFilesView) leftFilesView.classList.toggle("active", panel === "files");
+    if (leftDiffView) leftDiffView.classList.toggle("active", panel === "diff");
+    // Show/hide folder button based on active tab
+    const folderBtn = document.getElementById("fsLeftOpenFolder");
+    if (folderBtn) folderBtn.style.display = panel === "files" ? "" : "none";
   }
 
-  if (fsModePill) {
-    fsModePill.addEventListener("click", (e) => {
+  if (fsLeftPill) {
+    fsLeftPill.addEventListener("click", (e) => {
       const btn = e.target.closest("button[data-panel]");
-      if (btn) setFsMode(btn.dataset.panel);
+      if (btn) setFsLeftMode(btn.dataset.panel);
     });
   }
 
-  // Expose for external callers (e.g. diff card click in tracknote.js)
-  window.setFsSidebarMode = setFsMode;
+  if (diffClearBtn) {
+    diffClearBtn.addEventListener("click", () => {
+      const dc = document.getElementById("diffCards");
+      if (dc) dc.innerHTML = "";
+    });
+  }
+
+  // Expose for external callers (e.g. tracknote.js auto-open diff tab)
+  window.setFsLeftMode = setFsLeftMode;
 
 
   /* ---------- Diff editor (Monaco split view) ---------- */
@@ -1874,7 +1849,6 @@
     window.sidebarHost.register('files', {
       panelId: 'filesPanel',
       onOpen: () => {
-        document.body.classList.remove("diff-open");
         document.body.classList.remove("calendar-open");
         const calView = document.getElementById("calendarView");
         if (calView) calView.classList.add("hidden");
@@ -1887,6 +1861,8 @@
         leftExpanded.clear();
         leftExpanded.add(defaultRoot);
         loadLeftTree();
+        // Default to Files tab when opening
+        setFsLeftMode("files");
       },
       onClose: () => {},
     });

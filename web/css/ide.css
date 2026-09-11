@@ -514,12 +514,7 @@ body[data-mode="ide"] .chat-compact {
   margin: 0;
   height: 100dvh;
 }
-body[data-mode="ide"] .diff-sidebar {
-  top: 0;
-  right: 0;
-  bottom: 0;
-  border-radius: var(--radius-lg, 14px);
-}
+
 body[data-mode="ide"] header {
   padding: 0 10px;
 }
@@ -559,16 +554,7 @@ body[data-mode="ide"] #editorPane.hidden { display: flex !important; }
 body[data-mode="ide"].ide-sidebar-open .sidebar { display: flex; }
 body[data-mode="ide"].ide-sidebar-open .chat-compact { display: none; }
 
-/* IDE mode: ensure diff sidebar stays visible */
-body[data-mode="ide"] #diffSidebar { display: flex; }
 
-/* IDE mode: main area fills space when right sidebar is closed */
-body[data-mode="ide"]:not(.diff-open) .main {
-  margin-right: 0 !important;
-}
-body[data-mode="ide"]:not(.diff-open) #diffSidebar {
-  display: none !important;
-}
 
 /* --- Layout switcher styling (reuses mode-switcher) --- */
 #layoutSwitcher {
@@ -687,13 +673,11 @@ body.vscode-embed .chat-compact.hidden {
 body.vscode-embed .sidebar,
 body.vscode-embed .main,
 body.vscode-embed header,
-body.vscode-embed .diff-sidebar,
 body.vscode-embed #editorPane,
 body.vscode-embed .sidebar-overlay,
 body.vscode-embed .ide-resize-handle,
 body.vscode-embed .compact-header-actions,
 body.vscode-embed .ide-tab-bar,
-body.vscode-embed #diffSidebar,
 body.vscode-embed .monaco-editor,
 body.vscode-embed .fs-monaco-wrap {
   display: none !important;
