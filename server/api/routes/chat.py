@@ -1750,6 +1750,20 @@ async def chat(request: ChatRequest):
                         pending_thinking.append(chunk)
                         yield sse({"type": "thinking", "text": chunk})
                         continue
+                    if event_type == "token_rotation":
+                        # DeepSeek token rotation — forward as status to frontend
+                        _rot_reason = event.get("reason", "unknown")
+                        _rot_from = event.get("from_token", "?")
+                        _rot_to = event.get("to_token", "?")
+                        _rot_total = event.get("total_tokens", 0)
+                        logger.info("[deepseek-rotation] %s → %s (reason: %s, pool: %d)",
+                                    _rot_from, _rot_to, _rot_reason, _rot_total)
+                        yield sse({"type": "status", "message": f"Rotating DeepSeek token ({_rot_reason})... [{event.get('to_index', '?')}/{_rot_total}]"})
+                        continue
+                    if event_type == "status":
+                        # Per-token retry status from DeepSeek connector
+                        yield sse(event)
+                        continue
                     elif event_type == "done":
                         pending_thinking.clear()
                         async for _sse_line in _drain_sync_gen(emit_flush()):
