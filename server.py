@@ -5,6 +5,12 @@ import threading
 
 # ponytail: Windows cp1252 can't encode unicode in print() — force UTF-8
 if sys.platform == "win32":
+    # Detach from any parent console so no CMD window stays visible
+    import ctypes
+    try:
+        ctypes.windll.kernel32.FreeConsole()
+    except Exception:
+        pass
     for _s in (sys.stdout, sys.stderr):
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")

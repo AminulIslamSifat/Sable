@@ -572,7 +572,7 @@ function Setup-AutoStart {
 
         $action = New-ScheduledTaskAction `
             -Execute "cmd.exe" `
-            -Argument "/c `"$startBat`" --background" `
+            -Argument "/c `"$startBat`"" `
             -WorkingDirectory $SCRIPT_DIR
 
         if (-not $existingTask) {
@@ -610,7 +610,7 @@ function Setup-AutoStart {
             }
 
             # Also check if the bat path changed
-            $expectedArg = "/c `"$startBat`" --background"
+            $expectedArg = "/c `"$startBat`""
             if ($existingAction.Arguments -ne $expectedArg) {
                 $needsUpdate = $true
             }
@@ -694,7 +694,7 @@ function Create-DesktopShortcut {
         $shortcut.TargetPath = $startBat
         $shortcut.WorkingDirectory = $SCRIPT_DIR
         $shortcut.Description = "Launch Sable Agentic Chat Platform"
-        $shortcut.WindowStyle = 1  # Normal window
+        $shortcut.WindowStyle = 7  # Minimized/Hidden
         $shortcut.Save()
         Write-Ok "Desktop shortcut created: $shortcutPath"
     } catch {
@@ -750,9 +750,23 @@ function Main {
     Write-Info "Opening browser..."
     try { Start-Process $SABLE_URL } catch {}
 
-    Write-Info "Starting server..."
+    Write-Info "Starting server in background..."
     $env:TERM = "xterm-256color"
-    cmd /c "uv run python server.py 2>&1"
+
+    # Resolve uv path
+    $uvPath = Get-Command uv -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+    if (-not $uvPath) { $uvPath = "uv" }
+
+    # Launch detached, no visible console window
+    Start-Process -FilePath $uvPath `
+        -ArgumentList "run", "pythonw", "server.py" `
+        -WorkingDirectory $SCRIPT_DIR `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput "$SCRIPT_DIR\sable.log" `
+        -RedirectStandardError "$SCRIPT_DIR\sable_error.log"
+
+    Write-Ok "Server started in background (PID will appear in Task Manager)"
+    Write-Info "Logs: sable.log / sable_error.log"
 }
 
 Main
