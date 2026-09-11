@@ -16,7 +16,7 @@ class RoleConfig:
 
 
 # Fallback chain applied to ANY role that has no explicit model_chain configured.
-_DEFAULT_MODEL_CHAIN: list[str] = ["deepseek-expert", "gemini-2.5-flash"]
+_DEFAULT_MODEL_CHAIN: list[str] = ["deepseek-instant", "gemini-2.5-flash"]  # ponytail: deepseek unified
 
 AGENT_ROLES: dict[str, RoleConfig] = {
     "analyst": RoleConfig(

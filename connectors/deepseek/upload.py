@@ -38,14 +38,12 @@ _MIME_MAP: dict[str, str] = {
 
 async def upload_file(
     file_path: str,
-    model_type: str = "vision",
     thinking_enabled: bool = False,
 ) -> dict[str, Any]:
-    """Upload a file to DeepSeek via httpx multipart POST with PoW.
+    """Upload a file to DeepSeek (unified) via httpx multipart POST with PoW.
 
     Args:
         file_path: Local path of the file to upload.
-        model_type: DeepSeek model type header, default ``vision``.
         thinking_enabled: Whether thinking mode is active.
 
     Returns:
@@ -96,7 +94,7 @@ async def upload_file(
     headers = {
         **client._auth_headers(),
         "x-ds-pow-response": pow_header,
-        "x-model-type": model_type,
+        "x-model-type": "null",  # ponytail: unified — string "null"
         "x-thinking-enabled": "1" if thinking_enabled else "0",
         "x-file-size": str(file_size),
     }

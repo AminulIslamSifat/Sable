@@ -36,16 +36,10 @@ SKILL_ROUND_WARN_THRESHOLD = 15
 TYPEWRITER_CHARS_PER_TICK = 3
 TYPEWRITER_TICK_MS = 12
 
+# ponytail: DeepSeek unified all modes into a single model.
+# Vision is auto-detected when ref_file_ids are present; expert mode was removed.
 DEEPSEEK_MODELS = [
-    {"id": "default", "label": "Instant", "thinking_modes": [
-        {"id": "deepthink", "label": "DeepThink"},
-        {"id": "fast", "label": "Fast"},
-    ]},
-    {"id": "expert", "label": "Expert", "thinking_modes": [
-        {"id": "deepthink", "label": "DeepThink"},
-        {"id": "fast", "label": "Fast"},
-    ]},
-    {"id": "vision", "label": "Vision", "thinking_modes": [
+    {"id": "default", "label": "DeepSeek", "thinking_modes": [
         {"id": "deepthink", "label": "DeepThink"},
         {"id": "fast", "label": "Fast"},
     ]},

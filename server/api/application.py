@@ -382,12 +382,15 @@ _get_agent_runtime().set_event_callback(_async_push_agent_event)
 from engine.agents.auto_turn import auto_turn as _auto_turn
 
 
-async def _auto_turn_signal(chat_id: str, message: str) -> None:
+async def _auto_turn_signal(chat_id: str, message: str, parent_chat_id: str | None = None) -> None:
     """Push an auto_turn_trigger event so the frontend initiates a normal /api/chat call."""
     push_agent_event(chat_id, {
         "type": "auto_turn_trigger",
         "agent_id": None,
-        "data": {"message": message},
+        "data": {
+            "message": message,
+            "parent_chat_id": parent_chat_id or chat_id,
+        },
     })
 
 

@@ -728,7 +728,9 @@ async def chat(request: ChatRequest):
 
     current_mode = "scraper" if scraper_enabled else "api"
     locked_mode = get_chat_mode(active_chat_id)
-    if locked_mode and locked_mode != current_mode:
+    # Agent chats are always allowed through — they use the main pipeline
+    # regardless of scraper/api mode. The layout_mode field distinguishes them.
+    if locked_mode and locked_mode != current_mode and locked_mode != "agent":
         return {
             "error": f"This chat was created in {locked_mode} mode. "
                      f"Switch back to {locked_mode} mode or start a new chat."
@@ -950,8 +952,8 @@ async def chat(request: ChatRequest):
         _connector = get_connector(_api_backend, model_id=request.model)
         _cfg = get_model_config(request.model)
         _api_model = _cfg.get("api_model_type", _cfg["id"])
-        # DeepSeek Vision ephemeral: one-shot side request, no session continuity
-        _ephemeral = (_api_backend == "deepseek" and _api_model == "vision" and bool(request.ref_file_ids))
+        # ponytail: DeepSeek unified — no separate vision model, no ephemeral mode needed
+        _ephemeral = False
         # Collect local file paths for direct-read backends (base64 inline)
         _inline_files = None
         if _api_backend in _DIRECT_READ_BACKENDS and resolved_files:
@@ -1094,6 +1096,18 @@ async def chat(request: ChatRequest):
             # Block auto-turn from firing while main stream is active
             from engine.agents.auto_turn import auto_turn as _at_busy
             _at_busy.mark_stream_busy(active_chat_id)
+            _agent_run = None
+            _agent_killed = False  # Set True on CancelledError to prevent finally from marking completed
+            if "-agent-" in active_chat_id:
+                try:
+                    from engine.agents import get_runtime
+                    from server.database import update_agent_status
+                    _agent_run = get_runtime().get_agent(active_chat_id)
+                    if _agent_run:
+                        _agent_run.mark_running()
+                        update_agent_status(active_chat_id, "running")
+                except Exception:
+                    _agent_run = None
 
             while True:
                 round_skill_events: list[dict[str, Any]] = []
@@ -1158,9 +1172,26 @@ async def chat(request: ChatRequest):
                                 round_skill_events.append({"type": "skill_end", "name": "chat_title", "ok": True, "id": _ct_id, "duration_ms": 0})
                                 continue
 
+                            # Subagent spawn: intercept before engine.process_tag so raw XML
+                            # never leaks into the chat as visible text. The handler yields
+                            # agent_start / agent_trigger / skill_end events directly.
+                            if item["name"] == "spawn_agent":
+                                _sa_id = str(uuid.uuid4())[:12]
+                                round_skill_events.append({"type": "skill_start", "name": "spawn_agent", "id": _sa_id})
+                                yield sse({"type": "skill_start", "name": "spawn_agent", "id": _sa_id})
+                                for ev in engine.process_tag(
+                                    item["name"], item.get("attrs", {}), item.get("content", ""),
+                                    chat_id=active_chat_id,
+                                    cwd=request.cwd,
+                                ):
+                                    if ev.get("type") in ("skill_start", "skill_output", "skill_end"):
+                                        round_skill_events.append(ev)
+                                    yield sse(ev)
+                                continue
+
                             # Chat mode: block all tools except web_search/online_search/chat_title
                             if _layout_mode == "chat" and item["name"] not in (
-                                "online_search", "web_search", "web_fetch", "chat_title",
+                                "online_search", "chat_title",
                             ):
                                 _cm_id = str(uuid.uuid4())[:12]
                                 _cm_err = f"[Chat mode] Tool '{item['name']}' is disabled. Only web search is available."
@@ -1333,7 +1364,8 @@ async def chat(request: ChatRequest):
                     _connector = get_connector(_api_backend, model_id=request.model)
                     _cfg = get_model_config(request.model)
                     _api_model = _cfg.get("api_model_type", _cfg["id"])
-                    _ephemeral = (_api_backend == "deepseek" and _api_model == "vision" and bool(request.ref_file_ids))
+                    # ponytail: DeepSeek unified — no separate vision model
+                    _ephemeral = False
                     # Collect local file paths for direct-read backends
                     _inline_files = None
                     if _api_backend in _DIRECT_READ_BACKENDS and round_index == 0 and resolved_files:
@@ -1369,6 +1401,7 @@ async def chat(request: ChatRequest):
                         inject_instructions=not _ephemeral,
                         project_id=_project_id,
                         db_history=_db_history_s,
+                        layout_mode=_layout_mode,
                     )
                     # Agent sub-chats override system prompt (skip Maria persona)
                     if request.system_prompt:
@@ -1450,8 +1483,11 @@ async def chat(request: ChatRequest):
                         )
                     except Exception:
                         _round_prompt_tokens = 0
+                    _scraper_msg = current_message
+                    if request.system_prompt and "-agent-" in str(active_chat_id):
+                        _scraper_msg = f"[SYSTEM INSTRUCTION]\n{request.system_prompt}\n\n[USER MESSAGE]\n{current_message}"
                     round_event_source = scraper_service.stream_events(
-                        message=current_message,
+                        message=_scraper_msg,
                         chat_id=active_chat_id,
                         parent_id=current_parent,
                         files=files_for_round,
@@ -1482,8 +1518,14 @@ async def chat(request: ChatRequest):
                     # retries 3× internally, and the outer main-stream loop handles
                     # timeout-based reconnection. Triple-nesting caused 9-27 HTTP calls
                     # per user message.
+                    _qwen_msg = current_message
+                    # Agent sub-chats override system prompt (skip Maria persona).
+                    # Qwen manages system prompts server-side via sync_context, so we
+                    # inject the agent's system prompt directly into the message payload.
+                    if request.system_prompt and "-agent-" in str(active_chat_id):
+                        _qwen_msg = f"[SYSTEM INSTRUCTION]\n{request.system_prompt}\n\n[USER MESSAGE]\n{current_message}"
                     round_event_source = service.stream_events(
-                        message=current_message,
+                        message=_qwen_msg,
                         chat_id=_qwen_chat_id,
                         parent_id=current_parent,
                         files=files_for_round,
@@ -2419,6 +2461,46 @@ async def chat(request: ChatRequest):
                 if not feedback and _guard_warnings:
                     feedback = "\n\n".join(_guard_warnings)
                     _guard_warnings_injected = True
+                # Output format validation for subagents: check required_sections.
+                # Runs independent of tool feedback — a subagent's final answer must
+                # satisfy its role's required_sections regardless of whether it also
+                # called tools this round. (Previously gated behind `not feedback`,
+                # which silently skipped validation whenever any tool ran.)
+                if _agent_run and not stream_error and not error_message:
+                    try:
+                        from engine.agents.registry import get_role_config as _grc
+                        _rcfg = _grc(_agent_run.role)
+                        _req = _rcfg.required_sections
+                        if _req:
+                            _round_text = "".join(round_answer_parts)
+                            _found = sum(1 for s in _req if s.lower() in _round_text.lower())
+                            _threshold = len(_req) * 0.5
+                            if _found < _threshold:
+                                _missing = [s for s in _req if s.lower() not in _round_text.lower()]
+                                _fmt_error = (
+                                    f"[FORMAT ERROR] Your output is missing required sections. "
+                                    f"Found {_found}/{len(_req)} required headers (need ≥{int(_threshold)}).\n"
+                                    f"Missing: {', '.join(_missing)}\n\n"
+                                    f"Your response MUST include these section headers:\n"
+                                    + "\n".join(f"## {s}" for s in _req)
+                                    + "\n\nRegenerate your full response using the correct output format."
+                                )
+                                # Surface it as a user-visible skill event so the
+                                # format correction is observable in the chat, not
+                                # just injected into the model's next-round context.
+                                # Appended to round_skill_events (same pattern as
+                                # _loop_warning) so it is streamed + persisted once.
+                                _fmt_err_id = f"fmt_err_{round_index}"
+                                round_skill_events.append({"type": "skill_start", "name": "format_error", "id": _fmt_err_id})
+                                round_skill_events.append({"type": "skill_output", "name": "format_error", "text": _fmt_error, "id": _fmt_err_id})
+                                round_skill_events.append({"type": "skill_end", "name": "format_error", "ok": False, "error": _fmt_error, "id": _fmt_err_id})
+                                feedback = (feedback + "\n\n" + _fmt_error) if feedback else _fmt_error
+                                logger.info(
+                                    "[agent %s] format validation failed: %d/%d sections found, injecting correction",
+                                    active_chat_id, _found, len(_req),
+                                )
+                    except Exception:
+                        pass
                 if stream_error or error_message or not feedback or _ask_user_pause or _permission_pause or _cwd_pause:
                     break
 
@@ -2519,6 +2601,22 @@ async def chat(request: ChatRequest):
                     await _svc._stop_upstream_generation(active_chat_id, final_parent)
             except Exception:
                 pass
+            # Mark agent as killed so the finally block doesn't overwrite with "completed"
+            _agent_killed = True
+            if _agent_run:
+                try:
+                    from server.database import update_agent_status as _uas
+                    _agent_run.mark_failed("Stopped by user")
+                    _uas(active_chat_id, "killed", error="Stopped by user")
+                    # Broadcast so topbar card updates even if user switched chats
+                    from server.api.routes.agents import broadcast_agent_event as _bae
+                    _bae({
+                        "type": "agent_failed",
+                        "agent_id": active_chat_id,
+                        "data": {"role": _agent_run.role, "error": "Stopped by user"},
+                    })
+                except Exception:
+                    pass
             raise  # re-raise so Starlette cleans up properly
         except Exception as exc:
             error_message = f"{type(exc).__name__}: {exc}"
@@ -2546,6 +2644,77 @@ async def chat(request: ChatRequest):
             else:
                 add_message(active_chat_id, "assistant", stored_content, thinking, final_parent, skill_events)
             touch_chat(active_chat_id, final_parent)
+            if _agent_run and not _agent_killed:
+                from server.database import update_agent_status
+                if error_message:
+                    _agent_run.mark_failed(error_message)
+                    update_agent_status(active_chat_id, "failed", error=error_message)
+                else:
+                    _agent_run.mark_completed(answer)
+                    update_agent_status(active_chat_id, "completed", result=answer)
+                # Push completion/failure to parent chat's notification queue
+                # and signal the frontend to start an auto-turn so Maria sees it
+                try:
+                    from engine.agents.notifications import notification_queue as _nq
+                    from engine.agents.protocol import AgentEvent
+                    from server.api.routes.agents import push_agent_event as _push_ae
+                    from server.api.routes.agents import broadcast_agent_event as _broadcast_ae
+                    _parent_chat_id = _agent_run.chat_id or final_parent
+                    _nq.push(_parent_chat_id, AgentEvent(
+                        type="agent_completed" if not error_message else "agent_failed",
+                        agent_id=_agent_run.id,
+                        data={
+                            "role": _agent_run.role,
+                            "result": answer if not error_message else None,
+                            "summary": answer[:500] if not error_message else None,
+                            "error": error_message or None,
+                            "skills_used": _agent_run.skills_used,
+                            "words": _agent_run.word_count,
+                            "duration": _agent_run.duration,
+                        },
+                    ))
+                    # Build a rich auto-turn message with the full agent result
+                    # so Maria sees the complete response, not just a one-liner
+                    if error_message:
+                        _turn_msg = (
+                            f"[Agent {_agent_run.id} ({_agent_run.role}) FAILED]\n\n"
+                            f"Error: {error_message}\n\n"
+                            f"Acknowledge this failure and take any necessary follow-up action."
+                        )
+                    else:
+                        _turn_msg = (
+                            f"[Agent {_agent_run.id} ({_agent_run.role}) COMPLETED]\n\n"
+                            f"{answer}\n\n"
+                            f"---\n*Skills used: {', '.join(_agent_run.skills_used) or 'none'} | "
+                            f"Words: {_agent_run.word_count} | Duration: {_agent_run.duration:.1f}s*"
+                        )
+                    _trigger_ev = {
+                        "type": "auto_turn_trigger",
+                        "agent_id": _agent_run.id,
+                        "data": {
+                            "message": _turn_msg,
+                            "parent_chat_id": _parent_chat_id,
+                        },
+                    }
+                    # Push to parent chat's SSE queue (for when user is viewing it)
+                    _push_ae(_parent_chat_id, _trigger_ev)
+                    # Broadcast auto_turn_trigger to all other connected SSE clients
+                    # so the notification isn't lost if user switched to a different chat
+                    _broadcast_ae(_trigger_ev, exclude_chat_id=_parent_chat_id)
+                    # Also broadcast agent_completed/failed so the topbar card
+                    # gets cleaned up regardless of which chat the user is viewing
+                    _status_ev = {
+                        "type": "agent_completed" if not error_message else "agent_failed",
+                        "agent_id": _agent_run.id,
+                        "data": {
+                            "role": _agent_run.role,
+                            "summary": answer[:500] if not error_message else None,
+                            "error": error_message or None,
+                        },
+                    }
+                    _broadcast_ae(_status_ev)
+                except Exception:
+                    pass
             # Release auto-turn lock — drains any queued agent results
             try:
                 from engine.agents.auto_turn import auto_turn as _at_done

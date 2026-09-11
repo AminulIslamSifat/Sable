@@ -354,15 +354,13 @@ class ChatService:
     async def upload_deepseek_file(
         self,
         file_path: str,
-        model_type: str = "vision",
         thinking_enabled: bool = False,
     ) -> dict[str, Any]:
-        """Upload a file for DeepSeek Vision via pure httpx (no browser)."""
+        """Upload a file for DeepSeek (unified) via pure httpx (no browser)."""
         from connectors.deepseek.upload import upload_file
 
         return await upload_file(
             file_path,
-            model_type=model_type,
             thinking_enabled=thinking_enabled,
         )
 

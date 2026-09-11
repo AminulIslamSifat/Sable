@@ -233,23 +233,29 @@ def _trim_history(history: list[dict[str, Any]], prefix_len: int, max_chars: int
 # Instruction loading — uses shared builder with project-aware overrides
 _instruction_cache: str | None = None
 _cached_project_id: str | None = "__none__"
+_cached_layout_mode: str | None = "__none__"
 _cached_version: int = -1
 
 
-def _load_instructions(project_id: str | None = None) -> str:
+def _load_instructions(project_id: str | None = None, layout_mode: str | None = None) -> str:
     """Load instruction context for first-message injection. Project-aware."""
-    global _instruction_cache, _cached_project_id, _cached_version
+    global _instruction_cache, _cached_project_id, _cached_version, _cached_layout_mode
     from connectors.common.instruction_builder import get_instruction_version
     current_version = get_instruction_version()
-    # Invalidate cache when project or instruction version changes
-    if project_id != _cached_project_id or current_version != _cached_version:
+    # Invalidate cache when project, layout mode, or instruction version changes
+    if (project_id != _cached_project_id
+            or layout_mode != _cached_layout_mode
+            or current_version != _cached_version):
         _instruction_cache = None
         _cached_project_id = project_id
+        _cached_layout_mode = layout_mode
         _cached_version = current_version
     if _instruction_cache is not None:
         return _instruction_cache
     from connectors.common.instruction_builder import build_instructions
-    _instruction_cache = build_instructions(project_id=project_id, provider="deepseek")
+    _instruction_cache = build_instructions(
+        project_id=project_id, provider="deepseek", layout_mode=layout_mode,
+    )
     return _instruction_cache
 
 
@@ -277,6 +283,7 @@ class DeepSeekClient:
         self._token = token
         self._token_refresher = token_refresher
         self._account = account  # e.g. "browser-data-acc15"; None = active
+        # ponytail: DeepSeek unified — always send model_type=None
         self._model_id = model_id or "deepseek-instant"
         self._http: httpx.AsyncClient | None = None
         self._lock = asyncio.Lock()
@@ -642,7 +649,7 @@ class DeepSeekClient:
         body = {
             "chat_session_id": session_id,
             "parent_message_id": None,
-            "model_type": self._model_id,
+            "model_type": None,  # ponytail: DeepSeek unified — always null
             "prompt": prompt,
             "ref_file_ids": [],
             "thinking_enabled": False,
@@ -673,6 +680,7 @@ class DeepSeekClient:
         self, chat_id: str | None, inject_instructions: bool,
         system_instruction: str | None = None,
         project_id: str | None = None,
+        layout_mode: str | None = None,
     ) -> list[dict[str, Any]]:
         """Get existing session history or create a new one (sliding window)."""
         if chat_id and chat_id in self._sessions:
@@ -684,7 +692,7 @@ class DeepSeekClient:
             return self._sessions[chat_id]
 
         history: list[dict[str, Any]] = []
-        instructions = system_instruction if system_instruction else (_load_instructions(project_id=project_id) if inject_instructions else None)
+        instructions = system_instruction if system_instruction else (_load_instructions(project_id=project_id, layout_mode=layout_mode) if inject_instructions else None)
         if instructions:
             history.append({"role": "system", "content": instructions})
 
@@ -852,13 +860,15 @@ class DeepSeekClient:
         session, token rotation, summarization, or first message).
         """
         thinking_enabled = str(thinking_mode or "").lower() in ("thinking", "deepthink")
-        model_type = model
+        # ponytail: DeepSeek unified — always send null regardless of what caller passes
+        model_type = None
         file_ids = [str(fid) for fid in (ref_file_ids or []) if str(fid).strip()]
         project_id = kwargs.pop("project_id", None)
         db_history = kwargs.pop("db_history", None)
+        layout_mode = kwargs.pop("layout_mode", None)
 
         # Build client-side history (instructions as first entry, sliding window)
-        history = self._get_or_create_session(chat_id, inject_instructions, system_instruction=system_instruction, project_id=project_id)
+        history = self._get_or_create_session(chat_id, inject_instructions, system_instruction=system_instruction, project_id=project_id, layout_mode=layout_mode)
         # Seed from DB when session is fresh (cross-provider switch)
         if db_history and chat_id and len(history) <= 1:
             for _m in db_history:

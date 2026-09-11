@@ -504,8 +504,7 @@
       if (autoOpen) {
         // Open files panel in left sidebar with Diff tab active
         if (window.sidebarHost) {
-          window.sidebarHost.open('files');
-          if (typeof window.setFsLeftMode === 'function') window.setFsLeftMode('diff');
+          window.sidebarHost.openPanel('files', { mode: 'diff' });
         }
         if (typeof AgentPanel !== "undefined") AgentPanel.close();
       }

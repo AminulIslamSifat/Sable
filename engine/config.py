@@ -258,61 +258,15 @@ MODELS = [
             },
         ],
     },
-    {
-        "id": "deepseek-expert",
-        "label": "DeepSeek Expert",
-        "api_backend": "deepseek",
-        "api_model_type": "expert",
-        "max_session_chars": 1_000_000,
-        "capabilities": {"image": False, "video": False, "document": False, "audio": False},
-        "thinking_modes": [
-            {
-                "id": "fast",
-                "label": "Fast",
-                "thinking_enabled": False,
-                "auto_thinking": False,
-                "thinking_mode": "Fast",
-            },
-            {
-                "id": "thinking",
-                "label": "Thinking",
-                "thinking_enabled": True,
-                "auto_thinking": False,
-                "thinking_mode": "Thinking",
-            },
-        ],
-    },
+    # ponytail: DeepSeek unified all modes into one model.
+    # Vision auto-detected from ref_file_ids; expert mode removed upstream.
     {
         "id": "deepseek-instant",
-        "label": "DeepSeek Instant",
+        "label": "DeepSeek",
         "api_backend": "deepseek",
         "api_model_type": None,
         "max_session_chars": 1_000_000,
-        "capabilities": {"image": False, "video": False, "document": False, "audio": False},
-        "thinking_modes": [
-            {
-                "id": "fast",
-                "label": "Fast",
-                "thinking_enabled": False,
-                "auto_thinking": False,
-                "thinking_mode": "Fast",
-            },
-            {
-                "id": "thinking",
-                "label": "Thinking",
-                "thinking_enabled": True,
-                "auto_thinking": False,
-                "thinking_mode": "Thinking",
-            },
-        ],
-    },
-    {
-        "id": "deepseek-vision",
-        "label": "DeepSeek Vision",
-        "api_backend": "deepseek",
-        "api_model_type": "vision",
-        "max_session_chars": 1_000_000,
-        "capabilities": {"image": True, "video": False, "document": False, "audio": False},
+        "capabilities": {"image": True, "video": False, "document": True, "audio": False},
         "thinking_modes": [
             {
                 "id": "fast",

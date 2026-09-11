@@ -169,6 +169,7 @@ class OpenAICompatClient:
         self._http: httpx.AsyncClient | None = None
         self._instruction_cache: str | None = None
         self._cached_project_id: str | None = "__none__"
+        self._cached_layout_mode: str | None = "__none__"
         self._cached_version: int = -1
 
     # ------------------------------------------------------------------
@@ -236,19 +237,24 @@ class OpenAICompatClient:
     # Instructions
     # ------------------------------------------------------------------
 
-    def _load_instructions(self, project_id: str | None = None) -> str:
+    def _load_instructions(self, project_id: str | None = None, layout_mode: str | None = None) -> str:
         mode = self.INSTRUCTION_MODE
         if mode == "project":
             from connectors.common.instruction_builder import get_instruction_version
             current_version = get_instruction_version()
-            if project_id != self._cached_project_id or current_version != self._cached_version:
+            if (project_id != self._cached_project_id
+                    or layout_mode != self._cached_layout_mode
+                    or current_version != self._cached_version):
                 self._instruction_cache = None
                 self._cached_project_id = project_id
+                self._cached_layout_mode = layout_mode
                 self._cached_version = current_version
             if self._instruction_cache is not None:
                 return self._instruction_cache
             from connectors.common.instruction_builder import build_instructions
-            self._instruction_cache = build_instructions(project_id=project_id, provider="native")
+            self._instruction_cache = build_instructions(
+                project_id=project_id, provider="native", layout_mode=layout_mode,
+            )
             return self._instruction_cache
         if mode == "minimal":
             return _minimal_instructions()
@@ -310,6 +316,7 @@ class OpenAICompatClient:
         system_instruction: str | None = None,
         max_session_chars: int | None = None,
         project_id: str | None = None,
+        layout_mode: str | None = None,
     ) -> list[dict[str, Any]]:
         if chat_id and max_session_chars:
             self._session_max_chars[chat_id] = max_session_chars
@@ -326,7 +333,7 @@ class OpenAICompatClient:
         instructions = (
             system_instruction
             if system_instruction
-            else (self._load_instructions(project_id) if inject_instructions else None)
+            else (self._load_instructions(project_id, layout_mode) if inject_instructions else None)
         )
         if instructions:
             history.append({"role": "system", "content": instructions})
@@ -428,11 +435,13 @@ class OpenAICompatClient:
         system_instruction = kwargs.pop("system_instruction", None)
         project_id = kwargs.pop("project_id", None)
         db_history = kwargs.pop("db_history", None)
+        layout_mode = kwargs.pop("layout_mode", None)
         history = self._get_or_create_session(
             chat_id, inject_instructions,
             system_instruction=system_instruction,
             max_session_chars=max_session_chars,
             project_id=project_id,
+            layout_mode=layout_mode,
         )
         # Seed from DB when session is fresh (cross-provider switch)
         if db_history and chat_id and len(history) <= 1:
