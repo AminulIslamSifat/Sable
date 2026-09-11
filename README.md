@@ -47,7 +47,7 @@ The only prerequisite is **git**. Everything else (Python, uv, Docker, Playwrigh
 ### Linux / macOS
 
 ```bash
-git clone https://github.com/AminulIslamSifat/Sable.git
+git clone --depth 1 https://github.com/AminulIslamSifat/Sable.git
 cd Sable
 chmod +x start
 ./start
@@ -56,7 +56,7 @@ chmod +x start
 ### Windows
 
 ```powershell
-git clone https://github.com/AminulIslamSifat/Sable.git
+git clone --depth 1 https://github.com/AminulIslamSifat/Sable.git
 cd Sable
 .\start.ps1
 ```
