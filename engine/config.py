@@ -258,61 +258,15 @@ MODELS = [
             },
         ],
     },
-    {
-        "id": "deepseek-expert",
-        "label": "DeepSeek Expert",
-        "api_backend": "deepseek",
-        "api_model_type": "expert",
-        "max_session_chars": 1_000_000,
-        "capabilities": {"image": False, "video": False, "document": False, "audio": False},
-        "thinking_modes": [
-            {
-                "id": "fast",
-                "label": "Fast",
-                "thinking_enabled": False,
-                "auto_thinking": False,
-                "thinking_mode": "Fast",
-            },
-            {
-                "id": "thinking",
-                "label": "Thinking",
-                "thinking_enabled": True,
-                "auto_thinking": False,
-                "thinking_mode": "Thinking",
-            },
-        ],
-    },
+    # ponytail: DeepSeek unified all modes into one model.
+    # Vision auto-detected from ref_file_ids; expert mode removed upstream.
     {
         "id": "deepseek-instant",
-        "label": "DeepSeek Instant",
+        "label": "DeepSeek",
         "api_backend": "deepseek",
         "api_model_type": None,
         "max_session_chars": 1_000_000,
-        "capabilities": {"image": False, "video": False, "document": False, "audio": False},
-        "thinking_modes": [
-            {
-                "id": "fast",
-                "label": "Fast",
-                "thinking_enabled": False,
-                "auto_thinking": False,
-                "thinking_mode": "Fast",
-            },
-            {
-                "id": "thinking",
-                "label": "Thinking",
-                "thinking_enabled": True,
-                "auto_thinking": False,
-                "thinking_mode": "Thinking",
-            },
-        ],
-    },
-    {
-        "id": "deepseek-vision",
-        "label": "DeepSeek Vision",
-        "api_backend": "deepseek",
-        "api_model_type": "vision",
-        "max_session_chars": 1_000_000,
-        "capabilities": {"image": True, "video": False, "document": False, "audio": False},
+        "capabilities": {"image": True, "video": False, "document": True, "audio": False},
         "thinking_modes": [
             {
                 "id": "fast",
@@ -942,6 +896,27 @@ def auto_switch_account(
         return candidates[0] if candidates else None
     else:
         return get_next_available_account(exclude=_exclude)
+
+
+# --------------------------------------------------------------------------
+# Tool output limits
+# --------------------------------------------------------------------------
+DEFAULT_MAX_TOOL_OUTPUT_CHARS = 100_000
+
+
+def get_max_tool_output_chars() -> int:
+    """Read tool output cap from system/settings.json (default 100k)."""
+    try:
+        import json as _json
+        p = _SYSTEM / "settings.json"
+        if p.is_file():
+            data = _json.loads(p.read_text(encoding="utf-8"))
+            val = data.get("max_tool_output_chars")
+            if isinstance(val, int) and val > 0:
+                return val
+    except Exception:
+        pass
+    return DEFAULT_MAX_TOOL_OUTPUT_CHARS
 
 
 

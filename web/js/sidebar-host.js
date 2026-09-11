@@ -626,7 +626,7 @@
   }
 
   /** Generic open for registered panels */
-  function openPanel(id) {
+  function openPanel(id, opts) {
     const reg = panelRegistry.get(id);
     const el = getPanelEl(id);
     if (!el) return;
@@ -638,7 +638,7 @@
       ensureChatVisible();
       el.classList.remove('hidden');
     }
-    if (reg?.onOpen) reg.onOpen(el, pos);
+    if (reg?.onOpen) reg.onOpen(el, pos, opts);
     setRailActive(id, true);
   }
 

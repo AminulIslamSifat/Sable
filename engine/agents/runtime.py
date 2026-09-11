@@ -10,16 +10,13 @@ from pathlib import Path
 from typing import Any, Callable, Coroutine
 
 from engine.agents.agent import Agent
-from engine.agents.notifications import notification_queue
 from engine.agents.protocol import AgentEvent, AgentResult, AgentStatus, TaskAssignment
 from engine.agents.registry import get_role_config, get_next_account
-from engine.agents.auto_turn import auto_turn
 from engine.agents.resilience import CircuitBreaker
 
 logger = logging.getLogger("sable")
 
-# Agent output directory — use central config so path stays in sync
-from engine.config import AGENT_OUTPUT_DIR as _AGENT_OUTPUT_DIR
+
 
 # Type for the SSE push callback: async fn(chat_id, event_dict)
 EventCallback = Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]]
@@ -171,11 +168,6 @@ class AgentRuntime:
                 collect=assignment.collect,
             )
 
-            # Attach todo list if provided
-            if assignment.todos:
-                from engine.agents.agent import AgentTodoList
-                agent.todos = AgentTodoList.build_from_list(assignment.todos)
-
             # Attach fallback chain from role config
             agent.model_chain = role_cfg.model_chain
 
@@ -203,16 +195,6 @@ class AgentRuntime:
             browser_data_dir=agent.browser_data_dir,
         )
 
-        # Clear Qwen account settings (disable built-in tools + empty instruction)
-        # on EVERY spawn for Qwen agents with a browser profile.
-        if agent.browser_data_dir and "qwen" in agent.model:
-            try:
-                from engine.agents.loop import _clear_qwen_account_settings, _get_agent_qwen_headers
-                spawn_headers = await _get_agent_qwen_headers(agent)
-                await _clear_qwen_account_settings(spawn_headers, agent.id)
-            except Exception as exc:
-                logger.warning("Agent %s: clear settings on spawn failed: %s", agent.id, exc)
-
         # Emit spawn event
         await self._emit(chat_id, AgentEvent(
             type="agent_spawned",
@@ -221,153 +203,10 @@ class AgentRuntime:
                 "role": agent.role,
                 "task": agent.task,
                 "model": agent.model,
-                "todos": [
-                    {"id": t.id, "content": t.content, "status": t.status, "subtasks": t.subtasks, "result": t.result}
-                    for t in agent.todos.todos
-                ] if agent.todos else None,
             },
         ))
 
-        # Select semaphore based on backend
-        sem = self._qwen_sem if "qwen" in agent.model else self._ds_sem
-        timeout = assignment.timeout or role_cfg.default_timeout
-
-        # Fire-and-forget
-        task = asyncio.create_task(self._run_agent(agent, sem, timeout))
-        self._tasks[agent.id] = task
         return agent
-
-    # ------------------------------------------------------------------
-    # Agent execution
-    # ------------------------------------------------------------------
-
-    async def _run_agent(self, agent: Agent, sem: asyncio.Semaphore, timeout: float) -> None:
-        """Run agent within semaphore bounds. Handles all failure modes."""
-        async with self._global_sem, sem:
-            agent.mark_running()
-            from server.database import update_agent_status
-            update_agent_status(agent.id, "running")
-
-            try:
-                from engine.agents.loop import run_agent_llm_loop
-                result = await asyncio.wait_for(
-                    run_agent_llm_loop(agent, self._breakers, self._limits),
-                    timeout=timeout,
-                )
-                agent.mark_completed(result)
-                # Signal panel stream that the agent is done
-                agent.push_stream_event({"type": "done", "result": (result or "")[:500]})
-                update_agent_status(
-                    agent.id, agent.status.value,
-                    result=result, tokens_used=agent.tokens_used,
-                )
-                # Agent produces markdown natively — result is already a string
-                final_result = result or "No result"
-                await self._emit(agent.chat_id, AgentEvent(
-                    type="agent_completed",
-                    agent_id=agent.id,
-                    data={
-                        "role": agent.role,
-                        "result": final_result,
-                        "words": agent.word_count,
-                        "duration": agent.duration,
-                        "skills_used": agent.skills_used,
-                        "model": agent.model,
-                        "browser_data_dir": agent.browser_data_dir or "",
-                    },
-                ))
-                # Auto-turn: feed brief notification back to model
-                if agent.chat_id:
-                    await auto_turn.on_agent_done(agent.chat_id, agent.id, agent.role, result, task=agent.task)
-
-                # Memory trigger: consolidate agent knowledge if thresholds exceeded
-                try:
-                    from engine.agents.memory_trigger import trigger_agent_memory
-                    await trigger_agent_memory(agent)
-                except Exception as exc:
-                    logger.debug("[memory_trigger] Failed for agent %s: %s", agent.id, exc)
-
-            except asyncio.TimeoutError:
-                partial = agent.messages[-1]["content"] if agent.messages else ""
-                agent.mark_failed(f"Timed out after {timeout}s")
-                agent.push_stream_event({"type": "error", "message": f"Timed out after {timeout}s"})
-                agent.result = partial
-                update_agent_status(agent.id, "timed_out", error=agent.error, result=partial)
-                # Persist failure reason into agent conversation history
-                fail_msg = f"[SYSTEM] Agent failed: {agent.error}"
-                agent.messages.append({"role": "system", "content": fail_msg})
-                await self._persist_failure(agent.id, fail_msg)
-                await self._emit(agent.chat_id, AgentEvent(
-                    type="agent_failed",
-                    agent_id=agent.id,
-                    data={"role": agent.role, "error": agent.error, "partial": partial[:300]},
-                ))
-                if agent.chat_id:
-                    await auto_turn.on_agent_failed(agent.chat_id, agent.id, agent.role, agent.error, task=agent.task)
-
-            except Exception as exc:
-                agent.mark_failed(f"{type(exc).__name__}: {exc}")
-                agent.push_stream_event({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
-                update_agent_status(agent.id, "failed", error=agent.error)
-                # Persist failure reason into agent conversation history
-                fail_msg = f"[SYSTEM] Agent failed: {agent.error}"
-                agent.messages.append({"role": "system", "content": fail_msg})
-                await self._persist_failure(agent.id, fail_msg)
-                await self._emit(agent.chat_id, AgentEvent(
-                    type="agent_failed",
-                    agent_id=agent.id,
-                    data={"role": agent.role, "error": agent.error},
-                ))
-                if agent.chat_id:
-                    await auto_turn.on_agent_failed(agent.chat_id, agent.id, agent.role, agent.error, task=agent.task)
-
-            # Single-path notification: only queue if auto_turn won't handle it
-            # Collect-mode agents are handled inline by chat.py — skip both paths
-            if agent.chat_id and not agent.collect:
-                event_type = "agent_completed" if agent.status in (AgentStatus.COMPLETED, AgentStatus.DEGRADED) else "agent_failed"
-                _evt_data = {
-                    "role": agent.role,
-                    "summary": (agent.result or "")[:500],
-                    "error": agent.error,
-                    "duration": agent.duration,
-                    "words": agent.word_count,
-                    "skills_used": agent.skills_used,
-                    "model": agent.model,
-                    "browser_data_dir": agent.browser_data_dir or "",
-                }
-                # Check if auto_turn considers the chat busy (model mid-stream)
-                from engine.agents.auto_turn import auto_turn as _at
-                _at_state = _at._chats.get(agent.chat_id)
-                _is_busy = _at_state and _at_state.busy
-                # Check if this agent was spawned during the current stream
-                _in_current_stream = _at_state and agent.id in getattr(_at_state, 'current_stream_agents', set())
-
-                if _in_current_stream:
-                    # Result will appear as a skill card in the current turn — no notification needed
-                    pass
-                elif _is_busy:
-                    # Model is mid-stream but agent wasn't spawned this turn → queue for next turn
-                    notification_queue.push(agent.chat_id, AgentEvent(
-                        type=event_type,
-                        agent_id=agent.id,
-                        data=_evt_data,
-                    ))
-                # else: not busy → auto_turn.on_agent_done/on_agent_failed handles delivery exclusively
-
-                # Always persist into skill_events for history replay
-                try:
-                    from server.database import append_skill_event
-                    append_skill_event(agent.chat_id, {
-                        "type": "agent_result",
-                        "agent_id": agent.id,
-                        "ok": event_type == "agent_completed",
-                        "data": _evt_data,
-                    })
-                except Exception:
-                    pass
-
-            # Save full agent output to disk (non-blocking)
-            await asyncio.to_thread(self._save_agent_output, agent)
 
     # ------------------------------------------------------------------
     # Waiting (collect mode)
@@ -431,85 +270,6 @@ class AgentRuntime:
                 await self._event_callback(chat_id, payload)
             except Exception as exc:
                 logger.debug("SSE emit failed: %s", exc)
-
-    @staticmethod
-    async def _persist_failure(agent_id: str, message: str) -> None:
-        """Persist a failure message into the agent's DB conversation history."""
-        try:
-            from server.database import add_agent_message
-            add_agent_message(agent_id, "system", message)
-        except Exception as exc:
-            logger.debug("Failed to persist agent failure msg: %s", exc)
-
-    @staticmethod
-    def _save_agent_output(agent: Agent) -> None:
-        """Save agent output to two files:
-        - <id>.md: final result or error only
-        - <id>_conversation.md: full raw conversation (including system prompt)
-        """
-        try:
-            _AGENT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-            # --- File 1: result only ---
-            result_lines: list[str] = [
-                f"# Agent {agent.id} — {agent.role}",
-                "",
-                f"- **Task:** {agent.task}",
-                f"- **Model:** {agent.model}",
-                f"- **Status:** {agent.status.value}",
-                f"- **Duration:** {agent.duration:.1f}s",
-                f"- **Words:** {agent.word_count}",
-                f"- **Skills:** {', '.join(agent.skills_used) or 'none'}",
-            ]
-            if agent.error:
-                result_lines.append(f"- **Error:** {agent.error}")
-            result_lines.append("")
-            result_lines.append("## Result" if agent.result else "## Error")
-            result_lines.append("")
-            result_lines.append(agent.result or agent.error or "No output.")
-            result_lines.append("")
-
-            out_path = _AGENT_OUTPUT_DIR / f"{agent.id}.md"
-            out_path.write_text("\n".join(result_lines), encoding="utf-8")
-
-            # --- File 2: full conversation (skip system messages) ---
-            conv_lines: list[str] = [
-                f"# Agent {agent.id} — Conversation",
-                "",
-                f"- **Role:** {agent.role}",
-                f"- **Task:** {agent.task}",
-                "",
-            ]
-            for msg in agent.messages:
-                role = msg.get("role", "unknown")
-                content = msg.get("content", "")
-                conv_lines.append(f"### [{role}]")
-                conv_lines.append("")
-                conv_lines.append(content)
-                conv_lines.append("")
-
-            # Append skip reasons if any
-            if agent.todos and agent.todos.skip_reasons:
-                conv_lines.append("---")
-                conv_lines.append("")
-                conv_lines.append("## Skipped Tasks")
-                conv_lines.append("")
-                for todo_id, reason in agent.todos.skip_reasons:
-                    # Find the original content for this todo_id
-                    skipped_content = "unknown"
-                    for t in agent.todos.todos:
-                        if t.id == todo_id:
-                            skipped_content = t.content
-                            break
-                    conv_lines.append(f"- **Task #{todo_id}** \"{skipped_content}\": {reason}")
-                conv_lines.append("")
-
-            conv_path = _AGENT_OUTPUT_DIR / f"{agent.id}_conversation.md"
-            conv_path.write_text("\n".join(conv_lines), encoding="utf-8")
-
-            logger.info("Saved agent output: %s, %s", out_path, conv_path)
-        except Exception as exc:
-            logger.debug("Failed to save agent output: %s", exc)
 
     def _to_result(self, agent_id: str) -> AgentResult:
         agent = self._agents[agent_id]

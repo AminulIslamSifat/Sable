@@ -26,8 +26,8 @@ from typing import Any, Callable, Coroutine
 
 logger = logging.getLogger(__name__)
 
-# Signal function: async (chat_id, message_text) -> None
-SignalFn = Callable[[str, str], Coroutine[Any, Any, None]]
+# Signal function: async (chat_id, message_text, parent_chat_id?) -> None
+SignalFn = Callable[..., Coroutine[Any, Any, None]]
 
 
 @dataclass
@@ -37,7 +37,6 @@ class _TeacherRequest:
     role: str
     task: str
     stuck_reason: str
-    todo_snapshot: list[dict] | None
     future: asyncio.Future = field(default=None)  # type: ignore[assignment]
     created_at: float = field(default_factory=time.time)
 
@@ -223,7 +222,7 @@ class AutoTurnEngine:
         logger.info("[auto_turn] signalling frontend for chat %s", chat_id)
 
         try:
-            await self._signal_fn(chat_id, prompt)
+            await self._signal_fn(chat_id, prompt, chat_id)
         except Exception as exc:
             logger.error("[auto_turn] signal failed for chat %s: %s", chat_id, exc)
             state.busy = False
@@ -236,42 +235,31 @@ class AutoTurnEngine:
 
     async def request_teacher_guidance(
         self, chat_id: str, agent_id: str, role: str, task: str,
-        stuck_reason: str, todo_snapshot: list[dict] | None = None,
+        stuck_reason: str,
         context: str | None = None, recent_messages: list[dict] | None = None,
     ) -> str | None:
         """Request teacher guidance from main chat. Blocks until main chat responds.
 
-        Sends the escalation as a queued message (like agent completion) so it
-        gets delivered to main chat on the next available turn. Main chat responds
-        by calling the teacher_guidance tool, which resolves the future.
+        Sends the escalation as a queued message so it gets delivered to main chat
+        on the next available turn. Main chat responds by calling the
+        teacher_guidance tool, which resolves the future.
 
         Returns guidance text or None on timeout.
         """
         state = self.ensure_chat(chat_id)
         loop = asyncio.get_running_loop()
-        future: asyncio.Future[tuple[str, list[dict] | None]] = loop.create_future()
+        future: asyncio.Future[str] = loop.create_future()
 
         request = _TeacherRequest(
             agent_id=agent_id,
             role=role,
             task=task,
             stuck_reason=stuck_reason,
-            todo_snapshot=todo_snapshot,
             future=future,
         )
         state.pending_teacher_requests[agent_id] = request
 
         # Build the prompt for main chat — includes tool schema so it knows how to respond
-        todo_section = ""
-        if todo_snapshot:
-            todo_lines = []
-            for t in todo_snapshot:
-                icon = {"completed": "✅", "in_progress": "🔧", "pending": "❌", "skipped": "⏭️"}.get(t.get("status", ""), "?")
-                todo_lines.append(f"  {icon} [{t.get('id')}] {t.get('content')} — {t.get('status')}")
-                if t.get("result"):
-                    todo_lines.append(f"       Result: {t['result']}")
-            todo_section = "\nTodo List:\n" + "\n".join(todo_lines)
-
         context_section = f"\nContext: {context}" if context else ""
 
         recent_section = ""
@@ -279,23 +267,23 @@ class AutoTurnEngine:
             msg_lines = [f"[{m.get('role', '?')}]: {m.get('content', '')[:400]}" for m in recent_messages[-6:]]
             recent_section = "\nRecent conversation:\n" + "\n".join(msg_lines)
 
+        # Use a placeholder that won't collide with real agent IDs or break JSON transport.
+        # The main chat model reads this and calls teacher_guidance via normal tool_call format.
+        _tc_open = chr(60) + "tool_call" + chr(62)
+        _tc_close = chr(60) + "/tool_call" + chr(62)
         escalation_prompt = (
             f"[TEACHER ESCALATION REQUEST]\n"
             f"Agent {agent_id} ({role}) is stuck and needs your guidance.\n\n"
             f"Task: {task}\n"
             f"Stuck reason: {stuck_reason}\n"
-            f"{context_section}{todo_section}{recent_section}\n\n"
+            f"{context_section}{recent_section}\n\n"
             f"Please analyze what the agent is doing wrong and provide guidance.\n"
-            f"Respond using the teacher_guidance tool:\n\n"
-            f'<tool_call>\n'
-            f'{{"name": "teacher_guidance", "arguments": {{\n'
-            f'  "agent_id": "{agent_id}",\n'
-            f'  "guidance": "your specific actionable guidance here",\n'
-            f'  "todo_updates": "[{{\"action\": \"add\", \"content\": \"new step\"}}]"\n'
-            f'}}}}\n'
-            f'</tool_call>\n\n'
-            f"The todo_updates field is optional JSON. Supported actions: add, remove, replace, skip.\n"
-            f"Only include todo_updates if the plan itself is flawed."
+            f"Respond using the teacher_guidance tool like this:\n\n"
+            f"{_tc_open}\n"
+            + '{"name": "teacher_guidance", "arguments": {"agent_id": "'
+            + agent_id
+            + '", "guidance": "your specific actionable guidance here"}}'
+            + f"\n{_tc_close}"
         )
 
         # Queue it like agent completion — gets delivered on next available turn
@@ -310,7 +298,7 @@ class AutoTurnEngine:
 
         # Wait for main chat to respond via teacher_guidance tool call
         try:
-            guidance_text, todo_updates = await asyncio.wait_for(future, timeout=300)  # 5 min timeout
+            guidance_text = await asyncio.wait_for(future, timeout=300)  # 5 min timeout
             logger.info("[auto_turn] teacher guidance received for agent %s", agent_id)
             return guidance_text
         except asyncio.TimeoutError:
@@ -345,33 +333,15 @@ class AutoTurnEngine:
 
         return prompts
 
-    def resolve_teacher_guidance(
-        self, agent_id: str, guidance: str, todo_updates: list[dict] | None = None,
-    ) -> None:
+    def resolve_teacher_guidance(self, agent_id: str, guidance: str) -> None:
         """Called by teacher_guidance handler when main chat responds.
 
         Resolves the future so the waiting subagent unblocks.
-        Also applies todo_updates to the agent if provided.
         """
-        # Find which chat has this pending request
         for state in self._chats.values():
             req = state.pending_teacher_requests.get(agent_id)
             if req and req.future and not req.future.done():
-                # Apply todo updates to the agent before resolving
-                if todo_updates:
-                    try:
-                        from engine.agents import get_runtime
-                        runtime = get_runtime()
-                        agent = runtime._agents.get(agent_id)
-                        if agent and agent.todos:
-                            from engine.agents.teacher import _apply_todo_updates
-                            _apply_todo_updates(agent, todo_updates)
-                            logger.info("[auto_turn] applied %d todo updates for agent %s",
-                                        len(todo_updates), agent_id)
-                    except Exception as exc:
-                        logger.warning("[auto_turn] todo update failed for agent %s: %s", agent_id, exc)
-
-                req.future.set_result((guidance, todo_updates))
+                req.future.set_result(guidance)
                 logger.info("[auto_turn] resolved teacher guidance for agent %s", agent_id)
                 return
 

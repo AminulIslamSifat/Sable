@@ -19,8 +19,6 @@ from engine.agents.registry import RoleConfig, get_role_config
 from engine.agents.resilience import (
     CircuitBreaker,
     GuardrailDecision,
-    LoopDetector,
-    TurnCapTracker,
     build_recovery_prompt,
 )
 from engine.agents.runtime import AgentRuntime, get_runtime
@@ -33,8 +31,6 @@ __all__ = [
     "AgentRuntime",
     "AgentStatus",
     "CircuitBreaker",
-    "LoopDetector",
-    "TurnCapTracker",
     "RoleConfig",
     "TaskAssignment",
     "get_role_config",

@@ -172,17 +172,33 @@
       });
     });
 
-    // Open button → navigate to chat
+    // Open button → navigate to chat and scroll to message
     container.querySelectorAll('.search-open-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
+      btn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        const chatId = btn.dataset.chatId;
+        const card = btn.closest('.search-card');
+        const chatId = btn.dataset.chatId || card?.dataset.chatId;
+        const messageId = card?.dataset.messageId;
         if (!chatId) return;
         closeSearch();
         const railBtn = document.querySelector('.rail-btn[data-rail="search"]');
         if (railBtn) railBtn.classList.remove('active');
         window.dispatchEvent(new CustomEvent('rail-switch', { detail: { target: null } }));
-        window.dispatchEvent(new CustomEvent('sable-select-chat', { detail: { chatId } }));
+        // Use the real selectChat function
+        if (typeof window._sableSelectChat === 'function') {
+          await window._sableSelectChat(chatId);
+        }
+        // Scroll to the target message and highlight it
+        if (messageId) {
+          requestAnimationFrame(() => {
+            const msgEl = document.querySelector(`[data-message-id="${messageId}"]`);
+            if (msgEl) {
+              msgEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              msgEl.classList.add('search-highlight-flash');
+              setTimeout(() => msgEl.classList.remove('search-highlight-flash'), 2000);
+            }
+          });
+        }
       });
     });
   }

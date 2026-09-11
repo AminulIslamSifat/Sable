@@ -307,6 +307,8 @@
         _stopInFlight = true;
         const ctrl = activeStreams.get(activeChatId);
         if (ctrl) ctrl.abort();
+        // Nuclear stop: abort all active agent sub-streams for this chat
+        if (typeof window._abortAllAgents === "function") window._abortAllAgents();
         // Fallback: if abort doesn't end the stream within 3s, force-clean
         const _stuckId = activeChatId;
         setTimeout(() => {
@@ -360,13 +362,16 @@
           inputEl.value = "";
           autoResize();
           hideMentionPopup();
-          showToast(`${mention.role === "researcher" ? "🔍" : mention.role === "coder" ? "💻" : mention.role === "reviewer" ? "📋" : mention.role === "writer" ? "✍️" : "⚙️"} Spawning ${mention.role}…`, "info");
+
           try {
-            const result = await spawnAgentFromMention(mention.role, mention.task, activeChatId);
+            const result = await spawnAgentFromMention(mention.role, mention.task, activeChatId, message);
             if (result.error) {
               showToast(`Agent spawn failed: ${result.error}`, "error");
-            } else {
-              showToast(`✅ ${mention.role} spawned (${result.model})`, "success");
+            }
+            // Refresh sidebar so the agent's new chat entry appears with the
+            // correct title (the task text, not "New conversation").
+            if (typeof window._sableLoadChats === "function") {
+              await window._sableLoadChats();
             }
           } catch (e) {
             showToast(`Agent spawn error: ${e.message}`, "error");
@@ -404,6 +409,7 @@
       }
 
       const streamChatId = activeChatId;
+      const streamPane = activePane;
       const controller = startStream(streamChatId);
       inputEl.value = "";
       autoResize();
@@ -414,7 +420,7 @@
         .map(p => "/system/uploads/" + (p.filename || p.path.split("/").pop()));
 
       // Remove previous turn's file-edit summary card
-      if (activePane) activePane.querySelectorAll(".file-edit-summary-card").forEach(el => el.remove());
+      if (streamPane) streamPane.querySelectorAll(".file-edit-summary-card").forEach(el => el.remove());
 
       const userMsgDiv = addMessage("user", message, imageUrls);
       const lastSentMessage = message;
@@ -520,21 +526,27 @@
     // Goes through the exact same /api/chat pipeline as a user-typed message,
     // so skill cards, stop button, markdown, and history replay all work normally.
     async function sendAutoTurnMessage(message, opts = {}) {
-      if (!message || !activeChatId) return;
+      // Use explicit target chat if provided (from agent completion context),
+      // otherwise fall back to activeChatId.
+      const targetChatId = opts.targetChatId || activeChatId;
+      if (!message || !targetChatId) return;
       if (isStreaming()) {
         // Queue: retry after current stream finishes
         setTimeout(() => sendAutoTurnMessage(message, opts), 1500);
         return;
       }
 
-      const streamChatId = activeChatId;
-      const controller = startStream(streamChatId);
+      const streamChatId = targetChatId;
+      const controller = opts.controller || startStream(streamChatId);
+      const streamPane = typeof window._sableEnsurePane === "function"
+        ? window._sableEnsurePane(streamChatId)
+        : activePane;
 
       // Remove previous turn's file-edit summary card
       if (activePane) activePane.querySelectorAll(".file-edit-summary-card").forEach(el => el.remove());
 
-      const userMsgDiv = opts.skipUserBubble ? null : addMessage("user", message);
-      const ui = addBotStreaming();
+      const userMsgDiv = opts.skipUserBubble ? null : addMessage("user", message, undefined, streamPane);
+      const ui = addBotStreaming(streamPane, streamChatId);
 
       try {
         const res = await fetch("/api/chat", {
@@ -543,11 +555,13 @@
           body: JSON.stringify({
             message,
             chat_id: streamChatId,
-            parent_id: parentId != null ? String(parentId) : undefined,
-            model: selectedModel,
+            parent_id: opts.parentId != null ? String(opts.parentId) : undefined,
+            model: opts.model || selectedModel,
             thinking_mode: selectedThinkingMode,
             stream: true,
-            ...(opts.skipUserSave ? { skip_user_save: true } : {})
+            ...(opts.skipUserSave ? { skip_user_save: true } : {}),
+            ...(opts.systemPrompt ? { system_prompt: opts.systemPrompt } : {}),
+            ...(opts.browserDataDir ? { browser_data_dir: opts.browserDataDir } : {})
           }),
           signal: controller.signal
         });
@@ -572,7 +586,7 @@
           return;
         }
 
-        await consumeChatStream(res, ui, userMsgDiv, streamChatId);
+        await consumeChatStream(res, ui, userMsgDiv, streamChatId, streamPane);
       } catch (err) {
         if (err.name === "AbortError") {
           showToast("Auto-turn stopped", "info");

@@ -35,6 +35,7 @@ def decode_jwt_user_id(jwt_token: str) -> str | None:
         return None
 
 
+@pytest.mark.live
 @pytest.mark.anyio
 async def test_distinct_jwt_per_account():
     """Each account profile must produce a JWT with a unique user ID."""

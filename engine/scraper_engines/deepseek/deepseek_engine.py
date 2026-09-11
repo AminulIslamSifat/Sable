@@ -562,16 +562,8 @@ class GhostChat:
     # ------------------------------------------------------------------
 
     async def _click_model_button(self, model_type: str) -> bool:
-        """Click a DeepSeek model-type button if it's visible. Returns True on success."""
-        try:
-            btn = self.page.locator(f"[data-model-type='{model_type}']").first
-            if await btn.is_visible(timeout=3000):
-                await btn.click()
-                await asyncio.sleep(0.5)
-                return True
-        except Exception:
-            pass
-        return False
+        """No-op: DeepSeek unified — no model buttons to click."""
+        return True
 
     async def new_chat(self, reapply_model: bool = True) -> None:
         console.print("[dim]🚀 Warping to New Chat...[/dim]")
@@ -589,12 +581,7 @@ class GhostChat:
             await self.page.goto(PLATFORM["url"])
             await asyncio.sleep(3)
 
-        # DeepSeek snaps back to Instant on every new chat / reload — restore
-        # whichever model type was active so a refresh never loses the choice.
-        if reapply_model and self.current_model_type != "default":
-            if await self._click_model_button(self.current_model_type):
-                label = {"expert": "Expert", "vision": "Vision"}.get(self.current_model_type, self.current_model_type)
-                console.print(f"[dim]{label} mode restored after new chat[/dim] 🚀")
+        # ponytail: DeepSeek unified — no model reapplication needed
 
     async def stop_generation(self) -> bool:
         try:
@@ -856,12 +843,10 @@ class GhostChat:
     # ------------------------------------------------------------------
 
     def get_ui_metadata(self) -> dict[str, Any]:
-        """DeepSeek has 3 model types and deepthink toggle."""
+        """DeepSeek unified — single model with deepthink toggle."""
         return {
             "models": [
-                {"id": "default", "label": "Instant"},
-                {"id": "expert", "label": "Expert"},
-                {"id": "vision", "label": "Vision"},
+                {"id": "default", "label": "DeepSeek"},
             ],
             "thinking_modes": [
                 {"id": "fast", "label": "Fast"},
@@ -874,34 +859,9 @@ class GhostChat:
     # ------------------------------------------------------------------
 
     async def switch_model(self, model_type: str) -> bool:
-        """Switch DeepSeek model type (default/expert/vision).
-
-        Opens a new chat first, then clicks the corresponding model button.
-        Returns True on success.
-        """
-        valid_types = {"default", "expert", "vision"}
-        if model_type not in valid_types:
-            console.print(f"[dim red]Unknown model type: {model_type}[/dim red]")
-            return False
-
-        try:
-            # Fresh chat is opened WITHOUT re-applying the old model — we're
-            # about to click the new one, and this chat counts as the fresh
-            # chat for the next incoming message (no redundant second new_chat).
-            await self.new_chat(reapply_model=False)
-            await asyncio.sleep(1)
-            if await self._click_model_button(model_type):
-                self.current_model_type = model_type
-                self.system_injected = False
-                self.has_fresh_chat = True
-                label = {"default": "Instant", "expert": "Expert", "vision": "Vision"}[model_type]
-                console.print(f"[dim]Switched to {label} mode[/dim] 🚀")
-                return True
-            console.print(f"[dim yellow]Model button '{model_type}' not visible[/dim yellow]")
-            return False
-        except Exception as e:
-            console.print(f"[dim red]Model switch failed: {e}[/dim red]")
-            return False
+        """No-op: DeepSeek unified all modes into one model."""
+        self.current_model_type = "default"
+        return True
 
 
     async def set_thinking_mode(self, mode: str) -> None:

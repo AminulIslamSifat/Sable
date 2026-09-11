@@ -610,7 +610,16 @@
     const _loadingChats = new Set();
 
     async function selectChat(chatId) {
-      const meta = chatList.find(c => c.id === chatId);
+      let meta = chatList.find(c => c.id === chatId);
+
+      // If chat isn't in current chatList (e.g. search result from another project),
+      // clear the project filter and reload so the sidebar can display it.
+      if (!meta && activeProjectId) {
+        activeProjectId = null;
+        await loadChats();
+        meta = chatList.find(c => c.id === chatId);
+      }
+
       const alreadyOpen = openTabs.has(chatId);
 
       // Switch the visible tab (creates pane if needed)

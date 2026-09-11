@@ -24,11 +24,11 @@ from connectors.deepseek.client import get_client as get_deepseek_client
 _skill_engine: SkillEngine | None = None
 
 
-def _auto_switch_enabled() -> bool:
-    """Check if account auto-switch is enabled in system settings."""
+def _auto_switch_enabled(provider: str = "qwen") -> bool:
+    """Check if account auto-switch is enabled for a specific provider."""
     try:
-        from server.api.routes.settings import _read_system_settings
-        return _read_system_settings().get("account_auto_switch_enabled", True)
+        from server.api.routes.settings import get_auto_switch_for_provider
+        return get_auto_switch_for_provider(provider)
     except Exception:
         return True  # default to enabled on error
 
@@ -100,7 +100,7 @@ from server.database import (
     touch_chat, save_chat_url, get_chat_url,
     add_message, update_message, get_messages, list_chats, delete_chat, get_parent_id, get_db,
 )
-from server.utils import retry_async, retry_stream, make_title, _is_deepseek_api_model, _resolve_api_backend, _is_api_model, logger
+from server.utils import retry_async, make_title, _is_deepseek_api_model, _resolve_api_backend, _is_api_model, logger
 from engine.token_counter import count_prompt_tokens, count_completion_tokens
 from server.models import ChatRequest
 from ..dependencies import service, sse
@@ -728,7 +728,9 @@ async def chat(request: ChatRequest):
 
     current_mode = "scraper" if scraper_enabled else "api"
     locked_mode = get_chat_mode(active_chat_id)
-    if locked_mode and locked_mode != current_mode:
+    # Agent chats are always allowed through — they use the main pipeline
+    # regardless of scraper/api mode. The layout_mode field distinguishes them.
+    if locked_mode and locked_mode != current_mode and locked_mode != "agent":
         return {
             "error": f"This chat was created in {locked_mode} mode. "
                      f"Switch back to {locked_mode} mode or start a new chat."
@@ -788,10 +790,10 @@ async def chat(request: ChatRequest):
         "SELECT COUNT(*) as c FROM messages WHERE chat_id = ?", (active_chat_id,)
     ).fetchone()["c"]
 
-    # ponytail: skip chat_title injection for critique sub-chats — they're ephemeral
-    # and forcing a title tool call wastes a round on every critique turn
-    _is_critique_chat = "-critique-" in active_chat_id
-    if _local_use_utilities and parent_id is None and _msg_count <= 1 and not _is_critique_chat:
+    # ponytail: skip chat_title injection for critique/agent sub-chats — they're ephemeral
+    # and forcing a title tool call wastes a round on every sub-chat turn
+    _is_sub_chat = "-critique-" in active_chat_id or "-agent-" in active_chat_id
+    if _local_use_utilities and parent_id is None and _msg_count <= 1 and not _is_sub_chat:
         _context_parts.append('[SYSTEM: You MUST call the chat_title tool now to set a title for this new conversation. This is mandatory.]')
         # Inject platform info so the model uses correct paths and commands
         import platform as _plat
@@ -903,6 +905,22 @@ async def chat(request: ChatRequest):
                     resolved_files.append(meta)
                 else:
                     logger.warning("Could not resolve file: %s", f["path"])
+
+        # Derive ref_file_ids from freshly uploaded files. The frontend only sends
+        # `ref_file_ids` for already-uploaded files (e.g. re-sent history); a brand
+        # new upload returns its id in resolved_files and MUST be forwarded or the
+        # model receives no attachment reference at all.
+        _uploaded_file_ids = [
+            str(rf["file_id"]) for rf in resolved_files
+            if rf.get("file_id") and str(rf["file_id"]).strip()
+        ]
+        if _uploaded_file_ids:
+            _merged = list(request.ref_file_ids or [])
+            for _fid in _uploaded_file_ids:
+                if _fid not in _merged:
+                    _merged.append(_fid)
+            request.ref_file_ids = _merged
+            logger.info("Attaching %d uploaded file(s) to request: %s", len(_uploaded_file_ids), _uploaded_file_ids)
     if not request.stream and scraper_enabled:
         result = await scraper_service.chat(
             message=api_message,
@@ -934,20 +952,24 @@ async def chat(request: ChatRequest):
     except Exception:
         pass
     # Build system instruction for token counting (includes persona + tools schema)
+    # Agent sub-chats override the system prompt entirely (no Maria persona)
     _system_instruction_for_tokens = ""
-    try:
-        from connectors.common.instruction_builder import build_instructions
-        _system_instruction_for_tokens = build_instructions(project_id=_project_id)
-    except Exception:
-        pass
+    if request.system_prompt:
+        _system_instruction_for_tokens = request.system_prompt
+    else:
+        try:
+            from connectors.common.instruction_builder import build_instructions
+            _system_instruction_for_tokens = build_instructions(project_id=_project_id)
+        except Exception:
+            pass
     if not request.stream and _is_api_model(request.model):
         # _backend already resolved above at file resolution stage
         _api_backend = _backend or _resolve_api_backend(request.model)
         _connector = get_connector(_api_backend, model_id=request.model)
         _cfg = get_model_config(request.model)
         _api_model = _cfg.get("api_model_type", _cfg["id"])
-        # DeepSeek Vision ephemeral: one-shot side request, no session continuity
-        _ephemeral = (_api_backend == "deepseek" and _api_model == "vision" and bool(request.ref_file_ids))
+        # ponytail: DeepSeek unified — no separate vision model, no ephemeral mode needed
+        _ephemeral = False
         # Collect local file paths for direct-read backends (base64 inline)
         _inline_files = None
         if _api_backend in _DIRECT_READ_BACKENDS and resolved_files:
@@ -1090,8 +1112,25 @@ async def chat(request: ChatRequest):
             # Block auto-turn from firing while main stream is active
             from engine.agents.auto_turn import auto_turn as _at_busy
             _at_busy.mark_stream_busy(active_chat_id)
+            _agent_run = None
+            _agent_killed = False  # Set True on CancelledError to prevent finally from marking completed
+            if "-agent-" in active_chat_id:
+                try:
+                    from engine.agents import get_runtime
+                    from server.database import update_agent_status
+                    _agent_run = get_runtime().get_agent(active_chat_id)
+                    if _agent_run:
+                        _agent_run.mark_running()
+                        update_agent_status(active_chat_id, "running")
+                except Exception:
+                    _agent_run = None
+
+            # Teacher escalation state — set inside sync _dispatch_events,
+            # consumed in async context after dispatch completes.
+            _pending_teacher_escalation: dict[str, Any] = {"needed": False}
 
             while True:
+                _pending_teacher_escalation = {"needed": False}  # Reset each round
                 round_skill_events: list[dict[str, Any]] = []
                 round_thinking_parts: list[str] = []
                 round_answer_parts: list[str] = []
@@ -1154,15 +1193,42 @@ async def chat(request: ChatRequest):
                                 round_skill_events.append({"type": "skill_end", "name": "chat_title", "ok": True, "id": _ct_id, "duration_ms": 0})
                                 continue
 
+                            # Subagent spawn: intercept before engine.process_tag so raw XML
+                            # never leaks into the chat as visible text. The handler yields
+                            # agent_start / agent_trigger / skill_end events directly.
+                            if item["name"] == "spawn_agent":
+                                _sa_id = str(uuid.uuid4())[:12]
+                                round_skill_events.append({"type": "skill_start", "name": "spawn_agent", "id": _sa_id})
+                                yield sse({"type": "skill_start", "name": "spawn_agent", "id": _sa_id})
+                                for ev in engine.process_tag(
+                                    item["name"], item.get("attrs", {}), item.get("content", ""),
+                                    chat_id=active_chat_id,
+                                    cwd=request.cwd,
+                                ):
+                                    if ev.get("type") in ("skill_start", "skill_output", "skill_end"):
+                                        round_skill_events.append(ev)
+                                    yield sse(ev)
+                                continue
+
                             # Chat mode: block all tools except web_search/online_search/chat_title
                             if _layout_mode == "chat" and item["name"] not in (
-                                "online_search", "web_search", "web_fetch", "chat_title",
+                                "online_search", "chat_title",
                             ):
                                 _cm_id = str(uuid.uuid4())[:12]
                                 _cm_err = f"[Chat mode] Tool '{item['name']}' is disabled. Only web search is available."
                                 round_skill_events.append({"type": "skill_start", "name": item["name"], "id": _cm_id})
                                 round_skill_events.append({"type": "skill_end", "name": item["name"], "ok": False, "error": _cm_err, "id": _cm_id})
                                 yield sse({"type": "skill_end", "name": item["name"], "ok": False, "error": _cm_err, "id": _cm_id})
+                                continue
+
+                            # Subagent guard: block interactive/multiagent tools
+                            _SUBAGENT_BLOCKED = frozenset({"ask_user", "multi_agent", "spawn_agent"})
+                            if "-agent-" in str(active_chat_id) and item["name"] in _SUBAGENT_BLOCKED:
+                                _sa_block_id = str(uuid.uuid4())[:12]
+                                _sa_err = f"[GUARD] Tool '{item['name']}' is blocked for subagents. Subagents cannot prompt users or spawn nested agents."
+                                round_skill_events.append({"type": "skill_start", "name": item["name"], "id": _sa_block_id})
+                                round_skill_events.append({"type": "skill_end", "name": item["name"], "ok": False, "error": _sa_err, "id": _sa_block_id})
+                                yield sse({"type": "skill_end", "name": item["name"], "ok": False, "error": _sa_err, "id": _sa_block_id})
                                 continue
 
                             # Track command for loop detection (legacy MainChatGuard)
@@ -1190,6 +1256,17 @@ async def chat(request: ChatRequest):
                                     _decision.recovery_key,
                                     original_task=api_message or "",
                                 )
+
+                                # Flag for teacher escalation — collected here (sync),
+                                # executed after _dispatch_events returns (async context).
+                                if _agent_run:
+                                    _pending_teacher_escalation["needed"] = True
+                                    _pending_teacher_escalation["tool_name"] = item["name"]
+                                    _pending_teacher_escalation["reason"] = (
+                                        _decision.message or "repeated failures"
+                                    )
+                                    _pending_teacher_escalation["recovery_prompt"] = _recovery_prompt
+
                                 # Block this tool and all remaining tools this round
                                 _lp_id = str(uuid.uuid4())[:12]
                                 round_skill_events.append({"type": "skill_start", "name": item["name"], "id": _lp_id})
@@ -1329,7 +1406,8 @@ async def chat(request: ChatRequest):
                     _connector = get_connector(_api_backend, model_id=request.model)
                     _cfg = get_model_config(request.model)
                     _api_model = _cfg.get("api_model_type", _cfg["id"])
-                    _ephemeral = (_api_backend == "deepseek" and _api_model == "vision" and bool(request.ref_file_ids))
+                    # ponytail: DeepSeek unified — no separate vision model
+                    _ephemeral = False
                     # Collect local file paths for direct-read backends
                     _inline_files = None
                     if _api_backend in _DIRECT_READ_BACKENDS and round_index == 0 and resolved_files:
@@ -1365,7 +1443,11 @@ async def chat(request: ChatRequest):
                         inject_instructions=not _ephemeral,
                         project_id=_project_id,
                         db_history=_db_history_s,
+                        layout_mode=_layout_mode,
                     )
+                    # Agent sub-chats override system prompt (skip Maria persona)
+                    if request.system_prompt:
+                        _stream_kwargs["system_instruction"] = request.system_prompt
                     if _api_backend == "local":
                         _stream_kwargs["model_id"] = request.model
                     if _max_session_chars_stream:
@@ -1443,8 +1525,11 @@ async def chat(request: ChatRequest):
                         )
                     except Exception:
                         _round_prompt_tokens = 0
+                    _scraper_msg = current_message
+                    if request.system_prompt and "-agent-" in str(active_chat_id):
+                        _scraper_msg = f"[SYSTEM INSTRUCTION]\n{request.system_prompt}\n\n[USER MESSAGE]\n{current_message}"
                     round_event_source = scraper_service.stream_events(
-                        message=current_message,
+                        message=_scraper_msg,
                         chat_id=active_chat_id,
                         parent_id=current_parent,
                         files=files_for_round,
@@ -1471,17 +1556,24 @@ async def chat(request: ChatRequest):
                         )
                     except Exception:
                         _round_prompt_tokens = 0
-                    round_event_source = retry_stream(
-                        lambda: service.stream_events(
-                            message=current_message,
-                            chat_id=_qwen_chat_id,
-                            parent_id=current_parent,
-                            files=files_for_round,
-                            model=request.model,
-                            thinking_mode=request.thinking_mode,
-                            bdd=bdd,
-                        ),
-                        label=f"stream_round_{round_index}",
+                    # ponytail: removed retry_stream wrapper — _stream_request() already
+                    # retries 3× internally, and the outer main-stream loop handles
+                    # timeout-based reconnection. Triple-nesting caused 9-27 HTTP calls
+                    # per user message.
+                    _qwen_msg = current_message
+                    # Agent sub-chats override system prompt (skip Maria persona).
+                    # Qwen manages system prompts server-side via sync_context, so we
+                    # inject the agent's system prompt directly into the message payload.
+                    if request.system_prompt and "-agent-" in str(active_chat_id):
+                        _qwen_msg = f"[SYSTEM INSTRUCTION]\n{request.system_prompt}\n\n[USER MESSAGE]\n{current_message}"
+                    round_event_source = service.stream_events(
+                        message=_qwen_msg,
+                        chat_id=_qwen_chat_id,
+                        parent_id=current_parent,
+                        files=files_for_round,
+                        model=request.model,
+                        thinking_mode=request.thinking_mode,
+                        bdd=bdd,
                     )
                 # --- Chunk timeout for main stream ---
                 # NOTE: first-chunk timeout starts AFTER "request_sent" sentinel,
@@ -1553,17 +1645,15 @@ async def chat(request: ChatRequest):
                                         await service._ensure_headers(bdd)
                                     except Exception as _retry_exc:
                                         logger.warning("[main-stream] Retry refresh failed: %s", _retry_exc)
-                                    round_event_source = retry_stream(
-                                        lambda: service.stream_events(
-                                            message=current_message,
-                                            chat_id=_qwen_chat_id,
-                                            parent_id=current_parent,
-                                            files=files_for_round,
-                                            model=request.model,
-                                            thinking_mode=request.thinking_mode,
-                                            bdd=bdd,
-                                        ),
-                                        label=f"stream_round_{round_index}_retry{_main_timeout_retries}",
+                                    # ponytail: removed retry_stream wrapper (see L1475)
+                                    round_event_source = service.stream_events(
+                                        message=current_message,
+                                        chat_id=_qwen_chat_id,
+                                        parent_id=current_parent,
+                                        files=files_for_round,
+                                        model=request.model,
+                                        thinking_mode=request.thinking_mode,
+                                        bdd=bdd,
                                     )
                                 _main_iter = round_event_source.__aiter__()
                                 _main_got_first = False
@@ -1597,17 +1687,15 @@ async def chat(request: ChatRequest):
                                         await service._ensure_headers(bdd)
                                     except Exception as _retry_exc:
                                         logger.warning("[main-stream] Stall-retry refresh failed: %s", _retry_exc)
-                                    round_event_source = retry_stream(
-                                        lambda: service.stream_events(
-                                            message=current_message,
-                                            chat_id=_qwen_chat_id,
-                                            parent_id=current_parent,
-                                            files=files_for_round,
-                                            model=request.model,
-                                            thinking_mode=request.thinking_mode,
-                                            bdd=bdd,
-                                        ),
-                                        label=f"stream_round_{round_index}_stall_retry{_main_stall_retries}",
+                                    # ponytail: removed retry_stream wrapper (see L1475)
+                                    round_event_source = service.stream_events(
+                                        message=current_message,
+                                        chat_id=_qwen_chat_id,
+                                        parent_id=current_parent,
+                                        files=files_for_round,
+                                        model=request.model,
+                                        thinking_mode=request.thinking_mode,
+                                        bdd=bdd,
                                     )
                                 _main_iter = round_event_source.__aiter__()
                                 _main_got_first = False
@@ -1642,17 +1730,15 @@ async def chat(request: ChatRequest):
                                         await service._ensure_headers(bdd)
                                     except Exception as _retry_exc:
                                         logger.warning("[main-stream] Empty-response retry refresh failed: %s", _retry_exc)
-                                    round_event_source = retry_stream(
-                                        lambda: service.stream_events(
-                                            message=current_message,
-                                            chat_id=_qwen_chat_id,
-                                            parent_id=current_parent,
-                                            files=files_for_round,
-                                            model=request.model,
-                                            thinking_mode=request.thinking_mode,
-                                            bdd=bdd,
-                                        ),
-                                        label=f"stream_round_{round_index}_empty_retry{_empty_response_retries}",
+                                    # ponytail: removed retry_stream wrapper (see L1475)
+                                    round_event_source = service.stream_events(
+                                        message=current_message,
+                                        chat_id=_qwen_chat_id,
+                                        parent_id=current_parent,
+                                        files=files_for_round,
+                                        model=request.model,
+                                        thinking_mode=request.thinking_mode,
+                                        bdd=bdd,
                                     )
                                 _main_iter = round_event_source.__aiter__()
                                 _main_got_first = False
@@ -1660,7 +1746,7 @@ async def chat(request: ChatRequest):
                                 continue  # restart inner while with new stream
                             else:
                                 # All empty-response retries exhausted
-                                if _auto_switch_enabled() and not _is_api_model(request.model):
+                                if _auto_switch_enabled("qwen") and not _is_api_model(request.model):
                                     # Auto-switch ON → escalate to account switching
                                     print(f"[MAIN-STREAM]   ✗ ALL {_EMPTY_RESPONSE_MAX_RETRIES} EMPTY-RESPONSE RETRIES EXHAUSTED — triggering auto-switch")
                                     logger.warning("[main-stream] All %d empty-response retries exhausted for chat %s, escalating to auto-switch",
@@ -1705,6 +1791,20 @@ async def chat(request: ChatRequest):
                         round_thinking_parts.append(chunk)
                         pending_thinking.append(chunk)
                         yield sse({"type": "thinking", "text": chunk})
+                        continue
+                    if event_type == "token_rotation":
+                        # DeepSeek token rotation — forward as status to frontend
+                        _rot_reason = event.get("reason", "unknown")
+                        _rot_from = event.get("from_token", "?")
+                        _rot_to = event.get("to_token", "?")
+                        _rot_total = event.get("total_tokens", 0)
+                        logger.info("[deepseek-rotation] %s → %s (reason: %s, pool: %d)",
+                                    _rot_from, _rot_to, _rot_reason, _rot_total)
+                        yield sse({"type": "status", "message": f"Rotating DeepSeek token ({_rot_reason})... [{event.get('to_index', '?')}/{_rot_total}]"})
+                        continue
+                    if event_type == "status":
+                        # Per-token retry status from DeepSeek connector
+                        yield sse(event)
                         continue
                     elif event_type == "done":
                         pending_thinking.clear()
@@ -1900,17 +2000,15 @@ async def chat(request: ChatRequest):
                                     await service._ensure_headers(bdd)
                                 except Exception as _cip_exc:
                                     logger.warning("[main-stream] Chat-in-progress retry refresh failed: %s", _cip_exc)
-                                round_event_source = retry_stream(
-                                    lambda: service.stream_events(
-                                        message=current_message,
-                                        chat_id=_qwen_chat_id,
-                                        parent_id=current_parent,
-                                        files=files_for_round,
-                                        model=request.model,
-                                        thinking_mode=request.thinking_mode,
-                                        bdd=bdd,
-                                    ),
-                                    label=f"stream_round_{round_index}_cip_retry{_cip_retry}",
+                                # ponytail: removed retry_stream wrapper (see L1475)
+                                round_event_source = service.stream_events(
+                                    message=current_message,
+                                    chat_id=_qwen_chat_id,
+                                    parent_id=current_parent,
+                                    files=files_for_round,
+                                    model=request.model,
+                                    thinking_mode=request.thinking_mode,
+                                    bdd=bdd,
                                 )
                                 _main_iter = round_event_source.__aiter__()
                                 _main_got_first = False
@@ -2002,7 +2100,7 @@ async def chat(request: ChatRequest):
                     if event_type in ("rate_limited", "waf_blocked", "empty_exhausted") and not _is_qwen_stream:
                         # Non-Qwen backend hit rate-limit/WAF — just report error, don't switch accounts
                         stream_error = True
-                    elif event_type in ("rate_limited", "waf_blocked", "empty_exhausted") and _is_qwen_stream and _auto_switch_enabled():
+                    elif event_type in ("rate_limited", "waf_blocked", "empty_exhausted") and _is_qwen_stream and _auto_switch_enabled("qwen"):
                         print(f"[AUTO-SWITCH] ▶ TRIGGERED by {event_type} — msg={str(event.get('message',''))[:100]}")
                         pending_thinking.clear()
                         async for _sse_line in _drain_sync_gen(emit_flush()):
@@ -2362,7 +2460,100 @@ async def chat(request: ChatRequest):
                         )
                         if _incomplete_warn:
                             _guard_warnings.append(_incomplete_warn)
+                # ponytail: if the only tools this round were chat_title and the model
+                # already sent real answer text, don't inject [chat_title] OK back —
+                # the model doesn't need a confirmation nudge when it's already talking.
+                _only_chat_title = (
+                    bool(round_skill_events)
+                    and all(
+                        _ev.get("name") == "chat_title"
+                        for _ev in round_skill_events
+                        if _ev.get("type") == "skill_end"
+                    )
+                )
+                _has_answer_text = bool("".join(round_answer_parts).strip())
+                if _only_chat_title and _has_answer_text:
+                    round_skill_events.clear()
+
                 feedback = build_tool_feedback(round_skill_events)
+
+                # --- Teacher escalation for stuck subagents (async, after dispatch) ---
+                # _dispatch_events flagged a guardrail recovery; now we can await the
+                # parent chat's guidance from this async context.
+                if _pending_teacher_escalation.get("needed") and _agent_run:
+                    try:
+                        from engine.config import AGENT_CONFIG_PATH as _tcp
+                        import json as _json
+                        _tcfg = {}
+                        try:
+                            _tcfg = _json.loads(_tcp.read_text(encoding="utf-8")).get("teacher", {})
+                        except Exception:
+                            pass
+                        _teacher_on = _tcfg.get("enabled", True)
+                        _max_interventions = 2
+                        if _teacher_on and _agent_run.teacher_interventions < _max_interventions:
+                            from engine.agents.auto_turn import auto_turn as _at
+                            _parent_cid = _agent_run.chat_id
+                            if _parent_cid:
+                                _stuck_reason = (
+                                    f"Guardrail recovery on "
+                                    f"'{_pending_teacher_escalation.get('tool_name', '?')}': "
+                                    f"{_pending_teacher_escalation.get('reason', 'repeated failures')}"
+                                )
+                                _recent_msgs = []
+                                if hasattr(_agent_run, "messages"):
+                                    _recent_msgs = (
+                                        _agent_run.messages[-6:]
+                                        if len(_agent_run.messages) > 6
+                                        else list(_agent_run.messages)
+                                    )
+                                logger.info(
+                                    "[agent %s] requesting teacher escalation (%d/%d)",
+                                    _agent_run.id,
+                                    _agent_run.teacher_interventions + 1,
+                                    _max_interventions,
+                                )
+                                yield sse({"type": "status", "message": "requesting_teacher_guidance"})
+                                _guidance = await _at.request_teacher_guidance(
+                                    chat_id=_parent_cid,
+                                    agent_id=_agent_run.id,
+                                    role=_agent_run.role,
+                                    task=_agent_run.task,
+                                    stuck_reason=_stuck_reason,
+                                    context=_agent_run.context,
+                                    recent_messages=_recent_msgs,
+                                )
+                                if _guidance:
+                                    _agent_run.teacher_interventions += 1
+                                    _teacher_block = (
+                                        f"[TEACHER GUIDANCE — Intervention "
+                                        f"{_agent_run.teacher_interventions}/{_max_interventions}]\n"
+                                        f"{_guidance}\n[END TEACHER GUIDANCE]"
+                                    )
+                                    feedback = (_teacher_block + "\n\n" + feedback) if feedback else _teacher_block
+                                    logger.info(
+                                        "[agent %s] teacher guidance injected (%d chars)",
+                                        _agent_run.id, len(_guidance),
+                                    )
+                                else:
+                                    logger.info(
+                                        "[agent %s] teacher guidance not received (timeout/unavailable)",
+                                        _agent_run.id,
+                                    )
+                        else:
+                            if not _teacher_on:
+                                logger.info("[agent %s] teacher escalation disabled in config", _agent_run.id)
+                            else:
+                                logger.info(
+                                    "[agent %s] max teacher interventions reached (%d)",
+                                    _agent_run.id, _agent_run.teacher_interventions,
+                                )
+                    except Exception as _te_exc:
+                        logger.warning(
+                            "[agent %s] teacher escalation failed: %s",
+                            _agent_run.id if _agent_run else "?", _te_exc,
+                        )
+
                 # --- Critique report injection: prepend prominently so model acts on it ---
                 _critique_reports: list[str] = []
                 for _ev in round_skill_events:
@@ -2394,7 +2585,7 @@ async def chat(request: ChatRequest):
                         if _res.get("kind") == "image" and _res.get("path"):
                             _pending_skill_images.append(_res["path"])
                 # Truncate oversized tool output to protect context window
-                from engine.agents.loop import _get_max_tool_output_chars
+                from engine.config import get_max_tool_output_chars as _get_max_tool_output_chars
                 from engine.skills.events import middle_truncate
                 _tool_cap = _get_max_tool_output_chars()
                 if feedback and len(feedback) > _tool_cap:
@@ -2404,6 +2595,46 @@ async def chat(request: ChatRequest):
                 if not feedback and _guard_warnings:
                     feedback = "\n\n".join(_guard_warnings)
                     _guard_warnings_injected = True
+                # Output format validation for subagents: check required_sections.
+                # Runs independent of tool feedback — a subagent's final answer must
+                # satisfy its role's required_sections regardless of whether it also
+                # called tools this round. (Previously gated behind `not feedback`,
+                # which silently skipped validation whenever any tool ran.)
+                if _agent_run and not stream_error and not error_message:
+                    try:
+                        from engine.agents.registry import get_role_config as _grc
+                        _rcfg = _grc(_agent_run.role)
+                        _req = _rcfg.required_sections
+                        if _req:
+                            _round_text = "".join(round_answer_parts)
+                            _found = sum(1 for s in _req if s.lower() in _round_text.lower())
+                            _threshold = len(_req) * 0.5
+                            if _found < _threshold:
+                                _missing = [s for s in _req if s.lower() not in _round_text.lower()]
+                                _fmt_error = (
+                                    f"[FORMAT ERROR] Your output is missing required sections. "
+                                    f"Found {_found}/{len(_req)} required headers (need ≥{int(_threshold)}).\n"
+                                    f"Missing: {', '.join(_missing)}\n\n"
+                                    f"Your response MUST include these section headers:\n"
+                                    + "\n".join(f"## {s}" for s in _req)
+                                    + "\n\nRegenerate your full response using the correct output format."
+                                )
+                                # Surface it as a user-visible skill event so the
+                                # format correction is observable in the chat, not
+                                # just injected into the model's next-round context.
+                                # Appended to round_skill_events (same pattern as
+                                # _loop_warning) so it is streamed + persisted once.
+                                _fmt_err_id = f"fmt_err_{round_index}"
+                                round_skill_events.append({"type": "skill_start", "name": "format_error", "id": _fmt_err_id})
+                                round_skill_events.append({"type": "skill_output", "name": "format_error", "text": _fmt_error, "id": _fmt_err_id})
+                                round_skill_events.append({"type": "skill_end", "name": "format_error", "ok": False, "error": _fmt_error, "id": _fmt_err_id})
+                                feedback = (feedback + "\n\n" + _fmt_error) if feedback else _fmt_error
+                                logger.info(
+                                    "[agent %s] format validation failed: %d/%d sections found, injecting correction",
+                                    active_chat_id, _found, len(_req),
+                                )
+                    except Exception:
+                        pass
                 if stream_error or error_message or not feedback or _ask_user_pause or _permission_pause or _cwd_pause:
                     break
 
@@ -2504,6 +2735,22 @@ async def chat(request: ChatRequest):
                     await _svc._stop_upstream_generation(active_chat_id, final_parent)
             except Exception:
                 pass
+            # Mark agent as killed so the finally block doesn't overwrite with "completed"
+            _agent_killed = True
+            if _agent_run:
+                try:
+                    from server.database import update_agent_status as _uas
+                    _agent_run.mark_failed("Stopped by user")
+                    _uas(active_chat_id, "killed", error="Stopped by user")
+                    # Broadcast so topbar card updates even if user switched chats
+                    from server.api.routes.agents import broadcast_agent_event as _bae
+                    _bae({
+                        "type": "agent_failed",
+                        "agent_id": active_chat_id,
+                        "data": {"role": _agent_run.role, "error": "Stopped by user"},
+                    })
+                except Exception:
+                    pass
             raise  # re-raise so Starlette cleans up properly
         except Exception as exc:
             error_message = f"{type(exc).__name__}: {exc}"
@@ -2531,6 +2778,77 @@ async def chat(request: ChatRequest):
             else:
                 add_message(active_chat_id, "assistant", stored_content, thinking, final_parent, skill_events)
             touch_chat(active_chat_id, final_parent)
+            if _agent_run and not _agent_killed:
+                from server.database import update_agent_status
+                if error_message:
+                    _agent_run.mark_failed(error_message)
+                    update_agent_status(active_chat_id, "failed", error=error_message)
+                else:
+                    _agent_run.mark_completed(answer)
+                    update_agent_status(active_chat_id, "completed", result=answer)
+                # Push completion/failure to parent chat's notification queue
+                # and signal the frontend to start an auto-turn so Maria sees it
+                try:
+                    from engine.agents.notifications import notification_queue as _nq
+                    from engine.agents.protocol import AgentEvent
+                    from server.api.routes.agents import push_agent_event as _push_ae
+                    from server.api.routes.agents import broadcast_agent_event as _broadcast_ae
+                    _parent_chat_id = _agent_run.chat_id or final_parent
+                    _nq.push(_parent_chat_id, AgentEvent(
+                        type="agent_completed" if not error_message else "agent_failed",
+                        agent_id=_agent_run.id,
+                        data={
+                            "role": _agent_run.role,
+                            "result": answer if not error_message else None,
+                            "summary": answer[:500] if not error_message else None,
+                            "error": error_message or None,
+                            "skills_used": _agent_run.skills_used,
+                            "words": _agent_run.word_count,
+                            "duration": _agent_run.duration,
+                        },
+                    ))
+                    # Build a rich auto-turn message with the full agent result
+                    # so Maria sees the complete response, not just a one-liner
+                    if error_message:
+                        _turn_msg = (
+                            f"[Agent {_agent_run.id} ({_agent_run.role}) FAILED]\n\n"
+                            f"Error: {error_message}\n\n"
+                            f"Acknowledge this failure and take any necessary follow-up action."
+                        )
+                    else:
+                        _turn_msg = (
+                            f"[Agent {_agent_run.id} ({_agent_run.role}) COMPLETED]\n\n"
+                            f"{answer}\n\n"
+                            f"---\n*Skills used: {', '.join(_agent_run.skills_used) or 'none'} | "
+                            f"Words: {_agent_run.word_count} | Duration: {_agent_run.duration:.1f}s*"
+                        )
+                    _trigger_ev = {
+                        "type": "auto_turn_trigger",
+                        "agent_id": _agent_run.id,
+                        "data": {
+                            "message": _turn_msg,
+                            "parent_chat_id": _parent_chat_id,
+                        },
+                    }
+                    # Push to parent chat's SSE queue (for when user is viewing it)
+                    _push_ae(_parent_chat_id, _trigger_ev)
+                    # Broadcast auto_turn_trigger to all other connected SSE clients
+                    # so the notification isn't lost if user switched to a different chat
+                    _broadcast_ae(_trigger_ev, exclude_chat_id=_parent_chat_id)
+                    # Also broadcast agent_completed/failed so the topbar card
+                    # gets cleaned up regardless of which chat the user is viewing
+                    _status_ev = {
+                        "type": "agent_completed" if not error_message else "agent_failed",
+                        "agent_id": _agent_run.id,
+                        "data": {
+                            "role": _agent_run.role,
+                            "summary": answer[:500] if not error_message else None,
+                            "error": error_message or None,
+                        },
+                    }
+                    _broadcast_ae(_status_ev)
+                except Exception:
+                    pass
             # Release auto-turn lock — drains any queued agent results
             try:
                 from engine.agents.auto_turn import auto_turn as _at_done

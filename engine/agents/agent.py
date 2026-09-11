@@ -14,95 +14,9 @@ from engine.agents.protocol import AgentStatus
 _STREAM_HISTORY_SIZE = 300
 
 
-# ---------------------------------------------------------------------------
-# Todo system — structured task tracking for spawned agents
-# ---------------------------------------------------------------------------
-
-@dataclass
-class TodoItem:
-    """A single task in an agent's execution plan."""
-    id: int
-    content: str
-    status: str = "pending"  # pending | in_progress | completed | skipped
-    result: str | None = None
-    subtasks: list[str] = field(default_factory=list)
-
-
-@dataclass
-class AgentTodoList:
-    """Ordered task list attached to an agent. System-managed progression."""
-    todos: list[TodoItem] = field(default_factory=list)
-    current_index: int = 0
-    skip_reasons: list[tuple[int, str]] = field(default_factory=list)  # (todo_id, reason)
-
-    @property
-    def current(self) -> TodoItem | None:
-        if 0 <= self.current_index < len(self.todos):
-            return self.todos[self.current_index]
-        return None
-
-    @property
-    def all_done(self) -> bool:
-        return self.current_index >= len(self.todos) or len(self.todos) == 0
-
-    @classmethod
-    def build_from_list(cls, items: list[str]) -> "AgentTodoList":
-        """Create a todo list from plain strings. First item starts in_progress."""
-        todos = [
-            TodoItem(id=i + 1, content=t.strip(), status="pending")
-            for i, t in enumerate(items)
-            if t.strip()
-        ]
-        if todos:
-            todos[0].status = "in_progress"
-        return cls(todos=todos)
-
-    @property
-    def progress(self) -> str:
-        done = sum(1 for t in self.todos if t.status == "completed")
-        return f"{done}/{len(self.todos)}"
-
-    def advance(self) -> TodoItem | None:
-        """Mark current as completed (unless skipped), move to next. Returns new current or None."""
-        if self.current and self.current.status != "skipped":
-            self.current.status = "completed"
-        self.current_index += 1
-        # Auto-skip: advance past any skipped items
-        while self.current and self.current.status == "skipped":
-            self.current_index += 1
-        nxt = self.current
-        if nxt and nxt.status == "pending":
-            nxt.status = "in_progress"
-        return nxt
-
-    def skip_current_and_advance(self) -> TodoItem | None:
-        """Mark current as skipped and move to next non-skipped item."""
-        if self.current:
-            self.current.status = "skipped"
-        self.current_index += 1
-        while self.current and self.current.status == "skipped":
-            self.current_index += 1
-        nxt = self.current
-        if nxt and nxt.status == "pending":
-            nxt.status = "in_progress"
-        return nxt
-
-    def format_state(self) -> str:
-        """Minimal state block for per-iteration injection. No rules — just facts."""
-        if not self.todos:
-            return ""
-        done = sum(1 for t in self.todos if t.status in ("completed", "skipped"))
-        total = len(self.todos)
-        current = self.current
-        if self.all_done:
-            return f"[TODO] All {total} tasks complete ({done}/{total}). Provide your final answer."
-        line = f"[TODO] Progress: {done}/{total} | Current: {current.content}" if current else f"[TODO] Progress: {done}/{total}"
-        return line
-
-
 @dataclass
 class Agent:
-    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    id: str = field(default_factory=lambda: f"{uuid.uuid4().hex[:8]}-agent-{uuid.uuid4().hex[:4]}")
     role: str = "researcher"
     task: str = ""
     context: str | None = None
@@ -127,7 +41,6 @@ class Agent:
     cancelled: bool = False  # Set by kill() — checked between tool calls
     system_prompt: str | None = None  # Built skill registry + output format for API backends
     allowed_tool_groups: list[str] = field(default_factory=list)  # Tool group keys for native tool passing
-    todos: AgentTodoList | None = None  # Structured task plan (None = simple task, no tracking)
     teacher_interventions: int = 0  # How many times the teacher has intervened
     model_chain: list[str] = field(default_factory=list)  # Fallback models from role config
     _fallback_index: int = 0  # Current position in model_chain (0 = primary model)

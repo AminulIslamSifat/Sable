@@ -59,8 +59,6 @@ KNOWN_TAGS = (
     "spawn_agent",
     "agent_status",
     "kill_agent",
-    "todo_complete",
-    "todo_skip",
     "ask_user",
     "grep",
     "glob",
@@ -73,6 +71,7 @@ KNOWN_TAGS = (
     "chat_title",
     "computer_use",
     "load_tool",
+    "teacher_guidance",
 )
 
 # Params that map to the content field for handler compatibility.
@@ -475,13 +474,16 @@ class SkillParser:
                         _inner = _block_content[_xml_open_m.end() - _xml_open_m.start():_close_m.start() - _xml_open_m.start()].strip() if len(_block_content) > (_xml_open_m.end() - _xml_open_m.start()) else ""
                         _inner_stripped = _block_content[len(_xml_open_m.group()):].lstrip()
                         _is_json_in_legacy = (not _is_dsml and _inner_stripped and _inner_stripped[0] in ('{', '['))
+                        # Guard: if text before the DSML block contains <action> tags,
+                        # process those first via the Hermes handler below. Otherwise
+                        # the entire _before_xml (including action tags) gets yielded as prose.
+                        _action_before_dsml = self._ACTION_OPEN.search(_before_xml)
                         if _is_json_in_legacy:
                             _plog(f"LEGACY_BLOCK_WITH_JSON: skipping XML extraction, falling through to Hermes handler")
-                            # Don't consume — let the Hermes _ACTION_OPEN handler below pick it up
-                            # But we need to avoid infinite loop: the legacy regex matches same position.
-                            # Solution: strip the legacy open tag and replace with _ACTION_OPEN-compatible form
-                            # Actually simpler: just don't enter this branch. Remove legacy match so Hermes gets it.
                             _xml_open_m = None  # force fallthrough
+                        elif _action_before_dsml:
+                            _plog(f"ACTION_BEFORE_DSML: deferring DSML, processing action tags first")
+                            _xml_open_m = None  # force fallthrough to Hermes handler
                         else:
                             if _before_xml.strip():
                                 yield {"type": "text", "text": _before_xml}

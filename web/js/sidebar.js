@@ -1,4 +1,6 @@
-        async function renderChats() {
+        let _renderChatsToken = 0;
+    async function renderChats() {
+      const token = ++_renderChatsToken;
       chatsEl.innerHTML = '';
       chatsEl.classList.remove('has-project-banner');
 
@@ -43,6 +45,7 @@
       }
       // ── Project folder / banner at top of chat list ──
       await loadProjects();
+      if (token !== _renderChatsToken) return; // stale call, newer render started
       // Show/hide project menu button based on active project
       const projectMenuBtn = document.getElementById('projectMenuBtn');
       if (projectMenuBtn) projectMenuBtn.style.display = activeProjectId ? '' : 'none';
@@ -99,8 +102,19 @@
         const titleSpan = document.createElement("span");
         titleSpan.textContent = chat.title || "New chat";
         btn.appendChild(titleSpan);
+        // Show running indicator for agent chats that are actively streaming
+        const _isRunning = activeStreams.has(chat.id) ||
+          (typeof _activeAgentControllers !== "undefined" && _activeAgentControllers.has(chat.id));
+        if (_isRunning) {
+          row.classList.add("streaming");
+          if (chat.mode === 'agent') {
+            const dot = document.createElement("span");
+            dot.className = "agent-running-dot";
+            dot.title = "Agent running";
+            btn.appendChild(dot);
+          }
+        }
         btn.onclick = () => selectChat(chat.id);
-        if (activeStreams.has(chat.id)) row.classList.add("streaming");
         const del = document.createElement("button");
         del.className = "chat-delete";
         del.textContent = "×";

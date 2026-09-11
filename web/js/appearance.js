@@ -1,4 +1,24 @@
-    // ---------- Account Profile Switcher ----------
+    // ---------- Safe Clipboard Copy (works on non-HTTPS / Windows HTTP) ----------
+window.safeCopy = async function(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+  // Fallback for non-secure contexts (e.g. http://192.168.x.x on Windows)
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch {}
+  document.body.removeChild(ta);
+  return ok;
+};
+
+// ---------- Account Profile Switcher ----------
     const accountProfileCards = document.getElementById("accountProfileCards");
     const refreshAccountsBtn = document.getElementById("refreshAccountsBtn");
     const addAccountBrowserSelect = document.getElementById("addAccountBrowserSelect");
@@ -28,277 +48,341 @@
     window.loadAvailableBrowsers = loadAvailableBrowsers;
     window.loadAccountProfiles = loadAccountProfiles;
 
+    // Track which provider is currently selected in the filter bar
+    let _activeProviderFilter = localStorage.getItem("sable_provider_filter") || "all";
+
+    // Helper: render a toggle switch HTML
+    function _renderToggle(id, enabled, labelText, descText) {
+      return `<div style="display:flex;align-items:center;justify-content:space-between;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:10px;">
+        <div style="min-width:0;">
+          <div style="font-size:12px;font-weight:600;color:var(--text);">${labelText}</div>
+          ${descText ? `<div style="font-size:11px;color:var(--text-dim);margin-top:2px;">${descText}</div>` : ''}
+        </div>
+        <label style="position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0;cursor:pointer;">
+          <input type="checkbox" id="${id}" ${enabled ? 'checked' : ''} style="opacity:0;width:0;height:0;">
+          <span style="position:absolute;inset:0;background:${enabled ? 'var(--accent)' : 'var(--border)'};border-radius:20px;transition:0.2s;"></span>
+          <span style="position:absolute;left:${enabled ? '18px' : '2px'};top:2px;width:16px;height:16px;background:#fff;border-radius:50%;transition:0.2s;"></span>
+        </label>
+      </div>`;
+    }
+
+    // Helper: bind toggle visual + API call
+    function _bindProviderToggle(toggleId, provider) {
+      const el = document.getElementById(toggleId);
+      if (!el) return;
+      el.addEventListener("change", async () => {
+        const enabled = el.checked;
+        const label = el.closest("label");
+        if (label) {
+          const bg = label.children[1], knob = label.children[2];
+          if (bg) bg.style.background = enabled ? "var(--accent)" : "var(--border)";
+          if (knob) knob.style.left = enabled ? "18px" : "2px";
+        }
+        try {
+          await fetch(`/api/settings/accounts/auto-switch-toggle/${provider}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled }),
+          });
+          showToast(enabled ? `✅ ${provider} auto-switch on` : `⏸️ ${provider} auto-switch off`, enabled ? "success" : "info");
+        } catch (e) {
+          showToast("Failed: " + e.message, "error");
+          el.checked = !enabled;
+          if (label) {
+            const bg = label.children[1], knob = label.children[2];
+            if (bg) bg.style.background = enabled ? "var(--border)" : "var(--accent)";
+            if (knob) knob.style.left = enabled ? "2px" : "18px";
+          }
+        }
+      });
+    }
+
+    // Helper: badge
+    const _badge = (txt, warn) => `<span style="font-size:10px;color:${warn ? 'var(--danger)' : 'var(--text-dim)'};border:1px solid ${warn ? 'var(--danger)' : 'var(--border)'};border-radius:4px;padding:1px 5px;">${txt}</span>`;
+
+    // Render browser account card (for Qwen/DeepSeek)
+    function _renderBrowserCard(acc, active) {
+      const isActive = acc.name === active;
+      const email = acc.label || acc.email || "unknown account";
+      const size = acc.size_mb ? acc.size_mb + " MB" : "";
+      const browserMissing = acc.browser_path && acc.browser_path !== 'default' && acc.browser_available === false;
+      const borderColor = browserMissing ? 'var(--danger)' : isActive ? '#4ade80' : 'var(--border)';
+      const hasBackup = acc.has_backup;
+      return `<div style="background:var(--panel);border:${isActive ? '2px' : '1px'} solid ${borderColor};border-radius:10px;padding:${isActive ? '13px 17px' : '14px 18px'};display:flex;flex-direction:column;gap:10px;">
+        <div style="min-width:0;">
+          <div style="font-size:13px;font-weight:600;color:var(--text);">${email}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:4px;display:flex;flex-wrap:wrap;align-items:center;gap:5px;">
+            <span>${acc.name}</span>
+            ${size ? `<span style="opacity:0.4;">·</span><span>${size}</span>` : ''}
+            ${isActive ? '<span style="color:var(--accent);">● active</span>' : ''}
+            ${acc.browser_label ? _badge(acc.browser_label + (browserMissing ? ' !' : ''), browserMissing) : ''}
+            ${acc.has_waf ? _badge('qwen') : ''}
+            ${acc.has_ds ? _badge('ds') : ''}
+            ${acc.exhausted ? _badge('exhausted', true) : ''}
+            ${acc.captcha_blocked ? _badge('captcha', true) : ''}
+            ${hasBackup ? _badge('backup') : ''}
+          </div>
+        </div>
+        <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:8px;">
+          <button class="icon-btn account-backup-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Backup</button>
+          ${hasBackup ? `<button class="icon-btn account-restore-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Restore</button>` : ''}
+          <button class="icon-btn account-rename-btn" data-profile="${acc.name}" data-current-label="${(acc.label || acc.email || '').replace(/"/g, '&quot;')}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Rename</button>
+          <button class="icon-btn account-open-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Open</button>
+          <div style="flex:1;"></div>
+          ${isActive ? '' : `<button class="icon-btn account-switch-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Switch</button>`}
+          ${isActive ? '' : `<button class="icon-btn account-delete-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;color:var(--danger);">Delete</button>`}
+        </div>
+      </div>`;
+    }
+
+    // Render API key card (for Gemini, Groq, etc.)
+    function _renderApiKeyCard(key, provider) {
+      const isActive = key.active;
+      const borderColor = isActive ? '#4ade80' : 'var(--border)';
+      const browserTag = key.browser_data
+        ? `<span style="background:var(--surface,#2a2a3e);color:var(--text-muted,#aaa);padding:1px 6px;border-radius:4px;font-size:10px;font-family:var(--font-mono);">🌐 ${key.browser_data}</span>`
+        : '';
+      return `<div style="background:var(--panel);border:${isActive ? '2px' : '1px'} solid ${borderColor};border-radius:10px;padding:${isActive ? '13px 17px' : '14px 18px'};display:flex;flex-direction:column;gap:10px;">
+        <div style="min-width:0;">
+          <div style="font-size:13px;font-weight:600;color:var(--text);font-family:var(--font-mono);">${key.masked}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:4px;display:flex;flex-wrap:wrap;align-items:center;gap:5px;">
+            <span>Key #${key.index}</span>
+            ${browserTag}
+            ${isActive ? '<span style="color:var(--accent);">● active</span>' : ''}
+          </div>
+        </div>
+        <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:8px;">
+          <button class="icon-btn apikey-copy-btn" data-masked="${key.masked}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Copy</button>
+          <div style="flex:1;"></div>
+          ${isActive ? '' : `<button class="icon-btn apikey-switch-btn" data-provider="${provider}" data-index="${key.index}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Switch</button>`}
+          <button class="icon-btn apikey-delete-btn" data-provider="${provider}" data-index="${key.index}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;color:var(--danger);">Delete</button>
+        </div>
+      </div>`;
+    }
+
+    // Bind all browser-account handlers (preserved from original)
+    function _bindBrowserHandlers() {
+      accountProfileCards.querySelectorAll(".account-switch-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const profile = btn.dataset.profile;
+          btn.disabled = true; btn.textContent = "Switching…";
+          showToast("🔄 Switching account profile…", "info");
+          try {
+            const res = await fetch("/api/settings/accounts/switch", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ profile }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) { showToast(`✅ Switched to ${data.email || profile}`, "success"); await Promise.all([loadAccountProfiles(), loadModels()]); }
+            else { showToast("Switch failed: " + (data.detail || "unknown"), "error"); btn.disabled = false; btn.textContent = "Switch"; }
+          } catch (e) { showToast("Switch error: " + e.message, "error"); btn.disabled = false; btn.textContent = "Switch"; }
+        });
+      });
+      accountProfileCards.querySelectorAll(".account-delete-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const profile = btn.dataset.profile;
+          if (!await sableConfirm(`Delete ${profile}?\n\nThis permanently removes the browser data directory.`, { danger: true })) return;
+          btn.disabled = true; btn.textContent = "Deleting…";
+          try {
+            const res = await fetch("/api/settings/accounts/delete", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile }) });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) { showToast(`🗑️ Deleted ${profile}`, "success"); await loadAccountProfiles(); }
+            else { showToast("Delete failed: " + (data.detail || "unknown"), "error"); btn.disabled = false; btn.textContent = "Delete"; }
+          } catch (e) { showToast("Delete error: " + e.message, "error"); btn.disabled = false; btn.textContent = "Delete"; }
+        });
+      });
+      accountProfileCards.querySelectorAll(".account-rename-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const profile = btn.dataset.profile, currentLabel = btn.dataset.currentLabel || "";
+          const newLabel = await sablePrompt("Display name for " + profile + ":", currentLabel);
+          if (newLabel === null) return;
+          btn.disabled = true; btn.textContent = "Saving…";
+          try {
+            const res = await fetch("/api/settings/accounts/rename", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile, label: newLabel }) });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) { showToast(newLabel ? `✅ Renamed to "${newLabel}"` : `✅ Cleared custom name`, "success"); await loadAccountProfiles(); }
+            else { showToast("Rename failed: " + (data.detail || "unknown"), "error"); btn.disabled = false; btn.textContent = "Rename"; }
+          } catch (e) { showToast("Rename error: " + e.message, "error"); btn.disabled = false; btn.textContent = "Rename"; }
+        });
+      });
+      accountProfileCards.querySelectorAll(".account-open-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const profile = btn.dataset.profile; btn.disabled = true; btn.textContent = "Opening…";
+          try {
+            const res = await fetch("/api/settings/accounts/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile }) });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) showToast(`🌐 Opened browser for ${profile}`, "success");
+            else showToast("Open failed: " + (data.detail || "unknown"), "error");
+          } catch (e) { showToast("Open error: " + e.message, "error"); }
+          btn.disabled = false; btn.textContent = "Open";
+        });
+      });
+      accountProfileCards.querySelectorAll(".account-backup-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const profile = btn.dataset.profile, origText = btn.innerHTML; btn.disabled = true; btn.innerHTML = "⏳…";
+          try {
+            const res = await fetch("/api/settings/accounts/backup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile }) });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) { showToast(`Backed up ${profile}`, "success"); await loadAccountProfiles(); }
+            else { showToast("Backup failed: " + (data.detail || "unknown"), "error"); btn.disabled = false; btn.innerHTML = origText; }
+          } catch (e) { showToast("Backup error: " + e.message, "error"); btn.disabled = false; btn.innerHTML = origText; }
+        });
+      });
+      accountProfileCards.querySelectorAll(".account-restore-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const profile = btn.dataset.profile;
+          if (!await sableConfirm(`Restore ${profile} from backup?\n\nThis will replace the current profile data with the .bak copy.`, { danger: true })) return;
+          const origText = btn.innerHTML; btn.disabled = true; btn.innerHTML = "⏳…";
+          try {
+            const res = await fetch("/api/settings/accounts/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile }) });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) { showToast(`Restored ${profile}`, "success"); await loadAccountProfiles(); }
+            else { showToast("Restore failed: " + (data.detail || "unknown"), "error"); btn.disabled = false; btn.innerHTML = origText; }
+          } catch (e) { showToast("Restore error: " + e.message, "error"); btn.disabled = false; btn.innerHTML = origText; }
+        });
+      });
+    }
+
+    // Bind API key handlers
+    function _bindApiKeyHandlers() {
+      accountProfileCards.querySelectorAll(".apikey-switch-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const provider = btn.dataset.provider, index = parseInt(btn.dataset.index);
+          btn.disabled = true; btn.textContent = "Switching…";
+          try {
+            const res = await fetch(`/api/settings/${provider}/switch-key`, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ index }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) { showToast(`✅ Switched ${provider} key`, "success"); await loadAccountProfiles(); }
+            else { showToast("Switch failed: " + (data.detail || "unknown"), "error"); btn.disabled = false; btn.textContent = "Switch"; }
+          } catch (e) { showToast("Switch error: " + e.message, "error"); btn.disabled = false; btn.textContent = "Switch"; }
+        });
+      });
+      accountProfileCards.querySelectorAll(".apikey-delete-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const provider = btn.dataset.provider, index = parseInt(btn.dataset.index);
+          if (!await sableConfirm(`Delete this ${provider} API key?`, { danger: true })) return;
+          btn.disabled = true; btn.textContent = "Deleting…";
+          try {
+            const res = await fetch(`/api/settings/${provider}/api-key/${index}`, { method: "DELETE" });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) { showToast(`🗑️ Deleted ${provider} key`, "success"); await loadAccountProfiles(); }
+            else { showToast("Delete failed: " + (data.detail || "unknown"), "error"); btn.disabled = false; btn.textContent = "Delete"; }
+          } catch (e) { showToast("Delete error: " + e.message, "error"); btn.disabled = false; btn.textContent = "Delete"; }
+        });
+      });
+      accountProfileCards.querySelectorAll(".apikey-copy-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          safeCopy(btn.dataset.masked);
+          showToast("Copied masked key", "info");
+        });
+      });
+    }
+
     async function loadAccountProfiles() {
       if (!accountProfileCards) return;
+      const filterBar = document.getElementById("providerFilterBar");
       accountProfileCards.innerHTML = '<p class="muted" style="font-size:12px;margin:0;">Loading accounts…</p>';
       try {
-        const res = await fetch("/api/settings/accounts");
+        const res = await fetch("/api/settings/accounts/by-provider");
         if (!res.ok) throw new Error("HTTP " + res.status);
         const data = await res.json();
-        const accounts = data.accounts || [];
-        const active = data.active;
-        const autoSwitchEnabled = data.auto_switch_enabled !== false;
+        const providers = data.providers || {};
+        const activeAccount = data.active_account;
 
-        // Render auto-switch toggle above account cards
-        const toggleHtml = `<div style="display:flex;align-items:center;justify-content:space-between;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:10px;">
-          <div style="min-width:0;">
-            <div style="font-size:12px;font-weight:600;color:var(--text);">Auto-Switch on Rate Limit / Captcha</div>
-            <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">Automatically switch to another account when Qwen blocks this one.</div>
-          </div>
-          <label style="position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0;cursor:pointer;">
-            <input type="checkbox" id="autoSwitchToggle" ${autoSwitchEnabled ? 'checked' : ''} style="opacity:0;width:0;height:0;">
-            <span style="position:absolute;inset:0;background:${autoSwitchEnabled ? 'var(--accent)' : 'var(--border)'};border-radius:20px;transition:0.2s;"></span>
-            <span style="position:absolute;left:${autoSwitchEnabled ? '18px' : '2px'};top:2px;width:16px;height:16px;background:#fff;border-radius:50%;transition:0.2s;"></span>
-          </label>
-        </div>`;
+        // Provider order
+        const provOrder = ["qwen", "deepseek", "gemini", "groq", "mistral", "openai", "puter", "cloudflare"];
+        const provIds = provOrder.filter(p => providers[p]);
 
-        if (!accounts.length) {
-          accountProfileCards.innerHTML = '<p class="muted" style="font-size:12px;margin:0;">No account profiles found. Create dirs like <code>system/browser-data-acc1</code>, <code>system/browser-data-acc2</code>…</p>';
+        // Validate saved filter
+        if (_activeProviderFilter !== "all" && !provIds.includes(_activeProviderFilter)) {
+          _activeProviderFilter = "all";
+        }
+
+        // Render provider filter buttons
+        if (filterBar) {
+          const allCount = provIds.reduce((sum, p) => {
+            const pd = providers[p];
+            if (pd.type === "browser") return sum + (pd.accounts || []).length;
+            if (pd.type === "api_key") return sum + (pd.keys || []).length;
+            return sum + (pd.available ? 1 : 0);
+          }, 0);
+          let btns = `<button class="provider-filter-btn" data-provider="all" style="padding:4px 12px;font-size:11px;border-radius:6px;border:1px solid ${_activeProviderFilter === 'all' ? 'var(--accent)' : 'var(--border)'};background:${_activeProviderFilter === 'all' ? 'var(--accent-dim)' : 'var(--panel)'};color:${_activeProviderFilter === 'all' ? 'var(--accent-text)' : 'var(--text-dim)'};cursor:pointer;font-weight:${_activeProviderFilter === 'all' ? '600' : '400'};">All (${allCount})</button>`;
+          for (const pid of provIds) {
+            const pd = providers[pid];
+            const count = pd.type === "browser" ? (pd.accounts || []).length : pd.type === "api_key" ? (pd.keys || []).length : (pd.available ? 1 : 0);
+            const active = _activeProviderFilter === pid;
+            btns += `<button class="provider-filter-btn" data-provider="${pid}" style="padding:4px 12px;font-size:11px;border-radius:6px;border:1px solid ${active ? 'var(--accent)' : 'var(--border)'};background:${active ? 'var(--accent-dim)' : 'var(--panel)'};color:${active ? 'var(--accent-text)' : 'var(--text-dim)'};cursor:pointer;font-weight:${active ? '600' : '400'};">${pd.label} (${count})</button>`;
+          }
+          filterBar.innerHTML = btns;
+          filterBar.querySelectorAll(".provider-filter-btn").forEach(btn => {
+            btn.addEventListener("click", () => {
+              _activeProviderFilter = btn.dataset.provider;
+              try { localStorage.setItem("sable_provider_filter", _activeProviderFilter); } catch(e) {}
+              loadAccountProfiles();
+            });
+          });
+        }
+
+        // Filter providers to show
+        const showProvs = _activeProviderFilter === "all" ? provIds : provIds.filter(p => p === _activeProviderFilter);
+
+        if (!showProvs.length) {
+          accountProfileCards.innerHTML = '<p class="muted" style="font-size:12px;margin:0;">No providers configured.</p>';
           return;
         }
 
-        accountProfileCards.innerHTML = toggleHtml + accounts.map((acc) => {
-          const isActive = acc.name === active;
-          const email = acc.label || acc.email || "unknown account";
-          const size = acc.size_mb ? acc.size_mb + " MB" : "";
-          const browserMissing = acc.browser_path && acc.browser_path !== 'default' && acc.browser_available === false;
-          const borderColor = browserMissing ? 'var(--danger)' : isActive ? '#4ade80' : 'var(--border)';
-          const browserTitle = browserMissing ? 'Browser not found on disk: ' + (acc.browser_path || '') : (acc.browser_path || '');
-          const hasBackup = acc.has_backup;
-          const _badge = (txt, warn) => `<span style="font-size:10px;color:${warn ? 'var(--danger)' : 'var(--text-dim)'};border:1px solid ${warn ? 'var(--danger)' : 'var(--border)'};border-radius:4px;padding:1px 5px;">${txt}</span>`;
-          return `<div style="background:var(--panel);border:${isActive ? '2px' : '1px'} solid ${borderColor};border-radius:10px;padding:${isActive ? '13px 17px' : '14px 18px'};display:flex;flex-direction:column;gap:10px;">
-            <div style="min-width:0;">
-              <div style="font-size:13px;font-weight:600;color:var(--text);">${email}</div>
-              <div style="font-size:11px;color:var(--text-dim);margin-top:4px;display:flex;flex-wrap:wrap;align-items:center;gap:5px;">
-                <span>${acc.name}</span>
-                ${size ? `<span style="opacity:0.4;">·</span><span>${size}</span>` : ''}
-                ${isActive ? '<span style="color:var(--accent);">● active</span>' : ''}
-                ${acc.browser_label ? _badge(acc.browser_label + (browserMissing ? ' !' : ''), browserMissing) : ''}
-                ${acc.has_waf ? _badge('qwen') : ''}
-                ${acc.has_ds ? _badge('ds') : ''}
-                ${acc.exhausted ? _badge('exhausted', true) : ''}
-                ${acc.captcha_blocked ? _badge('captcha', true) : ''}
-                ${hasBackup ? _badge('backup') : ''}
-              </div>
-            </div>
-            <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:8px;">
-              <button class="icon-btn account-backup-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Backup</button>
-              ${hasBackup ? `<button class="icon-btn account-restore-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Restore</button>` : ''}
-              <button class="icon-btn account-rename-btn" data-profile="${acc.name}" data-current-label="${(acc.label || acc.email || '').replace(/"/g, '&quot;')}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Rename</button>
-              <button class="icon-btn account-open-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Open</button>
-              <div style="flex:1;"></div>
-              ${isActive ? '' : `<button class="icon-btn account-switch-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Switch</button>`}
-              ${isActive ? '' : `<button class="icon-btn account-delete-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;color:var(--danger);">Delete</button>`}
-            </div>
-          </div>`;
-        }).join("");
+        let html = "";
+        for (const pid of showProvs) {
+          const pd = providers[pid];
+          // Section header
+          html += `<div style="font-size:12px;font-weight:600;color:var(--text);margin-top:8px;margin-bottom:4px;display:flex;align-items:center;gap:6px;"><span>${pd.label}</span><span style="font-size:10px;color:var(--text-dim);font-weight:400;">(${pd.type === 'browser' ? 'browser profiles' : pd.type === 'api_key' ? 'API keys' : 'credentials'})</span></div>`;
 
-        // Auto-switch toggle handler
-        const autoSwitchToggle = document.getElementById("autoSwitchToggle");
-        if (autoSwitchToggle) {
-          autoSwitchToggle.addEventListener("change", async () => {
-            const enabled = autoSwitchToggle.checked;
-            // Update visual toggle state immediately
-            const label = autoSwitchToggle.closest("label");
-            if (label) {
-              const bg = label.children[1];
-              const knob = label.children[2];
-              if (bg) bg.style.background = enabled ? "var(--accent)" : "var(--border)";
-              if (knob) knob.style.left = enabled ? "18px" : "2px";
+          if (pd.type === "browser") {
+            // Auto-switch toggle for this provider
+            html += _renderToggle(`autoSwitch_${pid}`, pd.auto_switch_enabled,
+              `Auto-Switch on Rate Limit / Captcha`,
+              `Automatically switch to another ${pd.label} account when blocked.`);
+            const accounts = pd.accounts || [];
+            if (!accounts.length) {
+              html += '<p class="muted" style="font-size:12px;margin:0 0 8px 0;">No accounts with ' + pd.label + ' tokens found.</p>';
+            } else {
+              html += accounts.map(acc => _renderBrowserCard(acc, pd.active)).join("");
             }
-            try {
-              await fetch("/api/settings/accounts/auto-switch-toggle", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ enabled }),
-              });
-              showToast(enabled ? "✅ Auto-switch enabled" : "⏸️ Auto-switch disabled", enabled ? "success" : "info");
-            } catch (e) {
-              showToast("Failed to save: " + e.message, "error");
-              autoSwitchToggle.checked = !enabled;
-              // Revert visual state on error
-              if (label) {
-                const bg = label.children[1];
-                const knob = label.children[2];
-                if (bg) bg.style.background = enabled ? "var(--border)" : "var(--accent)";
-                if (knob) knob.style.left = enabled ? "2px" : "18px";
-              }
+          } else if (pd.type === "api_key") {
+            html += _renderToggle(`autoSwitch_${pid}`, pd.auto_switch_enabled,
+              `Auto-Rotate on Error`,
+              `Automatically rotate to next ${pd.label} key when one fails.`);
+            const keys = pd.keys || [];
+            if (!keys.length) {
+              html += '<p class="muted" style="font-size:12px;margin:0 0 8px 0;">No API keys configured. Add keys from the Providers tab.</p>';
+            } else {
+              html += keys.map(k => _renderApiKeyCard(k, pid)).join("");
             }
-          });
+          } else if (pd.type === "credential") {
+            html += _renderToggle(`autoSwitch_${pid}`, pd.auto_switch_enabled,
+              `Auto-Switch`, `Toggle auto-switch for ${pd.label}.`);
+            if (pd.available) {
+              html += `<div style="background:var(--panel);border:1px solid #4ade80;border-radius:10px;padding:14px 18px;font-size:12px;color:var(--text);"><span style="color:#4ade80;">● Configured</span></div>`;
+            } else {
+              html += '<p class="muted" style="font-size:12px;margin:0 0 8px 0;">Not configured. Set up from the Providers tab.</p>';
+            }
+          }
         }
 
-        accountProfileCards.querySelectorAll(".account-switch-btn").forEach((btn) => {
-          btn.addEventListener("click", async () => {
-            const profile = btn.dataset.profile;
-            btn.disabled = true;
-            btn.textContent = "Switching…";
-            showToast("🔄 Switching account profile…", "info");
-            try {
-              const res = await fetch("/api/settings/accounts/switch", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ profile }),
-              });
-              const data = await res.json().catch(() => ({}));
-              if (res.ok) {
-                showToast(`✅ Switched to ${data.email || profile}`, "success");
-                // Parallel — the two fetches are independent (Tier-3 UX fix)
-                await Promise.all([loadAccountProfiles(), loadModels()]);
-              } else {
-                showToast("Switch failed: " + (data.detail || "unknown"), "error");
-                btn.disabled = false;
-                btn.textContent = "Switch";
-              }
-            } catch (e) {
-              showToast("Switch error: " + e.message, "error");
-              btn.disabled = false;
-              btn.textContent = "Switch";
-            }
-          });
-        });
-        accountProfileCards.querySelectorAll(".account-delete-btn").forEach((btn) => {
-          btn.addEventListener("click", async () => {
-            const profile = btn.dataset.profile;
-            if (!await sableConfirm(`Delete ${profile}?\n\nThis permanently removes the browser data directory.`, { danger: true })) return;
-            btn.disabled = true;
-            btn.textContent = "Deleting…";
-            try {
-              const res = await fetch("/api/settings/accounts/delete", {
-                method: "DELETE",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ profile }),
-              });
-              const data = await res.json().catch(() => ({}));
-              if (res.ok) {
-                showToast(`🗑️ Deleted ${profile}`, "success");
-                await loadAccountProfiles();
-              } else {
-                showToast("Delete failed: " + (data.detail || "unknown"), "error");
-                btn.disabled = false;
-                btn.textContent = "Delete";
-              }
-            } catch (e) {
-              showToast("Delete error: " + e.message, "error");
-              btn.disabled = false;
-              btn.textContent = "Delete";
-            }
-          });
-        });
-        accountProfileCards.querySelectorAll(".account-rename-btn").forEach((btn) => {
-          btn.addEventListener("click", async () => {
-            const profile = btn.dataset.profile;
-            const currentLabel = btn.dataset.currentLabel || "";
-            const newLabel = await sablePrompt("Display name for " + profile + ":", currentLabel);
-            if (newLabel === null) return; // cancelled
-            btn.disabled = true;
-            btn.textContent = "Saving…";
-            try {
-              const res = await fetch("/api/settings/accounts/rename", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ profile, label: newLabel }),
-              });
-              const data = await res.json().catch(() => ({}));
-              if (res.ok) {
-                showToast(newLabel ? `✅ Renamed to "${newLabel}"` : `✅ Cleared custom name`, "success");
-                await loadAccountProfiles();
-              } else {
-                showToast("Rename failed: " + (data.detail || "unknown"), "error");
-                btn.disabled = false;
-                btn.textContent = "Rename";
-              }
-            } catch (e) {
-              showToast("Rename error: " + e.message, "error");
-              btn.disabled = false;
-              btn.textContent = "Rename";
-            }
-          });
-        });
-        accountProfileCards.querySelectorAll(".account-open-btn").forEach((btn) => {
-          btn.addEventListener("click", async () => {
-            const profile = btn.dataset.profile;
-            btn.disabled = true;
-            btn.textContent = "Opening…";
-            try {
-              const res = await fetch("/api/settings/accounts/open", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ profile }),
-              });
-              const data = await res.json().catch(() => ({}));
-              if (res.ok) {
-                showToast(`🌐 Opened browser for ${profile}`, "success");
-              } else {
-                showToast("Open failed: " + (data.detail || "unknown"), "error");
-              }
-            } catch (e) {
-              showToast("Open error: " + e.message, "error");
-            }
-            btn.disabled = false;
-            btn.textContent = "Open";
-          });
-        });
+        accountProfileCards.innerHTML = html;
 
-        // Per-account backup handlers
-        accountProfileCards.querySelectorAll(".account-backup-btn").forEach((btn) => {
-          btn.addEventListener("click", async () => {
-            const profile = btn.dataset.profile;
-            const origText = btn.innerHTML;
-            btn.disabled = true;
-            btn.innerHTML = "⏳…";
-            try {
-              const res = await fetch("/api/settings/accounts/backup", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ profile }),
-              });
-              const data = await res.json().catch(() => ({}));
-              if (res.ok) {
-                showToast(`Backed up ${profile}`, "success");
-                await loadAccountProfiles();
-              } else {
-                showToast("Backup failed: " + (data.detail || "unknown"), "error");
-                btn.disabled = false;
-                btn.innerHTML = origText;
-              }
-            } catch (e) {
-              showToast("Backup error: " + e.message, "error");
-              btn.disabled = false;
-              btn.innerHTML = origText;
-            }
-          });
-        });
+        // Bind per-provider toggles
+        for (const pid of showProvs) {
+          _bindProviderToggle(`autoSwitch_${pid}`, pid);
+        }
 
-        // Per-account restore handlers
-        accountProfileCards.querySelectorAll(".account-restore-btn").forEach((btn) => {
-          btn.addEventListener("click", async () => {
-            const profile = btn.dataset.profile;
-            if (!await sableConfirm(`Restore ${profile} from backup?\n\nThis will replace the current profile data with the .bak copy.`, { danger: true })) return;
-            const origText = btn.innerHTML;
-            btn.disabled = true;
-            btn.innerHTML = "⏳…";
-            try {
-              const res = await fetch("/api/settings/accounts/restore", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ profile }),
-              });
-              const data = await res.json().catch(() => ({}));
-              if (res.ok) {
-                showToast(`Restored ${profile}`, "success");
-                await loadAccountProfiles();
-              } else {
-                showToast("Restore failed: " + (data.detail || "unknown"), "error");
-                btn.disabled = false;
-                btn.innerHTML = origText;
-              }
-            } catch (e) {
-              showToast("Restore error: " + e.message, "error");
-              btn.disabled = false;
-              btn.innerHTML = origText;
-            }
-          });
-        });
+        // Bind browser account handlers + API key handlers
+        _bindBrowserHandlers();
+        _bindApiKeyHandlers();
+
       } catch (e) {
         accountProfileCards.innerHTML = `<p class="muted" style="font-size:12px;margin:0;color:var(--danger);">Failed to load: ${e.message}</p>`;
       }
@@ -1208,7 +1292,8 @@
     const block = btn.closest('.code-block');
     const codeEl = block?.querySelector('pre code');
     if (!codeEl) return;
-    navigator.clipboard.writeText(codeEl.textContent).then(() => {
+    safeCopy(codeEl.textContent).then((ok) => {
+      if (!ok) return;
       btn.classList.add('copied');
       btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
       setTimeout(() => {
@@ -1229,7 +1314,40 @@
     closeCtx();
     const action = item.dataset.action;
 
-    if (action === 'new-chat') {
+    if (action === 'copy') {
+      const sel = window.getSelection()?.toString() || '';
+      if (sel) {
+        await safeCopy(sel);
+        showToast('Copied', 'success');
+      } else {
+        showToast('Nothing selected', 'error');
+      }
+    } else if (action === 'paste') {
+      try {
+        const text = await navigator.clipboard.readText();
+        const active = document.activeElement;
+        if (active && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT' || active.isContentEditable)) {
+          active.setRangeText?.(text, active.selectionStart, active.selectionEnd, 'end') ?? active.insertAdjacentText?.('beforeend', text);
+          active.dispatchEvent(new Event('input', { bubbles: true }));
+        } else if (typeof inputEl !== 'undefined' && inputEl) {
+          inputEl.value += text;
+          inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+        } else {
+          showToast('No active input to paste into', 'error');
+        }
+      } catch { showToast('Clipboard read denied', 'error'); }
+    } else if (action === 'select-all') {
+      const target = e.target.closest('.message-content, .chat-area, #chatMessages, main');
+      if (target) {
+        const range = document.createRange();
+        range.selectNodeContents(target);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } else {
+        document.execCommand('selectAll');
+      }
+    } else if (action === 'new-chat') {
       document.getElementById('newChat')?.click();
     } else if (action === 'settings') {
       (document.getElementById('railSettingsBtn') || document.getElementById('settingsBtn'))?.click();

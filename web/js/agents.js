@@ -79,11 +79,16 @@ const AgentTopBar = {
   },
 
   addCard(agentId, role, task, model) {
+    // Dedup: never create two cards for the same agent
+    if (this.cards.has(agentId)) return;
+    // Clean up any completed/failed cards before adding a new one
+    this._sweepFinished();
     this.init();
     this._show();
     const card = document.createElement("div");
     card.className = "agent-card running";
     card.dataset.agentId = agentId;
+    card.dataset.role = role || "agent";
     card.innerHTML =
       `<span class="agent-spinner"></span>` +
       `<span class="agent-role">${escHtml(role)}</span>` +
@@ -109,7 +114,8 @@ const AgentTopBar = {
     card.innerHTML = `<span class="agent-check">${lucideIcon("✓")}</span><span class="agent-role">${escHtml(role)}</span>`;
     activateLucideIcons(card);
     card.onclick = () => AgentPanel.open(agentId, role);
-    setTimeout(() => this.removeCard(agentId), 60000);
+    // ponytail: 5s instead of 60s — completed cards shouldn't clutter the topbar
+    setTimeout(() => this.removeCard(agentId), 5000);
   },
 
   failCard(agentId, error) {
@@ -121,7 +127,8 @@ const AgentTopBar = {
     activateLucideIcons(card);
     card.title = error || "Failed";
     card.onclick = () => AgentPanel.open(agentId, role);
-    setTimeout(() => this.removeCard(agentId), 60000);
+    // ponytail: 8s for failures so user can read the error tooltip
+    setTimeout(() => this.removeCard(agentId), 8000);
   },
 
   removeCard(agentId) {
@@ -139,6 +146,15 @@ const AgentTopBar = {
     this.cards.forEach((card) => card.remove());
     this.cards.clear();
     this._hide();
+  },
+
+  /** Remove any cards that are no longer running (completed/failed). */
+  _sweepFinished() {
+    for (const [id, card] of this.cards) {
+      if (!card.classList.contains("running")) {
+        this.removeCard(id);
+      }
+    }
   },
 };
 
@@ -348,8 +364,7 @@ const AgentPanel = {
     this.el.querySelector(".agent-panel-title").textContent = `${role || "agent"}`;
     this.el.querySelector(".agent-panel-model").textContent = "";
     this.el.querySelector(".agent-panel-status").textContent = task ? task.slice(0, 50) : agentId;
-    // Close diff viewer if open (mutual exclusion)
-    document.body.classList.remove("diff-open");
+
     this.el.classList.remove("hidden");
     document.body.classList.add("agent-panel-open");
     this.bodyEl.innerHTML = "";
@@ -400,10 +415,6 @@ const AgentPanel = {
       stopBtn.disabled = false;
       stopBtn.textContent = "■ stop";
     }
-
-
-    // Then: subscribe to live stream
-    this._connectStream(agentId);
   },
 
   _renderHistory(messages) {
@@ -674,6 +685,137 @@ const AgentPanel = {
     }
   },
 
+  // ── New streaming API (main chat pipeline, 2026-09-10) ──────────────────
+  // These methods are called by _runAgentTurn in sse.js to stream agent output
+  // into the panel body using the same POST /api/chat pipeline as critique.
+
+  openForStream(agentId, role, task, model, todos) {
+    // Prepare panel state but do NOT auto-open — user clicks topbar card to view
+    this.init();
+    this.currentAgentId = agentId;
+    this._userScrolled = false;
+    this._isRunning = true;
+    this.el.querySelector(".agent-panel-title").textContent = role || "agent";
+    this.el.querySelector(".agent-panel-model").textContent = model || "";
+    this.el.querySelector(".agent-panel-status").textContent = task ? task.slice(0, 50) : agentId;
+    this.bodyEl.innerHTML = "";
+    this._clearTodos();
+    if (todos && todos.length) this._renderTodos(todos);
+    const stopBtn = this.el.querySelector(".agent-panel-stop");
+    if (stopBtn) { stopBtn.classList.remove("hidden"); stopBtn.disabled = false; }
+    this._startTimer(null, null);
+  },
+
+  appendAnswer(agentId, text) {
+    if (this.currentAgentId !== agentId) return;
+    // Find or create current streaming answer element
+    let el = this.bodyEl.querySelector(".ap-streaming-answer");
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "msg bot ap-streaming-answer";
+      el.innerHTML = '<div class="md-content"><span class="ap-raw"></span></div>';
+      this.bodyEl.appendChild(el);
+    }
+    const raw = el.querySelector(".ap-raw");
+    if (raw) raw.textContent += text;
+    this._scrollBottom();
+  },
+
+  appendThinking(agentId, text) {
+    if (this.currentAgentId !== agentId) return;
+    let wrap = this.bodyEl.querySelector(".ap-thinking-active");
+    if (!wrap) {
+      wrap = document.createElement("div");
+      wrap.className = "thinking-wrap ap-thinking-active";
+      wrap.innerHTML = '<details class="thinking" open><summary><i data-lucide="chevron-right" class="thinking-chevron"></i>Thinking</summary><div class="thinking-body"></div></details>';
+      this.bodyEl.appendChild(wrap);
+      if (typeof activateLucideIcons === "function") activateLucideIcons(wrap);
+    }
+    const body = wrap.querySelector(".thinking-body");
+    if (body) body.textContent += text;
+    this._scrollBottom();
+  },
+
+  addSkillStart(agentId, evt) {
+    if (this.currentAgentId !== agentId) return;
+    // Finalize any active streaming answer
+    const streaming = this.bodyEl.querySelector(".ap-streaming-answer");
+    if (streaming) {
+      streaming.classList.remove("ap-streaming-answer");
+      const raw = streaming.querySelector(".ap-raw");
+      if (raw && raw.parentNode === streaming && typeof renderMarkdown === "function") {
+        const md = document.createElement("div");
+        md.className = "md-content";
+        md.innerHTML = renderMarkdown(raw.textContent);
+        streaming.replaceChild(md, raw);
+      }
+    }
+    // Close thinking
+    const thinking = this.bodyEl.querySelector(".ap-thinking-active");
+    if (thinking) thinking.classList.remove("ap-thinking-active");
+
+    if (typeof window.createSkillCard === "function") {
+      let group = this.bodyEl.querySelector(".skill-stack:last-of-type");
+      if (!group || group.dataset.closed === "1") {
+        group = document.createElement("div");
+        group.className = "skill-stack";
+        group.style.display = "flex";
+        this.bodyEl.appendChild(group);
+      }
+      const card = window.createSkillCard(evt);
+      group.appendChild(card);
+      if (typeof activateLucideIcons === "function") activateLucideIcons(card);
+      card.dataset.skillId = evt.id || "";
+    }
+    this._scrollBottom();
+  },
+
+  addSkillOutput(agentId, evt) {
+    if (this.currentAgentId !== agentId) return;
+    const card = this.bodyEl.querySelector(`[data-skill-id="${evt.id}"]`);
+    if (card && typeof window.appendSkillCardOutput === "function") {
+      window.appendSkillCardOutput(card, evt.text);
+    }
+    this._scrollBottom();
+  },
+
+  addSkillEnd(agentId, evt) {
+    if (this.currentAgentId !== agentId) return;
+    const card = this.bodyEl.querySelector(`[data-skill-id="${evt.id}"]`);
+    if (card && typeof window.finishSkillCard === "function") {
+      window.finishSkillCard(card, evt);
+    }
+    // Mark last skill-stack as closed so next tool starts a new one
+    const group = this.bodyEl.querySelector(".skill-stack:last-of-type");
+    if (group) group.dataset.closed = "1";
+  },
+
+  appendError(agentId, message) {
+    if (this.currentAgentId !== agentId) return;
+    const div = document.createElement("div");
+    div.className = "ap-system-note ap-error-note";
+    div.textContent = "✗ " + message;
+    this.bodyEl.appendChild(div);
+    this._scrollBottom(true);
+  },
+
+  markDone(agentId, status) {
+    if (this.currentAgentId !== agentId) return;
+    // Finalize streaming answer
+    const streaming = this.bodyEl.querySelector(".ap-streaming-answer");
+    if (streaming) {
+      streaming.classList.remove("ap-streaming-answer");
+      const raw = streaming.querySelector(".ap-raw");
+      if (raw && raw.parentNode === streaming && typeof renderMarkdown === "function") {
+        const md = document.createElement("div");
+        md.className = "md-content";
+        md.innerHTML = renderMarkdown(raw.textContent);
+        streaming.replaceChild(md, raw);
+      }
+    }
+    this._setDone(status);
+  },
+
   _setDone(status) {
     const stopBtn = this.el.querySelector(".agent-panel-stop");
     if (stopBtn) { stopBtn.classList.add("hidden"); stopBtn.disabled = false; stopBtn.textContent = "■ stop"; }
@@ -691,7 +833,13 @@ const AgentPanel = {
     const btn = this.el.querySelector(".agent-panel-stop");
     if (btn) { btn.disabled = true; btn.textContent = "…"; }
     try {
+      // Agents use POST /api/chat pipeline, so stop both the agent and its chat stream
       await fetch(`/api/agents/${this.currentAgentId}/kill`, { method: "POST" });
+      await fetch("/api/chat/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: this.currentAgentId }),
+      });
       if (btn) { btn.textContent = "stopped"; }
     } catch {
       if (btn) { btn.disabled = false; btn.textContent = "■ stop"; }
@@ -801,6 +949,16 @@ function connectAgentEvents(chatId) {
 
   _agentEventSource.onerror = (err) => {
     console.error("[AgentDebug] SSE connection error:", err, "readyState:", _agentEventSource?.readyState);
+    // Auto-reconnect after 3s if the connection dropped
+    if (_agentEventSource && _agentEventSource.readyState === EventSource.CLOSED) {
+      console.log("[AgentDebug] SSE closed — scheduling reconnect in 3s for chat:", chatId);
+      setTimeout(() => {
+        if (_agentEventChatId === chatId) {
+          _agentEventSource = null; // force fresh connection
+          connectAgentEvents(chatId);
+        }
+      }, 3000);
+    }
   };
 }
 
@@ -821,6 +979,7 @@ function handleAgentEvent(ev) {
     case "agent_spawned":
       console.log("[AgentDebug] agent_spawned → calling addCard", ev.agent_id, ev.data);
       AgentTopBar.addCard(ev.agent_id, ev.data?.role || "agent", ev.data?.task || "", ev.data?.model || "");
+      if (typeof window._sableLoadChats === "function") window._sableLoadChats();
       // Capture todos for spawn-card injection
       if (ev.data?.todos && ev.data.todos.length) {
         _agentTodosRaw.set(ev.agent_id, ev.data.todos.map(t => t.content).join(" | "));
@@ -835,19 +994,56 @@ function handleAgentEvent(ev) {
       break;
     case "auto_turn_trigger":
       // Agent completed — fire a normal chat turn via the standard /api/chat pipeline.
-      // sendAutoTurnMessage (sse.js) handles the user bubble, bot streaming, skill
-      // cards, stop button, markdown, and history replay — identical to a typed message.
+      // Explicitly target the parent chat so results go to the right place
+      // even if the user switched tabs while the agent was running.
       if (typeof sendAutoTurnMessage === "function" && ev.data?.message) {
-        sendAutoTurnMessage(ev.data.message);
+        sendAutoTurnMessage(ev.data.message, {
+          targetChatId: ev.data?.parent_chat_id || _agentEventChatId || activeChatId,
+        });
       }
       break;
     case "agent_completed":
       AgentTopBar.finishCard(ev.agent_id, ev.data?.summary || "");
       addAgentResultCard(ev);
+      // Clear the streaming flag so the sidebar running-dot disappears now,
+      // not after the 600s safety timer.
+      if (typeof window._finishAgentStream === "function") window._finishAgentStream(ev.agent_id);
+      // Refresh sidebar so agent chat rows update their status indicator
+      if (typeof window._sableLoadChats === "function") window._sableLoadChats();
       break;
     case "agent_failed":
       AgentTopBar.failCard(ev.agent_id, ev.data?.error || "");
       addAgentResultCard(ev);
+      // Hard-cancel on failure — a failed agent shouldn't keep streaming.
+      if (typeof window._finishAgentStream === "function") window._finishAgentStream(ev.agent_id, { abort: true });
+      if (typeof window._sableLoadChats === "function") window._sableLoadChats();
+      break;
+    // --- Events from POST /api/agents/spawn (manual @-mention spawn) ---
+    // These use a different naming convention than the runtime events above.
+    case "agent_start":
+      console.log("[AgentDebug] agent_start → addCard", ev.id, ev.role, ev.task?.slice(0,60));
+      if (typeof AgentTopBar !== "undefined" && AgentTopBar.addCard) {
+        AgentTopBar.addCard(ev.id, ev.role, ev.task || "", ev.model || "");
+      }
+      if (typeof window._sableLoadChats === "function") {
+        window._sableLoadChats();
+      }
+      break;
+    case "agent_trigger":
+      console.log("[AgentDebug] agent_trigger → _runAgentTurn", ev.id, ev.message?.slice(0,60));
+      // Single-trigger: SSE is the only path now, no dedup needed
+      if (ev.message && ev.id && typeof window._runAgentTurn === "function") {
+        window._runAgentTurn(
+          ev.message,
+          ev.id,
+          ev.system_prompt || "",
+          ev.model || undefined,
+          ev.browser_data_dir || null,
+          ev.collect || false,
+        );
+      } else {
+        console.warn("[AgentDebug] agent_trigger missing fields or _runAgentTurn unavailable", { hasMsg: !!ev.message, id: ev.id, hasFn: typeof window._runAgentTurn === "function" });
+      }
       break;
   }
 }
@@ -859,7 +1055,12 @@ function handleAgentEvent(ev) {
 // Called when a chat is selected/opened
 function onChatOpened(chatId) {
   console.log("[AgentDebug] onChatOpened called, chatId:", chatId);
-  AgentTopBar.clear();
+  // Don't clear topbar cards on every tab switch — only clear if
+  // genuinely navigating to a different parent chat context.
+  // Cards manage their own lifecycle via finishCard/failCard/removeCard.
+  if (_agentEventChatId !== chatId) {
+    AgentTopBar.clear();
+  }
   connectAgentEvents(chatId);
   // Load any active agents for this chat
   fetch(`/api/agents/active?chat_id=${encodeURIComponent(chatId)}`)
@@ -968,14 +1169,20 @@ function parseAgentMention(text) {
   return { role, task: m[2].trim() };
 }
 
-/** Spawn agent via API. Returns response JSON. */
-async function spawnAgentFromMention(role, task, chatId) {
+/** Spawn agent via API. Returns response JSON.
+ *  Single-trigger architecture: the backend emits agent_spawned + agent_trigger
+ *  via SSE. We rely solely on the SSE path to fire _runAgentTurn — no direct
+ *  trigger here, eliminating the race condition that caused double-streaming.
+ */
+async function spawnAgentFromMention(role, task, chatId, rawMessage) {
   const res = await fetch("/api/agents/spawn", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ role, task, chat_id: chatId }),
+    body: JSON.stringify({ role, task, chat_id: chatId, raw_message: rawMessage || "" }),
   });
-  return res.json();
+  const result = await res.json();
+  // SSE agent_trigger event will handle _runAgentTurn — no direct call needed.
+  return result;
 }
 
 // Wire up input listener
@@ -1021,7 +1228,6 @@ document.addEventListener("DOMContentLoaded", () => {
 const AgentSettings = {
   loaded: false,
   _roles: {},             // current role data from API
-  _allTools: [],          // all available tool groups [{key, name, functions}] (from API)
   _allSkills: [],         // all available skill keys (from API)
   _skillMeta: {},         // skill key → {name, trigger} metadata
   _availableModels: [],   // all models from /api/models (for dropdown)
@@ -1070,22 +1276,16 @@ const AgentSettings = {
       }
       document.getElementById("teacherBrowserData").value = teacher.browser_data_dir || "";
 
-      // Fetch available tools and skills from API
+      // Fetch available skills from API
       try {
-        const [toolsRes, skillsRes] = await Promise.all([
-          fetch("/api/agents/available-tools"),
-          fetch("/api/agents/available-skills"),
-        ]);
-        const toolsData = toolsRes.ok ? await toolsRes.json() : { tools: [] };
+        const skillsRes = await fetch("/api/agents/available-skills");
         const skillsData = skillsRes.ok ? await skillsRes.json() : { skills: [] };
-        this._allTools = (toolsData.tools || []).sort((a, b) => a.name.localeCompare(b.name));
         this._allSkills = (skillsData.skills || []).map((s) => s.key).sort();
         this._skillMeta = {};
         for (const s of (skillsData.skills || [])) {
           this._skillMeta[s.key] = s;
         }
       } catch {
-        this._allTools = [{ key: "code_editor", name: "Code Editor", functions: 4 }];
         this._allSkills = [];
         this._skillMeta = {};
       }
@@ -1140,10 +1340,6 @@ const AgentSettings = {
             `<code class="arc-output-fmt">${escHtml(data.output_format || "—")}</code>` +
           `</div>` +
           `<div class="arc-field">` +
-            `<label>Allowed Tools <span class="arc-hint">(handler functions available via tool_call)</span></label>` +
-            `<div class="arc-skills-list arc-allowed-tools"></div>` +
-          `</div>` +
-          `<div class="arc-field">` +
             `<label>Allowed Skills <span class="arc-hint">(read instruction.md before use)</span></label>` +
             `<div class="arc-skills-list arc-allowed-skills"></div>` +
           `</div>` +
@@ -1162,8 +1358,7 @@ const AgentSettings = {
           `</div>` +
         `</div>`;
 
-      // Render tool and skill chips
-      this._renderToolChips(card.querySelector(".arc-allowed-tools"), data.allowed_tools || [], role + ":tools");
+      // Render skill chips
       this._renderSkillChips(card.querySelector(".arc-allowed-skills"), data.allowed_skills || [], role + ":skills");
 
       // Helper: create removable chip
@@ -1226,53 +1421,12 @@ const AgentSettings = {
     }
   },
 
-  _getToolArray(key) {
-    // key format: "role:tools" e.g. "coder:tools"
-    const role = key.split(":")[0];
-    if (!this._roles[role]) return [];
-    if (!this._roles[role].allowed_tools) this._roles[role].allowed_tools = [];
-    return this._roles[role].allowed_tools;
-  },
-
   _getSkillArray(key) {
     // key format: "role:skills" e.g. "coder:skills"
     const role = key.split(":")[0];
     if (!this._roles[role]) return [];
     if (!this._roles[role].allowed_skills) this._roles[role].allowed_skills = [];
     return this._roles[role].allowed_skills;
-  },
-
-  _toolGroupName(key) {
-    const g = (this._allTools || []).find((t) => t.key === key);
-    return g ? g.name : key;
-  },
-
-  _renderToolChips(container, tools, roleKey) {
-    container.innerHTML = "";
-    const wrap = document.createElement("div");
-    wrap.className = "arc-chips-wrap";
-    for (const toolKey of tools) {
-      const chip = document.createElement("span");
-      chip.className = "arc-skill-chip";
-      chip.dataset.toolKey = toolKey;
-      chip.innerHTML = `${escHtml(this._toolGroupName(toolKey))}<button class="arc-chip-x" title="Remove">×</button>`;
-      chip.querySelector(".arc-chip-x").onclick = (e) => {
-        e.stopPropagation();
-        const arr = this._getToolArray(roleKey);
-        const idx = arr.indexOf(toolKey);
-        if (idx > -1) arr.splice(idx, 1);
-        chip.remove();
-        this._markDirty();
-      };
-      wrap.appendChild(chip);
-    }
-    container.appendChild(wrap);
-
-    const addBtn = document.createElement("button");
-    addBtn.className = "arc-skill-add";
-    addBtn.textContent = "+ add tool";
-    addBtn.onclick = () => this._showItemPicker(container, roleKey, "tools");
-    container.appendChild(addBtn);
   },
 
   _renderSkillChips(container, skills, roleKey) {
@@ -1298,44 +1452,26 @@ const AgentSettings = {
     const addBtn = document.createElement("button");
     addBtn.className = "arc-skill-add";
     addBtn.textContent = "+ add skill";
-    addBtn.onclick = () => this._showItemPicker(container, roleKey, "skills");
+    addBtn.onclick = () => this._showItemPicker(container, roleKey);
     container.appendChild(addBtn);
   },
 
-  _showItemPicker(container, roleKey, type) {
+  _showItemPicker(container, roleKey) {
     // Remove existing picker
     const existing = container.querySelector(".arc-skill-picker");
     if (existing) { existing.remove(); return; }
 
-    const isTools = type === "tools";
-    const current = isTools ? this._getToolArray(roleKey) : this._getSkillArray(roleKey);
-
-    let available;
-    if (isTools) {
-      // _allTools is [{key, name, functions}], filter by key
-      available = (this._allTools || []).filter((g) => !current.includes(g.key));
-    } else {
-      available = (this._allSkills || []).filter((s) => !current.includes(s)).sort();
-    }
+    const current = this._getSkillArray(roleKey);
+    const available = (this._allSkills || []).filter((s) => !current.includes(s)).sort();
     if (!available.length) return;
 
     const picker = document.createElement("div");
     picker.className = "arc-skill-picker";
-    if (isTools) {
-      picker.innerHTML = available.map((g) => `<button class="arc-pick-item" data-item="${escAttr(g.key)}">${escHtml(g.name)} <small>(${g.functions})</small></button>`).join("");
-    } else {
-      picker.innerHTML = available.map((s) => `<button class="arc-pick-item" data-item="${escAttr(s)}">${escHtml(s)}</button>`).join("");
-    }
+    picker.innerHTML = available.map((s) => `<button class="arc-pick-item" data-item="${escAttr(s)}">${escHtml(s)}</button>`).join("");
     picker.querySelectorAll(".arc-pick-item").forEach((btn) => {
       btn.onclick = () => {
-        const item = btn.dataset.item;
-        const arr = isTools ? this._getToolArray(roleKey) : this._getSkillArray(roleKey);
-        arr.push(item);
-        if (isTools) {
-          this._renderToolChips(container, arr, roleKey);
-        } else {
-          this._renderSkillChips(container, arr, roleKey);
-        }
+        current.push(btn.dataset.item);
+        this._renderSkillChips(container, current, roleKey);
         this._markDirty();
       };
     });
@@ -1352,7 +1488,6 @@ const AgentSettings = {
       const modelSel = card.querySelector(".arc-model");
       roles[role] = {
         output_format: this._roles[role]?.output_format || "",
-        allowed_tools: this._roles[role]?.allowed_tools || [],
         allowed_skills: this._roles[role]?.allowed_skills || [],
         default_model: modelSel.value.trim(),
         default_timeout: parseInt(card.querySelector(".arc-timeout").value) || 90,

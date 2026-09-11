@@ -124,7 +124,6 @@
       body.sidebar-collapsed .sidebar { transform: translateX(-100%); }
       #chat { --chat-width: 100%; padding: 14px 10px; padding-bottom: 110px; }
       .msg, .turn, .thinking-wrap { width: var(--chat-width); max-width: var(--chat-width); }
-      .diff-sidebar { width: 100vw; }
       .diff-item { padding: 8px; }
       .diff-item-name { font-size: var(--font-size-system); }
       .diff-revert-btn { padding: 2px 7px; font-size: var(--font-size-system); }
@@ -201,61 +200,24 @@
     }
 
 
-    /* ---------- diff sidebar ---------- */
+    /* ---------- files panel left views (Files / Diff tabs) ---------- */
     .header-right {
       display: flex;
       align-items: center;
       gap: 10px;
     }
-    .diff-sidebar {
-      position: fixed;
-      top: 6px;
-      right: 6px;
-      bottom: 6px;
-      width: 325px;
-      background: color-mix(in srgb, var(--panel) 30%, transparent);
-      border: none;
-      border-radius: 18px;
-      box-shadow:
-        inset 0 0 0 1px var(--shadow-inner-glow),
-        inset 1.5px 2.5px 0px -1.5px var(--shadow-inner-glow),
-        inset -1.5px -1.5px 0px -1.5px var(--shadow-inner-glow),
-        inset -2px -6px 1px -5px var(--shadow-inner-glow),
-        inset -0.3px -1px 3px 0px rgba(0, 0, 0, 0.15),
-        inset -1px 2px 3px -1px rgba(0, 0, 0, 0.2),
-        inset 0px 2px 3px -1px rgba(0, 0, 0, 0.2),
-        inset 1.5px -4px 1px -3px rgba(0, 0, 0, 0.1),
-        0px 1px 4px 0px var(--shadow-outer),
-        0px 4px 12px 0px rgba(0, 0, 0, 0.1);
-      transform: translateX(105%);
-      transition: transform .18s ease;
-      z-index: 200;
-      display: flex;
-      flex-direction: column;
-    }
-    body.diff-open .diff-sidebar { transform: translateX(0); }
-    body.diff-open .input-row,
-    body.diff-open .attach-preview { max-width: none; }
     body.agent-panel-open .input-row,
     body.agent-panel-open .attach-preview { max-width: none; }
-    @media (min-width: 769px) {
-      body.diff-open .main { margin-right: 331px; transition: margin-right .18s ease; }
-    }
-    .diff-sidebar-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 6px;
-      padding: 4px 8px;
-      border-bottom: 1px solid var(--border);
+
+    .fs-left-view {
+      display: none;
+      flex: 1;
+      flex-direction: column;
       min-height: 0;
+      overflow: hidden;
     }
-    .diff-sidebar-title {
-      font-size: 11px;
-      letter-spacing: .08em;
-      text-transform: uppercase;
-      color: var(--accent-text);
-      line-height: 1;
+    .fs-left-view.active {
+      display: flex;
     }
 
     /* Sidebar tabs (Files / Diff) */
@@ -833,9 +795,7 @@
       body.tracknote-open .main { margin-right: 331px; transition: margin-right .18s ease; }
     }
     .tracknote-sidebar { z-index: 202; }
-    /* When both sidebars are somehow open, hide the file one to prevent overlap */
-    body.tracknote-open #diffSidebar { transform: translateX(105%) !important; }
-    body.diff-open .tracknote-sidebar { transform: translateX(105%) !important; }
+
 
     /* ---------- TrackNote standalone panels (left-sidebar hostable) ---------- */
     .tracknote-standalone {

@@ -16,6 +16,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
 from engine.config import AGENT_CONFIG_PATH
+from engine.agents.registry import get_role_config
 
 router = APIRouter()
 
@@ -35,6 +36,24 @@ def push_agent_event(chat_id: str, event: dict[str, Any]) -> None:
             q.put_nowait(payload)
         except asyncio.QueueFull:
             pass  # Client too slow or disconnected — skip
+
+
+def broadcast_agent_event(event: dict[str, Any], exclude_chat_id: str | None = None) -> None:
+    """Push an agent event to ALL connected SSE clients across all chats.
+
+    Used for cross-chat notifications (e.g., agent completion when user
+    switched to a different chat). Optionally excludes one chat_id to
+    avoid duplicate delivery if push_agent_event was already called for it.
+    """
+    payload = json.dumps(event, ensure_ascii=False, default=str)
+    for cid, queues in _agent_sse_clients.items():
+        if cid == exclude_chat_id:
+            continue
+        for q in queues:
+            try:
+                q.put_nowait(payload)
+            except asyncio.QueueFull:
+                pass
 
 
 async def _async_push_agent_event(chat_id: str, event: dict[str, Any]) -> None:
@@ -217,18 +236,6 @@ async def get_agent_config():
     return config
 
 
-@router.get("/api/agents/available-tools")
-async def get_available_tools():
-    """Return list of tool group keys (same as Settings > Tools panel)."""
-    from engine.tools_loader import browse_tools
-    groups = browse_tools()
-    tools = [
-        {"key": g["key"], "name": g["name"], "functions": len(g["tools"])}
-        for g in groups
-    ]
-    return {"tools": tools}
-
-
 @router.get("/api/agents/available-skills")
 async def get_available_skills():
     """Return list of all discovered skill keys with metadata."""
@@ -387,11 +394,6 @@ async def get_agent_history(agent_id: str):
         result["browser_data_dir"] = agent.browser_data_dir
         if agent.completed_at:
             result["completed_at"] = agent.completed_at
-        if agent.todos and agent.todos.todos:
-            result["todos"] = [
-                {"id": t.id, "content": t.content, "status": t.status, "subtasks": t.subtasks, "result": t.result}
-                for t in agent.todos.todos
-            ]
     return result
 
 
@@ -435,25 +437,43 @@ async def get_agent_detail(agent_id: str):
 
 @router.post("/api/agents/{agent_id}/kill")
 async def kill_agent(agent_id: str):
-    """Kill a running agent."""
+    """Kill a running agent — cancels runtime task, stops upstream LLM stream, updates status."""
     from engine.agents import get_runtime
     from server.database import update_agent_status
 
     rt = get_runtime()
+    agent = rt._agents.get(agent_id)
+
+    # 1. Cancel the asyncio task (if any)
     task = rt._tasks.get(agent_id)
     if task and not task.done():
         task.cancel()
-    if agent_id in rt._agents:
-        rt._agents[agent_id].mark_failed("Stopped by user")
+
+    # 2. Stop the upstream LLM generation so the chat.py SSE stream gets CancelledError
+    try:
+        from engine.service import service as _svc
+        from engine.config import get_scraper_settings, scraper_service as _scraper_svc
+        from server.database import get_upstream_session_id as _get_usid
+        upstream_id = _get_usid(agent_id) or agent_id
+        if get_scraper_settings().get("enabled") and _scraper_svc:
+            _eng = getattr(_scraper_svc, "_engine", None)
+            if _eng:
+                await _eng.stop_generation(chat_id=upstream_id)
+        elif _svc and hasattr(_svc, "_stop_upstream_generation"):
+            await _svc._stop_upstream_generation(upstream_id)
+    except Exception as exc:
+        logger.warning("kill_agent: upstream stop failed for %s: %s", agent_id, exc)
+
+    # 3. Update agent status
+    if agent:
+        agent.mark_failed("Stopped by user")
         update_agent_status(agent_id, "killed", error="Stopped by user")
-        # Push event to SSE clients
-        agent = rt._agents[agent_id]
-        if agent.chat_id:
-            push_agent_event(agent.chat_id, {
-                "type": "agent_failed",
-                "agent_id": agent_id,
-                "data": {"role": agent.role, "error": "Stopped by user"},
-            })
+        # Broadcast to all connected SSE clients so topbar/sidebar update
+        broadcast_agent_event({
+            "type": "agent_failed",
+            "agent_id": agent_id,
+            "data": {"role": agent.role, "error": "Stopped by user"},
+        })
         return {"status": "killed", "agent_id": agent_id}
     return {"error": "Agent not found", "agent_id": agent_id}
 
@@ -488,28 +508,37 @@ async def send_agent_message(agent_id: str, request: Request):
 
 @router.post("/api/agents/spawn")
 async def spawn_agent(request: Request):
-    """Manually spawn an agent from the chat UI (@ mention)."""
+    """Manually spawn an agent from the chat UI (@ mention).
+
+    Uses the main chat pipeline (critique pattern): emits agent_start + agent_trigger
+    events so the frontend fires POST /api/chat with the agent's chat_id.
+    No separate LLM loop — the main chat handles everything.
+    """
     from engine.agents import get_runtime
     from engine.agents.protocol import TaskAssignment
+    from engine.agents.registry import AGENT_ROLES, get_role_config
 
     body = await request.json()
     role = body.get("role", "").strip().lower()
     task = body.get("task", "").strip()
     chat_id = body.get("chat_id", "").strip()
+    raw_message = body.get("raw_message", "").strip()  # Original user input e.g. "@maria hello"
 
     if not role or not task or not chat_id:
         return {"error": "role, task, and chat_id are required"}
 
-    from engine.agents.registry import AGENT_ROLES
     valid_roles = tuple(AGENT_ROLES.keys())
     if role not in valid_roles:
         return {"error": f"Invalid role '{role}'. Must be one of: {', '.join(valid_roles)}"}
 
     rt = get_runtime()
+    role_cfg = get_role_config(role)
+    agent_model = body.get("model") or role_cfg.default_model
+
     assignment = TaskAssignment(
         task=task,
         role=role,
-        model=body.get("model") or None,  # None → registry default
+        model=agent_model,
         context=body.get("context") or None,
     )
     try:
@@ -517,7 +546,31 @@ async def spawn_agent(request: Request):
     except RuntimeError as exc:
         return {"error": str(exc)}
 
-    return {"status": "spawned", "agent_id": agent.id, "role": role, "model": agent.model}
+    # The canonical /api/chat turn persists this task and owns the title.
+
+    # Build system prompt from role instruction
+    system_prompt = role_cfg.system_prompt or f"You are a {role} agent. Task: {task}"
+    if assignment.context:
+        agent_message = f"Context: {assignment.context}\n\nTask: {task}"
+    else:
+        agent_message = f"Task: {task}"
+
+    # NOTE: rt.spawn() already emits "agent_spawned" via the runtime event callback,
+    # which the frontend handles to create the topbar card. We only need to emit
+    # agent_trigger here to kick off the LLM turn.
+
+    # Emit agent_trigger — frontend fires POST /api/chat through main pipeline
+    push_agent_event(chat_id, {
+        "type": "agent_trigger",
+        "id": agent.id,
+        "message": agent_message,
+        "system_prompt": system_prompt,
+        "model": agent_model,
+        "browser_data_dir": agent.browser_data_dir or None,
+        "collect": False,
+    })
+
+    return {"status": "spawned", "agent_id": agent.id, "role": role, "model": agent_model}
 
 
 
