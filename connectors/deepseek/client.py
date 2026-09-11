@@ -210,6 +210,23 @@ def get_unique_tokens() -> list[str]:
     return unique
 
 
+def get_unique_tokens_with_accounts() -> list[dict[str, str]]:
+    """Return unique tokens with their browser-data account association.
+
+    Returns list of {"token": ..., "account": "browser-data-accN"} dicts.
+    If a token appears under multiple accounts, first occurrence wins.
+    """
+    store = _load_token_store()
+    seen: set[str] = set()
+    result: list[dict[str, str]] = []
+    for account, tokens in store.items():
+        for tok in tokens:
+            if tok and tok != "None" and tok not in seen:
+                seen.add(tok)
+                result.append({"token": tok, "account": account})
+    return result
+
+
 def save_token_for_account(token: str, account: str | None = None) -> None:
     """Append a token to the account's list (deduped, capped). Never replaces old tokens.
 
@@ -379,19 +396,35 @@ class DeepSeekClient:
     # ------------------------------------------------------------------
 
     def _init_rotation(self) -> None:
-        """Use exactly one token: the selected account's token.
+        """Load all unique tokens across accounts for round-robin rotation.
 
-        DeepSeek tokens are browser-session-bound JWTs — they work like API
-        keys, not a rotatable pool. Use only the token for the currently
-        selected account (from settings). No cross-account pooling, no
-        multi-token rotation.
+        DeepSeek tokens are browser-session-bound JWTs but they work like API
+        keys — no browser needed to use them. Load ALL unique tokens from the
+        store so auto-rotate can failover across accounts when one gets
+        rate-limited or muted.
         """
-        # Prefer explicitly set token, then resolve from account store (strict, no fallback)
-        tok = self._token or get_own_token_for_account(self.account)
-        self._rotate_tokens = [tok] if tok else []
-        self._rotate_idx = 0
-        logger.info("[DeepSeek] Using single token for account %s: %s",
-                     self.account, self._mask_token(tok) if tok else "NONE")
+        # Load all unique tokens across all accounts for rotation
+        all_tokens = get_unique_tokens()
+
+        # If a specific token was explicitly set (e.g. manual switch), ensure
+        # it's in the pool and start from it — but DON'T restrict to just it
+        if self._token and self._token not in all_tokens:
+            all_tokens.insert(0, self._token)
+
+        if all_tokens:
+            self._rotate_tokens = all_tokens
+            # Start at the explicitly set token, or current account's token
+            preferred = self._token or get_own_token_for_account(self.account)
+            if preferred and preferred in self._rotate_tokens:
+                self._rotate_idx = self._rotate_tokens.index(preferred)
+            else:
+                self._rotate_idx = 0
+        else:
+            self._rotate_tokens = []
+            self._rotate_idx = 0
+
+        logger.info("[DeepSeek] Rotation pool loaded: %d tokens (account=%s, starting at idx=%d)",
+                     len(self._rotate_tokens), self.account, self._rotate_idx)
 
     @property
     def _current_rotate_token(self) -> str | None:

@@ -2128,6 +2128,12 @@
             if (_lastTurn) {
               const _bsCard = _lastTurn.querySelector('.backend-status-card');
               if (_bsCard && !_bsCard.classList.contains('collapsed')) _bsCard.classList.add('collapsed');
+              // Safety net: sweep away any lingering completed account-switch card
+              _lastTurn.querySelectorAll('.account-switch-card.asc-complete').forEach(c => {
+                clearTimeout(c._ascDismissTimer);
+                c.classList.add('asc-exit');
+                setTimeout(() => c.remove(), 350);
+              });
             }
             if (activeChatId === streamChatId) {
               parentId = evt.parent_id || parentId;
@@ -2567,6 +2573,13 @@ function handleAccountSwitchEvent(evt, container) {
   const statusEl = card.querySelector(".asc-status");
   const step = evt.step;
 
+  // Any new activity cancels a pending auto-dismiss left over from a prior "complete"
+  if (step !== "complete" && card._ascDismissTimer) {
+    clearTimeout(card._ascDismissTimer);
+    card._ascDismissTimer = null;
+    card.classList.remove("asc-exit");
+  }
+
   // On retry, reset intermediate steps (searching..warming_up) back to pending
   if (step === "retrying") {
     const resetKeys = ["searching", "switching", "syncing", "summarizing", "creating_session", "warming_up"];
@@ -2639,6 +2652,13 @@ function handleAccountSwitchEvent(evt, container) {
     card.classList.add("asc-complete");
     const finalRow = stepsEl.querySelector(`[data-step="complete"]`);
     if (finalRow) { finalRow.classList.add("asc-step-done"); finalRow.classList.remove("asc-step-active"); }
+    // Auto-dismiss: let the user see the success, then fade the card out so it
+    // doesn't linger on screen for the rest of the conversation.
+    clearTimeout(card._ascDismissTimer);
+    card._ascDismissTimer = setTimeout(() => {
+      card.classList.add("asc-exit");
+      setTimeout(() => card.remove(), 350);
+    }, 1600);
   } else if (step === "failed") {
     statusEl.textContent = "failed";
     card.classList.add("asc-failed");

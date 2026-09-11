@@ -1074,7 +1074,7 @@ async def toggle_auto_switch(payload: dict[str, Any]) -> dict[str, Any]:
 # --- Per-provider account/key listing & auto-switch ---
 
 # Providers that use browser profiles (accounts) vs API keys
-_BROWSER_PROVIDERS = ("qwen", "deepseek")
+_BROWSER_PROVIDERS = ("qwen",)
 _API_KEY_PROVIDERS = ("gemini", "groq", "mistral", "openai", "puter")
 
 # Map provider → (module_path, client_class_or_getter)
@@ -1200,15 +1200,45 @@ async def list_accounts_by_provider() -> dict[str, Any]:
         "auto_switch_enabled": _auto_sw("qwen"),
     }
 
-    # DeepSeek: accounts that have DS tokens
-    ds_accounts = [a for a in browser_accounts if a["has_ds"]]
-    providers["deepseek"] = {
-        "type": "browser",
-        "label": "DeepSeek",
-        "accounts": ds_accounts,
-        "active": active_account if any(a["name"] == active_account for a in ds_accounts) else None,
-        "auto_switch_enabled": _auto_sw("deepseek"),
-    }
+    # DeepSeek: present as api_key type — tokens are JWTs, no browser swap needed
+    try:
+        from connectors.deepseek.client import get_unique_tokens_with_accounts as _ds_unique_acct
+        _ds_entries = _ds_unique_acct()
+        _ds_client = get_deepseek_client()
+        _ds_active_token = _ds_client._token or None
+        _ds_keys = []
+        for _i, _entry in enumerate(_ds_entries):
+            _tok = _entry["token"]
+            _acct = _entry["account"]
+            _masked = _tok[:8] + "..." + _tok[-4:] if len(_tok) > 12 else "***"
+            # Extract account number from "browser-data-accN" for display
+            _acct_match = re.match(r"browser-data-acc(\d+)$", _acct)
+            _browser_tag = f"acc{_acct_match.group(1)}" if _acct_match else _acct
+            _ds_keys.append({
+                "index": _i,
+                "masked": _masked,
+                "active": _tok == _ds_active_token,
+                "browser_data": _browser_tag,
+            })
+        _ds_active_idx = next((k["index"] for k in _ds_keys if k["active"]), None)
+        providers["deepseek"] = {
+            "type": "api_key",
+            "label": "DeepSeek",
+            "keys": _ds_keys,
+            "active_index": _ds_active_idx,
+            "available": bool(_ds_entries),
+            "auto_switch_enabled": _auto_sw("deepseek"),
+        }
+    except Exception as exc:
+        providers["deepseek"] = {
+            "type": "api_key",
+            "label": "DeepSeek",
+            "keys": [],
+            "active_index": None,
+            "available": False,
+            "auto_switch_enabled": _auto_sw("deepseek"),
+            "error": str(exc),
+        }
 
     # --- API key providers ---
     for prov_id in _API_KEY_PROVIDERS:
@@ -1278,11 +1308,38 @@ async def toggle_auto_switch_per_provider(provider: str, payload: dict[str, Any]
 async def switch_api_key(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Manually switch to a specific API key by index for an API key provider."""
     provider = provider.lower().strip()
-    if provider not in _API_KEY_PROVIDER_MODULES:
-        raise HTTPException(status_code=400, detail=f"Provider '{provider}' does not support key switching")
     index = payload.get("index")
     if index is None or not isinstance(index, int):
         raise HTTPException(status_code=400, detail="Missing or invalid 'index' field")
+
+    # DeepSeek: silent token swap — no browser profile changes
+    if provider == "deepseek":
+        try:
+            from connectors.deepseek.client import get_unique_tokens_with_accounts as _ds_unique_acct
+            entries = _ds_unique_acct()
+            if index < 0 or index >= len(entries):
+                raise HTTPException(status_code=404, detail="Key index out of range")
+            target_token = entries[index]["token"]
+            client = get_deepseek_client()
+            # Silent swap: just set the token in-memory, no browser touch
+            client.set_token(target_token, persist=False)
+            # Rebuild key list for response
+            keys = []
+            for i, entry in enumerate(entries):
+                tok = entry["token"]
+                acct = entry["account"]
+                masked = tok[:8] + "..." + tok[-4:] if len(tok) > 12 else "***"
+                acct_match = re.match(r"browser-data-acc(\d+)$", acct)
+                browser_tag = f"acc{acct_match.group(1)}" if acct_match else acct
+                keys.append({"index": i, "masked": masked, "active": i == index, "browser_data": browser_tag})
+            return {"status": "ok", "keys": keys}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"DeepSeek switch failed: {exc}")
+
+    if provider not in _API_KEY_PROVIDER_MODULES:
+        raise HTTPException(status_code=400, detail=f"Provider '{provider}' does not support key switching")
     try:
         client = _get_api_key_client(provider)
         if index < 0 or index >= len(client._keys):

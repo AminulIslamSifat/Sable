@@ -139,11 +139,15 @@ window.safeCopy = async function(text) {
     function _renderApiKeyCard(key, provider) {
       const isActive = key.active;
       const borderColor = isActive ? '#4ade80' : 'var(--border)';
+      const browserTag = key.browser_data
+        ? `<span style="background:var(--surface,#2a2a3e);color:var(--text-muted,#aaa);padding:1px 6px;border-radius:4px;font-size:10px;font-family:var(--font-mono);">🌐 ${key.browser_data}</span>`
+        : '';
       return `<div style="background:var(--panel);border:${isActive ? '2px' : '1px'} solid ${borderColor};border-radius:10px;padding:${isActive ? '13px 17px' : '14px 18px'};display:flex;flex-direction:column;gap:10px;">
         <div style="min-width:0;">
           <div style="font-size:13px;font-weight:600;color:var(--text);font-family:var(--font-mono);">${key.masked}</div>
           <div style="font-size:11px;color:var(--text-dim);margin-top:4px;display:flex;flex-wrap:wrap;align-items:center;gap:5px;">
             <span>Key #${key.index}</span>
+            ${browserTag}
             ${isActive ? '<span style="color:var(--accent);">● active</span>' : ''}
           </div>
         </div>
