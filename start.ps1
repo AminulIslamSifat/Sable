@@ -25,17 +25,23 @@ function Write-Warn { param($msg) Write-Host "[Sable] WARN $msg" -ForegroundColo
 function Write-Err  { param($msg) Write-Host "[Sable] ERR  $msg" -ForegroundColor Red }
 function Write-Info { param($msg) Write-Host "[Sable] INFO $msg" -ForegroundColor Cyan }
 
-# -- Hidden Console Launcher --------------------------------------------------
-# Windows assigns a NEW visible console to every console-subsystem child
-# (git.exe, cmd.exe, taskkill...) whenever its parent has NO console attached.
-# `pythonw.exe` has no console -> every checkpoint git.exe pops a window.
-# `uv run python server.py` inside a terminal inherits that console -> no pops.
+# -- Detached Server Launcher -------------------------------------------------
+# Windows console rules (Win32 CreateProcess):
+#   * parent HAS a console  -> child inherits it, no new window
+#   * parent has NO console -> child ALLOCATES a NEW VISIBLE console
 #
-# This helper launches the server under a HIDDEN console host so the entire
-# process tree inherits ONE invisible console instead of allocating new ones.
-# Result: identical to running `uv run python server.py` in a terminal, but
-# the terminal itself is never shown.
-function Start-HiddenConsoleProcess {
+# `pythonw.exe` is a GUI-subsystem binary -> NO console -> every child it
+# spawns (git.exe from checkpoints, cmd.exe from execute_command, taskkill,
+# etc.) pops a fresh visible window. THAT is the popup spam.
+#
+# The fix: launch the server with CreateNoWindow=$true + UseShellExecute=$false.
+# That gives the server ONE *invisible* console (the CREATE_NO_WINDOW effect).
+# Every console-subsystem child inherits that invisible console, so Windows
+# never allocates a new visible one -> zero popups, anywhere in the tree.
+#
+# NOTE: WindowStyle is IGNORED when UseShellExecute=$false, so it is not used.
+#       Redirecting stdout/stderr is what produces the log files.
+function Start-SableServerProcess {
     param(
         [Parameter(Mandatory=$true)][string]$FilePath,
         [Parameter(Mandatory=$false)][string[]]$ArgumentList = @(),
@@ -53,9 +59,8 @@ function Start-HiddenConsoleProcess {
         }) -join ' '
     }
     $psi.WorkingDirectory       = $WorkingDirectory
-    $psi.UseShellExecute        = $false          # required to attach a console
-    $psi.CreateNoWindow         = $false          # FALSE = give it a console (hidden below)
-    $psi.WindowStyle            = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $psi.UseShellExecute        = $false   # required for CreateNoWindow + redirection
+    $psi.CreateNoWindow         = $true    # invisible console; children INHERIT it -> no popups
     $psi.RedirectStandardOutput = [bool]$StdOutLog
     $psi.RedirectStandardError  = [bool]$StdErrLog
 
@@ -65,7 +70,7 @@ function Start-HiddenConsoleProcess {
     $proc.StartInfo = $psi
 
     if ($StdOutLog -or $StdErrLog) {
-        # Async pump so the redirected pipes never fill and block the child.
+        # Async pump so redirected pipes never fill and block the child.
         $outWriter = if ($StdOutLog) { New-Object System.IO.StreamWriter($StdOutLog, $true) } else { $null }
         $errWriter = if ($StdErrLog) { New-Object System.IO.StreamWriter($StdErrLog, $true) } else { $null }
         Register-ObjectEvent -InputObject $proc -EventName OutputDataReceived -Action {
@@ -820,24 +825,25 @@ function Main {
 
     # CRITICAL: use `python.exe`, NOT `pythonw.exe`.
     #
-    # pythonw has NO console, so every child process (git.exe from the
-    # checkpoint system, cmd.exe from execute_command, taskkill, etc.) gets
-    # its own brand-new VISIBLE console window. That is the popup spam.
+    # pythonw (GUI subsystem) has NO console, so every child process it
+    # spawns (git.exe from the checkpoint system, cmd.exe from
+    # execute_command, taskkill, ...) gets its OWN brand-new VISIBLE
+    # console window -> the popup spam.
     #
-    # python.exe is a console-subsystem binary. When launched through
-    # Start-HiddenConsoleProcess it gets ONE hidden console that the entire
-    # child tree inherits -> git.exe/cmd.exe reuse it -> nothing ever pops.
-    # This mirrors exactly what `uv run python server.py` does in a terminal.
+    # python.exe + CreateNoWindow=$true gives the server ONE *invisible*
+    # console that the entire child tree inherits. No child ever allocates
+    # its own window. This is the exact CREATE_NO_WINDOW behavior from
+    # Win32, which Start-Process cannot express but ProcessStartInfo can.
     $serverEnv = @{ "TERM" = "xterm-256color" }
     try {
-        $proc = Start-HiddenConsoleProcess `
+        $proc = Start-SableServerProcess `
             -FilePath $uvPath `
             -ArgumentList @("run", "python", "server.py") `
             -WorkingDirectory $SCRIPT_DIR `
             -StdOutLog (Join-Path $SCRIPT_DIR "sable.log") `
             -StdErrLog (Join-Path $SCRIPT_DIR "sable_error.log") `
             -Environment $serverEnv
-        Write-Ok "Server started (PID $($proc.Id)) - hidden console, no child popups"
+        Write-Ok "Server started (PID $($proc.Id)) - invisible console, no child popups"
     } catch {
         Write-Err "Failed to launch server: $_"
         exit 1
