@@ -25,6 +25,65 @@ function Write-Warn { param($msg) Write-Host "[Sable] WARN $msg" -ForegroundColo
 function Write-Err  { param($msg) Write-Host "[Sable] ERR  $msg" -ForegroundColor Red }
 function Write-Info { param($msg) Write-Host "[Sable] INFO $msg" -ForegroundColor Cyan }
 
+# -- Hidden Console Launcher --------------------------------------------------
+# Windows assigns a NEW visible console to every console-subsystem child
+# (git.exe, cmd.exe, taskkill...) whenever its parent has NO console attached.
+# `pythonw.exe` has no console -> every checkpoint git.exe pops a window.
+# `uv run python server.py` inside a terminal inherits that console -> no pops.
+#
+# This helper launches the server under a HIDDEN console host so the entire
+# process tree inherits ONE invisible console instead of allocating new ones.
+# Result: identical to running `uv run python server.py` in a terminal, but
+# the terminal itself is never shown.
+function Start-HiddenConsoleProcess {
+    param(
+        [Parameter(Mandatory=$true)][string]$FilePath,
+        [Parameter(Mandatory=$false)][string[]]$ArgumentList = @(),
+        [string]$WorkingDirectory = $SCRIPT_DIR,
+        [string]$StdOutLog,
+        [string]$StdErrLog,
+        [hashtable]$Environment = @{}
+    )
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName               = $FilePath
+    if ($ArgumentList.Count -gt 0) {
+        $psi.Arguments = ($ArgumentList | ForEach-Object {
+            if ($_ -match '\s') { '"' + ($_ -replace '"','\"') + '"' } else { $_ }
+        }) -join ' '
+    }
+    $psi.WorkingDirectory       = $WorkingDirectory
+    $psi.UseShellExecute        = $false          # required to attach a console
+    $psi.CreateNoWindow         = $false          # FALSE = give it a console (hidden below)
+    $psi.WindowStyle            = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $psi.RedirectStandardOutput = [bool]$StdOutLog
+    $psi.RedirectStandardError  = [bool]$StdErrLog
+
+    foreach ($k in $Environment.Keys) { $psi.EnvironmentVariables[$k] = $Environment[$k] }
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+
+    if ($StdOutLog -or $StdErrLog) {
+        # Async pump so the redirected pipes never fill and block the child.
+        $outWriter = if ($StdOutLog) { New-Object System.IO.StreamWriter($StdOutLog, $true) } else { $null }
+        $errWriter = if ($StdErrLog) { New-Object System.IO.StreamWriter($StdErrLog, $true) } else { $null }
+        Register-ObjectEvent -InputObject $proc -EventName OutputDataReceived -Action {
+            if ($EventArgs.Data -ne $null) { $Event.MessageData.WriteLine($EventArgs.Data) }
+        } -MessageData $outWriter | Out-Null
+        Register-ObjectEvent -InputObject $proc -EventName ErrorDataReceived -Action {
+            if ($EventArgs.Data -ne $null) { $Event.MessageData.WriteLine($EventArgs.Data) }
+        } -MessageData $errWriter | Out-Null
+        $proc.Start() | Out-Null
+        if ($StdOutLog) { $proc.BeginOutputReadLine() }
+        if ($StdErrLog) { $proc.BeginErrorReadLine() }
+    } else {
+        $proc.Start() | Out-Null
+    }
+
+    return $proc
+}
+
 # -- Retry Helper -------------------------------------------------------------
 function Invoke-WithRetry {
     param([scriptblock]$Action, [string]$Name = "Operation")
@@ -415,8 +474,9 @@ function Bootstrap-Files {
 # -- Sync Dependencies -------------------------------------------------------
 function Sync-Dependencies {
     Write-Info "Synchronizing Python dependencies (uv sync)..."
+    # Run uv directly (not via `cmd /c`) so no extra console window flashes.
     $syncOk = Invoke-WithRetry -Action {
-        cmd /c "uv sync --extra windows 2>&1"
+        & uv sync --extra windows 2>&1 | ForEach-Object { Write-Host $_ }
         if ($LASTEXITCODE -ne 0) { throw "uv sync exited with code $LASTEXITCODE" }
     } -Name "uv sync"
 
@@ -424,7 +484,7 @@ function Sync-Dependencies {
         Write-Warn "uv sync failed - attempting venv recreation..."
         Remove-Item -Recurse -Force ".venv" -ErrorAction SilentlyContinue
         $retryOk = Invoke-WithRetry -Action {
-            cmd /c "uv sync --extra windows 2>&1"
+            & uv sync --extra windows 2>&1 | ForEach-Object { Write-Host $_ }
             if ($LASTEXITCODE -ne 0) { throw "uv sync exited with code $LASTEXITCODE" }
         } -Name "uv sync (retry)"
         if (-not $retryOk) {
@@ -439,7 +499,7 @@ function Sync-Dependencies {
 function Setup-Playwright {
     Write-Info "Ensuring Playwright Chromium..."
     try {
-        cmd /c "uv run playwright install chromium 2>&1"
+        & uv run playwright install chromium 2>&1 | ForEach-Object { Write-Host $_ }
     } catch {
         Write-Warn "Playwright Chromium install had issues - browser automation may not work"
     }
@@ -570,9 +630,11 @@ function Setup-AutoStart {
     try {
         $existingTask = Get-ScheduledTask -TaskName $TASK_NAME -ErrorAction SilentlyContinue
 
+        # Launch via hidden PowerShell instead of a bare cmd.exe so the login
+        # task never flashes a console window. Delegates to the same start.bat.
         $action = New-ScheduledTaskAction `
-            -Execute "cmd.exe" `
-            -Argument "/c `"$startBat`"" `
+            -Execute "powershell.exe" `
+            -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$SCRIPT_DIR\start.ps1`"" `
             -WorkingDirectory $SCRIPT_DIR
 
         if (-not $existingTask) {
@@ -750,22 +812,37 @@ function Main {
     Write-Info "Opening browser..."
     try { Start-Process $SABLE_URL } catch {}
 
-    Write-Info "Starting server in background..."
-    $env:TERM = "xterm-256color"
+    Write-Info "Starting server in background (hidden console)..."
 
     # Resolve uv path
     $uvPath = Get-Command uv -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
     if (-not $uvPath) { $uvPath = "uv" }
 
-    # Launch detached, no visible console window
-    Start-Process -FilePath $uvPath `
-        -ArgumentList "run", "pythonw", "server.py" `
-        -WorkingDirectory $SCRIPT_DIR `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput "$SCRIPT_DIR\sable.log" `
-        -RedirectStandardError "$SCRIPT_DIR\sable_error.log"
+    # CRITICAL: use `python.exe`, NOT `pythonw.exe`.
+    #
+    # pythonw has NO console, so every child process (git.exe from the
+    # checkpoint system, cmd.exe from execute_command, taskkill, etc.) gets
+    # its own brand-new VISIBLE console window. That is the popup spam.
+    #
+    # python.exe is a console-subsystem binary. When launched through
+    # Start-HiddenConsoleProcess it gets ONE hidden console that the entire
+    # child tree inherits -> git.exe/cmd.exe reuse it -> nothing ever pops.
+    # This mirrors exactly what `uv run python server.py` does in a terminal.
+    $serverEnv = @{ "TERM" = "xterm-256color" }
+    try {
+        $proc = Start-HiddenConsoleProcess `
+            -FilePath $uvPath `
+            -ArgumentList @("run", "python", "server.py") `
+            -WorkingDirectory $SCRIPT_DIR `
+            -StdOutLog (Join-Path $SCRIPT_DIR "sable.log") `
+            -StdErrLog (Join-Path $SCRIPT_DIR "sable_error.log") `
+            -Environment $serverEnv
+        Write-Ok "Server started (PID $($proc.Id)) - hidden console, no child popups"
+    } catch {
+        Write-Err "Failed to launch server: $_"
+        exit 1
+    }
 
-    Write-Ok "Server started in background (PID will appear in Task Manager)"
     Write-Info "Logs: sable.log / sable_error.log"
 }
 
