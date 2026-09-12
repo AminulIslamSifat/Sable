@@ -564,12 +564,39 @@
       return card;
     }
 
-    // ── Permission Approval Banner ──
-    function renderApprovalCard(evt, container) {
+// ── Permission Approval Banner ──
+    // Resolve the pane + chat a banner action belongs to. Falls back to the
+    // active pane when no chat id was captured (legacy call sites).
+    function _bannerTarget(chatId) {
+      const cid = chatId || activeChatId;
+      const pane = (window._sableEnsurePane && cid)
+        ? window._sableEnsurePane(cid)
+        : activePane;
+      return { cid, pane };
+    }
+
+    // Append a live "running" skill card to the target pane, mirroring what a
+    // normal in-stream command card looks like. Returns the card so the caller
+    // can finish it once execution returns.
+    function _appendRunningCard(pane, name, content) {
+      const card = createSkillCard({ name: name, data: { content: content } });
+      const st = card.querySelector('.skill-status');
+      if (st) { st.textContent = 'running…'; st.style.color = ''; }
+      const turn = pane ? pane.querySelector('.turn:last-child') : null;
+      const target = turn
+        ? (turn.querySelector('.skill-stack:last-of-type') || turn)
+        : (pane ? pane.querySelector('.messages') : null);
+      if (target) { target.appendChild(card); activateLucideIcons(card); }
+      pane?.querySelector('.messages')?.scrollTo({ top: 999999, behavior: 'smooth' });
+      return card;
+    }
+
+    function renderApprovalCard(evt, container, chatId) {
       const { id, name, data } = evt;
       const { command, category, reason } = data;
       const banner = document.getElementById('approvalBanner');
       if (!banner) return;
+      const { cid, pane } = _bannerTarget(chatId);
 
       const catIcons = {
         filesystem: 'trash-2', packages: 'package', services: 'settings',
@@ -581,6 +608,7 @@
 
       banner.className = 'approval-banner';
       banner.dataset.tagId = id;
+      banner.dataset.chatId = cid || '';
       banner.innerHTML = `
         <div class="ab-icon"><i data-lucide="${icon}"></i></div>
         <div class="ab-body">
@@ -593,241 +621,111 @@
           <button class="ab-deny"><i data-lucide="x"></i> Deny</button>
         </div>
       `;
+      activateLucideIcons(banner);
 
       const allowBtn = banner.querySelector('.ab-allow');
       const allowSessionBtn = banner.querySelector('.ab-allow-session');
       const denyBtn = banner.querySelector('.ab-deny');
 
-      allowBtn.addEventListener('click', async () => {
+      // Fire the running card + hide the banner in one shot, before any await,
+      // so the UI transitions immediately instead of sitting on the prompt.
+      function _begin() {
         allowBtn.disabled = true;
-        denyBtn.disabled = true;
         allowSessionBtn.disabled = true;
-        // Remove transient "waiting" note
-        activePane?.querySelectorAll('.approval-pending-note').forEach(el => el.remove());
-        try {
-          console.log('[approval] allow clicked, id:', id);
-          const resp = await fetch('/api/skills/approve/' + id, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({chat_id: activeChatId}) });
-          console.log('[approval] response status:', resp.status);
+        denyBtn.disabled = true;
+        pane?.querySelectorAll('.approval-pending-note').forEach(el => el.remove());
+        banner.classList.add('hidden');
+        return _appendRunningCard(pane, name, command);
+      }
 
-          if (resp.headers.get('content-type')?.includes('text/event-stream')) {
-            banner.classList.add('ab-resolved');
-            if (activePane) {
-              const card = createSkillCard({ name: name, data: { content: command } });
-              const status = card.querySelector('.skill-status');
-              status.textContent = 'approved \u2713';
-              status.style.color = 'var(--ok)';
-              const turn = activePane.querySelector('.turn:last-child');
-              const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
-              if (target) { target.appendChild(card); activateLucideIcons(card); }
-              activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
-            }
-            const reader = resp.body.getReader();
-            const dec = new TextDecoder();
-            let buf = '';
-            let output = '';
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              buf += dec.decode(value, { stream: true });
-              const lines = buf.split('\n');
-              buf = lines.pop();
-              for (const line of lines) {
-                if (!line.startsWith('data: ')) continue;
-                try {
-                  const ev = JSON.parse(line.slice(6));
-                  if (ev.type === 'skill_output' && ev.text) output += ev.text;
-                  if (ev.type === 'skill_end') {
-                    const st = document.createElement('span');
-                    st.className = 'ab-status ' + (ev.ok ? 'ok' : 'no');
-                    st.textContent = ev.ok ? 'done' : 'failed';
-                    banner.querySelector('.ab-actions').replaceWith(st);
-                  }
-                } catch(e) {}
-              }
-            }
-            if (output) {
-              const out = document.createElement('div');
-              out.className = 'ab-output';
-              out.textContent = output.slice(0, 500);
-              banner.appendChild(out);
-              if (activePane) {
-                const lastCard = activePane.querySelector('.turn:last-child .skill-card:last-of-type');
-                if (lastCard) {
-                  lastCard.querySelector('.skill-output').textContent = output.slice(0, 2000);
-                  const st = lastCard.querySelector('.skill-status');
-                  if (st) { st.textContent = 'done \u2713'; st.style.color = 'var(--ok)'; }
-                }
-              }
-            }
-            setTimeout(() => sendAutoTurnMessage('[System: Command was approved and executed. Continue.]', { skipUserBubble: true, skipUserSave: true }), 300);
-          } else {
-            const data = await resp.json();
-            // Check application-level success, not just HTTP status
-            if (!data.ok) {
-              banner.classList.add('ab-resolved');
-              const st = document.createElement('span');
-              st.className = 'ab-status no';
-              st.textContent = data.error || 'expired';
-              banner.querySelector('.ab-actions').replaceWith(st);
-              // Re-enable buttons so user sees the failure state
-              allowBtn.disabled = false;
-              denyBtn.disabled = false;
-              allowSessionBtn.disabled = false;
-              return; // Don't hide banner or send auto-turn
-            }
-            banner.classList.add('ab-resolved');
-            if (activePane) {
-              const card = createSkillCard({ name: name, data: { content: command } });
-              const status = card.querySelector('.skill-status');
-              status.textContent = 'approved \u2713';
-              status.style.color = 'var(--ok)';
-              const turn = activePane.querySelector('.turn:last-child');
-              const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
-              if (target) { target.appendChild(card); activateLucideIcons(card); }
-              activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
-            }
-            const st = document.createElement('span');
-            st.className = 'ab-status ok';
-            st.textContent = 'done';
-            banner.querySelector('.ab-actions').replaceWith(st);
-            if (data.feedback) {
-              if (activePane) {
-                const lastCard = activePane.querySelector('.turn:last-child .skill-card:last-of-type');
-                if (lastCard) {
-                  lastCard.querySelector('.skill-output').textContent = String(data.feedback).slice(0, 2000);
-                  const cst = lastCard.querySelector('.skill-status');
-                  if (cst) { cst.textContent = 'done \u2713'; cst.style.color = 'var(--ok)'; }
-                }
-              }
-              setTimeout(() => sendAutoTurnMessage(data.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
-            } else {
-              // No feedback but command succeeded — still tell the model to continue
-              setTimeout(() => sendAutoTurnMessage('[System: Command was approved and executed. Continue.]', { skipUserBubble: true, skipUserSave: true }), 300);
-            }
+      function _finishApproved(card, t0, res) {
+        if (!res.ok) {
+          finishSkillCard(card, { name, ok: false, duration_ms: Math.round(performance.now() - t0), error: res.error || 'expired' });
+          // Only restore the prompt if the user is still in this chat.
+          if (activeChatId === cid) {
+            banner.classList.remove('hidden');
+            renderApprovalCard(evt, pane, cid);
           }
-        } catch(e) {
-          banner.classList.add('ab-resolved');
-          const st = document.createElement('span');
-          st.className = 'ab-status no';
-          st.textContent = 'error';
-          banner.querySelector('.ab-actions')?.replaceWith(st);
+          return;
         }
-        setTimeout(() => banner.classList.add('hidden'), 4000);
-      });
+        const feedback = res.feedback ? String(res.feedback) : '';
+        const out = card.querySelector('.skill-output');
+        if (out && feedback) out.textContent = feedback.slice(0, 4000);
+        finishSkillCard(card, { name, ok: true, duration_ms: Math.round(performance.now() - t0), result: {} });
+        setTimeout(() => sendAutoTurnMessage(
+          feedback || '[System: Command was approved and executed. Continue.]',
+          { skipUserBubble: true, skipUserSave: true, targetChatId: cid },
+        ), 300);
+      }
 
+      allowBtn.addEventListener('click', async () => {
+        const card = _begin();
+        const t0 = performance.now();
+        try {
+          const resp = await fetch('/api/skills/approve/' + id, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: cid }),
+          });
+          _finishApproved(card, t0, await resp.json());
+        } catch (e) {
+          finishSkillCard(card, { name, ok: false, duration_ms: Math.round(performance.now() - t0), error: String(e) });
+        }
+      });
 
       allowSessionBtn.addEventListener('click', async () => {
-        allowBtn.disabled = true;
-        allowSessionBtn.disabled = true;
-        denyBtn.disabled = true;
-        activePane?.querySelectorAll('.approval-pending-note').forEach(el => el.remove());
+        const card = _begin();
+        const t0 = performance.now();
         try {
-          const resp = await fetch('/api/skills/approve/' + id, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({chat_id: activeChatId, session: true}) });
-          const data = await resp.json();
-          // Check application-level success before creating any UI
-          if (!data.ok) {
-            banner.classList.add('ab-resolved');
-            const st = document.createElement('span');
-            st.className = 'ab-status no';
-            st.textContent = data.error || 'expired';
-            banner.querySelector('.ab-actions').replaceWith(st);
-            allowBtn.disabled = false;
-            allowSessionBtn.disabled = false;
-            denyBtn.disabled = false;
-            return;
-          }
-          banner.classList.add('ab-resolved');
-          if (activePane) {
-            const card = createSkillCard({ name: name, data: { content: command } });
-            const status = card.querySelector('.skill-status');
-            status.textContent = 'approved (session) \u2713';
-            status.style.color = 'var(--ok)';
-            const turn = activePane.querySelector('.turn:last-child');
-            const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
-            if (target) { target.appendChild(card); activateLucideIcons(card); }
-            activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
-          }
-          const st = document.createElement('span');
-          st.className = 'ab-status ok';
-          st.textContent = 'session ✓';
-          banner.querySelector('.ab-actions').replaceWith(st);
-          if (data.feedback) {
-            if (activePane) {
-              const lastCard = activePane.querySelector('.turn:last-child .skill-card:last-of-type');
-              if (lastCard) {
-                lastCard.querySelector('.skill-output').textContent = String(data.feedback).slice(0, 2000);
-                const cst = lastCard.querySelector('.skill-status');
-                if (cst) { cst.textContent = 'done \u2713'; cst.style.color = 'var(--ok)'; }
-              }
-            }
-            setTimeout(() => sendAutoTurnMessage(data.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
-          } else {
-            setTimeout(() => sendAutoTurnMessage('[System: Command was approved and executed. Continue.]', { skipUserBubble: true, skipUserSave: true }), 300);
-          }
-        } catch(e) {
-          banner.classList.add('ab-resolved');
-          const st = document.createElement('span');
-          st.className = 'ab-status no';
-          st.textContent = 'error';
-          banner.querySelector('.ab-actions')?.replaceWith(st);
+          const resp = await fetch('/api/skills/approve/' + id, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: cid, session: true }),
+          });
+          _finishApproved(card, t0, await resp.json());
+        } catch (e) {
+          finishSkillCard(card, { name, ok: false, duration_ms: Math.round(performance.now() - t0), error: String(e) });
         }
-        setTimeout(() => banner.classList.add('hidden'), 4000);
       });
-
-
 
       denyBtn.addEventListener('click', async () => {
-        allowBtn.disabled = true;
-        allowSessionBtn.disabled = true;
-        denyBtn.disabled = true;
-        // Remove transient "waiting" note
-        activePane?.querySelectorAll('.approval-pending-note').forEach(el => el.remove());
-        banner.classList.add('ab-resolved');
-        const st = document.createElement('span');
-        st.className = 'ab-status no';
-        st.textContent = 'denied';
-        if (activePane) {
-          const card = createSkillCard({ name: name, data: { content: command } });
-          const status = card.querySelector('.skill-status');
-          status.textContent = 'denied ✗';
-          status.style.color = 'var(--danger)';
-          card.querySelector('.skill-output').textContent = '[denied by user]';
-          const turn = activePane.querySelector('.turn:last-child');
-          const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
-          if (target) { target.appendChild(card); activateLucideIcons(card); }
-          activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
-        }
-        banner.querySelector('.ab-actions').replaceWith(st);
+        const card = _begin();
+        const st = card.querySelector('.skill-status');
+        if (st) { st.textContent = 'denied ✗'; st.style.color = 'var(--danger)'; }
+        const out = card.querySelector('.skill-output');
+        if (out) out.textContent = '[denied by user]';
         try {
-          console.log('[approval] deny clicked, id:', id, 'chat:', activeChatId);
-          const r = await fetch('/api/skills/deny/' + id, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({chat_id: activeChatId}) });
-          console.log('[approval] deny status:', r.status);
-          const data = await r.json();
-          if (data.feedback) {
-            setTimeout(() => sendAutoTurnMessage(data.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
-          } else {
-            setTimeout(() => sendAutoTurnMessage('[System: Command was denied by user.]', { skipUserBubble: true, skipUserSave: true }), 300);
-          }
-        } catch(e) {
-          console.error('[approval] deny error:', e);
-          setTimeout(() => sendAutoTurnMessage('[System: Command was denied by user.]'), 300);
+          const r = await fetch('/api/skills/deny/' + id, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: cid }),
+          });
+          const res = await r.json();
+          setTimeout(() => sendAutoTurnMessage(
+            res.feedback || '[System: Command was denied by user.]',
+            { skipUserBubble: true, skipUserSave: true, targetChatId: cid },
+          ), 300);
+        } catch (e) {
+          setTimeout(() => sendAutoTurnMessage(
+            '[System: Command was denied by user.]',
+            { skipUserBubble: true, skipUserSave: true, targetChatId: cid },
+          ), 300);
         }
-        setTimeout(() => banner.classList.add('hidden'), 3000);
       });
-
-      activateLucideIcons(banner);
     }
 
-    function renderCwdWarningCard(evt, container) {
+    function renderCwdWarningCard(evt, container, chatId) {
       const { id, name, data } = evt;
       const { path, cwd } = data;
       const banner = document.getElementById('approvalBanner');
       if (!banner) return;
+      const { cid, pane } = _bannerTarget(chatId);
 
       const shortPath = path.length > 80 ? '…' + path.slice(-77) : path;
 
       banner.className = 'approval-banner cwd-warning-banner';
       banner.dataset.tagId = id;
+      banner.dataset.chatId = cid || '';
       banner.innerHTML = `
         <div class="ab-icon"><i data-lucide="folder-alert"></i></div>
         <div class="ab-body">
@@ -842,185 +740,134 @@
           <button class="ab-cwd-deny"><i data-lucide="x"></i> Deny</button>
         </div>
       `;
+      activateLucideIcons(banner);
 
       const sessionBtn = banner.querySelector('.ab-cwd-session');
       const continueBtn = banner.querySelector('.ab-cwd-continue');
       const openBtn = banner.querySelector('.ab-cwd-open');
       const denyBtn = banner.querySelector('.ab-cwd-deny');
 
-      function disableAllCwdBtns() {
-        if (sessionBtn) sessionBtn.disabled = true;
-        continueBtn.disabled = true;
-        openBtn.disabled = true;
-        if (denyBtn) denyBtn.disabled = true;
+      function _begin() {
+        [sessionBtn, continueBtn, openBtn, denyBtn].forEach(b => { if (b) b.disabled = true; });
+        pane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
+        banner.classList.add('hidden');
+        return _appendRunningCard(pane, name, path);
       }
 
-      sessionBtn?.addEventListener('click', async () => {
-        disableAllCwdBtns();
-        activePane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
+      async function _approveWithSession(session) {
+        const card = _begin();
+        const t0 = performance.now();
         try {
           const resp = await fetch('/api/skills/cwd-approve/' + id, {
             method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({chat_id: activeChatId, session: true}),
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: cid, session }),
           });
-          banner.classList.add('ab-resolved');
-          if (resp.ok && activePane) {
-            const card = createSkillCard({ name: name, data: { attrs: { path: path } } });
-            const status = card.querySelector('.skill-status');
-            status.textContent = 'allowed for session ✓';
-            status.style.color = 'var(--ok)';
-            const turn = activePane.querySelector('.turn:last-child');
-            const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
-            if (target) { target.appendChild(card); activateLucideIcons(card); }
-            activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
-          }
-          const result = await resp.json();
-          const st = document.createElement('span');
-          st.className = 'ab-status ok';
-          st.textContent = 'session allowed';
-          banner.querySelector('.ab-actions').replaceWith(st);
-          if (result.feedback) {
-            setTimeout(() => sendAutoTurnMessage(result.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
-          }
-        } catch(e) {
-          banner.classList.add('ab-resolved');
-          const st = document.createElement('span');
-          st.className = 'ab-status no';
-          st.textContent = 'error';
-          banner.querySelector('.ab-actions')?.replaceWith(st);
+          const res = await resp.json();
+          const out = card.querySelector('.skill-output');
+          if (out && res.feedback) out.textContent = String(res.feedback).slice(0, 4000);
+          finishSkillCard(card, { name, ok: true, duration_ms: Math.round(performance.now() - t0), result: {} });
+          setTimeout(() => sendAutoTurnMessage(
+            res.feedback || '[System: File operation approved. Continue.]',
+            { skipUserBubble: true, skipUserSave: true, targetChatId: cid },
+          ), 300);
+        } catch (e) {
+          finishSkillCard(card, { name, ok: false, duration_ms: Math.round(performance.now() - t0), error: String(e) });
         }
-        setTimeout(() => banner.classList.add('hidden'), 4000);
-      });
+      }
 
-      continueBtn.addEventListener('click', async () => {
-        disableAllCwdBtns();
-        activePane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
-        try {
-          const resp = await fetch('/api/skills/cwd-approve/' + id, {
-            method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({chat_id: activeChatId}),
-          });
-          banner.classList.add('ab-resolved');
-          if (resp.ok && activePane) {
-            const card = createSkillCard({ name: name, data: { attrs: { path: path } } });
-            const status = card.querySelector('.skill-status');
-            status.textContent = 'approved ✓';
-            status.style.color = 'var(--ok)';
-            const turn = activePane.querySelector('.turn:last-child');
-            const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
-            if (target) { target.appendChild(card); activateLucideIcons(card); }
-            activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
-          }
-          const result = await resp.json();
-          const st = document.createElement('span');
-          st.className = 'ab-status ok';
-          st.textContent = 'done';
-          banner.querySelector('.ab-actions').replaceWith(st);
-          if (result.feedback) {
-            setTimeout(() => sendAutoTurnMessage(result.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
-          }
-        } catch(e) {
-          banner.classList.add('ab-resolved');
-          const st = document.createElement('span');
-          st.className = 'ab-status no';
-          st.textContent = 'error';
-          banner.querySelector('.ab-actions')?.replaceWith(st);
-        }
-        setTimeout(() => banner.classList.add('hidden'), 4000);
-      });
+      sessionBtn?.addEventListener('click', () => _approveWithSession(true));
+      continueBtn.addEventListener('click', () => _approveWithSession(false));
 
       openBtn.addEventListener('click', async () => {
         continueBtn.disabled = true;
         openBtn.disabled = true;
-        activePane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
         try {
           const res = await fetch('/api/filesystem/pick-folder');
           const pickData = await res.json();
           if (pickData.path && window.pickFsRoot) {
             window.pickFsRoot(pickData.path);
-            // After changing CWD, approve the operation with new context
+            const card = _begin();
+            const t0 = performance.now();
             const resp = await fetch('/api/skills/cwd-approve/' + id, {
               method: 'POST',
-              headers: {'Content-Type':'application/json'},
-              body: JSON.stringify({chat_id: activeChatId}),
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ chat_id: cid }),
             });
-            banner.classList.add('ab-resolved');
             const result = await resp.json();
-            const st = document.createElement('span');
-            st.className = 'ab-status ok';
-            st.textContent = 'folder changed ✓';
-            banner.querySelector('.ab-actions').replaceWith(st);
-            if (result.feedback) {
-              setTimeout(() => sendAutoTurnMessage(result.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
-            }
+            const out = card.querySelector('.skill-output');
+            if (out && result.feedback) out.textContent = String(result.feedback).slice(0, 4000);
+            finishSkillCard(card, { name, ok: true, duration_ms: Math.round(performance.now() - t0), result: {} });
+            setTimeout(() => sendAutoTurnMessage(
+              result.feedback || '[System: Folder changed and operation approved. Continue.]',
+              { skipUserBubble: true, skipUserSave: true, targetChatId: cid },
+            ), 300);
           } else {
             // User cancelled folder picker — re-enable buttons
             continueBtn.disabled = false;
             openBtn.disabled = false;
-            return;
           }
-        } catch(e) {
-          banner.classList.add('ab-resolved');
-          const st = document.createElement('span');
-          st.className = 'ab-status no';
-          st.textContent = 'error';
-          banner.querySelector('.ab-actions')?.replaceWith(st);
+        } catch (e) {
+          finishSkillCard(_appendRunningCard(pane, name, path), { name, ok: false, duration_ms: 0, error: String(e) });
         }
-        setTimeout(() => banner.classList.add('hidden'), 4000);
       });
 
       denyBtn?.addEventListener('click', async () => {
-        disableAllCwdBtns();
-        activePane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
-        banner.classList.add('ab-resolved');
-
-        const st = document.createElement('span');
-        st.className = 'ab-status no';
-        st.textContent = 'denied';
-
-        if (activePane) {
-          const card = createSkillCard({ name: name, data: { attrs: { path: path } } });
-          const status = card.querySelector('.skill-status');
-          if (status) {
-            status.textContent = 'denied ✗';
-            status.style.color = 'var(--danger)';
-          }
-          const output = card.querySelector('.skill-output');
-          if (output) output.textContent = '[denied by user]';
-
-          const turn = activePane.querySelector('.turn:last-child');
-          const target = turn ? (turn.querySelector('.skill-stack:last-of-type') || turn) : activePane.querySelector('.messages');
-          if (target) { target.appendChild(card); activateLucideIcons(card); }
-          activePane.querySelector('.messages')?.scrollTo({top: 999999, behavior:'smooth'});
-        }
-
-        banner.querySelector('.ab-actions')?.replaceWith(st);
-
+        const card = _begin();
+        const st = card.querySelector('.skill-status');
+        if (st) { st.textContent = 'denied ✗'; st.style.color = 'var(--danger)'; }
+        const out = card.querySelector('.skill-output');
+        if (out) out.textContent = '[denied by user]';
         try {
           const resp = await fetch('/api/skills/cwd-deny/' + id, {
             method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({chat_id: activeChatId}),
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: cid }),
           });
           const result = await resp.json();
-          if (result.feedback) {
-            setTimeout(() => sendAutoTurnMessage(result.feedback, { skipUserBubble: true, skipUserSave: true }), 300);
-          } else {
-            setTimeout(() => sendAutoTurnMessage('[System: File operation outside project was denied by user.]', { skipUserBubble: true, skipUserSave: true }), 300);
-          }
-        } catch(e) {
-          console.error('[cwd-warning] deny error:', e);
-          setTimeout(() => sendAutoTurnMessage('[System: File operation outside project was denied by user.]', { skipUserBubble: true, skipUserSave: true }), 300);
+          setTimeout(() => sendAutoTurnMessage(
+            result.feedback || '[System: File operation outside project was denied by user.]',
+            { skipUserBubble: true, skipUserSave: true, targetChatId: cid },
+          ), 300);
+        } catch (e) {
+          setTimeout(() => sendAutoTurnMessage(
+            '[System: File operation outside project was denied by user.]',
+            { skipUserBubble: true, skipUserSave: true, targetChatId: cid },
+          ), 300);
         }
-
-        setTimeout(() => banner.classList.add('hidden'), 3000);
       });
-
-      activateLucideIcons(banner);
     }
 
+    // Re-sync the approval banner with whatever is still pending for a chat.
+    // Called on tab switch so a permission asked in chat A survives a detour
+    // to chat B and comes back.
+    async function refreshPendingBanner(chatId) {
+      const banner = document.getElementById('approvalBanner');
+      if (!banner) return;
+      if (!chatId) { banner.classList.add('hidden'); return; }
+      try {
+        const resp = await fetch('/api/skills/pending/' + encodeURIComponent(chatId));
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (activeChatId !== chatId) return; // switched away mid-fetch
+        const appr = (data.approvals || [])[0];
+        const cwd = (data.cwd_warnings || [])[0];
+        if (appr) {
+          renderApprovalCard(
+            { id: appr.id, name: appr.name, data: { command: appr.command, category: appr.category, reason: appr.reason } },
+            activePane, chatId,
+          );
+        } else if (cwd) {
+          renderCwdWarningCard(
+            { id: cwd.id, name: cwd.name, data: { path: cwd.path, cwd: cwd.cwd } },
+            activePane, chatId,
+          );
+        } else {
+          banner.classList.add('hidden');
+        }
+      } catch (e) { /* banner stays hidden on failure */ }
+    }
+    window._sableRefreshPendingBanner = refreshPendingBanner;
 
     // one "turn" holds everything for a single response: thinking, then any
     // skill/tool runs it made, then the final answer — all stacked in order,
@@ -2225,7 +2072,9 @@
 
           } else if (evt.type === "permission_request") {
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
-            renderApprovalCard(evt, streamPane);
+            // Bind the banner to the stream's chat, but only surface it if the
+            // user is actually looking at that chat right now.
+            if (activeChatId === streamChatId) renderApprovalCard(evt, streamPane, streamChatId);
           } else if (evt.type === "approval_pending") {
             // Transient "waiting" indicator — removed after approve/deny
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
@@ -2238,7 +2087,7 @@
             }
           } else if (evt.type === "cwd_warning") {
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
-            renderCwdWarningCard(evt, streamPane);
+            if (activeChatId === streamChatId) renderCwdWarningCard(evt, streamPane, streamChatId);
           } else if (evt.type === "cwd_warning_pending") {
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
             const pending = document.createElement('div');
