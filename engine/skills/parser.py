@@ -366,14 +366,21 @@ class SkillParser:
     # DSML (DeepSeek Markup Language) patterns — tolerates missing leading ｜,
     # underscore variants (dsml_tool_calls), ASCII pipe |, and mixed delimiters.
     # DeepSeek sometimes uses ASCII | (U+007C) instead of fullwidth ｜ (U+FF5C).
-    _DSML_OPEN = re.compile(r"<[｜|_]?DSML[｜_|]tool_calls\s*>", re.I)
-    _DSML_CLOSE = re.compile(r"</[｜|_]?DSML[｜_|]tool_calls\s*>", re.I)
+    # Delimiter class: one or more of fullwidth ｜, ASCII |, or underscore.
+    # Models vary wildly — single pipe, double pipe, mixed. Accept them all.
+    # NOTE: Use (?:...)? for optional delimiter groups. Writing [chars]+? creates
+    # a lazy quantifier, NOT "one-or-more optionally". That breaks matching.
+    _D = r"(?:[｜|_]+)"
+    # \s* after delimiter handles models that insert spaces: <｜｜DSML｜｜ calls>
+    _DSML_OPEN = re.compile(rf"<{_D}?DSML{_D}\s*(?:tool_)?calls\s*>", re.I)
+    # /? on close tags: handles both proper </DSML...> and bare <DSML...> as close
+    _DSML_CLOSE = re.compile(rf"</?{_D}?DSML{_D}\s*(?:tool_)?calls\s*>", re.I)
     _DSML_INVOKE_RE = re.compile(
-        r'<[｜|_]?DSML[｜|_]invoke\s+name="([^"]+)"\s*>(.*?)</[｜|_]?DSML[｜|_]invoke\s*>',
+        rf'<{_D}?DSML{_D}\s*invoke\s+name="([^"]+)"\s*>(.*?)</?{_D}?DSML{_D}\s*invoke\s*>',
         re.DOTALL,
     )
     _DSML_PARAM_RE = re.compile(
-        r'<[｜|_]?DSML[｜|_]parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>(.*?)</[｜|_]?DSML[｜|_]parameter\s*>',
+        rf'<{_D}?DSML{_D}\s*parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>(.*?)</?{_D}?DSML{_D}\s*parameter\s*>',
         re.DOTALL,
     )
     # Legacy XML invoke/parameter (Qwen3 XML fallback, older DeepSeek drift)
@@ -391,8 +398,10 @@ class SkillParser:
     # Safety net regex for orphaned tags in bare-JSON prefix text.
     # Also catches bare fragments like "action>" or "tool_call>" that result
     # from </ being consumed by partial-tag detection in a prior chunk.
+    # Also strips orphaned DSML tags with any pipe count.
     _ORPHAN_TAG_RE = re.compile(
-        r'(?:</?\s*(?:action|tool_calls?)\s*>|(?:^|(?<=[\s</]))(?:action|tool_calls?)\s*>)',
+        r'(?:</?\s*(?:action|tool_calls?|calls)\s*>|(?:^|(?<=[\s</]))(?:action|tool_calls?|calls)\s*>|'
+        r'</?[｜|_]*DSML[｜|_]*(?:tool_)?calls\s*>|</?[｜|_]*DSML[｜|_]*(?:invoke|parameter)[^>]*>)',
         re.IGNORECASE,
     )
 
@@ -609,7 +618,7 @@ class SkillParser:
                         _is_dsml_delimiters_only = bool(tail) and not _tail_norm and all(
                             c in "\uff5c|_" for c in tail
                         )
-                        _legacy_prefixes = ("action", "tool_call", "tool_calls", "invoke", "parameter")
+                        _legacy_prefixes = ("action", "tool_call", "tool_calls", "calls", "invoke", "parameter")
                         _open_match = (
                             tail == ""
                             or _is_dsml_delimiters_only

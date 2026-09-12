@@ -58,7 +58,7 @@ chmod +x start
 ```powershell
 git clone --depth 1 https://github.com/AminulIslamSifat/Sable.git
 cd Sable
-.\start.ps1
+.\start.bat --foreground
 ```
 
 That's it. The start script handles:

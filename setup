@@ -1,1 +1,0 @@
-git clone https://github.com/AminulIslamSifat/Sable . && python3 -m venv .venv && source .venv/bin/activate && echo -e "\033[1;32mNow run: ./init\033[0m"
