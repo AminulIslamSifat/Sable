@@ -57,6 +57,15 @@ _ORPHAN_TAG_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Safety net: strip orphaned DSML inner tags (invoke, parameter) that leak
+# through when models emit them outside the outer tool_calls wrapper or when
+# chunk-boundary races split the block awkwardly.
+# Matches both ASCII pipe | (U+007C) and fullwidth pipe ｜ (U+FF5C).
+_ORPHAN_DSML_RE = re.compile(
+    r'</?[|\uff5c]?DSML[|\uff5c](?:invoke|parameter)[^>]*>',
+    re.IGNORECASE,
+)
+
 
 def _parse_json_action(content: str) -> dict[str, Any] | None:
     """Parse JSON content from a <tool_call> tag into canonical function_call.
@@ -419,6 +428,7 @@ async def normalize_stream(
                             for fc in more_calls:
                                 yield fc
                             cleaned_r = _ORPHAN_TAG_RE.sub("", cleaned_r)
+                            cleaned_r = _ORPHAN_DSML_RE.sub("", cleaned_r)
                             if cleaned_r.strip():
                                 yield {"type": "answer", "text": cleaned_r}
                     else:
@@ -475,6 +485,9 @@ async def normalize_stream(
                             cleaned, more_calls = _extract_fn(remainder)
                             for fc in more_calls:
                                 yield fc
+                            # Strip any orphaned DSML inner tags from remainder
+                            cleaned = _ORPHAN_DSML_RE.sub("", cleaned)
+                            cleaned = _ORPHAN_TAG_RE.sub("", cleaned)
                             if cleaned.strip():
                                 yield {"type": "answer", "text": cleaned}
                         break
@@ -555,6 +568,7 @@ async def normalize_stream(
                         cleaned_r, more_calls = _extract_dsml_from_text(remainder)
                         for fc in more_calls:
                             yield fc
+                        cleaned_r = _ORPHAN_DSML_RE.sub("", cleaned_r)
                         if cleaned_r.strip():
                             yield {"type": "answer", "text": cleaned_r}
                 else:
@@ -597,10 +611,11 @@ async def normalize_stream(
             else:
                 _dlog(f"NO_PARTIAL | cleaned_tail={repr(cleaned[-30:])}")
 
-            # Safety net: strip any orphaned action/tool_call tags that
+            # Safety net: strip any orphaned action/tool_call/DSML tags that
             # leaked through chunk-boundary races or prefix reassembly.
             _pre_orphan = cleaned
             cleaned = _ORPHAN_TAG_RE.sub("", cleaned)
+            cleaned = _ORPHAN_DSML_RE.sub("", cleaned)
             if cleaned != _pre_orphan:
                 _dlog(f"ORPHAN_STRIP | before={repr(_pre_orphan[-50:])} | after={repr(cleaned[-50:])}")
             if cleaned.strip():

@@ -1010,11 +1010,20 @@ class DeepSeekClient:
         last_err = "unknown"
         _MAX_RETRIES_PER_TOKEN = 3
         _RETRY_DELAY_SECS = 2.0
+        # Per-token failure reasons — kept so the final error reports EACH token
+        # instead of only the last one (which made debugging rotation a nightmare).
+        token_errors: list[str] = []
+
+        def _all_failed_message() -> str:
+            if not token_errors:
+                return f"All DeepSeek tokens failed ({last_err})."
+            lines = "\n".join(f"  • {e}" for e in token_errors)
+            return f"All {len(token_errors)} DeepSeek token(s) failed:\n{lines}"
 
         for _attempt in range(attempts):
             prepared = await self._prepare_request_with_rotation()
             if prepared is None:
-                yield {"type": "error", "message": f"All DeepSeek tokens failed ({last_err})."}
+                yield {"type": "error", "message": _all_failed_message()}
                 return
             session_id, headers = prepared
 
@@ -1164,10 +1173,11 @@ class DeepSeekClient:
                                        _MAX_RETRIES_PER_TOKEN, last_err)
                         break  # Break retry loop → rotate to next token
 
-            # All retries exhausted for this token → rotate to next
+            # All retries exhausted for this token → record why, then rotate
             if chat_id:
                 self._parent_ids[chat_id] = None
             _old_token = self._current_rotate_token
+            token_errors.append(f"token {self._mask_token(_old_token)}: {last_err}")
             self._advance_rotation()
             _new_token = self._current_rotate_token
             logger.warning("DeepSeek rotated token: %s → %s (reason: %s)",
@@ -1182,7 +1192,7 @@ class DeepSeekClient:
                 "total_tokens": len(self._rotate_tokens),
             }
 
-        yield {"type": "error", "message": f"All DeepSeek tokens failed ({last_err})."}
+        yield {"type": "error", "message": _all_failed_message()}
 
     # ------------------------------------------------------------------
     # Public interface — non-streaming
@@ -1196,6 +1206,7 @@ class DeepSeekClient:
         chat_id: str | None = None,
         ref_file_ids: list[str] | None = None,
         inject_instructions: bool = True,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         """Non-streaming chat. Returns {answer, thinking, parent_id, error}."""
         answer_parts: list[str] = []

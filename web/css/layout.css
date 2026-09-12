@@ -1486,6 +1486,39 @@
       50% { border-color: color-mix(in srgb, var(--warning, #f59e0b) 35%, transparent); }
     }
 
+    /* ---------- persistent error card ---------- */
+
+    .error-card {
+      background: var(--danger-bg, rgba(229, 100, 106, 0.08));
+      border: 1px solid var(--danger, #e5646a);
+      border-radius: 12px;
+      padding: 20px 24px;
+      margin-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .error-card .ec-icon {
+      font-size: 28px;
+      line-height: 1;
+    }
+
+    .error-card .ec-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--danger, #e5646a);
+    }
+
+    .error-card .ec-detail {
+      font-size: 13px;
+      font-family: var(--mono, ui-monospace, monospace);
+      color: var(--text-dim, #aaa);
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
 
 
     /* ---------- Debug info inside error cards ---------- */
