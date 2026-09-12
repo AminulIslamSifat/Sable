@@ -1249,7 +1249,7 @@
         if (!answerEl) return;
         // Skip markdown re-render for special cards (rate-limit, captcha) that
         // already have their final HTML set via innerHTML.
-        const _isSpecialCard = raw === "__rate_limit_card__" || raw === "__captcha_block_card__";
+        const _isSpecialCard = raw === "__rate_limit_card__" || raw === "__captcha_block_card__" || raw === "__error_card__";
         // Final render with full mermaid + math support — only runs when this answer
         // segment is truly done (stream end or skill interleave boundary).
         if (answerContent && raw && !_isSpecialCard) {
@@ -1476,6 +1476,37 @@
               ${debugHtml}
             </div>`;
           // raw already set to "__captcha_block_card__" above — do NOT overwrite
+          scrollBottom();
+        },
+        replaceWithError(message) {
+          hidePending();
+          // Kill typewriter queues — don't leave a half-rendered partial answer
+          if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
+          _thinkQueue = "";
+          if (_ansTimer) { clearTimeout(_ansTimer); _ansTimer = null; }
+          _ansQueue = "";
+          currentThinkWrap = null;
+          currentThinkBody = null;
+          currentThinkSummary = null;
+          // Remove only the streaming partial answer — keep completed skill work
+          if (answerEl) {
+            answerEl.remove();
+            answerEl = null;
+            answerContent = null;
+            raw = "";
+          }
+          ensureAnswer();
+          answerEl.classList.remove('streaming');
+          // Mark special so closeAnswer() doesn't wipe this HTML on finalize()
+          raw = "__error_card__";
+          // Server sends multi-line token lists (e.g. per-token rotation failures),
+          // so preserve whitespace + escape before injecting.
+          answerContent.innerHTML = `
+            <div class="error-card">
+              <span class="ec-icon">⚠️</span>
+              <span class="ec-title">Request Failed</span>
+              <span class="ec-detail">${escHtml(message || 'Upstream request failed.')}</span>
+            </div>`;
           scrollBottom();
         },
         trackFileEdit(evt) {
@@ -2150,8 +2181,9 @@
           } else if (evt.type === "error") {
             gotError = true;
             const msg = evt.message || "Unknown error";
-            showToast(msg, "error");
-            ui.appendAnswer(`\n[error] ${msg}`);
+            // Persistent in-chat card — a toast vanishes in 4s and markdown collapses
+            // multi-line token lists. This stays in the transcript for debugging.
+            ui.replaceWithError(msg);
           } else if (evt.type === "tool_call") {
             const _tcName = evt.data?.name || "unknown";
             const _tcAttrs = evt.data?.attrs || {};
@@ -2422,20 +2454,16 @@
           let detail = "";
           try { detail = await res.text(); } catch (_) {}
           const msg = `Retry failed ${res.status}${detail ? ": " + detail.slice(0, 300) : ""}`;
-          showToast(msg, "error");
-          ui.appendAnswer(`\n[error] ${msg}`);
+          ui.replaceWithError(msg);
           return;
         }
 
         const { gotAnswer, gotDone, gotError } = await consumeChatStream(res, ui, null, streamChatId);
         if (!gotAnswer && !gotError && !gotDone) {
-          const msg = "Stream ended without a response";
-          showToast(msg, "error");
-          ui.appendAnswer(`\n[error] ${msg}`);
+          ui.replaceWithError("Stream ended without a response");
         }
       } catch (err) {
-        showToast("Connection lost: " + err.message, "error");
-        ui.appendAnswer(`\n[client error] ${err.message}`);
+        ui.replaceWithError("Connection lost: " + err.message);
       } finally {
         ui.finalize();
         endStream(streamChatId);
