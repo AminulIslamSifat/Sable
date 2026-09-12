@@ -15,6 +15,8 @@ from engine.security.middleware import (
     consume_pending_approval,
     deny_pending_approval,
     get_pending_approval,
+    list_pending_cwd_for_chat,
+    list_pending_for_chat,
 )
 
 __all__ = [
@@ -27,6 +29,8 @@ __all__ = [
     "consume_pending_approval",
     "deny_pending_approval",
     "get_pending_approval",
+    "list_pending_cwd_for_chat",
+    "list_pending_for_chat",
     "scan_content",
     "wrap_untrusted",
 ]

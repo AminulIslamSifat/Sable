@@ -401,7 +401,7 @@ class SkillParser:
     # Also strips orphaned DSML tags with any pipe count.
     _ORPHAN_TAG_RE = re.compile(
         r'(?:</?\s*(?:action|tool_calls?|calls)\s*>|(?:^|(?<=[\s</]))(?:action|tool_calls?|calls)\s*>|'
-        r'</?[｜|_]*DSML[｜|_]*(?:tool_)?calls\s*>|</?[｜|_]*DSML[｜|_]*(?:invoke|parameter)[^>]*>)',
+        r'</?[｜|_]*DSML[｜|_]*\s*(?:tool_)?calls\s*>|</?[｜|_]*DSML[｜|_]*\s*(?:invoke|parameter)[^>]*>)',
         re.IGNORECASE,
     )
 

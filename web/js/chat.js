@@ -208,7 +208,13 @@
       pane.classList.add("active");
       activePane = pane;
       activeChatId = chatId;
+      // Re-hydrate any permission/CWD prompt still pending for THIS chat.
+      // The banner is a single global element, so switching tabs must clear
+      // it and then re-ask the server what this chat is still waiting on.
       document.getElementById("approvalBanner")?.classList.add("hidden");
+      if (typeof window._sableRefreshPendingBanner === "function") {
+        window._sableRefreshPendingBanner(chatId);
+      }
       _bindScrollListener(pane);
       updateSendBtn();
       renderTabBar();
