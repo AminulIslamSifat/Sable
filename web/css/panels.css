@@ -1277,32 +1277,33 @@ textarea:disabled {
   transform: translateX(0);
 }
 
-/* type glyph */
-.toast::before {
+/* type icon (lucide svg) */
+.toast-icon {
   flex: 0 0 auto;
-  font-size: 15px;
-  line-height: 1;
+  width: 15px;
+  height: 15px;
   opacity: 0.9;
 }
-.toast.info::before    { content: "\2139"; }
-.toast.success::before { content: "\2714"; }
-.toast.error::before   { content: "\26A0"; }
+.toast-msg {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 
 .toast.error {
   border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
   border-left-color: var(--danger);
 }
-.toast.error::before { color: var(--danger); }
+.toast.error .toast-icon { color: var(--danger); }
 .toast.success {
   border-color: color-mix(in srgb, var(--ok) 40%, var(--border));
   border-left-color: var(--ok);
 }
-.toast.success::before { color: var(--ok); }
+.toast.success .toast-icon { color: var(--ok); }
 .toast.info {
   border-color: var(--border);
   border-left-color: var(--text-dim);
 }
-.toast.info::before { color: var(--text-dim); }
+.toast.info .toast-icon { color: var(--text-dim); }
 
 @media (max-width: 860px) {
   #toast {

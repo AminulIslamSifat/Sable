@@ -10,6 +10,9 @@
       setTimeout(() => el.remove(), 450);
     }
 
+    // lucide icon per toast type (matches the rest of the UI)
+    const TOAST_ICONS = { info: "info", success: "check", error: "triangle-alert" };
+
     function showToast(msg, type = "info") {
       // cap the stack — drop the oldest if we're at the limit
       const live = toastEl.querySelectorAll(".toast");
@@ -17,10 +20,23 @@
 
       const el = document.createElement("div");
       el.className = `toast ${type}`;
-      el.textContent = msg;
+
+      // icon node built via createElement (fixed lucide name) — message stays textContent (injection-safe)
+      const icon = document.createElement("i");
+      icon.className = "toast-icon";
+      icon.setAttribute("data-lucide", TOAST_ICONS[type] || TOAST_ICONS.info);
+      el.appendChild(icon);
+
+      const text = document.createElement("span");
+      text.className = "toast-msg";
+      text.textContent = msg;
+      el.appendChild(text);
+
       el.addEventListener("click", () => dismissToast(el));
 
       toastEl.appendChild(el);
+      if (window.lucide) window.lucide.createIcons({ nodes: [el] });
+
       requestAnimationFrame(() => el.classList.add("show"));
 
       el._timer = setTimeout(() => dismissToast(el), 3500);
