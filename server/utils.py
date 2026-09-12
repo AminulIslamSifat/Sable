@@ -24,10 +24,15 @@ async def retry_async(
     base_delay: float = RETRY_BASE_DELAY,
     label: str = "operation",
 ) -> Any:
+    # Programming errors are deterministic — retrying them just wastes time and
+    # floods logs. Fail fast so real bugs look different from flaky I/O.
+    non_retryable = (NameError, TypeError, AttributeError, SyntaxError, ImportError)
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
             return await coro_factory()
+        except non_retryable:
+            raise
         except Exception as exc:
             last_exc = exc
             if attempt < max_retries:

@@ -2098,7 +2098,11 @@ async def chat(request: ChatRequest):
                     # for native API backends (Gemini/Groq/DeepSeek) and scraper.
                     _is_qwen_stream = not _is_api_model(request.model) and not scraper_enabled
                     if event_type in ("rate_limited", "waf_blocked", "empty_exhausted") and not _is_qwen_stream:
-                        # Non-Qwen backend hit rate-limit/WAF — just report error, don't switch accounts
+                        # Non-Qwen backend hit rate-limit/WAF — report the REAL error to the
+                        # frontend (don't silently drop it) but don't attempt account switching.
+                        _real_err = str(event.get("message") or error_message or "Upstream API error")
+                        logger.warning("[main-stream] API backend error (%s): %s", event_type, _real_err[:300])
+                        yield sse({"type": "error", "message": _real_err})
                         stream_error = True
                     elif event_type in ("rate_limited", "waf_blocked", "empty_exhausted") and _is_qwen_stream and _auto_switch_enabled("qwen"):
                         print(f"[AUTO-SWITCH] ▶ TRIGGERED by {event_type} — msg={str(event.get('message',''))[:100]}")

@@ -1,11 +1,45 @@
 
-    let toastTimer = null;
+    const MAX_TOASTS = 4;
+
+    function dismissToast(el) {
+      if (!el || !el.isConnected) return;
+      clearTimeout(el._timer);
+      el.classList.remove("show");
+      el.addEventListener("transitionend", () => el.remove(), { once: true });
+      // fallback in case transitionend never fires (reduced-motion, display:none, etc.)
+      setTimeout(() => el.remove(), 450);
+    }
+
+    // lucide icon per toast type (matches the rest of the UI)
+    const TOAST_ICONS = { info: "info", success: "check", error: "triangle-alert" };
+
     function showToast(msg, type = "info") {
-      toastEl.textContent = msg;
-      toastEl.classList.remove("success", "info", "error");
-      toastEl.classList.add(type, "show");
-      clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => toastEl.classList.remove("show"), 3500);
+      // cap the stack — drop the oldest if we're at the limit
+      const live = toastEl.querySelectorAll(".toast");
+      if (live.length >= MAX_TOASTS) dismissToast(live[0]);
+
+      const el = document.createElement("div");
+      el.className = `toast ${type}`;
+
+      // icon node built via createElement (fixed lucide name) — message stays textContent (injection-safe)
+      const icon = document.createElement("i");
+      icon.className = "toast-icon";
+      icon.setAttribute("data-lucide", TOAST_ICONS[type] || TOAST_ICONS.info);
+      el.appendChild(icon);
+
+      const text = document.createElement("span");
+      text.className = "toast-msg";
+      text.textContent = msg;
+      el.appendChild(text);
+
+      el.addEventListener("click", () => dismissToast(el));
+
+      toastEl.appendChild(el);
+      if (window.lucide) window.lucide.createIcons({ nodes: [el] });
+
+      requestAnimationFrame(() => el.classList.add("show"));
+
+      el._timer = setTimeout(() => dismissToast(el), 3500);
     }
     window.showToast = showToast; // expose for filesystem.js
 
@@ -103,19 +137,14 @@
     window.sableAlert = (msg, opts = {}) => sableDialog({ message: msg, type: 'alert', ...opts });
 
 
-    // mobile: tap to dismiss toast immediately
-    toastEl.addEventListener("click", () => {
-      clearTimeout(toastTimer);
-      toastEl.classList.remove("show");
-    });
-
     // mobile browsers throttle setTimeout in background tabs —
-    // dismiss any stale toast when the tab regains focus
+    // dismiss any stale toasts when the tab regains focus
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden && toastEl.classList.contains("show")) {
-        clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => toastEl.classList.remove("show"), 800);
-      }
+      if (document.hidden) return;
+      toastEl.querySelectorAll(".toast").forEach(el => {
+        clearTimeout(el._timer);
+        el._timer = setTimeout(() => dismissToast(el), 800);
+      });
     });
 
     function saveActiveChat() {

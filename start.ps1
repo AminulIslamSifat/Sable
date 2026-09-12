@@ -795,13 +795,25 @@ function Create-DesktopShortcut {
     $shortcutPath = Join-Path $desktopPath "Sable.lnk"
     $startBat = Join-Path $SCRIPT_DIR "start.bat"
 
+    # Windows .lnk icons MUST be a real .ico (PNG/SVG won't render).
+    # Generated from web/assets/sable_icon.svg -> sable_icon.ico (multi-res).
+    $iconPath = Join-Path $SCRIPT_DIR "web\assets\sable_icon.ico"
+    if (-not (Test-Path $iconPath)) {
+        Write-Warn "Icon not found at $iconPath - shortcut will use default icon"
+        $iconPath = $null
+    }
+
     $needsUpdate = $true
     if (Test-Path $shortcutPath) {
         try {
             $shell = New-Object -ComObject WScript.Shell
             $existing = $shell.CreateShortcut($shortcutPath)
             if ($existing.TargetPath -eq $startBat) {
-                $needsUpdate = $false
+                # Only skip if icon is also correct
+                $currentIcon = if ($existing.IconLocation) { $existing.IconLocation.Split(',')[0] } else { "" }
+                if (-not $iconPath -or $currentIcon -eq $iconPath) {
+                    $needsUpdate = $false
+                }
             }
         } catch {}
     }
@@ -818,6 +830,10 @@ function Create-DesktopShortcut {
         $shortcut.WorkingDirectory = $SCRIPT_DIR
         $shortcut.Description = "Launch Sable Agentic Chat Platform"
         $shortcut.WindowStyle = 7  # Minimized/Hidden
+        if ($iconPath) {
+            # ",0" = first icon group inside the .ico
+            $shortcut.IconLocation = "$iconPath,0"
+        }
         $shortcut.Save()
         Write-Ok "Desktop shortcut created: $shortcutPath"
     } catch {
