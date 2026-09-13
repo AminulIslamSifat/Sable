@@ -49,7 +49,6 @@ if %errorlevel% neq 0 (
 :: This bat exits immediately, so the double-click cmd window closes at once.
 if "%SABLE_BACKGROUND%"=="1" (
     set "VBS=%TEMP%\sable_silent_%RANDOM%.vbs"
-    :: Create VBS file safely (quotes around echo prevent special char parsing)
     >"%VBS%" echo Set sh = CreateObject("WScript.Shell")
     if not exist "%VBS%" (
         echo [Sable] ERROR: Could not create temporary VBS file.
@@ -57,14 +56,10 @@ if "%SABLE_BACKGROUND%"=="1" (
         exit /b 1
     )
     >>"%VBS%" echo sh.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""%SCRIPT_DIR%start.ps1""", 0, False
-    
-    :: Run VBS
     wscript //nologo "%VBS%"
-    if %errorlevel% neq 0 (
+    if !errorlevel! neq 0 (
         echo [Sable] WARNING: wscript failed to launch background process.
     )
-    
-    :: Cleanup
     del /q "%VBS%" 2>nul
     exit /b 0
 )
