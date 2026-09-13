@@ -3,7 +3,29 @@
 :: Normal launch = visible log console (foreground).
 :: Pass --background to run fully silent (no console window stays open).
 
-cd /d "%~dp0"
+:: Resolve script directory safely
+set "SCRIPT_DIR=%~dp0"
+if "%SCRIPT_DIR%"=="" (
+    echo [Sable] ERROR: Could not determine script directory.
+    pause
+    exit /b 1
+)
+
+:: Change to script directory
+cd /d "%SCRIPT_DIR%"
+if %errorlevel% neq 0 (
+    echo [Sable] ERROR: Could not change to directory %SCRIPT_DIR%
+    pause
+    exit /b 1
+)
+
+:: Sanity Check: Ensure we are in the project root
+if not exist "server.py" (
+    echo [Sable] CRITICAL ERROR: server.py not found in %SCRIPT_DIR%
+    echo [Sable] This script must be run from the Sable project root.
+    pause
+    exit /b 1
+)
 
 set SABLE_BACKGROUND=0
 if "%~1"=="--background" set SABLE_BACKGROUND=1
@@ -23,13 +45,27 @@ if %errorlevel% neq 0 (
 :: This bat exits immediately, so the double-click cmd window closes at once.
 if "%SABLE_BACKGROUND%"=="1" (
     set "VBS=%TEMP%\sable_silent_%RANDOM%.vbs"
-    > "%VBS%" echo Set sh = CreateObject("WScript.Shell")
-    >>"%VBS%" echo sh.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""%~dp0start.ps1""", 0, False
+    :: Create VBS file safely
+    echo Set sh = CreateObject("WScript.Shell")> "%VBS%"
+    if not exist "%VBS%" (
+        echo [Sable] ERROR: Could not create temporary VBS file.
+        pause
+        exit /b 1
+    )
+    echo sh.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""%SCRIPT_DIR%start.ps1""", 0, False>> "%VBS%"
+    
+    :: Run VBS
     wscript //nologo "%VBS%"
+    if %errorlevel% neq 0 (
+        echo [Sable] WARNING: wscript failed to launch background process.
+    )
+    
+    :: Cleanup
     del /q "%VBS%" 2>nul
     exit /b 0
 )
 
 :: Foreground mode (default): show the console with live logs.
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start.ps1"
+echo [Sable] Starting in foreground mode...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%start.ps1"
 exit /b %errorlevel%

@@ -22,6 +22,14 @@ $RETRY_DELAY  = 2
 
 Set-Location $SCRIPT_DIR
 
+# -- Sanity Check: Are we in the right place? --------------------------------
+if (-not (Test-Path "server.py") -or -not (Test-Path "pyproject.toml")) {
+    Write-Host "[Sable] CRITICAL ERROR: server.py or pyproject.toml not found in $SCRIPT_DIR" -ForegroundColor Red
+    Write-Host "[Sable] This script must be run from the Sable project root." -ForegroundColor Red
+    Write-Host "[Sable] Aborting to prevent accidental file operations in the wrong directory." -ForegroundColor Red
+    exit 1
+}
+
 # -- Logging ------------------------------------------------------------------
 function Write-Log  { param($msg) Write-Host "[Sable] $msg" }
 function Write-Ok   { param($msg) Write-Host "[Sable] OK  $msg" -ForegroundColor Green }
@@ -539,6 +547,7 @@ function Sync-Dependencies {
 
     if (-not $syncOk) {
         Write-Warn "uv sync failed - attempting venv recreation..."
+        Write-Warn "DELETING .venv folder (this is safe, only dependencies)..."
         Remove-Item -Recurse -Force ".venv" -ErrorAction SilentlyContinue
         $retryOk = Invoke-WithRetry -Action {
             $code = Invoke-HiddenCommand -FilePath $uvPath -ArgumentList @("sync", "--extra", "windows")
