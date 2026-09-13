@@ -63,41 +63,60 @@ function Start-SableServerProcess {
         [hashtable]$Environment = @{}
     )
 
+    # If log files are requested, do NOT use PowerShell async event pumps.
+    # start.ps1 exits after launching the server, which kills those event handlers.
+    # Instead, keep logging alive with cmd.exe redirection:
+    #   python.exe server.py >> sable.log 2>> sable_error.log
+    if ($StdOutLog -or $StdErrLog) {
+        if (-not $StdOutLog) { $StdOutLog = Join-Path $WorkingDirectory "sable.log" }
+        if (-not $StdErrLog) { $StdErrLog = Join-Path $WorkingDirectory "sable_error.log" }
+
+        # Ensure files exist so the shortcut log tailer has something to open.
+        New-Item -ItemType File -Force -Path $StdOutLog | Out-Null
+        New-Item -ItemType File -Force -Path $StdErrLog | Out-Null
+
+        $quotedFile = '"' + $FilePath + '"'
+        $argString = ($ArgumentList | ForEach-Object {
+            if ($_ -match '[\s"]') { '"' + ($_ -replace '"','\"') + '"' } else { $_ }
+        }) -join ' '
+        $quotedOut = '"' + $StdOutLog + '"'
+        $quotedErr = '"' + $StdErrLog + '"'
+
+        $childCmd = $quotedFile
+        if ($argString) { $childCmd += " $argString" }
+        $childCmd += " >> $quotedOut 2>> $quotedErr"
+
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName         = if ($env:ComSpec) { $env:ComSpec } else { "cmd.exe" }
+        $psi.Arguments        = "/d /s /c `"$childCmd`""
+        $psi.WorkingDirectory = $WorkingDirectory
+        $psi.UseShellExecute  = $false
+        $psi.CreateNoWindow   = $true
+
+        foreach ($k in $Environment.Keys) { $psi.EnvironmentVariables[$k] = $Environment[$k] }
+
+        $proc = New-Object System.Diagnostics.Process
+        $proc.StartInfo = $psi
+        $proc.Start() | Out-Null
+        return $proc
+    }
+
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName               = $FilePath
+    $psi.FileName         = $FilePath
     if ($ArgumentList.Count -gt 0) {
         $psi.Arguments = ($ArgumentList | ForEach-Object {
             if ($_ -match '\s') { '"' + ($_ -replace '"','\"') + '"' } else { $_ }
         }) -join ' '
     }
-    $psi.WorkingDirectory       = $WorkingDirectory
-    $psi.UseShellExecute        = $false   # required for CreateNoWindow + redirection
-    $psi.CreateNoWindow         = $true    # invisible console; children INHERIT it -> no popups
-    $psi.RedirectStandardOutput = [bool]$StdOutLog
-    $psi.RedirectStandardError  = [bool]$StdErrLog
+    $psi.WorkingDirectory = $WorkingDirectory
+    $psi.UseShellExecute  = $false
+    $psi.CreateNoWindow   = $true
 
     foreach ($k in $Environment.Keys) { $psi.EnvironmentVariables[$k] = $Environment[$k] }
 
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $psi
-
-    if ($StdOutLog -or $StdErrLog) {
-        # Async pump so redirected pipes never fill and block the child.
-        $outWriter = if ($StdOutLog) { New-Object System.IO.StreamWriter($StdOutLog, $true) } else { $null }
-        $errWriter = if ($StdErrLog) { New-Object System.IO.StreamWriter($StdErrLog, $true) } else { $null }
-        Register-ObjectEvent -InputObject $proc -EventName OutputDataReceived -Action {
-            if ($EventArgs.Data -ne $null) { $Event.MessageData.WriteLine($EventArgs.Data) }
-        } -MessageData $outWriter | Out-Null
-        Register-ObjectEvent -InputObject $proc -EventName ErrorDataReceived -Action {
-            if ($EventArgs.Data -ne $null) { $Event.MessageData.WriteLine($EventArgs.Data) }
-        } -MessageData $errWriter | Out-Null
-        $proc.Start() | Out-Null
-        if ($StdOutLog) { $proc.BeginOutputReadLine() }
-        if ($StdErrLog) { $proc.BeginErrorReadLine() }
-    } else {
-        $proc.Start() | Out-Null
-    }
-
+    $proc.Start() | Out-Null
     return $proc
 }
 
@@ -813,13 +832,13 @@ function Create-DesktopShortcut {
     Write-Info "Checking desktop shortcut..."
     $desktopPath = [Environment]::GetFolderPath("Desktop")
     $shortcutPath = Join-Path $desktopPath "Sable.lnk"
-    $startBat = Join-Path $SCRIPT_DIR "start.bat"
+    $launcherPs1 = Join-Path $SCRIPT_DIR "start_shortcut.ps1"
 
-    # The shortcut launches start.bat in a hidden window (setup + server),
-    # then opens the browser and tails sable.log live in THIS window.
-    $logPath = Join-Path $SCRIPT_DIR "sable.log"
-    $psCmd  = "Start-Process -FilePath `"$startBat`" -WindowStyle Hidden; Start-Sleep 3; Start-Process 'http://127.0.0.1:$SABLE_PORT'; while (!(Test-Path `"$logPath`")) { Start-Sleep 1 }; Get-Content -Wait -Tail 50 `"$logPath`""
-    $psArgs = "-NoProfile -ExecutionPolicy Bypass -Command `"$psCmd`""
+    # The shortcut runs start_shortcut.ps1 which:
+    #   1. Runs start.bat visibly (setup + background server)
+    #   2. Opens the browser
+    #   3. Tails sable.log live in this window
+    $psArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPs1`""
 
     # Windows .lnk icons MUST be a real .ico (PNG/SVG won't render).
     # Generated from web/assets/sable_icon.svg -> sable_icon.ico (multi-res).
