@@ -557,9 +557,19 @@ function Setup-Playwright {
     Write-Info "Ensuring Playwright Chromium..."
     $uvPath = (Get-Command uv -ErrorAction SilentlyContinue).Source
     if (-not $uvPath) { $uvPath = "uv" }
+    $isBackground = ($env:SABLE_BACKGROUND -eq "1")
     try {
-        $code = Invoke-HiddenCommand -FilePath $uvPath -ArgumentList @("run", "playwright", "install", "chromium")
-        if ($code -ne 0) { Write-Warn "playwright install exited with code $code" }
+        if ($isBackground) {
+            # Background mode: no visible console, swallow output silently
+            $code = Invoke-HiddenCommand -FilePath $uvPath -ArgumentList @("run", "playwright", "install", "chromium")
+            if ($code -ne 0) { Write-Warn "playwright install exited with code $code" }
+        } else {
+            # Foreground mode: run directly so the user sees Playwright's
+            # download progress bar. Invoke-HiddenCommand swallows \r
+            # carriage-return updates (OutputDataReceived only fires on \n).
+            & $uvPath run playwright install chromium
+            if ($LASTEXITCODE -ne 0) { Write-Warn "playwright install exited with code $LASTEXITCODE" }
+        }
     } catch {
         Write-Warn "Playwright Chromium install had issues - browser automation may not work"
     }
