@@ -1,7 +1,11 @@
 @echo off
+setlocal enabledelayedexpansion
 :: Sable Start Script for Windows - double-click to launch.
 :: Normal launch = visible log console (foreground).
 :: Pass --background to run fully silent (no console window stays open).
+
+:: Force clean state — ignore any leaked env vars from parent shell
+set "SABLE_BACKGROUND=0"
 
 :: Resolve script directory safely
 set "SCRIPT_DIR=%~dp0"
@@ -45,14 +49,14 @@ if %errorlevel% neq 0 (
 :: This bat exits immediately, so the double-click cmd window closes at once.
 if "%SABLE_BACKGROUND%"=="1" (
     set "VBS=%TEMP%\sable_silent_%RANDOM%.vbs"
-    :: Create VBS file safely
-    echo Set sh = CreateObject("WScript.Shell")> "%VBS%"
+    :: Create VBS file safely (quotes around echo prevent special char parsing)
+    >"%VBS%" echo Set sh = CreateObject("WScript.Shell")
     if not exist "%VBS%" (
         echo [Sable] ERROR: Could not create temporary VBS file.
         pause
         exit /b 1
     )
-    echo sh.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""%SCRIPT_DIR%start.ps1""", 0, False>> "%VBS%"
+    >>"%VBS%" echo sh.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""%SCRIPT_DIR%start.ps1""", 0, False
     
     :: Run VBS
     wscript //nologo "%VBS%"
