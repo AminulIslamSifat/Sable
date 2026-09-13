@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -30,7 +31,9 @@ from connectors.common.instruction_builder import get_tool_format
 logger = logging.getLogger("sable.deepseek_api")
 
 BASE_URL = "https://chat.deepseek.com"
-SOLVER_PATH = Path(__file__).resolve().parent / "pow_solver" / "pow_solver"
+_SOLVER_DIR = Path(__file__).resolve().parent / "pow_solver"
+_SOLVER_NAME = "pow_solver.exe" if sys.platform == "win32" else "pow_solver"
+SOLVER_PATH = _SOLVER_DIR / _SOLVER_NAME
 
 # Raw request/response logging
 from engine.config import LOGS_DIR as _LOGS_DIR
