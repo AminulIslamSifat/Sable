@@ -174,9 +174,48 @@
       } catch (e) { console.error("loadTools failed", e); }
     }
 
+    // --- Tool Call Format dropdown ---
+    const toolFormatSelect = document.getElementById("toolFormatSelect");
+    const toolFormatSaveBtn = document.getElementById("toolFormatSaveBtn");
+    const toolFormatStatus = document.getElementById("toolFormatStatus");
+
+    async function loadToolFormat() {
+      if (!toolFormatSelect) return;
+      try {
+        const res = await fetch("/api/settings/tool-format");
+        const data = await res.json();
+        toolFormatSelect.value = data.tool_call_format || "";
+      } catch (e) { console.warn("Failed to load tool format setting", e); }
+    }
+
+    if (toolFormatSaveBtn) {
+      toolFormatSaveBtn.addEventListener("click", async () => {
+        toolFormatSaveBtn.disabled = true;
+        if (toolFormatStatus) toolFormatStatus.textContent = "Saving...";
+        try {
+          const res = await fetch("/api/settings/tool-format", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tool_call_format: toolFormatSelect.value })
+          });
+          if (res.ok) {
+            if (toolFormatStatus) { toolFormatStatus.textContent = "✓ Saved"; toolFormatStatus.style.color = "var(--accent)"; }
+          } else {
+            const err = await res.json().catch(() => ({}));
+            if (toolFormatStatus) { toolFormatStatus.textContent = "✗ " + (err.detail || "Failed"); toolFormatStatus.style.color = "var(--error)"; }
+          }
+        } catch (e) {
+          if (toolFormatStatus) { toolFormatStatus.textContent = "✗ Error"; toolFormatStatus.style.color = "var(--error)"; }
+        }
+        toolFormatSaveBtn.disabled = false;
+        setTimeout(() => { if (toolFormatStatus) toolFormatStatus.textContent = ""; }, 3000);
+      });
+    }
+
     document.querySelector('[data-tab="personalization"]').addEventListener("click", () => {
       loadTools();
       loadSkills();
+      loadToolFormat();
     });
     document.querySelector('[data-tab="account"]')?.addEventListener("click", () => { if (window.loadAvailableBrowsers) window.loadAvailableBrowsers(); if (typeof loadAccountProfiles === 'function') loadAccountProfiles(); });
 

@@ -2894,6 +2894,39 @@ async def chat(request: ChatRequest):
 
 
 # ─── Approval Gate Endpoints ──────────────────────────────────────────────────
+@router.get("/api/skills/pending/{chat_id}")
+async def list_pending(chat_id: str):
+    """Return live permission/CWD prompts still awaiting a decision for a chat.
+
+    The approval banner is a single global element, so the frontend needs a
+    way to re-hydrate it when the user switches back to a chat that is still
+    blocked on a prompt.
+    """
+    from engine.security.middleware import (
+        list_pending_cwd_for_chat,
+        list_pending_for_chat,
+    )
+
+    approvals = [
+        {
+            "id": p.tag_id,
+            "name": p.name,
+            "command": p.content[:500],
+            "category": p.category,
+            "reason": p.reason,
+        }
+        for p in list_pending_for_chat(chat_id)
+    ]
+    cwd_warnings = [
+        {
+            "id": p.tag_id,
+            "name": p.name,
+            "path": p.path,
+            "cwd": p.cwd,
+        }
+        for p in list_pending_cwd_for_chat(chat_id)
+    ]
+    return {"ok": True, "approvals": approvals, "cwd_warnings": cwd_warnings}
 
 @router.post("/api/skills/approve/{tag_id}")
 async def approve_command(tag_id: str, request: Request):

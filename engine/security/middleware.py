@@ -107,6 +107,7 @@ class PendingApproval:
     content: str
     category: str
     reason: str
+    chat_id: str | None = None
     created: float = field(default_factory=time.time)
 
 
@@ -119,14 +120,17 @@ class PendingCwdWarning:
     content: str
     path: str
     cwd: str
+    chat_id: str | None = None
     created: float = field(default_factory=time.time)
 
 
-# In-memory store: tag_id → PendingApproval (expires after 5 min)
+# In-memory store: tag_id → PendingApproval (expires after 30 min)
+# TTL is generous on purpose: the prompt must survive the user switching to
+# another chat and coming back, which can take a while.
 _pending_approvals: dict[str, PendingApproval] = {}
-_APPROVAL_TTL = 300  # seconds
+_APPROVAL_TTL = 1800  # seconds
 
-# In-memory store: tag_id → PendingCwdWarning (expires after 5 min)
+# In-memory store: tag_id → PendingCwdWarning (expires after 30 min)
 _pending_cwd_warnings: dict[str, PendingCwdWarning] = {}
 
 # ─── Session permission cache ─────────────────────────────────────────────────
@@ -162,6 +166,38 @@ def get_pending_approval(tag_id: str) -> PendingApproval | None:
         _pending_approvals.pop(tag_id, None)
         return None
     return entry
+
+
+def list_pending_for_chat(chat_id: str) -> list[PendingApproval]:
+    """Return all live pending approvals belonging to a chat (oldest first).
+
+    Used by the frontend to re-hydrate the approval banner after the user
+    switches away from a chat and comes back.
+    """
+    now = time.time()
+    live: list[PendingApproval] = []
+    for tag_id, entry in list(_pending_approvals.items()):
+        if now - entry.created > _APPROVAL_TTL:
+            _pending_approvals.pop(tag_id, None)
+            continue
+        if entry.chat_id == chat_id:
+            live.append(entry)
+    live.sort(key=lambda e: e.created)
+    return live
+
+
+def list_pending_cwd_for_chat(chat_id: str) -> list[PendingCwdWarning]:
+    """Return all live pending CWD warnings belonging to a chat (oldest first)."""
+    now = time.time()
+    live: list[PendingCwdWarning] = []
+    for tag_id, entry in list(_pending_cwd_warnings.items()):
+        if now - entry.created > _APPROVAL_TTL:
+            _pending_cwd_warnings.pop(tag_id, None)
+            continue
+        if entry.chat_id == chat_id:
+            live.append(entry)
+    live.sort(key=lambda e: e.created)
+    return live
 
 
 def consume_pending_approval(tag_id: str) -> PendingApproval | None:
@@ -305,6 +341,7 @@ class SecurityMiddleware:
                             content=ctx.content,
                             category=category,
                             reason=reason,
+                            chat_id=ctx.chat_id,
                         )
                         logger.info(
                             "PERMISSION REQUIRED: tag=%s category=%s cmd=%s",
@@ -339,6 +376,7 @@ class SecurityMiddleware:
                         content=ctx.content,
                         path=target_path,
                         cwd=ctx.cwd,
+                        chat_id=ctx.chat_id,
                     )
                     logger.info(
                         "CWD WARNING: tag=%s path=%s cwd=%s",

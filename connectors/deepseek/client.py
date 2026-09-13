@@ -25,6 +25,8 @@ from typing import Any
 
 import httpx
 
+from connectors.common.instruction_builder import get_tool_format
+
 logger = logging.getLogger("sable.deepseek_api")
 
 BASE_URL = "https://chat.deepseek.com"
@@ -256,6 +258,47 @@ CLIENT_HEADERS = {
 # Client-side history cap (matches Gemini/Mistral sliding window)
 _MAX_SESSION_CHARS = 100_000
 
+# Account/token-switch context compression (Hermes pattern, mirrors Qwen).
+# Chats under this many chars are serialized raw; bigger ones get summarized.
+_SWITCH_SUMMARIZE_MIN = 40_000
+_SWITCH_HEAD_TURNS = 2   # user/assistant pairs kept verbatim at the start
+_SWITCH_TAIL_TURNS = 4   # user/assistant pairs kept verbatim at the end
+
+
+def _split_head_tail(
+    messages: list[dict[str, Any]],
+) -> tuple[str, str, list[dict[str, Any]]]:
+    """Split history into (head_text, tail_text, middle) for summarization.
+
+    Head = first `_SWITCH_HEAD_TURNS` message pairs, tail = last
+    `_SWITCH_TAIL_TURNS` pairs, both kept verbatim. Middle = everything
+    between them, to be compressed by the summarizer.
+    """
+    if not messages:
+        return "", "", []
+
+    head_n = _SWITCH_HEAD_TURNS * 2
+    tail_n = _SWITCH_TAIL_TURNS * 2
+
+    # Not enough to bother splitting — keep everything verbatim.
+    if len(messages) <= head_n + tail_n:
+        rendered = "\n".join(
+            f"[{m.get('role', 'user')}]: {m.get('content', '')}" for m in messages
+        )
+        return rendered, "", []
+
+    head_msgs = messages[:head_n]
+    tail_msgs = messages[-tail_n:]
+    middle = messages[head_n:-tail_n]
+
+    head_text = "\n".join(
+        f"[{m.get('role', 'user')}]: {m.get('content', '')}" for m in head_msgs
+    )
+    tail_text = "\n".join(
+        f"[{m.get('role', 'user')}]: {m.get('content', '')}" for m in tail_msgs
+    )
+    return head_text, tail_text, middle
+
 from connectors.common.context_summarizer import (
     should_inject_hint, should_force_summarize, get_hint_text,
     extract_summarize_tag, strip_summarize_tag, build_summary_prompt,
@@ -388,6 +431,13 @@ class DeepSeekClient:
         # Invalidate rotation cache so next request picks up the new token
         self._rotate_tokens = []
         self._rotate_idx = 0
+        # Account/token switch == new upstream chat. Drop stale parent chains
+        # so the next turn doesn't reference a message_id that never existed on
+        # the new account, and drop the incoming token's cached session so it
+        # gets a fresh chat_session instead of inheriting the old one.
+        self._parent_ids.clear()
+        if token:
+            self._rotate_sessions.pop(token, None)
         if persist and token:
             save_token_for_account(token, account or self._account)
 
@@ -762,6 +812,57 @@ class DeepSeekClient:
             logger.warning("DeepSeek summarizer error: %s", e)
             return None
 
+    async def _build_switch_prompt(
+        self, history: list[dict[str, Any]], current_message: str,
+    ) -> str:
+        """Build a fresh-chat seed prompt for an account/token switch (Hermes pattern).
+
+        Mirrors Qwen's `_build_switch_context`: keep the head (system + first user
+        turns) and the tail verbatim, compress the middle via the same model, then
+        end with a `continue` cue. This lets a brand-new DeepSeek chat resume the
+        conversation without shipping the entire raw transcript.
+        """
+        prefix_len = 1 if history and history[0].get("role") == "system" else 0
+        body = history[prefix_len:]
+        total_chars = sum(_msg_chars(m) for m in body)
+
+        # Small enough — plain serialization is fine and cheaper.
+        if total_chars <= _SWITCH_SUMMARIZE_MIN:
+            return self._serialize_history(history, current_message)
+
+        head, tail, middle = _split_head_tail(body)
+
+        middle_text = "\n".join(
+            f"[{m.get('role', 'user')}]: {m.get('content', '')}" for m in middle
+        )
+
+        flow = ""
+        if middle_text.strip():
+            try:
+                summary = await self._call_self_summarize(
+                    build_summary_prompt(middle, _msg_chars)
+                )
+                flow = summary or middle_text
+            except Exception as exc:
+                logger.warning("DeepSeek switch summarizer failed (%s) — using raw middle", exc)
+                flow = middle_text
+
+        parts: list[str] = []
+        if prefix_len:
+            parts.append(f"[System Instructions]\n{history[0].get('content', '')}")
+        if head:
+            parts.append(head)
+        if flow.strip():
+            parts.append(f"## Conversation Flow\n{flow}")
+        if tail:
+            parts.append(tail)
+        parts.append("continue")
+        _reminder = self._get_reminder()
+        if _reminder:
+            current_message = f"{_reminder}\n\n{current_message}"
+        parts.append(f"User: {current_message}")
+        return "\n\n".join(parts)
+
     def _get_or_create_session(
         self, chat_id: str | None, inject_instructions: bool,
         system_instruction: str | None = None,
@@ -786,20 +887,74 @@ class DeepSeekClient:
             self._sessions[chat_id] = history
         return history
 
-    # Tag warning disabled — system prompt (tools_loader) now handles format
-    # instruction per-provider (DSML for DeepSeek). This warning contradicted
-    # the DSML format instruction and caused the model to output bare JSON
-    # instead of DSML invoke/parameter blocks.
-    _DEEPSEEK_TAG_WARNING = ""
+    # Tool-calling format reminder — prepended to EVERY user message (chained,
+    # full-context, and rotation paths). Built dynamically from the active
+    # tool_call_format setting so it always matches what the system prompt says.
+    @classmethod
+    def _get_reminder(cls) -> str:
+        """Build a compact reminder showing the current tool call format.
+
+        Uses placeholder tag names / non-parseable JSON so Sable's own
+        response parser never fires on these examples.
+        """
+        fmt = get_tool_format("deepseek")
+        if not fmt:
+            return ""
+
+        # Detect which format is active by checking for signature strings
+        if "Hermes XML" in fmt or "invoke name" in fmt:
+            # Hermes XML format
+            _tc_o = "<" + "tool_call" + ">"
+            _tc_c = "</" + "tool_call" + ">"
+            return (
+                "[reminder] Tool calling structure:\n"
+                + _tc_o + "\n"
+                + '<invoke name="TOOL_NAME">\n'
+                + '<parameter name="arg">value</parameter>\n'
+                + "</invoke>\n"
+                + _tc_c + "\n"
+                + "[user message]"
+            )
+        elif "DSML" in fmt or "|DSML|" in fmt:
+            # DSML format
+            return (
+                "[reminder] Tool calling structure:\n"
+                + "<|DSML|tool_calls>\n"
+                + '  <|DSML|invoke name="TOOL_NAME">\n'
+                + '    <|DSML|parameter name="arg" string="true">value</|DSML|parameter>\n'
+                + "  </|DSML|invoke>\n"
+                + "</|DSML|tool_calls>\n"
+                + "[user message]"
+            )
+        elif "Native" in fmt or "[] wrapper" in fmt:
+            # Native bracket format
+            return (
+                "[reminder] Tool calling structure:\n"
+                + '[{"name": "TOOL_NAME", "arguments": {ARGS}}]\n'
+                + "[user message]"
+            )
+        elif "None" in fmt or "native API" in fmt:
+            return ""
+        else:
+            # Default: Qwen JSON (action tags)
+            _ao = "<" + "action" + ">"
+            _ac = "</" + "action" + ">"
+            return (
+                "[reminder] Tool calling structure:\n"
+                + _ao + '[{"name": "TOOL_NAME", "arguments": {ARGS}}]' + _ac + "\n"
+                + _ao + '[{"name": "TOOL_A", "arguments": {}}, {"name": "TOOL_B", "arguments": {}}]' + _ac + "\n"
+                + "[user message]"
+            )
 
     @classmethod
     def _serialize_history(cls, history: list[dict[str, Any]], current_message: str) -> str:
         """Serialize client-side history + current message into a single prompt string.
 
-        A tag-format warning is prepended to the *last* user message so that
-        DeepSeek sees it immediately before generating its response, reducing
-        the chance of it falling back to legacy <invoke>/<parameter> XML.
+        The tool-call format reminder is prepended to EVERY user message
+        (both historical and current) so DeepSeek always sees the correct
+        format immediately before each user turn.
         """
+        reminder = cls._get_reminder()
         parts: list[str] = []
         for msg in history:
             role = msg.get("role", "user")
@@ -807,12 +962,15 @@ class DeepSeekClient:
             if role == "system":
                 parts.append(f"[System Instructions]\n{content}")
             elif role == "user":
-                parts.append(f"User: {content}")
+                if reminder:
+                    parts.append(f"User: {reminder}\n{content}")
+                else:
+                    parts.append(f"User: {content}")
             elif role == "assistant":
                 parts.append(f"Assistant: {content}")
-        # Prepend warning to the current (last) user message (if any)
-        if cls._DEEPSEEK_TAG_WARNING:
-            warned_message = f"{cls._DEEPSEEK_TAG_WARNING}\n\n{current_message}"
+        # Prepend reminder to the current (last) user message as well
+        if reminder:
+            warned_message = f"{reminder}\n{current_message}"
         else:
             warned_message = current_message
         parts.append(f"User: {warned_message}")
@@ -987,7 +1145,11 @@ class DeepSeekClient:
 
         if _use_chaining:
             # Chained mode: send only the current message, DeepSeek uses parent
-            prompt = message
+            _reminder = self._get_reminder()
+            prompt = (
+                f"{_reminder}\n\n{message}"
+                if _reminder else message
+            )
             logger.debug("DeepSeek chained mode: parent=%s, chat=%s", _parent_id, chat_id)
         else:
             # Full-context fallback: serialize entire history into prompt
@@ -1008,8 +1170,8 @@ class DeepSeekClient:
         else:
             attempts = max(1, len(self._rotate_tokens))
         last_err = "unknown"
-        _MAX_RETRIES_PER_TOKEN = 3
-        _RETRY_DELAY_SECS = 2.0
+        _MAX_RETRIES_PER_TOKEN = 8
+        _RETRY_DELAY_SECS = 5.0
         # Per-token failure reasons — kept so the final error reports EACH token
         # instead of only the last one (which made debugging rotation a nightmare).
         token_errors: list[str] = []
@@ -1021,21 +1183,37 @@ class DeepSeekClient:
             return f"All {len(token_errors)} DeepSeek token(s) failed:\n{lines}"
 
         for _attempt in range(attempts):
+            # On rotation (attempt > 0) the previously selected token failed.
+            # Drop its cached session so _prepare_request_with_rotation spins up
+            # a BRAND-NEW chat_session — the old one belongs to the dead token
+            # and any parent chain into it is meaningless.
+            if _attempt > 0:
+                _tok = self._current_rotate_token
+                if _tok:
+                    self._rotate_sessions.pop(_tok, None)
+                    logger.info("DeepSeek rotation #%d: forcing fresh session for token %s",
+                                _attempt, self._mask_token(_tok))
+
             prepared = await self._prepare_request_with_rotation()
             if prepared is None:
                 yield {"type": "error", "message": _all_failed_message()}
                 return
             session_id, headers = prepared
 
-            # On rotation (attempt > 0), force full-context mode since the new
-            # token's server-side session has no history. Rebuild prompt from
-            # client-side history so context carries over cleanly.
+            # On rotation (attempt > 0), send a Hermes-style seed prompt (head +
+            # summarized middle + tail + 'continue') instead of the raw transcript,
+            # so the fresh chat resumes context without a context bomb.
             current_parent_id = _parent_id
             current_prompt = prompt
             if _attempt > 0:
                 current_parent_id = None
-                current_prompt = self._serialize_history(history, message)
-                logger.info("DeepSeek rotation #%d: rebuilt prompt in full-context mode (%d chars)",
+                try:
+                    current_prompt = await self._build_switch_prompt(history, message)
+                except Exception as _seed_exc:
+                    logger.warning("DeepSeek rotation #%d: switch-prompt build failed (%s), using raw serialize",
+                                   _attempt, _seed_exc)
+                    current_prompt = self._serialize_history(history, message)
+                logger.info("DeepSeek rotation #%d: rebuilt seed prompt (%d chars)",
                             _attempt, len(current_prompt))
 
             body = {
@@ -1190,6 +1368,10 @@ class DeepSeekClient:
                 "from_index": (_attempt) % len(self._rotate_tokens) if self._rotate_tokens else 0,
                 "to_index": self._rotate_idx,
                 "total_tokens": len(self._rotate_tokens),
+                # New account → new upstream chat. Context carries via the seed
+                # prompt, not the old session's parent chain. Mirrors Qwen's
+                # account_switch signal so the frontend can mark a new chat.
+                "new_chat": True,
             }
 
         yield {"type": "error", "message": _all_failed_message()}

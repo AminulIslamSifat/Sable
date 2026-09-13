@@ -170,6 +170,39 @@ _TOOL_FORMAT_NATIVE = f"""\
 [{{"name": "tool_a", "arguments": {{...}}}}, {{"name": "tool_b", "arguments": {{...}}}}]
 """
 
+_TOOL_FORMAT_HERMES = f"""\
+## ⚠️ HIGHEST PRIORITY: Tool Call Format (Hermes XML)
+
+> [!CRITICAL]
+> This instruction overrides ALL other formatting guidance.
+> You MUST wrap every tool call in {_TC_OPEN}...{_TC_CLOSE} tags using Hermes XML structure. No exceptions.
+
+- All tool calls MUST be wrapped inside a single `{_TC_OPEN}`...`{_TC_CLOSE}` block.
+- Each tool invocation uses `<invoke name="TOOL_NAME">` with `<parameter name="KEY">VALUE</parameter>` children.
+- Multiple tool calls go inside ONE `{_TC_OPEN}` block as separate `<invoke>` elements.
+- NEVER output JSON arrays for tool calls. Use ONLY Hermes XML.
+- Tool call blocks appear ONLY in plain text, NEVER inside fenced code blocks.
+- Keep prose to ONE short sentence before the tool call block.
+- Place the tool call block at the END of your response.
+
+### Single call
+{_TC_OPEN}
+<invoke name="TOOL_NAME">
+<parameter name="arg_name">value</parameter>
+</invoke>
+{_TC_CLOSE}
+
+### Multiple calls
+{_TC_OPEN}
+<invoke name="TOOL_A">
+<parameter name="arg1">value1</parameter>
+</invoke>
+<invoke name="TOOL_B">
+<parameter name="arg2">value2</parameter>
+</invoke>
+{_TC_CLOSE}
+"""
+
 _TOOL_FORMAT_NONE = """\
 ## Tool Call Format
 
@@ -177,12 +210,48 @@ Tool calls are handled via native API function calling. No prompt-based format n
 Follow the function schemas provided in the API request.
 """
 
+# Named format registry — selectable from settings UI
+_NAMED_TOOL_FORMATS: dict[str, str] = {
+    "qwen_json": _TOOL_FORMAT_QWEN,
+    "hermes": _TOOL_FORMAT_HERMES,
+    "dsml": _TOOL_FORMAT_DEEPSEEK,
+    "native": _TOOL_FORMAT_NATIVE,
+    "none": _TOOL_FORMAT_NONE,
+}
+
+# Default per-provider mapping (used when no settings override is set)
 _PROVIDER_TOOL_FORMATS: dict[str, str] = {
     "deepseek": _TOOL_FORMAT_QWEN,  # TEMP: use Qwen <action> format instead of DSML
     "qwen": _TOOL_FORMAT_QWEN,
     "native": _TOOL_FORMAT_NATIVE,
     "none": _TOOL_FORMAT_NONE,
 }
+
+
+def get_tool_format(provider: str | None = None) -> str:
+    """Return the active tool format string.
+
+    Priority:
+      1. ``tool_call_format`` key in system/settings.json (user override from UI)
+      2. Per-provider default from ``_PROVIDER_TOOL_FORMATS``
+      3. Empty string if provider is None or unknown
+    """
+    # Check for user override in settings
+    try:
+        _settings_path = Path(__file__).resolve().parent.parent.parent / "system" / "settings.json"
+        if _settings_path.is_file():
+            import json as _json
+            _settings = _json.loads(_settings_path.read_text(encoding="utf-8"))
+            _override = _settings.get("tool_call_format", "")
+            if _override and _override in _NAMED_TOOL_FORMATS:
+                return _NAMED_TOOL_FORMATS[_override]
+    except Exception:
+        pass
+
+    # Fall back to provider default
+    if provider and provider in _PROVIDER_TOOL_FORMATS:
+        return _PROVIDER_TOOL_FORMATS[provider]
+    return ""
 
 
 def build_instructions(
@@ -344,8 +413,10 @@ def build_instructions(
         # --- ⚠️ TOOL CALL FORMAT PRIMER (BEFORE tool schemas) ---
         # Injected FIRST so the model knows HOW to call tools before seeing WHAT tools exist.
         # This is the highest-weighted instruction via dual placement (primer + recency).
-        if provider and provider in _PROVIDER_TOOL_FORMATS:
-            parts.append(_PROVIDER_TOOL_FORMATS[provider])
+        # Respects user override from settings UI (tool_call_format dropdown).
+        _active_tool_format = get_tool_format(provider)
+        if _active_tool_format:
+            parts.append(_active_tool_format)
 
         # --- Tool Schemas ---
         try:
@@ -404,8 +475,8 @@ def build_instructions(
     # Second injection of the same format instruction. Models weight instructions at
     # both the beginning and end of system prompts most heavily. Dual placement ensures
     # this is the MOST WEIGHTED instruction in the entire prompt.
-    if provider and provider in _PROVIDER_TOOL_FORMATS:
-        parts.append(_PROVIDER_TOOL_FORMATS[provider])
+    if _active_tool_format:
+        parts.append(_active_tool_format)
 
     return "\n\n".join(parts)
 
