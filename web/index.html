@@ -1451,6 +1451,22 @@
             <textarea id="personaEditorContent" class="persona-editor-textarea" placeholder="Write the instruction here..."></textarea>
           </div>
 
+          <!-- ═══ Tool Call Format ═══ -->
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">📡</span>Tool Call Format</h3>
+          <p class="muted mem-desc">Choose how the AI structures tool calls. Applies to all providers. Default uses per-provider format.</p>
+          <div style="display:flex;align-items:center;gap:12px;margin-top:10px;">
+            <select id="toolFormatSelect" class="mem-input" style="width:100%;max-width:320px;">
+              <option value="">Default (per-provider)</option>
+              <option value="qwen_json">Qwen JSON (action tags + JSON array)</option>
+              <option value="hermes">Hermes XML (invoke/parameter tags)</option>
+              <option value="dsml">DSML (DeepSeek native pipe tags)</option>
+              <option value="native">Native (bracket-wrapped JSON)</option>
+              <option value="none">None (API function calling)</option>
+            </select>
+            <button id="toolFormatSaveBtn" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">💾</span>Save</button>
+            <span id="toolFormatStatus" class="muted mem-status"></span>
+          </div>
+
           <!-- ═══ Tools ═══ -->
           <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🔧</span>Tools</h3>
           <p class="muted mem-desc">Toggle tools on/off. Tools are always-active capabilities injected into every conversation.</p>

@@ -267,16 +267,17 @@
   }
 
   function syncPendingState(compactMsgs, source) {
-    const srcPending = source.querySelector('.pending-indicator');
+    // Processing text now lives inside the backend status card header
+    const srcProcessing = source.querySelector('.bs-processing-text:not([style*="display: none"])');
     const compactPending = compactMsgs.querySelector('.compact-pending');
-    if (srcPending && !compactPending) {
+    if (srcProcessing && !compactPending) {
       const el = document.createElement('div');
       el.className = 'compact-pending pending-indicator';
       el.innerHTML = '<span class="processing-text">processing\u2026</span>';
       compactMsgs.appendChild(el);
       const gap0 = compactMsgs.scrollHeight - compactMsgs.scrollTop - compactMsgs.clientHeight;
       if (gap0 < 80) compactMsgs.scrollTop = compactMsgs.scrollHeight;
-    } else if (!srcPending && compactPending) {
+    } else if (!srcProcessing && compactPending) {
       compactPending.remove();
     }
   }
@@ -411,16 +412,17 @@
     const source = getActivePane();
     if (!compactMsgs || !source) return;
 
-    const srcPending = source.querySelector('.pending-indicator');
+    // Processing text now lives inside the backend status card header
+    const srcProcessing = source.querySelector('.bs-processing-text:not([style*="display: none"])');
     const compactPending = compactMsgs.querySelector('.compact-pending');
 
-    if (srcPending && !compactPending) {
+    if (srcProcessing && !compactPending) {
       const el = document.createElement('div');
       el.className = 'compact-pending pending-indicator';
       el.innerHTML = '<span class="processing-text">processing\u2026</span>';
       compactMsgs.appendChild(el);
       compactMsgs.scrollTop = compactMsgs.scrollHeight;
-    } else if (!srcPending && compactPending) {
+    } else if (!srcProcessing && compactPending) {
       compactPending.remove();
     }
   }

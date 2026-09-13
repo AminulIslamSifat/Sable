@@ -644,26 +644,34 @@ class GhostChat:
                 await asyncio.sleep(0.5)
                 await field.click()
 
+                # Tool-calling format reminder — prepended to EVERY user message
+                # (including the first). Memory is injected centrally by server.py.
+                reminder = (
+                    "[reminder]\n"
+                    "tool calling format — every tool call MUST be a single JSON array "
+                    "wrapped in an <action> block:\n"
+                    '<action>[{"name": "<function-name>", "arguments": { ... }}]</action>\n'
+                    "Multiple calls go in the SAME array:\n"
+                    '<action>[{"name": "tool_a", "arguments": {...}}, '
+                    '{"name": "tool_b", "arguments": {...}}]</action>\n'
+                    "Never emit DSML. Never split into multiple <action> blocks. "
+                    "Keep prose before it to one short sentence. Place it at the END of the response.\n"
+                    "[user message]\n"
+                )
+
                 if raw:
                     # Raw mode: send message as-is without any system prompt injection.
                     # Used for internal prompts (memory consolidation, etc.)
                     pass
                 elif not self.system_injected:
                     instructions = self._load_instructions()
-                    # Memory is injected centrally by server.py — do NOT duplicate here.
                     if instructions:
-                        message = f"[SYSTEM INSTRUCTION]\n{instructions}\n\n[USER MESSAGE]\n{message}"
+                        message = f"[SYSTEM INSTRUCTION]\n{instructions}\n\n{reminder}{message}"
+                    else:
+                        message = f"{reminder}{message}"
                     self.system_injected = True
                 else:
-                    # Prepend a short quick reminder to every next user message
-                    reminder = (
-                        "[QUICK REMINDER]\n"
-                        "1. Use <action>[...]</action> JSON array format for all tool calls (NOT DSML).\n"
-                        "2. Use <execute_command> to run any command.\n"
-                        "3. Always use appropriate tags to run commands or use skills.\n\n"
-                    )
-                    # Memory is injected centrally by server.py — do NOT duplicate here.
-                    message = f"{reminder}[USER MESSAGE]\n{message}"
+                    message = f"{reminder}{message}"
 
                 # Try clipboard paste first for all messages to bypass automation detection and keep Angular in sync!
                 filled = await self._paste_large_message(field, message)

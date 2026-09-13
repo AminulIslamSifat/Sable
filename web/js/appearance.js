@@ -1177,11 +1177,18 @@ window.safeCopy = async function(text) {
     });
 
   // ── Browser Session Monitor ──────────────────────────────────
+  // Auth-aware fetch header — a raw fetch() bypasses the global wrapper, so
+  // any /api/* endpoint rejects it with 401 unless we attach the token.
+  function _authHeader() {
+    const token = localStorage.getItem('sable_token');
+    return token ? { Authorization: 'Bearer ' + token } : {};
+  }
+
   async function loadBrowserSession() {
     const card = document.getElementById('browserSessionCard');
     if (!card) return;
     try {
-      const res = await fetch('/api/scraper/sessions');
+      const res = await fetch('/api/scraper/sessions', { headers: _authHeader() });
       const d = await res.json();
       if (!d.active) {
         card.innerHTML = '<p class="muted" style="font-size:12px;margin:0;">No active browser session.</p>';
@@ -1210,7 +1217,7 @@ window.safeCopy = async function(text) {
 
   async function killBrowserSession() {
     try {
-      const res = await fetch('/api/scraper/sessions/kill', { method: 'POST' });
+      const res = await fetch('/api/scraper/sessions/kill', { method: 'POST', headers: _authHeader() });
       const d = await res.json();
       showToast(d.killed_pid ? 'Killed PID ' + d.killed_pid : 'Session reset (no PID found)', 'success');
     } catch {
@@ -1220,8 +1227,18 @@ window.safeCopy = async function(text) {
   }
 
   document.getElementById('refreshSessionBtn')?.addEventListener('click', loadBrowserSession);
-  loadBrowserSession();
-  setInterval(loadBrowserSession, 15000);
+
+  // Guarded poll — a bare setInterval() here stacks a NEW timer every time
+  // this module runs, so the endpoint gets hammered N times per 15s. Clearing
+  // before arming keeps exactly one alive; hidden tabs don't poll at all.
+  let _sessionPollTimer = null;
+  function _startSessionPoll() {
+    clearInterval(_sessionPollTimer);
+    _sessionPollTimer = setInterval(() => {
+      if (document.visibilityState === 'visible') loadBrowserSession();
+    }, 15000);
+  }
+  _startSessionPoll();
   // ── /Browser Session Monitor ─────────────────────────────────
 
   // ── Context Menu ──────────────────────────────────────────

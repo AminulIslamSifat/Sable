@@ -25,6 +25,8 @@ from typing import Any
 
 import httpx
 
+from connectors.common.instruction_builder import get_tool_format
+
 logger = logging.getLogger("sable.deepseek_api")
 
 BASE_URL = "https://chat.deepseek.com"
@@ -855,6 +857,9 @@ class DeepSeekClient:
         if tail:
             parts.append(tail)
         parts.append("continue")
+        _reminder = self._get_reminder()
+        if _reminder:
+            current_message = f"{_reminder}\n\n{current_message}"
         parts.append(f"User: {current_message}")
         return "\n\n".join(parts)
 
@@ -882,20 +887,74 @@ class DeepSeekClient:
             self._sessions[chat_id] = history
         return history
 
-    # Tag warning disabled — system prompt (tools_loader) now handles format
-    # instruction per-provider (DSML for DeepSeek). This warning contradicted
-    # the DSML format instruction and caused the model to output bare JSON
-    # instead of DSML invoke/parameter blocks.
-    _DEEPSEEK_TAG_WARNING = ""
+    # Tool-calling format reminder — prepended to EVERY user message (chained,
+    # full-context, and rotation paths). Built dynamically from the active
+    # tool_call_format setting so it always matches what the system prompt says.
+    @classmethod
+    def _get_reminder(cls) -> str:
+        """Build a compact reminder showing the current tool call format.
+
+        Uses placeholder tag names / non-parseable JSON so Sable's own
+        response parser never fires on these examples.
+        """
+        fmt = get_tool_format("deepseek")
+        if not fmt:
+            return ""
+
+        # Detect which format is active by checking for signature strings
+        if "Hermes XML" in fmt or "invoke name" in fmt:
+            # Hermes XML format
+            _tc_o = "<" + "tool_call" + ">"
+            _tc_c = "</" + "tool_call" + ">"
+            return (
+                "[reminder] Tool calling structure:\n"
+                + _tc_o + "\n"
+                + '<invoke name="TOOL_NAME">\n'
+                + '<parameter name="arg">value</parameter>\n'
+                + "</invoke>\n"
+                + _tc_c + "\n"
+                + "[user message]"
+            )
+        elif "DSML" in fmt or "|DSML|" in fmt:
+            # DSML format
+            return (
+                "[reminder] Tool calling structure:\n"
+                + "<|DSML|tool_calls>\n"
+                + '  <|DSML|invoke name="TOOL_NAME">\n'
+                + '    <|DSML|parameter name="arg" string="true">value</|DSML|parameter>\n'
+                + "  </|DSML|invoke>\n"
+                + "</|DSML|tool_calls>\n"
+                + "[user message]"
+            )
+        elif "Native" in fmt or "[] wrapper" in fmt:
+            # Native bracket format
+            return (
+                "[reminder] Tool calling structure:\n"
+                + '[{"name": "TOOL_NAME", "arguments": {ARGS}}]\n'
+                + "[user message]"
+            )
+        elif "None" in fmt or "native API" in fmt:
+            return ""
+        else:
+            # Default: Qwen JSON (action tags)
+            _ao = "<" + "action" + ">"
+            _ac = "</" + "action" + ">"
+            return (
+                "[reminder] Tool calling structure:\n"
+                + _ao + '[{"name": "TOOL_NAME", "arguments": {ARGS}}]' + _ac + "\n"
+                + _ao + '[{"name": "TOOL_A", "arguments": {}}, {"name": "TOOL_B", "arguments": {}}]' + _ac + "\n"
+                + "[user message]"
+            )
 
     @classmethod
     def _serialize_history(cls, history: list[dict[str, Any]], current_message: str) -> str:
         """Serialize client-side history + current message into a single prompt string.
 
-        A tag-format warning is prepended to the *last* user message so that
-        DeepSeek sees it immediately before generating its response, reducing
-        the chance of it falling back to legacy <invoke>/<parameter> XML.
+        The tool-call format reminder is prepended to EVERY user message
+        (both historical and current) so DeepSeek always sees the correct
+        format immediately before each user turn.
         """
+        reminder = cls._get_reminder()
         parts: list[str] = []
         for msg in history:
             role = msg.get("role", "user")
@@ -903,12 +962,15 @@ class DeepSeekClient:
             if role == "system":
                 parts.append(f"[System Instructions]\n{content}")
             elif role == "user":
-                parts.append(f"User: {content}")
+                if reminder:
+                    parts.append(f"User: {reminder}\n{content}")
+                else:
+                    parts.append(f"User: {content}")
             elif role == "assistant":
                 parts.append(f"Assistant: {content}")
-        # Prepend warning to the current (last) user message (if any)
-        if cls._DEEPSEEK_TAG_WARNING:
-            warned_message = f"{cls._DEEPSEEK_TAG_WARNING}\n\n{current_message}"
+        # Prepend reminder to the current (last) user message as well
+        if reminder:
+            warned_message = f"{reminder}\n{current_message}"
         else:
             warned_message = current_message
         parts.append(f"User: {warned_message}")
@@ -1083,7 +1145,11 @@ class DeepSeekClient:
 
         if _use_chaining:
             # Chained mode: send only the current message, DeepSeek uses parent
-            prompt = message
+            _reminder = self._get_reminder()
+            prompt = (
+                f"{_reminder}\n\n{message}"
+                if _reminder else message
+            )
             logger.debug("DeepSeek chained mode: parent=%s, chat=%s", _parent_id, chat_id)
         else:
             # Full-context fallback: serialize entire history into prompt
