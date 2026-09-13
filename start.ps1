@@ -910,8 +910,6 @@ function Main {
     Write-Info "Opening browser..."
     try { Start-Process $SABLE_URL } catch {}
 
-    Write-Info "Starting server in background (hidden console)..."
-
     # CRITICAL: launch `.venv\Scripts\python.exe server.py` DIRECTLY.
     #
     # Do NOT use `uv run python server.py` here. `uv.exe` is a console-
@@ -931,22 +929,35 @@ function Main {
         exit 1
     }
 
-    $serverEnv = @{ "TERM" = "xterm-256color" }
-    try {
-        $proc = Start-SableServerProcess `
-            -FilePath $venvPython `
-            -ArgumentList @("server.py") `
-            -WorkingDirectory $SCRIPT_DIR `
-            -StdOutLog (Join-Path $SCRIPT_DIR "sable.log") `
-            -StdErrLog (Join-Path $SCRIPT_DIR "sable_error.log") `
-            -Environment $serverEnv
-        Write-Ok "Server started (PID $($proc.Id)) - invisible console, no child popups"
-    } catch {
-        Write-Err "Failed to launch server: $_"
-        exit 1
-    }
+    $isBackground = ($env:SABLE_BACKGROUND -eq "1")
 
-    Write-Info "Logs: sable.log / sable_error.log"
+    if ($isBackground) {
+        # Background mode (Task Scheduler / --background flag):
+        # Hidden console, output redirected to log files.
+        Write-Info "Starting server in background (hidden console)..."
+        $serverEnv = @{ "TERM" = "xterm-256color" }
+        try {
+            $proc = Start-SableServerProcess `
+                -FilePath $venvPython `
+                -ArgumentList @("server.py") `
+                -WorkingDirectory $SCRIPT_DIR `
+                -StdOutLog (Join-Path $SCRIPT_DIR "sable.log") `
+                -StdErrLog (Join-Path $SCRIPT_DIR "sable_error.log") `
+                -Environment $serverEnv
+            Write-Ok "Server started (PID $($proc.Id)) - invisible console, no child popups"
+        } catch {
+            Write-Err "Failed to launch server: $_"
+            exit 1
+        }
+        Write-Info "Logs: sable.log / sable_error.log"
+    } else {
+        # Foreground mode (desktop shortcut / double-click):
+        # Run directly in this console so the user sees live logs.
+        Write-Info "Starting server (live logs below)..."
+        Write-Host ""
+        $env:TERM = "xterm-256color"
+        & $venvPython server.py
+    }
 }
 
 Main
