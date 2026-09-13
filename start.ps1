@@ -815,10 +815,10 @@ function Create-DesktopShortcut {
     $shortcutPath = Join-Path $desktopPath "Sable.lnk"
     $startBat = Join-Path $SCRIPT_DIR "start.bat"
 
-    # The shortcut runs start.bat normally (setup + background server),
-    # then opens the browser and tails sable.log live in this window.
+    # The shortcut launches start.bat in a hidden window (setup + server),
+    # then opens the browser and tails sable.log live in THIS window.
     $logPath = Join-Path $SCRIPT_DIR "sable.log"
-    $psCmd  = "& `"$startBat`"; Start-Process 'http://127.0.0.1:$SABLE_PORT'; Get-Content -Wait -Tail 50 `"$logPath`""
+    $psCmd  = "Start-Process -FilePath `"$startBat`" -WindowStyle Hidden; Start-Sleep 3; Start-Process 'http://127.0.0.1:$SABLE_PORT'; while (!(Test-Path `"$logPath`")) { Start-Sleep 1 }; Get-Content -Wait -Tail 50 `"$logPath`""
     $psArgs = "-NoProfile -ExecutionPolicy Bypass -Command `"$psCmd`""
 
     # Windows .lnk icons MUST be a real .ico (PNG/SVG won't render).
