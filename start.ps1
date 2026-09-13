@@ -815,6 +815,12 @@ function Create-DesktopShortcut {
     $shortcutPath = Join-Path $desktopPath "Sable.lnk"
     $startBat = Join-Path $SCRIPT_DIR "start.bat"
 
+    # The shortcut runs start.bat normally (setup + background server),
+    # then opens the browser and tails sable.log live in this window.
+    $logPath = Join-Path $SCRIPT_DIR "sable.log"
+    $psCmd  = "& `"$startBat`"; Start-Process 'http://127.0.0.1:$SABLE_PORT'; Get-Content -Wait -Tail 50 `"$logPath`""
+    $psArgs = "-NoProfile -ExecutionPolicy Bypass -Command `"$psCmd`""
+
     # Windows .lnk icons MUST be a real .ico (PNG/SVG won't render).
     # Generated from web/assets/sable_icon.svg -> sable_icon.ico (multi-res).
     $iconPath = Join-Path $SCRIPT_DIR "web\assets\sable_icon.ico"
@@ -828,8 +834,7 @@ function Create-DesktopShortcut {
         try {
             $shell = New-Object -ComObject WScript.Shell
             $existing = $shell.CreateShortcut($shortcutPath)
-            if ($existing.TargetPath -eq $startBat -and $existing.Arguments -eq "") {
-                # Only skip if icon is also correct
+            if ($existing.TargetPath -eq "powershell.exe" -and $existing.Arguments -eq $psArgs) {
                 $currentIcon = if ($existing.IconLocation) { $existing.IconLocation.Split(',')[0] } else { "" }
                 if (-not $iconPath -or $currentIcon -eq $iconPath) {
                     $needsUpdate = $false
@@ -846,13 +851,12 @@ function Create-DesktopShortcut {
     try {
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($shortcutPath)
-        $shortcut.TargetPath = $startBat
-        $shortcut.Arguments = ""
+        $shortcut.TargetPath = "powershell.exe"
+        $shortcut.Arguments = $psArgs
         $shortcut.WorkingDirectory = $SCRIPT_DIR
         $shortcut.Description = "Launch Sable Agentic Chat Platform"
-        $shortcut.WindowStyle = 1  # Normal (visible console with live logs)
+        $shortcut.WindowStyle = 1  # Normal (visible log window)
         if ($iconPath) {
-            # ",0" = first icon group inside the .ico
             $shortcut.IconLocation = "$iconPath,0"
         }
         $shortcut.Save()
@@ -905,11 +909,6 @@ function Main {
 
     Show-InfoBox $SABLE_URL $SABLE_PORT
 
-    # No waiting/polling here. It was blocking Windows startup behavior.
-    # Open browser immediately, then run the server in the foreground.
-    Write-Info "Opening browser..."
-    try { Start-Process $SABLE_URL } catch {}
-
     # CRITICAL: launch `.venv\Scripts\python.exe server.py` DIRECTLY.
     #
     # Do NOT use `uv run python server.py` here. `uv.exe` is a console-
@@ -929,34 +928,20 @@ function Main {
         exit 1
     }
 
-    $isBackground = ($env:SABLE_BACKGROUND -eq "1")
-
-    if ($isBackground) {
-        # Background mode (Task Scheduler / --background flag):
-        # Hidden console, output redirected to log files.
-        Write-Info "Starting server in background (hidden console)..."
-        $serverEnv = @{ "TERM" = "xterm-256color" }
-        try {
-            $proc = Start-SableServerProcess `
-                -FilePath $venvPython `
-                -ArgumentList @("server.py") `
-                -WorkingDirectory $SCRIPT_DIR `
-                -StdOutLog (Join-Path $SCRIPT_DIR "sable.log") `
-                -StdErrLog (Join-Path $SCRIPT_DIR "sable_error.log") `
-                -Environment $serverEnv
-            Write-Ok "Server started (PID $($proc.Id)) - invisible console, no child popups"
-        } catch {
-            Write-Err "Failed to launch server: $_"
-            exit 1
-        }
-        Write-Info "Logs: sable.log / sable_error.log"
-    } else {
-        # Foreground mode (desktop shortcut / double-click):
-        # Run directly in this console so the user sees live logs.
-        Write-Info "Starting server (live logs below)..."
-        Write-Host ""
-        $env:TERM = "xterm-256color"
-        & $venvPython server.py
+    Write-Info "Starting server in background..."
+    $serverEnv = @{ "TERM" = "xterm-256color" }
+    try {
+        $proc = Start-SableServerProcess `
+            -FilePath $venvPython `
+            -ArgumentList @("server.py") `
+            -WorkingDirectory $SCRIPT_DIR `
+            -StdOutLog (Join-Path $SCRIPT_DIR "sable.log") `
+            -StdErrLog (Join-Path $SCRIPT_DIR "sable_error.log") `
+            -Environment $serverEnv
+        Write-Ok "Server started (PID $($proc.Id))"
+    } catch {
+        Write-Err "Failed to launch server: $_"
+        exit 1
     }
 }
 

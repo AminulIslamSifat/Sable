@@ -1,8 +1,8 @@
 @echo off
 setlocal enabledelayedexpansion
 :: Sable Start Script for Windows - double-click to launch.
-:: Normal launch = visible log console (foreground).
-:: Pass --background to run fully silent (no console window stays open).
+:: Runs setup checks visibly, then starts the server in background.
+:: Use the desktop shortcut to also get a live log viewer + browser.
 
 :: Force clean state - ignore any leaked env vars from parent shell
 set "SABLE_BACKGROUND=0"
@@ -32,7 +32,6 @@ if not exist "server.py" (
 )
 
 set SABLE_BACKGROUND=0
-if "%~1"=="--background" set SABLE_BACKGROUND=1
 
 if not defined SABLE_PORT set SABLE_PORT=61770
 
@@ -49,7 +48,6 @@ if "%SABLE_BACKGROUND%"=="1" (
     exit /b 0
 )
 
-:: Foreground mode (default): show the console with live logs.
-echo [Sable] Starting in foreground mode...
+:: Foreground: show setup logs, server starts in background and script exits.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%start.ps1"
 exit /b %errorlevel%
