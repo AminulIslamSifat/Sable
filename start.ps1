@@ -828,7 +828,7 @@ function Create-DesktopShortcut {
         try {
             $shell = New-Object -ComObject WScript.Shell
             $existing = $shell.CreateShortcut($shortcutPath)
-            if ($existing.TargetPath -eq $startBat -and $existing.Arguments -eq "--background") {
+            if ($existing.TargetPath -eq $startBat -and $existing.Arguments -eq "") {
                 # Only skip if icon is also correct
                 $currentIcon = if ($existing.IconLocation) { $existing.IconLocation.Split(',')[0] } else { "" }
                 if (-not $iconPath -or $currentIcon -eq $iconPath) {
@@ -847,10 +847,10 @@ function Create-DesktopShortcut {
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($shortcutPath)
         $shortcut.TargetPath = $startBat
-        $shortcut.Arguments = "--background"
+        $shortcut.Arguments = ""
         $shortcut.WorkingDirectory = $SCRIPT_DIR
         $shortcut.Description = "Launch Sable Agentic Chat Platform"
-        $shortcut.WindowStyle = 7  # Minimized/Hidden
+        $shortcut.WindowStyle = 1  # Normal (visible console with live logs)
         if ($iconPath) {
             # ",0" = first icon group inside the .ico
             $shortcut.IconLocation = "$iconPath,0"
