@@ -11,7 +11,11 @@ $ProgressPreference    = "SilentlyContinue"   # Speed up Invoke-WebRequest
 # -- Globals ------------------------------------------------------------------
 $SABLE_PORT   = if ($env:SABLE_PORT) { $env:SABLE_PORT } else { "61770" }
 $SABLE_URL    = "http://127.0.0.1:$SABLE_PORT"
-$SCRIPT_DIR   = Split-Path -Parent $MyInvocation.MyCommand.Path
+$SCRIPT_DIR   = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
+if (-not $SCRIPT_DIR -or -not (Test-Path $SCRIPT_DIR)) {
+    Write-Host "[Sable] ERR  Could not determine script directory. Aborting." -ForegroundColor Red
+    exit 1
+}
 $TASK_NAME    = "Sable Server"
 $MAX_RETRIES  = 3
 $RETRY_DELAY  = 2
