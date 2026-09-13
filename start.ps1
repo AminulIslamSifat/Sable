@@ -672,12 +672,10 @@ function Cleanup-StaleProcess {
 # -- Task Scheduler Auto-Start -----------------------------------------------
 function Setup-AutoStart {
     Write-Info "Checking auto-start configuration..."
-    # Launch via wscript + start_silent.vbs. wscript.exe is a GUI-subsystem
-    # binary that NEVER allocates a console, and the VBS runs PowerShell
-    # with window flag 0. This is the only way to guarantee ZERO popup at
-    # logon — `-WindowStyle Hidden` alone still briefly materializes a
-    # console that child processes (uv, etc.) can leak as a visible window.
-    $silentVbs = Join-Path $SCRIPT_DIR "start_silent.vbs"
+    # Launch via start.bat --background which uses wscript + temp VBS
+    # internally. wscript.exe is a GUI-subsystem binary that NEVER allocates
+    # a console, guaranteeing ZERO popup at logon.
+    $startBat = Join-Path $SCRIPT_DIR "start.bat"
 
     # Clean up legacy registry Run key
     try {
@@ -691,10 +689,10 @@ function Setup-AutoStart {
     try {
         $existingTask = Get-ScheduledTask -TaskName $TASK_NAME -ErrorAction SilentlyContinue
 
-        # Launch via wscript (GUI subsystem, no console) -> VBS -> hidden PS.
+        # Launch via start.bat --background (handles silent VBS wrapping).
         $action = New-ScheduledTaskAction `
-            -Execute "wscript.exe" `
-            -Argument "//nologo `"$silentVbs`"" `
+            -Execute "cmd.exe" `
+            -Argument "/c `"`"$startBat`" --background`"" `
             -WorkingDirectory $SCRIPT_DIR
 
         if (-not $existingTask) {
@@ -731,10 +729,9 @@ function Setup-AutoStart {
                 $needsUpdate = $true
             }
 
-            # Also check if the launch command changed (must be wscript + this vbs)
-            $expectedExe = "wscript.exe"
-            $expectedArg = "//nologo `"$silentVbs`""
-            if ($existingAction.Execute -notlike "*$expectedExe*" -or $existingAction.Arguments -ne $expectedArg) {
+            # Also check if the launch command changed (must be cmd + start.bat --background)
+            $expectedExe = "cmd.exe"
+            if ($existingAction.Execute -notlike "*$expectedExe*" -or $existingAction.Arguments -notlike "*--background*") {
                 $needsUpdate = $true
             }
 
@@ -808,7 +805,7 @@ function Create-DesktopShortcut {
         try {
             $shell = New-Object -ComObject WScript.Shell
             $existing = $shell.CreateShortcut($shortcutPath)
-            if ($existing.TargetPath -eq $startBat) {
+            if ($existing.TargetPath -eq $startBat -and $existing.Arguments -eq "--background") {
                 # Only skip if icon is also correct
                 $currentIcon = if ($existing.IconLocation) { $existing.IconLocation.Split(',')[0] } else { "" }
                 if (-not $iconPath -or $currentIcon -eq $iconPath) {
@@ -827,6 +824,7 @@ function Create-DesktopShortcut {
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($shortcutPath)
         $shortcut.TargetPath = $startBat
+        $shortcut.Arguments = "--background"
         $shortcut.WorkingDirectory = $SCRIPT_DIR
         $shortcut.Description = "Launch Sable Agentic Chat Platform"
         $shortcut.WindowStyle = 7  # Minimized/Hidden
