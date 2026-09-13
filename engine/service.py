@@ -177,15 +177,33 @@ class ChatService:
                 return self._headers
             async with self._lock:
                 if not self._headers or self._headers_account != account:
-                    await self._browser.start()
-                    self._headers = await self._browser.get_fresh_headers()
-                    self._headers_account = account
-                    save_qwen_tokens_for_account(
-                        cookies=self._headers.get("Cookie", ""),
-                        bx_ua=self._headers.get("bx-ua", ""),
-                        bx_umidtoken=self._headers.get("bx-umidtoken", ""),
-                        account=account,
-                    )
+                    try:
+                        await self._browser.start()
+                        self._headers = await self._browser.get_fresh_headers()
+                        self._headers_account = account
+                        save_qwen_tokens_for_account(
+                            cookies=self._headers.get("Cookie", ""),
+                            bx_ua=self._headers.get("bx-ua", ""),
+                            bx_umidtoken=self._headers.get("bx-umidtoken", ""),
+                            account=account,
+                        )
+                    except Exception as exc:
+                        logger.warning("Browser launch failed for %s: %s: %s", account, type(exc).__name__, exc)
+                        # Fall back to cached tokens on disk before giving up
+                        cached = get_qwen_tokens_for_account(account)
+                        if cached and cached.get("cookies"):
+                            from engine.session import build_headers
+                            self._headers = build_headers(
+                                cookies=cached["cookies"],
+                                bx_ua=cached.get("bx_ua"),
+                                bx_umidtoken=cached.get("bx_umidtoken"),
+                            )
+                            self._headers_account = account
+                            logger.info("Fell back to cached Qwen WAF tokens for %s after browser failure", account)
+                        else:
+                            raise RuntimeError(
+                                f"Browser launch failed for {account} and no cached tokens available on disk"
+                            ) from exc
                 return self._headers
 
         # ── Scoped path (bdd set): isolated browser + header cache ──
@@ -207,37 +225,78 @@ class ChatService:
             if bdd in self._scoped_headers and self._scoped_accounts.get(bdd) == account:
                 return self._scoped_headers[bdd]
             browser = self._get_browser(bdd)
-            await browser.start()
-            headers = await browser.get_fresh_headers()
-            self._scoped_headers[bdd] = headers
-            self._scoped_accounts[bdd] = account
-            save_qwen_tokens_for_account(
-                cookies=headers.get("Cookie", ""),
-                bx_ua=headers.get("bx-ua", ""),
-                bx_umidtoken=headers.get("bx-umidtoken", ""),
-                account=account,
-            )
-            return headers
+            try:
+                await browser.start()
+                headers = await browser.get_fresh_headers()
+                self._scoped_headers[bdd] = headers
+                self._scoped_accounts[bdd] = account
+                save_qwen_tokens_for_account(
+                    cookies=headers.get("Cookie", ""),
+                    bx_ua=headers.get("bx-ua", ""),
+                    bx_umidtoken=headers.get("bx-umidtoken", ""),
+                    account=account,
+                )
+                return headers
+            except Exception as exc:
+                logger.warning("Browser launch failed for %s (scoped %s): %s: %s", account, bdd, type(exc).__name__, exc)
+                cached = get_qwen_tokens_for_account(account)
+                if cached and cached.get("cookies"):
+                    from engine.session import build_headers
+                    headers = build_headers(
+                        cookies=cached["cookies"],
+                        bx_ua=cached.get("bx_ua"),
+                        bx_umidtoken=cached.get("bx_umidtoken"),
+                    )
+                    self._scoped_headers[bdd] = headers
+                    self._scoped_accounts[bdd] = account
+                    logger.info("Fell back to cached Qwen WAF tokens for %s (scoped) after browser failure", account)
+                    return headers
+                raise RuntimeError(
+                    f"Browser launch failed for {account} (scoped {bdd}) and no cached tokens available on disk"
+                ) from exc
 
     async def _refresh_headers(self, bdd: str | None = None) -> dict[str, str]:
         account = self._resolve_account(bdd)
         browser = self._get_browser(bdd)
         async with self._lock:
-            await browser.start()
-            headers = await browser.get_fresh_headers()
-            if not bdd:
-                self._headers = headers
-                self._headers_account = account
-            else:
-                self._scoped_headers[bdd] = headers
-                self._scoped_accounts[bdd] = account
-            save_qwen_tokens_for_account(
-                cookies=headers.get("Cookie", ""),
-                bx_ua=headers.get("bx-ua", ""),
-                bx_umidtoken=headers.get("bx-umidtoken", ""),
-                account=account,
-            )
-            return headers
+            try:
+                await browser.start()
+                headers = await browser.get_fresh_headers()
+                if not bdd:
+                    self._headers = headers
+                    self._headers_account = account
+                else:
+                    self._scoped_headers[bdd] = headers
+                    self._scoped_accounts[bdd] = account
+                save_qwen_tokens_for_account(
+                    cookies=headers.get("Cookie", ""),
+                    bx_ua=headers.get("bx-ua", ""),
+                    bx_umidtoken=headers.get("bx-umidtoken", ""),
+                    account=account,
+                )
+                return headers
+            except Exception as exc:
+                logger.warning("Browser refresh failed for %s: %s: %s", account, type(exc).__name__, exc)
+                # Fall back to cached tokens before giving up
+                cached = get_qwen_tokens_for_account(account)
+                if cached and cached.get("cookies"):
+                    from engine.session import build_headers
+                    headers = build_headers(
+                        cookies=cached["cookies"],
+                        bx_ua=cached.get("bx_ua"),
+                        bx_umidtoken=cached.get("bx_umidtoken"),
+                    )
+                    if not bdd:
+                        self._headers = headers
+                        self._headers_account = account
+                    else:
+                        self._scoped_headers[bdd] = headers
+                        self._scoped_accounts[bdd] = account
+                    logger.info("Fell back to cached Qwen WAF tokens for %s after refresh failure", account)
+                    return headers
+                raise RuntimeError(
+                    f"Browser refresh failed for {account} and no cached tokens available on disk"
+                ) from exc
 
     async def warmup(self, account: str | None = None) -> None:
         """Pre-load WAF headers. Never launches a browser when the target

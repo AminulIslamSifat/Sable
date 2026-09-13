@@ -94,12 +94,14 @@ class BrowserManager:
 
     async def start(self):
         """Lazy-starts the browser context and page if not already running."""
-        if not self.playwright:
-            self._check_profile_lock()
-            launch_num = _increment_playwright_counter()
-            print(f"[DEBUG] Launching persistent browser context #{launch_num} (headless={self.headless})...")
-            from playwright.async_api import async_playwright
-            from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
+        if self.playwright and self.context:
+            return
+        self._check_profile_lock()
+        launch_num = _increment_playwright_counter()
+        print(f"[DEBUG] Launching persistent browser context #{launch_num} (headless={self.headless})...")
+        from playwright.async_api import async_playwright
+        from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
+        try:
             self.playwright = await async_playwright().start()
             profile_name = getattr(self, "profile_name", None) or Path(self.user_data_dir).name
             exe_path = resolve_browser_for_profile(profile_name)
@@ -135,6 +137,10 @@ class BrowserManager:
 
             await self.page.add_script_tag(url="https://gosspublic.alicdn.com/aliyun-oss-sdk-6.18.1.min.js")
             await self.page.wait_for_timeout(1000)
+        except Exception:
+            # Reset state so a subsequent retry doesn't see a half-initialized manager
+            await self.close()
+            raise
 
     async def restart(self, headless: bool | None = None) -> None:
         """Close and relaunch the browser with an optional new headless flag."""
