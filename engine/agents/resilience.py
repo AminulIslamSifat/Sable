@@ -762,6 +762,10 @@ class MainChatGuard:
                 block = block.strip()
                 if not block:
                     continue
+                # Skip JSON validation for XML invoke format — it's valid, just not JSON.
+                # Models may emit <invoke name="...">...</invoke> inside <tool_call> wrappers.
+                if _re.search(r'<\s*invoke\b', block, _re.I):
+                    continue
                 # Pre-validate: try sanitizing before declaring failure
                 sanitized_block = sanitize_transport(block)
                 if not _parse_action_payload(sanitized_block) and not _parse_action_payload(block):

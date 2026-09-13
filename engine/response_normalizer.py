@@ -100,19 +100,57 @@ def _parse_json_action(content: str) -> dict[str, Any] | None:
 def _extract_actions_from_text(text: str) -> tuple[str, list[dict[str, Any]]]:
     """Extract tool call tags from text, return cleaned text + function_call events.
 
-    Handles both Sable custom format and native Hermes format.
+    Handles three formats inside <tool_call>/<action> wrappers:
+      1. JSON object: {"name": "x", "arguments": {...}}
+      2. JSON array:  [{"name": "x", "arguments": {...}}]
+      3. Hermes XML:  <invoke name="x"><parameter name="y">z</parameter></invoke>
     """
     calls: list[dict[str, Any]] = []
 
     def _replace(match: re.Match) -> str:
-        inner = match.group(1)
+        inner = match.group(1).strip()
+
+        # Try 1: JSON object
         fc = _parse_json_action(inner)
         if fc:
             calls.append(fc)
-            return ""  # Strip the tag from output text
-        return match.group(0)  # Not valid JSON — leave as-is
+            return ""
+
+        # Try 2: JSON array [{"name": ...}, ...]
+        if inner.startswith("["):
+            try:
+                arr = json.loads(inner)
+                if isinstance(arr, list):
+                    found_any = False
+                    for item in arr:
+                        if isinstance(item, dict):
+                            name = item.get("name") or item.get("tool") or ""
+                            args = item.get("arguments") or item.get("args") or {}
+                            if name:
+                                calls.append({"type": "function_call", "name": name, "args": args})
+                                found_any = True
+                    if found_any:
+                        return ""
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Try 3: Hermes XML invoke/parameter inside <tool_call> wrapper
+        xml_calls = _parse_legacy_invoke(inner)
+        if xml_calls:
+            calls.extend(xml_calls)
+            return ""
+
+        return match.group(0)  # Nothing matched — leave as-is
 
     cleaned = _ACTION_RE.sub(_replace, text)
+
+    # Also catch bare <invoke> blocks not wrapped in any outer tag
+    if not calls:
+        bare_calls = _parse_legacy_invoke(text)
+        if bare_calls:
+            calls.extend(bare_calls)
+            cleaned = _LEGACY_INVOKE_RE.sub("", cleaned)
+
     return cleaned, calls
 
 
@@ -346,7 +384,25 @@ async def normalize_stream(
 
     _dlog("=== normalize_stream START (provider=%s) ===" % provider)
 
+    # --- Raw response logger: dump every chunk verbatim for debugging ---
+    import os as _os_raw
+    _raw_log_dir = _os_raw.path.join(_os_raw.path.dirname(__file__), "..", "tests")
+    _os_raw.makedirs(_raw_log_dir, exist_ok=True)
+    _raw_log_path = _os_raw.path.join(_raw_log_dir, "qwen_output.txt")
+    _raw_fh = open(_raw_log_path, "a", encoding="utf-8")
+    from datetime import datetime as _dt_raw
+    _raw_fh.write(f"\n{'='*60}\n=== STREAM START | provider={provider} | {_dt_raw.now().isoformat()} ===\n{'='*60}\n")
+    _raw_fh.flush()
+
     async for event in stream:
+        # Log every raw event before any processing
+        try:
+            _ts = _dt_raw.now().strftime("%H:%M:%S.%f")[:-3]
+            _raw_fh.write(f"[{_ts}] {json.dumps(event, ensure_ascii=False)}\n")
+            _raw_fh.flush()
+        except Exception:
+            pass
+
         etype = event.get("type")
 
         # -- Native function calls from connectors --
@@ -418,19 +474,31 @@ async def normalize_stream(
                         yield {"type": "answer", "text": before}
                     _ct = "</action>" if _reassembled_open == "<action>" else "</" + "tool_call>"
                     close_idx = after.find(_ct)
-                    if close_idx != -1 and json_structurally_complete(after[:close_idx]):
-                        fc = _parse_json_action(after[:close_idx])
-                        if fc:
-                            yield fc
-                        remainder = after[close_idx + len(_ct):]
-                        if remainder:
-                            cleaned_r, more_calls = _extract_actions_from_text(remainder)
-                            for fc in more_calls:
+                    if close_idx != -1:
+                        inner = after[:close_idx]
+                        # Try JSON first, then Hermes XML
+                        _rc: list[dict[str, Any]] = []
+                        if json_structurally_complete(inner):
+                            fc = _parse_json_action(inner)
+                            if fc:
+                                _rc.append(fc)
+                        if not _rc:
+                            _rc = _parse_legacy_invoke(inner)
+                        if _rc:
+                            for fc in _rc:
                                 yield fc
-                            cleaned_r = _ORPHAN_TAG_RE.sub("", cleaned_r)
-                            cleaned_r = _ORPHAN_DSML_RE.sub("", cleaned_r)
-                            if cleaned_r.strip():
-                                yield {"type": "answer", "text": cleaned_r}
+                            remainder = after[close_idx + len(_ct):]
+                            if remainder:
+                                cleaned_r, more_calls = _extract_actions_from_text(remainder)
+                                for fc in more_calls:
+                                    yield fc
+                                cleaned_r = _ORPHAN_TAG_RE.sub("", cleaned_r)
+                                cleaned_r = _ORPHAN_DSML_RE.sub("", cleaned_r)
+                                if cleaned_r.strip():
+                                    yield {"type": "answer", "text": cleaned_r}
+                        else:
+                            _action_buffer = after
+                            _in_action = True
                     else:
                         _action_buffer = after
                         _in_action = True
@@ -517,10 +585,17 @@ async def normalize_stream(
                     if close_idx == -1:
                         break
                     inner = after[:close_idx]
+                    # Try JSON first, then Hermes XML invoke/parameter
+                    _parsed_calls: list[dict[str, Any]] = []
                     if json_structurally_complete(inner):
-                        remainder = after[close_idx + len(_ct):]
                         fc = _parse_json_action(inner)
                         if fc:
+                            _parsed_calls.append(fc)
+                    if not _parsed_calls:
+                        _parsed_calls = _parse_legacy_invoke(inner)
+                    if _parsed_calls:
+                        remainder = after[close_idx + len(_ct):]
+                        for fc in _parsed_calls:
                             yield fc
                         if remainder:
                             cleaned, more_calls = _extract_actions_from_text(remainder)
@@ -632,6 +707,11 @@ async def normalize_stream(
                 _action_buffer = ""
                 _in_action = False
             _debug_fh.close()
+            try:
+                _raw_fh.write(f"=== STREAM END | {_dt_raw.now().isoformat()} ===\n")
+                _raw_fh.close()
+            except Exception:
+                pass
 
             for _idx in sorted(_tc_accum):
                 acc = _tc_accum[_idx]

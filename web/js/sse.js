@@ -883,18 +883,33 @@
       turn.className = "turn";
       pane.appendChild(turn);
 
-      // Immediate feedback that the message was sent and a response is on
-      // its way — removed as soon as any real content (thinking, a skill
-      // event, or an answer token) actually arrives.
-      const pending = document.createElement("div");
-      pending.className = "pending-indicator";
-      pending.innerHTML = `<span class="processing-text">processing…</span>`;
-      turn.appendChild(pending);
+      // Immediate feedback: create the backend status card right away with
+      // a shimmering "processing…" label in the header.  The text stays
+      // visible (even when collapsed) until real pipeline steps arrive or
+      // the first content token hides it.
+      const bsCard = document.createElement("div");
+      bsCard.className = "skill-card backend-status-card";
+      bsCard.innerHTML = `
+        <div class="skill-header">
+          <div class="skill-header-left">
+            <span class="skill-name">${typeof _backendStatusIcon === "function" ? _backendStatusIcon("terminal", 15) : ""} Backend Status</span>
+            <span class="bs-processing-text processing-text">processing…</span>
+          </div>
+          <div class="skill-header-right" style="display:flex;align-items:center;gap:8px;">
+            <span class="skill-status bs-status">working…</span>
+          </div>
+        </div>
+        <div class="bs-steps"></div>`;
+      bsCard.querySelector(".skill-header").onclick = () => bsCard.classList.toggle("collapsed");
+      turn.appendChild(bsCard);
+      if (typeof activateLucideIcons === "function") activateLucideIcons(bsCard);
+
       let pendingShown = true;
       function hidePending() {
         if (!pendingShown) return;
         pendingShown = false;
-        pending.remove();
+        const procText = bsCard.querySelector(".bs-processing-text");
+        if (procText) procText.style.display = "none";
         ensureAnswer();
       }
 
@@ -2361,7 +2376,8 @@ function handleBackendStatusEvent(evt, container) {
   const label = parsedLabel || (mapped ? mapped.label : msg.replace(/_/g, " "));
   const icon = parsedLabel ? parsedIcon : (mapped ? mapped.icon : "info");
 
-  // Find or create the card
+  // Find or create the card (usually pre-created by addBotStreaming with
+  // the shimmer processing text already visible in the header).
   let card = container.querySelector(".backend-status-card");
   if (!card) {
     card = document.createElement("div");
@@ -2380,6 +2396,10 @@ function handleBackendStatusEvent(evt, container) {
     container.appendChild(card);
     if (typeof activateLucideIcons === "function") activateLucideIcons(card);
   }
+
+  // Real pipeline step arrived — hide the initial shimmer processing text
+  const procText = card.querySelector(".bs-processing-text");
+  if (procText) procText.style.display = "none";
 
   const stepsEl = card.querySelector(".bs-steps");
   const statusEl = card.querySelector(".bs-status");

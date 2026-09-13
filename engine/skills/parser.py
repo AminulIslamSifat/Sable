@@ -679,13 +679,41 @@ class SkillParser:
                             stripped_ahead = self.buf
                             _plog(f"STRIPPED_BACKTICK_WRAPPER: fence={_fence_len}, inner starts with {repr(_inner[:20])}")
                 if stripped_ahead[0] not in ('{', '['):
-                    # Not JSON — preserve the ENTIRE sequence (tags + content) as visible text
-                    # Use self.buf (not stripped_ahead) to preserve whitespace between tag and content
+                    # Not JSON inside <tool_call> — but check if it's XML invoke/parameter
+                    # tags (hybrid format: <tool_call> wrapping <invoke> instead of JSON).
+                    # Models sometimes mix hermes wrapper with legacy XML content.
                     _open_tag = m.group(0)
                     _ahead = self.buf  # original buffer with whitespace intact
-                    _plog(f"NON_JSON_TOOL_CALL: starts with {repr(stripped_ahead[:30])}, emitting as text")
-                    # Check if there's a closing tag — if so, emit full block as text
                     _close_in_ahead = self._ACTION_CLOSE.search(_ahead)
+                    # Check for invoke/parameter tags — including partial prefixes
+                    # that may be split across SSE chunks (e.g. '<inv' + 'oke name=...').
+                    # If stripped_ahead is a prefix of '<invoke', we must hold the buffer
+                    # rather than emitting as text, because the next chunk may complete it.
+                    def _is_prefix_of_any(s: str, targets: tuple[str, ...]) -> bool:
+                        return any(t.startswith(s) or s.startswith(t) for t in targets)
+
+                    _has_invoke = (
+                        self._LEGACY_INVOKE_RE.search(_ahead)
+                        or self._DSML_INVOKE_RE.search(_ahead)
+                        or _is_prefix_of_any(stripped_ahead, ('<invoke', '<parameter'))
+                    )
+                    if _has_invoke:
+                        # Hybrid: <tool_call>/<action> wrapping XML invoke tags.
+                        # Route through the legacy/DSML XML extractor instead of leaking.
+                        if _close_in_ahead is not None:
+                            _inner_xml = _ahead[:_close_in_ahead.start()]
+                            _after_close = _ahead[_close_in_ahead.end():]
+                            _plog(f"HYBRID_XML_TOOL_CALL: found invoke tags inside {_open_tag}, routing to XML extractor")
+                            self.buf = _after_close
+                            yield from self._extract_dsml(_inner_xml)
+                        else:
+                            # No closing tag yet — hold buffer, wait for more stream
+                            _plog(f"HYBRID_XML_TOOL_CALL: incomplete, holding buffer")
+                            self.buf = _open_tag + _ahead
+                            break
+                        continue
+                    # Truly not a tool call — preserve the ENTIRE sequence as visible text
+                    _plog(f"NON_JSON_TOOL_CALL: starts with {repr(stripped_ahead[:30])}, emitting as text")
                     if _close_in_ahead is not None:
                         # Emit open tag + inner text + close tag as visible prose
                         _full_block = _open_tag + _ahead[:_close_in_ahead.end()]

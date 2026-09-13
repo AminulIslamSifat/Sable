@@ -763,6 +763,29 @@
 
     .backend-status-card.collapsed .bs-steps { display: none; }
 
+    /* Processing shimmer inside backend status card header */
+    .bs-processing-text {
+      font-size: var(--font-size-system);
+      font-family: var(--font-mono);
+      letter-spacing: 0.04em;
+      background: linear-gradient(
+        90deg,
+        var(--muted-2) 0%,
+        var(--accent) 15%,
+        var(--accent) 80%,
+        #fff 85%,
+        var(--accent) 90%,
+        var(--muted-2) 100%
+      );
+      background-size: 200% 100%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: shimmer-text 0.6s linear infinite;
+      will-change: background-position;
+      white-space: nowrap;
+    }
+
     /* Push status/switch cards below answer content */
     .turn > .backend-status-card,
     .turn > .account-switch-card,

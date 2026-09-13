@@ -230,6 +230,56 @@ async def set_disabled_tools(request: Request) -> dict[str, str]:
     _DISABLED_TOOLS_PATH.write_text(json.dumps(disabled), encoding="utf-8")
     return {"status": "ok"}
 
+_SETTINGS_PATH = Path(__file__).resolve().parent.parent.parent.parent / "system" / "settings.json"
+_VALID_TOOL_FORMATS = {"qwen_json", "hermes", "dsml", "native", "none", ""}
+
+@router.get("/api/settings/tool-format")
+def get_tool_format_setting() -> dict[str, str]:
+    """Return the current tool_call_format override from settings."""
+    if _SETTINGS_PATH.is_file():
+        try:
+            data = json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
+            fmt = data.get("tool_call_format", "")
+            return {"tool_call_format": fmt if fmt in _VALID_TOOL_FORMATS else ""}
+        except Exception:
+            pass
+    return {"tool_call_format": ""}
+
+@router.post("/api/settings/tool-format")
+async def set_tool_format_setting(request: Request) -> dict[str, str]:
+    """Set the tool_call_format override in system/settings.json."""
+    body = await request.json()
+    fmt = body.get("tool_call_format", "")
+    if fmt not in _VALID_TOOL_FORMATS:
+        raise HTTPException(status_code=400, detail=f"Invalid format. Must be one of: {', '.join(sorted(_VALID_TOOL_FORMATS - {''}))} or empty for default")
+
+    # Read existing settings
+    data: dict[str, Any] = {}
+    if _SETTINGS_PATH.is_file():
+        try:
+            data = json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+
+    if fmt:
+        data["tool_call_format"] = fmt
+    else:
+        data.pop("tool_call_format", None)  # Remove to use per-provider defaults
+
+    _SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _SETTINGS_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(_SETTINGS_PATH)
+
+    # Invalidate instruction cache so next chat picks up the new format
+    try:
+        from connectors.common.instruction_builder import invalidate_cache
+        invalidate_cache()
+    except Exception:
+        pass
+
+    return {"status": "ok"}
+
 @router.post("/api/sync-context")
 async def sync_context_route(request: Request) -> dict[str, Any]:
     from connectors.common.instruction_builder import invalidate_cache
