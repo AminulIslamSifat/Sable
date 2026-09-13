@@ -948,7 +948,10 @@ function Main {
     }
 
     Write-Info "Starting server in background..."
-    $serverEnv = @{ "TERM" = "xterm-256color" }
+    $serverEnv = @{
+        "TERM"              = "xterm-256color"
+        "PYTHONUNBUFFERED"  = "1"
+    }
     try {
         $proc = Start-SableServerProcess `
             -FilePath $venvPython `

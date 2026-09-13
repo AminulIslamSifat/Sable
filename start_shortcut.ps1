@@ -21,8 +21,16 @@ Write-Host "==========================================="
 Write-Host ""
 
 # Fresh marker so it is obvious the log tail is live for this launch.
-"" | Out-File -FilePath $logPath -Encoding utf8 -Append
-("========== Sable shortcut launch: {0} ==========" -f (Get-Date)) | Out-File -FilePath $logPath -Encoding utf8 -Append
+# The previous server's cmd.exe may still hold the file handle briefly after kill.
+$marker = "`n========== Sable shortcut launch: $(Get-Date) =========="
+for ($i = 0; $i -lt 5; $i++) {
+    try {
+        $marker | Out-File -FilePath $logPath -Encoding utf8 -Append -ErrorAction Stop
+        break
+    } catch {
+        Start-Sleep -Seconds 1
+    }
+}
 
 # Run start.bat normally in this same window.
 # It shows setup logs and exits after launching server.py in background.
