@@ -4,7 +4,7 @@ setlocal enabledelayedexpansion
 :: Normal launch = visible log console (foreground).
 :: Pass --background to run fully silent (no console window stays open).
 
-:: Force clean state — ignore any leaked env vars from parent shell
+:: Force clean state - ignore any leaked env vars from parent shell
 set "SABLE_BACKGROUND=0"
 
 :: Resolve script directory safely
@@ -43,24 +43,9 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: Background mode: hand off to wscript + a temp VBS so NO console window
-:: survives. wscript.exe is a GUI-subsystem binary -> it never allocates
-:: a console, and it launches PowerShell with window flag 0 (hidden).
-:: This bat exits immediately, so the double-click cmd window closes at once.
+:: Background mode: relaunch via PowerShell Start-Process (no VBS needed)
 if "%SABLE_BACKGROUND%"=="1" (
-    set "VBS=%TEMP%\sable_silent_%RANDOM%.vbs"
-    >"%VBS%" echo Set sh = CreateObject("WScript.Shell")
-    if not exist "%VBS%" (
-        echo [Sable] ERROR: Could not create temporary VBS file.
-        pause
-        exit /b 1
-    )
-    >>"%VBS%" echo sh.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""%SCRIPT_DIR%start.ps1""", 0, False
-    wscript //nologo "%VBS%"
-    if !errorlevel! neq 0 (
-        echo [Sable] WARNING: wscript failed to launch background process.
-    )
-    del /q "%VBS%" 2>nul
+    powershell -NoProfile -Command "Start-Process powershell -ArgumentList '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"%SCRIPT_DIR%start.ps1\"' -WindowStyle Hidden"
     exit /b 0
 )
 
