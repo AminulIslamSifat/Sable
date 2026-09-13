@@ -817,16 +817,6 @@ function Wait-ForServer {
     return $false
 }
 
-# -- Open Browser -------------------------------------------------------------
-function Open-Browser {
-    param([string]$Url)
-    Start-Job -ScriptBlock {
-        param($u)
-        Start-Sleep -Seconds 3
-        try { Start-Process $u } catch {}
-    } -ArgumentList $Url | Out-Null
-}
-
 # -- Desktop Shortcut (.lnk) -------------------------------------------------
 function Create-DesktopShortcut {
     Write-Info "Checking desktop shortcut..."

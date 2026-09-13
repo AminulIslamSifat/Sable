@@ -31,7 +31,11 @@ if not exist "server.py" (
     exit /b 1
 )
 
-set SABLE_BACKGROUND=0
+if "%~1"=="--background" (
+    set SABLE_BACKGROUND=1
+) else (
+    set SABLE_BACKGROUND=0
+)
 
 if not defined SABLE_PORT set SABLE_PORT=61770
 
