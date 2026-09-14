@@ -21,6 +21,8 @@ from .chats import (
     get_chat_url,
     get_chat_project_id,
     list_chats,
+    set_chat_pinned,
+    get_chat_pinned,
     delete_chat,
     delete_all_chats,
     get_chat_tail_id,

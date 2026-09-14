@@ -1276,6 +1276,8 @@
 
     .chat-row .chat-item { flex: 1; width: auto; display: flex; align-items: center; gap: 6px; }
     .chat-item .chat-item-icon { width: 14px; height: 14px; flex-shrink: 0; opacity: 0.7; }
+    .chat-item .chat-item-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chat-item .chat-pin-icon { width: 13px; height: 13px; flex-shrink: 0; opacity: 0.75; color: var(--accent); }
 
     .chat-item {
       width: 100%;

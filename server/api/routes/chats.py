@@ -7,9 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 from engine.scraper import get_settings as get_scraper_settings
 from server.database import (
     ensure_chat, list_chats, get_messages, add_message, delete_chat, delete_all_chats,
+    set_chat_pinned,
     search_messages,
     get_skill_events_for_message, list_projects, create_project, update_project,
     delete_project, get_project,
@@ -715,6 +717,21 @@ def delete_chat_route(chat_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Chat not found")
     return {"deleted": True, "chat_id": chat_id}
 
+
+class ChatUpdate(BaseModel):
+    pinned: bool | None = None
+
+
+@router.patch("/api/chats/{chat_id}")
+def update_chat_route(chat_id: str, body: ChatUpdate) -> dict[str, Any]:
+    """Partial update for a chat. Currently supports pin/unpin."""
+    if body.pinned is None:
+        raise HTTPException(status_code=400, detail="No updatable fields provided")
+    ok = set_chat_pinned(chat_id, body.pinned)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    return {"updated": True, "chat_id": chat_id, "pinned": body.pinned}
+
 _CONTEXT_PASS_SETTINGS_PATH = Path(__file__).resolve().parents[3] / "system" / "context_pass_settings.json"
 
 def _load_ctx_pass_settings() -> dict[str, str]:
@@ -1017,19 +1034,8 @@ async def fork_chat(payload: dict[str, str]) -> dict[str, Any]:
             (source_chat_id, message_id),
         ).fetchall()
 
-    # For Qwen: create fresh upstream session before creating local chat
-    _new_upstream_id = None
-    if is_qwen:
-        try:
-            _headers = await service._ensure_headers()
-            from engine.session import create_new_chat as _create_qwen_chat
-            _new_upstream_id = await _create_qwen_chat(_headers)
-            if not _new_upstream_id:
-                _headers = await service._refresh_headers()
-                _new_upstream_id = await _create_qwen_chat(_headers)
-        except Exception as e:
-            logger.warning("[fork] Failed to create Qwen upstream session: %s", e)
-            # Continue without upstream session — user can still see history
+    # Forked chats are unlocked — user can switch to any model/provider freely.
+    # No upstream session needed since the fork may be used with a different provider.
 
     # Create new chat
     new_chat_id = uuid.uuid4().hex
@@ -1037,7 +1043,7 @@ async def fork_chat(payload: dict[str, str]) -> dict[str, Any]:
         new_chat_id,
         title=f"Fork from {source_chat_id[:8]}",
         provider=source_provider,
-        upstream_session_id=_new_upstream_id,
+        is_fork=True,
     )
 
     # Build history block for Qwen (injected as first user message)

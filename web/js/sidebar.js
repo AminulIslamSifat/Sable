@@ -66,7 +66,12 @@
 
       const filtered = q ? chatList.filter(c => (c.title || '').toLowerCase().includes(q)) : chatList;
       const allChats = filtered
-        .sort((a, b) => (b.updated_at || b.created_at || '').localeCompare(a.updated_at || a.created_at || ''));
+        .sort((a, b) => {
+          const pa = a.pinned ? 1 : 0;
+          const pb = b.pinned ? 1 : 0;
+          if (pa !== pb) return pb - pa; // pinned first
+          return (b.updated_at || b.created_at || '').localeCompare(a.updated_at || a.created_at || '');
+        });
 
       const __groupOf = (c) => {
         const raw = c.updated_at || c.created_at || c.last_message_at || null;
@@ -101,7 +106,15 @@
         }
         const titleSpan = document.createElement("span");
         titleSpan.textContent = chat.title || "New chat";
+        titleSpan.className = "chat-item-title";
         btn.appendChild(titleSpan);
+        if (chat.pinned) {
+          const pin = document.createElement("i");
+          pin.setAttribute("data-lucide", "pin");
+          pin.className = "icon-lucide chat-pin-icon";
+          pin.title = "Pinned";
+          btn.appendChild(pin);
+        }
         // Show running indicator for agent chats that are actively streaming
         const _isRunning = activeStreams.has(chat.id) ||
           (typeof _activeAgentControllers !== "undefined" && _activeAgentControllers.has(chat.id));
@@ -122,8 +135,70 @@
         del.onclick = (e) => { e.stopPropagation(); deleteChat(chat.id); };
         row.appendChild(btn);
         row.appendChild(del);
+        row.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          openChatRowMenu(e.clientX, e.clientY, chat);
+        });
         return row;
       };
+
+      function openChatRowMenu(x, y, chat) {
+        const menu = document.getElementById("chatRowMenu");
+        if (!menu) return;
+        menu.innerHTML = "";
+        const addItem = (label, icon, danger, fn) => {
+          const b = document.createElement("button");
+          b.className = "ctx-item" + (danger ? " ctx-danger" : "");
+          const ic = document.createElement("span");
+          ic.className = "ctx-icon";
+          ic.innerHTML = `<i data-lucide="${icon}" class="icon-lucide"></i>`;
+          b.appendChild(ic);
+          b.appendChild(document.createTextNode(label));
+          b.onclick = () => { closeChatRowMenu(); fn(); };
+          menu.appendChild(b);
+        };
+        addItem(chat.pinned ? "Unpin chat" : "Pin chat", "pin", false, () => togglePinChat(chat.id, !chat.pinned));
+        const sep = document.createElement("div");
+        sep.className = "ctx-sep";
+        menu.appendChild(sep);
+        addItem("Delete chat", "trash-2", true, () => deleteChat(chat.id));
+        if (typeof lucide !== "undefined") lucide.createIcons();
+        menu.style.left = Math.min(x, window.innerWidth - menu.offsetWidth - 12) + "px";
+        menu.style.top = Math.min(y, window.innerHeight - menu.offsetHeight - 12) + "px";
+        menu.classList.add("open");
+      }
+
+      function closeChatRowMenu() {
+        const menu = document.getElementById("chatRowMenu");
+        if (menu) menu.classList.remove("open");
+      }
+
+      document.addEventListener("click", closeChatRowMenu);
+      document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeChatRowMenu(); });
+      window.addEventListener("resize", closeChatRowMenu);
+      window.addEventListener("scroll", closeChatRowMenu, true);
+
+      async function togglePinChat(chatId, pinned) {
+        const chat = chatList.find(c => c.id === chatId);
+        const prev = chat ? !!chat.pinned : false;
+        if (chat) chat.pinned = pinned ? 1 : 0;
+        renderChats();
+        try {
+          const res = await fetch(`/api/chats/${chatId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pinned }),
+          });
+          if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Pin failed");
+          showToast(pinned ? "Chat pinned" : "Chat unpinned", "success");
+        } catch (err) {
+          if (chat) chat.pinned = prev ? 1 : 0;
+          renderChats();
+          showToast("Pin failed: " + err.message, "error");
+        }
+      }
+      window._sableTogglePinChat = togglePinChat;
 
       // All chats unified with date groups
       let __lastGroup = null;

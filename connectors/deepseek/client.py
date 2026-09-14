@@ -391,6 +391,7 @@ class DeepSeekClient:
         self._rotate_tokens: list[str] = []
         self._rotate_idx: int = 0
         self._rotate_sessions: dict[str, str] = {}  # token → deepseek session_id
+        self._last_prepare_error: str | None = None  # surfaced when all tokens fail
 
         # Load per-model max session chars from config
         from engine.config import get_model_config
@@ -413,6 +414,11 @@ class DeepSeekClient:
     @property
     def token(self) -> str | None:
         if self._token:
+            return self._token
+        # Check persisted user preference before generic fallback
+        preferred = self._get_preferred_token_from_settings()
+        if preferred:
+            self._token = preferred
             return self._token
         # Resolve from per-account store (with fallback)
         self._token = get_token_for_account(self._account)
@@ -448,6 +454,21 @@ class DeepSeekClient:
     # Token rotation (automatic round-robin + failover, like Gemini/Mistral)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _get_preferred_token_from_settings() -> str | None:
+        """Read the user's manually-selected DeepSeek token from settings.json."""
+        try:
+            path = _SYSTEM_DIR / "settings.json"
+            if not path.is_file():
+                return None
+            settings = json.loads(path.read_text(encoding="utf-8"))
+            tok = settings.get("deepseek_preferred_token")
+            if tok and isinstance(tok, str) and tok != "None":
+                return tok
+        except Exception:
+            pass
+        return None
+
     def _init_rotation(self) -> None:
         """Load all unique tokens across accounts for round-robin rotation.
 
@@ -466,12 +487,24 @@ class DeepSeekClient:
 
         if all_tokens:
             self._rotate_tokens = all_tokens
-            # Start at the explicitly set token, or current account's token
-            preferred = self._token or get_own_token_for_account(self.account)
+            # Priority: persisted user preference > in-memory > active account.
+            # User preference MUST win because application.py calls set_token()
+            # on startup with a freshly-scraped browser token, which would
+            # otherwise silently override the user's manual key selection.
+            preferred = (
+                self._get_preferred_token_from_settings()
+                or self._token
+                or get_own_token_for_account(self.account)
+            )
             if preferred and preferred in self._rotate_tokens:
                 self._rotate_idx = self._rotate_tokens.index(preferred)
             else:
                 self._rotate_idx = 0
+            # Keep in-memory token in sync with rotation starting point so
+            # the .token property, is_available, etc. reflect the actual active key.
+            start_token = self._current_rotate_token
+            if start_token and start_token != self._token:
+                self._token = start_token
         else:
             self._rotate_tokens = []
             self._rotate_idx = 0
@@ -525,12 +558,17 @@ class DeepSeekClient:
         if not self._rotate_tokens:
             return None
 
+        auto_rotate = _auto_rotate_enabled("deepseek")
+        # When auto-rotate is off, only try the current token once.
+        # When on, try all tokens in the pool.
+        max_tries = 1 if not auto_rotate else len(self._rotate_tokens)
         tried = 0
-        total = len(self._rotate_tokens)
 
-        while tried < total:
+        while tried < max_tries:
             token = self._current_rotate_token
             if not token:
+                if not auto_rotate:
+                    break
                 self._advance_rotation()
                 tried += 1
                 continue
@@ -542,8 +580,19 @@ class DeepSeekClient:
                 try:
                     session_id = await self._create_session(headers=auth)
                     self._rotate_sessions[token] = session_id
+                except DeepSeekAPIError as exc:
+                    logger.warning("Rotation: session failed for %s...: %s", token[:10], exc)
+                    self._last_prepare_error = str(exc)
+                    if not auto_rotate:
+                        break
+                    self._advance_rotation()
+                    tried += 1
+                    continue
                 except Exception as exc:
                     logger.warning("Rotation: session failed for %s...: %s", token[:10], exc)
+                    self._last_prepare_error = str(exc)
+                    if not auto_rotate:
+                        break
                     self._advance_rotation()
                     tried += 1
                     continue
@@ -554,8 +603,19 @@ class DeepSeekClient:
                 loop = asyncio.get_running_loop()
                 nonce = await loop.run_in_executor(None, self._solve_pow, challenge)
                 pow_header = self._build_pow_header(challenge, nonce)
+            except DeepSeekAPIError as exc:
+                logger.warning("Rotation: PoW failed for %s...: %s", token[:10], exc)
+                self._last_prepare_error = str(exc)
+                if not auto_rotate:
+                    break
+                self._advance_rotation()
+                tried += 1
+                continue
             except Exception as exc:
                 logger.warning("Rotation: PoW failed for %s...: %s", token[:10], exc)
+                self._last_prepare_error = str(exc)
+                if not auto_rotate:
+                    break
                 self._advance_rotation()
                 tried += 1
                 continue
@@ -718,9 +778,15 @@ class DeepSeekClient:
                 raise DeepSeekAPIError("Token still invalid after browser refresh. Log in to chat.deepseek.com.")
         resp.raise_for_status()
         data = resp.json()
-        if data.get("code") != 0:
-            raise DeepSeekAPIError(f"Challenge failed: {data.get('msg', 'unknown')}")
-        return data["data"]["biz_data"]["challenge"]
+        if not isinstance(data, dict) or data.get("code") != 0:
+            msg = data.get("msg", "unknown") if isinstance(data, dict) else "unknown"
+            raise DeepSeekAPIError(f"Challenge failed: {msg}")
+        inner = data.get("data")
+        biz = inner.get("biz_data") if isinstance(inner, dict) else None
+        challenge = biz.get("challenge") if isinstance(biz, dict) else None
+        if not challenge:
+            raise DeepSeekAPIError(f"Challenge response missing challenge field (data={inner})")
+        return challenge
 
     async def _create_session(self, headers: dict[str, str] | None = None) -> str:
         """Create a new chat session, return its UUID. Auto-refreshes token on 401.
@@ -750,11 +816,21 @@ class DeepSeekClient:
                 raise DeepSeekAPIError("Token still invalid after refresh. Log in to chat.deepseek.com.")
         resp.raise_for_status()
         data = resp.json()
-        biz = data["data"]["biz_data"]
+        # DeepSeek sometimes returns 200 with data=null for muted/rate-limited accounts
+        inner = data.get("data") if isinstance(data, dict) else None
+        biz = inner.get("biz_data") if isinstance(inner, dict) else None
+        if not biz:
+            msg = data.get("msg", "unknown") if isinstance(data, dict) else "unknown"
+            code = data.get("code", "?") if isinstance(data, dict) else "?"
+            raise DeepSeekAPIError(f"Session create returned no biz_data (code={code}, msg={msg})")
         # Response shape: biz_data.chat_session.id (or legacy biz_data.id)
-        if "chat_session" in biz:
-            return biz["chat_session"]["id"]
-        return biz["id"]
+        chat_session = biz.get("chat_session")
+        if isinstance(chat_session, dict) and "id" in chat_session:
+            return chat_session["id"]
+        session_id = biz.get("id")
+        if not session_id:
+            raise DeepSeekAPIError(f"Session create response missing id: {biz}")
+        return session_id
 
     # ------------------------------------------------------------------
     # Client-side session history (mirrors Gemini/Mistral pattern)
@@ -1172,7 +1248,7 @@ class DeepSeekClient:
             attempts = 1
         else:
             attempts = max(1, len(self._rotate_tokens))
-        last_err = "unknown"
+        last_err = self._last_prepare_error or "unknown"
         _MAX_RETRIES_PER_TOKEN = 8
         _RETRY_DELAY_SECS = 5.0
         # Per-token failure reasons — kept so the final error reports EACH token

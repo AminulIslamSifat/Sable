@@ -12,10 +12,10 @@ from .core import get_db
 
 # ── Chat CRUD ────────────────────────────────────────────────────────────────
 
-def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = None, mode: str | None = None, provider: str | None = None, project_id: str | None = None, upstream_session_id: str | None = None) -> None:
+def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = None, mode: str | None = None, provider: str | None = None, project_id: str | None = None, upstream_session_id: str | None = None, is_fork: bool = False) -> None:
     now = utcnow()
     with get_db() as conn:
-        existing = conn.execute("SELECT id, mode, provider, project_id, upstream_session_id FROM chats WHERE id = ?", (chat_id,)).fetchone()
+        existing = conn.execute("SELECT id, mode, provider, project_id, upstream_session_id, is_fork FROM chats WHERE id = ?", (chat_id,)).fetchone()
         if existing:
             if mode and not existing["mode"]:
                 conn.execute("UPDATE chats SET mode = ? WHERE id = ?", (mode, chat_id))
@@ -25,10 +25,12 @@ def ensure_chat(chat_id: str, title: str = "New chat", parent_id: str | None = N
                 conn.execute("UPDATE chats SET project_id = ? WHERE id = ?", (project_id, chat_id))
             if upstream_session_id and existing["upstream_session_id"] != upstream_session_id:
                 conn.execute("UPDATE chats SET upstream_session_id = ? WHERE id = ?", (upstream_session_id, chat_id))
+            if is_fork and not existing["is_fork"]:
+                conn.execute("UPDATE chats SET is_fork = 1 WHERE id = ?", (chat_id,))
             return
         conn.execute(
-            "INSERT INTO chats (id, title, parent_id, created_at, updated_at, mode, provider, project_id, upstream_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (chat_id, title, parent_id, now, now, mode, provider, project_id, upstream_session_id),
+            "INSERT INTO chats (id, title, parent_id, created_at, updated_at, mode, provider, project_id, upstream_session_id, is_fork) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, title, parent_id, now, now, mode, provider, project_id, upstream_session_id, 1 if is_fork else 0),
         )
 
 
@@ -75,6 +77,22 @@ def update_chat_title(chat_id: str, title: str) -> None:
     """Unconditionally set chat title (used by model-driven title tag)."""
     with get_db() as conn:
         conn.execute("UPDATE chats SET title = ? WHERE id = ?", (title, chat_id))
+
+
+def set_chat_pinned(chat_id: str, pinned: bool) -> bool:
+    """Pin or unpin a chat. Returns False if the chat doesn't exist."""
+    with get_db() as conn:
+        cur = conn.execute(
+            "UPDATE chats SET pinned = ? WHERE id = ?",
+            (1 if pinned else 0, chat_id),
+        )
+        return cur.rowcount > 0
+
+
+def get_chat_pinned(chat_id: str) -> bool:
+    with get_db() as conn:
+        row = conn.execute("SELECT pinned FROM chats WHERE id = ?", (chat_id,)).fetchone()
+    return bool(row["pinned"]) if row and row["pinned"] is not None else False
 
 
 def get_injected_memory_keys(chat_id: str) -> set[str]:
@@ -145,12 +163,12 @@ def list_chats(project_id: str | None = None) -> list[dict[str, Any]]:
     with get_db() as conn:
         if project_id is not None:
             rows = conn.execute(
-                "SELECT id, title, parent_id, created_at, updated_at, provider, project_id, mode FROM chats WHERE project_id = ? ORDER BY updated_at DESC",
+                "SELECT id, title, parent_id, created_at, updated_at, provider, project_id, mode, is_fork, pinned FROM chats WHERE project_id = ? ORDER BY pinned DESC, updated_at DESC",
                 (project_id,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, title, parent_id, created_at, updated_at, provider, project_id, mode FROM chats ORDER BY updated_at DESC"
+                "SELECT id, title, parent_id, created_at, updated_at, provider, project_id, mode, is_fork, pinned FROM chats ORDER BY pinned DESC, updated_at DESC"
             ).fetchall()
         return [dict(row) for row in rows]
 

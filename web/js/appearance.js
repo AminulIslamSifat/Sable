@@ -1245,8 +1245,9 @@ window.safeCopy = async function(text) {
   const ctxMenu = document.getElementById('contextMenu');
 
   document.addEventListener('contextmenu', (e) => {
-    // Only on main area / sidebar, not on inputs or textareas
-    if (e.target.closest('textarea, input, select, .ctx-menu, #fsOverlay')) return;
+    // Only on main area / sidebar, not on inputs or textareas.
+    // .chat-row has its own pin/delete menu (sidebar.js) — don't open the generic one too.
+    if (e.target.closest('textarea, input, select, .ctx-menu, #fsOverlay, .chat-row')) return;
     e.preventDefault();
 
     const x = Math.min(e.clientX, window.innerWidth - ctxMenu.offsetWidth - 12);

@@ -403,12 +403,12 @@
 
       if (!scraper) {
         // Block cross-provider switches only for qwen/scraping chats.
-        // Pure API models share the same chat freely — provider swaps on every switch.
+        // Pure API models and forked chats share the same chat freely — provider swaps on every switch.
         const activeMeta = chatList.find(c => c.id === activeChatId);
-        if (activeMeta?.provider) {
+        if (activeMeta?.provider && !activeMeta.is_fork) {
           const chatProvider = activeMeta.provider;
-          const isApiChat = chatProvider !== "qwen" && chatProvider !== "scraping";
-          if (!isApiChat) {
+          const isUnlocked = chatProvider !== "qwen" && chatProvider !== "scraping";
+          if (!isUnlocked) {
             const newEntry = modelList.find(m => m.id === modelSelectEl.value);
             const newProvider = newEntry?.api_backend || "qwen";
             const effectiveChatProvider = chatProvider === "scraping" ? "deepseek" : chatProvider;

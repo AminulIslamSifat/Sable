@@ -1205,7 +1205,8 @@ async def list_accounts_by_provider() -> dict[str, Any]:
         from connectors.deepseek.client import get_unique_tokens_with_accounts as _ds_unique_acct
         _ds_entries = _ds_unique_acct()
         _ds_client = get_deepseek_client()
-        _ds_active_token = _ds_client._token or None
+        # Use .token property (not ._token) so persisted preference is resolved
+        _ds_active_token = _ds_client.token or None
         _ds_keys = []
         for _i, _entry in enumerate(_ds_entries):
             _tok = _entry["token"]
@@ -1320,9 +1321,15 @@ async def switch_api_key(provider: str, payload: dict[str, Any]) -> dict[str, An
             if index < 0 or index >= len(entries):
                 raise HTTPException(status_code=404, detail="Key index out of range")
             target_token = entries[index]["token"]
+            target_account = entries[index]["account"]
             client = get_deepseek_client()
-            # Silent swap: just set the token in-memory, no browser touch
-            client.set_token(target_token, persist=False)
+            # Persist the user's manual selection so it survives restarts
+            _settings = _read_system_settings()
+            _settings["deepseek_preferred_token"] = target_token
+            _settings["deepseek_preferred_account"] = target_account
+            _write_system_settings(_settings)
+            # Set token in-memory and persist under its own account
+            client.set_token(target_token, account=target_account, persist=True)
             # Rebuild key list for response
             keys = []
             for i, entry in enumerate(entries):
@@ -1671,6 +1678,39 @@ async def restore_all_accounts() -> dict[str, Any]:
     return {"status": "ok", "restored": restored, "skipped": skipped}
 
 
+def _kill_browsers_for_profile(profile_path: Path) -> list[int]:
+    """Kill any Chromium/chrome processes using *profile_path* as user-data-dir.
+
+    Returns the list of PIDs that were killed.
+    """
+    import subprocess
+    from engine.process_utils import kill_process_tree
+
+    killed: list[int] = []
+    target_str = str(profile_path)
+
+    try:
+        # Find chromium/chrome processes whose cmdline contains this profile path
+        result = subprocess.run(
+            ["pgrep", "-f", f"chrom.*{target_str}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        pids = [int(p) for p in result.stdout.split() if p.strip().isdigit()]
+    except Exception:
+        pids = []
+
+    for pid in pids:
+        try:
+            kill_process_tree(pid)
+            killed.append(pid)
+        except Exception:
+            pass
+
+    return killed
+
+
 @router.post("/api/settings/accounts/open")
 async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
     """Launch a headful browser with the specified profile."""
@@ -1682,6 +1722,12 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"'{target_name}' not found")
 
     url = payload.get("url", "https://chat.qwen.ai")
+
+    # Kill any existing browser processes using this profile so the data dir isn't locked
+    killed_pids = await asyncio.to_thread(_kill_browsers_for_profile, target_path)
+    if killed_pids:
+        logger.info(f"Killed existing browser(s) for {target_name}: PIDs {killed_pids}")
+        await asyncio.sleep(1.5)  # give OS time to release the lock
 
     # Resolve browser using centralized resolver (respects accounts.json)
     from engine.platform_paths import resolve_browser_for_profile, extra_browser_args

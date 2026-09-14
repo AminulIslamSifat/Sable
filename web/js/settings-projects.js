@@ -561,16 +561,17 @@
     /**
      * Rebuild the model dropdown filtered to the provider's model group.
      * - null (new/unlocked chat): show all models, enabled
+     * - forked chats: show ALL models, enabled (free switching — unlocked)
      * - "qwen": show only qwen models, enabled (free switching within group)
      * - "deepseek": show only deepseek models, enabled (free switching within group)
      * - "scraping": show deepseek models, DISABLED (locked tight)
      */
-    function lockModelDropdown(provider) {
-      // Pure API chats (non-qwen, non-scraping): show ALL api models — free switching
-      const isApiChat = provider && provider !== "qwen" && provider !== "scraping";
+    function lockModelDropdown(provider, isFork) {
+      // Forked chats and pure API chats: show ALL models — free switching
+      const isUnlocked = isFork || (provider && provider !== "qwen" && provider !== "scraping");
       const allowed = provider
-        ? isApiChat
-          ? modelList.filter(m => m.api_backend && m.api_backend !== "qwen")
+        ? isUnlocked
+          ? modelList
           : modelList.filter(m => {
               if (provider === "deepseek" || provider === "scraping") return m.api_backend === "deepseek";
               if (provider === "local") return m.api_backend === "local";
@@ -599,10 +600,11 @@
       try { _savedTm = localStorage.getItem(THINKING_MODE_KEY); } catch(e) {}
       populateThinkingModes(_savedTm);
 
-      // Only scraping gets hard-disabled; qwen/deepseek allow within-group switching
-      modelSelectEl.disabled = provider === "scraping";
+      // Scraping is hard-disabled unless it's a fork; qwen/deepseek allow within-group switching
+      const locked = provider === "scraping" && !isFork;
+      modelSelectEl.disabled = locked;
       const _mt = document.getElementById("modelTrigger");
-      if (_mt) { _mt.style.pointerEvents = provider === "scraping" ? "none" : ""; _mt.style.opacity = provider === "scraping" ? "0.45" : ""; }
+      if (_mt) { _mt.style.pointerEvents = locked ? "none" : ""; _mt.style.opacity = locked ? "0.45" : ""; }
       syncModelDropdown();
     }
 
@@ -629,8 +631,8 @@
       _scrollPending = false;
       _scrollForChat = null;
 
-      // Lock model dropdown to the chat's provider (or unlock for new chats)
-      lockModelDropdown(meta?.provider || null);
+      // Lock model dropdown to the chat's provider (or unlock for new/forked chats)
+      lockModelDropdown(meta?.provider || null, !!meta?.is_fork);
 
       // Update send button: show stop-mode only if THIS chat is streaming
       updateSendBtn();
