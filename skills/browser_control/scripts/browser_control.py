@@ -249,13 +249,27 @@ class BrowserDaemon:
 
     def _on_response(self, response):
         if self._capturing_network:
-            self._network_log.append({
+            entry = {
                 "type": "response",
                 "status": response.status,
                 "url": response.url[:300],
                 "headers": dict(response.headers) if response.headers else {},
                 "ts": time.time(),
-            })
+            }
+            self._network_log.append(entry)
+            try:
+                import asyncio
+                asyncio.ensure_future(self._capture_response_body(response, entry))
+            except Exception:
+                pass
+
+    async def _capture_response_body(self, response, entry):
+        """Fetch the response body and attach it to the log entry (best-effort)."""
+        try:
+            body = await response.body()
+            entry["body"] = body[:200000].decode("utf-8", errors="replace")
+        except Exception as e:
+            entry["body_error"] = str(e)
 
     def _on_console(self, msg):
         if self._capturing_console:
