@@ -6,6 +6,7 @@ import time
 import uuid
 import base64
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -37,19 +38,66 @@ def _increment_playwright_counter() -> int:
     return count
 
 
-def build_headers(cookies: str | None = None, bx_ua: str | None = None, bx_umidtoken: str | None = None) -> dict[str, str]:
-    """Construct HTTP headers with given or fallback cookies and security tokens."""
+def _account_ua(account: str | None) -> tuple[str, str]:
+    """(user_agent, sec-ch-ua) for the browser that created `account`.
+
+    Falls back to the Playwright-bundled Chromium when the account is unknown
+    or has no saved browser. Never raises — a broken accounts.json must not
+    break outbound requests.
+    """
+    try:
+        from engine.platform_paths import get_account_ua_fingerprint
+        return get_account_ua_fingerprint(account)
+    except Exception:
+        from engine.platform_paths import derive_ua_fingerprint
+        return derive_ua_fingerprint(None)
+
+
+def _current_account_ua() -> tuple[str, str]:
+    """(user_agent, sec-ch-ua) for the browser that created the active account."""
+    try:
+        from engine.config import get_active_account
+        return _account_ua(get_active_account())
+    except Exception:
+        return _account_ua(None)
+
+
+def build_headers(
+    cookies: str | None = None,
+    bx_ua: str | None = None,
+    bx_umidtoken: str | None = None,
+    referer: str | None = None,
+    account: str | None = None,
+) -> dict[str, str]:
+    """Construct HTTP headers with given or fallback cookies and security tokens.
+
+    Mirrors the real chat.qwen.ai Chromium web client so the WAF fingerprint
+    (UA + sec-ch-ua + bx-ua token) stays internally consistent. The UA and
+    sec-ch-ua brands are derived from the Chromium version of the browser that
+    created the account (see accounts.json → browser_path), so a Helium-created
+    account announces Chromium 153, not a hardcoded guess.
+
+    `referer` should be the full chat URL when known
+    (https://chat.qwen.ai/c/<chat_id>), falling back to the site root.
+    """
+    _tz = datetime.now().astimezone().strftime("%a %b %d %Y %H:%M:%S GMT%z")
+
+    user_agent, sec_ch_ua = _account_ua(account) if account else _current_account_ua()
+
     return {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:153.0) Gecko/20100101 Firefox/153.0",
+        "User-Agent": user_agent,
         "Accept": "application/json",
         "Accept-Language": "en-US,en;q=0.9",
         "Content-Type": "application/json",
-        "Origin": "https://chat.qwen.ai",
-        "Referer": "https://chat.qwen.ai/",
+        "Referer": referer or "https://chat.qwen.ai/",
+        "Timezone": _tz,
         "X-Accel-Buffering": "no",
         "X-Request-Id": str(uuid.uuid4()),
-        "Version": "0.2.78",
+        "Version": "0.2.91",
         "source": "web",
+        "sec-ch-ua": sec_ch_ua,
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Linux"',
         "Cookie": cookies or COOKIES,
         "bx-ua": bx_ua or BX_UA,
         "bx-umidtoken": bx_umidtoken or BX_UMIDTOKEN,
@@ -205,10 +253,22 @@ class BrowserManager:
         fresh = "fresh" if not missing else "fallback"
         print(f"[DEBUG] Using {fresh} WAF headers (bx-ua={'yes' if captured.get('bx-ua') else 'no'}, bx-umidtoken={'yes' if captured.get('bx-umidtoken') else 'no'})")
 
+        # Use the live page URL as Referer when we're on a chat page, so the
+        # request carries the same https://chat.qwen.ai/c/<id> referer the real
+        # client sends.
+        referer = None
+        try:
+            cur = self.page.url if self.page else ""
+            if cur.startswith("https://chat.qwen.ai/c/"):
+                referer = cur
+        except Exception:
+            pass
+
         return build_headers(
             cookies=cookie_str,
             bx_ua=captured.get("bx-ua"),
             bx_umidtoken=captured.get("bx-umidtoken"),
+            referer=referer,
         )
 
     async def extract_deepseek_token(self) -> str:
@@ -260,19 +320,26 @@ class BrowserManager:
 
         print(f"[DEBUG] Uploading '{filename}' ({filesize} bytes) via direct HTTP...")
 
+        # Fingerprint derived from the browser that created the active account.
+        _ua, _sec_ch_ua = _current_account_ua()
+
         # Step 1: Get STS token
         sts_headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:153.0) Gecko/20100101 Firefox/153.0",
+            "User-Agent": _ua,
             "Accept": "application/json",
+            "Accept-Language": "en-US,en;q=0.9",
             "Content-Type": "application/json",
+            "Timezone": datetime.now().astimezone().strftime("%a %b %d %Y %H:%M:%S GMT%z"),
             "source": "web",
-            "version": "0.2.81",
+            "version": "0.2.91",
             "x-request-id": str(uuid.uuid4()),
             "Cookie": cookies,
             "bx-ua": bx_ua or "",
             "bx-umidtoken": bx_umidtoken or "",
             "bx-v": "2.5.37",
-            "Origin": "https://chat.qwen.ai",
+            "sec-ch-ua": _sec_ch_ua,
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Linux"',
             "Referer": "https://chat.qwen.ai/",
         }
         sts_payload = {"filename": filename, "filesize": str(filesize), "filetype": "image"}
@@ -385,9 +452,8 @@ class BrowserManager:
 
         headers.update({
             "Content-Type": "application/json",
-            "Version": "0.2.80",
+            "Version": "0.2.91",
             "source": "web",
-            "Origin": "https://chat.qwen.ai",
             "Referer": "https://chat.qwen.ai/settings/personalization",
             "X-Request-Id": str(uuid.uuid4()),
         })

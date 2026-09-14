@@ -30,6 +30,11 @@ def build_body(
     model_id = model_cfg["id"]
     mode_cfg = get_thinking_mode_config(model, thinking_mode)
 
+    # The real web client pre-allocates the *next* message UUID into the
+    # current message's childrenIds. Mirror that so threading fingerprints
+    # match upstream.
+    next_message_id = str(uuid.uuid4())
+
     return {
         "stream": True,
         "version": "2.1",
@@ -45,7 +50,7 @@ def build_body(
                 "id": None,
                 "fid": str(uuid.uuid4()),
                 "parentId": parent_id,
-                "childrenIds": [],
+                "childrenIds": [next_message_id],
                 "role": "user",
                 "content": message,
                 "user_action": "chat",

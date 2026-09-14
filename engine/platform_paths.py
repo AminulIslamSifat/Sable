@@ -298,6 +298,95 @@ def is_browser_available(browser_path: str | None) -> bool:
     return shutil.which(browser_path) is not None
 
 
+# ─── Browser version → UA fingerprint derivation ────────────────────────────
+# Chrome 110+ ships a *reduced* UA: the version is collapsed to
+# `<major>.0.0.0`, and the same major drives the sec-ch-ua brand list.
+# So the only thing we actually need from the binary is its Chromium major.
+_UA_VERSION_CACHE: dict[str, str | None] = {}
+
+
+def get_browser_chromium_version(browser_path: str | None) -> str | None:
+    """Return the Chromium version string for a browser binary (cached).
+
+    Accepts a path, a command name, or None (→ Playwright bundled Chromium).
+    Returns e.g. '153.0.8010.36', or None if it could not be determined.
+    """
+    if browser_path in _UA_VERSION_CACHE:
+        return _UA_VERSION_CACHE[browser_path]
+
+    import re
+    import shutil
+    import subprocess
+
+    resolved: str | None
+    if not browser_path or browser_path == "default":
+        resolved = find_playwright_chrome()
+    else:
+        resolved = shutil.which(browser_path) if not os.path.isabs(browser_path) else browser_path
+
+    version: str | None = None
+    if resolved and (os.path.isfile(resolved) or shutil.which(resolved)):
+        try:
+            out = subprocess.run(
+                [resolved, "--version"],
+                capture_output=True, text=True, timeout=15,
+            )
+            text = f"{out.stdout}\n{out.stderr}"
+            # Prefer the version that follows the Chromium/Chrome keyword, since
+            # vendor strings precede it — e.g. Helium prints
+            # "Helium 0.17.0.1 (Chromium 153.0.8010.36)" and we want 153.x,
+            # and Chrome-for-Testing prints
+            # "Google Chrome for Testing 149.0.7827.55".
+            m = re.search(
+                r"(?:Chromium|Chrome)[^\d\n]{0,25}(\d+(?:\.\d+){1,3})",
+                text,
+            )
+            if not m:
+                # Last resort: first 3–4 part version anywhere in the output.
+                m = re.search(r"(\d+\.\d+\.\d+(?:\.\d+)?)", text)
+            if m:
+                version = m.group(1)
+        except Exception:
+            version = None
+
+    _UA_VERSION_CACHE[browser_path] = version
+    return version
+
+
+def get_account_browser_version(profile_name: str) -> str | None:
+    """Chromium version of the browser that *created* the given account."""
+    return get_browser_chromium_version(get_account_browser_path(profile_name))
+
+
+def derive_ua_fingerprint(chromium_version: str | None) -> tuple[str, str]:
+    """Derive (user_agent, sec-ch-ua) from a Chromium version string.
+
+    Falls back to a safe modern default when the version is unknown.
+    """
+    major = "149"
+    if chromium_version:
+        parts = chromium_version.split(".")
+        if parts and parts[0].isdigit():
+            major = parts[0]
+
+    ua = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+    )
+    sec_ch_ua = f'"Chromium";v="{major}", "Not)A;Brand";v="24"'
+    return ua, sec_ch_ua
+
+
+def get_account_ua_fingerprint(profile_name: str | None) -> tuple[str, str]:
+    """(user_agent, sec-ch-ua) for the browser that created this account."""
+    version = None
+    if profile_name:
+        version = get_account_browser_version(profile_name)
+    else:
+        version = get_browser_chromium_version(None)
+    return derive_ua_fingerprint(version)
+
+
 # ─── Process liveness check ──────────────────────────────────────────────────
 def pid_exists(pid: int) -> bool:
     """Check if a process with the given PID is alive (cross-platform)."""

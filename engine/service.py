@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import logging
 import os
@@ -761,6 +762,9 @@ class ChatService:
                             _answer_chars = 0
                             _finish_reason = None
                             _last_sse_data = None
+                            # Incremental UTF-8 decoder: multi-byte chars
+                            # (Bengali, emoji) can span chunk boundaries.
+                            _decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
                             logger.info(
                                 "Qwen stream started: chat_id=%s attempt=%d model=%s",
                                 chat_id, attempt, body.get("model", "?"),
@@ -793,7 +797,7 @@ class ChatService:
 
                                 _total_bytes += len(chunk)
                                 _chunk_count += 1
-                                buffer += chunk.decode("utf-8", errors="replace")
+                                buffer += _decoder.decode(chunk)
                                 while "\n" in buffer:
                                     line, buffer = buffer.split("\n", 1)
                                     line = line.strip()
@@ -960,6 +964,18 @@ class ChatService:
                                         _fr = data.get("finish_reason")
                                     if _fr:
                                         _finish_reason = _fr
+
+                                    # Token accounting — the API reports usage on
+                                    # the final chunk(s). Surface it for logging.
+                                    _usage = data.get("usage")
+                                    if isinstance(_usage, dict) and _usage:
+                                        logger.info(
+                                            "Qwen usage: input=%s output=%s total=%s",
+                                            _usage.get("input_tokens"),
+                                            _usage.get("output_tokens"),
+                                            _usage.get("total_tokens"),
+                                        )
+                                        yield {"type": "usage", "data": _usage}
 
                                     created = data.get("response.created")
                                     if isinstance(created, dict):

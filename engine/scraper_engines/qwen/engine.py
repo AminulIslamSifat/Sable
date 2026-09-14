@@ -372,13 +372,28 @@ class QwenEngine(BaseScraperEngine):
 
                 stop_url = f"https://chat.qwen.ai/api/v2/chat/completions/stop?chat_id={chat_id}"
                 payload = json.dumps({"chat_id": chat_id, "response_id": response_id}).encode()
+                # UA / sec-ch-ua derived from the browser that created the
+                # active account, not hardcoded — Helium accounts are Chromium
+                # 153, Playwright-bundled accounts are 149.
+                try:
+                    from engine.session import _current_account_ua
+                    _ua, _sec_ch_ua = _current_account_ua()
+                except Exception:
+                    _ua, _sec_ch_ua = (
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+                        '"Chromium";v="149", "Not)A;Brand";v="24"',
+                    )
+
                 headers = {
                     "Content-Type": "application/json",
                     "Accept": "application/json, text/plain, */*",
-                    "Origin": "https://chat.qwen.ai",
                     "Referer": f"https://chat.qwen.ai/c/{chat_id}",
                     "source": "web",
-                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:154.0) Gecko/20100101 Firefox/154.0",
+                    "User-Agent": _ua,
+                    "sec-ch-ua": _sec_ch_ua,
+                    "sec-ch-ua-mobile": "?0",
+                    "sec-ch-ua-platform": '"Linux"',
                 }
                 if cookie_str:
                     headers["Cookie"] = cookie_str

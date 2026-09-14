@@ -1,6 +1,7 @@
 """Qwen Chat — Main entry point and clean CLI interface."""
 
 import asyncio
+import codecs
 import json
 import sys
 from datetime import datetime
@@ -88,11 +89,14 @@ async def stream_chat(
                 in_answer = False
                 buffer = ""
                 line_count = 0
+                # Incremental decoder so multi-byte UTF-8 chars split across
+                # chunk boundaries (Bengali, emoji) aren't corrupted into '?'.
+                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
                 async for chunk in res.aiter_bytes():
                     if not chunk:
                         continue
-                    buffer += chunk.decode("utf-8", errors="replace")
+                    buffer += decoder.decode(chunk)
                     while "\n" in buffer:
                         line, buffer = buffer.split("\n", 1)
                         line_str = line.strip()
@@ -116,6 +120,11 @@ async def stream_chat(
                             data = json.loads(line_str[6:])
                         except json.JSONDecodeError:
                             continue
+
+                        # Token accounting — reported on the final chunk(s).
+                        _usage = data.get("usage")
+                        if isinstance(_usage, dict) and _usage:
+                            _log_stream_chunk("usage", json.dumps(_usage))
 
                         created = data.get("response.created")
                         if isinstance(created, dict):
