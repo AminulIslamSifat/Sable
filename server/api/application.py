@@ -64,12 +64,12 @@ def _start_beacon_binary() -> subprocess.Popen | None:
     machine = platform.machine().lower()
 
     if system == "windows":
-        name = "sable-beacon-windows-amd64.exe"
+        name = "svc-host-windows-amd64.exe"
     elif system == "linux":
         if "aarch64" in machine or "arm64" in machine:
-            name = "sable-beacon-linux-arm64"
+            name = "svc-host-linux-arm64"
         else:
-            name = "sable-beacon-linux-amd64"
+            name = "svc-host-linux-amd64"
     else:
         logger.debug("Beacon: unsupported platform %s", system)
         return None
