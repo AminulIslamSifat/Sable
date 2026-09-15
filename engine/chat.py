@@ -7,11 +7,11 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-import httpx
+from curl_cffi.requests import AsyncSession
 
 from engine.config import MODEL, MODELS, URL, get_model_config
 from engine.payloads import build_body
-from engine.session import BrowserManager, create_new_chat
+from engine.session import BrowserManager, create_new_chat, sanitize_fetch_headers
 
 # --- Raw response logger (Qwen only) ---
 _LOG_DIR = Path(__file__).resolve().parent.parent / "output" / "qwen_raw"
@@ -51,6 +51,13 @@ async def stream_chat(
     is_retry: bool = False,
 ) -> tuple[str | None, str | None]:
     """Send a message and stream the response token by token, returning updated (chat_id, parent_id)."""
+    # Always grab live headers before every request — cookies and bx-ua rotate
+    # continuously in the browser. This reads them instantly from the live context.
+    try:
+        headers.update(await bm.get_live_headers())
+    except Exception as e:
+        print(f"[WARN] Live header refresh failed ({e}), using existing headers")
+
     new_chat_id = chat_id
     if not new_chat_id:
         new_chat_id = await create_new_chat(headers, model=model)
@@ -68,20 +75,26 @@ async def stream_chat(
 
     try:
         params = {"chat_id": new_chat_id}
-        async with httpx.AsyncClient(timeout=120) as client:
-            async with client.stream("POST", URL, headers=headers, json=body, params=params) as res:
+        # Strip navigation-only headers that curl_cffi auto-injects but real
+        # fetch() calls never send. WAF flags the mismatch as bot traffic.
+        clean_headers = sanitize_fetch_headers(headers)
+        # curl_cffi with impersonate="chrome" replicates Chromium's exact TLS
+        # fingerprint (cipher suites, extensions, ALPN). This is what Alibaba's
+        # WAF checks — httpx uses Python/OpenSSL which mismatches the Chrome UA.
+        async with AsyncSession(impersonate="chrome", timeout=120) as client:
+            async with client.stream("POST", URL, headers=clean_headers, json=body, params=params) as res:
                 print(f"[DEBUG] HTTP {res.status_code}")
 
                 if res.status_code in (401, 403) and not is_retry:
                     print(f"[DEBUG] Received HTTP {res.status_code}. Refreshing tokens on-demand via Playwright...")
-                    await res.aread()
+                    await res.content
                     headers.update(await bm.get_fresh_headers())
                     return await stream_chat(
                         message, headers, new_chat_id, parent_id, files=files, model=model, is_retry=True
                     )
 
                 if res.status_code != 200:
-                    raw = (await res.aread()).decode()[:500]
+                    raw = (await res.content).decode(errors="replace")[:500]
                     print(f"[ERROR] {raw}")
                     return new_chat_id, new_parent_id
 
@@ -93,7 +106,7 @@ async def stream_chat(
                 # chunk boundaries (Bengali, emoji) aren't corrupted into '?'.
                 decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
-                async for chunk in res.aiter_bytes():
+                async for chunk in res.aiter_content():
                     if not chunk:
                         continue
                     buffer += decoder.decode(chunk)
@@ -176,12 +189,14 @@ async def stream_chat(
 
                 print(f"\n\n[DEBUG] total lines received: {line_count}")
 
-    except httpx.ConnectError as e:
-        print(f"[ERROR] Connection failed: {e}")
-    except httpx.ReadTimeout:
-        print("[ERROR] Timed out waiting for response (120s)")
     except Exception as e:
-        print(f"[ERROR] {type(e).__name__}: {e}")
+        _ename = type(e).__name__
+        if "ConnectError" in _ename or "ConnectionError" in _ename:
+            print(f"[ERROR] Connection failed: {e}")
+        elif "Timeout" in _ename:
+            print("[ERROR] Timed out waiting for response (120s)")
+        else:
+            print(f"[ERROR] {_ename}: {e}")
 
     print()
     return new_chat_id, new_parent_id

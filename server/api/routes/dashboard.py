@@ -200,6 +200,27 @@ def dashboard_status() -> dict[str, Any]:
             "SELECT COUNT(*) as cnt FROM agent_runs WHERE status IN ('failed', 'timed_out', 'killed')"
         ).fetchone()["cnt"]
 
+    # Qwen browser & header status
+    qwen_browser_alive = False
+    qwen_tokens_cached = False
+    try:
+        import json as _json
+        _qw_path = Path.home() / ".qwen_tokens.json"
+        if _qw_path.exists():
+            _tokens = _json.loads(_qw_path.read_text())
+            qwen_tokens_cached = bool(_tokens)
+    except Exception:
+        pass
+    try:
+        import subprocess
+        _result = subprocess.run(
+            ["pgrep", "-f", "chromium.*browser-data-acc"],
+            capture_output=True, timeout=3,
+        )
+        qwen_browser_alive = _result.returncode == 0
+    except Exception:
+        pass
+
     return {
         "tasks": {
             "running": running_tasks,
@@ -221,6 +242,11 @@ def dashboard_status() -> dict[str, Any]:
         },
         "calendar": {
             "today_events": calendar_today,
+        },
+        "qwen_browser": {
+            "alive": qwen_browser_alive,
+            "tokens_cached": qwen_tokens_cached,
+            "header_source": "live_browser" if qwen_browser_alive else ("disk_cache" if qwen_tokens_cached else "none"),
         },
     }
 
@@ -449,7 +475,7 @@ def dashboard_provider_status() -> dict[str, Any]:
                            {"q": "test", "num": 1}))
 
     # Ping concurrently (max 6 tasks)
-    status: dict[str, bool] = {"deepseek": True, "qwen": True}  # system-managed
+    status: dict[str, Any] = {"deepseek": True}  # deepseek is system-managed
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {}
         for name, url, headers, method, body in ping_tasks:
@@ -459,5 +485,39 @@ def dashboard_provider_status() -> dict[str, Any]:
                 status[name] = fut.result(timeout=4)
             except Exception:
                 status[name] = False
+
+    # ── Qwen: live browser + header freshness check ──────────────────────
+    # Replaces the old hardcoded "qwen": True with actual diagnostics.
+    try:
+        from server.api.dependencies import service as _svc
+        _browser = _svc._browser
+        _browser_running = _browser.is_running and _browser.context is not None
+        _has_cached_headers = _svc._headers is not None and bool(_svc._headers.get("Cookie"))
+
+        # Determine header source
+        if _browser_running:
+            _header_source = "live_browser"
+        elif _has_cached_headers:
+            _header_source = "disk_cache"
+        else:
+            _header_source = "none"
+
+        # Check if cached tokens exist on disk as a fallback indicator
+        _disk_tokens_available = False
+        try:
+            from engine.config import get_qwen_tokens_for_account
+            _cached = get_qwen_tokens_for_account()
+            _disk_tokens_available = bool(_cached and _cached.get("cookies"))
+        except Exception:
+            pass
+
+        status["qwen"] = {
+            "ok": _browser_running or _has_cached_headers or _disk_tokens_available,
+            "browser_running": _browser_running,
+            "header_source": _header_source,
+            "disk_tokens_available": _disk_tokens_available,
+        }
+    except Exception as _qwen_exc:
+        status["qwen"] = {"ok": False, "error": str(_qwen_exc)}
 
     return {"status": status}

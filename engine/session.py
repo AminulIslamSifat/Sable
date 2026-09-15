@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import httpx
+
 from engine.config import COOKIES, BX_UA, BX_UMIDTOKEN, NEW_CHAT_URL, get_model_config
 
 
@@ -86,7 +86,7 @@ def build_headers(
 
     return {
         "User-Agent": user_agent,
-        "Accept": "application/json",
+        "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
         "Content-Type": "application/json",
         "Referer": referer or "https://chat.qwen.ai/",
@@ -98,10 +98,47 @@ def build_headers(
         "sec-ch-ua": sec_ch_ua,
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Linux"',
+        # ── Sec-Fetch-* headers ──────────────────────────────────────────
+        # curl_cffi's impersonate="chrome" auto-injects these as if the
+        # request were a page navigation (Dest: document, Mode: navigate,
+        # Site: none). But Qwen's API is called via JS fetch(), which sends
+        # completely different values. Alibaba's WAF flags the mismatch
+        # instantly — a POST to /completions with Sec-Fetch-Mode: navigate
+        # is impossible for a real browser.
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+        # ── Strip navigation-only headers ────────────────────────────────
+        # curl_cffi also leaks Sec-Fetch-User and Upgrade-Insecure-Requests
+        # which only exist on top-level navigations, never on fetch() calls.
+        # Setting them to empty string prevents curl_cffi from injecting
+        # its defaults. We handle actual removal in the caller.
         "Cookie": cookies or COOKIES,
         "bx-ua": bx_ua or BX_UA,
         "bx-umidtoken": bx_umidtoken or BX_UMIDTOKEN,
         "bx-v": "2.5.37",
+    }
+
+
+# Headers that curl_cffi's impersonate="chrome" auto-injects for page navigations
+# but that a real browser NEVER sends on fetch()/XHR API calls. If these leak
+# through, Alibaba's WAF sees an impossible combination (JSON POST + navigation
+# headers) and flags it as bot traffic.
+_NAVIGATION_ONLY_HEADERS = frozenset({
+    "sec-fetch-user",
+    "upgrade-insecure-requests",
+})
+
+
+def sanitize_fetch_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Remove navigation-only headers that curl_cffi leaks into API requests.
+
+    Call this right before passing headers to curl_cffi for any Qwen API call.
+    Returns a new dict — doesn't mutate the original.
+    """
+    return {
+        k: v for k, v in headers.items()
+        if k.lower() not in _NAVIGATION_ONLY_HEADERS
     }
 
 
@@ -130,13 +167,32 @@ class BrowserManager:
     def _check_profile_lock(self) -> bool:
         """Check if the profile is locked by another Chromium instance."""
         lock_file = Path(self.user_data_dir) / "SingletonLock"
-        if lock_file.exists():
-            print("[WARN] Profile SingletonLock detected — another browser instance may be running.")
-            print("[WARN] Removing stale lock file...")
-            try:
-                lock_file.unlink()
-            except OSError as e:
-                print(f"[ERROR] Could not remove lock: {e}")
+        # Use is_symlink() | exists() because SingletonLock is a symlink to
+        # "hostname-PID". If the target process is dead, exists() returns False
+        # but the dangling symlink still blocks Chromium from launching.
+        if lock_file.is_symlink() or lock_file.exists():
+            # Check if the PID in the symlink target is actually alive
+            stale = True
+            if lock_file.is_symlink():
+                try:
+                    target = lock_file.readlink().name  # e.g. "Archie-24367"
+                    pid_str = target.rsplit("-", 1)[-1]
+                    pid = int(pid_str)
+                    import signal
+                    os.kill(pid, 0)  # raises OSError if process doesn't exist
+                    stale = False  # process is alive — real lock
+                except (ValueError, OSError, ProcessLookupError):
+                    stale = True
+            
+            if stale:
+                print("[DEBUG] Removing stale SingletonLock...")
+                try:
+                    lock_file.unlink()
+                except OSError as e:
+                    print(f"[ERROR] Could not remove lock: {e}")
+                    return False
+            else:
+                print("[WARN] Profile locked by active Chromium process")
                 return False
         return True
 
@@ -237,8 +293,30 @@ class BrowserManager:
         finally:
             self.page.remove_listener("request", on_request)
 
+        # Wait for critical Alibaba WAF cookies to be set by page JS.
+        # acw_tc (WAF session), isg (bot detection token), and tfstk (fingerprint)
+        # are generated asynchronously by Alibaba's anti-bot SDK. Without them,
+        # httpx requests get captcha-challenged even with perfect headers.
+        for _ in range(12):  # up to 6s, checking every 500ms
+            _check_cookies = await self.context.cookies()
+            _cookie_names = {c["name"] for c in _check_cookies}
+            if "acw_tc" in _cookie_names and "isg" in _cookie_names:
+                print("[DEBUG] WAF cookies (acw_tc, isg) baked successfully")
+                break
+            await self.page.wait_for_timeout(500)
+        else:
+            print("[WARN] WAF cookies (acw_tc/isg) not detected after 6s — captcha likely")
+
         all_cookies = await self.context.cookies()
-        cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in all_cookies]) if all_cookies else None
+        # Only include cookies that a real browser would send to chat.qwen.ai.
+        # Playwright's context stores cross-domain cookies (DeepSeek, mmstat, etc.)
+        # that a browser would never leak to Qwen. Sending them is a fingerprint red flag.
+        _qwen_domains = (".qwen.ai", "chat.qwen.ai", ".alibaba.com")
+        filtered_cookies = [
+            c for c in all_cookies
+            if any(c["domain"] == d or c["domain"].endswith(d) for d in _qwen_domains)
+        ]
+        cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in filtered_cookies]) if filtered_cookies else None
 
         missing = [key for key in ("bx-ua", "bx-umidtoken") if not captured.get(key)]
         if missing:
@@ -268,6 +346,108 @@ class BrowserManager:
             cookies=cookie_str,
             bx_ua=captured.get("bx-ua"),
             bx_umidtoken=captured.get("bx-umidtoken"),
+            referer=referer,
+        )
+
+    async def get_live_headers(self) -> dict[str, str]:
+        """Instantly read current headers from the live browser context.
+
+        No HTTP probes, no waiting. Reads cookies directly from the Playwright
+        cookie jar and extracts bx-ua/bx-umidtoken from the Baxia SDK's global
+        state in the page JS context. Takes <100ms instead of 3-6s.
+
+        Call this before every request to always send the freshest tokens.
+        Requires the browser to already be running (via start() or get_fresh_headers()).
+        """
+        # Don't try to launch — just reuse whatever is already running.
+        # If the browser isn't up yet, fall back to get_fresh_headers().
+        if not self.page or not self.context:
+            if not self.playwright:
+                print("[DEBUG] Browser not running, doing full fresh header setup...")
+                return await self.get_fresh_headers()
+            raise RuntimeError("Browser session is not available")
+
+        # Read cookies directly — instant, no network needed
+        all_cookies = await self.context.cookies()
+        _qwen_domains = (".qwen.ai", "chat.qwen.ai", ".alibaba.com")
+        filtered_cookies = [
+            c for c in all_cookies
+            if any(c["domain"] == d or c["domain"].endswith(d) for d in _qwen_domains)
+        ]
+        cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in filtered_cookies]) if filtered_cookies else None
+
+        # Extract bx-ua and bx-umidtoken from the Baxia SDK's JS globals.
+        # The SDK stores its state on window.__baxia__ or similar objects.
+        # We try multiple known access patterns.
+        bx_ua: str | None = None
+        bx_umidtoken: str | None = None
+        try:
+            baxia_state = await self.page.evaluate("""() => {
+                const result = { bx_ua: null, bx_umidtoken: null };
+                try {
+                    // Pattern 1: Baxia global object
+                    if (window.__baxia__) {
+                        const b = window.__baxia__;
+                        if (typeof b.getUA === 'function') result.bx_ua = b.getUA();
+                        if (b.umidToken) result.bx_umidtoken = b.umidToken;
+                        if (b.token) result.bx_umidtoken = b.token;
+                    }
+                    // Pattern 2: AWSC namespace
+                    if (!result.bx_ua && window.AWSC) {
+                        const a = window.AWSC;
+                        if (typeof a.getUA === 'function') result.bx_ua = a.getUA();
+                    }
+                    // Pattern 3: __umid_getinfo
+                    if (!result.bx_umidtoken && typeof window.__umid_getinfo === 'function') {
+                        const info = window.__umid_getinfo();
+                        if (info && info.token) result.bx_umidtoken = info.token;
+                    }
+                    // Pattern 4: scan for umid token in meta tags
+                    if (!result.bx_umidtoken) {
+                        const meta = document.querySelector('meta[name="umid-token"]');
+                        if (meta) result.bx_umidtoken = meta.getAttribute('content');
+                    }
+                } catch(e) {}
+                return result;
+            }""")
+            bx_ua = baxia_state.get("bx_ua") if isinstance(baxia_state, dict) else None
+            bx_umidtoken = baxia_state.get("bx_umidtoken") if isinstance(baxia_state, dict) else None
+        except Exception:
+            pass
+
+        # Fallback: if JS extraction failed, do ONE fast fetch probe
+        if not bx_ua or not bx_umidtoken:
+            captured: dict[str, str] = {}
+            def on_req(req) -> None:
+                if "api/v2" in req.url:
+                    h = dict(req.headers)
+                    if "bx-ua" in h:
+                        captured["bx-ua"] = h["bx-ua"]
+                    if "bx-umidtoken" in h:
+                        captured["bx-umidtoken"] = h["bx-umidtoken"]
+            self.page.on("request", on_req)
+            try:
+                await self.page.evaluate("""async () => {
+                    try { await fetch('/api/v2/users/status', { credentials: 'include' }); } catch(e) {}
+                }""")
+                await self.page.wait_for_timeout(800)
+            finally:
+                self.page.remove_listener("request", on_req)
+            bx_ua = bx_ua or captured.get("bx-ua")
+            bx_umidtoken = bx_umidtoken or captured.get("bx-umidtoken")
+
+        referer = None
+        try:
+            cur = self.page.url if self.page else ""
+            if cur.startswith("https://chat.qwen.ai/c/"):
+                referer = cur
+        except Exception:
+            pass
+
+        return build_headers(
+            cookies=cookie_str,
+            bx_ua=bx_ua,
+            bx_umidtoken=bx_umidtoken,
             referer=referer,
         )
 
@@ -326,7 +506,7 @@ class BrowserManager:
         # Step 1: Get STS token
         sts_headers = {
             "User-Agent": _ua,
-            "Accept": "application/json",
+            "Accept": "application/json, text/plain, */*",
             "Accept-Language": "en-US,en;q=0.9",
             "Content-Type": "application/json",
             "Timezone": datetime.now().astimezone().strftime("%a %b %d %Y %H:%M:%S GMT%z"),
@@ -345,16 +525,17 @@ class BrowserManager:
         sts_payload = {"filename": filename, "filesize": str(filesize), "filetype": "image"}
 
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
+            from curl_cffi.requests import AsyncSession as _CffiSession
+            async with _CffiSession(impersonate="chrome", timeout=15) as client:
                 sts_resp = await client.post(
                     "https://chat.qwen.ai/api/v2/files/getstsToken",
                     headers=sts_headers,
                     json=sts_payload,
                 )
             if sts_resp.status_code != 200:
-                print(f"[ERROR] STS token request failed: HTTP {sts_resp.status_code} — {sts_resp.text[:300]}")
+                print(f"[ERROR] STS token request failed: HTTP {sts_resp.status_code} — {sts_resp.content.decode(errors='replace')[:300]}")
                 return None
-            sts_data = sts_resp.json()
+            sts_data = json.loads(sts_resp.content)
             if not sts_data.get("success"):
                 print(f"[ERROR] STS token rejected: {json.dumps(sts_data)[:300]}")
                 return None
@@ -428,8 +609,20 @@ class BrowserManager:
                 to push their own system prompt into Qwen's personalization slot.
             layout_mode: "chat" strips tools/skills/MCP except web search + chat_title.
         """
+        # Try disk-cached tokens first — this is a pure API call, no browser needed.
+        # Only fall back to launching Playwright if no cached tokens exist.
         if headers is None:
-            await self.start()
+            from engine.config import get_qwen_tokens_for_account
+            cached = get_qwen_tokens_for_account()
+            if cached and cached.get("cookies"):
+                headers = build_headers(
+                    cookies=cached["cookies"],
+                    bx_ua=cached.get("bx_ua"),
+                    bx_umidtoken=cached.get("bx_umidtoken"),
+                )
+                print("[DEBUG] sync_context: using disk-cached tokens")
+            else:
+                await self.start()
 
         SETTINGS_URL = "https://chat.qwen.ai/api/v2/users/user/settings/update"
 
@@ -459,23 +652,28 @@ class BrowserManager:
         })
 
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                # Step 1: Disable default Qwen tools that conflict with Sable skills
-                tools_payload = {
-                    "tools_enabled": {
-                        "web_extractor": False,
-                        "web_search_image": False,
-                        "web_search": False,
-                        "image_gen_tool": False,
-                        "code_interpreter": False,
-                        "history_retriever": False,
-                        "image_edit_tool": False,
-                        "bio": False,
-                        "image_zoom_in_tool": False,
-                    }
+            from curl_cffi.requests import AsyncSession as _CffiSession
+
+            # Step 1: Disable default Qwen tools that conflict with Sable skills.
+            # Each step uses its own session because curl_cffi auto-stores Set-Cookie
+            # responses in its jar and appends them to subsequent requests, creating
+            # duplicate cookies that Qwen's WAF rejects as tampered.
+            tools_payload = {
+                "tools_enabled": {
+                    "web_extractor": False,
+                    "web_search_image": False,
+                    "web_search": False,
+                    "image_gen_tool": False,
+                    "code_interpreter": False,
+                    "history_retriever": False,
+                    "image_edit_tool": False,
+                    "bio": False,
+                    "image_zoom_in_tool": False,
                 }
-                r1 = await client.post(SETTINGS_URL, json=tools_payload, headers=headers)
-                d1 = r1.json()
+            }
+            async with _CffiSession(impersonate="chrome", timeout=15) as s1:
+                r1 = await s1.post(SETTINGS_URL, json=tools_payload, headers=headers)
+                d1 = json.loads(r1.content)
                 if r1.status_code == 401 or d1.get("data", {}).get("code") == "Unauthorized":
                     print(f"[WARN] sync_context: {r1.status_code} Unauthorized — response: {str(d1)[:300]}")
                     return False
@@ -483,18 +681,19 @@ class BrowserManager:
                     raise Exception(f"Disable tools failed: {d1}")
                 print("[DEBUG] Qwen default tools disabled")
 
-                # Step 2: Update personalization instruction
-                instr_payload = {
-                    "personalization": {
-                        "name": _get_user_name(),
-                        "description": "",
-                        "style": "Default",
-                        "instruction": instructions,
-                    }
+            # Step 2: Update personalization instruction (separate session)
+            instr_payload = {
+                "personalization": {
+                    "name": _get_user_name(),
+                    "description": "",
+                    "style": "Default",
+                    "instruction": instructions,
                 }
-                headers["X-Request-Id"] = str(uuid.uuid4())
-                r2 = await client.post(SETTINGS_URL, json=instr_payload, headers=headers)
-                d2 = r2.json()
+            }
+            headers["X-Request-Id"] = str(uuid.uuid4())
+            async with _CffiSession(impersonate="chrome", timeout=15) as s2:
+                r2 = await s2.post(SETTINGS_URL, json=instr_payload, headers=headers)
+                d2 = json.loads(r2.content)
                 if not d2.get("success"):
                     raise Exception(f"Update instruction failed: {d2}")
                 try:
@@ -541,21 +740,27 @@ async def create_new_chat(headers: dict[str, str], model: str | None = None) -> 
         "chat_type": "t2t",
         "chat_mode": "normal",
     }
-    # FIX: was using the blocking `httpx.post`, which stalls the event loop for
-    # the duration of the request if called from async code alongside
-    # BrowserManager. Switched to AsyncClient.
+    # curl_cffi with impersonate="chrome" — same TLS fix as stream_chat.
+    # httpx uses Python/OpenSSL which Alibaba's WAF fingerprints and blocks.
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        from curl_cffi.requests import AsyncSession
+        async with AsyncSession(impersonate="chrome", timeout=15) as client:
             res = await client.post(NEW_CHAT_URL, headers=headers, json=body)
         if res.status_code == 200:
-            data = res.json()
+            import json as _json
+            raw = res.content.decode(errors="replace")
+            # Guard against WAF returning HTML captcha page with HTTP 200
+            if raw.lstrip().startswith("<"):
+                print("[ERROR] WAF captcha challenge on chats/new — tokens likely stale")
+                return None
+            data = _json.loads(raw)
             if data.get("success"):
                 chat_id = data.get("data", {}).get("id")
                 print(f"[DEBUG] Server created chat session ID: {chat_id}")
                 return chat_id
             print(f"[ERROR] Server refused chat creation: {data}")
         else:
-            print(f"[ERROR] HTTP {res.status_code} on chats/new: {res.text[:300]}")
+            print(f"[ERROR] HTTP {res.status_code} on chats/new: {res.content.decode(errors='replace')[:300]}")
     except Exception as e:
         print(f"[ERROR] create_new_chat failed: {e}")
     return None

@@ -24,7 +24,8 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-import httpx
+from curl_cffi.requests import AsyncSession
+from curl_cffi.requests.exceptions import ReadTimeout as CurlReadTimeout
 
 from connectors.common.instruction_builder import get_tool_format
 
@@ -57,6 +58,46 @@ def _log_raw(direction: str, payload: str) -> None:
 _SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
 TOKEN_STORE_PATH = _SYSTEM_DIR / ".deepseek_tokens.json"
 MAX_TOKENS_PER_ACCOUNT = 10
+
+
+# Per-account device fingerprint store (browser identity header)
+FP_STORE_PATH = _SYSTEM_DIR / ".deepseek_fp.json"
+
+
+def _load_fp_store() -> dict[str, str]:
+    if FP_STORE_PATH.exists():
+        try:
+            raw = json.loads(FP_STORE_PATH.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                return raw
+        except Exception:
+            pass
+    return {}
+
+
+def _save_fp_store(store: dict[str, str]) -> None:
+    import tempfile
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8",
+        dir=str(FP_STORE_PATH.parent), suffix=".tmp",
+        delete=False,
+    ) as tmp:
+        json.dump(store, tmp, indent=2)
+        tmp_path = tmp.name
+    os.replace(tmp_path, str(FP_STORE_PATH))
+
+
+def get_fp_for_account(account: str | None = None) -> str | None:
+    acct = account or _resolve_active_account()
+    store = _load_fp_store()
+    return store.get(acct)
+
+
+def set_fp_for_account(value: str, account: str | None = None) -> None:
+    acct = account or _resolve_active_account()
+    store = _load_fp_store()
+    store[acct] = value
+    _save_fp_store(store)
 
 
 def _auto_rotate_enabled(provider: str) -> bool:
@@ -251,11 +292,15 @@ def save_token_for_account(token: str, account: str | None = None) -> None:
     store[acct] = existing
     _save_token_store(store)
 
+# Application-level headers only.
+# TLS fingerprint, User-Agent, sec-ch-ua, Accept-Language are all injected
+# automatically by curl_cffi's impersonate="chrome" — no need to set them here.
 CLIENT_HEADERS = {
-    "x-client-version": "2.3.0",
+    "x-client-version": "2.5.0",
     "x-client-platform": "web",
     "x-client-bundle-id": "com.deepseek.chat",
     "x-client-locale": "en_US",
+    "x-client-timezone-offset": "21600",
 }
 
 # Client-side history cap (matches Gemini/Mistral sliding window)
@@ -377,9 +422,8 @@ class DeepSeekClient:
         self._token = token
         self._token_refresher = token_refresher
         self._account = account  # e.g. "browser-data-acc15"; None = active
-        # ponytail: DeepSeek unified — always send model_type=None
         self._model_id = model_id or "deepseek-instant"
-        self._http: httpx.AsyncClient | None = None
+        self._http: AsyncSession | None = None
         self._lock = asyncio.Lock()
         # Client-side conversation history: chat_id → [message dicts]
         self._sessions: dict[str, list[dict[str, Any]]] = {}
@@ -534,7 +578,11 @@ class DeepSeekClient:
         self._rotate_idx = (self._rotate_idx + 1) % len(self._rotate_tokens)
 
     def _auth_headers_for(self, token: str) -> dict[str, str]:
-        return {"Authorization": f"Bearer {token}", **CLIENT_HEADERS}
+        headers = {"Authorization": f"Bearer {token}", **CLIENT_HEADERS}
+        fp = get_fp_for_account(self._account)
+        if fp:
+            headers["x-hif-leim"] = fp
+        return headers
 
     def _auth_headers(self) -> dict[str, str]:
         """Auth headers using current rotation token (or fallback single token)."""
@@ -621,6 +669,7 @@ class DeepSeekClient:
                 continue
 
             headers = {**auth, "X-DS-PoW-Response": pow_header, "Content-Type": "application/json"}
+            headers["Referer"] = f"https://chat.deepseek.com/a/chat/s/{session_id}"
             return session_id, headers
 
         return None
@@ -690,18 +739,17 @@ class DeepSeekClient:
     # HTTP client lifecycle
     # ------------------------------------------------------------------
 
-    async def _get_http(self) -> httpx.AsyncClient:
-        if self._http is None or self._http.is_closed:
-            self._http = httpx.AsyncClient(
-                base_url=BASE_URL,
-                timeout=httpx.Timeout(120.0, connect=10.0),
-                follow_redirects=True,
-            )
+    async def _get_http(self) -> AsyncSession:
+        if self._http is None:
+            # impersonate="chrome" replicates Chromium's exact TLS fingerprint
+            # (cipher suites, extensions, ALPN, HTTP/2 SETTINGS frame).
+            # This is what WAF checks — raw httpx/OpenSSL mismatches the Chrome UA.
+            self._http = AsyncSession(impersonate="chrome", timeout=120)
         return self._http
 
     async def close(self) -> None:
-        if self._http and not self._http.is_closed:
-            await self._http.aclose()
+        if self._http is not None:
+            await self._http.close()
             self._http = None
 
     # ------------------------------------------------------------------
@@ -759,7 +807,7 @@ class DeepSeekClient:
             hdrs = self._auth_headers()
 
         resp = await http.post(
-            "/api/v0/chat/create_pow_challenge",
+            f"{BASE_URL}/api/v0/chat/create_pow_challenge",
             json={"target_path": "/api/v0/chat/completion"},
             headers=hdrs,
         )
@@ -770,7 +818,7 @@ class DeepSeekClient:
             logger.warning("401 on challenge — refreshing token...")
             await self._refresh_token()
             resp = await http.post(
-                "/api/v0/chat/create_pow_challenge",
+                f"{BASE_URL}/api/v0/chat/create_pow_challenge",
                 json={"target_path": "/api/v0/chat/completion"},
                 headers=self._auth_headers(),
             )
@@ -798,7 +846,7 @@ class DeepSeekClient:
         explicit = headers is not None
         hdrs = headers if explicit else self._auth_headers()
         resp = await http.post(
-            "/api/v0/chat_session/create",
+            f"{BASE_URL}/api/v0/chat_session/create",
             json={},
             headers=hdrs,
         )
@@ -808,7 +856,7 @@ class DeepSeekClient:
             logger.warning("401 on session create — refreshing token...")
             await self._refresh_token()
             resp = await http.post(
-                "/api/v0/chat_session/create",
+                f"{BASE_URL}/api/v0/chat_session/create",
                 json={},
                 headers=self._auth_headers(),
             )
@@ -868,7 +916,7 @@ class DeepSeekClient:
             "prompt": prompt,
             "ref_file_ids": [],
             "thinking_enabled": False,
-            "search_enabled": False,
+            "search_enabled": True,
             "action": None,
             "preempt": False,
         }
@@ -877,7 +925,7 @@ class DeepSeekClient:
             http = await self._get_http()
             full_answer = ""
             async with http.stream(
-                "POST", "/api/v0/chat/completion", json=body, headers=headers,
+                "POST", f"{BASE_URL}/api/v0/chat/completion", json=body, headers=headers,
             ) as resp:
                 if resp.status_code != 200:
                     return None
@@ -1061,7 +1109,7 @@ class DeepSeekClient:
 
     async def _iter_completion_events(
         self,
-        resp: httpx.Response,
+        resp,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Parse an open /chat/completion SSE stream into Sable events.
 
@@ -1070,7 +1118,9 @@ class DeepSeekClient:
         current_frag_type: str = "RESPONSE"
         last_message_id: int | None = None  # Track assistant message ID from stream
 
-        async for line in resp.aiter_lines():
+        async for raw_line in resp.aiter_lines():
+            # curl_cffi yields bytes; httpx yielded str. Normalize.
+            line = raw_line.decode("utf-8", errors="replace") if isinstance(raw_line, bytes) else raw_line
             if not line.startswith("data: "):
                 continue
             payload = line[6:]
@@ -1183,8 +1233,6 @@ class DeepSeekClient:
         session, token rotation, summarization, or first message).
         """
         thinking_enabled = str(thinking_mode or "").lower() in ("thinking", "deepthink")
-        # ponytail: DeepSeek unified — always send null regardless of what caller passes
-        model_type = None
         file_ids = [str(fid) for fid in (ref_file_ids or []) if str(fid).strip()]
         project_id = kwargs.pop("project_id", None)
         db_history = kwargs.pop("db_history", None)
@@ -1192,6 +1240,8 @@ class DeepSeekClient:
 
         # Build client-side history (instructions as first entry, sliding window)
         history = self._get_or_create_session(chat_id, inject_instructions, system_instruction=system_instruction, project_id=project_id, layout_mode=layout_mode)
+        # Browser sends "default" for first message in session, null for subsequent
+        model_type = "default" if len(history) <= 1 else None
         # Seed from DB when session is fresh (cross-provider switch)
         if db_history and chat_id and len(history) <= 1:
             for _m in db_history:
@@ -1302,7 +1352,7 @@ class DeepSeekClient:
                 "prompt": current_prompt,
                 "ref_file_ids": file_ids,
                 "thinking_enabled": thinking_enabled,
-                "search_enabled": False,
+                "search_enabled": True,
                 "action": None,
                 "preempt": False,
             }
@@ -1317,18 +1367,18 @@ class DeepSeekClient:
                     full_thinking = ""
 
                     async with http.stream(
-                        "POST", "/api/v0/chat/completion", json=body, headers=headers,
+                        "POST", f"{BASE_URL}/api/v0/chat/completion", json=body, headers=headers,
                     ) as resp:
                         # Auth/rate-limit errors → no retry, rotate immediately
                         if resp.status_code in (401, 403, 429):
-                            await resp.aread()
+                            await resp.content
                             last_err = f"HTTP {resp.status_code}"
                             logger.warning("DeepSeek auth error (%s), rotating immediately...", last_err)
                             break  # Break retry loop → rotate to next token
 
                         if resp.status_code != 200:
-                            error_body = await resp.aread()
-                            last_err = f"HTTP {resp.status_code}: {error_body.decode()[:200]}"
+                            error_body = await resp.content
+                            last_err = f"HTTP {resp.status_code}: {error_body.decode(errors='replace')[:200]}"
                             logger.warning("DeepSeek HTTP error (%s), rotating immediately...", last_err)
                             break  # Break retry loop → rotate to next token
 
@@ -1405,7 +1455,7 @@ class DeepSeekClient:
 
                     return  # Success — done
 
-                except httpx.ReadTimeout:
+                except CurlReadTimeout:
                     last_err = "timeout (120s)"
                     if _retry < _MAX_RETRIES_PER_TOKEN - 1:
                         logger.warning("DeepSeek timeout, retry %d/%d in %.0fs...",

@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import logging
 
-import httpx
+from curl_cffi.requests import AsyncSession as CffiSession
+from engine.session import sanitize_fetch_headers
 
 logger = logging.getLogger("sable.research.llm")
 
@@ -84,18 +85,19 @@ async def qwen_complete(
     params = {"chat_id": chat_id}
     accumulated = ""
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=15)) as client:
-        async with client.stream("POST", URL, headers=headers, json=body, params=params) as resp:
+    _hdrs = sanitize_fetch_headers(headers)
+    async with CffiSession(impersonate="chrome", timeout=timeout) as client:
+        async with client.stream("POST", URL, headers=_hdrs, json=body, params=params) as resp:
             if resp.status_code in (401, 403):
                 logger.error("qwen auth failed | status=%d account=%s", resp.status_code, account)
                 raise RuntimeError(f"Qwen auth failed ({resp.status_code})")
             if resp.status_code != 200:
-                raw = (await resp.aread()).decode(errors="replace")
+                raw = resp.content.decode(errors="replace") if isinstance(resp.content, bytes) else (await resp.acontent).decode(errors="replace")
                 logger.error("qwen http error | status=%d body=%s", resp.status_code, raw[:300])
                 raise RuntimeError(f"Qwen HTTP {resp.status_code}: {raw[:300]}")
             logger.debug("streaming response | status=%d", resp.status_code)
             buffer = ""
-            async for chunk in resp.aiter_bytes():
+            async for chunk in resp.aiter_content():
                 if not chunk:
                     continue
                 buffer += chunk.decode("utf-8", errors="replace")

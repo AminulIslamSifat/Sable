@@ -117,9 +117,9 @@ async def _call_teacher_qwen(prompt: str, model: str, browser_data_dir: str | No
     """One-shot Qwen call for the teacher."""
     import uuid
     from engine.config import get_qwen_tokens_for_account, _SYSTEM, URL
-    from engine.session import build_headers
+    from engine.session import build_headers, sanitize_fetch_headers
+    from curl_cffi.requests import AsyncSession as CffiSession
     from pathlib import Path
-    import httpx
 
     account = None
     if browser_data_dir:
@@ -147,8 +147,9 @@ async def _call_teacher_qwen(prompt: str, model: str, browser_data_dir: str | No
         "feature_config": {"thinking_mode": "Fast"},
     }
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(URL, json=payload, headers=headers)
+    _hdrs = sanitize_fetch_headers(headers)
+    async with CffiSession(impersonate="chrome", timeout=120) as client:
+        resp = await client.post(URL, json=payload, headers=_hdrs)
         resp.raise_for_status()
         data = resp.json()
         return data.get("content", "") or data.get("message", {}).get("content", "")

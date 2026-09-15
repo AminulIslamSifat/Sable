@@ -14,7 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import httpx
+import httpx  # kept for non-Qwen calls (DeepSeek upload, etc.)
+from curl_cffi.requests import AsyncSession as CffiSession
 
 from engine.config import (
     URL,
@@ -24,7 +25,7 @@ from engine.config import (
     mark_account_exhausted,
 )
 from engine.payloads import build_body
-from engine.session import BrowserManager, create_new_chat
+from engine.session import BrowserManager, create_new_chat, sanitize_fetch_headers
 
 logger = logging.getLogger("sable")
 
@@ -300,8 +301,11 @@ class ChatService:
                 ) from exc
 
     async def warmup(self, account: str | None = None) -> None:
-        """Pre-load WAF headers. Never launches a browser when the target
-        account's tokens are cached on disk.
+        """Pre-load WAF headers and keep the browser alive for live header refresh.
+
+        Loads cached tokens instantly so the first request isn't delayed by a
+        Chromium launch, then starts the browser in the background so that
+        subsequent requests can call get_live_headers() for fresh bx-ua/cookies.
 
         Pass account= to pin the target — background callers MUST, since the
         active-profile symlink can move between scheduling and execution.
@@ -311,7 +315,9 @@ class ChatService:
         # Fast path: headers for this account already in memory
         if self._headers and self._headers_account == account:
             return
-        # Medium path: per-account token cache on disk — no browser launch needed.
+        # Medium path: per-account token cache on disk — load instantly,
+        # but DON'T return yet. We still need to start the browser below
+        # so get_live_headers() has a live context to read from.
         cached = get_qwen_tokens_for_account(account)
         if cached and cached.get("cookies"):
             from engine.session import build_headers
@@ -321,8 +327,7 @@ class ChatService:
                 bx_umidtoken=cached.get("bx_umidtoken"),
             )
             self._headers_account = account
-            logger.info("Warmup: loaded cached Qwen WAF tokens for %s (no browser launch)", account)
-            return
+            logger.info("Warmup: loaded cached Qwen WAF tokens for %s", account)
         # Guard: no valid profile → skip browser launch entirely
         # Slow path: launch browser to fetch fresh headers
         # (BrowserManager.start() guards against missing profiles)
@@ -339,10 +344,12 @@ class ChatService:
                         bx_umidtoken=self._headers.get("bx-umidtoken", ""),
                         account=account,
                     )
+                else:
+                    logger.info("Warmup: browser started for live header refresh (using cached headers)")
             except Exception as exc:
-                logger.warning("Warmup failed: %s: %s", type(exc).__name__, exc)
-                self._headers = None
-                self._headers_account = None
+                # Browser launch failed, but don't nuke cached headers — they're
+                # still valid for HTTP requests, just without live refresh capability.
+                logger.warning("Warmup browser start failed: %s: %s (cached headers still usable)", type(exc).__name__, exc)
 
     async def force_refresh_waf(self, account: str | None = None) -> None:
         """Always launch browser to collect fresh WAF tokens, ignoring cache.
@@ -384,14 +391,18 @@ class ChatService:
     async def refresh_deepseek_token(self) -> str:
         """Extract a fresh DeepSeek token. Reuses an already-running browser
         (e.g. one a cold warmup left open); closes it only if this call
-        launched it."""
+        launched it AND warmup hasn't started it for live header refresh."""
         async with self._lock:
             opened_here = not self._browser.is_running
             await self._browser.start()
             try:
                 return await self._browser.extract_deepseek_token()
             finally:
-                if opened_here:
+                # Never close the browser here — warmup() intentionally keeps
+                # it alive so get_live_headers() can read fresh tokens per-request.
+                # Only close if we somehow launched it outside of warmup context
+                # and no headers are loaded yet (edge case).
+                if opened_here and not self._headers:
                     await self._browser.close()
 
     async def create_chat(self, model: str | None = None, bdd: str | None = None) -> str | None:
@@ -443,14 +454,16 @@ class ChatService:
             payload = {"chat_id": chat_id}
             if response_id:
                 payload["response_id"] = response_id
-            async with httpx.AsyncClient(timeout=5) as client:
-                resp = await client.post(STOP_URL, json=payload, headers=headers)
+            _hdrs = sanitize_fetch_headers(headers)
+            async with CffiSession(impersonate="chrome", timeout=5) as client:
+                resp = await client.post(STOP_URL, json=payload, headers=_hdrs)
                 if resp.status_code == 200:
                     data = resp.json()
                     if data.get("success"):
                         logger.info("Upstream generation stopped: chat_id=%s response_id=%s", chat_id, response_id)
                         return True
-                logger.warning("Stop API returned %s: %s", resp.status_code, resp.text[:200])
+                _text = resp.text[:200] if hasattr(resp, 'text') else str(resp.content)[:200]
+                logger.warning("Stop API returned %s: %s", resp.status_code, _text)
         except Exception as exc:
             logger.warning("Failed to call stop API: %s", exc)
         return False
@@ -583,8 +596,9 @@ class ChatService:
             # Fallback probe — only when stop API isn't responding
             still_busy = False
             try:
-                async with httpx.AsyncClient(timeout=8) as client:
-                    resp = await client.post(URL, headers=headers, json=body, params=params)
+                _hdrs = sanitize_fetch_headers(headers)
+                async with CffiSession(impersonate="chrome", timeout=8) as client:
+                    resp = await client.post(URL, headers=_hdrs, json=body, params=params)
                     try:
                         data = resp.json()
                         inner = data.get("data", {})
@@ -646,20 +660,43 @@ class ChatService:
             needs_refresh = False
             _chunk_timeout_triggered = False
 
+            # ── Live header refresh before every request ─────────────────────
+            # If the browser is already running, grab fresh bx-ua/bx-umidtoken
+            # and cookies instantly (<100ms). This prevents WAF drift between
+            # requests without ever triggering a cold Chromium launch.
+            # Falls back silently to cached headers when browser isn't up.
             try:
-                async with httpx.AsyncClient(timeout=httpx.Timeout(connect=15.0, read=None, write=15.0, pool=15.0)) as client:
+                browser = self._get_browser(bdd)
+                if browser.is_running and browser.page and browser.context:
+                    print("[STREAM]     🟢 browser is UP — grabbing live headers...")
+                    _live = await browser.get_live_headers()
+                    if _live and _live.get("Cookie"):
+                        headers.update(_live)
+                        print(f"[STREAM]     ✓ live headers refreshed (bx-ua={'yes' if _live.get('bx-ua') else 'no'})")
+                else:
+                    print("[STREAM]     ⏭️  browser not running — skipped live header refresh, using cached")
+            except Exception as _hdr_exc:
+                print(f"[STREAM]     ⚠ live header refresh skipped: {_hdr_exc}")
+            # ─────────────────────────────────────────────────────────────────
+
+            try:
+                # curl_cffi impersonates Chrome's TLS fingerprint (cipher suites,
+                # extensions, ALPN). httpx uses Python/OpenSSL which Alibaba's WAF
+                # detects instantly despite correct headers.
+                _clean_headers = sanitize_fetch_headers(headers)
+                async with CffiSession(impersonate="chrome", timeout=30) as client:
                     print(f"[STREAM]     ↳ HTTP POST {URL[:60]}...")
-                    async with client.stream("POST", URL, headers=headers, json=body, params=params) as res:
+                    async with client.stream("POST", URL, headers=_clean_headers, json=body, params=params) as res:
                         status_code = res.status_code
                         print(f"[STREAM]     ✓ HTTP {res.status_code} (attempt {attempt}/{max_attempts})")
                         logger.debug("Upstream HTTP %s (attempt %d/%d)", res.status_code, attempt, max_attempts)
                         yield {"type": "debug", "message": f"HTTP {res.status_code} (attempt {attempt}/{max_attempts})"}
 
                         if res.status_code in (401, 403):
-                            await res.aread()
+                            _ = res.content  # drain the response body
                             needs_refresh = True
                         elif res.status_code != 200:
-                            raw = (await res.aread()).decode(errors="replace")
+                            raw = res.content.decode(errors="replace") if isinstance(res.content, bytes) else (await res.acontent).decode(errors="replace")
                             # Check if non-200 response is actually a rate-limit or API error
                             try:
                                 err_data = json.loads(raw)
@@ -770,7 +807,7 @@ class ChatService:
                                 chat_id, attempt, body.get("model", "?"),
                             )
                             # Use an iterator so we can wrap each next() with asyncio.wait_for
-                            _byte_iter = res.aiter_bytes()
+                            _byte_iter = res.aiter_content()
                             while True:
                                 try:
                                     chunk = await asyncio.wait_for(
@@ -1066,10 +1103,10 @@ class ChatService:
                 # Client disconnected (stop button pressed) — tell Qwen to stop generating
                 await self._stop_upstream_generation(chat_id, chosen_response_id)
                 raise
-            except httpx.ConnectError as exc:
+            except (httpx.ConnectError, ConnectionError, OSError) as exc:
                 last_error_msg = f"Connection failed: {exc}"
                 continue
-            except httpx.ReadTimeout:
+            except (httpx.ReadTimeout, asyncio.TimeoutError, TimeoutError):
                 last_error_msg = "Timed out waiting for response"
                 continue
             except Exception as exc:

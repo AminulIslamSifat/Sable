@@ -4,27 +4,34 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from typing import Any
 
 from ..config import DB_PATH
 from ..utils import utcnow
 
-_conn: sqlite3.Connection | None = None
+# One SQLite connection PER THREAD. A single shared handle across the FastAPI
+# threadpool caused `sqlite3.OperationalError: cannot commit - no transaction
+# is active`: two threads interleaved on the same connection, so one thread's
+# `with conn:` __exit__ ran COMMIT while another thread had already ended the
+# transaction. Thread-local handles remove the race entirely.
+_local = threading.local()
 
 
 def get_db() -> sqlite3.Connection:
-    """Return a persistent module-level connection (WAL mode, safe for concurrent access)."""
-    global _conn
-    if _conn is None:
-        _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        _conn.row_factory = sqlite3.Row
-        _conn.execute("PRAGMA journal_mode=WAL")
-        _conn.execute("PRAGMA busy_timeout=5000")
-        _conn.execute("PRAGMA synchronous=NORMAL")
-        _conn.execute("PRAGMA cache_size=-64000")       # 64MB page cache
-        _conn.execute("PRAGMA mmap_size=268435456")      # 256MB mmap
-        _conn.execute("PRAGMA temp_store=MEMORY")
-    return _conn
+    """Return this thread's SQLite connection (WAL mode, safe for concurrent access)."""
+    conn = getattr(_local, "conn", None)
+    if conn is None:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=-64000")       # 64MB page cache
+        conn.execute("PRAGMA mmap_size=268435456")      # 256MB mmap
+        conn.execute("PRAGMA temp_store=MEMORY")
+        _local.conn = conn
+    return conn
 
 
 def init_db() -> None:
