@@ -482,16 +482,30 @@ class BrowserManager:
             raise RuntimeError("DeepSeek userToken was empty after parsing.")
         return token
 
-    async def upload_image(self, image_path: str, cookies: str | None = None, bx_ua: str | None = None, bx_umidtoken: str | None = None) -> dict | None:
-        """Upload an image via direct HTTP (STS token + Aliyun OSS PUT). No Playwright JS needed."""
-        if not os.path.exists(image_path):
-            print(f"[ERROR] File not found: {image_path}")
+    async def upload_file(self, file_path: str, cookies: str | None = None, bx_ua: str | None = None, bx_umidtoken: str | None = None) -> dict | None:
+        """Upload any file (image or document) via direct HTTP (STS token + Aliyun OSS PUT).
+
+        Documents (code, PDFs, text) use Qwen's `document` class — parsed
+        server-side — while images use the `vision` class. No Playwright JS needed.
+        """
+        if not os.path.exists(file_path):
+            print(f"[ERROR] File not found: {file_path}")
             return None
 
-        filesize = os.path.getsize(image_path)
-        filename = os.path.basename(image_path)
-        ext = filename.split(".")[-1].lower()
-        mime_type = "image/png" if ext == "png" else ("image/jpeg" if ext in ("jpg", "jpeg") else "image/webp")
+        filesize = os.path.getsize(file_path)
+        filename = os.path.basename(file_path)
+
+        # Real MIME detection (shared helper) — Qwen keys parsing off this.
+        from connectors.common.media import detect_mime, categorize
+        mime_type = detect_mime(Path(file_path))
+        category = categorize(mime_type)
+
+        is_image = category == "image"
+        # STS/filetype vocabulary: images -> "image", everything else -> "file".
+        sts_filetype = "image" if is_image else "file"
+        # Display class in the Qwen UI payload.
+        file_class = "vision" if is_image else "document"
+        show_type = "image" if is_image else "file"
 
         # Fallback to config constants if caller didn't provide credentials
         cookies = cookies or COOKIES
@@ -522,7 +536,7 @@ class BrowserManager:
             "sec-ch-ua-platform": '"Linux"',
             "Referer": "https://chat.qwen.ai/",
         }
-        sts_payload = {"filename": filename, "filesize": str(filesize), "filetype": "image"}
+        sts_payload = {"filename": filename, "filesize": str(filesize), "filetype": sts_filetype}
 
         try:
             from curl_cffi.requests import AsyncSession as _CffiSession
@@ -550,7 +564,7 @@ class BrowserManager:
             auth = oss2.StsAuth(sts["access_key_id"], sts["access_key_secret"], sts["security_token"])
             bucket = oss2.Bucket(auth, f"https://{sts['endpoint']}", sts["bucketname"])
 
-            with open(image_path, "rb") as f:
+            with open(file_path, "rb") as f:
                 put_result = bucket.put_object(sts["file_path"], f)
 
             if put_result.status not in (200, 204):
@@ -565,8 +579,13 @@ class BrowserManager:
         file_id = sts["file_id"]
         file_url = sts.get("file_url", "")
 
+        meta: dict = {"name": filename, "size": filesize, "content_type": mime_type}
+        if not is_image:
+            # Qwen's web client reports server-side parse state for documents.
+            meta["parse_meta"] = {"parse_status": "success"}
+
         file_obj = {
-            "type": "image",
+            "type": "file" if not is_image else "image",
             "file": {
                 "created_at": now_ms,
                 "data": {},
@@ -574,13 +593,13 @@ class BrowserManager:
                 "hash": None,
                 "id": file_id,
                 "user_id": sts["file_path"].split("/")[0],
-                "meta": {"name": filename, "size": filesize, "content_type": mime_type},
+                "meta": meta,
                 "update_at": now_ms,
                 "lastModified": now_ms,
                 "name": filename,
                 "webkitRelativePath": "",
                 "size": filesize,
-                "type": mime_type
+                "type": mime_type,
             },
             "id": file_id,
             "url": file_url,
@@ -593,12 +612,16 @@ class BrowserManager:
             "error": "",
             "itemId": str(uuid.uuid4()),
             "file_type": mime_type,
-            "showType": "image",
-            "file_class": "vision",
-            "uploadTaskId": str(uuid.uuid4())
+            "showType": show_type,
+            "file_class": file_class,
+            "uploadTaskId": str(uuid.uuid4()),
         }
-        print(f"[DEBUG] Image uploaded successfully! File ID: {file_id}")
+        print(f"[DEBUG] File uploaded successfully! ({file_class}) File ID: {file_id}")
         return file_obj
+
+    # Backward-compatible alias — existing callers pass images.
+    async def upload_image(self, image_path: str, cookies: str | None = None, bx_ua: str | None = None, bx_umidtoken: str | None = None) -> dict | None:
+        return await self.upload_file(image_path, cookies=cookies, bx_ua=bx_ua, bx_umidtoken=bx_umidtoken)
 
     async def sync_context(self, headers: dict[str, str] | None = None, project_id: str | None = None, custom_instructions: str | None = None, layout_mode: str | None = None) -> bool:
         """Sync persona instructions to Qwen via settings/update API (no Playwright DOM).

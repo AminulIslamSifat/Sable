@@ -847,11 +847,8 @@ async def chat(request: ChatRequest):
             _model_caps.get("image", False)
             and not _model_caps.get("document", False)
         )
-        # Also convert for Qwen models marked document=True since Qwen OSS
-        # only accepts images — the document flag just means "we handle docs"
-        _is_qwen_backend = _backend not in _DIRECT_READ_BACKENDS and _backend != "deepseek" and not scraper_enabled
-        if _is_qwen_backend and _model_caps.get("image", False):
-            _should_convert_docs = True
+        # Qwen accepts documents natively (STS filetype="file", parsed
+        # server-side) — no doc→image conversion needed.
 
         _expanded_files: list[dict[str, Any]] = []
         if _should_convert_docs:
@@ -896,11 +893,11 @@ async def chat(request: ChatRequest):
                     else:
                         logger.warning("DeepSeek upload failed for: %s", f["path"])
                 continue
-            # Qwen / others: upload to Qwen OSS
+            # Qwen / others: upload to Qwen OSS (images + documents)
             if "id" in f and "url" in f:
                 resolved_files.append(f)
             elif "path" in f:
-                meta = await service.upload_image(f["path"])
+                meta = await service.upload_file(f["path"])
                 if meta:
                     resolved_files.append(meta)
                 else:
@@ -910,9 +907,11 @@ async def chat(request: ChatRequest):
         # `ref_file_ids` for already-uploaded files (e.g. re-sent history); a brand
         # new upload returns its id in resolved_files and MUST be forwarded or the
         # model receives no attachment reference at all.
+        # Uploads return `id` (and `file.id`), not `file_id` — accept either so
+        # freshly attached files are forwarded to the model's attachment refs.
         _uploaded_file_ids = [
-            str(rf["file_id"]) for rf in resolved_files
-            if rf.get("file_id") and str(rf["file_id"]).strip()
+            str(rf.get("file_id") or rf.get("id")) for rf in resolved_files
+            if (rf.get("file_id") or rf.get("id")) and str(rf.get("file_id") or rf.get("id")).strip()
         ]
         if _uploaded_file_ids:
             _merged = list(request.ref_file_ids or [])

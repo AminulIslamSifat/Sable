@@ -413,6 +413,18 @@ class ChatService:
             chat_id = await create_new_chat(headers, model=model)
         return chat_id
 
+    async def upload_file(
+        self, file_path: str, bdd: str | None = None
+    ) -> dict[str, Any] | None:
+        """Upload any file (image or document) to Qwen via STS + OSS."""
+        headers = await self._ensure_headers(bdd)
+        return await self._browser.upload_file(
+            file_path,
+            cookies=headers.get("Cookie"),
+            bx_ua=headers.get("bx-ua"),
+            bx_umidtoken=headers.get("bx-umidtoken"),
+        )
+
     async def upload_image(self, image_path: str) -> dict[str, Any] | None:
         headers = await self._ensure_headers()
         return await self._browser.upload_image(

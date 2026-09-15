@@ -290,11 +290,19 @@
     let pendingFiles = []; // { file: File, path: string|null, chip: HTMLElement }
 
     /* ---- Model capabilities → attach button ---- */
+    // Broad accept list for documents: office/text PLUS source code, since
+    // Qwen parses code files natively (see engine/session.py upload_file).
+    const DOC_ACCEPT = [
+      ".pdf,.doc,.docx,.txt,.md,.csv,.xlsx,.xls,.pptx,.ppt",
+      ".py,.go,.rs,.ts,.tsx,.jsx,.js,.kt,.swift,.rb,.php,.c,.h,.cpp,.hpp,.cs",
+      ".sh,.fish,.zsh,.toml,.ini,.conf,.log,.env,.sql,.lua,.dart,.scala,.r,.pl",
+      ".json,.yaml,.yml,.xml,.html,.css,.vue,.svelte,.java,.gradle,.dockerfile",
+    ].join(",");
     const CAP_ACCEPT = {
       image: "image/*",
       video: "video/*",
       audio: "audio/*",
-      document: ".pdf,.doc,.docx,.txt,.md,.csv,.xlsx,.xls,.pptx,.ppt",
+      document: DOC_ACCEPT,
     };
 
     function getActiveCapabilities() {
