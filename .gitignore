@@ -108,6 +108,6 @@ Brain/disabled_tools.json
 Brain/disabled_skills.json
 .sable_server.pid
 
-# Diagnostics beacon — private source & compiled binaries
-engine/scraper/diagnostics/beacon/
+# Diagnostics cache — runtime artifacts
+engine/scraper/diagnostics/cache/
 
