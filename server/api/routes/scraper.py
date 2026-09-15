@@ -35,10 +35,7 @@ async def get_scraper_models() -> dict[str, Any]:
 
 @router.get("/api/scraper/diagnostics")
 async def get_scraper_diagnostics() -> dict[str, Any]:
-    """Return diagnostic info about active scraper sessions.
-
-    Proxies to the Go beacon's local diagnostics HTTP server.
-    """
+    """Return diagnostic info about active scraper sessions."""
     try:
         from engine.scraper.diagnostics import get_alive_sessions, get_all_sessions, get_recent_events
         alive = get_alive_sessions(max_age=120)
@@ -56,7 +53,7 @@ async def get_scraper_diagnostics() -> dict[str, Any]:
 
 @router.post("/api/scraper/diagnostics/replay")
 async def start_diagnostic_replay(payload: dict[str, Any]) -> dict[str, Any]:
-    """Start a diagnostic replay session via Go beacon sidecar."""
+    """Start a diagnostic replay session."""
     try:
         from engine.scraper.diagnostics import start_replay
         engine_type = str(payload.get("engine_type", "qwen")).strip()
@@ -71,7 +68,7 @@ async def start_diagnostic_replay(payload: dict[str, Any]) -> dict[str, Any]:
             metadata=metadata,
         )
         if rid is None:
-            return {"error": "Diagnostics beacon unavailable"}
+            return {"error": "Diagnostics helper unavailable"}
         return {"replay_id": rid, "status": "started"}
     except Exception as exc:
         return {"error": str(exc)}
@@ -79,7 +76,7 @@ async def start_diagnostic_replay(payload: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/api/scraper/diagnostics/replay/{replay_id}")
 async def get_diagnostic_replay_result(replay_id: str) -> dict[str, Any]:
-    """Get the result of a diagnostic replay session from Go beacon."""
+    """Get the result of a diagnostic replay session."""
     try:
         from engine.scraper.diagnostics import get_replay_result
         result = get_replay_result(replay_id)
@@ -92,7 +89,7 @@ async def get_diagnostic_replay_result(replay_id: str) -> dict[str, Any]:
 
 @router.get("/api/scraper/diagnostics/replays")
 async def list_diagnostic_replays() -> dict[str, Any]:
-    """List recent diagnostic replay sessions from Go beacon."""
+    """List recent diagnostic replay sessions."""
     try:
         from engine.scraper.diagnostics import list_replays
         entries = list_replays(limit=20)

@@ -292,7 +292,7 @@ class ScraperEngine(ScraperLifecycle):
                         return
                     setup_ok = True
 
-                    # Diagnostics: heartbeat on successful send via Go beacon HTTP API
+
                     try:
                         from .diagnostics import heartbeat as _diag_hb
                         diag_sid = getattr(self, '_diag_session_id', None)

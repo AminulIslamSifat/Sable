@@ -187,7 +187,7 @@ class ScraperLifecycle:
         self.engine = engine
         self.loaded_path = engine_path
 
-        # Diagnostics: passively track engine session via Go beacon HTTP API
+
         try:
             from .diagnostics import register_session
             settings_diag = _load_settings()

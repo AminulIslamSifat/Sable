@@ -1,9 +1,3 @@
-"""engine.scraper.diagnostics — HTTP client for Go beacon sidecar.
-
-The beacon runs as a compiled Go binary with a local HTTP diagnostics
-server on port 18923. This module provides Python wrappers that call
-those endpoints, replacing the old in-process monitor/replay modules.
-"""
 
 from .client import (
     register_session,

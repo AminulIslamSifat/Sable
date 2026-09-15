@@ -1,14 +1,3 @@
-"""Diagnostics HTTP client — talks to the Go beacon's local diag server.
-
-Replaces the old in-process Python monitor/replay modules.
-All calls are fire-and-forget with short timeouts. Failures return
-safe defaults so scraper operations are never blocked.
-"""
-
-from __future__ import annotations
-
-import json
-import logging
 import urllib.request
 from typing import Any
 
