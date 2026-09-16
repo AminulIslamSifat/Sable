@@ -564,9 +564,81 @@
       return card;
     }
 
-// ── Permission Approval Banner ──
-    // Resolve the pane + chat a banner action belongs to. Falls back to the
-    // active pane when no chat id was captured (legacy call sites).
+// ── Permission Approval Queue ──
+    // Batch-aware approval system: multiple permission requests in one round
+    // are queued as individual cards. The model only receives combined feedback
+    // after ALL items in the batch are resolved.
+
+    // Queue state per chat: chatId → { pendingIds: Set, results: Map<id, {approved, feedback}>, total: number, cid: string }
+    const _approvalBatches = new Map();
+
+    function _getOrCreateBatch(chatId) {
+      if (!_approvalBatches.has(chatId)) {
+        _approvalBatches.set(chatId, { pendingIds: new Set(), results: new Map(), total: 0, cid: chatId });
+      }
+      return _approvalBatches.get(chatId);
+    }
+
+    // Called when the backend emits a permission_batch event listing all IDs for this round
+    function initApprovalBatch(permissionIds, cwdIds, chatId) {
+      const batch = _getOrCreateBatch(chatId);
+      for (const id of permissionIds) batch.pendingIds.add(id);
+      for (const id of cwdIds) batch.pendingIds.add(id);
+      batch.total = batch.pendingIds.size;
+      _updateBatchProgress(chatId);
+    }
+
+    // Mark one item as resolved and check if the whole batch is done
+    async function _resolveBatchItem(tagId, approved, feedback, chatId) {
+      const batch = _approvalBatches.get(chatId);
+      if (!batch) return;
+      batch.pendingIds.delete(tagId);
+      batch.results.set(tagId, { approved, feedback });
+      _updateBatchProgress(chatId);
+
+      // If all items resolved, send combined feedback to model
+      if (batch.pendingIds.size === 0 && batch.results.size > 0) {
+        const allResults = Array.from(batch.results.values());
+        _approvalBatches.delete(chatId);
+
+        try {
+          const resp = await fetch('/api/skills/batch-complete/' + encodeURIComponent(chatId), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ results: allResults }),
+          });
+          const data = await resp.json();
+          if (data.ok && data.combined_feedback) {
+            setTimeout(() => sendAutoTurnMessage(
+              data.combined_feedback,
+              { skipUserBubble: true, skipUserSave: true, targetChatId: chatId },
+            ), 300);
+          }
+        } catch (e) {
+          console.error('[approval-batch] Failed to complete batch:', e);
+          // Fallback: send results individually
+          const fallback = allResults.map(r => r.feedback).join('\n\n');
+          setTimeout(() => sendAutoTurnMessage(
+            fallback || '[System: All commands resolved.]',
+            { skipUserBubble: true, skipUserSave: true, targetChatId: chatId },
+          ), 300);
+        }
+      }
+    }
+
+    function _updateBatchProgress(chatId) {
+      const batch = _approvalBatches.get(chatId);
+      const container = document.getElementById('approvalQueueContainer');
+      if (!container || !batch) return;
+      const progressEl = container.querySelector('.aq-progress');
+      if (progressEl) {
+        const resolved = batch.results.size;
+        const total = batch.total || (resolved + batch.pendingIds.size);
+        progressEl.textContent = `${resolved}/${total} resolved`;
+      }
+    }
+
+    // Resolve the pane + chat a banner action belongs to.
     function _bannerTarget(chatId) {
       const cid = chatId || activeChatId;
       const pane = (window._sableEnsurePane && cid)
@@ -575,9 +647,7 @@
       return { cid, pane };
     }
 
-    // Append a live "running" skill card to the target pane, mirroring what a
-    // normal in-stream command card looks like. Returns the card so the caller
-    // can finish it once execution returns.
+    // Append a live "running" skill card to the target pane.
     function _appendRunningCard(pane, name, content) {
       const card = createSkillCard({ name: name, data: { content: content } });
       const st = card.querySelector('.skill-status');
@@ -591,11 +661,36 @@
       return card;
     }
 
+    // Ensure the queue container exists inside the approval banner area
+    function _ensureQueueContainer() {
+      let container = document.getElementById('approvalQueueContainer');
+      if (!container) {
+        const banner = document.getElementById('approvalBanner');
+        if (!banner) return null;
+        // Repurpose the banner as our queue container
+        container = document.createElement('div');
+        container.id = 'approvalQueueContainer';
+        container.className = 'approval-queue-container';
+        container.innerHTML = '<div class="aq-header"><span class="aq-title">⏳ Pending Approvals</span><span class="aq-progress"></span></div><div class="aq-cards"></div>';
+        banner.parentNode.insertBefore(container, banner);
+        banner.classList.add('hidden'); // Hide old single banner
+      }
+      container.classList.remove('hidden');
+      return container;
+    }
+
+    function _hideQueueIfEmpty() {
+      const container = document.getElementById('approvalQueueContainer');
+      if (!container) return;
+      const cards = container.querySelector('.aq-cards');
+      if (!cards || cards.children.length === 0) {
+        container.classList.add('hidden');
+      }
+    }
+
     function renderApprovalCard(evt, container, chatId) {
       const { id, name, data } = evt;
       const { command, category, reason } = data;
-      const banner = document.getElementById('approvalBanner');
-      if (!banner) return;
       const { cid, pane } = _bannerTarget(chatId);
 
       const catIcons = {
@@ -606,10 +701,26 @@
       const icon = catIcons[category] || 'alert-triangle';
       const shortCmd = command.length > 80 ? command.slice(0, 80) + '…' : command;
 
-      banner.className = 'approval-banner';
-      banner.dataset.tagId = id;
-      banner.dataset.chatId = cid || '';
-      banner.innerHTML = `
+      const qContainer = _ensureQueueContainer();
+      if (!qContainer) return;
+      const cardsDiv = qContainer.querySelector('.aq-cards');
+
+      // Don't duplicate if already rendered
+      if (cardsDiv.querySelector(`[data-tag-id="${id}"]`)) return;
+
+      // Auto-register in batch if not tracked yet (single-item fallback)
+      const batch = _getOrCreateBatch(cid);
+      if (!batch.pendingIds.has(id) && !batch.results.has(id)) {
+        batch.pendingIds.add(id);
+        batch.total = batch.pendingIds.size + batch.results.size;
+        _updateBatchProgress(cid);
+      }
+
+      const card = document.createElement('div');
+      card.className = 'approval-banner aq-card';
+      card.dataset.tagId = id;
+      card.dataset.chatId = cid || '';
+      card.innerHTML = `
         <div class="ab-icon"><i data-lucide="${icon}"></i></div>
         <div class="ab-body">
           <div class="ab-title">${shortCmd.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
@@ -617,49 +728,27 @@
         </div>
         <div class="ab-actions">
           <button class="ab-allow"><i data-lucide="check"></i> Allow</button>
-          <button class="ab-allow-session"><i data-lucide="shield-check"></i> Allow for Session</button>
+          <button class="ab-allow-session"><i data-lucide="shield-check"></i> Session</button>
           <button class="ab-deny"><i data-lucide="x"></i> Deny</button>
         </div>
       `;
-      activateLucideIcons(banner);
+      cardsDiv.appendChild(card);
+      activateLucideIcons(card);
 
-      const allowBtn = banner.querySelector('.ab-allow');
-      const allowSessionBtn = banner.querySelector('.ab-allow-session');
-      const denyBtn = banner.querySelector('.ab-deny');
+      const allowBtn = card.querySelector('.ab-allow');
+      const allowSessionBtn = card.querySelector('.ab-allow-session');
+      const denyBtn = card.querySelector('.ab-deny');
 
-      // Fire the running card + hide the banner in one shot, before any await,
-      // so the UI transitions immediately instead of sitting on the prompt.
-      function _begin() {
+      function _disableButtons() {
         allowBtn.disabled = true;
         allowSessionBtn.disabled = true;
         denyBtn.disabled = true;
-        pane?.querySelectorAll('.approval-pending-note').forEach(el => el.remove());
-        banner.classList.add('hidden');
-        return _appendRunningCard(pane, name, command);
-      }
-
-      function _finishApproved(card, t0, res) {
-        if (!res.ok) {
-          finishSkillCard(card, { name, ok: false, duration_ms: Math.round(performance.now() - t0), error: res.error || 'expired' });
-          // Only restore the prompt if the user is still in this chat.
-          if (activeChatId === cid) {
-            banner.classList.remove('hidden');
-            renderApprovalCard(evt, pane, cid);
-          }
-          return;
-        }
-        const feedback = res.feedback ? String(res.feedback) : '';
-        const out = card.querySelector('.skill-output');
-        if (out && feedback) out.textContent = feedback.slice(0, 4000);
-        finishSkillCard(card, { name, ok: true, duration_ms: Math.round(performance.now() - t0), result: {} });
-        setTimeout(() => sendAutoTurnMessage(
-          feedback || '[System: Command was approved and executed. Continue.]',
-          { skipUserBubble: true, skipUserSave: true, targetChatId: cid },
-        ), 300);
       }
 
       allowBtn.addEventListener('click', async () => {
-        const card = _begin();
+        _disableButtons();
+        pane?.querySelectorAll('.approval-pending-note').forEach(el => el.remove());
+        const runCard = _appendRunningCard(pane, name, command);
         const t0 = performance.now();
         try {
           const resp = await fetch('/api/skills/approve/' + id, {
@@ -667,14 +756,31 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ chat_id: cid }),
           });
-          _finishApproved(card, t0, await resp.json());
+          const res = await resp.json();
+          if (res.ok) {
+            const feedback = res.feedback ? String(res.feedback) : '';
+            const out = runCard.querySelector('.skill-output');
+            if (out && feedback) out.textContent = feedback.slice(0, 4000);
+            finishSkillCard(runCard, { name, ok: true, duration_ms: Math.round(performance.now() - t0), result: {} });
+            card.classList.add('aq-resolved');
+            card.remove();
+            _hideQueueIfEmpty();
+            await _resolveBatchItem(id, true, feedback || '[Command approved and executed.]', cid);
+          } else {
+            finishSkillCard(runCard, { name, ok: false, duration_ms: Math.round(performance.now() - t0), error: res.error || 'expired' });
+            _disableButtons.call(null); // Re-enable on failure
+            allowBtn.disabled = false; allowSessionBtn.disabled = false; denyBtn.disabled = false;
+          }
         } catch (e) {
-          finishSkillCard(card, { name, ok: false, duration_ms: Math.round(performance.now() - t0), error: String(e) });
+          finishSkillCard(runCard, { name, ok: false, duration_ms: Math.round(performance.now() - t0), error: String(e) });
+          allowBtn.disabled = false; allowSessionBtn.disabled = false; denyBtn.disabled = false;
         }
       });
 
       allowSessionBtn.addEventListener('click', async () => {
-        const card = _begin();
+        _disableButtons();
+        pane?.querySelectorAll('.approval-pending-note').forEach(el => el.remove());
+        const runCard = _appendRunningCard(pane, name, command);
         const t0 = performance.now();
         try {
           const resp = await fetch('/api/skills/approve/' + id, {
@@ -682,17 +788,32 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ chat_id: cid, session: true }),
           });
-          _finishApproved(card, t0, await resp.json());
+          const res = await resp.json();
+          if (res.ok) {
+            const feedback = res.feedback ? String(res.feedback) : '';
+            const out = runCard.querySelector('.skill-output');
+            if (out && feedback) out.textContent = feedback.slice(0, 4000);
+            finishSkillCard(runCard, { name, ok: true, duration_ms: Math.round(performance.now() - t0), result: {} });
+            card.classList.add('aq-resolved');
+            card.remove();
+            _hideQueueIfEmpty();
+            await _resolveBatchItem(id, true, feedback || '[Command approved for session and executed.]', cid);
+          } else {
+            finishSkillCard(runCard, { name, ok: false, duration_ms: Math.round(performance.now() - t0), error: res.error || 'expired' });
+            allowBtn.disabled = false; allowSessionBtn.disabled = false; denyBtn.disabled = false;
+          }
         } catch (e) {
-          finishSkillCard(card, { name, ok: false, duration_ms: Math.round(performance.now() - t0), error: String(e) });
+          finishSkillCard(runCard, { name, ok: false, duration_ms: Math.round(performance.now() - t0), error: String(e) });
+          allowBtn.disabled = false; allowSessionBtn.disabled = false; denyBtn.disabled = false;
         }
       });
 
       denyBtn.addEventListener('click', async () => {
-        const card = _begin();
-        const st = card.querySelector('.skill-status');
+        _disableButtons();
+        const runCard = _appendRunningCard(pane, name, command);
+        const st = runCard.querySelector('.skill-status');
         if (st) { st.textContent = 'denied ✗'; st.style.color = 'var(--danger)'; }
-        const out = card.querySelector('.skill-output');
+        const out = runCard.querySelector('.skill-output');
         if (out) out.textContent = '[denied by user]';
         try {
           const r = await fetch('/api/skills/deny/' + id, {
@@ -701,15 +822,15 @@
             body: JSON.stringify({ chat_id: cid }),
           });
           const res = await r.json();
-          setTimeout(() => sendAutoTurnMessage(
-            res.feedback || '[System: Command was denied by user.]',
-            { skipUserBubble: true, skipUserSave: true, targetChatId: cid },
-          ), 300);
+          card.classList.add('aq-resolved');
+          card.remove();
+          _hideQueueIfEmpty();
+          await _resolveBatchItem(id, false, res.feedback || '[Command denied by user.]', cid);
         } catch (e) {
-          setTimeout(() => sendAutoTurnMessage(
-            '[System: Command was denied by user.]',
-            { skipUserBubble: true, skipUserSave: true, targetChatId: cid },
-          ), 300);
+          card.classList.add('aq-resolved');
+          card.remove();
+          _hideQueueIfEmpty();
+          await _resolveBatchItem(id, false, '[Command denied by user.]', cid);
         }
       });
     }
@@ -717,16 +838,29 @@
     function renderCwdWarningCard(evt, container, chatId) {
       const { id, name, data } = evt;
       const { path, cwd } = data;
-      const banner = document.getElementById('approvalBanner');
-      if (!banner) return;
       const { cid, pane } = _bannerTarget(chatId);
 
       const shortPath = path.length > 80 ? '…' + path.slice(-77) : path;
 
-      banner.className = 'approval-banner cwd-warning-banner';
-      banner.dataset.tagId = id;
-      banner.dataset.chatId = cid || '';
-      banner.innerHTML = `
+      const qContainer = _ensureQueueContainer();
+      if (!qContainer) return;
+      const cardsDiv = qContainer.querySelector('.aq-cards');
+
+      if (cardsDiv.querySelector(`[data-tag-id="${id}"]`)) return;
+
+      // Auto-register in batch if not tracked yet (single-item fallback)
+      const batch = _getOrCreateBatch(cid);
+      if (!batch.pendingIds.has(id) && !batch.results.has(id)) {
+        batch.pendingIds.add(id);
+        batch.total = batch.pendingIds.size + batch.results.size;
+        _updateBatchProgress(cid);
+      }
+
+      const card = document.createElement('div');
+      card.className = 'approval-banner cwd-warning-banner aq-card';
+      card.dataset.tagId = id;
+      card.dataset.chatId = cid || '';
+      card.innerHTML = `
         <div class="ab-icon"><i data-lucide="folder-alert"></i></div>
         <div class="ab-body">
           <div class="ab-title">File operation outside project folder</div>
@@ -734,28 +868,28 @@
           <div class="ab-detail">Without making it the project folder, you can't recover in case of accidental damage.</div>
         </div>
         <div class="ab-actions">
-          <button class="ab-cwd-session"><i data-lucide="shield-check"></i> Allow for Session</button>
+          <button class="ab-cwd-session"><i data-lucide="shield-check"></i> Session</button>
           <button class="ab-cwd-continue"><i data-lucide="arrow-right"></i> Continue</button>
           <button class="ab-cwd-open"><i data-lucide="folder-open"></i> Open Folder</button>
           <button class="ab-cwd-deny"><i data-lucide="x"></i> Deny</button>
         </div>
       `;
-      activateLucideIcons(banner);
+      cardsDiv.appendChild(card);
+      activateLucideIcons(card);
 
-      const sessionBtn = banner.querySelector('.ab-cwd-session');
-      const continueBtn = banner.querySelector('.ab-cwd-continue');
-      const openBtn = banner.querySelector('.ab-cwd-open');
-      const denyBtn = banner.querySelector('.ab-cwd-deny');
+      const sessionBtn = card.querySelector('.ab-cwd-session');
+      const continueBtn = card.querySelector('.ab-cwd-continue');
+      const openBtn = card.querySelector('.ab-cwd-open');
+      const denyBtn = card.querySelector('.ab-cwd-deny');
 
-      function _begin() {
+      function _disableButtons() {
         [sessionBtn, continueBtn, openBtn, denyBtn].forEach(b => { if (b) b.disabled = true; });
-        pane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
-        banner.classList.add('hidden');
-        return _appendRunningCard(pane, name, path);
       }
 
       async function _approveWithSession(session) {
-        const card = _begin();
+        _disableButtons();
+        pane?.querySelectorAll('.cwd-warning-pending-note').forEach(el => el.remove());
+        const runCard = _appendRunningCard(pane, name, path);
         const t0 = performance.now();
         try {
           const resp = await fetch('/api/skills/cwd-approve/' + id, {
@@ -764,59 +898,49 @@
             body: JSON.stringify({ chat_id: cid, session }),
           });
           const res = await resp.json();
-          const out = card.querySelector('.skill-output');
-          if (out && res.feedback) out.textContent = String(res.feedback).slice(0, 4000);
-          finishSkillCard(card, { name, ok: true, duration_ms: Math.round(performance.now() - t0), result: {} });
-          setTimeout(() => sendAutoTurnMessage(
-            res.feedback || '[System: File operation approved. Continue.]',
-            { skipUserBubble: true, skipUserSave: true, targetChatId: cid },
-          ), 300);
+          if (res.ok) {
+            const out = runCard.querySelector('.skill-output');
+            if (out && res.feedback) out.textContent = String(res.feedback).slice(0, 4000);
+            finishSkillCard(runCard, { name, ok: true, duration_ms: Math.round(performance.now() - t0), result: {} });
+            card.classList.add('aq-resolved');
+            card.remove();
+            _hideQueueIfEmpty();
+            await _resolveBatchItem(id, true, res.feedback || '[File operation approved.]', cid);
+          } else {
+            finishSkillCard(runCard, { name, ok: false, duration_ms: Math.round(performance.now() - t0), error: res.error || 'error' });
+            [sessionBtn, continueBtn, openBtn, denyBtn].forEach(b => { if (b) b.disabled = false; });
+          }
         } catch (e) {
-          finishSkillCard(card, { name, ok: false, duration_ms: Math.round(performance.now() - t0), error: String(e) });
+          finishSkillCard(runCard, { name, ok: false, duration_ms: Math.round(performance.now() - t0), error: String(e) });
+          [sessionBtn, continueBtn, openBtn, denyBtn].forEach(b => { if (b) b.disabled = false; });
         }
       }
 
       sessionBtn?.addEventListener('click', () => _approveWithSession(true));
-      continueBtn.addEventListener('click', () => _approveWithSession(false));
+      continueBtn?.addEventListener('click', () => _approveWithSession(false));
 
-      openBtn.addEventListener('click', async () => {
-        continueBtn.disabled = true;
-        openBtn.disabled = true;
+      openBtn?.addEventListener('click', async () => {
+        _disableButtons();
         try {
           const res = await fetch('/api/filesystem/pick-folder');
           const pickData = await res.json();
           if (pickData.path && window.pickFsRoot) {
             window.pickFsRoot(pickData.path);
-            const card = _begin();
-            const t0 = performance.now();
-            const resp = await fetch('/api/skills/cwd-approve/' + id, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ chat_id: cid }),
-            });
-            const result = await resp.json();
-            const out = card.querySelector('.skill-output');
-            if (out && result.feedback) out.textContent = String(result.feedback).slice(0, 4000);
-            finishSkillCard(card, { name, ok: true, duration_ms: Math.round(performance.now() - t0), result: {} });
-            setTimeout(() => sendAutoTurnMessage(
-              result.feedback || '[System: Folder changed and operation approved. Continue.]',
-              { skipUserBubble: true, skipUserSave: true, targetChatId: cid },
-            ), 300);
+            await _approveWithSession(false);
           } else {
-            // User cancelled folder picker — re-enable buttons
-            continueBtn.disabled = false;
-            openBtn.disabled = false;
+            [sessionBtn, continueBtn, openBtn, denyBtn].forEach(b => { if (b) b.disabled = false; });
           }
         } catch (e) {
-          finishSkillCard(_appendRunningCard(pane, name, path), { name, ok: false, duration_ms: 0, error: String(e) });
+          [sessionBtn, continueBtn, openBtn, denyBtn].forEach(b => { if (b) b.disabled = false; });
         }
       });
 
       denyBtn?.addEventListener('click', async () => {
-        const card = _begin();
-        const st = card.querySelector('.skill-status');
+        _disableButtons();
+        const runCard = _appendRunningCard(pane, name, path);
+        const st = runCard.querySelector('.skill-status');
         if (st) { st.textContent = 'denied ✗'; st.style.color = 'var(--danger)'; }
-        const out = card.querySelector('.skill-output');
+        const out = runCard.querySelector('.skill-output');
         if (out) out.textContent = '[denied by user]';
         try {
           const resp = await fetch('/api/skills/cwd-deny/' + id, {
@@ -825,47 +949,80 @@
             body: JSON.stringify({ chat_id: cid }),
           });
           const result = await resp.json();
-          setTimeout(() => sendAutoTurnMessage(
-            result.feedback || '[System: File operation outside project was denied by user.]',
-            { skipUserBubble: true, skipUserSave: true, targetChatId: cid },
-          ), 300);
+          card.classList.add('aq-resolved');
+          card.remove();
+          _hideQueueIfEmpty();
+          await _resolveBatchItem(id, false, result.feedback || '[File operation denied by user.]', cid);
         } catch (e) {
-          setTimeout(() => sendAutoTurnMessage(
-            '[System: File operation outside project was denied by user.]',
-            { skipUserBubble: true, skipUserSave: true, targetChatId: cid },
-          ), 300);
+          card.classList.add('aq-resolved');
+          card.remove();
+          _hideQueueIfEmpty();
+          await _resolveBatchItem(id, false, '[File operation denied by user.]', cid);
         }
       });
     }
 
-    // Re-sync the approval banner with whatever is still pending for a chat.
-    // Called on tab switch so a permission asked in chat A survives a detour
-    // to chat B and comes back.
+    // Re-sync the approval queue with whatever is still pending for a chat.
+    // Called on tab switch so permissions asked in chat A survive a detour
+    // to chat B and come back. Now renders ALL pending items, not just the first.
     async function refreshPendingBanner(chatId) {
-      const banner = document.getElementById('approvalBanner');
-      if (!banner) return;
-      if (!chatId) { banner.classList.add('hidden'); return; }
+      if (!chatId) {
+        const container = document.getElementById('approvalQueueContainer');
+        if (container) container.classList.add('hidden');
+        return;
+      }
       try {
         const resp = await fetch('/api/skills/pending/' + encodeURIComponent(chatId));
         if (!resp.ok) return;
         const data = await resp.json();
         if (activeChatId !== chatId) return; // switched away mid-fetch
-        const appr = (data.approvals || [])[0];
-        const cwd = (data.cwd_warnings || [])[0];
-        if (appr) {
+
+        const approvals = data.approvals || [];
+        const cwdWarnings = data.cwd_warnings || [];
+
+        if (approvals.length === 0 && cwdWarnings.length === 0) {
+          const container = document.getElementById('approvalQueueContainer');
+          if (container) container.classList.add('hidden');
+          return;
+        }
+
+        // Re-initialize batch tracker for rehydrated items.
+        // Preserve already-resolved results from the existing batch (if any)
+        // since those tools already executed on the backend but haven't been
+        // sent to the model yet.
+        const existingBatch = _approvalBatches.get(chatId);
+        const preservedResults = existingBatch ? existingBatch.results : new Map();
+        _approvalBatches.delete(chatId);
+        initApprovalBatch(
+          approvals.map(a => a.id),
+          cwdWarnings.map(c => c.id),
+          chatId,
+        );
+        // Restore previously resolved results
+        const freshBatch = _approvalBatches.get(chatId);
+        if (freshBatch && preservedResults.size > 0) {
+          for (const [id, result] of preservedResults) {
+            freshBatch.results.set(id, result);
+          }
+          freshBatch.total = freshBatch.pendingIds.size + freshBatch.results.size;
+          _updateBatchProgress(chatId);
+        }
+
+        // Render all pending approval cards
+        for (const appr of approvals) {
           renderApprovalCard(
             { id: appr.id, name: appr.name, data: { command: appr.command, category: appr.category, reason: appr.reason } },
             activePane, chatId,
           );
-        } else if (cwd) {
+        }
+        // Render all pending CWD warning cards
+        for (const cwd of cwdWarnings) {
           renderCwdWarningCard(
             { id: cwd.id, name: cwd.name, data: { path: cwd.path, cwd: cwd.cwd } },
             activePane, chatId,
           );
-        } else {
-          banner.classList.add('hidden');
         }
-      } catch (e) { /* banner stays hidden on failure */ }
+      } catch (e) { /* queue stays hidden on failure */ }
     }
     window._sableRefreshPendingBanner = refreshPendingBanner;
 
@@ -2123,6 +2280,14 @@
               const turn = streamPane.querySelector('.turn:last-child');
               (turn || streamPane.querySelector('.messages')).appendChild(pending);
             }
+          } else if (evt.type === "permission_batch") {
+            // Backend signals all permission/cwd requests for this round — init the batch tracker
+            if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
+            initApprovalBatch(
+              evt.permission_ids || [],
+              evt.cwd_ids || [],
+              streamChatId,
+            );
           } else if (evt.type === "sim_ready") {
             const fname = evt.filename || "simulation.html";
             const url = "/assets/" + encodeURIComponent(fname);

@@ -1348,6 +1348,55 @@
   opacity: 0.85;
 }
 
+/* ── Approval Queue Container ──────────────────────────── */
+.approval-queue-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  margin: 8px 0;
+  background: color-mix(in srgb, var(--panel) 60%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.approval-queue-container.hidden { display: none; }
+.approval-queue-container .aq-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.approval-queue-container .aq-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.approval-queue-container .aq-progress {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+.approval-queue-container .aq-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.approval-queue-container .aq-card {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+.approval-queue-container .aq-card.aq-resolved {
+  opacity: 0.4;
+  transform: scale(0.97);
+  pointer-events: none;
+}
+
 /* ── Context Menu (glassy) ─────────────────────────────── */
 .ctx-menu {
   position: fixed;

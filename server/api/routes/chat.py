@@ -2638,6 +2638,25 @@ async def chat(request: ChatRequest):
                                 )
                     except Exception:
                         pass
+                # Emit permission/cwd batch summary so frontend can queue multiple approvals
+                if _permission_pause or _cwd_pause:
+                    _batch_perm_ids = [
+                        ev.get("id", "")
+                        for ev in round_skill_events
+                        if ev.get("type") == "permission_request"
+                    ]
+                    _batch_cwd_ids = [
+                        ev.get("id", "")
+                        for ev in round_skill_events
+                        if ev.get("type") == "cwd_warning"
+                    ]
+                    yield sse({
+                        "type": "permission_batch",
+                        "permission_ids": _batch_perm_ids,
+                        "cwd_ids": _batch_cwd_ids,
+                        "total": len(_batch_perm_ids) + len(_batch_cwd_ids),
+                    })
+
                 if stream_error or error_message or not feedback or _ask_user_pause or _permission_pause or _cwd_pause:
                     break
 
@@ -3048,6 +3067,38 @@ async def cwd_approve_command(tag_id: str, request: Request):
             append_skill_event(chat_id, ev)
 
     return {"ok": True, "feedback": feedback}
+
+
+@router.post("/api/skills/batch-complete/{chat_id}")
+async def batch_complete(chat_id: str, request: Request):
+    """All items in a permission batch have been resolved.
+
+    The frontend accumulates individual approve/deny results and calls this
+    once every item in the batch is resolved. We combine all feedback into
+    one message and send it to the model as a single turn so the model sees
+    the full picture instead of fragmented partial results.
+    """
+    body = await request.json() if request else {}
+    results: list[dict] = body.get("results", [])
+
+    if not results:
+        return {"ok": False, "error": "No results provided"}
+
+    # Combine all feedback blocks into one structured message
+    parts: list[str] = []
+    for i, r in enumerate(results, 1):
+        status = "APPROVED" if r.get("approved") else "DENIED"
+        fb = r.get("feedback", "[no feedback]")
+        parts.append(f"--- Tool {i}/{len(results)} [{status}] ---\n{fb}")
+
+    combined = (
+        f"[System: All {len(results)} pending tool(s) have been resolved by the user. "
+        f"Here are the combined results:]\n\n"
+        + "\n\n".join(parts)
+        + "\n\n[System: Continue based on ALL results above.]"
+    )
+
+    return {"ok": True, "combined_feedback": combined}
 
 
 @router.post("/api/skills/cwd-deny/{tag_id}")
