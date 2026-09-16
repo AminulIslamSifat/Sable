@@ -44,7 +44,6 @@ def _get_local_version() -> str:
 
 def _extract_version(text: str) -> str | None:
     """Extract a semver-like version from a string (tag or release name)."""
-    # Match patterns like v1.0.0, 1.2.3, 0.4.0
     match = re.search(r'v?(\d+\.\d+\.\d+)', text)
     return match.group(1) if match else None
 
@@ -52,7 +51,6 @@ def _extract_version(text: str) -> str | None:
 def _compare_versions(local: str, remote: str) -> bool:
     """Return True if remote > local."""
     try:
-        # Try direct parse first, then extract from string
         try:
             remote_ver = Version(remote.lstrip("v"))
         except InvalidVersion:
@@ -69,6 +67,40 @@ def _check_cache() -> dict[str, Any] | None:
     if _cache["data"] and (time.time() - _cache["ts"]) < _CACHE_TTL:
         return _cache["data"]
     return None
+
+
+def _auth_url() -> str:
+    """Return an authenticated HTTPS URL for the repo if a token is available."""
+    if _GITHUB_TOKEN:
+        return f"https://x-access-token:{_GITHUB_TOKEN}@github.com/{_GITHUB_REPO}.git"
+    return f"https://github.com/{_GITHUB_REPO}.git"
+
+
+def _run_git(args: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
+    """Blocking git helper. Always runs in project root, never prompts."""
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_ASKPASS"] = "echo"
+    return subprocess.run(
+        ["git", *args],
+        capture_output=True,
+        text=True,
+        cwd=str(_PROJECT_ROOT),
+        timeout=timeout,
+        env=env,
+    )
+
+
+def _current_branch() -> str:
+    """Return current branch name, fallback to main."""
+    try:
+        proc = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], timeout=10)
+        branch = proc.stdout.strip()
+        if branch and branch != "HEAD":
+            return branch
+    except Exception:
+        pass
+    return "main"
 
 
 @router.get("/api/update/check")
@@ -89,13 +121,8 @@ def check_update(force: bool = False) -> dict[str, Any]:
         if _GITHUB_TOKEN:
             headers["Authorization"] = f"Bearer {_GITHUB_TOKEN}"
 
-        resp = httpx.get(
-            _GITHUB_API,
-            headers=headers,
-            timeout=15,
-        )
+        resp = httpx.get(_GITHUB_API, headers=headers, timeout=15)
         if resp.status_code == 404:
-            # No releases yet
             result = {
                 "update_available": False,
                 "local_version": local_version,
@@ -118,7 +145,6 @@ def check_update(force: bool = False) -> dict[str, Any]:
 
     remote_tag = release.get("tag_name", "")
     release_name = release.get("name", "")
-    # Try tag first, fall back to extracting version from release name
     remote_version = _extract_version(remote_tag) or _extract_version(release_name) or remote_tag
     update_available = _compare_versions(local_version, remote_version)
 
@@ -138,59 +164,57 @@ def check_update(force: bool = False) -> dict[str, Any]:
 
 @router.post("/api/update/apply")
 async def apply_update() -> StreamingResponse:
-    """Apply update: git pull + uv sync + restart service. Streams SSE progress."""
+    """Force-update: fetch origin, hard-reset to origin branch, sync deps, restart.
+
+    This is intentionally destructive: local changes are discarded, no merge is
+    attempted, and no stash is created. Failures roll back to ORIG_HEAD.
+    """
 
     async def generator():
-        yield sse({"type": "progress", "step": "check", "message": "Checking for uncommitted changes…"})
+        branch = _current_branch()
+        remote_url = _auth_url()
 
-        # Step 1: Check for uncommitted changes
-        proc = await asyncio.to_thread(
-            subprocess.run,
-            ["git", "status", "--porcelain"],
-            capture_output=True, text=True, cwd=str(_PROJECT_ROOT),
-        )
-        if proc.returncode != 0:
-            yield sse({"type": "error", "message": f"Git status failed: {proc.stderr.strip()}"})
-            return
+        # Record pre-update HEAD so we can roll back if the rest of the update fails.
+        pre_head_proc = await asyncio.to_thread(_run_git, ["rev-parse", "HEAD"], 15)
+        pre_head = pre_head_proc.stdout.strip() if pre_head_proc.returncode == 0 else ""
 
-        dirty_files = [ln for ln in proc.stdout.strip().splitlines() if ln.strip()]
-        if dirty_files:
-            yield sse({
-                "type": "warning",
-                "message": f"{len(dirty_files)} uncommitted change(s) detected. Stashing…",
-            })
-            stash = await asyncio.to_thread(
-                subprocess.run,
-                ["git", "stash", "push", "-m", "auto-stash before update"],
-                capture_output=True, text=True, cwd=str(_PROJECT_ROOT),
-            )
-            if stash.returncode != 0:
-                yield sse({"type": "error", "message": f"Git stash failed: {stash.stderr.strip()}"})
-                return
-            yield sse({"type": "log", "step": "check", "message": "Changes stashed."})
+        async def _stream_cmd(cmd: list[str], step_id: str, timeout_sec: int = 180, rc_out: list[int] | None = None):
+            """Stream subprocess output line-by-line over SSE.
 
-        # Helper: stream a subprocess line-by-line via SSE.
-        # Uses a mutable list to smuggle the return code out of the async generator.
-        async def _stream_cmd(cmd: list[str], step_id: str, timeout_sec: int = 120, rc_out: list[int] | None = None):
+            Uses a mutable rc_out list so the caller can read the exit code
+            after the async generator completes.
+            """
+            env = os.environ.copy()
+            env["GIT_TERMINAL_PROMPT"] = "0"
+            env["GIT_ASKPASS"] = "echo"
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=str(_PROJECT_ROOT),
+                env=env,
             )
+            started = time.time()
             try:
                 while True:
-                    line = await asyncio.wait_for(
-                        process.stdout.readline(), timeout=timeout_sec
-                    )
+                    if time.time() - started > timeout_sec:
+                        process.kill()
+                        yield sse({"type": "error", "message": f"Timed out after {timeout_sec}s: {' '.join(cmd)}"})
+                        if rc_out is not None:
+                            rc_out[0] = -1
+                        return
+                    try:
+                        line = await asyncio.wait_for(process.stdout.readline(), timeout=5)
+                    except asyncio.TimeoutError:
+                        continue
                     if not line:
                         break
                     decoded = line.decode("utf-8", errors="replace").rstrip()
                     if decoded:
                         yield sse({"type": "log", "step": step_id, "message": decoded})
-            except asyncio.TimeoutError:
+            except Exception as exc:
                 process.kill()
-                yield sse({"type": "error", "message": f"Timed out after {timeout_sec}s: {' '.join(cmd)}"})
+                yield sse({"type": "error", "message": f"Command error: {exc}"})
                 if rc_out is not None:
                     rc_out[0] = -1
                 return
@@ -199,43 +223,62 @@ async def apply_update() -> StreamingResponse:
             if rc_out is not None:
                 rc_out[0] = process.returncode
 
-        # Step 2: Git fetch + merge via HTTPS
-        yield sse({"type": "progress", "step": "pull", "message": "Fetching latest code…"})
-        _https_url = f"https://github.com/{_GITHUB_REPO}.git"
+        async def _rollback(reason: str):
+            """Hard-reset back to pre-update HEAD. Best-effort."""
+            if not pre_head:
+                yield sse({"type": "error", "message": f"{reason} (no rollback target)"})
+                return
+            yield sse({"type": "warning", "message": f"{reason} — rolling back to {pre_head[:8]}…"})
+            rb_rc: list[int] = [0]
+            async for ev in _stream_cmd(["git", "reset", "--hard", pre_head], "rollback", 60, rb_rc):
+                yield ev
+            if rb_rc[0] == 0:
+                yield sse({"type": "error", "message": f"{reason}. Rolled back to previous version."})
+            else:
+                yield sse({"type": "error", "message": f"{reason}. Rollback ALSO failed — manual fix needed."})
 
+        # ── Step 1: Fetch (force, tags included, shallow-safe) ───────────────
+        yield sse({"type": "progress", "step": "pull", "message": f"Fetching origin/{branch}…"})
         fetch_rc: list[int] = [0]
         async for event in _stream_cmd(
-            ["git", "fetch", "--progress", _https_url, "main"], "pull", 120, fetch_rc
+            ["git", "fetch", "--force", "--prune", "--tags", remote_url, branch],
+            "pull", 180, fetch_rc,
         ):
             yield event
         if fetch_rc[0] != 0:
             yield sse({"type": "error", "message": "Git fetch failed."})
             return
 
-        yield sse({"type": "progress", "step": "pull", "message": "Merging…"})
-        merge_rc: list[int] = [0]
-        async for event in _stream_cmd(
-            ["git", "merge", "FETCH_HEAD", "--no-edit"], "pull", 60, merge_rc
-        ):
+        # ── Step 2: Hard reset to FETCH_HEAD (discards ALL local changes) ────
+        yield sse({"type": "progress", "step": "pull", "message": "Force-resetting working tree…"})
+        # Clean untracked files that would block checkout, but keep ignored files (venv, data, etc.)
+        clean_rc: list[int] = [0]
+        async for event in _stream_cmd(["git", "clean", "-fd"], "pull", 60, clean_rc):
             yield event
-        if merge_rc[0] != 0:
-            yield sse({"type": "error", "message": "Git merge failed."})
-            return
-        yield sse({"type": "log", "step": "pull", "message": "Code updated ✓"})
+        if clean_rc[0] != 0:
+            yield sse({"type": "warning", "message": "git clean failed — continuing anyway."})
 
-        # Step 3: uv sync
+        reset_rc: list[int] = [0]
+        async for event in _stream_cmd(["git", "reset", "--hard", "FETCH_HEAD"], "pull", 60, reset_rc):
+            yield event
+        if reset_rc[0] != 0:
+            async for ev in _rollback("Git reset failed"):
+                yield ev
+            return
+        yield sse({"type": "log", "step": "pull", "message": "Code updated (forced) ✓"})
+
+        # ── Step 3: uv sync ──────────────────────────────────────────────────
         yield sse({"type": "progress", "step": "sync", "message": "Syncing dependencies…"})
         sync_rc: list[int] = [0]
-        async for event in _stream_cmd(
-            ["uv", "sync"], "sync", 180, sync_rc
-        ):
+        async for event in _stream_cmd(["uv", "sync"], "sync", 300, sync_rc):
             yield event
         if sync_rc[0] != 0:
-            yield sse({"type": "error", "message": "uv sync failed."})
+            async for ev in _rollback("uv sync failed"):
+                yield ev
             return
         yield sse({"type": "log", "step": "sync", "message": "Dependencies synced ✓"})
 
-        # Step 4: Restart service
+        # ── Step 4: Restart ──────────────────────────────────────────────────
         yield sse({"type": "progress", "step": "restart", "message": "Restarting service… (page will reload)"})
         await asyncio.sleep(0.5)
 

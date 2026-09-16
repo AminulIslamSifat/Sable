@@ -60,11 +60,32 @@ def stop_service() -> None:
             # Self-stop: raise SIGINT equivalent
             os._exit(0)
     else:
+        # Fire-and-forget stop, then make sure THIS process actually dies.
         subprocess.Popen(
             ["systemctl", "--user", "stop", _SERVICE_NAME],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        # If systemctl isn't managing us (running manually), kill ourselves.
+        if not _is_managed_by_systemd():
+            os.kill(os.getpid(), signal.SIGTERM)
+
+
+def _is_managed_by_systemd() -> bool:
+    """Return True if the current process is running under our systemd user unit."""
+    if IS_WINDOWS:
+        return False
+    try:
+        # systemd sets INVOCATION_ID for units it manages.
+        if os.environ.get("INVOCATION_ID") or os.environ.get("SYSTEMD_EXEC_PID"):
+            return True
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", _SERVICE_NAME],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.stdout.strip() == "active"
+    except Exception:
+        return False
 
 
 def _windows_task_exists(task_name: str) -> bool:
@@ -120,11 +141,17 @@ def restart_service() -> None:
         subprocess.Popen(args, env=env, close_fds=True)
         os._exit(0)
     else:
+        # Linux: hand off to systemd, THEN terminate this process so the
+        # old instance doesn't linger holding the port / SSE stream.
         subprocess.Popen(
             ["systemctl", "--user", "restart", _SERVICE_NAME],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        # Give systemd a beat to queue the restart, then hard-exit.
+        # os._exit skips atexit/finalizers — we WANT that here so no
+        # shutdown handler blocks the process from dying.
+        os._exit(0)
 
 
 def is_systemd_available() -> bool:
