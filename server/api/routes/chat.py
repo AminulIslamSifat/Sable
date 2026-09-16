@@ -2762,6 +2762,12 @@ async def chat(request: ChatRequest):
             except Exception:
                 pass
         finally:
+            # Signal stream completion to frontend so backend-status cards collapse
+            if not error_message and not _agent_killed:
+                try:
+                    yield sse({"type": "done", "parent_id": final_parent})
+                except Exception:
+                    pass
             answer = "".join(answer_parts)
             thinking = "".join(thinking_parts)
             if not answer and skill_events:

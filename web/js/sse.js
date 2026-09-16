@@ -2016,11 +2016,22 @@
             ui.appendAnswer(evt.text || "");
           } else if (evt.type === "done") {
             gotDone = true;
-            // Collapse backend status card when streaming finishes
+            // Update backend status card to "Done" then collapse after a beat
             const _lastTurn = streamPane?.querySelector('.turn:last-child');
             if (_lastTurn) {
               const _bsCard = _lastTurn.querySelector('.backend-status-card');
-              if (_bsCard && !_bsCard.classList.contains('collapsed')) _bsCard.classList.add('collapsed');
+              if (_bsCard) {
+                const _statusEl = _bsCard.querySelector('.bs-status');
+                if (_statusEl) {
+                  _statusEl.textContent = 'Done';
+                  _statusEl.style.color = 'var(--success, #4ade80)';
+                }
+                _bsCard.querySelectorAll('.bs-step-active').forEach(el => {
+                  el.classList.remove('bs-step-active');
+                  el.classList.add('bs-step-done');
+                });
+                if (!_bsCard.classList.contains('collapsed')) _bsCard.classList.add('collapsed');
+              }
               // Safety net: sweep away any lingering completed account-switch card
               _lastTurn.querySelectorAll('.account-switch-card.asc-complete').forEach(c => {
                 clearTimeout(c._ascDismissTimer);
@@ -2345,6 +2356,8 @@ const _BACKEND_STATUS_MAP = {
   recovering_parent:                       { label: "Parent message lost — recovering…", icon: "refresh-cw" },
   waiting_for_agents:                      { label: "Waiting for agents…",              icon: "users" },
   high_skill_round_count:                  { label: "High skill round count",           icon: "alert-circle" },
+  requesting_teacher_guidance:             { label: "Asking teacher for guidance…",     icon: "graduation-cap" },
+  feeding_skill_results:                   { label: "Processing tool results…",         icon: "wrench" },
 };
 
 function _backendStatusIcon(name, size = 14) {
