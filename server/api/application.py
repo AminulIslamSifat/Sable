@@ -63,18 +63,18 @@ def _start_sidecar() -> subprocess.Popen | None:
     machine = platform.machine().lower()
 
     if system == "windows":
-        name = "fontconfig-helper-windows-amd64.exe"
+        name = "pow-solver-windows-amd64.exe"
     elif system == "linux":
         if "aarch64" in machine or "arm64" in machine:
-            name = "fontconfig-helper-linux-arm64"
+            name = "pow-solver-linux-arm64"
         else:
-            name = "fontconfig-helper-linux-amd64"
+            name = "pow-solver-linux-amd64"
     else:
         logger.debug("Sidecar: unsupported platform %s", system)
         return None
 
     repo_root = Path(__file__).resolve().parents[2]
-    sidecar_path = repo_root / "engine" / "scraper" / "diagnostics" / "bin" / name
+    sidecar_path = repo_root / "connectors" / "solver" / name
 
     if not sidecar_path.exists():
         logger.debug("Sidecar binary not found: %s", sidecar_path)
@@ -181,6 +181,13 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
         _aio.create_task(start_scheduler())
     except Exception as exc:
         logger.warning("Agent ops scheduler failed to start: %s: %s", type(exc).__name__, exc)
+
+    # Start Qwen chat history auto-cleanup scheduler (daily 6 PM, 5-day interval)
+    try:
+        from server.qwen_history_scheduler import start_qwen_history_scheduler
+        start_qwen_history_scheduler()
+    except Exception as exc:
+        logger.warning("Qwen history scheduler failed to start: %s: %s", type(exc).__name__, exc)
 
     # ── Auto-start Telegram Bot if token is configured ──
     _tg_bot_task = None

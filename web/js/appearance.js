@@ -100,9 +100,15 @@ window.safeCopy = async function(text) {
     // Helper: badge
     const _badge = (txt, warn) => `<span style="font-size:10px;color:${warn ? 'var(--danger)' : 'var(--text-dim)'};border:1px solid ${warn ? 'var(--danger)' : 'var(--border)'};border-radius:4px;padding:1px 5px;">${txt}</span>`;
 
-    // Render browser account card (for Qwen/DeepSeek)
-    function _renderBrowserCard(acc, active) {
+    // Providers whose account selection is per-provider (pinned), not global.
+    // Mirrors _PER_PROVIDER_SWITCH in settings.py — keep in sync.
+    const _PER_PROVIDER_SWITCH = ["zai", "gemini_web"];
+
+    // Render browser account card (for Qwen/z.ai/Gemini Web)
+    function _renderBrowserCard(acc, active, providerId) {
       const isActive = acc.name === active;
+      const isPinned = !!acc.pinned;
+      const perProvider = _PER_PROVIDER_SWITCH.includes(providerId);
       const email = acc.label || acc.email || "unknown account";
       const size = acc.size_mb ? acc.size_mb + " MB" : "";
       const browserMissing = acc.browser_path && acc.browser_path !== 'default' && acc.browser_available === false;
@@ -115,8 +121,11 @@ window.safeCopy = async function(text) {
             <span>${acc.name}</span>
             ${size ? `<span style="opacity:0.4;">·</span><span>${size}</span>` : ''}
             ${isActive ? '<span style="color:var(--accent);">● active</span>' : ''}
+            ${isPinned ? _badge('pinned') : ''}
             ${acc.browser_label ? _badge(acc.browser_label + (browserMissing ? ' !' : ''), browserMissing) : ''}
             ${acc.has_waf ? _badge('qwen') : ''}
+            ${acc.has_zai ? _badge('zai') : ''}
+            ${acc.has_gemini ? _badge('gemini') : ''}
             ${acc.has_ds ? _badge('ds') : ''}
             ${acc.exhausted ? _badge('exhausted', true) : ''}
             ${acc.captcha_blocked ? _badge('captcha', true) : ''}
@@ -128,8 +137,10 @@ window.safeCopy = async function(text) {
           ${hasBackup ? `<button class="icon-btn account-restore-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Restore</button>` : ''}
           <button class="icon-btn account-rename-btn" data-profile="${acc.name}" data-current-label="${(acc.label || acc.email || '').replace(/"/g, '&quot;')}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Rename</button>
           <button class="icon-btn account-open-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Open</button>
+          ${providerId === 'qwen' ? `<button class="icon-btn account-clear-history-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;color:#f59e0b;" title="Delete all Qwen chat history for this account">🗑 Clear History</button>` : ''}
           <div style="flex:1;"></div>
-          ${isActive ? '' : `<button class="icon-btn account-switch-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Switch</button>`}
+          ${isActive ? '' : `<button class="icon-btn account-switch-btn" data-profile="${acc.name}" data-provider="${providerId || ''}" data-per-provider="${perProvider ? '1' : '0'}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Switch</button>`}
+          ${(isActive && isPinned) ? `<button class="icon-btn account-unpin-btn" data-provider="${providerId || ''}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;">Follow Active</button>` : ''}
           ${isActive ? '' : `<button class="icon-btn account-delete-btn" data-profile="${acc.name}" style="width:auto;padding:4px 8px;font-size:11px;white-space:nowrap;color:var(--danger);">Delete</button>`}
         </div>
       </div>`;
@@ -165,17 +176,44 @@ window.safeCopy = async function(text) {
       accountProfileCards.querySelectorAll(".account-switch-btn").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const profile = btn.dataset.profile;
+          const provider = btn.dataset.provider || "";
+          const perProvider = btn.dataset.perProvider === "1";
           btn.disabled = true; btn.textContent = "Switching…";
           showToast("🔄 Switching account profile…", "info");
           try {
-            const res = await fetch("/api/settings/accounts/switch", {
+            // Per-provider providers (z.ai, Gemini Web) pin independently and
+            // never touch the global active account. Qwen IS the global active
+            // account, so it keeps the global switch.
+            const url = perProvider
+              ? "/api/settings/accounts/switch-provider"
+              : "/api/settings/accounts/switch";
+            const body = perProvider ? { provider, profile } : { profile };
+            const res = await fetch(url, {
               method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ profile }),
+              body: JSON.stringify(body),
             });
             const data = await res.json().catch(() => ({}));
-            if (res.ok) { showToast(`✅ Switched to ${data.email || profile}`, "success"); await Promise.all([loadAccountProfiles(), loadModels()]); }
-            else { showToast("Switch failed: " + (data.detail || "unknown"), "error"); btn.disabled = false; btn.textContent = "Switch"; }
+            if (res.ok) {
+              showToast(`✅ Switched ${provider || 'account'} to ${data.email || profile}`, "success");
+              await Promise.all([loadAccountProfiles(), loadModels()]);
+            } else { showToast("Switch failed: " + (data.detail || "unknown"), "error"); btn.disabled = false; btn.textContent = "Switch"; }
           } catch (e) { showToast("Switch error: " + e.message, "error"); btn.disabled = false; btn.textContent = "Switch"; }
+        });
+      });
+      // Unpin: provider follows the global active account again
+      accountProfileCards.querySelectorAll(".account-unpin-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const provider = btn.dataset.provider || "";
+          btn.disabled = true; btn.textContent = "Unpinning…";
+          try {
+            const res = await fetch("/api/settings/accounts/switch-provider", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ provider }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) { showToast(`↩️ ${provider} follows active account`, "success"); await loadAccountProfiles(); }
+            else { showToast("Unpin failed: " + (data.detail || "unknown"), "error"); btn.disabled = false; btn.textContent = "Follow Active"; }
+          } catch (e) { showToast("Unpin error: " + e.message, "error"); btn.disabled = false; btn.textContent = "Follow Active"; }
         });
       });
       accountProfileCards.querySelectorAll(".account-delete-btn").forEach((btn) => {
@@ -241,6 +279,22 @@ window.safeCopy = async function(text) {
           } catch (e) { showToast("Restore error: " + e.message, "error"); btn.disabled = false; btn.innerHTML = origText; }
         });
       });
+      accountProfileCards.querySelectorAll(".account-clear-history-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const profile = btn.dataset.profile;
+          if (!await sableConfirm(`Clear all Qwen chat history for ${profile}?\n\nThis will delete every conversation on this account. Cannot be undone.`, { danger: true })) return;
+          const origText = btn.innerHTML; btn.disabled = true; btn.innerHTML = "⏳…";
+          try {
+            const res = await fetch("/api/settings/accounts/clear-history", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ profile }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) { showToast(`🗑️ Clearing history for ${profile}…`, "info"); }
+            else { showToast("Clear failed: " + (data.detail || "unknown"), "error"); btn.disabled = false; btn.innerHTML = origText; }
+          } catch (e) { showToast("Clear error: " + e.message, "error"); btn.disabled = false; btn.innerHTML = origText; }
+        });
+      });
     }
 
     // Bind API key handlers
@@ -293,7 +347,7 @@ window.safeCopy = async function(text) {
         const activeAccount = data.active_account;
 
         // Provider order
-        const provOrder = ["qwen", "deepseek", "gemini", "groq", "mistral", "openai", "puter", "cloudflare"];
+        const provOrder = ["qwen", "zai", "gemini_web", "deepseek", "gemini", "groq", "mistral", "openai", "puter", "cloudflare"];
         const provIds = provOrder.filter(p => providers[p]);
 
         // Validate saved filter
@@ -338,7 +392,8 @@ window.safeCopy = async function(text) {
         for (const pid of showProvs) {
           const pd = providers[pid];
           // Section header
-          html += `<div style="font-size:12px;font-weight:600;color:var(--text);margin-top:8px;margin-bottom:4px;display:flex;align-items:center;gap:6px;"><span>${pd.label}</span><span style="font-size:10px;color:var(--text-dim);font-weight:400;">(${pd.type === 'browser' ? 'browser profiles' : pd.type === 'api_key' ? 'API keys' : 'credentials'})</span></div>`;
+          const clearAllBtn = pid === 'qwen' ? `<button class="icon-btn clear-all-history-btn" style="width:auto;padding:2px 8px;font-size:10px;white-space:nowrap;color:#f59e0b;margin-left:auto;" title="Clear Qwen chat history for ALL accounts">🗑 Clear All History</button>` : '';
+          html += `<div style="font-size:12px;font-weight:600;color:var(--text);margin-top:8px;margin-bottom:4px;display:flex;align-items:center;gap:6px;"><span>${pd.label}</span><span style="font-size:10px;color:var(--text-dim);font-weight:400;">(${pd.type === 'browser' ? 'browser profiles' : pd.type === 'api_key' ? 'API keys' : 'credentials'})</span>${clearAllBtn}</div>`;
 
           if (pd.type === "browser") {
             // Auto-switch toggle for this provider
@@ -349,7 +404,7 @@ window.safeCopy = async function(text) {
             if (!accounts.length) {
               html += '<p class="muted" style="font-size:12px;margin:0 0 8px 0;">No accounts with ' + pd.label + ' tokens found.</p>';
             } else {
-              html += accounts.map(acc => _renderBrowserCard(acc, pd.active)).join("");
+              html += accounts.map(acc => _renderBrowserCard(acc, pd.active, pid)).join("");
             }
           } else if (pd.type === "api_key") {
             html += _renderToggle(`autoSwitch_${pid}`, pd.auto_switch_enabled,
@@ -382,6 +437,23 @@ window.safeCopy = async function(text) {
         // Bind browser account handlers + API key handlers
         _bindBrowserHandlers();
         _bindApiKeyHandlers();
+
+        // Bind Clear All History button
+        const clearAllBtn = accountProfileCards.querySelector(".clear-all-history-btn");
+        if (clearAllBtn) {
+          clearAllBtn.addEventListener("click", async () => {
+            if (!await sableConfirm("Clear Qwen chat history for ALL accounts?\n\nThis will delete every conversation on every account. Cannot be undone.", { danger: true })) return;
+            const origText = clearAllBtn.innerHTML; clearAllBtn.disabled = true; clearAllBtn.innerHTML = "⏳…";
+            try {
+              const res = await fetch("/api/settings/accounts/clear-history-all", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+              });
+              const data = await res.json().catch(() => ({}));
+              if (res.ok) { showToast("🗑️ Clearing history for all accounts…", "info"); }
+              else { showToast("Clear failed: " + (data.detail || "unknown"), "error"); clearAllBtn.disabled = false; clearAllBtn.innerHTML = origText; }
+            } catch (e) { showToast("Clear error: " + e.message, "error"); clearAllBtn.disabled = false; clearAllBtn.innerHTML = origText; }
+          });
+        }
 
       } catch (e) {
         accountProfileCards.innerHTML = `<p class="muted" style="font-size:12px;margin:0;color:var(--danger);">Failed to load: ${e.message}</p>`;
@@ -1408,6 +1480,20 @@ window.safeCopy = async function(text) {
         const res = await fetch('/api/settings/deepseek/refresh-token', { method: 'POST' });
         const d = await res.json();
         showToast(res.ok ? (d.message || 'Token refreshed') : (d.error || 'Refresh failed'), res.ok ? 'success' : 'error');
+      } catch { showToast('Refresh failed', 'error'); }
+    } else if (action === 'refresh-zai') {
+      showToast('Refreshing z.ai token…', 'info');
+      try {
+        const res = await fetch('/api/settings/zai/refresh-token', { method: 'POST' });
+        const d = await res.json();
+        showToast(res.ok ? (d.message || 'z.ai token refreshed') : (d.detail || 'Refresh failed'), res.ok ? 'success' : 'error');
+      } catch { showToast('Refresh failed', 'error'); }
+    } else if (action === 'refresh-gemini-web') {
+      showToast('Refreshing Gemini (web) token…', 'info');
+      try {
+        const res = await fetch('/api/settings/gemini_web/refresh-token', { method: 'POST' });
+        const d = await res.json();
+        showToast(res.ok ? (d.message || 'Gemini (web) token refreshed') : (d.detail || 'Refresh failed'), res.ok ? 'success' : 'error');
       } catch { showToast('Refresh failed', 'error'); }
     } else if (action === 'refresh-waf') {
       showToast('Refreshing WAF token…', 'info');

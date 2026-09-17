@@ -125,6 +125,13 @@ def _log_conversation(chat_id: str, model: str, role: str, content: str) -> None
 
 router = APIRouter()
 
+# chat_id -> latest upstream response_id (the Qwen node id of the in-flight
+# assistant turn). Captured the moment the `response_id` SSE event fires so
+# /api/chat/stop always has one, even if the frontend pressed Stop before its
+# own copy landed. Qwen's stop endpoint REQUIRES response_id and returns a
+# RequestValidationError without it.
+_ACTIVE_RESPONSE_IDS: dict[str, str] = {}
+
 
 @router.post("/api/chat/stop")
 async def stop_generation(request: Request):
@@ -145,6 +152,15 @@ async def stop_generation(request: Request):
 
     if not chat_id:
         return {"success": False, "error": "chat_id required"}
+
+    # Frontend may not have the response_id yet (Stop pressed before the first
+    # chunk landed). Fall back to the id captured server-side when the
+    # response_id event fired. Qwen's stop endpoint REQUIRES response_id.
+    if not response_id:
+        response_id = _ACTIVE_RESPONSE_IDS.get(chat_id)
+    if not response_id:
+        logger.info("Stop request for %s has no response_id yet — upstream stop skipped", chat_id)
+        return {"success": False, "error": "response_id not available yet"}
 
     # Resolve upstream session ID — Qwen's stop API needs the upstream ID, not local UUID
     from server.database import get_upstream_session_id as _get_usid
@@ -169,6 +185,8 @@ async def stop_generation(request: Request):
         except Exception as exc:
             logger.warning("API stop failed: %s", exc)
 
+    if stopped:
+        _ACTIVE_RESPONSE_IDS.pop(chat_id, None)
     logger.info("Stop request: local=%s upstream=%s response_id=%s success=%s", chat_id, upstream_id, response_id, stopped)
     return {"success": stopped}
 
@@ -758,11 +776,23 @@ async def chat(request: ChatRequest):
         from server.database import get_upstream_session_id as _get_usid
         _upstream_session_id = _get_usid(active_chat_id)
     set_title_if_default(active_chat_id, title)
-    # Server tail is authoritative — client leaf is fallback for first-message only
-    parent_id = get_parent_id(active_chat_id, None) or request.parent_id
-    # Reject bare integer parent_ids (DB row id leak from frontend — invalid upstream token)
-    if parent_id and parent_id.isdigit():
-        parent_id = None
+    # Server tail is authoritative — client leaf is fallback for first-message only.
+    #
+    # `chats.parent_id` MUST hold an upstream node token (Qwen response_id), never
+    # a local SQLite row id. A digit-only value is a legacy corruption from an
+    # earlier stop-path bug: Qwen rejects it with PARENT_NOT_FOUND, and the old
+    # recovery nulled the parent and branched from root — losing the whole
+    # conversation. Treat any digit-only tail as "no parent" and fall back to the
+    # client leaf so the turn at least starts from a real upstream node.
+    _stored_parent = get_parent_id(active_chat_id, None)
+    if _stored_parent and str(_stored_parent).isdigit():
+        logger.warning(
+            "[parent-guard] Dropping digit-only tail %r for chat %s (local row id, not an upstream token)",
+            _stored_parent, active_chat_id,
+        )
+        touch_chat(active_chat_id, None)
+        _stored_parent = None
+    parent_id = _stored_parent or request.parent_id
     # Stash conversation settings for auto-turn delivery
     try:
         from engine.agents.auto_turn import auto_turn as _at
@@ -781,8 +811,8 @@ async def chat(request: ChatRequest):
             _cp_sha = _cp_mgr.save_checkpoint(active_chat_id, _user_msg_id, "turn_start")
             if _cp_sha:
                 _save_cp(active_chat_id, _user_msg_id, "turn_start", _cp_sha, request.cwd)
-        except Exception:
-            pass  # Checkpoints are best-effort; never break the chat flow
+        except Exception as e:
+            logger.warning("Checkpoint save failed for chat %s msg %s: %s", active_chat_id, _user_msg_id, e)
     # Separate API payload so injections don't leak into session history
     # Build context FIRST, user message always at the very end
     _context_parts: list[str] = []
@@ -1068,6 +1098,9 @@ async def chat(request: ChatRequest):
         _raw_answer_parts: list[str] = []  # pre-parser raw text for guard checks
         thinking_parts: list[str] = []
         skill_events: list[dict[str, Any]] = []
+        # Current round's tool events. They are merged into skill_events only AFTER
+        # a round fully completes, so this must survive until the cancel handler runs.
+        round_skill_events: list[dict[str, Any]] = []
         final_parent = parent_id
         error_message: str | None = None
         current_message = api_message
@@ -1770,10 +1803,13 @@ async def chat(request: ChatRequest):
                     if event_type in ("meta", "request_sent"):
                         continue
                     if event_type == "response_id":
-                        # Capture for CancelledError stop call, forward to frontend
+                        # Capture for stop call, forward to frontend.
+                        # Mirror into _ACTIVE_RESPONSE_IDS so /api/chat/stop can
+                        # resolve it even if the frontend hasn't stored it yet.
                         _rid = event.get("id")
                         if _rid:
                             final_parent = str(_rid)
+                            _ACTIVE_RESPONSE_IDS[active_chat_id] = str(_rid)
                         yield sse(event)
                         continue
                     if event_type == "answer":
@@ -1909,16 +1945,44 @@ async def chat(request: ChatRequest):
                             error_message = "Failed to recover: could not create new upstream session"
                             stream_error = True
                     elif event_type == "parent_not_found":
-                        # Stale parent_id — chat still exists upstream, just retry with parent_id=None
-                        logger.warning("[parent-recovery] PARENT_NOT_FOUND for chat_id=%s, retrying with parent_id=None", active_chat_id)
+                        # Stale/unknown parent_id — the upstream session still exists
+                        # but has no node with that token. Re-stream from the root BUT
+                        # inject the full local history, otherwise the model sees a
+                        # single message and the whole conversation is lost (this is
+                        # exactly what caused "it forgets everything" after a stop).
+                        logger.warning("[parent-recovery] PARENT_NOT_FOUND for chat_id=%s — re-streaming from root WITH history", active_chat_id)
                         yield sse({"type": "status", "message": "recovering_parent"})
                         # Clear stale parent_id from DB
                         touch_chat(active_chat_id, None)
                         current_parent = None
                         final_parent = None
-                        # Re-stream same message with no parent
+                        _pn_msg = current_message
+                        try:
+                            _pn_prev = get_messages(active_chat_id, include_skill_events=True)
+                            _pn_lines: list[str] = []
+                            for _pm in _pn_prev:
+                                if _pm["role"] not in ("user", "assistant"):
+                                    continue
+                                if _pm["content"]:
+                                    _pn_lines.append(f"[{_pm['role']}]: {_pm['content']}")
+                                for _sev in (_pm.get("skill_events") or []):
+                                    _sev_type = _sev.get("type", "")
+                                    if _sev_type == "skill_start":
+                                        _pn_lines.append(f"[tool_call]: {_sev.get('name', 'unknown')}({_sev.get('data', {}).get('attrs', {})})")
+                                    elif _sev_type == "skill_end":
+                                        _tr_error = _sev.get("error")
+                                        if _tr_error:
+                                            _pn_lines.append(f"[tool_result]: {_sev.get('name')} (ok=False): ERROR: {_tr_error}")
+                                        else:
+                                            _pn_lines.append(f"[tool_result]: {_sev.get('name')} (ok=True): {str(_sev.get('result', ''))[:2000]}")
+                            if _pn_lines:
+                                _pn_msg = "[PREVIOUS CONVERSATION]\n" + "\n".join(_pn_lines) + "\n[END PREVIOUS CONVERSATION]\n\n" + current_message
+                                logger.info("[parent-recovery] Injected %d history lines for chat %s", len(_pn_lines), active_chat_id)
+                        except Exception as _pn_hist_err:
+                            logger.warning("[parent-recovery] History injection failed: %s", _pn_hist_err)
+                        # Re-stream same message with no parent, history prepended
                         round_event_source = service.stream_events(
-                            message=current_message,
+                            message=_pn_msg,
                             chat_id=_upstream_session_id,
                             parent_id=None,
                             files=files_for_round,
@@ -1974,7 +2038,11 @@ async def chat(request: ChatRequest):
                             # IMMEDIATELY call stop API — don't wait for retries
                             print(f"[MAIN-STREAM]   🔨 'chat in progress' detected — calling stop API immediately")
                             try:
-                                _stop_ok = await service._stop_upstream_generation(_qwen_chat_id)
+                                # response_id is mandatory upstream — use the cached
+                                # in-flight node id, falling back to the last known
+                                # parent token. Without it Qwen rejects the call.
+                                _cip_rid = _ACTIVE_RESPONSE_IDS.get(_qwen_chat_id) or _ACTIVE_RESPONSE_IDS.get(active_chat_id) or final_parent
+                                _stop_ok = await service._stop_upstream_generation(_qwen_chat_id, _cip_rid)
                                 if _stop_ok:
                                     print(f"[MAIN-STREAM]   ✓ Stop API succeeded on first detection")
                                 else:
@@ -2027,7 +2095,8 @@ async def chat(request: ChatRequest):
                                         # Confirmed still busy → call stop reactively before next retry
                                         print(f"[MAIN-STREAM]   🔨 Still busy after probe — calling stop API (check {_cip_retry})")
                                         try:
-                                            _stop_ok = await service._stop_upstream_generation(_qwen_chat_id)
+                                            _cip_rid = _ACTIVE_RESPONSE_IDS.get(_qwen_chat_id) or _ACTIVE_RESPONSE_IDS.get(active_chat_id) or final_parent
+                                            _stop_ok = await service._stop_upstream_generation(_qwen_chat_id, _cip_rid)
                                             if _stop_ok:
                                                 print(f"[MAIN-STREAM]   ✓ Stop API succeeded on check {_cip_retry}")
                                             else:
@@ -2748,9 +2817,76 @@ async def chat(request: ChatRequest):
                         "round": round_index,
                     }
                 )
-        except asyncio.CancelledError:
-            # Frontend disconnected (stop button / tab close) — kill upstream generation
+        except (asyncio.CancelledError, GeneratorExit):
+            # Frontend disconnected (stop button / tab close) — kill upstream generation.
+            #
+            # A browser abort (AbortController.abort()) surfaces to this generator
+            # as GeneratorExit, NOT CancelledError. Catching only CancelledError
+            # meant _agent_killed stayed False on every real stop, the `finally`
+            # block tried to yield a "done" event (RuntimeError on a closing
+            # generator), and touch_chat() never ran — so the next user message
+            # branched from a stale parent_id and the stopped tool loop was lost.
             logger.info("[event_stream] Client disconnected for chat %s — stopping upstream", active_chat_id)
+            # Flush the in-flight round's tool events into skill_events BEFORE the
+            # finally-block persist. Normally these are merged at end-of-round, but a
+            # cancel mid-round skips that merge entirely — leaving the assistant
+            # message with no record of the tool calls that already executed, so the
+            # next turn's history reconstruction (build_tool_feedback) sees nothing.
+            try:
+                # Merge the in-flight round's tool events so they persist even when
+                # the user stops mid-tool-loop (end-of-round merge never runs).
+                if round_skill_events:
+                    skill_events.extend(round_skill_events)
+                    round_skill_events.clear()
+            except Exception as _flush_err:
+                logger.warning("[event_stream] Failed to flush partial tool events on cancel: %s", _flush_err)
+            # ── CRITICAL: persist + pin the tail HERE, synchronously. ──
+            # The `finally` block only runs at generator teardown, which can lose
+            # the race against the user's next message (observed: a stale user row
+            # landing between two correct ones). Doing it now — before any `await`
+            # below — guarantees the next request reads the right parent.
+            #
+            # A mid-round stop has saved_message_id == None (the round-level
+            # persist never ran), so we must materialise the partial assistant
+            # message ourselves or the tail has nothing to point at. The finally
+            # block then sees saved_message_id set and UPDATEs instead of INSERTing
+            # a duplicate.
+            _agent_killed = True
+            try:
+                if saved_message_id is None:
+                    _stop_answer = "".join(answer_parts)
+                    _stop_thinking = "".join(thinking_parts)
+                    _stop_content = _stop_answer or error_message or ""
+                    if not _stop_content and skill_events:
+                        _stop_content = "\n".join(
+                            f"[skill] {e.get('name', 'skill')}" if e.get("type") == "skill_start"
+                            else (f"[{'ok' if e.get('ok') else 'error'}] {e.get('name', 'skill')}" if e.get("type") == "skill_end" else "")
+                            for e in skill_events
+                        ).strip()
+                    saved_message_id = add_message(
+                        active_chat_id, "assistant", _stop_content, _stop_thinking,
+                        final_parent, skill_events, memory_used=_all_tool_mem_used or None,
+                    )
+                    logger.info("[event_stream] STOP: persisted partial assistant msg id=%s for chat %s", saved_message_id, active_chat_id)
+            except Exception as _persist_err:
+                logger.warning("[event_stream] Failed to persist partial msg on stop: %s", _persist_err)
+            # Tail pointer: ONLY an upstream token is valid here. `chats.parent_id`
+            # is handed to Qwen verbatim as parentId — a local SQLite row id (digit)
+            # is NOT a node in Qwen's tree and triggers PARENT_NOT_FOUND, which
+            # nulls the parent and branches from root (full amnesia). `final_parent`
+            # is the response_id captured at stream start, i.e. the actual last
+            # node Qwen created — branch from that. If we never captured one
+            # (stop before first token), leave the previous tail untouched rather
+            # than clobbering it.
+            try:
+                if final_parent and not str(final_parent).isdigit():
+                    touch_chat(active_chat_id, str(final_parent))
+                    logger.info("[event_stream] STOP: tail kept at upstream token %s for chat %s", final_parent, active_chat_id)
+                else:
+                    touch_chat(active_chat_id, None)  # timestamp only, preserve parent
+                    logger.info("[event_stream] STOP: no upstream token (final_parent=%s) — parent preserved for chat %s", final_parent, active_chat_id)
+            except Exception as _pin_err:
+                logger.warning("[event_stream] Failed to pin tail on stop: %s", _pin_err)
             try:
                 _svc = service if not _is_api_model(request.model) else None
                 if _svc and hasattr(_svc, '_stop_upstream_generation'):
@@ -2781,10 +2917,18 @@ async def chat(request: ChatRequest):
             except Exception:
                 pass
         finally:
-            # Signal stream completion to frontend so backend-status cards collapse
+            # Signal stream completion to frontend so backend-status cards collapse.
+            #
+            # NEVER yield inside finally during generator close: a bare yield here
+            # raises RuntimeError("async generator ignored GeneratorExit") and
+            # aborts the rest of this block — which is exactly where the tail
+            # pointer gets advanced. Only emit "done" when the client is still
+            # attached (no GeneratorExit / cancel in flight).
             if not error_message and not _agent_killed:
                 try:
                     yield sse({"type": "done", "parent_id": final_parent})
+                except (RuntimeError, GeneratorExit):
+                    pass
                 except Exception:
                     pass
             answer = "".join(answer_parts)
@@ -2803,9 +2947,27 @@ async def chat(request: ChatRequest):
             stored_content = answer or error_message or ""
             if saved_message_id is not None:
                 update_message(saved_message_id, stored_content, thinking, final_parent, skill_events)
+                _tail_msg_id = saved_message_id
             else:
-                add_message(active_chat_id, "assistant", stored_content, thinking, final_parent, skill_events)
-            touch_chat(active_chat_id, final_parent)
+                _tail_msg_id = add_message(active_chat_id, "assistant", stored_content, thinking, final_parent, skill_events)
+            # Tail pointer: on a clean finish the upstream token (final_parent) is a
+            # valid Qwen node, so advance to it. When the user STOPS mid-tool-loop,
+            # no "done" ever fired and final_parent is a stale/partial token — the
+            # next request would branch from the wrong node and lose the tool loop.
+            # In that case pin the tail to the last persisted message id (a digit),
+            # which is exactly the point the next user message must branch from.
+            # Tail pointer rules:
+            #  - Stopped mid-turn: no upstream node exists for the partial round,
+            #    so pin the tail to the last persisted message id (a digit).
+            #  - Clean finish: advance to the upstream token so the next turn
+            #    continues the server-side session naturally.
+            # final_parent can be a stale/partial token on abort — never trust it
+            # when _agent_killed is set.
+            if _agent_killed or not final_parent:
+                touch_chat(active_chat_id, str(_tail_msg_id))
+            else:
+                touch_chat(active_chat_id, final_parent)
+            _ACTIVE_RESPONSE_IDS.pop(active_chat_id, None)
             if _agent_run and not _agent_killed:
                 from server.database import update_agent_status
                 if error_message:

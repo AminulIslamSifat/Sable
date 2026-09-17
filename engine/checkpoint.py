@@ -59,6 +59,21 @@ EXCLUDE_PATTERNS = [
 MAX_FILE_SIZE = 10 * 1024 * 1024
 
 
+def _git_subprocess_kwargs() -> dict:
+    """Subprocess kwargs for git commands.
+
+    Deliberately does NOT isolate the process group (no os.setsid). git has no
+    children worth tree-killing, and setsid stops subprocess.run()'s timeout
+    from reliably reaping the child — an interrupted git write leaves a
+    zero-byte loose object behind, which bricks the whole shadow repo.
+    On Windows we still suppress the console window.
+    """
+    from engine.process_utils import IS_WINDOWS
+    if IS_WINDOWS:
+        return {"creationflags": 0x08000000}  # CREATE_NO_WINDOW
+    return {}
+
+
 class CheckpointManager:
     """Manages shadow git checkpoints for a single project root."""
 
@@ -69,7 +84,6 @@ class CheckpointManager:
         self._ensure_shadow_repo()
 
     def _git(self, *args: str, timeout: int = 30) -> subprocess.CompletedProcess:
-        from engine.process_utils import popen_kwargs
         cmd = [
             "git",
             f"--git-dir={self.git_dir}",
@@ -77,22 +91,29 @@ class CheckpointManager:
             *args,
         ]
         return subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, **popen_kwargs()
+            cmd, capture_output=True, text=True, timeout=timeout,
+            **_git_subprocess_kwargs(),
         )
 
     def _ensure_shadow_repo(self) -> None:
-        from engine.process_utils import popen_kwargs
         if not os.path.exists(self.git_dir):
             os.makedirs(os.path.dirname(self.git_dir), exist_ok=True)
-            # Init bare repo — use posix path so git doesn't choke on backslashes
+            # --bare keeps git_dir as the repo root. A non-bare `git init
+            # <path>/.git` nests the real repo one level deeper (…/.git/.git)
+            # while the code still passes --git-dir=…/.git, so every command
+            # fails. Bare + explicit --work-tree is the correct shape.
             result = subprocess.run(
                 ["git", "init", "--bare", self.git_dir],
-                capture_output=True, text=True, timeout=10, **popen_kwargs(),
+                capture_output=True, text=True, timeout=10,
+                **_git_subprocess_kwargs(),
             )
             if result.returncode != 0:
                 logger.error("Failed to init shadow repo at %s: %s", self.git_dir, result.stderr[:300])
             # Set up excludes
             self._write_excludes()
+        else:
+            # Pre-existing repo — repair any damage before using it.
+            self._heal_repo()
         # Ensure identity is set (bare repos don't always inherit global config)
         email = self._git("config", "user.email")
         if email.returncode != 0 or not email.stdout.strip():
@@ -100,6 +121,85 @@ class CheckpointManager:
         name = self._git("config", "user.name")
         if name.returncode != 0 or not name.stdout.strip():
             self._git("config", "user.name", "Sable Checkpoint")
+
+    def _heal_repo(self) -> None:
+        """Repair a shadow repo damaged by an interrupted git write.
+
+        An interrupted write leaves a zero-byte loose object. If that object
+        is the commit HEAD points at, every later commit fails with
+        "could not parse HEAD" and the entire checkpoint history for this
+        project is permanently dead. Detect and repair that here, once, at
+        construction time:
+
+          1. Delete every zero-byte loose object.
+          2. If HEAD no longer resolves, walk the reflog back to the newest
+             commit that still exists and rewind the branch to it.
+        """
+        obj_root = Path(self.git_dir) / "objects"
+        if not obj_root.exists():
+            return
+
+        # 1. Sweep truncated loose objects.
+        removed = 0
+        for p in obj_root.rglob("*"):
+            try:
+                if p.is_file() and p.stat().st_size == 0:
+                    logger.warning("[checkpoint] removing truncated git object: %s", p)
+                    p.unlink()
+                    removed += 1
+            except OSError:
+                pass
+
+        # 2. Rewind if HEAD is unreadable.
+        #
+        # NOTE: `rev-parse --verify HEAD` is NOT sufficient here — it only
+        # resolves the ref *name* to a SHA and succeeds even when the object
+        # itself has been deleted. `cat-file -e HEAD^{commit}` actually
+        # verifies the object exists and is a commit.
+        if self._git("cat-file", "-e", "HEAD^{commit}").returncode == 0:
+            if removed:
+                logger.info("[checkpoint] healed %d truncated object(s) in %s", removed, self.git_dir)
+            return
+
+        logger.warning("[checkpoint] HEAD unreadable for %s — attempting rewind", self.git_dir)
+        sym = self._git("symbolic-ref", "-q", "HEAD")
+        ref = sym.stdout.strip() if sym.returncode == 0 and sym.stdout.strip() else "refs/heads/master"
+
+        # Candidate SHAs, newest first:
+        #   a) reflog entries (fast path, preserves exact history order)
+        #   b) every commit object in the store, by committer date (fallback)
+        #
+        # (b) matters because a previous heal expires the reflog — after that a
+        # fresh corruption would leave reflog empty and rewind would find
+        # nothing. Scanning objects is slower but always works.
+        candidates: list[str] = []
+        reflog = self._git("reflog", "--format=%H")
+        if reflog.returncode == 0:
+            candidates.extend(s.strip() for s in reflog.stdout.splitlines() if s.strip())
+
+        if not candidates:
+            listed = self._git("cat-file", "--batch-check=%(objectname) %(objecttype)",
+                               "--batch-all-objects", timeout=60)
+            if listed.returncode == 0:
+                commits: list[tuple[int, str]] = []
+                for line in listed.stdout.splitlines():
+                    parts = line.split()
+                    if len(parts) != 2 or parts[1] != "commit":
+                        continue
+                    sha = parts[0]
+                    ts = self._git("show", "-s", "--format=%ct", sha, timeout=15)
+                    if ts.returncode == 0 and ts.stdout.strip().isdigit():
+                        commits.append((int(ts.stdout.strip()), sha))
+                commits.sort(reverse=True)
+                candidates.extend(sha for _, sha in commits)
+
+        for sha in candidates:
+            if self._git("cat-file", "-e", f"{sha}^{{commit}}").returncode == 0:
+                self._git("update-ref", ref, sha)
+                self._git("reflog", "expire", "--expire=now", "--all")
+                logger.warning("[checkpoint] rewound %s to %s", ref, sha[:8])
+                return
+        logger.error("[checkpoint] could not find a valid commit to rewind to for %s", self.git_dir)
 
     def _write_excludes(self) -> None:
         """Write a git exclude file (like .gitignore but internal to shadow repo)."""

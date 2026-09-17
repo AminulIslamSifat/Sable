@@ -284,6 +284,95 @@ MODELS = [
             },
         ],
     },
+    # ── z.ai (GLM) — browser-assisted backend ──
+    {
+        "id": "zai-glm-5.3-flash",
+        "label": "GLM-5.3-Flash",
+        "api_backend": "zai",
+        "api_model_type": "x-preview-l",
+        "max_session_chars": 1_000_000,
+        "capabilities": {"image": True, "video": False, "document": False, "audio": False},
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+            {"id": "low", "label": "Low", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Low"},
+            {"id": "high", "label": "High", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "High"},
+            {"id": "max", "label": "Max", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Max"},
+        ],
+    },
+    {
+        "id": "zai-glm-5.3",
+        "label": "GLM-5.3",
+        "api_backend": "zai",
+        "api_model_type": "glm-5.3",
+        "max_session_chars": 1_000_000,
+        "capabilities": {"image": False, "video": False, "document": False, "audio": False},
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+            {"id": "low", "label": "Low", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Low"},
+            {"id": "high", "label": "High", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "High"},
+            {"id": "max", "label": "Max", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Max"},
+        ],
+    },
+    {
+        "id": "zai-glm-5.2",
+        "label": "GLM-5.2",
+        "api_backend": "zai",
+        "api_model_type": "glm-5.2",
+        "max_session_chars": 1_000_000,
+        "capabilities": {"image": False, "video": False, "document": False, "audio": False},
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+            {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Thinking"},
+        ],
+    },
+    {
+        "id": "zai-glm-5-turbo",
+        "label": "GLM-5-Turbo",
+        "api_backend": "zai",
+        "api_model_type": "GLM-5-Turbo",
+        "max_session_chars": 1_000_000,
+        "capabilities": {"image": False, "video": False, "document": False, "audio": False},
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+            {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Thinking"},
+        ],
+    },
+    {
+        "id": "zai-glm-5v-turbo",
+        "label": "GLM-5V-Turbo",
+        "api_backend": "zai",
+        "api_model_type": "GLM-5v-Turbo",
+        "max_session_chars": 1_000_000,
+        "capabilities": {"image": True, "video": False, "document": False, "audio": False},
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+            {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Thinking"},
+        ],
+    },
+    {
+        "id": "zai-glm-4.7",
+        "label": "GLM-4.7",
+        "api_backend": "zai",
+        "api_model_type": "glm-4.7",
+        "max_session_chars": 1_000_000,
+        "capabilities": {"image": False, "video": False, "document": False, "audio": False},
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+            {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Thinking"},
+        ],
+    },
+    {
+        "id": "zai-glm-4.6v",
+        "label": "GLM-4.6V",
+        "api_backend": "zai",
+        "api_model_type": "glm-4.6v",
+        "max_session_chars": 1_000_000,
+        "capabilities": {"image": True, "video": False, "document": False, "audio": False},
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+            {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Thinking"},
+        ],
+    },
     {
         "id": "gemini-2.5-flash",
         "label": "Gemini 2.5 Flash",
@@ -308,6 +397,19 @@ MODELS = [
             {"id": "low", "label": "Low", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Low"},
             {"id": "medium", "label": "Medium", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Medium"},
             {"id": "high", "label": "High", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "High"},
+        ],
+    },
+    # ── Gemini Web (browser-auth, no API key) ──
+    {
+        "id": "gemini-web",
+        "label": "Gemini (Web)",
+        "api_backend": "gemini_web",
+        "api_model_type": "gemini-web",
+        "max_session_chars": 1_000_000,
+        "capabilities": {"image": False, "video": False, "document": False, "audio": False},
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+            {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Thinking"},
         ],
     },
 ]
@@ -917,6 +1019,73 @@ def get_max_tool_output_chars() -> int:
     except Exception:
         pass
     return DEFAULT_MAX_TOOL_OUTPUT_CHARS
+
+
+# ── Per-provider account pinning ────────────────────────────────────────────
+# settings.json: "provider_accounts": {"gemini": "browser-data-acc4", "zai": null}
+# A provider mapped to an account name always uses that profile's browser.
+# null / absent → follow the global active account (shared behavior).
+
+# A provider may be referenced by a friendly name; the first key that exists
+# in settings wins. Lets users write "gemini" while the backend is "gemini_web".
+_PROVIDER_ALIASES: dict[str, tuple[str, ...]] = {
+    "gemini_web": ("gemini_web", "gemini"),
+    "zai": ("zai",),
+    "qwen": ("qwen",),
+    "deepseek": ("deepseek",),
+}
+
+
+def get_provider_account(provider: str) -> str | None:
+    """Return the pinned account name for a provider, or None to follow active."""
+    if not provider:
+        return None
+    try:
+        import json as _json
+        p = _SYSTEM / "settings.json"
+        if p.is_file():
+            data = _json.loads(p.read_text(encoding="utf-8"))
+            mapping = data.get("provider_accounts")
+            if isinstance(mapping, dict):
+                for key in _PROVIDER_ALIASES.get(provider, (provider,)):
+                    val = mapping.get(key)
+                    if isinstance(val, str) and val.strip():
+                        return val.strip()
+    except Exception:
+        pass
+    return None
+
+
+def set_provider_account(provider: str, account: str | None) -> None:
+    """Pin (or clear, with None) a provider to a specific account."""
+    import json as _json
+    p = _SYSTEM / "settings.json"
+    data: dict = {}
+    if p.is_file():
+        try:
+            data = _json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    mapping = data.get("provider_accounts")
+    if not isinstance(mapping, dict):
+        mapping = {}
+    if account:
+        mapping[provider] = account
+    else:
+        mapping.pop(provider, None)
+    data["provider_accounts"] = mapping
+    p.write_text(_json.dumps(data, indent=2), encoding="utf-8")
+
+
+def get_provider_browser_dir(provider: str) -> Path:
+    """Resolve the browser data dir for a provider.
+
+    Pinned account wins; otherwise follows the global active account.
+    """
+    pinned = get_provider_account(provider)
+    if pinned:
+        return _SYSTEM / pinned
+    return get_browser_data_dir()
 
 
 

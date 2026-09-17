@@ -37,6 +37,80 @@ def _increment_playwright_counter() -> int:
         pass
     return count
 
+def _display_available(display: str | None = None) -> bool:
+    """True if an X display socket exists for the given DISPLAY value."""
+    disp = display or os.environ.get("DISPLAY")
+    if not disp:
+        return False
+    # DISPLAY forms: ":1" or "host:1" -> socket /tmp/.X11-unix/X1
+    num = disp.rsplit(":", 1)[-1].split(".", 1)[0]
+    if not num.isdigit():
+        return False
+    return Path(f"/tmp/.X11-unix/X{num}").exists()
+
+
+# Xvfb process started by this module (kept alive for the headed browser).
+_XVFB_PROC: Any = None
+_XVFB_DISPLAY: str | None = None
+
+
+def _ensure_virtual_display() -> str | None:
+    """Return a DISPLAY that a headed Chromium can use, starting Xvfb if needed.
+
+    The server often runs with no DISPLAY (systemd/ssh). Headed Chromium aborts
+    without one, so we spawn a private Xvfb once and reuse it.
+    """
+    global _XVFB_PROC, _XVFB_DISPLAY
+    if _display_available():
+        return os.environ.get("DISPLAY")
+    if _XVFB_DISPLAY and _display_available(_XVFB_DISPLAY):
+        return _XVFB_DISPLAY
+    import shutil as _shutil
+    import subprocess as _subprocess
+    xvfb = _shutil.which("Xvfb")
+    if not xvfb:
+        return None
+    # Pick a free display number by probing sockets 99..110
+    for num in range(99, 111):
+        if Path(f"/tmp/.X11-unix/X{num}").exists():
+            continue
+        try:
+            proc = _subprocess.Popen(
+                [xvfb, f":{num}", "-screen", "0", "1280x1024x24", "-nolisten", "tcp"],
+                stdout=_subprocess.DEVNULL,
+                stderr=_subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception:
+            return None
+        time.sleep(0.8)
+        if _display_available(f":{num}"):
+            _XVFB_PROC = proc
+            _XVFB_DISPLAY = f":{num}"
+            print(f"[DEBUG] Started Xvfb on DISPLAY=:{num} for headed browser")
+            return _XVFB_DISPLAY
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    return None
+
+
+def _browser_env_with_display() -> dict[str, str] | None:
+    """Return an env dict with a usable DISPLAY for a headed launch.
+
+    Returns None when the current env already has a valid DISPLAY (inherit),
+    otherwise a copy of os.environ with DISPLAY pointing at an Xvfb we manage.
+    """
+    if _display_available():
+        return None
+    disp = _ensure_virtual_display()
+    if not disp:
+        return None
+    env = dict(os.environ)
+    env["DISPLAY"] = disp
+    return env
+
 
 def _account_ua(account: str | None) -> tuple[str, str]:
     """(user_agent, sec-ch-ua) for the browser that created `account`.
@@ -219,6 +293,14 @@ class BrowserManager:
                     "--disable-gpu",
                 ] + extra_browser_args(exe_path),
             )
+            if not self.headless:
+                # Headed launch needs a display; provide one (Xvfb) if the
+                # server has none, otherwise Chromium aborts immediately.
+                _env = _browser_env_with_display()
+                if _env:
+                    launch_kwargs["env"] = _env
+                else:
+                    print("[WARN] No DISPLAY available for headed launch")
             if exe_path:
                 launch_kwargs["executable_path"] = exe_path
             self.context = await self.playwright.chromium.launch_persistent_context(**launch_kwargs)
@@ -252,6 +334,19 @@ class BrowserManager:
             self.headless = headless
         await self.close()
         await self.start()
+
+    async def ensure_headed(self) -> None:
+        """Ensure the browser runs headed — required for Aliyun captcha minting.
+
+        z.ai's TRACELESS captcha SDK rejects headless Chromium outright (headless
+        UA + --ozone-platform=headless flags are trivially fingerprinted). If we
+        are currently headless, tear down and relaunch headed on a virtual
+        display (Xvfb) so the mint can succeed.
+        """
+        if not self.headless:
+            return
+        print("[DEBUG] z.ai requires a headed browser — restarting headed on a virtual display...")
+        await self.restart(headless=False)
 
     async def get_fresh_headers(self) -> dict[str, str]:
         """Sniff fresh WAF tokens and cookies using the running browser tab context."""
@@ -480,6 +575,28 @@ class BrowserManager:
         token = str(token).strip()
         if not token:
             raise RuntimeError("DeepSeek userToken was empty after parsing.")
+        return token
+
+    async def extract_zai_token(self) -> str:
+        """Read the z.ai bearer JWT from the shared persistent browser profile."""
+        await self.start()
+        if not self.context:
+            raise RuntimeError("Browser session is not available")
+
+        page = await self.context.new_page()
+        try:
+            await page.goto("https://chat.z.ai", wait_until="domcontentloaded", timeout=15000)
+            await page.wait_for_timeout(2000)  # let JS hydrate localStorage
+            raw = await page.evaluate("() => localStorage.getItem('token')")
+        finally:
+            await page.close()
+
+        if not raw:
+            raise RuntimeError("No z.ai token found in browser profile. Log in to chat.z.ai first.")
+
+        token = str(raw).strip().strip('"')
+        if not token:
+            raise RuntimeError("z.ai token was empty after parsing.")
         return token
 
     async def upload_file(self, file_path: str, cookies: str | None = None, bx_ua: str | None = None, bx_umidtoken: str | None = None) -> dict | None:

@@ -97,6 +97,33 @@ def _get_available_backends() -> set[str]:
     except Exception as exc:
         logger.debug("Backend deepseek unavailable: %s", exc)
 
+    # Gemini (web): browser-assisted — available if a captured request template
+    # exists and a signed-in Google account has been seen (live or on disk).
+    try:
+        from connectors.gemini_web.client import get_client as get_gweb_client
+        from connectors.gemini_web import auth as _gwauth
+        has_template = get_gweb_client().is_available
+        has_auth = bool(_gwauth.list_valid_accounts())
+        if has_template and has_auth:
+            available.add("gemini_web")
+    except Exception as exc:
+        logger.debug("Backend gemini_web unavailable: %s", exc)
+
+    # z.ai: browser-assisted (like qwen) — available if a token is cached OR
+    # a logged-in browser profile exists, since the token can be pulled live.
+    try:
+        from connectors.zai.client import get_token_for_account as get_zai_token
+        from engine.config import _SYSTEM as _sys_dir2
+        has_zai_token = bool(get_zai_token())
+        has_zai_profile = any(
+            d.is_dir() and d.name.startswith("browser-data-acc")
+            for d in _sys_dir2.iterdir()
+        ) if _sys_dir2.is_dir() else False
+        if has_zai_token or has_zai_profile:
+            available.add("zai")
+    except Exception as exc:
+        logger.debug("Backend zai unavailable: %s", exc)
+
     # API-key-based providers
     _key_providers = {
         "gemini": "connectors.gemini.client",

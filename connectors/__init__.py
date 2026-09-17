@@ -84,8 +84,14 @@ def get_connector(backend: str, model_id: str | None = None) -> Any:
     if backend == "deepseek":
         from connectors.deepseek.client import get_client
         _registry[backend] = get_client()
+    elif backend == "zai":
+        from connectors.zai.client import get_client
+        _registry[backend] = get_client()
     elif backend == "gemini":
         from connectors.gemini.client import get_client
+        _registry[backend] = get_client()
+    elif backend == "gemini_web":
+        from connectors.gemini_web.client import get_client
         _registry[backend] = get_client()
     elif backend == "groq":
         from connectors.groq.client import get_client

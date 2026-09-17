@@ -442,7 +442,8 @@
             files: filesPayload.length ? filesPayload : undefined,
             model: selectedModel,
             thinking_mode: selectedThinkingMode,
-            stream: true
+            stream: true,
+            cwd: window.getIdeCwd ? window.getIdeCwd() : undefined,
           }),
           signal: controller.signal
         });

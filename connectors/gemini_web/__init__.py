@@ -1,0 +1,1 @@
+"""Gemini Web (browser-auth) connector for Sable."""

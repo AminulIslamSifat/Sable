@@ -897,6 +897,20 @@ html[data-mode="light"] .status-dropdown-item {
   background: var(--panel-2);
   color: var(--text);
 }
+.model-backend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.model-backend-badge {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  opacity: 0.5;
+}
+.status-dropdown-item.active .model-backend-badge {
+  opacity: 1;
+}
 html[data-mode="light"] .status-dropdown-item:hover {
   background: color-mix(in srgb, var(--accent) 10%, var(--panel-2));
   color: var(--text);

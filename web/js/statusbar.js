@@ -185,13 +185,39 @@
 
 
     /* ---------- Model dropdown (status-dropdown style) ---------- */
+
+    // Browser-scraped models (no API key) vs API-key / custom-endpoint models
+    const BROWSER_BACKENDS = ["qwen", "zai", "gemini_web", "deepseek"];
+    const isBrowserBackend = (b) => !b || BROWSER_BACKENDS.includes(b);
+
+    function _backendBadgeIcon(backend) {
+      return isBrowserBackend(backend) ? "globe" : "key-round";
+    }
+
     function syncModelDropdown() {
       modelMenu.innerHTML = "";
       for (const opt of modelSelectEl.options) {
+        const model = modelList.find(m => m.id === opt.value);
         const item = document.createElement("div");
         item.className = "status-dropdown-item" + (opt.selected ? " active" : "");
-        item.textContent = opt.textContent;
         item.dataset.value = opt.value;
+
+        // Placeholder options (e.g. "__none__") get no badge
+        if (model && !String(model.id).startsWith("__")) {
+          const browser = isBrowserBackend(model.api_backend);
+          item.classList.add("model-backend-item");
+
+          const icon = document.createElement("i");
+          icon.setAttribute("data-lucide", _backendBadgeIcon(model.api_backend));
+          icon.className = "model-backend-badge";
+          icon.title = browser ? "Browser-based" : "API key";
+
+          const label = document.createElement("span");
+          label.textContent = opt.textContent;
+          item.append(icon, label);
+        } else {
+          item.textContent = opt.textContent;
+        }
         item.addEventListener("click", (e) => {
           e.stopPropagation();
           modelSelectEl.value = opt.value;
@@ -202,6 +228,8 @@
         });
         modelMenu.appendChild(item);
       }
+      if (window.lucide) lucide.createIcons({ nodes: modelMenu.querySelectorAll("[data-lucide]") });
+
       const sel = modelSelectEl.options[modelSelectEl.selectedIndex];
       if (sel) modelLabel.textContent = sel.textContent;
     }

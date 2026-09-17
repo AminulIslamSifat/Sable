@@ -18,6 +18,7 @@ from engine.scraper import (
     update_settings as update_scraper_settings,
 )
 from connectors.deepseek.client import get_client as get_deepseek_client
+from connectors.zai.client import get_client as get_zai_client
 
 from server.config import (
     BASE_DIR, _SYSTEM_DIR, _BROWSER_PROFILES,
@@ -133,19 +134,92 @@ async def refresh_deepseek_token() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Refresh failed: {exc}")
 
 
+@router.post("/api/settings/zai/refresh-token")
+async def refresh_zai_token() -> dict[str, Any]:
+    try:
+        token = await get_zai_client().refresh_token()
+        return {"status": "ok", "message": "z.ai token refreshed", "token_preview": token[:20] + "...", "active": True}
+    except Exception as exc:
+        logger.error("z.ai token refresh failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Refresh failed: {exc}")
+
+
+@router.post("/api/settings/gemini_web/refresh-token")
+async def refresh_gemini_web_token() -> dict[str, Any]:
+    """Force a live Gemini cookie read from the provider's browser profile.
+
+    Pinned account wins (get_provider_browser_dir); otherwise the global active
+    account is used. On success the fresh jar is snapshotted to disk and the
+    client's in-memory cache is invalidated so the next send picks it up.
+    """
+    from connectors.gemini_web import auth as _gauth
+    try:
+        browser = service._browser_for_provider("gemini_web")
+        account = Path(browser.user_data_dir).name
+        async with service._lock:
+            await browser.start()
+            ctx = browser.context
+            if ctx is None:
+                raise RuntimeError("browser context unavailable")
+            raw = await ctx.cookies("https://gemini.google.com")
+            jar = {c["name"]: c["value"] for c in raw}
+        if not _gauth.has_google_auth(jar):
+            raise RuntimeError(f"no Google auth cookies in {account}")
+        _gauth.save_gemini_auth(browser.user_data_dir, jar)
+        # Drop the client's cached jar so the next request re-reads
+        try:
+            from connectors.gemini_web.client import get_client as _gw
+            _gw().invalidate_jar()
+        except Exception:
+            pass
+        preview = ""
+        for k in ("SAPISID", "__Secure-1PSID", "__Secure-3PSID"):
+            if jar.get(k):
+                v = jar[k]
+                preview = f"{k}={v[:6]}...{v[-4:]}" if len(v) > 12 else f"{k}=***"
+                break
+        return {
+            "status": "ok",
+            "message": f"Gemini (web) token refreshed for {account}",
+            "account": account,
+            "token_preview": preview,
+            "active": True,
+        }
+    except Exception as exc:
+        logger.error("Gemini (web) token refresh failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Refresh failed: {exc}")
+
+
 @router.post("/api/settings/browser/refresh-waf")
 async def refresh_waf_token() -> dict[str, Any]:
-    """Re-launch browser briefly to extract fresh Qwen WAF/cookie headers."""
+    """Re-launch browser briefly to extract fresh Qwen WAF/cookie headers,
+    and opportunistically refresh DeepSeek + z.ai tokens for the active account."""
     try:
         svc = service
         headers = await svc._refresh_headers()
         has_cookie = bool(headers.get("Cookie"))
         has_bx = bool(headers.get("bx-ua"))
+
+        # Same browser session → grab the other providers' tokens while we're here.
+        ds_ok = zai_ok = False
+        try:
+            ds_token = await get_deepseek_client().refresh_token()
+            ds_ok = bool(ds_token)
+        except Exception as exc:
+            logger.warning("DeepSeek token refresh during WAF refresh failed: %s", exc)
+        try:
+            zai_token = await get_zai_client().refresh_token()
+            zai_ok = bool(zai_token)
+        except Exception as exc:
+            logger.warning("z.ai token refresh during WAF refresh failed: %s", exc)
+
         return {
             "status": "ok",
             "message": "WAF tokens refreshed",
             "has_cookie": has_cookie,
             "has_bx_ua": has_bx,
+            "deepseek": ds_ok,
+            "zai": zai_ok,
         }
     except Exception as exc:
         logger.error("WAF token refresh failed: %s", exc)
@@ -1133,12 +1207,23 @@ async def list_accounts_by_provider() -> dict[str, Any]:
     # --- Browser-based providers (Qwen, DeepSeek) ---
     waf_tokens: dict = {}
     ds_tokens: dict = {}
+    zai_tokens: dict = {}
     try:
         waf_tokens = json.loads((_SYSTEM_DIR / ".qwen_tokens.json").read_text())
     except Exception:
         pass
     try:
         ds_tokens = json.loads((_SYSTEM_DIR / ".deepseek_tokens.json").read_text())
+    except Exception:
+        pass
+    try:
+        zai_tokens = json.loads((_SYSTEM_DIR / ".zai_tokens.json").read_text())
+    except Exception:
+        pass
+    # Gemini (web) auth snapshots — {account: {cookies: {...}, saved_at: ts}}
+    gemini_auth: dict = {}
+    try:
+        gemini_auth = json.loads((_SYSTEM_DIR / ".gemini_web_auth.json").read_text())
     except Exception:
         pass
 
@@ -1169,8 +1254,14 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                     browser_available = os.path.isfile(browser_path)
                 _waf_list = waf_tokens.get(entry.name, [])
                 _ds_list = ds_tokens.get(entry.name, [])
+                _zai_list = zai_tokens.get(entry.name, [])
                 _has_waf = bool(_waf_list) if isinstance(_waf_list, list) else bool(_waf_list)
                 _has_ds = bool(_ds_list) if isinstance(_ds_list, list) else bool(_ds_list)
+                _has_zai = any(t and t != "None" for t in _zai_list) if isinstance(_zai_list, list) else bool(_zai_list)
+                _g_entry = gemini_auth.get(entry.name) if isinstance(gemini_auth, dict) else None
+                _has_gemini = bool(
+                    isinstance(_g_entry, dict) and _g_entry.get("cookies")
+                )
                 accounts.append({
                     "name": entry.name,
                     "num": int(m.group(1)),
@@ -1178,6 +1269,8 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                     "size_mb": _dir_size_mb(entry),
                     "has_waf": _has_waf,
                     "has_ds": _has_ds,
+                    "has_zai": _has_zai,
+                    "has_gemini": _has_gemini,
                     "exhausted": exhaustion.get(entry.name, False),
                     "captcha_blocked": captcha_blocks.get(entry.name, False),
                     "browser_path": browser_path,
@@ -1190,15 +1283,49 @@ async def list_accounts_by_provider() -> dict[str, Any]:
 
     browser_accounts = await asyncio.to_thread(_scan_browser_accounts)
 
+    from engine.config import get_provider_account as _get_pin
+
+    def _browser_provider(pid: str, label: str, accounts: list[dict[str, Any]]) -> dict[str, Any]:
+        """Shape a browser-backed provider payload.
+
+        `active` = the pinned account when one is set, else the global active
+        account IF it holds this provider's auth. Each account gets a `pinned`
+        flag so the UI can offer an unpin ("Follow Active") affordance.
+
+        Account dicts are shallow-copied because the same object appears in
+        several provider lists and each provider has its own pin state.
+        """
+        pinned = _get_pin(pid)
+        rows = [dict(a) for a in accounts]
+        names = {a["name"] for a in rows}
+        if pinned and pinned in names:
+            active = pinned
+        elif active_account in names:
+            active = active_account
+        else:
+            active = None
+        for a in rows:
+            a["pinned"] = bool(pinned) and a["name"] == pinned
+        return {
+            "type": "browser",
+            "label": label,
+            "accounts": rows,
+            "active": active,
+            "pinned": pinned if (pinned and pinned in names) else None,
+            "auto_switch_enabled": _auto_sw(pid),
+        }
+
     # Qwen: accounts that have WAF tokens
     qwen_accounts = [a for a in browser_accounts if a["has_waf"]]
-    providers["qwen"] = {
-        "type": "browser",
-        "label": "Qwen",
-        "accounts": qwen_accounts,
-        "active": active_account if any(a["name"] == active_account for a in qwen_accounts) else None,
-        "auto_switch_enabled": _auto_sw("qwen"),
-    }
+    providers["qwen"] = _browser_provider("qwen", "Qwen", qwen_accounts)
+
+    # z.ai (ZLM): browser-based, only accounts holding a z.ai token
+    zai_accounts = [a for a in browser_accounts if a.get("has_zai")]
+    providers["zai"] = _browser_provider("zai", "z.ai (GLM)", zai_accounts)
+
+    # Gemini (web): browser-based, only accounts holding a Google auth snapshot
+    gemini_accounts = [a for a in browser_accounts if a.get("has_gemini")]
+    providers["gemini_web"] = _browser_provider("gemini_web", "Gemini (Web)", gemini_accounts)
 
     # DeepSeek: present as api_key type — tokens are JWTs, no browser swap needed
     try:
@@ -1357,6 +1484,70 @@ async def switch_api_key(provider: str, payload: dict[str, Any]) -> dict[str, An
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Switch failed: {exc}")
+
+# Providers whose account selection is per-provider (pinned) rather than global.
+# Qwen is deliberately excluded: it IS the global active account, so its switch
+# stays on /accounts/switch and every unpinned provider follows it.
+_PER_PROVIDER_SWITCH = ("zai", "gemini_web", "gemini")
+
+
+@router.post("/api/settings/accounts/switch-provider")
+async def switch_provider_account(payload: dict[str, Any]) -> dict[str, Any]:
+    """Pin a provider to a specific browser account, or unpin it.
+
+    Independent from the global active account: pinning zai to acc7 does not
+    move qwen or gemini. Passing a falsy/absent `profile` clears the pin so the
+    provider follows the global active account again.
+
+    Browser teardown: the provider's current BrowserManager is closed so the
+    next use relaunches against the new data dir. Browsers are keyed by data
+    dir, so if another provider is pinned to the same account it keeps its own
+    handle and is unaffected.
+    """
+    provider = str(payload.get("provider", "")).lower().strip()
+    if provider not in _PER_PROVIDER_SWITCH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provider '{provider}' does not support per-provider switching",
+        )
+    target_name = str(payload.get("profile", "") or "").strip()
+
+    from engine.config import set_provider_account, get_provider_browser_dir
+
+    if target_name:
+        if not re.match(r"^browser-data-acc\d+$", target_name):
+            raise HTTPException(status_code=400, detail="Profile must match 'browser-data-acc*'")
+        if not (_SYSTEM_DIR / target_name).is_dir():
+            raise HTTPException(status_code=404, detail=f"Profile directory '{target_name}' not found")
+
+    # Resolve the dir currently in use BEFORE changing the pin, so we tear down
+    # the right browser even when unpinning (which falls back to active).
+    old_dir = str(await asyncio.to_thread(get_provider_browser_dir, provider))
+
+    try:
+        await asyncio.to_thread(set_provider_account, provider, target_name or None)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to persist pin: {exc}")
+
+    # Tear down the old browser for this provider so it relaunches on the new dir.
+    try:
+        default_dir = str(service._browser.user_data_dir)
+        if old_dir != default_dir:
+            await service.close_scoped(old_dir)
+    except Exception as exc:
+        logger.warning("switch-provider teardown failed for %s: %s", provider, exc)
+
+    new_dir = str(await asyncio.to_thread(get_provider_browser_dir, provider))
+    new_account = Path(new_dir).name
+    label = _read_profile_email(Path(new_dir)) if Path(new_dir).is_dir() else new_account
+    return {
+        "status": "ok",
+        "provider": provider,
+        "pinned": target_name or None,
+        "active": new_account,
+        "email": label,
+    }
+
 
 @router.post("/api/settings/accounts/switch")
 async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
@@ -1763,6 +1954,57 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
 
 
 _SERVICE_NAME = "sable.service"
+
+
+# ── Qwen Chat History Cleanup ───────────────────────────────────────────────
+
+@router.post("/api/settings/accounts/clear-history")
+async def clear_account_history(payload: dict[str, str]) -> dict[str, Any]:
+    """Delete all Qwen chat history for a specific browser profile."""
+    from engine.qwen_cleanup import delete_all_chats_for_profile
+
+    profile = payload.get("profile", "")
+    if not re.match(r"^browser-data-acc\d+$", profile):
+        raise HTTPException(status_code=400, detail="Invalid profile name")
+
+    async def _do_clear() -> None:
+        result = await delete_all_chats_for_profile(profile)
+        if not result["success"]:
+            logger.warning("Clear history failed for %s: %s", profile, result.get("error"))
+
+    _spawn_bg(_do_clear())
+    return {"status": "started", "profile": profile}
+
+
+@router.post("/api/settings/accounts/clear-history-all")
+async def clear_all_accounts_history() -> dict[str, Any]:
+    """Delete all Qwen chat history for every browser profile."""
+    from engine.qwen_cleanup import delete_all_chats_all_profiles
+
+    async def _do_clear_all() -> None:
+        results = await delete_all_chats_all_profiles()
+        succeeded = sum(1 for r in results if r["success"])
+        logger.info("Bulk clear complete: %d/%d succeeded", succeeded, len(results))
+
+    _spawn_bg(_do_clear_all())
+    return {"status": "started"}
+
+
+@router.get("/api/settings/accounts/clear-history-status")
+async def get_clear_history_status() -> dict[str, Any]:
+    """Return last_cleared timestamps for all accounts."""
+    from engine.qwen_cleanup import get_last_cleared, _load_accounts
+
+    accounts = _load_accounts()
+    status = {}
+    for key in sorted(accounts.keys()):
+        if key.startswith("browser-data-acc"):
+            lc = accounts[key].get("last_cleared")
+            status[key] = {"last_cleared": lc}
+    return {"accounts": status}
+
+
+
 
 
 @router.post("/api/settings/service/stop")

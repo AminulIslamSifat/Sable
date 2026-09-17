@@ -118,6 +118,16 @@ class ChatService:
 
     async def close(self) -> None:
         async with self._lock:
+            # Close every browser we own: the default plus any scoped ones
+            # (provider-pinned accounts, isolated streams).
+            for browser in list(self._scoped_browsers.values()):
+                try:
+                    await browser.close()
+                except Exception as exc:
+                    logger.warning("scoped browser close failed: %s", exc)
+            self._scoped_browsers.clear()
+            self._scoped_headers.clear()
+            self._scoped_accounts.clear()
             await self._browser.close()
             self._headers = None
             self._headers_account = None
@@ -140,14 +150,44 @@ class ChatService:
             self._scoped_browsers[bdd] = BrowserManager(user_data_dir=bdd)
         return self._scoped_browsers[bdd]
 
-    def _resolve_account(self, bdd: str | None) -> str:
-        """Resolve account name for a given browser data dir."""
+    def _browser_for_provider(self, provider: str) -> BrowserManager:
+        """Resolve the BrowserManager a provider should use.
+
+        Providers pinned to an account in settings (provider_accounts) get an
+        isolated browser for that profile. Unpinned providers follow the global
+        active account and share the default browser.
+
+        Browsers are keyed by data dir — so two providers pinned to the SAME
+        account share one BrowserManager (Chromium permits one process per
+        profile); different accounts get fully independent browsers that can
+        run concurrently.
+        """
+        from engine.config import get_provider_browser_dir
+        try:
+            target = str(get_provider_browser_dir(provider))
+        except Exception:
+            return self._browser
+        default_dir = str(self._browser.user_data_dir)
+        if target == default_dir:
+            return self._browser
+        return self._get_browser(target)
+
+    def _resolve_account(self, bdd: str | None, provider: str | None = None) -> str:
+        """Resolve account name for a given browser data dir.
+
+        For the default path (no bdd), a provider pin in settings wins, then
+        the service override, then the global active account.
+        """
         import re as _re
-        from engine.config import _resolve_active_account
+        from engine.config import _resolve_active_account, get_provider_account
         if bdd:
             basename = Path(bdd).name
             if _re.match(r"browser-data-acc\d+$", basename):
                 return basename
+        if provider:
+            pinned = get_provider_account(provider)
+            if pinned:
+                return pinned
         return self._account_override or _resolve_active_account()
 
     async def close_scoped(self, bdd: str) -> None:
@@ -160,7 +200,7 @@ class ChatService:
                 self._scoped_accounts.pop(bdd, None)
 
     async def _ensure_headers(self, bdd: str | None = None) -> dict[str, str]:
-        account = self._resolve_account(bdd)
+        account = self._resolve_account(bdd, provider=None if bdd else "qwen")
 
         # ── Default path (bdd=None): existing behavior, untouched ──
         if not bdd:
@@ -179,9 +219,10 @@ class ChatService:
                 return self._headers
             async with self._lock:
                 if not self._headers or self._headers_account != account:
+                    browser = self._browser_for_provider("qwen")
                     try:
-                        await self._browser.start()
-                        self._headers = await self._browser.get_fresh_headers()
+                        await browser.start()
+                        self._headers = await browser.get_fresh_headers()
                         self._headers_account = account
                         save_qwen_tokens_for_account(
                             cookies=self._headers.get("Cookie", ""),
@@ -405,6 +446,100 @@ class ChatService:
                 if opened_here and not self._headers:
                     await self._browser.close()
 
+    async def get_zai_page(self):
+        """Return a Playwright page on chat.z.ai from the z.ai browser context.
+
+        Uses the provider's pinned account if set (provider_accounts.zai),
+        otherwise the shared default browser. Chromium allows one process per
+        profile, so the connector must not launch its own.
+        """
+        browser = self._browser_for_provider("zai")
+        # z.ai captcha minting only works in a headed browser (Aliyun rejects
+        # headless Chromium). Promote the browser if it's headless.
+        await browser.ensure_headed()
+        await browser.start()
+        ctx = browser.context
+        if ctx is None:
+            raise RuntimeError("Browser context is not available")
+        page = getattr(self, "_zai_page", None)
+        bound = getattr(self, "_zai_page_browser", None)
+        try:
+            # Only reuse if the page belongs to the SAME browser (a pin change
+            # swaps the browser, so a stale page from the old context is invalid).
+            if page is not None and bound is browser and not page.is_closed():
+                return page
+        except Exception:
+            pass
+        page = await ctx.new_page()
+        await page.goto("https://chat.z.ai", wait_until="domcontentloaded", timeout=20000)
+        for _ in range(12):
+            try:
+                if await page.evaluate("() => !!localStorage.getItem('token')"):
+                    break
+            except Exception:
+                break
+            await page.wait_for_timeout(500)
+        # NOTE: the Aliyun captcha SDK is lazy-loaded by the z.ai SPA on first
+        # send — window.initAliyunCaptcha is intentionally absent on a fresh
+        # page. The connector bootstraps it in-page before minting, so there's
+        # nothing to wait for here.
+        self._zai_page = page
+        self._zai_page_browser = browser
+        return page
+
+    async def refresh_zai_token(self) -> str:
+        """Extract a fresh z.ai JWT from the provider's browser profile.
+
+        Uses the z.ai pinned account if set, else the shared default browser.
+        """
+        browser = self._browser_for_provider("zai")
+        async with self._lock:
+            await browser.start()
+            return await browser.extract_zai_token()
+
+    async def get_gemini_cookies(self) -> dict[str, str]:
+        """Return Google auth cookies for gemini.google.com.
+
+        Order: ACTIVE account (live browser read) -> disk snapshot fallback.
+        A successful live read is snapshotted to disk per account so later
+        calls still work when the active account has no Gemini login.
+
+        The connector sends via curl_cffi, but auth cookies live encrypted in
+        Chromium's store — only a live context can read them. We reuse the
+        shared BrowserManager to avoid the profile-lock conflict.
+        """
+        from connectors.gemini_web import auth as _gauth
+
+        browser = self._browser_for_provider("gemini_web")
+        active_dir = browser.user_data_dir
+
+        # 1) Live read from the provider's account (pinned or active)
+        try:
+            async with self._lock:
+                await browser.start()
+                ctx = browser.context
+                if ctx is not None:
+                    raw = await ctx.cookies("https://gemini.google.com")
+                    jar = {c["name"]: c["value"] for c in raw}
+                    if _gauth.has_google_auth(jar):
+                        _gauth.save_gemini_auth(active_dir, jar)
+                        return jar
+                    logger.info("account %s has no Gemini auth; trying disk",
+                                Path(active_dir).name)
+        except Exception as exc:
+            logger.warning("live Gemini cookie read failed (%s); trying disk", exc)
+
+        # 2) Fall back to the freshest valid snapshot on disk
+        best = _gauth.load_best_gemini_auth()
+        if best is not None:
+            acct, jar = best
+            logger.info("using saved Gemini auth from %s", acct)
+            return jar
+
+        raise RuntimeError(
+            "No Gemini auth: account has none and no valid disk snapshot"
+        )
+
     async def create_chat(self, model: str | None = None, bdd: str | None = None) -> str | None:
         headers = await self._ensure_headers(bdd)
         chat_id = await create_new_chat(headers, model=model)
@@ -461,11 +596,16 @@ class ChatService:
         POST /api/v2/chat/completions/stop with {chat_id, response_id}.
         Returns True if the server acknowledged the stop.
         """
+        # Qwen's stop endpoint REQUIRES response_id — calling without it returns
+        # RequestValidationError and burns a request. The caller is responsible
+        # for resolving a response_id (frontend value, or the server-side cache
+        # in /api/chat/stop) before invoking this.
+        if not response_id:
+            logger.info("stop_generation skipped: no response_id for chat_id=%s", chat_id)
+            return False
         try:
             headers = await self._ensure_headers()
-            payload = {"chat_id": chat_id}
-            if response_id:
-                payload["response_id"] = response_id
+            payload = {"chat_id": chat_id, "response_id": response_id}
             _hdrs = sanitize_fetch_headers(headers)
             async with CffiSession(impersonate="chrome", timeout=5) as client:
                 resp = await client.post(STOP_URL, json=payload, headers=_hdrs)

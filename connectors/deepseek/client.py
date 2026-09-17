@@ -18,6 +18,7 @@ import base64
 import json
 import logging
 import os
+import random
 import subprocess
 import sys
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -1362,6 +1363,13 @@ class DeepSeekClient:
             # Per-token retry loop: retry same token before rotating
             for _retry in range(_MAX_RETRIES_PER_TOKEN):
                 try:
+                    # Random 3-12s delay before every DeepSeek API call
+                    # (applies to initial messages, tool-calling loop rounds, and retries)
+                    _delay = random.uniform(3.0, 12.0)
+                    logger.debug("DeepSeek pre-request delay: %.1fs", _delay)
+                    yield {"type": "status", "message": f"deepseek_delay_{_delay:.1f}s"}
+                    await asyncio.sleep(_delay)
+
                     http = await self._get_http()
                     full_answer = ""
                     full_thinking = ""

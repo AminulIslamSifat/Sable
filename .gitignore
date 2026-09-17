@@ -109,5 +109,5 @@ Brain/disabled_skills.json
 .sable_server.pid
 
 # Diagnostics cache — runtime artifacts
-engine/scraper/diagnostics/cache/
+
 
