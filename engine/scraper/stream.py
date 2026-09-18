@@ -280,6 +280,16 @@ class ScraperEngine(ScraperLifecycle):
                                     "message": f"browser_thinking_mode_failed: {exc}",
                                 }
 
+                    # Anti-burst jitter: one gap per send (each tool-call round /
+                    # user turn). Disabled by default for Qwen; enable in Settings.
+                    try:
+                        from connectors.common.jitter import apply_jitter as _apply_jitter
+                        _jdelay = await _apply_jitter("qwen")
+                        if _jdelay:
+                            yield {"type": "status", "message": f"qwen_delay_{_jdelay:.1f}s"}
+                    except Exception as _jexc:
+                        logger.debug("Qwen jitter skipped: %s", _jexc)
+
                     send_kwargs: dict[str, Any] = {}
                     if _accepts_arg(engine.send_msg, 'raw'):
                         send_kwargs['raw'] = raw

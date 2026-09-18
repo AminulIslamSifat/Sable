@@ -22,7 +22,19 @@ PERSISTENT_ROOT = (
 # Server bind settings — single source of truth for the FastAPI/uvicorn app.
 # Override with SABLE_HOST / SABLE_PORT environment variables when needed.
 # --------------------------------------------------------------------------
-HOST = os.getenv("SABLE_HOST", "0.0.0.0")
+def _host_from_settings() -> str | None:
+    """Bind host persisted from web settings (Network Access option)."""
+    try:
+        import json as _json
+        p = _ROOT / "system" / "network_settings.json"
+        host = _json.loads(p.read_text(encoding="utf-8")).get("host")
+        return host if host in ("0.0.0.0", "127.0.0.1") else None
+    except Exception:
+        return None
+
+
+# Env var wins > web settings > default (all interfaces)
+HOST = os.getenv("SABLE_HOST") or _host_from_settings() or "0.0.0.0"
 # User home directory — single source of truth for all ~ expansion
 HOME_DIR = Path.home()
 

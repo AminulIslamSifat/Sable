@@ -1004,6 +1004,18 @@
             </select>
           </div>
 
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;">
+            <div style="min-width:0;">
+              <label for="networkModeSelect" style="font-size:13px;color:var(--text-dim);">Network Access</label>
+              <p style="font-size:11px;color:var(--text-dim);opacity:.75;margin:2px 0 0;line-height:1.4;"><code>127.0.0.1</code> = Local only (just this device) &middot; <code>0.0.0.0</code> = Shared LAN (any device on your network can open Sable)</p>
+            </div>
+            <select id="networkModeSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;flex-shrink:0;">
+              <option value="local">🔒 Local only</option>
+              <option value="lan">🌐 Shared LAN</option>
+            </select>
+          </div>
+          <p id="networkModeStatus" style="font-size:11px;color:var(--text-dim);opacity:.75;margin:0;min-height:14px;"></p>
+
           <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
             <label for="iconStyleSelect" style="font-size:13px;color:var(--text-dim);">Icon Style</label>
             <select id="iconStyleSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
@@ -1238,6 +1250,28 @@
             <div id="customModelList" style="display:flex;flex-direction:column;gap:6px;margin-top:12px;"></div>
             <div id="customModelStatus" style="font-size:11px;color:var(--text-dim);margin-top:8px;"></div>
           </div>
+          <!-- ═══ Request Jitter (anti-burst throttle) ═══ -->
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">⏱️</span>Request Jitter</h3>
+          <p class="muted mem-desc">Randomized gap before each provider send. Prevents burst bans during tool-calling loops, where every tool call is a fresh upstream message. Applied once per send — never on retries.</p>
+
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+            <label style="font-size:12px;color:var(--text);display:flex;align-items:center;gap:6px;cursor:pointer;">
+              <input type="checkbox" id="jitterEnabled" style="accent-color:var(--accent);width:14px;height:14px;"> Master switch
+            </label>
+          </div>
+
+          <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px;align-items:center;">
+            <label style="font-size:11px;color:var(--text);">Min (s)
+              <input type="number" id="jitterMin" step="0.5" min="0" style="width:80px;margin-left:6px;padding:6px 8px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
+            </label>
+            <label style="font-size:11px;color:var(--text);">Max (s)
+              <input type="number" id="jitterMax" step="0.5" min="0" style="width:80px;margin-left:6px;padding:6px 8px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:12px;">
+            </label>
+          </div>
+
+          <div id="jitterProviders" style="display:flex;flex-wrap:wrap;gap:14px;margin-bottom:8px;"></div>
+          <div id="jitterStatus" style="font-size:11px;color:var(--text-dim);margin-top:6px;"></div>
+
           <!-- ═══ Search Engine ═══ -->
           <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🔍</span>Search Engine</h3>
           <p class="muted mem-desc">Configure web search provider, fallback chain, and caching. Used by Online Search skill and Deep Research.</p>

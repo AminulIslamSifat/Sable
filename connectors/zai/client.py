@@ -587,6 +587,15 @@ class ZaiClient:
         system_instruction: str | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        # Anti-burst jitter: one gap per send (each tool-call round / user turn).
+        try:
+            from connectors.common.jitter import apply_jitter as _apply_jitter
+            _jdelay = await _apply_jitter("zai")
+            if _jdelay:
+                yield {"type": "status", "message": f"zai_delay_{_jdelay:.1f}s"}
+        except Exception as _jexc:
+            logger.debug("z.ai jitter skipped: %s", _jexc)
+
         page = await self._ensure_page()
         model_id = model or "x-preview-l"
         enable_thinking, reasoning_effort = self._resolve_thinking(thinking_mode)

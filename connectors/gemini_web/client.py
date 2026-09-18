@@ -367,6 +367,15 @@ class GeminiWebClient:
         ref_file_ids: list[str] | None = None, inject_instructions: bool = True,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        # Anti-burst jitter: one gap per send (each tool-call round / user turn).
+        try:
+            from connectors.common.jitter import apply_jitter as _apply_jitter
+            _jdelay = await _apply_jitter("gemini")
+            if _jdelay:
+                yield {"type": "status", "message": f"gemini_delay_{_jdelay:.1f}s"}
+        except Exception as _jexc:
+            logger.debug("Gemini jitter skipped: %s", _jexc)
+
         project_id = kwargs.get("project_id")
         layout_mode = kwargs.get("layout_mode")
         async for ev in self._stream(

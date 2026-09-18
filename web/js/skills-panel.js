@@ -619,7 +619,83 @@
       loadCustomModels();
       loadCustomEndpoints();
       if (typeof loadSearchSettings === "function") loadSearchSettings();
+      if (typeof loadJitterSettings === "function") loadJitterSettings();
     });
+
+    // --- Request Jitter section (inside Providers tab) ---
+    const _jitterEls = {
+      enabled: () => document.getElementById("jitterEnabled"),
+      min: () => document.getElementById("jitterMin"),
+      max: () => document.getElementById("jitterMax"),
+      providers: () => document.getElementById("jitterProviders"),
+      status: () => document.getElementById("jitterStatus"),
+    };
+    const _JITTER_LABELS = { deepseek: "DeepSeek", qwen: "Qwen", zai: "z.ai", gemini: "Gemini" };
+    let _jitterProviders = {};
+
+    function _renderJitterProviders() {
+      const box = _jitterEls.providers();
+      if (!box) return;
+      box.innerHTML = "";
+      Object.keys(_JITTER_LABELS).forEach((prov) => {
+        const on = !!_jitterProviders[prov];
+        const label = document.createElement("label");
+        label.style.cssText = "font-size:11px;color:var(--text);display:flex;align-items:center;gap:4px;cursor:pointer;";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = on;
+        cb.style.cssText = "accent-color:var(--accent);width:13px;height:13px;";
+        cb.addEventListener("change", () => {
+          _jitterProviders[prov] = cb.checked;
+          window._universalSave?.markDirty("providers");
+        });
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(" " + _JITTER_LABELS[prov]));
+        box.appendChild(label);
+      });
+    }
+
+    async function loadJitterSettings() {
+      try {
+        const res = await fetch("/api/settings/jitter");
+        if (!res.ok) return;
+        const d = await res.json();
+        const en = _jitterEls.enabled(); if (en) en.checked = !!d.enabled;
+        const mn = _jitterEls.min(); if (mn) mn.value = d.min ?? 3;
+        const mx = _jitterEls.max(); if (mx) mx.value = d.max ?? 12;
+        _jitterProviders = d.providers || {};
+        _renderJitterProviders();
+        const st = _jitterEls.status();
+        if (st) st.textContent = "Loaded.";
+      } catch (e) {
+        console.error("Failed to load jitter settings:", e);
+      }
+    }
+
+    _jitterEls.enabled()?.addEventListener("change", () => window._universalSave?.markDirty("providers"));
+    _jitterEls.min()?.addEventListener("input", () => window._universalSave?.markDirty("providers"));
+    _jitterEls.max()?.addEventListener("input", () => window._universalSave?.markDirty("providers"));
+
+    async function _saveJitterSettings() {
+      const payload = {
+        enabled: !!_jitterEls.enabled()?.checked,
+        min: parseFloat(_jitterEls.min()?.value || "3"),
+        max: parseFloat(_jitterEls.max()?.value || "12"),
+        providers: { ..._jitterProviders },
+      };
+      const res = await fetch("/api/settings/jitter", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || data.error || "Save failed");
+      const st = _jitterEls.status();
+      if (st) st.textContent = "Saved.";
+    }
+
+    window._universalSave?.register("providers", _saveJitterSettings);
+    window.loadJitterSettings = loadJitterSettings;
 
     // --- Search Engine section (inside Providers tab) ---
     const _searchEls = {

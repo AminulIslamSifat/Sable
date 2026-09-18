@@ -124,6 +124,48 @@ async def update_browser_settings(payload: dict[str, bool]) -> dict[str, Any]:
     await service.restart_browser(headless=headless)
     return {"status": "ok", "headless": service.browser_headless}
 
+
+# --- Network access mode: localhost-only vs shared LAN bind ----------------
+
+_NETWORK_MODE_HOSTS = {"local": "127.0.0.1", "lan": "0.0.0.0"}
+
+
+def _network_settings_path() -> Path:
+    from engine.config import _SYSTEM
+    return _SYSTEM / "network_settings.json"
+
+
+def _current_bind_host() -> str:
+    env = os.getenv("SABLE_HOST")
+    if env:
+        return env
+    try:
+        host = json.loads(_network_settings_path().read_text(encoding="utf-8")).get("host")
+        if host in _NETWORK_MODE_HOSTS.values():
+            return host
+    except Exception:
+        pass
+    return "0.0.0.0"
+
+
+@router.get("/api/settings/network")
+async def get_network_settings() -> dict[str, Any]:
+    host = _current_bind_host()
+    return {"host": host, "mode": "lan" if host == "0.0.0.0" else "local"}
+
+
+@router.post("/api/settings/network")
+async def update_network_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist bind-host preference. Takes effect after server restart."""
+    mode = str(payload.get("mode") or "").strip().lower()
+    if mode not in _NETWORK_MODE_HOSTS:
+        raise HTTPException(status_code=400, detail="mode must be 'local' or 'lan'")
+    host = _NETWORK_MODE_HOSTS[mode]
+    path = _network_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"host": host, "mode": mode}, indent=2), encoding="utf-8")
+    return {"status": "ok", "host": host, "mode": mode, "restart_required": True}
+
 @router.post("/api/settings/deepseek/refresh-token")
 async def refresh_deepseek_token() -> dict[str, Any]:
     try:
@@ -224,6 +266,63 @@ async def refresh_waf_token() -> dict[str, Any]:
     except Exception as exc:
         logger.error("WAF token refresh failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Refresh failed: {exc}")
+
+
+# ── Request Jitter (anti-burst throttle) ──────────────────────────────
+
+@router.get("/api/settings/jitter")
+async def get_jitter_settings() -> dict[str, Any]:
+    """Return the per-provider request-jitter config."""
+    from connectors.common.jitter import get_jitter_config, PROVIDERS
+    cfg = get_jitter_config()
+    cfg["available_providers"] = list(PROVIDERS)
+    return cfg
+
+
+@router.post("/api/settings/jitter")
+async def set_jitter_settings(request: Request) -> dict[str, Any]:
+    """Update the request-jitter config (enabled / min / max / per-provider)."""
+    from connectors.common.jitter import (
+        get_jitter_config, PROVIDERS, DEFAULT_MIN, DEFAULT_MAX,
+    )
+    body = await request.json()
+
+    cfg = get_jitter_config()
+    if "enabled" in body:
+        cfg["enabled"] = bool(body["enabled"])
+    if "min" in body:
+        try:
+            cfg["min"] = max(0.0, float(body["min"]))
+        except (TypeError, ValueError):
+            pass
+    if "max" in body:
+        try:
+            cfg["max"] = max(0.0, float(body["max"]))
+        except (TypeError, ValueError):
+            pass
+    if cfg["max"] < cfg["min"]:
+        cfg["min"], cfg["max"] = cfg["max"], cfg["min"]
+
+    providers = cfg.get("providers", {})
+    if isinstance(body.get("providers"), dict):
+        for prov in PROVIDERS:
+            if prov in body["providers"]:
+                providers[prov] = bool(body["providers"][prov])
+    cfg["providers"] = providers
+
+    _settings = _read_system_settings()
+    _settings["request_jitter"] = {
+        "enabled": cfg["enabled"],
+        "min": cfg["min"],
+        "max": cfg["max"],
+        "providers": providers,
+    }
+    _write_system_settings(_settings)
+
+    result = get_jitter_config()
+    result["available_providers"] = list(PROVIDERS)
+    return {"status": "ok", **result}
+
 
 
 @router.post("/api/settings/gemini/api-key")
@@ -1586,31 +1685,11 @@ async def switch_account(payload: dict[str, str]) -> dict[str, Any]:
     # the DeepSeek client falls back to its disk store / browser refresh.
     async def _post_switch_warmup(account: str) -> None:
         try:
-            # Always launch browser to collect fresh WAF tokens (non-blocking)
-            await service.force_refresh_waf(account=account)
-            from connectors.deepseek.client import get_own_token_for_account as get_ds_token
-            ds_cached = get_ds_token(account)
-            if ds_cached:
-                get_deepseek_client().set_token(ds_cached, account=account)
-                logger.info("Loaded cached DeepSeek token for %s", account)
-            else:
-                try:
-                    ds_token = await service.refresh_deepseek_token()
-                    # Persist ONLY if a fresh token was actually extracted for
-                    # THIS account. Otherwise use it in-memory (persist=False)
-                    # so we don't smear a foreign token under this account key.
-                    own = get_ds_token(account)
-                    if own and own == ds_token:
-                        get_deepseek_client().set_token(ds_token, account=account)
-                    else:
-                        get_deepseek_client().set_token(ds_token, account=account, persist=False)
-                        logger.info(
-                            "Using DeepSeek token in-memory for %s (not persisted: "
-                            "no account-specific capture)",
-                            account,
-                        )
-                except Exception as exc:
-                    logger.warning("DeepSeek token extraction failed for %s: %s", account, exc)
+            # Refresh ALL providers (Qwen WAF + DeepSeek + z.ai + Gemini) for
+            # the newly-active profile. Isolated per provider so one failure
+            # never blocks the rest.
+            _tok = await service.refresh_all_provider_tokens(account=account)
+            logger.info("Post-switch provider token refresh for %s: %s", account, _tok)
             from connectors.common.instruction_builder import invalidate_cache
             invalidate_cache()
             from engine.config import mark_sync_failed, clear_sync_failed

@@ -1,7 +1,7 @@
 [
   {
     "name": "execute_command",
-    "description": "Run a shell command. Use bg=true for long-running processes.",
+    "description": "Run a shell command. Use bg=true for long-running processes. Process will be killed after timeout without bg true",
     "parameters": {
       "type": "object",
       "properties": {
@@ -15,7 +15,7 @@
         },
         "bg": {
           "type": "boolean",
-          "description": "Set true to run in background (returns PID), To run in the background. Process is killed after timeout if bg=False"
+          "description": "Set true to run in background (returns PID), To run in the background. Process is killed after timeout if bg=False. Must be true for continuous running project liek server and others."
         }
       },
       "required": [

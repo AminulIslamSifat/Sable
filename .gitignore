@@ -111,3 +111,11 @@ Brain/disabled_skills.json
 # Diagnostics cache — runtime artifacts
 
 
+
+# Stale build artifacts (renamed beacon -> pow-solver; produced by diagnostics/cache/build.sh into connectors/solver/)
+engine/scraper/diagnostics/cache/sable-beacon-*
+engine/scraper/diagnostics/cache/*.bak
+engine/scraper/diagnostics/bin/
+
+# Diagnostics cache - build stage only; build.sh stages to /tmp. Never commit.
+engine/scraper/diagnostics/cache/

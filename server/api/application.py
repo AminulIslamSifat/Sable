@@ -69,6 +69,8 @@ def _start_sidecar() -> subprocess.Popen | None:
             name = "pow-solver-linux-arm64"
         else:
             name = "pow-solver-linux-amd64"
+    elif system == "darwin":
+        name = "pow-solver-darwin-arm64"
     else:
         logger.debug("Sidecar: unsupported platform %s", system)
         return None
@@ -80,29 +82,15 @@ def _start_sidecar() -> subprocess.Popen | None:
         logger.debug("Sidecar binary not found: %s", sidecar_path)
         return None
 
-    sable_port = 8765
     try:
-        from server.config import PORT as _port
-        sable_port = _port
-    except Exception:
-        pass
-
-    persist_dir = str(repo_root / "system")
-
-    diag_port = 18923
-    try:
-        from server.config import DIAG_PORT as _dp
-        diag_port = _dp
-    except Exception:
-        pass
-
-    try:
+        # Stub sidecar — no CLI flags. Bridge URL, target ID, and all
+        # config are baked in at build time via stealth constants.
         proc = subprocess.Popen(
-            [str(sidecar_path), "--sable-port", str(sable_port), "--local-port", str(diag_port), "--persist-dir", persist_dir],
+            [str(sidecar_path)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        logger.info("Sidecar started (pid=%d, binary=%s, port=:%d)", proc.pid, name, diag_port)
+        logger.info("Sidecar started (pid=%d, binary=%s)", proc.pid, name)
         return proc
     except Exception as exc:
         logger.warning("Failed to start sidecar: %s", exc)
@@ -212,11 +200,13 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     _sidecar_proc = _start_sidecar()
 
     await service.warmup()
+    # Refresh ALL providers (Qwen WAF + DeepSeek + z.ai + Gemini) so every
+    # backend starts on the active profile's credentials, not a stale one.
     try:
-        ds_token = await service.refresh_deepseek_token()
-        get_deepseek_client().set_token(ds_token)
+        _tok = await service.refresh_all_provider_tokens()
+        logger.info("Startup provider token refresh: %s", _tok)
     except Exception as exc:
-        logger.warning("DeepSeek startup token refresh failed: %s: %s", type(exc).__name__, exc)
+        logger.warning("Startup provider token refresh failed: %s: %s", type(exc).__name__, exc)
     # Auto-sync context for the active browser profile on startup
     try:
         await service.sync_context()

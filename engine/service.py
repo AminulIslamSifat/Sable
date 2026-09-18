@@ -429,6 +429,77 @@ class ChatService:
                     self._headers = None
                     self._headers_account = None
 
+    async def refresh_all_provider_tokens(self, account: str | None = None) -> dict[str, bool]:
+        """Refresh Qwen WAF + DeepSeek + z.ai + Gemini auth for `account`.
+
+        Single entry point used by startup and post-account-switch warmup so
+        every provider's credentials track the active browser profile. Each
+        provider is isolated: one failure never blocks the others, and the
+        result map reports what actually succeeded.
+
+        account=None resolves to the active profile (pinned/override aware).
+        """
+        results: dict[str, bool] = {
+            "qwen": False, "deepseek": False, "zai": False, "gemini": False,
+        }
+
+        # --- Qwen WAF (cookies + bx-ua) ---
+        try:
+            await self.force_refresh_waf(account=account)
+            results["qwen"] = bool(self._headers and self._headers.get("Cookie"))
+        except Exception as exc:
+            logger.warning("refresh_all: Qwen WAF failed: %s: %s", type(exc).__name__, exc)
+
+        # --- DeepSeek (browser localStorage bearer) ---
+        try:
+            from connectors.deepseek.client import (
+                get_deepseek_client, get_own_token_for_account as _ds_own,
+            )
+            ds_client = get_deepseek_client()
+            own = _ds_own(account) if account else None
+            if own:
+                ds_client.set_token(own, account=account)
+            else:
+                ds_token = await self.refresh_deepseek_token()
+                if ds_token:
+                    # Only persist under the account if it's genuinely ours,
+                    # else keep in-memory so we don't smear a foreign token.
+                    fresh_own = _ds_own(account) if account else None
+                    if account and fresh_own == ds_token:
+                        ds_client.set_token(ds_token, account=account)
+                    else:
+                        ds_client.set_token(ds_token, account=account, persist=False)
+            results["deepseek"] = bool(ds_client.token)
+        except Exception as exc:
+            logger.warning("refresh_all: DeepSeek failed: %s: %s", type(exc).__name__, exc)
+
+        # --- z.ai (browser JWT) ---
+        try:
+            from connectors.zai.client import get_client as _zai_client
+            zai_token = await self.refresh_zai_token()
+            if zai_token:
+                _zai_client().set_token(zai_token)
+                results["zai"] = True
+        except Exception as exc:
+            logger.warning("refresh_all: z.ai failed: %s: %s", type(exc).__name__, exc)
+
+        # --- Gemini (Google auth cookies → disk snapshot) ---
+        try:
+            jar = await self.get_gemini_cookies()
+            if jar:
+                from connectors.gemini_web.client import get_client as _gw
+                _gw().invalidate_jar()
+                results["gemini"] = True
+        except Exception as exc:
+            logger.warning("refresh_all: Gemini failed: %s: %s", type(exc).__name__, exc)
+
+        logger.info(
+            "refresh_all: account=%s qwen=%s deepseek=%s zai=%s gemini=%s",
+            account or "active", results["qwen"], results["deepseek"],
+            results["zai"], results["gemini"],
+        )
+        return results
+
     async def refresh_deepseek_token(self) -> str:
         """Extract a fresh DeepSeek token. Reuses an already-running browser
         (e.g. one a cold warmup left open); closes it only if this call

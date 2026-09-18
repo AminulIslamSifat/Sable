@@ -802,3 +802,32 @@
     });
     })();
 
+
+// ── Network Access Mode (localhost vs shared LAN) ──────────────────────────
+(() => {
+  const select = document.getElementById("networkModeSelect");
+  const status = document.getElementById("networkModeStatus");
+  if (!select) return;
+
+  fetch("/api/settings/network").then(r => r.json()).then(data => {
+    select.value = data.mode === "local" ? "local" : "lan";
+  }).catch(() => {});
+
+  select.addEventListener("change", async () => {
+    if (status) status.textContent = "Saving…";
+    try {
+      const res = await fetch("/api/settings/network", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: select.value }),
+      });
+      const data = await res.json();
+      if (status) status.textContent = res.ok
+        ? "Saved — restart Sable to apply."
+        : "❌ " + (data.detail || "Failed to save");
+    } catch {
+      if (status) status.textContent = "❌ Connection error";
+    }
+  });
+})();
+

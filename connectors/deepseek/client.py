@@ -148,12 +148,16 @@ def _load_token_store() -> dict[str, list[str]]:
     store: dict[str, list[str]] = {}
     for key, val in raw.items():
         if isinstance(val, list):
-            store[key] = [t for t in val if t and t != "None"]
+            valid = [t for t in val if t and t != "None"]
         elif isinstance(val, str) and val and val != "None":
             # Migrate old flat format → list
-            store[key] = [val]
+            valid = [val]
         else:
-            store[key] = []
+            valid = []
+        # Collapse to the single CURRENT token. An account has exactly one
+        # live auth token; anything older is a stale duplicate left behind by
+        # a refresh. Keeping only the latest also cleans the file on next save.
+        store[key] = valid[-1:]
 
     # One-time migration from legacy single-token file (guarded)
     if not store and not _LEGACY_MIGRATED and _LEGACY_TOKEN_CACHE.exists():
@@ -275,22 +279,18 @@ def get_unique_tokens_with_accounts() -> list[dict[str, str]]:
 
 
 def save_token_for_account(token: str, account: str | None = None) -> None:
-    """Append a token to the account's list (deduped, capped). Never replaces old tokens.
+    """Store the CURRENT token for an account, overwriting any previous value.
 
-    Keeps at most MAX_TOKENS_PER_ACCOUNT entries per account (FIFO eviction of oldest).
-    Uses atomic write to prevent corruption from concurrent saves.
+    Refresh must be idempotent: the newest token replaces the old one so a
+    single account never accumulates stale duplicates. A refresh means "this
+    is now the live token for this account" — accumulating old ones only
+    bloated the rotation pool with dead keys. Uses atomic write.
     """
     if not token or token == "None":
         return
     acct = account or _resolve_active_account()
     store = _load_token_store()
-    existing = store.get(acct, [])
-    if token not in existing:
-        existing.append(token)
-    # Cap: keep only the most recent N tokens
-    if len(existing) > MAX_TOKENS_PER_ACCOUNT:
-        existing = existing[-MAX_TOKENS_PER_ACCOUNT:]
-    store[acct] = existing
+    store[acct] = [token]
     _save_token_store(store)
 
 # Application-level headers only.
@@ -312,6 +312,12 @@ _MAX_SESSION_CHARS = 100_000
 _SWITCH_SUMMARIZE_MIN = 40_000
 _SWITCH_HEAD_TURNS = 2   # user/assistant pairs kept verbatim at the start
 _SWITCH_TAIL_TURNS = 4   # user/assistant pairs kept verbatim at the end
+
+# Self-summarization (LLM-in-the-loop context compression) is DISABLED.
+# It fired a full extra completion call BEFORE the real request, adding
+# 10-30s of pre-send latency whenever history crossed the force threshold.
+# Flip to True to re-enable.
+_ENABLE_SELF_SUMMARIZE = False
 
 
 def _split_head_tail(
@@ -889,6 +895,8 @@ class DeepSeekClient:
         self, chat_id: str, history: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """Check thresholds and summarize if needed. Returns updated history."""
+        if not _ENABLE_SELF_SUMMARIZE:
+            return history
         prefix_len = 1 if history and history[0].get("role") == "system" else 0
         total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
         if should_force_summarize(total_chars, self._max_session_chars):
@@ -905,6 +913,8 @@ class DeepSeekClient:
 
     async def _call_self_summarize(self, prompt: str) -> str | None:
         """Call the same DeepSeek model to generate a summary. Non-streaming."""
+        if not _ENABLE_SELF_SUMMARIZE:
+            return None
         # Use a simple non-streaming call via the same API
         prepared = await self._prepare_request_with_rotation()
         if prepared is None:
@@ -1260,7 +1270,7 @@ class DeepSeekClient:
                 self._parent_ids[chat_id] = None
             prefix_len = 1 if history and history[0].get("role") == "system" else 0
             total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
-            if should_inject_hint(total_chars, self._max_session_chars):
+            if _ENABLE_SELF_SUMMARIZE and should_inject_hint(total_chars, self._max_session_chars):
                 hint = get_hint_text(total_chars, self._max_session_chars)
                 message = message + hint
 
@@ -1311,6 +1321,18 @@ class DeepSeekClient:
                 return f"All DeepSeek tokens failed ({last_err})."
             lines = "\n".join(f"  • {e}" for e in token_errors)
             return f"All {len(token_errors)} DeepSeek token(s) failed:\n{lines}"
+
+        # Anti-burst jitter: ONE gap per send (each tool-call round / user turn),
+        # never per retry or token rotation. Retries use _RETRY_DELAY_SECS below.
+        # Every tool call + its output is a fresh user message upstream, so this
+        # spacing is what keeps the burst from tripping DeepSeek's WAF.
+        try:
+            from connectors.common.jitter import apply_jitter as _apply_jitter
+            _jdelay = await _apply_jitter("deepseek")
+            if _jdelay:
+                yield {"type": "status", "message": f"deepseek_delay_{_jdelay:.1f}s"}
+        except Exception as _jexc:
+            logger.debug("DeepSeek jitter skipped: %s", _jexc)
 
         for _attempt in range(attempts):
             # On rotation (attempt > 0) the previously selected token failed.
@@ -1363,13 +1385,6 @@ class DeepSeekClient:
             # Per-token retry loop: retry same token before rotating
             for _retry in range(_MAX_RETRIES_PER_TOKEN):
                 try:
-                    # Random 3-12s delay before every DeepSeek API call
-                    # (applies to initial messages, tool-calling loop rounds, and retries)
-                    _delay = random.uniform(3.0, 12.0)
-                    logger.debug("DeepSeek pre-request delay: %.1fs", _delay)
-                    yield {"type": "status", "message": f"deepseek_delay_{_delay:.1f}s"}
-                    await asyncio.sleep(_delay)
-
                     http = await self._get_http()
                     full_answer = ""
                     full_thinking = ""
