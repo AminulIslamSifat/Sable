@@ -281,12 +281,14 @@ class ScraperEngine(ScraperLifecycle):
                                 }
 
                     # Anti-burst jitter: one gap per send (each tool-call round /
-                    # user turn). Disabled by default for Qwen; enable in Settings.
+                    # user turn). Enabled by default for Qwen and DeepSeek.
                     try:
-                        from connectors.common.jitter import apply_jitter as _apply_jitter
-                        _jdelay = await _apply_jitter("qwen")
+                        from connectors.common.jitter import jitter_for as _jitter_for, sleep_jitter as _sleep_jitter
+                        _jdelay = _jitter_for("qwen")
                         if _jdelay:
+                            # Emit status BEFORE sleeping so the UI card updates first
                             yield {"type": "status", "message": f"qwen_delay_{_jdelay:.1f}s"}
+                            await _sleep_jitter(_jdelay)
                     except Exception as _jexc:
                         logger.debug("Qwen jitter skipped: %s", _jexc)
 

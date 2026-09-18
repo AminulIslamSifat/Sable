@@ -596,8 +596,11 @@
         modelSelectEl.value = selectedModel;
       }
       // Always sync thinking modes for the current model
-      let _savedTm = null;
-      try { _savedTm = localStorage.getItem(THINKING_MODE_KEY); } catch(e) {}
+      // Prefer per-chat saved thinking mode over global localStorage
+      let _savedTm = selectedThinkingMode || null;
+      if (!_savedTm) {
+        try { _savedTm = localStorage.getItem(THINKING_MODE_KEY); } catch(e) {}
+      }
       populateThinkingModes(_savedTm);
 
       // Scraping is hard-disabled unless it's a fork; qwen/deepseek allow within-group switching
@@ -630,6 +633,14 @@
       // Cancel any stale scroll rAF from the previous chat
       _scrollPending = false;
       _scrollForChat = null;
+
+      // Restore per-chat model and thinking mode if saved
+      if (meta?.last_model && modelList.some(m => m.id === meta.last_model)) {
+        selectedModel = meta.last_model;
+      }
+      if (meta?.last_thinking_mode) {
+        selectedThinkingMode = meta.last_thinking_mode;
+      }
 
       // Lock model dropdown to the chat's provider (or unlock for new/forked chats)
       lockModelDropdown(meta?.provider || null, !!meta?.is_fork);
@@ -684,6 +695,25 @@
 
         inputEl.focus();
     }
+
+    /** Persist current model/thinking mode for the active chat to DB */
+    async function saveActiveChatModelSettings() {
+      if (!activeChatId) return;
+      const meta = chatList.find(c => c.id === activeChatId);
+      if (!meta) return;
+      // Update local cache immediately so switching tabs back is instant
+      meta.last_model = selectedModel;
+      meta.last_thinking_mode = selectedThinkingMode;
+      // Fire-and-forget to DB
+      try {
+        await fetch(`/api/chats/${activeChatId}/model-settings`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: selectedModel, thinking_mode: selectedThinkingMode }),
+        });
+      } catch (_) {}
+    }
+    window._sableSaveChatModelSettings = saveActiveChatModelSettings;
 
     // Expose for cross-module navigation (e.g. fork button, projects panel)
     window._sableSelectChat = selectChat;

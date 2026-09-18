@@ -369,10 +369,12 @@ class GeminiWebClient:
     ) -> AsyncGenerator[dict[str, Any], None]:
         # Anti-burst jitter: one gap per send (each tool-call round / user turn).
         try:
-            from connectors.common.jitter import apply_jitter as _apply_jitter
-            _jdelay = await _apply_jitter("gemini")
+            from connectors.common.jitter import jitter_for as _jitter_for, sleep_jitter as _sleep_jitter
+            _jdelay = _jitter_for("gemini")
             if _jdelay:
+                # Emit status BEFORE sleeping so the UI card updates first
                 yield {"type": "status", "message": f"gemini_delay_{_jdelay:.1f}s"}
+                await _sleep_jitter(_jdelay)
         except Exception as _jexc:
             logger.debug("Gemini jitter skipped: %s", _jexc)
 

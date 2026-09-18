@@ -265,6 +265,7 @@
             btn.classList.add('active');
             thinkingSwitcherEl.style.setProperty('--i', idx);
             try { localStorage.setItem(THINKING_MODE_KEY, selectedThinkingMode); } catch (err) {}
+            if (typeof window._sableSaveChatModelSettings === "function") window._sableSaveChatModelSettings();
           });
           thinkingSwitcherEl.appendChild(btn);
         }

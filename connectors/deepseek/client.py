@@ -1327,10 +1327,12 @@ class DeepSeekClient:
         # Every tool call + its output is a fresh user message upstream, so this
         # spacing is what keeps the burst from tripping DeepSeek's WAF.
         try:
-            from connectors.common.jitter import apply_jitter as _apply_jitter
-            _jdelay = await _apply_jitter("deepseek")
+            from connectors.common.jitter import jitter_for as _jitter_for, sleep_jitter as _sleep_jitter
+            _jdelay = _jitter_for("deepseek")
             if _jdelay:
+                # Emit status BEFORE sleeping so the UI card updates first
                 yield {"type": "status", "message": f"deepseek_delay_{_jdelay:.1f}s"}
+                await _sleep_jitter(_jdelay)
         except Exception as _jexc:
             logger.debug("DeepSeek jitter skipped: %s", _jexc)
 

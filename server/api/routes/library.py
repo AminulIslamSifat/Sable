@@ -74,7 +74,7 @@ def _scan_md_dir(directory: Path, exclude_suffix: str | None = None) -> list[dic
             "preview": _preview(text),
             "mtime": mtime,
         })
-    items.sort(key=lambda x: x["mtime"])
+    items.sort(key=lambda x: x["mtime"], reverse=True)
     return items
 
 

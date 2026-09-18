@@ -277,7 +277,7 @@ MODELS = [
         "label": "DeepSeek",
         "api_backend": "deepseek",
         "api_model_type": None,
-        "max_session_chars": 1_000_000,
+        "max_session_chars": 4_000_000,
         "capabilities": {"image": True, "video": False, "document": True, "audio": False},
         "thinking_modes": [
             {
@@ -302,7 +302,7 @@ MODELS = [
         "label": "GLM-5.3-Flash",
         "api_backend": "zai",
         "api_model_type": "x-preview-l",
-        "max_session_chars": 1_000_000,
+        "max_session_chars": 4_000_000,
         "capabilities": {"image": True, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
@@ -316,7 +316,7 @@ MODELS = [
         "label": "GLM-5.3",
         "api_backend": "zai",
         "api_model_type": "glm-5.3",
-        "max_session_chars": 1_000_000,
+        "max_session_chars": 4_000_000,
         "capabilities": {"image": False, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
@@ -330,7 +330,7 @@ MODELS = [
         "label": "GLM-5.2",
         "api_backend": "zai",
         "api_model_type": "glm-5.2",
-        "max_session_chars": 1_000_000,
+        "max_session_chars": 4_000_000,
         "capabilities": {"image": False, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
@@ -342,7 +342,7 @@ MODELS = [
         "label": "GLM-5-Turbo",
         "api_backend": "zai",
         "api_model_type": "GLM-5-Turbo",
-        "max_session_chars": 1_000_000,
+        "max_session_chars": 4_000_000,
         "capabilities": {"image": False, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
@@ -354,7 +354,7 @@ MODELS = [
         "label": "GLM-5V-Turbo",
         "api_backend": "zai",
         "api_model_type": "GLM-5v-Turbo",
-        "max_session_chars": 1_000_000,
+        "max_session_chars": 4_000_000,
         "capabilities": {"image": True, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
@@ -366,7 +366,7 @@ MODELS = [
         "label": "GLM-4.7",
         "api_backend": "zai",
         "api_model_type": "glm-4.7",
-        "max_session_chars": 1_000_000,
+        "max_session_chars": 4_000_000,
         "capabilities": {"image": False, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
@@ -378,7 +378,7 @@ MODELS = [
         "label": "GLM-4.6V",
         "api_backend": "zai",
         "api_model_type": "glm-4.6v",
-        "max_session_chars": 1_000_000,
+        "max_session_chars": 4_000_000,
         "capabilities": {"image": True, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
@@ -417,7 +417,7 @@ MODELS = [
         "label": "Gemini (Web)",
         "api_backend": "gemini_web",
         "api_model_type": "gemini-web",
-        "max_session_chars": 1_000_000,
+        "max_session_chars": 4_000_000,
         "capabilities": {"image": False, "video": False, "document": False, "audio": False},
         "thinking_modes": [
             {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},

@@ -396,8 +396,9 @@
       }
 
       // Mode cross-guard: block sending from mismatched provider chats
+      // Forked chats are unlocked — allow any provider/model combination
       const activeMeta = chatList.find(c => c.id === activeChatId);
-      if (activeMeta?.provider) {
+      if (activeMeta?.provider && !activeMeta.is_fork) {
         if (scraperMode && activeMeta.provider !== "scraping") {
           showToast("This chat is locked to " + activeMeta.provider + " — switch off scraper mode or start a new chat.", "error");
           return;

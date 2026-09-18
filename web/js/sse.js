@@ -2550,6 +2550,15 @@ function handleBackendStatusEvent(evt, container) {
     parsedIcon = kind.startsWith("empty") ? "ghost" : kind.startsWith("chat_in") ? "message-square" : "timer";
   }
 
+  // Parse delay patterns: deepseek_delay_5.2s, qwen_delay_3.1s, zai_delay_7.0s, gemini_delay_4.5s
+  const delayMatch = msg.match(/^(deepseek|qwen|zai|gemini)_delay_([\d.]+)s$/);
+  if (delayMatch) {
+    const provider = delayMatch[1].charAt(0).toUpperCase() + delayMatch[1].slice(1);
+    const seconds = delayMatch[2];
+    parsedLabel = `${provider} rate-limit delay — waiting ${seconds}s…`;
+    parsedIcon = "timer";
+  }
+
   const mapped = _BACKEND_STATUS_MAP[msg];
   const label = parsedLabel || (mapped ? mapped.label : msg.replace(/_/g, " "));
   const icon = parsedLabel ? parsedIcon : (mapped ? mapped.icon : "info");

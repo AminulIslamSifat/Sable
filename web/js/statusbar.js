@@ -54,6 +54,7 @@
           try { localStorage.setItem(THINKING_MODE_KEY, selectedThinkingMode); } catch (err) {}
           statusDropdownEl.classList.remove("open");
           populateThinkingModes(selectedThinkingMode);
+          if (typeof window._sableSaveChatModelSettings === "function") window._sableSaveChatModelSettings();
         });
         statusMenuEl.appendChild(item);
       }
@@ -455,6 +456,8 @@
       // since the previous mode may not exist on the newly selected model.
       populateThinkingModes(null);
       updateAttachUI();
+      // Persist per-chat model/thinking settings
+      if (typeof window._sableSaveChatModelSettings === "function") window._sableSaveChatModelSettings();
 
       // In scraper mode the model selector maps to browser model buttons
       // — switch immediately and open a fresh chat so the new model starts clean.

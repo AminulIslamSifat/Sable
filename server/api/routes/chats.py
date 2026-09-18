@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from engine.scraper import get_settings as get_scraper_settings
 from server.database import (
     ensure_chat, list_chats, get_messages, add_message, delete_chat, delete_all_chats,
-    set_chat_pinned,
+    set_chat_pinned, save_chat_model_settings,
     search_messages,
     get_skill_events_for_message, list_projects, create_project, update_project,
     delete_project, get_project,
@@ -732,6 +732,22 @@ def update_chat_route(chat_id: str, body: ChatUpdate) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Chat not found")
     return {"updated": True, "chat_id": chat_id, "pinned": body.pinned}
 
+
+class ChatModelSettings(BaseModel):
+    model: str | None = None
+    thinking_mode: str | None = None
+
+
+@router.post("/api/chats/{chat_id}/model-settings")
+def save_model_settings_route(chat_id: str, body: ChatModelSettings) -> dict[str, Any]:
+    """Persist last-used model and thinking mode for a chat tab."""
+    try:
+        save_chat_model_settings(chat_id, body.model, body.thinking_mode)
+        return {"saved": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 _CONTEXT_PASS_SETTINGS_PATH = Path(__file__).resolve().parents[3] / "system" / "context_pass_settings.json"
 
 def _load_ctx_pass_settings() -> dict[str, str]:
@@ -1074,7 +1090,8 @@ async def fork_chat(payload: dict[str, str]) -> dict[str, Any]:
                     else:
                         _history_lines.append(f"[tool_result]: {_tr_name} (ok={_tr_ok}): {_tr_result}")
 
-    # Copy messages into new chat
+    # Copy messages into new chat (including skill_events so tool calls
+    # like memory consolidation are preserved in the forked chat)
     msg_count = 0
     for row in rows:
         mem = None
@@ -1083,13 +1100,15 @@ async def fork_chat(payload: dict[str, str]) -> dict[str, Any]:
                 mem = json.loads(row["memory_used"])
             except (json.JSONDecodeError, TypeError):
                 pass
+        # Fetch skill events from source message so tool calls survive the fork
+        _src_events = get_skill_events_for_message(row["id"]) or None
         add_message(
             new_chat_id,
             row["role"],
             row["content"] or "",
             row["thinking"],
             None,  # Don't copy parent_id (new chat has its own lineage)
-            None,  # Don't copy skill_events
+            _src_events,
             mem,
         )
         msg_count += 1

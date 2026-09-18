@@ -20,8 +20,8 @@ Config lives in ``system/settings.json`` under ``request_jitter``::
       }
     }
 
-Defaults preserve prior behaviour: DeepSeek jitter ON (3-12s), other providers
-OFF until explicitly enabled from Settings -> Providers.
+Defaults: DeepSeek and Qwen jitter ON (3-12s), z.ai and Gemini OFF until
+explicitly enabled from Settings -> Providers.
 """
 from __future__ import annotations
 
@@ -43,10 +43,10 @@ except Exception:  # pragma: no cover - fallback when engine not importable
 DEFAULT_MIN = 3.0
 DEFAULT_MAX = 12.0
 
-# Preserve existing behaviour: only DeepSeek shipped with jitter enabled.
+# Default providers with jitter enabled.
 _DEFAULT_PROVIDERS: dict[str, bool] = {
     "deepseek": True,
-    "qwen": False,
+    "qwen": True,
     "zai": False,
     "gemini": False,
 }
@@ -106,12 +106,24 @@ def jitter_for(provider: str) -> float:
     return random.uniform(cfg["min"], cfg["max"])
 
 
+async def sleep_jitter(delay: float) -> None:
+    """Sleep for a previously computed jitter delay. Separated from calculation
+    so callers can emit a status event to the UI *before* the actual wait."""
+    if delay > 0:
+        await asyncio.sleep(delay)
+
+
 async def apply_jitter(provider: str) -> float | None:
-    """Sleep a randomized anti-burst gap for a provider before a genuine send.
+    """Calculate AND sleep a randomized anti-burst gap for a provider.
+
+    .. deprecated::
+        Prefer calling :func:`jitter_for` + yielding a status event +
+        :func:`sleep_jitter` so the UI shows the delay *before* it happens.
+        Kept for backwards compatibility with callers that don't need
+        pre-delay status updates.
 
     Returns the delay applied in seconds, or ``None`` if jitter was skipped
-    (disabled globally, disabled for this provider, or zero range). Callers may
-    yield a status event so the UI can show why the turn is slow.
+    (disabled globally, disabled for this provider, or zero range).
     """
     delay = jitter_for(provider)
     if delay <= 0:

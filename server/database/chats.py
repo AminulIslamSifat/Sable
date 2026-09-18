@@ -53,6 +53,22 @@ def get_chat_provider(chat_id: str) -> str | None:
     return row["provider"] if row and row["provider"] else None
 
 
+def is_chat_fork(chat_id: str) -> bool:
+    """Return True if the chat was created via fork."""
+    with get_db() as conn:
+        row = conn.execute("SELECT is_fork FROM chats WHERE id = ?", (chat_id,)).fetchone()
+    return bool(row and row["is_fork"])
+
+
+def save_chat_model_settings(chat_id: str, model: str | None, thinking_mode: str | None) -> None:
+    """Persist the last-used model and thinking mode for a chat."""
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE chats SET last_model = ?, last_thinking_mode = ? WHERE id = ?",
+            (model, thinking_mode, chat_id),
+        )
+
+
 def get_upstream_session_id(chat_id: str) -> str | None:
     """Get the upstream session ID for a chat (Qwen/DeepSeek server-side session)."""
     with get_db() as conn:
@@ -158,12 +174,12 @@ def list_chats(project_id: str | None = None) -> list[dict[str, Any]]:
     with get_db() as conn:
         if project_id is not None:
             rows = conn.execute(
-                "SELECT id, title, parent_id, created_at, updated_at, provider, project_id, mode, is_fork, pinned FROM chats WHERE project_id = ? ORDER BY pinned DESC, updated_at DESC",
+                "SELECT id, title, parent_id, created_at, updated_at, provider, project_id, mode, is_fork, pinned, last_model, last_thinking_mode FROM chats WHERE project_id = ? ORDER BY pinned DESC, updated_at DESC",
                 (project_id,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, title, parent_id, created_at, updated_at, provider, project_id, mode, is_fork, pinned FROM chats ORDER BY pinned DESC, updated_at DESC"
+                "SELECT id, title, parent_id, created_at, updated_at, provider, project_id, mode, is_fork, pinned, last_model, last_thinking_mode FROM chats ORDER BY pinned DESC, updated_at DESC"
             ).fetchall()
         return [dict(row) for row in rows]
 

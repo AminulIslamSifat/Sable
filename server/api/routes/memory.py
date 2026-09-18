@@ -33,25 +33,59 @@ _CONSOLIDATION_BACKENDS = frozenset({"groq", "gemini", "mistral"})
 
 
 def _format_conversation(messages: list[dict[str, Any]], max_chars: int = 50_000) -> str:
-    """Format DB messages into a readable conversation block for consolidation."""
+    """Format DB messages into a readable conversation block for consolidation.
+
+    Includes memory_used data and skill events (tool calls) so the consolidation
+    LLM can see what memories were active and what tools were invoked per turn.
+    """
     parts: list[str] = []
     total = 0
     for i, msg in enumerate(messages):
         role = msg.get("role", "user")
         content = msg.get("content", "")
-        if not content:
-            continue
         # Strip injected memory blocks and timestamp prefixes from user messages
         if role == "user":
             content = _MEM_BLOCK_RE.sub("", content)
             content = _TS_RE.sub("", content)
         label = "User" if role == "user" else "Assistant"
-        line = f"[{label}]: {content}"
-        if total + len(line) > max_chars:
+
+        segments: list[str] = []
+        if content:
+            segments.append(f"[{label}]: {content}")
+
+        # Append memory context that was active for this message
+        mem_used = msg.get("memory_used") or []
+        if mem_used:
+            mem_lines = [f"  - {mu.get('key', '')}: {mu.get('value', '')}" for mu in mem_used if mu.get("value")]
+            if mem_lines:
+                segments.append(f"[Memory used]:\n" + "\n".join(mem_lines))
+
+        # Append skill events (tool calls including memory consolidation)
+        for sev in (msg.get("skill_events") or []):
+            sev_type = sev.get("type", "")
+            if sev_type == "skill_start":
+                name = sev.get("name", "unknown")
+                attrs = sev.get("data", {}).get("attrs", {})
+                segments.append(f"[Tool call]: {name}({attrs})")
+            elif sev_type == "skill_end":
+                name = sev.get("name", "unknown")
+                ok = sev.get("ok", True)
+                err = sev.get("error")
+                res = str(sev.get("result", ""))[:500]
+                if err:
+                    segments.append(f"[Tool result]: {name} (ok={ok}): ERROR: {err}")
+                else:
+                    segments.append(f"[Tool result]: {name} (ok={ok}): {res}")
+
+        if not segments:
+            continue
+
+        block = "\n".join(segments)
+        if total + len(block) > max_chars:
             parts.append(f"...[{len(messages) - i} more messages truncated]")
             break
-        parts.append(line)
-        total += len(line)
+        parts.append(block)
+        total += len(block)
     return "\n\n".join(parts)
 
 @router.get("/api/settings/memory")
@@ -695,7 +729,9 @@ def _consolidation_prep(chat_id: str, payload: dict[str, Any]) -> dict[str, Any]
     except Exception:
         pass
 
-    messages = get_messages(chat_id)
+    # Include skill_events so tool calls (memory consolidation etc.) are visible
+    # to the LLM when formatting the conversation for the prompt
+    messages = get_messages(chat_id, include_skill_events=True)
     if len(messages) < 2:
         return {"skip": True}
 
@@ -1036,7 +1072,7 @@ async def consolidate_memory(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _consolidation_scraper_prep(chat_id: str) -> dict[str, Any] | None:
     """Synchronous prep for scraper consolidation. Runs in a thread."""
-    messages = get_messages(chat_id)
+    messages = get_messages(chat_id, include_skill_events=True)
     if len(messages) < 2:
         return {"skip": True}
     injected_keys = get_injected_memory_keys(chat_id)

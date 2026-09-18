@@ -88,6 +88,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE chats ADD COLUMN is_fork INTEGER DEFAULT 0")
         if "pinned" not in chat_cols:
             conn.execute("ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+        if "last_model" not in chat_cols:
+            conn.execute("ALTER TABLE chats ADD COLUMN last_model TEXT")
+        if "last_thinking_mode" not in chat_cols:
+            conn.execute("ALTER TABLE chats ADD COLUMN last_thinking_mode TEXT")
 
         # --- Multi-agent tables ---
         conn.execute(

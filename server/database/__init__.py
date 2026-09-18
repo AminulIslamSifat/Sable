@@ -10,6 +10,8 @@ from .chats import (
     rename_chat,
     get_chat_mode,
     get_chat_provider,
+    is_chat_fork,
+    save_chat_model_settings,
     get_upstream_session_id,
     set_upstream_session_id,
     set_title_if_default,
@@ -77,6 +79,7 @@ __all__ = [
     "get_db", "init_db", "migrate_skill_events_to_table",
     # chats
     "ensure_chat", "rename_chat", "get_chat_mode", "get_chat_provider",
+    "is_chat_fork", "save_chat_model_settings",
     "get_upstream_session_id", "set_upstream_session_id", "set_title_if_default",
     "update_chat_title", "get_injected_memory_keys", "save_injected_memory_keys",
     "touch_chat", "save_chat_url", "get_chat_url", "get_chat_project_id",

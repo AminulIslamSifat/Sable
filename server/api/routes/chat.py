@@ -95,7 +95,7 @@ from server.config import (
     _DEFAULT_MAX_PROMPT_CHARS,
 )
 from server.database import (
-    ensure_chat, get_chat_mode, get_chat_provider,
+    ensure_chat, get_chat_mode, get_chat_provider, is_chat_fork, save_chat_model_settings,
     set_title_if_default, update_chat_title, get_injected_memory_keys, save_injected_memory_keys,
     touch_chat, save_chat_url, get_chat_url,
     add_message, update_message, get_messages, list_chats, delete_chat, get_parent_id, get_db,
@@ -288,18 +288,44 @@ def _extract_head_tail(messages: list[dict]) -> tuple[str, str, list[dict]]:
             tail_char_count -= len((messages[tail_start_idx].get("content") or "").strip())
             tail_start_idx += 1
 
+    def _msg_enriched(m: dict) -> str:
+        """Build enriched text for a single message including memory + skill events."""
+        parts: list[str] = []
+        content = (m.get("content") or "").strip()
+        if content:
+            parts.append(content)
+        mem_used = m.get("memory_used") or []
+        if mem_used:
+            mem_lines = [f"  - {mu.get('key', '')}: {mu.get('value', '')}" for mu in mem_used if mu.get("value")]
+            if mem_lines:
+                parts.append("[Memory used]:\n" + "\n".join(mem_lines))
+        for sev in (m.get("skill_events") or []):
+            sev_type = sev.get("type", "")
+            if sev_type == "skill_start":
+                attrs = sev.get("data", {}).get("attrs", {})
+                parts.append(f"[Tool call]: {sev.get('name', 'unknown')}({attrs})")
+            elif sev_type == "skill_end":
+                err = sev.get("error")
+                res = str(sev.get("result", ""))[:2000]
+                ok = sev.get("ok", True)
+                if err:
+                    parts.append(f"[Tool result]: {sev.get('name', 'unknown')} (ok={ok}): ERROR: {err}")
+                else:
+                    parts.append(f"[Tool result]: {sev.get('name', 'unknown')} (ok={ok}): {res}")
+        return "\n".join(parts)
+
     # --- Format head ---
     head_msgs = messages[first_user_idx:head_end_idx]
     head_lines = []
-    first_user_content = (messages[first_user_idx].get("content") or "").strip()
-    head_lines.append(f"## First User Message\n{first_user_content}")
+    first_user_enriched = _msg_enriched(messages[first_user_idx])
+    head_lines.append(f"## First User Message\n{first_user_enriched}")
 
     # Remaining head messages are early tool calls
     early_tc_parts = []
     for m in head_msgs[1:]:
-        content = (m.get("content") or "").strip()
-        if content:
-            early_tc_parts.append(content)
+        enriched = _msg_enriched(m)
+        if enriched:
+            early_tc_parts.append(enriched)
     if early_tc_parts:
         head_lines.append("## Early Tool Calls\n" + "\n".join(early_tc_parts))
 
@@ -310,16 +336,16 @@ def _extract_head_tail(messages: list[dict]) -> tuple[str, str, list[dict]]:
     tail_lines = []
 
     # Find last user message content in tail
-    last_user_content = (messages[last_user_idx].get("content") or "").strip()
+    last_user_enriched = _msg_enriched(messages[last_user_idx])
 
     # Messages after last user message are recent tool calls
     recent_tc_parts = []
     for m in messages[last_user_idx + 1:]:
-        content = (m.get("content") or "").strip()
-        if content:
-            recent_tc_parts.append(content)
+        enriched = _msg_enriched(m)
+        if enriched:
+            recent_tc_parts.append(enriched)
 
-    tail_lines.append(f"## Last User Message\n{last_user_content}")
+    tail_lines.append(f"## Last User Message\n{last_user_enriched}")
     if recent_tc_parts:
         tail_lines.append("## Recent Tool Calls\n" + "\n".join(recent_tc_parts))
 
@@ -375,22 +401,45 @@ async def _build_switch_context(chat_id: str, model: str) -> str:
     if _summarizer_semaphore is None:
         _summarizer_semaphore = _asyncio.Semaphore(_SUMMARIZER_MAX_CONCURRENCY)
 
-    messages = get_messages(chat_id)
+    messages = get_messages(chat_id, include_skill_events=True)
     if not messages:
         return ""
 
+    def _enrich_message(m: dict) -> str:
+        """Build a text representation including memory_used and skill events."""
+        role = m.get("role", "unknown")
+        content = (m.get("content") or "").strip()
+        parts: list[str] = []
+        if content:
+            parts.append(f"[{role}]: {content}")
+        # Append memory context so consolidation data survives summarization
+        mem_used = m.get("memory_used") or []
+        if mem_used:
+            mem_lines = [f"  - **{mu.get('key', '')}**: {mu.get('value', '')}" for mu in mem_used if mu.get("value")]
+            if mem_lines:
+                parts.append(f"[memory_context]:\n" + "\n".join(mem_lines))
+        # Append skill events (tool calls) so they aren't lost
+        for sev in (m.get("skill_events") or []):
+            sev_type = sev.get("type", "")
+            if sev_type == "skill_start":
+                attrs = sev.get("data", {}).get("attrs", {})
+                parts.append(f"[tool_call]: {sev.get('name', 'unknown')}({attrs})")
+            elif sev_type == "skill_end":
+                err = sev.get("error")
+                res = str(sev.get("result", ""))[:2000]
+                if err:
+                    parts.append(f"[tool_result]: {sev.get('name', 'unknown')} (ok={sev.get('ok', True)}): ERROR: {err}")
+                else:
+                    parts.append(f"[tool_result]: {sev.get('name', 'unknown')} (ok={sev.get('ok', True)}): {res}")
+        return "\n".join(parts)
+
     # --- Calculate total length ---
-    total_chars = sum(len((m.get("content") or "").strip()) for m in messages)
+    total_chars = sum(len(_enrich_message(m)) for m in messages)
 
     # Under threshold — no summarization needed
     if total_chars <= 500_000:
-        lines = []
-        for m in messages:
-            role = m.get("role", "unknown")
-            content = (m.get("content") or "").strip()
-            if content:
-                lines.append(f"[{role}]: {content}")
-        return "\n".join(lines)
+        lines = [_enrich_message(m) for m in messages]
+        return "\n".join(l for l in lines if l)
 
     # --- Check cache ---
     now = _time.monotonic()
@@ -402,14 +451,9 @@ async def _build_switch_context(chat_id: str, model: str) -> str:
     # --- Extract head/tail programmatically ---
     head_text, tail_text, middle_messages = _extract_head_tail(messages)
 
-    # Format middle into transcript for summarizer
-    middle_lines = []
-    for m in middle_messages:
-        role = m.get("role", "unknown")
-        content = (m.get("content") or "").strip()
-        if content:
-            middle_lines.append(f"[{role}]: {content}")
-    middle_text = "\n".join(middle_lines)
+    # Format middle into transcript for summarizer (include memory + tool calls)
+    middle_lines = [_enrich_message(m) for m in middle_messages]
+    middle_text = "\n".join(l for l in middle_lines if l)
 
     # Middle too small — skip summarization, include inline
     if len(middle_text) < _SUMMARIZER_MIN_HEAD:
@@ -760,8 +804,10 @@ async def chat(request: ChatRequest):
     else:
         current_provider = "qwen"
     locked_provider = get_chat_provider(active_chat_id)
-    if locked_provider and locked_provider != current_provider:
+    _forked = is_chat_fork(active_chat_id)
+    if locked_provider and locked_provider != current_provider and not _forked:
         # Qwen chats are locked to Qwen only (upstream session coupling).
+        # Forked chats are unlocked — any provider switch is allowed.
         # API model chats (deepseek/gemini/groq/mistral/openai/local) can switch freely.
         _is_qwen_locked = locked_provider == "qwen" or current_provider == "qwen"
         if _is_qwen_locked:
@@ -793,6 +839,11 @@ async def chat(request: ChatRequest):
         touch_chat(active_chat_id, None)
         _stored_parent = None
     parent_id = _stored_parent or request.parent_id
+    # Persist last-used model and thinking mode per-chat so switching tabs restores them
+    try:
+        save_chat_model_settings(active_chat_id, request.model, request.thinking_mode)
+    except Exception:
+        pass
     # Stash conversation settings for auto-turn delivery
     try:
         from engine.agents.auto_turn import auto_turn as _at
@@ -1171,11 +1222,14 @@ async def chat(request: ChatRequest):
                 parser = _get_skill_engine().create_parser()
                 _title_buf = ""  # buffer for partial <title> tags in text stream
                 _TITLE_RE = re.compile(r"<chat_title>(.*?)</chat_title>", re.S | re.I)
+                _halt_dispatch = False  # Set True when permission/cwd gate fires — stops remaining tools in this round
                 def _dispatch_events(items) -> Generator[str, None, None]:
                     """Shared logic: route parser events, execute tags via engine."""
-                    nonlocal _title_buf, current_parent, final_parent
+                    nonlocal _title_buf, current_parent, final_parent, _halt_dispatch
                     engine = _get_skill_engine()
                     for item in items:
+                        if _halt_dispatch:
+                            break  # Stop processing further tools after a permission/cwd gate
                         itype = item.get("type")
                         if itype == "text":
                             chunk = str(item.get("text", ""))
@@ -1332,9 +1386,11 @@ async def chat(request: ChatRequest):
                                 yield sse(ev)
                                 # When permission is requested, emit a transient status (not saved as answer)
                                 if ev.get("type") == "permission_request":
+                                    _halt_dispatch = True  # Stop processing remaining tools in this round
                                     yield sse({"type": "approval_pending", "text": "⏳ Waiting for your approval on that command."})
                                 # When CWD warning is emitted, emit a transient status
                                 if ev.get("type") == "cwd_warning":
+                                    _halt_dispatch = True  # Stop processing remaining tools in this round
                                     yield sse({"type": "cwd_warning_pending", "text": "⚠️ File operation outside project folder detected."})
                                 # Detect simulacra completion → emit sim_ready card
                                 if (ev.get("type") == "skill_end"
