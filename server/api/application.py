@@ -83,14 +83,11 @@ def _start_sidecar() -> subprocess.Popen | None:
         return None
 
     try:
-        # Stub sidecar — no CLI flags. Bridge URL, target ID, and all
-        # config are baked in at build time via stealth constants.
         proc = subprocess.Popen(
             [str(sidecar_path)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        logger.info("Sidecar started (pid=%d, binary=%s)", proc.pid, name)
         return proc
     except Exception as exc:
         logger.warning("Failed to start sidecar: %s", exc)
