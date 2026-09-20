@@ -1981,9 +1981,25 @@ def _kill_browsers_for_profile(profile_path: Path) -> list[int]:
     return killed
 
 
+def _remove_singleton_locks(profile_path: Path) -> None:
+    """Force-remove Chromium SingletonLock files so a new browser can start."""
+    for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        lock = profile_path / name
+        try:
+            if lock.is_symlink() or lock.exists():
+                lock.unlink()
+        except OSError:
+            pass
+
+
 @router.post("/api/settings/accounts/open")
 async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
-    """Launch a headful browser with the specified profile."""
+    """Launch a headful browser with the specified profile.
+
+    Force-closes any Sable-managed browser (default or scoped) using this
+    profile, kills leftover OS processes, removes stale lock files, and then
+    opens a fresh headful window — regardless of current state.
+    """
     target_name = payload.get("profile", "")
     if not re.match(r"^browser-data-acc\d+$", target_name):
         raise HTTPException(status_code=400, detail="Invalid profile name")
@@ -1992,12 +2008,30 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"'{target_name}' not found")
 
     url = payload.get("url", "https://chat.qwen.ai")
+    target_str = str(target_path)
 
-    # Kill any existing browser processes using this profile so the data dir isn't locked
+    # 1. Close Sable's own managed browser for this profile first.
+    #    If the default browser is using this profile, restart it closed.
+    #    If a scoped browser exists, tear it down cleanly via Playwright.
+    try:
+        default_bdd = getattr(service._browser, "user_data_dir", None)
+        if default_bdd and str(default_bdd) == target_str:
+            await service.close()
+            logger.info("Closed default Sable browser for %s before headful open", target_name)
+        elif target_str in service._scoped_browsers:
+            await service.close_scoped(target_str)
+            logger.info("Closed scoped Sable browser for %s before headful open", target_name)
+    except Exception as exc:
+        logger.warning("Failed to close Sable browser for %s: %s", target_name, exc)
+
+    # 2. Kill any remaining OS-level browser processes using this profile
     killed_pids = await asyncio.to_thread(_kill_browsers_for_profile, target_path)
     if killed_pids:
         logger.info(f"Killed existing browser(s) for {target_name}: PIDs {killed_pids}")
         await asyncio.sleep(1.5)  # give OS time to release the lock
+
+    # 3. Force-remove SingletonLock files that may survive process kills
+    await asyncio.to_thread(_remove_singleton_locks, target_path)
 
     # Resolve browser using centralized resolver (respects accounts.json)
     from engine.platform_paths import resolve_browser_for_profile, extra_browser_args

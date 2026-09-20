@@ -749,6 +749,17 @@ class ChatService:
         params = {"chat_id": active_chat_id}
         print(f"[STREAM] ↳ entering _stream_request() attempt loop...")
 
+        # Anti-burst jitter: randomized gap before sending to prevent WAF throttling.
+        # Uses the same shared config as the scraper path (connectors.common.jitter).
+        try:
+            from connectors.common.jitter import jitter_for as _jitter_for, sleep_jitter as _sleep_jitter
+            _jdelay = _jitter_for("qwen")
+            if _jdelay:
+                yield {"type": "status", "message": f"qwen_delay_{_jdelay:.1f}s"}
+                await _sleep_jitter(_jdelay)
+        except Exception as _jexc:
+            print(f"[STREAM] Qwen jitter skipped: {_jexc}")
+
         # Sentinel: all setup complete, HTTP request is about to be sent.
         # Consumers can use this to start first-chunk timeouts accurately.
         yield {"type": "request_sent"}
