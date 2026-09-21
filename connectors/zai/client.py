@@ -667,16 +667,37 @@ class ZaiClient:
                     prior.pop()
                 embed.extend(prior)
 
-            if instructions:
-                first_user = next((m for m in embed if m["role"] == "user"), None)
-                if first_user is not None:
-                    # Prior turns exist: park the persona on the earliest user
-                    # turn, leaving this turn's prompt untouched so the stored
-                    # message id and the sent prompt stay identical.
-                    first_user["content"] = instructions + "\n\n---\n\n" + first_user["content"]
-                else:
+            if embed:
+                # Fork / stateless path: z.ai's completions API ignores the
+                # embedded chat tree when current_user_message_parent_id is
+                # null (always the case for a fresh/forked chat). Sending a
+                # multi-node history tree with no parent pointer means the
+                # server treats the message as root — model sees nothing prior.
+                #
+                # Fix: serialize the entire conversation into a single flat
+                # prompt string. This is exactly what DeepSeek does in its
+                # _serialize_history() fallback and what Qwen does via
+                # fork_history injection — when there's no parent chain,
+                # put all context inline so the model sees it as text.
+                parts: list[str] = []
+                if instructions:
+                    parts.append(f"[System Instructions]\n{instructions}")
+                for m in embed:
+                    role = m.get("role", "user")
+                    content = m.get("content", "")
+                    if role == "user":
+                        parts.append(f"User: {content}")
+                    elif role == "assistant":
+                        parts.append(f"Assistant: {content}")
+                parts.append(f"User: {message}")
+                prompt = "\n\n".join(parts)
+                # Single-message embed: no tree needed, just one fat prompt.
+                embed = [{"role": "user", "content": prompt}]
+            else:
+                # No prior history (brand new chat, not a fork): simple path.
+                if instructions:
                     prompt = instructions + "\n\n---\n\n" + message
-            embed.append({"role": "user", "content": prompt})
+                embed.append({"role": "user", "content": prompt})
         else:
             if instructions:
                 prompt = instructions + "\n\n---\n\n" + message

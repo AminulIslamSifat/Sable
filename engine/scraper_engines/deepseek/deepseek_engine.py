@@ -634,9 +634,52 @@ class GhostChat:
         text = re.sub(r"^text\n", "", text)
         return text
 
+    async def _send_hello_warmup(self) -> None:
+        """Backend-only warmup: on the first message of a chat, send a bare
+        'hello', wait for the response to complete, and discard it. The real
+        (instruction-heavy) message is then sent as a normal follow-up."""
+        try:
+            field = await self._find_input_field()
+            if field is None:
+                self._log_debug("hello_warmup_skipped", reason="no_input_field")
+                return
+            await asyncio.sleep(0.3)
+            await field.click()
+            filled = await self._paste_large_message(field, "hello")
+            if not filled:
+                await field.fill("hello")
+            await asyncio.sleep(0.3)
+            await self._wait_for_send_enabled()
+            await self._ensure_fetch_patched()
+            self._reset_sse_capture()
+
+            send_sel = PLATFORM["selectors"].get("send_btn", "div[role='button']:has(path[d^='M8.3125 0.981587'])")
+            send_button = self.page.locator(send_sel).first
+            classes = await send_button.get_attribute("class") or ""
+            if "ds-button--disabled" not in classes and "disabled" not in classes.lower():
+                await send_button.click()
+            else:
+                await self.page.keyboard.press(PLATFORM["keys"]["send"])
+
+            # Wait for the hello response to finish, capture and discard it.
+            # live_display is never passed, so nothing reaches the frontend.
+            try:
+                await self.get_response()
+            except Exception as e:
+                self._log_debug("hello_warmup_capture_error", error=str(e))
+            self._reset_sse_capture()
+            self._log_debug("hello_warmup_done")
+        except Exception as e:
+            self._log_debug("hello_warmup_failed", error=str(e))
+
     async def send_msg(self, message: str, raw: bool = False) -> bool:
         for attempt in range(3):
             try:
+                # First message of a chat (non-raw): send a silent backend
+                # 'hello' first, let it complete, THEN send instructions + message.
+                if not raw and not self.system_injected:
+                    await self._send_hello_warmup()
+
                 field = await self._find_input_field()
                 if field is None:
                     raise Exception("No input textarea found")

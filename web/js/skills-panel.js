@@ -647,7 +647,7 @@
         cb.style.cssText = "accent-color:var(--accent);width:13px;height:13px;";
         cb.addEventListener("change", () => {
           _jitterProviders[prov] = cb.checked;
-          window._universalSave?.markDirty("providers");
+          window._universalSave?.markDirty("jitter");
         });
         label.appendChild(cb);
         label.appendChild(document.createTextNode(" " + _JITTER_LABELS[prov]));
@@ -672,9 +672,9 @@
       }
     }
 
-    _jitterEls.enabled()?.addEventListener("change", () => window._universalSave?.markDirty("providers"));
-    _jitterEls.min()?.addEventListener("input", () => window._universalSave?.markDirty("providers"));
-    _jitterEls.max()?.addEventListener("input", () => window._universalSave?.markDirty("providers"));
+    _jitterEls.enabled()?.addEventListener("change", () => window._universalSave?.markDirty("jitter"));
+    _jitterEls.min()?.addEventListener("input", () => window._universalSave?.markDirty("jitter"));
+    _jitterEls.max()?.addEventListener("input", () => window._universalSave?.markDirty("jitter"));
 
     async function _saveJitterSettings() {
       const payload = {
@@ -694,7 +694,7 @@
       if (st) st.textContent = "Saved.";
     }
 
-    window._universalSave?.register("providers", _saveJitterSettings);
+    window._universalSave?.register("jitter", _saveJitterSettings);
     window.loadJitterSettings = loadJitterSettings;
 
     // --- Search Engine section (inside Providers tab) ---
