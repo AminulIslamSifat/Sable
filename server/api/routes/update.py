@@ -5,7 +5,7 @@ import os
 import platform
 import re
 import shutil
-import subprocess
+
 import tempfile
 import time
 import tomllib
@@ -244,20 +244,6 @@ def _safe_extract(zip_path: Path, dest: Path) -> int:
     return written
 
 
-def _kill_running_solver() -> None:
-    """Terminate any running sidecar so its binary can be replaced."""
-    system = platform.system().lower()
-    try:
-        if system == "windows":
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "pow-solver-windows-amd64.exe"],
-                capture_output=True, timeout=15,
-            )
-        else:
-            subprocess.run(["pkill", "-f", "pow-solver-"], capture_output=True, timeout=15)
-    except Exception as exc:
-        logger.debug("Solver kill skipped: %s", exc)
-
 
 def _plan_overlay(stage: Path, dst: Path) -> list[str]:
     """Return the relative paths that an overlay of `stage` would write."""
@@ -350,7 +336,6 @@ def _overlay_tree(src: Path, dst: Path) -> int:
                 shutil.copy2(src_file, target)
             except OSError as exc:
                 if "Text file busy" in str(exc) or getattr(exc, "errno", None) == 26:
-                    _kill_running_solver()
                     time.sleep(1)
                     shutil.copy2(src_file, target)
                 else:
@@ -515,7 +500,6 @@ async def apply_update() -> StreamingResponse:
 
         # ── Step 5: Install (overlay staged tree) ────────────────────────
         yield sse({"type": "progress", "step": "pull", "message": "Installing update…"})
-        await asyncio.to_thread(_kill_running_solver)
         try:
             copied = await asyncio.to_thread(_overlay_tree, stage, _PROJECT_ROOT)
         except Exception as exc:

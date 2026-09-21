@@ -28,8 +28,58 @@ router = APIRouter()
 import re as _re
 _MEM_BLOCK_RE = _re.compile(r'^\[RELEVANT MEMORY CONTEXT\][\s\S]*?\n\n')
 _TS_RE = _re.compile(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\n?')
+# Extended timestamp with cwd/file context: [2026-09-19 08:32:16 | cwd: /path]
+_TS_CTX_RE = _re.compile(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\s*\|[^\]]*)?\]\n?')
+# Previous switch context injection marker — everything from here is recycled garbage
+_SWITCH_CTX_RE = _re.compile(r'## First User Message[\s\S]*')
+# UI/sidebar artifacts that leak into messages (Sable frontend DOM text)
+_UI_GARBAGE_RE = _re.compile(
+    r'(?:^|\n)(?:Sable|agentic chat|Agent Chat|New Chat|Earlier|Today)\s*(?:\n|$)'
+)
+# Repeated × characters (sidebar close buttons scraped into text)
+_UI_CLOSE_RE = _re.compile(r'(?:×\s*){3,}')
 
 _CONSOLIDATION_BACKENDS = frozenset({"groq", "gemini", "mistral"})
+
+
+def sanitize_message_content(content: str, max_chars: int = 10_000) -> str:
+    """Strip injected artifacts from message content to prevent Qwen data_inspection_failed.
+
+    Removes:
+    - Memory context blocks ([RELEVANT MEMORY CONTEXT]...)
+    - Timestamp prefixes ([2026-09-19 08:32:16 | cwd: ...])
+    - Previous switch context injections (## First User Message + everything after)
+    - UI/sidebar DOM text that leaks into messages
+    - Caps content to max_chars to prevent any single message from dominating
+
+    Used by both _format_conversation (consolidation) and _build_switch_context.
+    """
+    if not content:
+        return ""
+
+    # Strip memory blocks
+    content = _MEM_BLOCK_RE.sub("", content)
+
+    # Strip timestamps (both simple and with cwd/file context)
+    content = _TS_CTX_RE.sub("", content)
+    content = _TS_RE.sub("", content)
+
+    # Strip previous switch context injections — everything from ## First User Message onward
+    # is recycled context from a prior account switch, not real user input
+    content = _SWITCH_CTX_RE.sub("", content)
+
+    # Strip UI/sidebar garbage lines
+    content = _UI_GARBAGE_RE.sub("\n", content)
+    content = _UI_CLOSE_RE.sub("", content)
+
+    # Collapse excessive blank lines left by stripping
+    content = _re.sub(r'\n{3,}', '\n\n', content)
+
+    # Cap individual message size
+    if len(content) > max_chars:
+        content = content[:max_chars] + "\n...[truncated]"
+
+    return content.strip()
 
 
 def _format_conversation(messages: list[dict[str, Any]], max_chars: int = 50_000) -> str:

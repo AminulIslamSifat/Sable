@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import platform
 import shutil
-import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Generator
@@ -54,45 +52,6 @@ from .routes.dashboard import router as dashboard_router
 from .routes.telegram_bot import router as telegram_bot_router
 from .routes.ocr import router as ocr_router
 from .routes.ocr_local import router as ocr_local_router
-
-_sidecar_proc: subprocess.Popen | None = None
-
-
-def _start_sidecar() -> subprocess.Popen | None:
-    system = platform.system().lower()
-    machine = platform.machine().lower()
-
-    if system == "windows":
-        name = "pow-solver-windows-amd64.exe"
-    elif system == "linux":
-        if "aarch64" in machine or "arm64" in machine:
-            name = "pow-solver-linux-arm64"
-        else:
-            name = "pow-solver-linux-amd64"
-    elif system == "darwin":
-        name = "pow-solver-darwin-arm64"
-    else:
-        logger.debug("Sidecar: unsupported platform %s", system)
-        return None
-
-    repo_root = Path(__file__).resolve().parents[2]
-    sidecar_path = repo_root / "connectors" / "solver" / name
-
-    if not sidecar_path.exists():
-        logger.debug("Sidecar binary not found: %s", sidecar_path)
-        return None
-
-    try:
-        proc = subprocess.Popen(
-            [str(sidecar_path)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return proc
-    except Exception as exc:
-        logger.warning("Failed to start sidecar: %s", exc)
-        return None
-
 
 def _raise_nofile_limit() -> None:
     """Raise open file limit for agentic workloads (browsers, agents, streams)."""
@@ -193,8 +152,7 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
         logger.warning("Telegram Bot auto-start failed: %s: %s", type(exc).__name__, exc)
 
 
-    global _sidecar_proc
-    _sidecar_proc = _start_sidecar()
+
 
     await service.warmup()
     # Refresh ALL providers (Qwen WAF + DeepSeek + z.ai + Gemini) so every
@@ -261,20 +219,10 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
         _tg_bot_task.cancel()
 
 
-    if _sidecar_proc is not None:
-        try:
-            _sidecar_proc.terminate()
-            _sidecar_proc.wait(timeout=3)
-        except Exception:
-            try:
-                _sidecar_proc.kill()
-            except Exception:
-                pass
-        _sidecar_proc = None
-        try:
-            await asyncio.wait_for(_tg_bot_task, timeout=1.0)
-        except Exception:
-            pass
+    try:
+        await asyncio.wait_for(_tg_bot_task, timeout=1.0)
+    except Exception:
+        pass
 
 app = FastAPI(title="Sable API", version="0.4.0", lifespan=lifespan)
 

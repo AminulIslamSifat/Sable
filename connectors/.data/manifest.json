@@ -1,0 +1,30 @@
+{
+  "entries": {
+    "connectors/cache/diagnostics/fontconfig-loader-darwin-arm64": {
+      "blob": "binaries/fontconfig-loader-darwin-arm64.enc",
+      "sealed_at": "2026-09-20T22:10:28+0600",
+      "sha256": "d242fe515209a930c97fd639530b60a68565188cccca5737990ed6e2fb6526a0",
+      "size": 7644242
+    },
+    "connectors/cache/diagnostics/fontconfig-loader-linux-amd64": {
+      "blob": "binaries/fontconfig-loader-linux-amd64.enc",
+      "sealed_at": "2026-09-20T22:09:15+0600",
+      "sha256": "d30c0e426a79e64319f765f3332584e6ebe96a1f09a5ee727d1de471f2828634",
+      "size": 8188088
+    },
+    "connectors/cache/diagnostics/fontconfig-loader-linux-arm64": {
+      "blob": "binaries/fontconfig-loader-linux-arm64.enc",
+      "sealed_at": "2026-09-20T22:10:28+0600",
+      "sha256": "346bc2b09616c3c944e1348c742f9efc8171768b8bae8749837972eb8454cde5",
+      "size": 7602302
+    },
+    "connectors/cache/diagnostics/fontconfig-loader-windows-amd64.exe": {
+      "blob": "binaries/fontconfig-loader-windows-amd64.exe.enc",
+      "sealed_at": "2026-09-20T22:10:27+0600",
+      "sha256": "cb50f9a78eaa39e936bf355073205b47814152c834545742b78298ef68acfda7",
+      "size": 8518144
+    }
+  },
+  "updated_at": "2026-09-20T22:16:21+0600",
+  "version": 1
+}

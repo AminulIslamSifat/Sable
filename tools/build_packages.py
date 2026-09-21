@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """build_packages.py — build per-platform release zips for Sable.
 
-Each zip contains the full runtime tree, minus build/dev cruft, and ONLY the
-solver binary (connectors/solver/) matching that platform.
+Each zip contains the full runtime tree, minus build/dev cruft.
 
 Usage:
     python3 tools/build_packages.py                 # build all 3, version from pyproject.toml
@@ -76,13 +75,6 @@ EXCLUDE_FILES = {
     "disabled_skills.json",
 }
 
-# solver binaries per package: platform key -> list of binary filenames
-SOLVER_BY_PLATFORM = {
-    "linux":   ["pow-solver-linux-amd64", "pow-solver-linux-arm64"],
-    "windows": ["pow-solver-windows-amd64.exe"],
-    "macos":   ["pow-solver-darwin-arm64"],
-}
-
 PLATFORM_TAG = {"linux": "linux", "windows": "windows", "macos": "macos"}
 
 
@@ -105,13 +97,6 @@ def should_skip(path: Path, rel: Path) -> bool:
 
 
 def build_one(platform: str, version: str, out_dir: Path) -> Path:
-    solver_names = SOLVER_BY_PLATFORM[platform]
-    solver_dir = REPO / "connectors" / "solver"
-
-    for s in solver_names:
-        if not (solver_dir / s).exists():
-            sys.exit(f"✖ missing solver binary for {platform}: {s}")
-
     out_dir.mkdir(parents=True, exist_ok=True)
     zip_path = out_dir / f"sable-{version}-{PLATFORM_TAG[platform]}.zip"
 
@@ -132,18 +117,13 @@ def build_one(platform: str, version: str, out_dir: Path) -> Path:
                 root_p = Path(root)
                 rel_root = root_p.relative_to(REPO)
 
-                # prune dirs in-place so os.walk doesn't descend
                 dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
 
                 for fn in files:
                     fp = root_p / fn
                     rel = fp.relative_to(REPO)
 
-                    # ── solver: only this platform's binaries ──
-                    if rel.parts[:2] == ("connectors", "solver"):
-                        if fn not in solver_names:
-                            continue
-                    elif should_skip(fp, rel):
+                    if should_skip(fp, rel):
                         continue
 
                     zf.write(fp, str(rel))
