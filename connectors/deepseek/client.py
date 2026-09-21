@@ -307,58 +307,7 @@ CLIENT_HEADERS = {
 # Client-side history cap (matches Gemini/Mistral sliding window)
 _MAX_SESSION_CHARS = 100_000
 
-# Account/token-switch context compression (Hermes pattern, mirrors Qwen).
-# Chats under this many chars are serialized raw; bigger ones get summarized.
-_SWITCH_SUMMARIZE_MIN = 40_000
-_SWITCH_HEAD_TURNS = 2   # user/assistant pairs kept verbatim at the start
-_SWITCH_TAIL_TURNS = 4   # user/assistant pairs kept verbatim at the end
-
-# Self-summarization (LLM-in-the-loop context compression) is DISABLED.
-# It fired a full extra completion call BEFORE the real request, adding
-# 10-30s of pre-send latency whenever history crossed the force threshold.
-# Flip to True to re-enable.
-_ENABLE_SELF_SUMMARIZE = False
-
-
-def _split_head_tail(
-    messages: list[dict[str, Any]],
-) -> tuple[str, str, list[dict[str, Any]]]:
-    """Split history into (head_text, tail_text, middle) for summarization.
-
-    Head = first `_SWITCH_HEAD_TURNS` message pairs, tail = last
-    `_SWITCH_TAIL_TURNS` pairs, both kept verbatim. Middle = everything
-    between them, to be compressed by the summarizer.
-    """
-    if not messages:
-        return "", "", []
-
-    head_n = _SWITCH_HEAD_TURNS * 2
-    tail_n = _SWITCH_TAIL_TURNS * 2
-
-    # Not enough to bother splitting — keep everything verbatim.
-    if len(messages) <= head_n + tail_n:
-        rendered = "\n".join(
-            f"[{m.get('role', 'user')}]: {m.get('content', '')}" for m in messages
-        )
-        return rendered, "", []
-
-    head_msgs = messages[:head_n]
-    tail_msgs = messages[-tail_n:]
-    middle = messages[head_n:-tail_n]
-
-    head_text = "\n".join(
-        f"[{m.get('role', 'user')}]: {m.get('content', '')}" for m in head_msgs
-    )
-    tail_text = "\n".join(
-        f"[{m.get('role', 'user')}]: {m.get('content', '')}" for m in tail_msgs
-    )
-    return head_text, tail_text, middle
-
-from connectors.common.context_summarizer import (
-    should_inject_hint, should_force_summarize, get_hint_text,
-    extract_summarize_tag, strip_summarize_tag, build_summary_prompt,
-    rewrite_history_with_summary, compute_force_cut_index,
-)
+from connectors.common.context_summarizer import strip_summarize_tag
 
 
 def _msg_chars(msg: dict[str, Any]) -> int:
@@ -441,7 +390,10 @@ class DeepSeekClient:
         # Token rotation state (always active — like Gemini/Mistral key rotation)
         self._rotate_tokens: list[str] = []
         self._rotate_idx: int = 0
-        self._rotate_sessions: dict[str, str] = {}  # token → deepseek session_id
+        # Per-chat DeepSeek sessions: (token, chat_id) → deepseek chat_session_id.
+        # Each Sable chat gets its own upstream session so parent_message_id
+        # chaining works correctly. Never shared across chats.
+        self._chat_sessions: dict[tuple[str, str], str] = {}
         self._last_prepare_error: str | None = None  # surfaced when all tokens fail
 
         # Load per-model max session chars from config
@@ -493,11 +445,13 @@ class DeepSeekClient:
         self._rotate_idx = 0
         # Account/token switch == new upstream chat. Drop stale parent chains
         # so the next turn doesn't reference a message_id that never existed on
-        # the new account, and drop the incoming token's cached session so it
-        # gets a fresh chat_session instead of inheriting the old one.
+        # the new account, and drop all cached sessions for this token so each
+        # chat gets a fresh DeepSeek session on next request.
         self._parent_ids.clear()
         if token:
-            self._rotate_sessions.pop(token, None)
+            keys_to_drop = [k for k in self._chat_sessions if k[0] == token]
+            for k in keys_to_drop:
+                del self._chat_sessions[k]
         if persist and token:
             save_token_for_account(token, account or self._account)
 
@@ -601,11 +555,14 @@ class DeepSeekClient:
             raise DeepSeekAPIError("No DeepSeek token available.")
         return {"Authorization": f"Bearer {tok}", **CLIENT_HEADERS}
 
-    async def _prepare_request_with_rotation(self) -> tuple[str, dict[str, str]] | None:
-        """Pick a usable token, get/create its session, solve PoW.
+    async def _prepare_request_with_rotation(
+        self, chat_id: str | None = None,
+    ) -> tuple[str, dict[str, str]] | None:
+        """Pick a usable token, get/create a per-chat session, solve PoW.
 
         Returns (session_id, headers) or None if all tokens exhausted.
-        Always uses parent_id=None (stateless) — context is in the prompt.
+        Each (token, chat_id) pair gets its own DeepSeek session so
+        parent_message_id chaining works correctly across concurrent chats.
         Advances past tokens that fail; does NOT advance on success (caller does).
         """
         if not self._rotate_tokens:
@@ -614,10 +571,11 @@ class DeepSeekClient:
             return None
 
         auto_rotate = _auto_rotate_enabled("deepseek")
-        # When auto-rotate is off, only try the current token once.
-        # When on, try all tokens in the pool.
         max_tries = 1 if not auto_rotate else len(self._rotate_tokens)
         tried = 0
+
+        # Fallback key when chat_id is None (ephemeral chats share one session per token)
+        cid = chat_id or "__ephemeral__"
 
         while tried < max_tries:
             token = self._current_rotate_token
@@ -629,12 +587,33 @@ class DeepSeekClient:
                 continue
 
             auth = self._auth_headers_for(token)
+            cache_key = (token, cid)
 
-            # One persistent session per token (avoids ~460ms create overhead per turn)
-            if token not in self._rotate_sessions:
+            # One persistent session per (token, chat_id) pair.
+            # After a server restart, _chat_sessions is empty but the DB may
+            # hold the DeepSeek chat_session_id in upstream_session_id.
+            # Restore it so we continue the same upstream conversation.
+            if cache_key not in self._chat_sessions and chat_id:
+                try:
+                    from server.database import get_upstream_session_id as _get_usid
+                    _saved_sid = _get_usid(chat_id)
+                    if _saved_sid:
+                        self._chat_sessions[cache_key] = _saved_sid
+                        logger.info("DeepSeek: restored session %s for chat %s from DB", _saved_sid[:12], chat_id)
+                except Exception:
+                    pass
+
+            if cache_key not in self._chat_sessions:
                 try:
                     session_id = await self._create_session(headers=auth)
-                    self._rotate_sessions[token] = session_id
+                    self._chat_sessions[cache_key] = session_id
+                    # Persist so we can restore after restart
+                    if chat_id:
+                        try:
+                            from server.database import set_upstream_session_id as _set_usid
+                            _set_usid(chat_id, session_id)
+                        except Exception:
+                            pass
                 except DeepSeekAPIError as exc:
                     logger.warning("Rotation: session failed for %s...: %s", token[:10], exc)
                     self._last_prepare_error = str(exc)
@@ -651,7 +630,7 @@ class DeepSeekClient:
                     self._advance_rotation()
                     tried += 1
                     continue
-            session_id = self._rotate_sessions[token]
+            session_id = self._chat_sessions[cache_key]
 
             try:
                 challenge = await self._get_challenge(headers=auth)
@@ -887,43 +866,31 @@ class DeepSeekClient:
             raise DeepSeekAPIError(f"Session create response missing id: {biz}")
         return session_id
 
-    # ------------------------------------------------------------------
-    # Client-side session history (mirrors Gemini/Mistral pattern)
-    # ------------------------------------------------------------------
+    async def _seed_hello_message(
+        self, session_id: str, headers: dict[str, str],
+    ) -> int | None:
+        """Send a minimal 'hello' as the FIRST upstream message of a fresh chat.
 
-    async def _maybe_summarize(
-        self, chat_id: str, history: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        """Check thresholds and summarize if needed. Returns updated history."""
-        if not _ENABLE_SELF_SUMMARIZE:
-            return history
-        prefix_len = 1 if history and history[0].get("role") == "system" else 0
-        total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
-        if should_force_summarize(total_chars, self._max_session_chars):
-            cut_idx = compute_force_cut_index(history, prefix_len)
-            msgs_to_summarize = history[prefix_len:cut_idx]
-            if len(msgs_to_summarize) >= 2:
-                prompt = build_summary_prompt(msgs_to_summarize, _msg_chars)
-                summary = await self._call_self_summarize(prompt)
-                if summary:
-                    logger.info("Force-summarized %d messages for chat %s", len(msgs_to_summarize), chat_id)
-                    history = rewrite_history_with_summary(history, summary, cut_idx, prefix_len, fmt="openai")
-                    self._sessions[chat_id] = history
-        return history
+        Opens the chat with a tiny greeting, captures the returned assistant
+        message_id, and returns it for chaining the next message.
+        Backend-only — callers MUST NOT forward any events to the frontend.
+        """
+        return await self._send_and_capture_id(
+            session_id, headers, prompt="hello",
+            parent_id=None, model_type="default", tag="hello-seed",
+        )
 
-    async def _call_self_summarize(self, prompt: str) -> str | None:
-        """Call the same DeepSeek model to generate a summary. Non-streaming."""
-        if not _ENABLE_SELF_SUMMARIZE:
-            return None
-        # Use a simple non-streaming call via the same API
-        prepared = await self._prepare_request_with_rotation()
-        if prepared is None:
-            return None
-        session_id, headers = prepared
+    async def _send_and_capture_id(
+        self, session_id: str, headers: dict[str, str],
+        prompt: str, parent_id: int | None, model_type: str | None,
+        tag: str = "send",
+    ) -> int | None:
+        """Send one non-frontend message, consume the stream, return its
+        assistant response_message_id for parent chaining. None on failure."""
         body = {
             "chat_session_id": session_id,
-            "parent_message_id": None,
-            "model_type": None,  # ponytail: DeepSeek unified — always null
+            "parent_message_id": parent_id,
+            "model_type": model_type,
             "prompt": prompt,
             "ref_file_ids": [],
             "thinking_enabled": False,
@@ -931,75 +898,31 @@ class DeepSeekClient:
             "action": None,
             "preempt": False,
         }
-        _log_raw("USER_MESSAGE [summarize]", prompt)
+        _log_raw(f"USER_MESSAGE [{tag}]", prompt)
         try:
             http = await self._get_http()
-            full_answer = ""
+            last_id: int | None = None
             async with http.stream(
                 "POST", f"{BASE_URL}/api/v0/chat/completion", json=body, headers=headers,
             ) as resp:
                 if resp.status_code != 200:
+                    await resp.content
+                    logger.warning("DeepSeek %s HTTP %s", tag, resp.status_code)
                     return None
                 async for event in self._iter_completion_events(resp):
-                    if event.get("type") == "answer":
-                        full_answer += event.get("text", "")
-            _log_raw("RESPONSE [summarize] (raw)", full_answer)
-            result = strip_summarize_tag(full_answer).strip()
-            return result if result else None
-        except Exception as e:
-            logger.warning("DeepSeek summarizer error: %s", e)
+                    etype = event.get("type")
+                    if etype == "done":
+                        pid = event.get("parent_id")
+                        if isinstance(pid, int):
+                            last_id = pid
+                    elif etype == "biz_error":
+                        logger.warning("DeepSeek %s biz_error: %s", tag, event.get("biz_msg"))
+                        return None
+            _log_raw(f"RESPONSE [{tag}]", f"message_id={last_id}")
+            return last_id
+        except Exception as exc:
+            logger.warning("DeepSeek %s failed: %s", tag, exc)
             return None
-
-    async def _build_switch_prompt(
-        self, history: list[dict[str, Any]], current_message: str,
-    ) -> str:
-        """Build a fresh-chat seed prompt for an account/token switch (Hermes pattern).
-
-        Mirrors Qwen's `_build_switch_context`: keep the head (system + first user
-        turns) and the tail verbatim, compress the middle via the same model, then
-        end with a `continue` cue. This lets a brand-new DeepSeek chat resume the
-        conversation without shipping the entire raw transcript.
-        """
-        prefix_len = 1 if history and history[0].get("role") == "system" else 0
-        body = history[prefix_len:]
-        total_chars = sum(_msg_chars(m) for m in body)
-
-        # Small enough — plain serialization is fine and cheaper.
-        if total_chars <= _SWITCH_SUMMARIZE_MIN:
-            return self._serialize_history(history, current_message)
-
-        head, tail, middle = _split_head_tail(body)
-
-        middle_text = "\n".join(
-            f"[{m.get('role', 'user')}]: {m.get('content', '')}" for m in middle
-        )
-
-        flow = ""
-        if middle_text.strip():
-            try:
-                summary = await self._call_self_summarize(
-                    build_summary_prompt(middle, _msg_chars)
-                )
-                flow = summary or middle_text
-            except Exception as exc:
-                logger.warning("DeepSeek switch summarizer failed (%s) — using raw middle", exc)
-                flow = middle_text
-
-        parts: list[str] = []
-        if prefix_len:
-            parts.append(f"[System Instructions]\n{history[0].get('content', '')}")
-        if head:
-            parts.append(head)
-        if flow.strip():
-            parts.append(f"## Conversation Flow\n{flow}")
-        if tail:
-            parts.append(tail)
-        parts.append("continue")
-        _reminder = self._get_reminder()
-        if _reminder:
-            current_message = f"{_reminder}\n\n{current_message}"
-        parts.append(f"User: {current_message}")
-        return "\n\n".join(parts)
 
     def _get_or_create_session(
         self, chat_id: str | None, inject_instructions: bool,
@@ -1083,36 +1006,6 @@ class DeepSeekClient:
                 + _ao + '[{"name": "TOOL_A", "arguments": {}}, {"name": "TOOL_B", "arguments": {}}]' + _ac + "\n"
                 + "[user message]"
             )
-
-    @classmethod
-    def _serialize_history(cls, history: list[dict[str, Any]], current_message: str) -> str:
-        """Serialize client-side history + current message into a single prompt string.
-
-        The tool-call format reminder is prepended to EVERY user message
-        (both historical and current) so DeepSeek always sees the correct
-        format immediately before each user turn.
-        """
-        reminder = cls._get_reminder()
-        parts: list[str] = []
-        for msg in history:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            if role == "system":
-                parts.append(f"[System Instructions]\n{content}")
-            elif role == "user":
-                if reminder:
-                    parts.append(f"User: {reminder}\n{content}")
-                else:
-                    parts.append(f"User: {content}")
-            elif role == "assistant":
-                parts.append(f"Assistant: {content}")
-        # Prepend reminder to the current (last) user message as well
-        if reminder:
-            warned_message = f"{reminder}\n{current_message}"
-        else:
-            warned_message = current_message
-        parts.append(f"User: {warned_message}")
-        return "\n\n".join(parts)
 
     # ------------------------------------------------------------------
     # SSE response parsing
@@ -1237,11 +1130,18 @@ class DeepSeekClient:
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat completion. Yields Sable-compatible event dicts.
 
-        Uses server-side message chaining via parent_message_id (like Qwen).
-        Only the current user message is sent as prompt; DeepSeek chains context
-        server-side using the parent_message_id from the previous response.
-        Falls back to full-context serialization when parent is unknown (fresh
-        session, token rotation, summarization, or first message).
+        Every Sable chat gets its own DeepSeek session (chat_session_id).
+        Flow for first message in a new chat:
+          1. Create a new DeepSeek session via _create_session
+          2. Send a tiny "hello" with model_type="default", parent_message_id=null
+          3. Capture the response_message_id from the hello
+          4. Send the real message (with instructions) chained to hello's message_id,
+             model_type=null
+        Flow for subsequent messages:
+          - Send only the current message, chained via parent_message_id to the
+            last assistant response_message_id. model_type=null always.
+        No full-context serialization ever happens here. Fork history injection
+        is handled at the route level by prepending to the message string.
         """
         thinking_enabled = str(thinking_mode or "").lower() in ("thinking", "deepthink")
         file_ids = [str(fid) for fid in (ref_file_ids or []) if str(fid).strip()]
@@ -1250,61 +1150,60 @@ class DeepSeekClient:
         layout_mode = kwargs.pop("layout_mode", None)
 
         # Build client-side history (instructions as first entry, sliding window)
-        history = self._get_or_create_session(chat_id, inject_instructions, system_instruction=system_instruction, project_id=project_id, layout_mode=layout_mode)
-        # Browser sends "default" for first message in session, null for subsequent
-        model_type = "default" if len(history) <= 1 else None
+        # Used ONLY for local tracking / trimming — never serialized to DeepSeek.
+        history = self._get_or_create_session(
+            chat_id, inject_instructions,
+            system_instruction=system_instruction,
+            project_id=project_id, layout_mode=layout_mode,
+        )
         # Seed from DB when session is fresh (cross-provider switch)
         if db_history and chat_id and len(history) <= 1:
             for _m in db_history:
                 history.append({"role": _m["role"], "content": _m["content"]})
 
-        # Context summarization: check thresholds before sending
-        # If summarization fires, we lose the parent chain — must send full context
-        _summarized_this_turn = False
+        # Client-side history trimming (keeps memory bounded, doesn't affect upstream)
         if chat_id:
-            old_history_len = len(history)
-            history = await self._maybe_summarize(chat_id, history)
-            if len(history) != old_history_len:
-                _summarized_this_turn = True
-                # Summarization broke the parent chain — reset tracked parent
-                self._parent_ids[chat_id] = None
             prefix_len = 1 if history and history[0].get("role") == "system" else 0
             total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
-            if _ENABLE_SELF_SUMMARIZE and should_inject_hint(total_chars, self._max_session_chars):
-                hint = get_hint_text(total_chars, self._max_session_chars)
-                message = message + hint
+            if total_chars > self._max_session_chars:
+                history = _trim_history(history, prefix_len, self._max_session_chars)
+                self._sessions[chat_id] = history
 
-        # Determine whether to use chained mode or full-context fallback
+        # Determine if this is a fresh chat (no parent chain yet).
+        # After a server restart, self._parent_ids is empty but the DB still
+        # holds the last DeepSeek response_message_id in chats.parent_id.
+        # Restore it so we don't treat an existing conversation as fresh.
         _parent_id = self._parent_ids.get(chat_id) if chat_id else None
-        _is_first_message = len(history) <= 1  # Only system instruction (or empty)
-        _use_chaining = (
-            _parent_id is not None
-            and not _summarized_this_turn
-            and not _is_first_message
-        )
+        if chat_id and _parent_id is None:
+            try:
+                from server.database import get_parent_id as _db_get_parent
+                _db_parent = _db_get_parent(chat_id, None)
+                if _db_parent is not None:
+                    _parent_id = int(_db_parent)
+                    self._parent_ids[chat_id] = _parent_id
+                    logger.info("DeepSeek: restored parent_id=%s for chat %s from DB", _parent_id, chat_id)
+            except Exception:
+                pass
+        _is_fresh_chat = _parent_id is None
 
-        if _use_chaining:
-            # Chained mode: send only the current message, DeepSeek uses parent
-            _reminder = self._get_reminder()
-            prompt = (
-                f"{_reminder}\n\n{message}"
-                if _reminder else message
-            )
-            logger.debug("DeepSeek chained mode: parent=%s, chat=%s", _parent_id, chat_id)
-        else:
-            # Full-context fallback: serialize entire history into prompt
-            prompt = self._serialize_history(history, message)
-            _parent_id = None  # Stateless when sending full context
-            logger.debug("DeepSeek full-context mode: chat=%s, reason=%s",
-                         chat_id, "first_msg" if _is_first_message else "no_parent" if not self._parent_ids.get(chat_id) else "summarized")
+        # The prompt is ALWAYS just the current message (+ optional reminder).
+        # Never the full serialized history. DeepSeek chains server-side.
+        _reminder = self._get_reminder()
+        prompt = f"{_reminder}\n\n{message}" if _reminder else message
 
-        # Ensure rotation pool is loaded before computing attempts
-        # ponytail: ceiling=single-call init; upgrade path=move to __init__ if needed elsewhere
+        # Build the instruction payload for first-message hello-seed flow.
+        # On a fresh chat, we send "hello" first, then chain the real message
+        # with instructions as the second message.
+        _instruction_payload: str | None = None
+        if _is_fresh_chat and inject_instructions and history:
+            sys_msgs = [m for m in history if m.get("role") == "system"]
+            if sys_msgs:
+                _instruction_payload = "\n\n".join(m.get("content", "") for m in sys_msgs)
+
+        # Ensure rotation pool is loaded
         if not self._rotate_tokens:
             self._init_rotation()
 
-        # Try each token with round-robin rotation + per-token retry + failover
-        # When auto-rotate is disabled, only try the current token (no failover)
         if not _auto_rotate_enabled("deepseek"):
             attempts = 1
         else:
@@ -1312,8 +1211,6 @@ class DeepSeekClient:
         last_err = self._last_prepare_error or "unknown"
         _MAX_RETRIES_PER_TOKEN = 8
         _RETRY_DELAY_SECS = 5.0
-        # Per-token failure reasons — kept so the final error reports EACH token
-        # instead of only the last one (which made debugging rotation a nightmare).
         token_errors: list[str] = []
 
         def _all_failed_message() -> str:
@@ -1322,58 +1219,72 @@ class DeepSeekClient:
             lines = "\n".join(f"  • {e}" for e in token_errors)
             return f"All {len(token_errors)} DeepSeek token(s) failed:\n{lines}"
 
-        # Anti-burst jitter: ONE gap per send (each tool-call round / user turn),
-        # never per retry or token rotation. Retries use _RETRY_DELAY_SECS below.
-        # Every tool call + its output is a fresh user message upstream, so this
-        # spacing is what keeps the burst from tripping DeepSeek's WAF.
+        # Anti-burst jitter
         try:
             from connectors.common.jitter import jitter_for as _jitter_for, sleep_jitter as _sleep_jitter
             _jdelay = _jitter_for("deepseek")
             if _jdelay:
-                # Emit status BEFORE sleeping so the UI card updates first
                 yield {"type": "status", "message": f"deepseek_delay_{_jdelay:.1f}s"}
                 await _sleep_jitter(_jdelay)
         except Exception as _jexc:
             logger.debug("DeepSeek jitter skipped: %s", _jexc)
 
         for _attempt in range(attempts):
-            # On rotation (attempt > 0) the previously selected token failed.
-            # Drop its cached session so _prepare_request_with_rotation spins up
-            # a BRAND-NEW chat_session — the old one belongs to the dead token
-            # and any parent chain into it is meaningless.
-            if _attempt > 0:
+            # On rotation, drop this chat's cached session so we get a fresh one
+            if _attempt > 0 and chat_id:
                 _tok = self._current_rotate_token
                 if _tok:
-                    self._rotate_sessions.pop(_tok, None)
-                    logger.info("DeepSeek rotation #%d: forcing fresh session for token %s",
-                                _attempt, self._mask_token(_tok))
+                    self._chat_sessions.pop((_tok, chat_id), None)
+                    self._chat_sessions.pop((_tok, "__ephemeral__"), None)
+                    logger.info("DeepSeek rotation #%d: dropped session for chat %s, token %s",
+                                _attempt, chat_id, self._mask_token(_tok))
 
-            prepared = await self._prepare_request_with_rotation()
+            prepared = await self._prepare_request_with_rotation(chat_id=chat_id)
             if prepared is None:
                 yield {"type": "error", "message": _all_failed_message()}
                 return
             session_id, headers = prepared
 
-            # On rotation (attempt > 0), send a Hermes-style seed prompt (head +
-            # summarized middle + tail + 'continue') instead of the raw transcript,
-            # so the fresh chat resumes context without a context bomb.
+            # --- Hello seed flow for fresh chats ---
+            # Send "hello" first (model_type=default, parent=null), capture the
+            # response_message_id, then chain the real message to it.
             current_parent_id = _parent_id
+            current_model_type = None  # Subsequent messages always use null
+
+            if _is_fresh_chat and current_parent_id is None:
+                _seed_id = await self._seed_hello_message(session_id, headers)
+                if _seed_id is not None:
+                    current_parent_id = _seed_id
+                    current_model_type = None  # Message #2+ must be null
+                    logger.info("DeepSeek hello-seed ok: chaining to parent=%s for chat %s", _seed_id, chat_id)
+                    # CRITICAL: The hello seed consumed the PoW nonce in `headers`.
+                    # DeepSeek PoW challenges are single-use — reusing the same
+                    # X-DS-PoW-Response on the real message causes silent failure
+                    # (empty response or rejection). Solve a fresh challenge now.
+                    try:
+                        _fresh_challenge = await self._get_challenge(headers=headers)
+                        loop = asyncio.get_running_loop()
+                        _fresh_nonce = await loop.run_in_executor(None, self._solve_pow, _fresh_challenge)
+                        _fresh_pow = self._build_pow_header(_fresh_challenge, _fresh_nonce)
+                        headers = {**headers, "X-DS-PoW-Response": _fresh_pow}
+                        logger.debug("DeepSeek: refreshed PoW after hello seed for chat %s", chat_id)
+                    except Exception as _pow_exc:
+                        logger.warning("DeepSeek: failed to refresh PoW after hello seed: %s", _pow_exc)
+                else:
+                    # Hello seed failed — send as first message with model_type=default
+                    current_model_type = "default"
+                    logger.warning("DeepSeek hello-seed failed for chat %s, sending as first message", chat_id)
+
+            # Build the actual prompt. For fresh chats with instructions, prepend
+            # the system instructions to the first real message so DeepSeek gets them.
             current_prompt = prompt
-            if _attempt > 0:
-                current_parent_id = None
-                try:
-                    current_prompt = await self._build_switch_prompt(history, message)
-                except Exception as _seed_exc:
-                    logger.warning("DeepSeek rotation #%d: switch-prompt build failed (%s), using raw serialize",
-                                   _attempt, _seed_exc)
-                    current_prompt = self._serialize_history(history, message)
-                logger.info("DeepSeek rotation #%d: rebuilt seed prompt (%d chars)",
-                            _attempt, len(current_prompt))
+            if _is_fresh_chat and _instruction_payload:
+                current_prompt = f"{_instruction_payload}\n\n{prompt}"
 
             body = {
                 "chat_session_id": session_id,
                 "parent_message_id": current_parent_id,
-                "model_type": model_type,
+                "model_type": current_model_type,
                 "prompt": current_prompt,
                 "ref_file_ids": file_ids,
                 "thinking_enabled": thinking_enabled,
@@ -1384,7 +1295,7 @@ class DeepSeekClient:
 
             _log_raw("USER_MESSAGE (prompt sent)", current_prompt)
 
-            # Per-token retry loop: retry same token before rotating
+            # Per-token retry loop
             for _retry in range(_MAX_RETRIES_PER_TOKEN):
                 try:
                     http = await self._get_http()
@@ -1394,18 +1305,17 @@ class DeepSeekClient:
                     async with http.stream(
                         "POST", f"{BASE_URL}/api/v0/chat/completion", json=body, headers=headers,
                     ) as resp:
-                        # Auth/rate-limit errors → no retry, rotate immediately
                         if resp.status_code in (401, 403, 429):
                             await resp.content
                             last_err = f"HTTP {resp.status_code}"
                             logger.warning("DeepSeek auth error (%s), rotating immediately...", last_err)
-                            break  # Break retry loop → rotate to next token
+                            break
 
                         if resp.status_code != 200:
                             error_body = await resp.content
                             last_err = f"HTTP {resp.status_code}: {error_body.decode(errors='replace')[:200]}"
                             logger.warning("DeepSeek HTTP error (%s), rotating immediately...", last_err)
-                            break  # Break retry loop → rotate to next token
+                            break
 
                         _response_parent_id: int | None = None
                         _got_biz_error = False
@@ -1421,30 +1331,41 @@ class DeepSeekClient:
                                 _got_biz_error = True
                                 last_err = f"biz_code:{event.get('biz_code')} ({event.get('biz_msg', 'unknown')})"
                                 logger.warning("DeepSeek biz_error: %s", last_err)
-                                break  # Break SSE parsing
+                                break
                             yield event
 
                         if _got_biz_error:
-                            break  # Break retry loop → rotate to next token
+                            break
 
                     _log_raw("RESPONSE (raw)", (full_thinking + "\n---\n" + full_answer) if full_thinking else full_answer)
 
-                    # Empty response detection: HTTP 200 but zero content
+                    # Empty response detection
                     if not full_answer and not full_thinking:
                         last_err = "empty_response"
+                        # Self-heal: DeepSeek returns an empty 200 when a large
+                        # chained message follows the tiny hello seed. Drop the
+                        # parent chain and resend UNCHAINED with model_type=default
+                        # (the known-good first-message path) instead of burning
+                        # retries on a request that will never answer.
+                        if body.get("parent_message_id") is not None:
+                            logger.warning("DeepSeek empty response on chained message — dropping parent chain, retrying unchained")
+                            body["parent_message_id"] = None
+                            body["model_type"] = "default"
+                            yield {"type": "status", "message": "deepseek_retry_unchained"}
+                            await asyncio.sleep(_RETRY_DELAY_SECS)
+                            continue
                         if _retry < _MAX_RETRIES_PER_TOKEN - 1:
                             logger.warning("DeepSeek empty response, retry %d/%d in %.0fs...",
                                            _retry + 1, _MAX_RETRIES_PER_TOKEN, _RETRY_DELAY_SECS)
                             yield {"type": "status", "message": f"deepseek_retry_{_retry + 1}"}
                             await asyncio.sleep(_RETRY_DELAY_SECS)
-                            continue  # Retry same token
+                            continue
                         else:
                             logger.warning("DeepSeek empty response after %d retries, rotating...",
                                            _MAX_RETRIES_PER_TOKEN)
-                            break  # Break retry loop → rotate to next token
+                            break
 
-                    # Success — save user message + assistant response to history
-                    _summarize_idx = extract_summarize_tag(full_answer)
+                    # Success — update client-side history and parent chain
                     clean_answer = strip_summarize_tag(full_answer)
                     history.append({"role": "user", "content": message})
                     response_content = full_thinking + clean_answer if full_thinking else clean_answer
@@ -1458,20 +1379,7 @@ class DeepSeekClient:
                         self._parent_ids[chat_id] = None
                         logger.warning("DeepSeek: no message_id in response for chat %s, chain reset", chat_id)
 
-                    # Handle model-triggered summarization
-                    if _summarize_idx is not None and chat_id:
-                        prefix_len = 1 if history and history[0].get("role") == "system" else 0
-                        actual_cut = max(prefix_len, min(_summarize_idx, len(history) - 1))
-                        msgs_to_summarize = history[prefix_len:actual_cut]
-                        if len(msgs_to_summarize) >= 2:
-                            sum_prompt = build_summary_prompt(msgs_to_summarize, _msg_chars)
-                            summary = await self._call_self_summarize(sum_prompt)
-                            if summary:
-                                logger.info("Model-triggered summarization at index %d for chat %s", _summarize_idx, chat_id)
-                                history = rewrite_history_with_summary(history, summary, actual_cut, prefix_len, fmt="openai")
-                                self._sessions[chat_id] = history
-                                self._parent_ids[chat_id] = None
-
+                    # Trim client-side history if needed
                     if chat_id:
                         prefix_len = 1 if history and history[0].get("role") == "system" else 0
                         total_chars = sum(_msg_chars(m) for m in history[prefix_len:])
@@ -1487,11 +1395,11 @@ class DeepSeekClient:
                                        _retry + 1, _MAX_RETRIES_PER_TOKEN, _RETRY_DELAY_SECS)
                         yield {"type": "status", "message": f"deepseek_retry_{_retry + 1}"}
                         await asyncio.sleep(_RETRY_DELAY_SECS)
-                        continue  # Retry same token
+                        continue
                     else:
                         logger.warning("DeepSeek timeout after %d retries, rotating...",
                                        _MAX_RETRIES_PER_TOKEN)
-                        break  # Break retry loop → rotate to next token
+                        break
                 except Exception as exc:
                     last_err = f"{type(exc).__name__}: {exc}"
                     if _retry < _MAX_RETRIES_PER_TOKEN - 1:
@@ -1499,11 +1407,11 @@ class DeepSeekClient:
                                        last_err, _retry + 1, _MAX_RETRIES_PER_TOKEN, _RETRY_DELAY_SECS)
                         yield {"type": "status", "message": f"deepseek_retry_{_retry + 1}"}
                         await asyncio.sleep(_RETRY_DELAY_SECS)
-                        continue  # Retry same token
+                        continue
                     else:
                         logger.warning("DeepSeek error after %d retries (%s), rotating...",
                                        _MAX_RETRIES_PER_TOKEN, last_err)
-                        break  # Break retry loop → rotate to next token
+                        break
 
             # All retries exhausted for this token → record why, then rotate
             if chat_id:
@@ -1522,9 +1430,6 @@ class DeepSeekClient:
                 "from_index": (_attempt) % len(self._rotate_tokens) if self._rotate_tokens else 0,
                 "to_index": self._rotate_idx,
                 "total_tokens": len(self._rotate_tokens),
-                # New account → new upstream chat. Context carries via the seed
-                # prompt, not the old session's parent chain. Mirrors Qwen's
-                # account_switch signal so the frontend can mark a new chat.
                 "new_chat": True,
             }
 

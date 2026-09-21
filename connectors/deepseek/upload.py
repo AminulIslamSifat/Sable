@@ -50,7 +50,7 @@ async def upload_file(
         Dict with ``file_id``, ``status``, ``file_name``, ``file_size``,
         ``model_kind``, ``is_image``, and ``raw`` metadata.
     """
-    from connectors.deepseek.client import get_client
+    from connectors.deepseek.client import BASE_URL, get_client
 
     abs_path = os.path.abspath(os.path.expanduser(file_path))
     if not os.path.exists(abs_path):
@@ -65,15 +65,16 @@ async def upload_file(
 
     # Step 1: Get PoW challenge for upload endpoint
     http = await client._get_http()
+    challenge_url = f"{BASE_URL}/api/v0/chat/create_pow_challenge"
     resp = await http.post(
-        "/api/v0/chat/create_pow_challenge",
+        challenge_url,
         json={"target_path": UPLOAD_TARGET_PATH},
         headers=client._auth_headers(),
     )
     if resp.status_code == 401:
         await client._refresh_token()
         resp = await http.post(
-            "/api/v0/chat/create_pow_challenge",
+            challenge_url,
             json={"target_path": UPLOAD_TARGET_PATH},
             headers=client._auth_headers(),
         )
@@ -99,15 +100,28 @@ async def upload_file(
         "x-file-size": str(file_size),
     }
 
-    with open(abs_path, "rb") as f:
-        file_bytes = f.read()
+    from curl_cffi import CurlMime
 
-    upload_resp = await http.post(
-        UPLOAD_TARGET_PATH,
-        headers=headers,
-        files={"file": (file_name, file_bytes, mime)},
+    multipart = CurlMime.from_list(
+        [
+            {
+                "name": "file",
+                "filename": file_name,
+                "content_type": mime,
+                "local_path": abs_path,
+            }
+        ]
     )
-    upload_resp.raise_for_status()
+
+    try:
+        upload_resp = await http.post(
+            f"{BASE_URL}{UPLOAD_TARGET_PATH}",
+            headers=headers,
+            multipart=multipart,
+        )
+        upload_resp.raise_for_status()
+    finally:
+        multipart.close()
 
     payload = upload_resp.json()
     if payload.get("code") != 0:

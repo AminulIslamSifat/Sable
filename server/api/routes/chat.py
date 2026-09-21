@@ -831,7 +831,11 @@ async def chat(request: ChatRequest):
     # conversation. Treat any digit-only tail as "no parent" and fall back to the
     # client leaf so the turn at least starts from a real upstream node.
     _stored_parent = get_parent_id(active_chat_id, None)
-    if _stored_parent and str(_stored_parent).isdigit():
+    # The digit-only guard exists because Qwen parent IDs are UUIDs/hashes —
+    # a bare integer means someone accidentally stored a local SQLite row id.
+    # However, DeepSeek uses small integers (2, 4, 6…) as response_message_ids,
+    # which ARE valid upstream tokens. Only drop digits for Qwen chats.
+    if _stored_parent and str(_stored_parent).isdigit() and current_provider == "qwen":
         logger.warning(
             "[parent-guard] Dropping digit-only tail %r for chat %s (local row id, not an upstream token)",
             _stored_parent, active_chat_id,
@@ -1156,9 +1160,13 @@ async def chat(request: ChatRequest):
         error_message: str | None = None
         current_message = api_message
         current_parent = parent_id
-        # Fork history injection: for Qwen forks, prepend conversation history
-        # to the first message so the fresh upstream session has context.
-        if _upstream_session_id and parent_id is None:
+        # Fork history injection: prepend conversation history to the first
+        # message so the fresh upstream session has context. Works for both
+        # Qwen (server-side upstream_session_id) and DeepSeek (client-side
+        # chat_session_id keyed on the local chat_id). fork_history is written
+        # by the fork endpoint and NULLed after injection — its presence is
+        # the signal, no provider gate needed here.
+        if parent_id is None:
             try:
                 with get_db() as _fh_conn:
                     _fh_row = _fh_conn.execute(
@@ -1501,10 +1509,33 @@ async def chat(request: ChatRequest):
                     if _api_backend in _DIRECT_READ_BACKENDS and round_index == 0 and resolved_files:
                         _inline_files = [f.get('path') for f in resolved_files if f.get('path')]
                     # Inject skill-produced images (from get_file) if model supports vision
+                    _extra_ref_ids: list[str] = []
                     if _pending_skill_images:
                         _caps = _cfg.get("capabilities", {})
                         if _caps.get("image", False) and _api_backend in _DIRECT_READ_BACKENDS:
                             _inline_files = (_inline_files or []) + _pending_skill_images
+                        elif _caps.get("image", False) and _api_backend == "deepseek":
+                            # DeepSeek has no inline-file path: images must go through its own
+                            # upload endpoint, and the returned file_id rides on ref_file_ids
+                            # (which is otherwise None past round 0, i.e. exactly when tools run).
+                            _ds_thinking = str(request.thinking_mode or "").lower() in ("thinking", "deepthink")
+                            for _img_path in _pending_skill_images:
+                                try:
+                                    _meta = await service.upload_deepseek_file(
+                                        _img_path, thinking_enabled=_ds_thinking
+                                    )
+                                    if _meta and _meta.get("file_id"):
+                                        _extra_ref_ids.append(str(_meta["file_id"]))
+                                    else:
+                                        logger.warning("DeepSeek skill-image upload returned no id: %s", _img_path)
+                                except Exception as _ds_up_exc:
+                                    logger.warning("DeepSeek skill-image upload failed for %s: %s", _img_path, _ds_up_exc)
+                            if not _extra_ref_ids:
+                                current_message += (
+                                    f"\n\n[NOTE: {len(_pending_skill_images)} image(s) were produced by tools "
+                                    f"but could not be uploaded to DeepSeek. "
+                                    f"The image content is not accessible.]"
+                                )
                         else:
                             # Model can't see images or backend doesn't support inline files
                             _reason = "does not support image input" if not _caps.get("image", False) else "does not support inline file injection"
@@ -1527,7 +1558,7 @@ async def chat(request: ChatRequest):
                         model=_api_model,
                         thinking_mode=request.thinking_mode,
                         chat_id=None if _ephemeral else active_chat_id,
-                        ref_file_ids=request.ref_file_ids if round_index == 0 else None,
+                        ref_file_ids=((list(request.ref_file_ids or []) if round_index == 0 else []) + _extra_ref_ids) or None,
                         inject_instructions=not _ephemeral,
                         project_id=_project_id,
                         db_history=_db_history_s,

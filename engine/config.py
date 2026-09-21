@@ -270,6 +270,28 @@ MODELS = [
             },
         ],
     },
+    {
+        "id": "qwen3.8-omni-flash",
+        "label": "Qwen3.8 Omni Flash",
+        "max_session_chars": 3_000_000,
+        "capabilities": {"image": True, "video": False, "document": True, "audio": False},
+        "thinking_modes": [
+            {
+                "id": "fast",
+                "label": "Fast",
+                "thinking_enabled": False,
+                "auto_thinking": False,
+                "thinking_mode": "Fast",
+            },
+            {
+                "id": "thinking",
+                "label": "Thinking",
+                "thinking_enabled": True,
+                "auto_thinking": False,
+                "thinking_mode": "Thinking",
+            },
+        ],
+    },
     # ponytail: DeepSeek unified all modes into one model.
     # Vision auto-detected from ref_file_ids; expert mode removed upstream.
     {

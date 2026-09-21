@@ -1025,10 +1025,14 @@ async def fork_chat(payload: dict[str, str]) -> dict[str, Any]:
     except (ValueError, TypeError):
         raise HTTPException(status_code=400, detail="message_id must be an integer")
 
-    # Check if source chat uses Qwen provider
+    # Providers that use fresh-session-with-history-injection on fork.
+    # Qwen: server-side session (upstream_session_id)
+    # DeepSeek: client-side chat_session_id, chained via parent_message_id
+    # Both get a fresh upstream session on fork, so history must be injected.
     from server.database import get_chat_provider, get_db as _get_db
+    _INJECTION_PROVIDERS = {"qwen", "deepseek"}
     source_provider = get_chat_provider(source_chat_id)
-    is_qwen = source_provider == "qwen"
+    needs_injection = source_provider in _INJECTION_PROVIDERS
 
     # Get the fork message first (to return its content for the input box)
     with _get_db() as conn:
@@ -1062,9 +1066,9 @@ async def fork_chat(payload: dict[str, str]) -> dict[str, Any]:
         is_fork=True,
     )
 
-    # Build history block for Qwen (injected as first user message)
+    # Build history block (injected as first user message on the forked chat)
     _history_lines = []
-    if is_qwen:
+    if needs_injection:
         # Fetch full messages with skill events for tool call history
         _prev_msgs = get_messages(source_chat_id, include_skill_events=True)
         # Only include messages before the fork point (exclusive)
@@ -1113,9 +1117,9 @@ async def fork_chat(payload: dict[str, str]) -> dict[str, Any]:
         )
         msg_count += 1
 
-    # For Qwen: store history injection data so the chat endpoint can prepend
-    # it to the first message sent in the forked chat (fresh upstream session).
-    if is_qwen and _history_lines:
+    # Store history injection data so the chat endpoint can prepend it to the
+    # first message sent in the forked chat (fresh upstream session).
+    if needs_injection and _history_lines:
         from server.database import get_db as _db
         _history_block = "[PREVIOUS CONVERSATION]\n" + "\n".join(_history_lines) + "\n[END PREVIOUS CONVERSATION]\n\n"
         with _db() as conn:
@@ -1123,10 +1127,10 @@ async def fork_chat(payload: dict[str, str]) -> dict[str, Any]:
                 "UPDATE chats SET fork_history = ? WHERE id = ?",
                 (_history_block, new_chat_id),
             )
-        logger.info("[fork] Stored %d history lines for Qwen fork %s", len(_history_lines), new_chat_id)
+        logger.info("[fork] Stored %d history lines for %s fork %s", len(_history_lines), source_provider, new_chat_id)
 
-    logger.info("[fork] Created %s from %s at message %d (%d messages copied, qwen=%s)",
-                new_chat_id, source_chat_id, message_id, msg_count, is_qwen)
+    logger.info("[fork] Created %s from %s at message %d (%d messages copied, inject=%s)",
+                new_chat_id, source_chat_id, message_id, msg_count, needs_injection)
     return {
         "chat_id": new_chat_id,
         "message_count": msg_count,
