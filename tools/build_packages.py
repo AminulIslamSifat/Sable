@@ -147,7 +147,7 @@ def main() -> None:
 
     version = args.version or get_version()
     out_dir = Path(args.out).expanduser().resolve()
-    platforms = list(SOLVER_BY_PLATFORM) if args.platform == "all" else [args.platform]
+    platforms = list(PLATFORM_TAG) if args.platform == "all" else [args.platform]
 
     print(f"📦 Sable v{version} → {out_dir}")
     built = []
