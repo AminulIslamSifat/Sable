@@ -279,7 +279,18 @@ async def auth_middleware(request: Request, call_next):
     if not authorized:
         _client = request.client
         _origin = f"{_client.host}:{_client.port}" if _client else "unknown"
-        _mark = " (empty bearer)" if auth_header == "Bearer " else ""
+        _presented = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+        _expected = _auth_mod.AUTH_TOKEN or ""
+        _mark = " (no auth header)" if not auth_header else (
+            f" (presented={_presented[:8]}… len={len(_presented)}"
+            f" expected={_expected[:8]}… len={len(_expected)}"
+            f" match={_presented == _expected})"
+        )
+        import sys as _sys
+        print(f"[AUTH-DEBUG] 401 {request.method} {path} from {_origin}"
+              f" header={auth_header!r} {_mark}"
+              f" file_token={(_auth_mod.AUTH_TOKEN or '')[:8]}…",
+              file=_sys.stderr, flush=True)
         logger.warning(
             "401 UNAUTHORIZED  %s %s  <- %s%s",
             request.method, path, _origin, _mark,

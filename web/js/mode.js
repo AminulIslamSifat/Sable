@@ -11,6 +11,7 @@
   // Elements
   const layoutAgentBtn = document.getElementById('layoutAgent');
   const layoutChatBtn = document.getElementById('layoutChat');
+  const layoutStudyBtn = document.getElementById('layoutStudy');
   const sidebarToggle = document.getElementById('sidebarToggle');
   const chatCompact = document.getElementById('chatCompact');
   const chatCompactInput = document.getElementById('chatCompactInput');
@@ -23,18 +24,25 @@
     localStorage.setItem(STORAGE_KEY, mode);
 
     // Update switcher buttons
-    if (mode === 'agent') {
-      layoutAgentBtn.classList.add('active');
-      if (layoutChatBtn) layoutChatBtn.classList.remove('active');
-    } else {
-      layoutAgentBtn.classList.remove('active');
-      if (layoutChatBtn) layoutChatBtn.classList.add('active');
+    layoutAgentBtn.classList.toggle('active', mode === 'agent');
+    if (layoutChatBtn) layoutChatBtn.classList.toggle('active', mode === 'chat');
+    if (layoutStudyBtn) layoutStudyBtn.classList.toggle('active', mode === 'study');
+
+    // Study mode: show the full-screen study dashboard, hide chat scaffolding
+    const studyView = document.getElementById('studyView');
+    if (mode === 'study') {
+      body.classList.remove('ide-sidebar-open');
+      if (studyView) studyView.classList.remove('hidden');
+      // Close compact chat if it was open from IDE mode
+      if (chatCompact) chatCompact.classList.add('hidden');
+    } else if (studyView) {
+      studyView.classList.add('hidden');
     }
 
     // Chat mode: close any IDE panels, no tools
     if (mode === 'chat') {
       body.classList.remove('ide-sidebar-open');
-    } else {
+    } else if (mode !== 'study') {
       // Leaving IDE mode: close the right sidebar
       // Clear inline sizes set by IDE resize handles so agent-mode CSS
       // defaults stay in sync.
@@ -501,6 +509,11 @@
     if (layoutChatBtn) {
       layoutChatBtn.addEventListener('click', function () {
         setLayoutMode('chat');
+      });
+    }
+    if (layoutStudyBtn) {
+      layoutStudyBtn.addEventListener('click', function () {
+        setLayoutMode('study');
       });
     }
   }

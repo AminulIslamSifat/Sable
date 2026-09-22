@@ -45,8 +45,25 @@ def _has_any_account() -> bool:
 
 @router.get("/api/setup/status")
 async def setup_status() -> dict[str, Any]:
-    """Check if initial setup is needed (no auth token set yet)."""
-    has_token = _AUTH_TOKEN_FILE.exists() and _AUTH_TOKEN_FILE.read_text(encoding="utf-8").strip() != ""
+    """Check if initial setup is needed (no auth token set yet).
+
+    IMPORTANT: consult the in-memory AUTH_TOKEN (what the auth middleware
+    actually validates against), not just the on-disk file. If the startup
+    flow mutates the token after import, the file and memory can diverge and
+    the frontend will loop between setup/login because setup says 'done'.
+    """
+    import server.auth as _auth
+    _mem = getattr(_auth, "AUTH_TOKEN", None)
+    _file_tok = ""
+    if _AUTH_TOKEN_FILE.exists():
+        _file_tok = _AUTH_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    has_token = bool(_mem) and (_mem == _file_tok)
+    if not has_token:
+        logger.warning(
+            "setup/status: token mismatch — memory=%s file=%s",
+            "set" if _mem else "None",
+            "set" if _file_tok else "None",
+        )
     has_account = _has_any_account()
 
     # Check if any API provider has keys configured
@@ -81,8 +98,11 @@ async def set_password(payload: SetPasswordRequest) -> dict[str, str]:
     try:
         import server.auth as auth_mod
         auth_mod.AUTH_TOKEN = password
+        assert auth_mod.AUTH_TOKEN == password, "in-memory token failed to sync"
+        logger.info("setup: auth token set and synced in memory")
     except Exception as exc:
-        logger.warning("Failed to reload auth token in memory: %s", exc)
+        logger.error("Failed to reload auth token in memory: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Token sync failed: {exc}")
     # Set default persona to Agent for first-time users
     _set_default_persona()
     return {"status": "ok"}

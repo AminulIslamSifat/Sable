@@ -77,7 +77,7 @@
 
     // Inject the bearer token into every API request; bounce to login on 401.
     let _authBounced = false;
-    let _authReady = false; // Prevents 401 bounce during initial setup flow
+    let _authReady = false; // Set only AFTER auth flow fully completes
     const _origFetch = window.fetch.bind(window);
     window.fetch = async (url, init = {}) => {
       const token = getToken();
@@ -85,7 +85,13 @@
         init.headers = Object.assign({}, init.headers, { Authorization: "Bearer " + token });
       }
       const res = await _origFetch(url, init);
-      if (res.status === 401 && typeof url === "string" && !url.includes("/api/login") && !url.includes("/api/setup/") && _authReady && !_authBounced) {
+      // Only bounce on 401 if:
+      // 1. We actually sent a token (not just missing during init)
+      // 2. Auth flow has fully completed (_authReady)
+      // 3. Haven't already bounced this session
+      // 4. Not an auth/setup endpoint (those handle their own errors)
+      if (res.status === 401 && token && _authReady && !_authBounced && typeof url === "string"
+          && !url.includes("/api/login") && !url.includes("/api/setup/") && !url.includes("/api/account/")) {
         _authBounced = true;
         clearToken();
         // Check if setup is needed before showing login screen
@@ -123,6 +129,7 @@
         });
         if (res.ok) {
           setToken(token);
+          _authReady = true;
           _authBounced = false;
           showPhase(null);
           if (_loginResolve) { _loginResolve(); _loginResolve = null; }
@@ -196,9 +203,26 @@
 
             // === PHASE 1: Account sign in / sign up ===
             if (status.needs_password) {
-              _authReady = true;
+              // Do NOT set _authReady here — it causes the fetch interceptor
+              // to bounce on every API call fired by other scripts during setup,
+              // creating an infinite reload loop.
               showPhase(phaseAccount);
               if (window.AccountAuth) {
+                await window.AccountAuth.run();
+                try {
+                  const s2 = await _origFetch("/api/setup/status");
+                  if (s2.ok) status = await s2.json();
+                } catch {}
+              } else {
+                // account-auth.js hasn't loaded yet — wait for it
+                await new Promise((resolve) => {
+                  const check = setInterval(() => {
+                    if (window.AccountAuth) {
+                      clearInterval(check);
+                      resolve();
+                    }
+                  }, 50);
+                });
                 await window.AccountAuth.run();
                 try {
                   const s2 = await _origFetch("/api/setup/status");
@@ -346,17 +370,38 @@
               });
             }
 
-            // === PHASE 3: Auto-login ===
-            showPhase(loginOverlay);
-            loginTokenIn.value = getToken();
-            loginForm.dispatchEvent(new Event("submit"));
+            // === PHASE 3: Login ===
+            const _cached = getToken();
+            if (_cached) {
+              showPhase(loginOverlay);
+              loginTokenIn.value = _cached;
+              // MUST be cancelable — a non-cancelable submit event makes
+              // e.preventDefault() a no-op, so Firefox natively submits the
+              // form and reloads the page → infinite login-reload loop.
+              loginForm.dispatchEvent(new Event("submit", { cancelable: true }));
+              return waitForLogin();
+            }
+            // Setup complete, no session → account (email/password) gate
+            showPhase(phaseAccount);
+            if (!window.AccountAuth) {
+              await new Promise((resolve) => {
+                const _wait = setInterval(() => {
+                  if (window.AccountAuth) { clearInterval(_wait); resolve(); }
+                }, 50);
+              });
+            }
+            await window.AccountAuth.run();
+            if (getToken()) {
+              _authReady = true;
+              showPhase(null);
+            }
             return waitForLogin();
           }
       } catch {
         // Setup status check failed — fall through to normal login
       }
 
-      // === PHASE 3: Normal login flow ===
+      // === Status check failed — legacy token login fallback ===
       _authReady = true;
       showPhase(loginOverlay);
       loginTokenIn.focus();

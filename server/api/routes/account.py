@@ -131,9 +131,10 @@ async def account_me(authorization: str | None = Header(None)) -> dict:
     try:
         return await bridge.me(token)
     except bridge.BridgeError as exc:
-        # Session no longer valid — drop the stale local token too.
-        if exc.status == 401:
-            _auth.clear_auth_token()
+        # NEVER clear the local auth token here. A bridge 401 only means the
+        # bridge session expired/unreachable — the local token is still valid
+        # for the API middleware. Clearing it caused the login → reload → 401
+        # → login loop. Profile UI just shows signed-out state instead.
         raise HTTPException(status_code=exc.status, detail=exc.message)
 
 
