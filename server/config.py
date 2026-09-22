@@ -25,7 +25,14 @@ DB_PATH = BASE_DIR / "system/sable.db"
 UPLOAD_DIR = BASE_DIR / "system/uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 _AUTH_TOKEN_FILE = Path(__file__).resolve().parent.parent / "system/.auth_token"
-AUTH_EXEMPT_PREFIXES = ("/api/login", "/api/health", "/api/env", "/api/filesystem/", "/static/", "/system/uploads/", "/assets/", "/api/settings/accounts/create", "/api/setup/")
+AUTH_EXEMPT_PREFIXES = (
+    "/api/login", "/api/health", "/api/env", "/api/filesystem/",
+    "/static/", "/system/uploads/", "/assets/",
+    "/api/settings/accounts/create", "/api/setup/",
+    # Account front door — these must work before a session exists.
+    "/api/account/config", "/api/account/register",
+    "/api/account/login", "/api/account/google",
+)
 
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.0

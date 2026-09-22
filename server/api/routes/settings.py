@@ -3261,10 +3261,15 @@ async def remove_search_provider_key(provider: str, index: int) -> dict[str, Any
 @router.get("/api/settings/general")
 async def get_general_settings() -> dict[str, Any]:
     """Return general app settings."""
+    from engine.notifications.policy import CATEGORY_META, DEFAULT_CATEGORIES
     settings = _read_system_settings()
+    cats = settings.get("notification_categories") or {}
     return {
         "max_tool_output_chars": settings.get("max_tool_output_chars", 100_000),
         "desktop_notifications": settings.get("desktop_notifications", True),
+        "notification_categories": {
+            k: bool(cats.get(k, DEFAULT_CATEGORIES.get(k, True))) for k in CATEGORY_META
+        },
     }
 
 
@@ -3641,12 +3646,28 @@ async def update_general_settings(payload: dict[str, Any]) -> dict[str, Any]:
     if "desktop_notifications" in payload:
         settings["desktop_notifications"] = bool(payload["desktop_notifications"])
 
+    if "notification_categories" in payload:
+        from engine.notifications.policy import CATEGORY_META
+        incoming = payload["notification_categories"] or {}
+        if not isinstance(incoming, dict):
+            raise HTTPException(400, "notification_categories must be an object")
+        current = settings.get("notification_categories") or {}
+        for k in CATEGORY_META:
+            if k in incoming:
+                current[k] = bool(incoming[k])
+        settings["notification_categories"] = current
+
     _write_system_settings(settings)
     logger.info("General settings updated: max_tool_output_chars=%s, desktop_notifications=%s",
                 settings.get("max_tool_output_chars"), settings.get("desktop_notifications"))
+    from engine.notifications.policy import CATEGORY_META as _CM, DEFAULT_CATEGORIES as _DC
+    _cats = settings.get("notification_categories") or {}
     return {
         "status": "ok",
         "max_tool_output_chars": settings.get("max_tool_output_chars", 100_000),
         "desktop_notifications": settings.get("desktop_notifications", True),
+        "notification_categories": {
+            k: bool(_cats.get(k, _DC.get(k, True))) for k in _CM
+        },
     }
 

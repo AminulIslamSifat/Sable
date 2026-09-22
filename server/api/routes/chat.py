@@ -2902,6 +2902,17 @@ async def chat(request: ChatRequest):
                         "cwd_ids": _batch_cwd_ids,
                         "total": len(_batch_perm_ids) + len(_batch_cwd_ids),
                     })
+                    # Desktop notification: the turn is blocked on the user.
+                    try:
+                        from engine.notifications.policy import notify_category as _notify_perm
+                        _n_blocked = len(_batch_perm_ids) + len(_batch_cwd_ids)
+                        asyncio.ensure_future(_notify_perm(
+                            "permission", "Approval needed",
+                            f"{_n_blocked} tool{'s' if _n_blocked != 1 else ''} waiting for your approval",
+                            urgency="critical",
+                        ))
+                    except Exception:
+                        pass
 
                 if stream_error or error_message or not feedback or _ask_user_pause or _permission_pause or _cwd_pause:
                     break
@@ -3214,6 +3225,18 @@ async def chat(request: ChatRequest):
                         },
                     }
                     _broadcast_ae(_status_ev)
+                    # Desktop notification: a spawned subagent finished.
+                    try:
+                        from engine.notifications.policy import notify_category as _notify_ag
+                        _ag_role = _agent_run.role or "agent"
+                        asyncio.ensure_future(_notify_ag(
+                            "agent",
+                            "Subagent finished" if not error_message else "Subagent failed",
+                            f"{_ag_role}: {answer[:120]}" if not error_message else f"{_ag_role} failed",
+                            urgency="normal" if not error_message else "critical",
+                        ))
+                    except Exception:
+                        pass
                 except Exception:
                     pass
             # Release auto-turn lock — drains any queued agent results
@@ -3222,27 +3245,14 @@ async def chat(request: ChatRequest):
                 _at_done.mark_stream_done(active_chat_id)
             except Exception:
                 pass
-            # Desktop notification: fire when 3+ tool calls were executed this turn
+            # Desktop notifications — event-specific (image/research), with a
+            # generic long-turn fallback. Policy: engine.notifications.policy.
             try:
-                from server.api.routes.settings import _read_system_settings as _rs
-                _dn_enabled = _rs().get("desktop_notifications", True)
-                if _dn_enabled:
-                    _tool_call_count = sum(
-                        1 for _ev in skill_events
-                        if _ev.get("type") == "skill_end"
-                        and _ev.get("name") not in ("chat_title", "_loop_warning", "action_parse")
-                    )
-                    if _tool_call_count >= 3:
-                        from engine.notifications.desktop import notify_desktop
-                        _ok_count = sum(
-                            1 for _ev in skill_events
-                            if _ev.get("type") == "skill_end" and _ev.get("ok")
-                            and _ev.get("name") not in ("chat_title", "_loop_warning", "action_parse")
-                        )
-                        asyncio.ensure_future(notify_desktop(
-                            "Sable · Turn Complete",
-                            f"{_tool_call_count} tools used ({_ok_count} succeeded)",
-                        ))
+                from engine.notifications.policy import (
+                    plan_turn_notifications as _plan, notify_category as _notify_cat,
+                )
+                for _cat, _title, _body, _urg in _plan(skill_events):
+                    asyncio.ensure_future(_notify_cat(_cat, _title, _body, urgency=_urg))
             except Exception:
                 pass
     return StreamingResponse(

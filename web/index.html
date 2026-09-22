@@ -83,17 +83,31 @@
 </head>
 <body data-mode="agent">
   <!-- Login / Setup gate -->
-  <!-- Phase 1: Set Password (first-run only) -->
-  <div id="phasePassword" class="login-overlay hidden">
-    <div class="login-card">
+  <!-- Phase 1: Account sign in / sign up (first-run only) -->
+  <div id="phaseAccount" class="login-overlay hidden">
+    <div class="login-card" style="max-width:400px;">
       <img src="/static/assets/sable_icon.svg" alt="Sable" class="login-logo">
-      <h1>Welcome to Sable</h1>
-      <p class="login-sub">Choose a password to protect your workspace</p>
-      <form id="setupPasswordForm" class="login-form" autocomplete="off">
-        <input type="password" id="setupPassword" class="login-input" placeholder="Choose a password" autofocus>
-        <button type="submit" id="setupPasswordBtn" class="login-btn">Set Password</button>
+      <h1 id="acctTitle">Welcome to Sable</h1>
+      <p class="login-sub" id="acctSub">Sign in to your account</p>
+
+      <div style="display:flex;gap:4px;margin-bottom:16px;background:var(--panel);border-radius:10px;padding:3px;border:1px solid var(--border);">
+        <button id="acctTabSignin" type="button" class="setup-tab-btn active" style="flex:1;padding:8px 12px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;background:var(--accent);color:#fff;transition:all .2s;">Sign in</button>
+        <button id="acctTabSignup" type="button" class="setup-tab-btn" style="flex:1;padding:8px 12px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;background:transparent;color:var(--text);transition:all .2s;">Create account</button>
+      </div>
+
+      <form id="acctForm" class="login-form" autocomplete="on">
+        <input type="text" id="acctName" class="login-input" placeholder="Name (optional)" autocomplete="name" style="display:none;margin-bottom:8px;">
+        <input type="email" id="acctEmail" class="login-input" placeholder="Email" autocomplete="email" style="margin-bottom:8px;">
+        <input type="password" id="acctPassword" class="login-input" placeholder="Password" autocomplete="current-password" style="margin-bottom:10px;">
+        <button type="submit" id="acctSubmit" class="login-btn" style="width:100%;">Sign in</button>
       </form>
-      <p id="setupPasswordError" class="login-error hidden"></p>
+
+      <div id="acctDivider" style="display:none;align-items:center;gap:10px;margin:14px 0;color:var(--text-dim);font-size:11px;">
+        <div style="flex:1;height:1px;background:var(--border);"></div><span>or</span><div style="flex:1;height:1px;background:var(--border);"></div>
+      </div>
+      <button id="acctGoogle" type="button" class="login-btn" style="width:100%;display:none;background:var(--panel);color:var(--text);border:1px solid var(--border);">Continue with Google</button>
+
+      <p id="acctError" class="login-error hidden"></p>
     </div>
   </div>
 
@@ -944,6 +958,9 @@
       <div class="settings-tabs">
         <!-- Core -->
         <button class="settings-tab active" data-tab="general">General</button>
+        <button class="settings-tab" data-tab="updates"><span class="icon-emoji">🔄</span> Updates</button>
+        <button class="settings-tab" data-tab="profile"><span class="icon-emoji">👤</span> Profile</button>
+        <button class="settings-tab" data-tab="appearance"><span class="icon-emoji">🎛</span> Appearance</button>
         <button class="settings-tab" data-tab="personalization">Personalization</button>
         <button class="settings-tab" data-tab="account">Account</button>
         <!-- AI -->
@@ -961,7 +978,6 @@
         <button class="settings-tab" data-tab="logs">Live Logs</button>
         <button class="settings-tab" data-tab="shortcuts"><span class="icon-emoji">⌨️</span> Shortcuts</button>
         <button class="settings-tab" data-tab="security"><span class="icon-emoji">🔒</span> Security</button>
-        <button class="settings-tab" data-tab="updates"><span class="icon-emoji">🔄</span> Updates</button>
       </div>
       </div>
       <div class="settings-main">
@@ -984,7 +1000,54 @@
         <div id="tab-schedules" class="settings-tab-content">
           <div id="schedulesSettingsPanel"><p class="muted" style="font-size:12px;">Loading…</p></div>
         </div>
-        <div id="tab-general" class="settings-tab-content active">
+        <div id="tab-profile" class="settings-tab-content">
+          <!-- Signed in -->
+          <div id="profileSignedIn" style="display:none;">
+            <div style="display:flex;align-items:center;gap:14px;padding:14px;border:1px solid var(--border);border-radius:12px;background:var(--panel);margin-bottom:16px;">
+              <div id="profileAvatar" style="width:48px;height:48px;border-radius:50%;background:linear-gradient(135deg,var(--accent),#8b5cf6);display:flex;align-items:center;justify-content:center;font-size:19px;font-weight:700;color:#fff;flex-shrink:0;">?</div>
+              <div style="min-width:0;flex:1;">
+                <div id="profileName" style="font-size:15px;font-weight:650;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">—</div>
+                <div id="profileEmail" style="font-size:12px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">—</div>
+              </div>
+              <span id="profilePlanBadge" style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:4px 9px;border-radius:20px;background:var(--border);color:var(--text-dim);">free</span>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;">
+              <div style="padding:10px 12px;border:1px solid var(--border);border-radius:9px;background:var(--panel);">
+                <div style="font-size:10.5px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px;">Payment</div>
+                <div id="profilePayment" style="font-size:13px;color:var(--text);font-weight:600;">—</div>
+              </div>
+              <div style="padding:10px 12px;border:1px solid var(--border);border-radius:9px;background:var(--panel);">
+                <div style="font-size:10.5px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px;">Member since</div>
+                <div id="profileCreated" style="font-size:13px;color:var(--text);font-weight:600;">—</div>
+              </div>
+            </div>
+
+            <div style="padding:10px 12px;border:1px solid var(--border);border-radius:9px;background:var(--panel);margin-bottom:16px;">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                <div style="min-width:0;">
+                  <div style="font-size:10.5px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px;">Bridge</div>
+                  <div id="profileBridgeUrl" style="font-size:12px;color:var(--text);font-family:var(--font-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">—</div>
+                </div>
+                <span id="profileBridgeStatus" style="font-size:11px;color:var(--text-dim);white-space:nowrap;">checking…</span>
+              </div>
+            </div>
+
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <button id="profileProvisionBtn" class="icon-btn" style="width:auto;padding:7px 14px;font-size:12px;">🔑 Provision Vault Key</button>
+              <button id="profileLogoutBtn" class="icon-btn" style="width:auto;padding:7px 14px;font-size:12px;color:#ff6b6b;border-color:#ff6b6b55;">Log out</button>
+            </div>
+            <p id="profileStatus" style="font-size:11.5px;color:var(--text-dim);margin-top:10px;"></p>
+          </div>
+
+          <!-- Signed out -->
+          <div id="profileSignedOut" style="display:none;text-align:center;padding:24px 0;">
+            <p style="font-size:13px;color:var(--text-dim);margin-bottom:14px;">Not signed in to a Sable account.</p>
+            <button id="profileSignInBtn" class="login-btn" style="width:auto;padding:8px 20px;font-size:13px;">Sign in</button>
+          </div>
+        </div>
+        <div id="tab-appearance" class="settings-tab-content">
+          <h3 class="mem-title"><span class="icon-emoji">🎨</span>Theme &amp; Display</h3>
           <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
             <label for="fontSizeSelect" style="font-size:13px;color:var(--text-dim);">Response Font Size</label>
             <select id="fontSizeSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
@@ -1013,35 +1076,12 @@
               <option value="system">System Default</option>
             </select>
           </div>
-
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;">
-            <div style="min-width:0;">
-              <label for="networkModeSelect" style="font-size:13px;color:var(--text-dim);">Network Access</label>
-              <p style="font-size:11px;color:var(--text-dim);opacity:.75;margin:2px 0 0;line-height:1.4;"><code>127.0.0.1</code> = Local only (just this device) &middot; <code>0.0.0.0</code> = Shared LAN (any device on your network can open Sable)</p>
-            </div>
-            <select id="networkModeSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;flex-shrink:0;">
-              <option value="local">🔒 Local only</option>
-              <option value="lan">🌐 Shared LAN</option>
-            </select>
-          </div>
-          <p id="networkModeStatus" style="font-size:11px;color:var(--text-dim);opacity:.75;margin:0;min-height:14px;"></p>
-
           <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
             <label for="iconStyleSelect" style="font-size:13px;color:var(--text-dim);">Icon Style</label>
             <select id="iconStyleSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;">
               <option value="emoji" selected>Emoji</option>
               <option value="lucide">Lucide</option>
             </select>
-          </div>
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
-            <label for="maxToolOutputInput" style="font-size:13px;color:var(--text-dim);">Max Tool Output (chars)</label>
-            <input id="maxToolOutputInput" type="number" min="1000" step="10000" value="100000"
-              style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;width:110px;" />
-          </div>
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
-            <label for="desktopNotifToggle" style="font-size:13px;color:var(--text-dim);">Desktop Notifications (3+ tools)</label>
-            <input id="desktopNotifToggle" type="checkbox" checked
-              style="width:18px;height:18px;cursor:pointer;accent-color:var(--accent);" />
           </div>
           <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
@@ -1091,6 +1131,41 @@
                 <span class="swatch-dot" style="background:#3b82f6;"></span>Blue
               </button>
             </div>
+          </div>
+
+          <h3 class="mem-title" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);"><span class="icon-emoji">🎛</span>Activity Rail</h3>
+          <p class="muted mem-desc">Choose which rail buttons are visible. Pinned buttons (Chat, Search, Files, Terminal, Dashboard, Library, Settings) can't be hidden.</p>
+          <div id="railToggleList" style="display:flex;flex-direction:column;gap:6px;margin-top:12px;"></div>
+          <div class="mem-input-row mem-save-row" style="margin-top:14px;">
+            <button id="railResetBtn" class="icon-btn" style="width:auto;padding:6px 16px;font-size:12px;"><span class="icon-emoji">↺</span>Reset to defaults</button>
+            <span id="railStatus" class="muted mem-status"></span>
+          </div>
+        </div>
+        <div id="tab-general" class="settings-tab-content active">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;">
+            <div style="min-width:0;">
+              <label for="networkModeSelect" style="font-size:13px;color:var(--text-dim);">Network Access</label>
+              <p style="font-size:11px;color:var(--text-dim);opacity:.75;margin:2px 0 0;line-height:1.4;"><code>127.0.0.1</code> = Local only (just this device) &middot; <code>0.0.0.0</code> = Shared LAN (any device on your network can open Sable)</p>
+            </div>
+            <select id="networkModeSelect" style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;cursor:pointer;flex-shrink:0;">
+              <option value="local">🔒 Local only</option>
+              <option value="lan">🌐 Shared LAN</option>
+            </select>
+          </div>
+          <p id="networkModeStatus" style="font-size:11px;color:var(--text-dim);opacity:.75;margin:0;min-height:14px;"></p>
+
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+            <label for="maxToolOutputInput" style="font-size:13px;color:var(--text-dim);">Max Tool Output (chars)</label>
+            <input id="maxToolOutputInput" type="number" min="1000" step="10000" value="100000"
+              style="background:var(--panel);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;width:110px;" />
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+            <label for="desktopNotifToggle" style="font-size:13px;color:var(--text-dim);">Desktop Notifications</label>
+            <input id="desktopNotifToggle" type="checkbox" checked
+              style="width:18px;height:18px;cursor:pointer;accent-color:var(--accent);" />
+          </div>
+          <div id="notifCategoryList" style="display:flex;flex-direction:column;gap:5px;margin:2px 0 6px 0;padding-left:10px;border-left:2px solid var(--border);">
+            <p class="muted" style="font-size:11px;margin:0 0 2px 0;">Notify me when…</p>
           </div>
           <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
             <label for="headlessToggle" style="font-size:13px;color:var(--text-dim);">Headless Browser</label>
@@ -2192,6 +2267,9 @@
   <script src="/static/js/projects-panel.js?v=6"></script>
   <script src="/static/js/settings-init.js?v=7"></script>
   <script src="/static/js/settings-ui.js?v=5"></script>
+  <script src="/static/js/profile.js?v=1"></script>
+  <script src="/static/js/rail-settings.js?v=1"></script>
+  <script src="/static/js/account-auth.js?v=1"></script>
   <script src="/static/js/settings-bot.js?v=1"></script>
   <script src="/static/js/settings-schedules.js?v=1"></script>
   <script src="/static/js/library.js?v=2"></script>

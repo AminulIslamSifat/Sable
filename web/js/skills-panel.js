@@ -1401,6 +1401,44 @@
     const maxToolOutputInput = document.getElementById("maxToolOutputInput");
 
     const desktopNotifToggle = document.getElementById("desktopNotifToggle");
+    const notifCategoryList = document.getElementById("notifCategoryList");
+
+    // Category labels — must match engine/notifications/policy.py CATEGORY_META
+    const NOTIF_CATEGORIES = [
+      ["permission", "🔐 A tool needs my approval"],
+      ["image",      "🎨 Image generation finishes"],
+      ["research",   "🔬 Deep research finishes"],
+      ["agent",      "🤖 A subagent finishes"],
+      ["turn",       "✅ A long turn finishes (3+ tools)"],
+    ];
+
+    function _renderNotifCategories(cats) {
+      if (!notifCategoryList) return;
+      notifCategoryList.innerHTML =
+        '<p class="muted" style="font-size:11px;margin:0 0 2px 0;">Notify me when…</p>' +
+        NOTIF_CATEGORIES.map(([id, label]) => `
+          <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;cursor:pointer;padding:2px 0;">
+            <input type="checkbox" data-notif-cat="${id}" ${cats?.[id] === false ? "" : "checked"}
+              style="width:15px;height:15px;cursor:pointer;accent-color:var(--accent);">
+            <span>${label}</span>
+          </label>`).join("");
+
+      notifCategoryList.querySelectorAll("input[data-notif-cat]").forEach((cb) => {
+        cb.addEventListener("change", async () => {
+          const payload = {};
+          notifCategoryList.querySelectorAll("input[data-notif-cat]").forEach((c) => {
+            payload[c.dataset.notifCat] = c.checked;
+          });
+          try {
+            await fetch("/api/settings/general", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ notification_categories: payload }),
+            });
+          } catch {}
+        });
+      });
+    }
 
     async function loadGeneralSettings() {
       try {
@@ -1413,8 +1451,17 @@
           if (desktopNotifToggle) {
             desktopNotifToggle.checked = d.desktop_notifications !== false;
           }
+          _renderNotifCategories(d.notification_categories || {});
+          _syncNotifCategoryDisabled();
         }
       } catch {}
+    }
+
+    function _syncNotifCategoryDisabled() {
+      if (!notifCategoryList) return;
+      const on = desktopNotifToggle ? desktopNotifToggle.checked : true;
+      notifCategoryList.style.opacity = on ? "1" : "0.4";
+      notifCategoryList.style.pointerEvents = on ? "" : "none";
     }
 
     if (maxToolOutputInput) {
@@ -1433,6 +1480,7 @@
 
     if (desktopNotifToggle) {
       desktopNotifToggle.addEventListener("change", async () => {
+        _syncNotifCategoryDisabled();
         try {
           await fetch("/api/settings/general", {
             method: "POST",

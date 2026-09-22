@@ -762,9 +762,9 @@ class MainChatGuard:
                 block = block.strip()
                 if not block:
                     continue
-                # Skip JSON validation for XML invoke format — it's valid, just not JSON.
-                # Models may emit <invoke name="...">...</invoke> inside <tool_call> wrappers.
-                if _re.search(r'<\s*invoke\b', block, _re.I):
+                # Skip JSON validation for XML invoke/function format — it's valid, just not JSON.
+                # Models may emit <invoke name="..."> or <function=name> inside <tool_call> wrappers.
+                if _re.search(r'<\s*(?:invoke\b|function\s*=)', block, _re.I):
                     continue
                 # Pre-validate: try sanitizing before declaring failure
                 sanitized_block = sanitize_transport(block)
@@ -824,8 +824,13 @@ class MainChatGuard:
             _re.I
         )
         has_tool_json = bool(tool_json_pat.search(_stripped))
+        # Check for MiMo-style XML function calls: <function=tool_name>
+        has_mimo_xml = bool(_re.search(
+            r'<\s*function\s*=\s*(?:' + '|'.join(_re.escape(t) for t in KNOWN_TAGS) + r')\b',
+            _stripped, _re.I
+        ))
 
-        if has_action_markers or has_tool_json:
+        if has_action_markers or has_tool_json or has_mimo_xml:
             self._incomplete_warned = True
             return (
                 "[INCOMPLETE RESPONSE WARNING] Your last response contained "

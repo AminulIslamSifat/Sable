@@ -44,6 +44,7 @@ from .routes.telegram import router as telegram_router
 from .routes.research import router as research_router
 from .routes.tracknote import router as tracknote_router
 from .routes.setup import router as setup_router
+from .routes.account import router as account_router
 from .routes.cookbook import router as cookbook_router
 from .routes.checkpoints import router as checkpoints_router
 from .routes.personas import router as personas_router
@@ -305,6 +306,7 @@ app.include_router(telegram_router)
 app.include_router(research_router)
 app.include_router(tracknote_router)
 app.include_router(setup_router)
+app.include_router(account_router)
 app.include_router(cookbook_router)
 app.include_router(checkpoints_router)
 app.include_router(personas_router)

@@ -17,3 +17,23 @@ def _load_auth_token() -> str | None:
     return env_token or None
 
 AUTH_TOKEN: str | None = _load_auth_token()
+
+
+def set_auth_token(token: str) -> None:
+    """Persist + activate a session token (called after bridge login/register)."""
+    global AUTH_TOKEN
+    _AUTH_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _AUTH_TOKEN_FILE.write_text(token, encoding="utf-8")
+    AUTH_TOKEN = token
+
+
+def clear_auth_token() -> None:
+    """Drop the local session token (logout)."""
+    global AUTH_TOKEN
+    try:
+        _AUTH_TOKEN_FILE.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+    AUTH_TOKEN = None

@@ -395,6 +395,17 @@ class SkillParser:
     _LEGACY_BLOCK_OPEN = re.compile(r"<tool_calls\s*>", re.I)
     _LEGACY_BLOCK_CLOSE = re.compile(r"</tool_calls\s*>", re.I)
 
+    # MiMo-style XML: <function=name><parameter=key>value</parameter></function>
+    # MiMo uses attribute-equals syntax instead of name="..." for both functions and params.
+    _MIMO_FUNCTION_RE = re.compile(
+        r'<function\s*=\s*([^>\s]+)\s*>(.*?)</function\s*>',
+        re.DOTALL | re.IGNORECASE,
+    )
+    _MIMO_PARAM_RE = re.compile(
+        r'<parameter\s*=\s*([^>\s]+)\s*>(.*?)</parameter\s*>',
+        re.DOTALL | re.IGNORECASE,
+    )
+
     # Safety net regex for orphaned tags in bare-JSON prefix text.
     # Also catches bare fragments like "action>" or "tool_call>" that result
     # from </ being consumed by partial-tag detection in a prior chunk.
@@ -695,7 +706,8 @@ class SkillParser:
                     _has_invoke = (
                         self._LEGACY_INVOKE_RE.search(_ahead)
                         or self._DSML_INVOKE_RE.search(_ahead)
-                        or _is_prefix_of_any(stripped_ahead, ('<invoke', '<parameter'))
+                        or self._MIMO_FUNCTION_RE.search(_ahead)
+                        or _is_prefix_of_any(stripped_ahead, ('<invoke', '<parameter', '<function'))
                     )
                     if _has_invoke:
                         # Hybrid: <tool_call>/<action> wrapping XML invoke tags.
@@ -815,8 +827,21 @@ class SkillParser:
                     attrs[pname] = pval
         return attrs
 
+    @classmethod
+    def _parse_mimo_params(cls, inner: str) -> dict[str, Any]:
+        """Parse MiMo-style <parameter=key>value</parameter> tags."""
+        attrs: dict[str, Any] = {}
+        for m in cls._MIMO_PARAM_RE.finditer(inner):
+            pname, pval = m.group(1).strip(), m.group(2).strip()
+            # Auto-detect JSON types (numbers, booleans, arrays, objects)
+            try:
+                attrs[pname] = json.loads(pval)
+            except (json.JSONDecodeError, ValueError):
+                attrs[pname] = pval
+        return attrs
+
     def _extract_dsml(self, block: str) -> Generator[dict[str, Any], None, None]:
-        """Parse a complete DSML/legacy tool_calls block and yield tag_found events.
+        """Parse a complete DSML/legacy/MiMo tool_calls block and yield tag_found events.
         
         Always tries BOTH DSML and legacy invoke patterns since DeepSeek can produce
         hybrid blocks (e.g. <DSML|tool_calls> with plain <invoke> inside).
@@ -851,6 +876,24 @@ class SkillParser:
                     break
             str_attrs = _stringify_params(params)
             _plog(f"LEGACY_XML_TAG_FOUND: {name} | attrs_keys={list(str_attrs.keys())}")
+            yield {
+                "type": "tag_found",
+                "name": name,
+                "attrs": str_attrs,
+                "content": content,
+            }
+            found = True
+        # ALSO try MiMo function/parameter format (<function=name><parameter=key>val</parameter></function>)
+        for m in self._MIMO_FUNCTION_RE.finditer(block):
+            name = m.group(1).strip()
+            params = self._parse_mimo_params(m.group(2))
+            content = ""
+            for ck in _CONTENT_PARAM_KEYS:
+                if ck in params:
+                    content = str(params[ck])
+                    break
+            str_attrs = _stringify_params(params)
+            _plog(f"MIMO_XML_TAG_FOUND: {name} | attrs_keys={list(str_attrs.keys())}")
             yield {
                 "type": "tag_found",
                 "name": name,

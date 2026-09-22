@@ -151,6 +151,18 @@ async def research_events(session_id: str, request: Request):
                     event = await asyncio.wait_for(queue.get(), timeout=15)
                     yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
                     if event.get("phase") in ("done", "error"):
+                        # Desktop notification: research finished (or errored).
+                        try:
+                            from engine.notifications.policy import notify_category as _notify_r
+                            _ph = event.get("phase")
+                            asyncio.ensure_future(_notify_r(
+                                "research",
+                                "Research complete" if _ph == "done" else "Research failed",
+                                str(event.get("status") or session_id)[:180],
+                                urgency="normal" if _ph == "done" else "critical",
+                            ))
+                        except Exception:
+                            pass
                         break
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"

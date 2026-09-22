@@ -203,6 +203,32 @@ _TOOL_FORMAT_HERMES = f"""\
 {_TC_CLOSE}
 """
 
+_TOOL_FORMAT_MIMO = f"""\
+## ⚠️ HIGHEST PRIORITY: Tool Call Format (XML)
+
+> [!CRITICAL]
+> This instruction overrides ALL other formatting guidance.
+> You MUST use XML tool call format for every tool call. No exceptions.
+
+- Every tool call MUST be wrapped in `<tool_call>` ... `</tool_call>` tags.
+- Inside the wrapper, use `<function=TOOL_NAME>` to specify the tool.
+- Inside the function tag, use `<parameter=KEY>VALUE</parameter>` for each argument.
+- For parameters that are numbers, booleans, arrays, or objects, pass valid JSON as the value.
+- For string parameters, pass the raw text value directly.
+- Multiple tool calls: use SEPARATE `<tool_call>` blocks, one per call.
+- NEVER output JSON arrays, bare JSON objects, or any other format for tool calls.
+- Tool call blocks appear ONLY in plain text, NEVER inside fenced code blocks.
+- Keep prose to ONE short sentence before the tool call block.
+- Place all tool call blocks at the END of your response.
+
+### Single call
+<tool_call><function=execute_command><parameter=command>ls -la</parameter><parameter=timeout>30</parameter></function></tool_call>
+
+### Multiple calls
+<tool_call><function=view_file><parameter=path>/home/user/file.txt</parameter></function></tool_call>
+<tool_call><function=execute_command><parameter=command>echo hello</parameter></function></tool_call>
+"""
+
 _TOOL_FORMAT_NONE = """\
 ## Tool Call Format
 
@@ -215,6 +241,7 @@ _NAMED_TOOL_FORMATS: dict[str, str] = {
     "qwen_json": _TOOL_FORMAT_QWEN,
     "hermes": _TOOL_FORMAT_HERMES,
     "dsml": _TOOL_FORMAT_DEEPSEEK,
+    "mimo": _TOOL_FORMAT_MIMO,
     "native": _TOOL_FORMAT_NATIVE,
     "none": _TOOL_FORMAT_NONE,
 }
@@ -224,6 +251,7 @@ _PROVIDER_TOOL_FORMATS: dict[str, str] = {
     "deepseek": _TOOL_FORMAT_QWEN,  # TEMP: use Qwen <action> format instead of DSML
     "qwen": _TOOL_FORMAT_QWEN,
     "zai": _TOOL_FORMAT_QWEN,
+    "mimo": _TOOL_FORMAT_MIMO,
     "native": _TOOL_FORMAT_NATIVE,
     "none": _TOOL_FORMAT_NONE,
 }

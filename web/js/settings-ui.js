@@ -68,6 +68,8 @@
         else if (tabName === 'tools') loadTools();
         else if (tabName === 'shortcuts') renderShortcutsTab();
         else if (tabName === 'updates') loadUpdatesTab();
+        else if (tabName === 'profile') { if (window.loadProfileTab) window.loadProfileTab(); }
+        else if (tabName === 'appearance') { if (window.loadRailTab) window.loadRailTab(); }
       }
     }
 
@@ -278,6 +280,8 @@
         else if (tabName === 'schedules') { if (window._schedulesSettingsInit) window._schedulesSettingsInit(); }
         else if (tabName === 'shortcuts') renderShortcutsTab();
         else if (tabName === 'updates') loadUpdatesTab();
+        else if (tabName === 'profile') { if (window.loadProfileTab) window.loadProfileTab(); }
+        else if (tabName === 'appearance') { if (window.loadRailTab) window.loadRailTab(); }
       });
     });
 

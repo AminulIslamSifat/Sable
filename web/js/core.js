@@ -28,7 +28,7 @@
     const TOKEN_KEY = "sable_token";
 
     // Phase elements
-    const phasePassword  = document.getElementById("phasePassword");
+    const phaseAccount   = document.getElementById("phaseAccount");
     const phaseSetup     = document.getElementById("phaseSetup");
     const loginOverlay   = document.getElementById("loginOverlay");
 
@@ -36,11 +36,6 @@
     const loginTokenIn = document.getElementById("loginToken");
     const loginBtn     = document.getElementById("loginBtn");
     const loginError   = document.getElementById("loginError");
-
-    const setupPasswordForm = document.getElementById("setupPasswordForm");
-    const setupPasswordIn   = document.getElementById("setupPassword");
-    const setupPasswordBtn  = document.getElementById("setupPasswordBtn");
-    const setupPasswordErr  = document.getElementById("setupPasswordError");
 
     // Setup phase 2 elements
     const setupTabApiKey   = document.getElementById("setupTabApiKey");
@@ -74,7 +69,7 @@
 
     // Hide all phases, then show one
     function showPhase(phase) {
-      phasePassword.classList.add("hidden");
+      phaseAccount.classList.add("hidden");
       phaseSetup.classList.add("hidden");
       loginOverlay.classList.add("hidden");
       if (phase) phase.classList.remove("hidden");
@@ -99,8 +94,7 @@
           if (sRes.ok) {
             const sData = await sRes.json();
             if (sData.needs_password) {
-              showPhase(phasePassword);
-              setupPasswordIn.focus();
+              showPhase(phaseAccount);
               return res;
             }
           }
@@ -145,8 +139,7 @@
               const sData = await sRes.json();
               if (sData.needs_password) {
                 clearToken();
-                showPhase(phasePassword);
-                setupPasswordIn.focus();
+                showPhase(phaseAccount);
                 return;
               }
             }
@@ -199,44 +192,23 @@
       try {
           const statusRes = await _origFetch("/api/setup/status");
           if (statusRes.ok) {
-            const status = await statusRes.json();
+            let status = await statusRes.json();
+
+            // === PHASE 1: Account sign in / sign up ===
             if (status.needs_password) {
-              // === PHASE 1: Set Password ===
               _authReady = true;
-              showPhase(phasePassword);
-              setupPasswordIn.focus();
+              showPhase(phaseAccount);
+              if (window.AccountAuth) {
+                await window.AccountAuth.run();
+                try {
+                  const s2 = await _origFetch("/api/setup/status");
+                  if (s2.ok) status = await s2.json();
+                } catch {}
+              }
+            }
 
-              await new Promise((resolve) => {
-                setupPasswordForm.addEventListener("submit", async (e) => {
-                  e.preventDefault();
-                  const pw = setupPasswordIn.value.trim();
-                  if (!pw) return;
-                  setupPasswordBtn.disabled = true;
-                  setupPasswordErr.classList.add("hidden");
-                  try {
-                    const res = await _origFetch("/api/setup/password", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ password: pw }),
-                    });
-                    if (res.ok) {
-                      setToken(pw);
-                      resolve();
-                    } else {
-                      const data = await res.json().catch(() => ({}));
-                      setupPasswordErr.textContent = data.detail || "Failed to set password.";
-                      setupPasswordErr.classList.remove("hidden");
-                    }
-                  } catch {
-                    setupPasswordErr.textContent = "Connection error.";
-                    setupPasswordErr.classList.remove("hidden");
-                  } finally {
-                    setupPasswordBtn.disabled = false;
-                  }
-                }, { once: true });
-              });
-
-              // === PHASE 2: Setup — API Key or Browser Login ===
+            // === PHASE 2: Setup — API Key or Browser Login ===
+            if (status.needs_setup) {
               showPhase(phaseSetup);
 
               // Load available browsers for the dropdown
@@ -372,13 +344,13 @@
                   setupSkipBtn.addEventListener("click", () => resolve(), { once: true });
                 }
               });
-
-              // === PHASE 3: Auto-login after setup ===
-              showPhase(loginOverlay);
-              loginTokenIn.value = getToken();
-              loginForm.dispatchEvent(new Event("submit"));
-              return waitForLogin();
             }
+
+            // === PHASE 3: Auto-login ===
+            showPhase(loginOverlay);
+            loginTokenIn.value = getToken();
+            loginForm.dispatchEvent(new Event("submit"));
+            return waitForLogin();
           }
       } catch {
         // Setup status check failed — fall through to normal login
