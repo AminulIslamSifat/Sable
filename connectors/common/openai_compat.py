@@ -250,7 +250,7 @@ class OpenAICompatClient:
         if len(self._keys) <= 1:
             return self._current_key
         if not _auto_rotate_enabled(self.NAME.lower()):
-            logger.info("[%s] Auto-rotate disabled — staying on current key", self.NAME)
+            self.logger.info("[%s] Auto-rotate disabled — staying on current key", self.NAME)
             return self._current_key
         self._key_index = (self._key_index + 1) % len(self._keys)
         return self._keys[self._key_index]

@@ -513,9 +513,16 @@ install_systemd_service() {
         return 1
     fi
 
+    # Regenerate if an OLD service exists that does not point at our launcher.
+    local want="${SCRIPT_DIR}/sable-launch.sh --no-browser"
     if systemctl --user cat "$SERVICE_NAME" >/dev/null 2>&1; then
-        _ok "systemd service already installed"
-        return 0
+        local have
+        have="$(systemctl --user show -p ExecStart --value "$SERVICE_NAME" 2>/dev/null || true)"
+        if printf '%s' "$have" | grep -qF "${SCRIPT_DIR}/sable-launch.sh"; then
+            _ok "systemd service already installed (starter-first)"
+            return 0
+        fi
+        _warn "systemd service is stale — regenerating to point at the launcher"
     fi
 
     _info "Installing systemd user service..."
@@ -532,7 +539,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${SCRIPT_DIR}
-ExecStart=${uv_bin} run python server.py
+ExecStart=${SCRIPT_DIR}/sable-launch.sh --no-browser
 Restart=on-failure
 RestartSec=3
 Environment=TERM=xterm-256color
@@ -625,49 +632,23 @@ install_desktop_file() {
     local desktop_file="${app_dir}/sable.desktop"
     local launcher="${SCRIPT_DIR}/sable-launch.sh"
 
-    # Create the smart launcher script that checks port before starting
-    cat > "$launcher" << 'LAUNCHER_EOF'
+    # The launcher is a committed, starter-first script (sable-launch.sh).
+    # If it is missing, fall back to writing a minimal shim so the
+    # desktop entry still points somewhere sane.
+    if [ ! -f "$launcher" ]; then
+        _warn "sable-launch.sh missing — writing minimal shim"
+        cat > "$launcher" << 'LAUNCHER_EOF'
 #!/usr/bin/env bash
-# Sable smart launcher — checks if server is running, starts if needed, opens browser
-SABLE_PORT="${SABLE_PORT:-61770}"
-SABLE_URL="http://127.0.0.1:${SABLE_PORT}"
+# minimal shim — real launcher is sable-launch.sh in the repo root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-is_server_running() {
-    curl -sf --max-time 2 "${SABLE_URL}/api/health" >/dev/null 2>&1 || \
-    curl -sf --max-time 2 "${SABLE_URL}/" >/dev/null 2>&1
-}
-
-open_browser() {
-    if command -v xdg-open >/dev/null 2>&1; then
-        xdg-open "$SABLE_URL" 2>/dev/null &
-    elif command -v python3 >/dev/null 2>&1; then
-        python3 -c "import webbrowser; webbrowser.open('${SABLE_URL}')" 2>/dev/null &
-    fi
-}
-
-if is_server_running; then
-    open_browser
-else
-    # Start server in background via the main start script, wait, then open
-    cd "$SCRIPT_DIR" || exit 1
-    nohup bash "$SCRIPT_DIR/start" --background >/dev/null 2>&1 &
-
-    # Wait up to 30s for server to come up
-    elapsed=0
-    while [ $elapsed -lt 30 ]; do
-        sleep 1
-        ((elapsed++))
-        if is_server_running; then
-            open_browser
-            exit 0
-        fi
-    done
-
-    # Timeout — try opening anyway
-    open_browser
+cd "$SCRIPT_DIR" || exit 1
+if [ -x "$SCRIPT_DIR/sable-tools/starter/sable-starter-bin" ]; then
+    exec "$SCRIPT_DIR/sable-tools/starter/sable-starter-bin" \
+        --vault "$SCRIPT_DIR/vault.sable" --port "${SABLE_PORT:-61770}" --run
 fi
+exec uv run python server.py
 LAUNCHER_EOF
+    fi
     chmod +x "$launcher"
 
     mkdir -p "$app_dir"
@@ -764,13 +745,13 @@ main() {
         _warn "Falling back to foreground mode..."
     fi
 
-    # Foreground fallback
-    _info "Starting in foreground mode..."
-    print_info_box
-    open_browser
+    # Foreground fallback — hand off to the starter-first launcher.
+    # The launcher resolves starter -> sable-boot -> server.py and opens
+    # the browser itself, so nothing below needs to duplicate that logic.
+    _info "Starting via launcher (starter-first)..."
     export TERM="${TERM:-xterm-256color}"
     export SABLE_PORT
-    exec uv run python server.py
+    exec "${SCRIPT_DIR}/sable-launch.sh"
 }
 
 # Trap unexpected exits

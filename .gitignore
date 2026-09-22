@@ -119,3 +119,7 @@ engine/scraper/diagnostics/bin/
 
 # Diagnostics cache - build stage only; build.sh stages to /tmp. Never commit.
 engine/scraper/diagnostics/cache/
+
+# vault artifacts
+*.sable
+vault.sable

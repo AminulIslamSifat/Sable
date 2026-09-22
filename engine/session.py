@@ -624,7 +624,25 @@ class BrowserManager:
         file_class = "vision" if is_image else "document"
         show_type = "image" if is_image else "file"
 
-        # Fallback to config constants if caller didn't provide credentials
+        # Prefer live browser tokens — the disk-cached config constants go
+        # stale and STS rejects them with "Token has expired" (2026-09-21).
+        if not (cookies and bx_ua and bx_umidtoken):
+            try:
+                live = await self.get_live_headers()
+
+                def _hdr(name: str, _live: dict = live) -> str | None:
+                    for k, v in (_live or {}).items():
+                        if k.lower() == name.lower():
+                            return v
+                    return None
+
+                cookies = cookies or _hdr("cookie")
+                bx_ua = bx_ua or _hdr("bx-ua")
+                bx_umidtoken = bx_umidtoken or _hdr("bx-umidtoken")
+            except Exception as e:
+                print(f"[WARN] upload_file live-header harvest failed ({e}) — trying disk tokens")
+
+        # Fallback to config constants as last resort
         cookies = cookies or COOKIES
         bx_ua = bx_ua or BX_UA
         bx_umidtoken = bx_umidtoken or BX_UMIDTOKEN

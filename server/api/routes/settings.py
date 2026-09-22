@@ -232,6 +232,38 @@ async def refresh_gemini_web_token() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Refresh failed: {exc}")
 
 
+@router.post("/api/settings/mimo/refresh-token")
+async def refresh_mimo_token() -> dict[str, Any]:
+    """Force a live MiMo cookie read from the provider's browser profile.
+
+    MiMo auth is 3 cookies (xiaomichatbot_serviceToken, userId,
+    xiaomichatbot_ph). Pinned account wins; otherwise the global active
+    account is used. On success the client's in-memory jar is dropped so the
+    next send picks up the fresh cookies.
+    """
+    try:
+        jar = await service.get_mimo_cookies()
+        browser = service._browser_for_provider("mimo")
+        account = Path(browser.user_data_dir).name
+        try:
+            from connectors.mimo.client import get_client as _mimo
+            _mimo().invalidate_jar()
+        except Exception:
+            pass
+        tok = jar.get("xiaomichatbot_serviceToken", "")
+        preview = f"{tok[:6]}...{tok[-4:]}" if len(tok) > 12 else "***"
+        return {
+            "status": "ok",
+            "message": f"MiMo token refreshed for {account}",
+            "account": account,
+            "token_preview": preview,
+            "active": True,
+        }
+    except Exception as exc:
+        logger.error("MiMo token refresh failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Refresh failed: {exc}")
+
+
 @router.post("/api/settings/browser/refresh-waf")
 async def refresh_waf_token() -> dict[str, Any]:
     """Re-launch browser briefly to extract fresh Qwen WAF/cookie headers,
@@ -242,8 +274,10 @@ async def refresh_waf_token() -> dict[str, Any]:
         has_cookie = bool(headers.get("Cookie"))
         has_bx = bool(headers.get("bx-ua"))
 
-        # Same browser session → grab the other providers' tokens while we're here.
-        ds_ok = zai_ok = False
+        # Grab EVERY provider's tokens in one pass. Each provider's browser is
+        # launched once and left running (no close), so refreshing all of them
+        # is one warm Chromium per account instead of an open→close→open cycle.
+        ds_ok = zai_ok = gem_ok = mimo_ok = False
         try:
             ds_token = await get_deepseek_client().refresh_token()
             ds_ok = bool(ds_token)
@@ -254,6 +288,29 @@ async def refresh_waf_token() -> dict[str, Any]:
             zai_ok = bool(zai_token)
         except Exception as exc:
             logger.warning("z.ai token refresh during WAF refresh failed: %s", exc)
+        try:
+            from connectors.gemini_web import auth as _gauth
+            gem_browser = service._browser_for_provider("gemini_web")
+            await gem_browser.start()
+            ctx = gem_browser.context
+            if ctx is not None:
+                raw = await ctx.cookies("https://gemini.google.com")
+                gjar = {c["name"]: c["value"] for c in raw}
+                if _gauth.has_google_auth(gjar):
+                    _gauth.save_gemini_auth(gem_browser.user_data_dir, gjar)
+                    from connectors.gemini_web.client import get_client as _gw
+                    _gw().invalidate_jar()
+                    gem_ok = True
+        except Exception as exc:
+            logger.warning("Gemini token refresh during WAF refresh failed: %s", exc)
+        try:
+            mimo_jar = await service.get_mimo_cookies()
+            if mimo_jar:
+                from connectors.mimo.client import get_client as _mimo
+                _mimo().invalidate_jar()
+                mimo_ok = True
+        except Exception as exc:
+            logger.warning("MiMo token refresh during WAF refresh failed: %s", exc)
 
         return {
             "status": "ok",
@@ -262,6 +319,8 @@ async def refresh_waf_token() -> dict[str, Any]:
             "has_bx_ua": has_bx,
             "deepseek": ds_ok,
             "zai": zai_ok,
+            "gemini_web": gem_ok,
+            "mimo": mimo_ok,
         }
     except Exception as exc:
         logger.error("WAF token refresh failed: %s", exc)
@@ -1382,6 +1441,59 @@ async def list_accounts_by_provider() -> dict[str, Any]:
 
     browser_accounts = await asyncio.to_thread(_scan_browser_accounts)
 
+    def _scan_unregistered_browser_data() -> list[dict[str, Any]]:
+        """Find browser data directories that don't match the acc{N} pattern."""
+        unregistered: list[dict[str, Any]] = []
+        skip_names = {".git", ".venv", "__pycache__", ".sable_backups", ".pytest_cache"}
+        for entry in _SYSTEM_DIR.iterdir():
+            if entry.is_symlink() or not entry.is_dir() or entry.name in skip_names:
+                continue
+            if entry.name.endswith(".bak"):
+                continue
+            if re.match(r"browser-data-acc\d+$", entry.name):
+                continue
+            # Only include dirs that look like browser data
+            is_browser_dir = any(
+                kw in entry.name.lower()
+                for kw in ("browser", "playwright", "chromium", "chrome", "profile")
+            )
+            if not is_browser_dir:
+                try:
+                    children = [c.name for c in entry.iterdir()]
+                    is_browser_dir = any(
+                        marker in children
+                        for marker in ("Default", "Preferences", "Cookies", "Local Storage", "IndexedDB")
+                    )
+                except Exception:
+                    pass
+            if not is_browser_dir:
+                continue
+            browser_path = acc_cfg.get(entry.name, {}).get("browser_path", "")
+            browser_available = True
+            if browser_path and browser_path != "default":
+                browser_available = os.path.isfile(browser_path)
+            unregistered.append({
+                "name": entry.name,
+                "num": -1,
+                "email": entry.name.replace("-", " ").replace("_", " ").title(),
+                "size_mb": _dir_size_mb(entry),
+                "has_waf": False,
+                "has_ds": False,
+                "has_zai": False,
+                "has_gemini": False,
+                "exhausted": False,
+                "captcha_blocked": False,
+                "browser_path": browser_path,
+                "browser_label": _browser_label(browser_path),
+                "browser_available": browser_available,
+                "has_backup": (_SYSTEM_DIR / f"{entry.name}.bak").is_dir(),
+                "unregistered": True,
+            })
+        unregistered.sort(key=lambda a: a["name"])
+        return unregistered
+
+    unregistered_browser_data = await asyncio.to_thread(_scan_unregistered_browser_data)
+
     from engine.config import get_provider_account as _get_pin
 
     def _browser_provider(pid: str, label: str, accounts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1513,6 +1625,7 @@ async def list_accounts_by_provider() -> dict[str, Any]:
     return {
         "providers": providers,
         "active_account": active_account,
+        "unregistered_browser_data": unregistered_browser_data,
     }
 
 

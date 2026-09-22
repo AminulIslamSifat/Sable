@@ -737,6 +737,51 @@ class DeepSeekClient:
         if self._http is not None:
             await self._http.close()
             self._http = None
+        # Tear down this account's ghost tab so Playwright's driver subprocess
+        # exits cleanly (otherwise its transport is GC'd after the event loop
+        # closes and spits a RuntimeError traceback).
+        try:
+            from connectors.deepseek import ghost as _ghost
+            s = _ghost.GhostSession._registry.get(self.account)
+            if s is not None:
+                await s.close()
+                _ghost.GhostSession._registry.pop(self.account, None)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Completion transport — ghost-tab (browser identity) or curl (fallback)
+    # ------------------------------------------------------------------
+
+    async def _resolve_ghost(self):
+        """Return a live GhostSession for this account, or None if unavailable.
+        Never raises — a dead/missing ghost just means we fall back to curl."""
+        try:
+            from connectors.deepseek import ghost as _ghost
+            if not _ghost.ghost_enabled():
+                return None
+            return await _ghost.GhostSession.for_account(self.account)
+        except Exception as exc:
+            logger.warning("Ghost unavailable (%s) — using curl", exc)
+            return None
+
+    async def _completion_opener(self, headers: dict[str, str], body: dict[str, Any], ghost):
+        """Return an async context manager yielding a response-like object.
+        Prefers ghost (in-page fetch, browser identity). Falls back to curl.
+        """
+        if ghost is not None:
+            token = headers.get("Authorization", "")
+            if token.startswith("Bearer "):
+                token = token[7:]
+            pow_hdr = headers.get("X-DS-PoW-Response", "")
+            try:
+                r = await ghost.fetch_completion(token, body, pow_hdr)
+                from connectors.deepseek.ghost import GhostResponse
+                return GhostResponse(int(r.get("status", 0)), r.get("raw", ""))
+            except Exception as exc:
+                logger.warning("Ghost fetch failed (%s) — falling back to curl for this request", exc)
+        http = await self._get_http()
+        return http.stream("POST", f"{BASE_URL}/api/v0/chat/completion", json=body, headers=headers)
 
     # ------------------------------------------------------------------
     # PoW solving
@@ -1295,16 +1340,21 @@ class DeepSeekClient:
 
             _log_raw("USER_MESSAGE (prompt sent)", current_prompt)
 
+            # Resolve the transport once per token attempt.
+            # Ghost (browser identity) is preferred; curl is the fallback.
+            _ghost = await self._resolve_ghost()
+            if _ghost is not None:
+                yield {"type": "status", "message": "deepseek_transport_ghost"}
+            else:
+                yield {"type": "status", "message": "deepseek_transport_curl"}
+
             # Per-token retry loop
             for _retry in range(_MAX_RETRIES_PER_TOKEN):
                 try:
-                    http = await self._get_http()
                     full_answer = ""
                     full_thinking = ""
 
-                    async with http.stream(
-                        "POST", f"{BASE_URL}/api/v0/chat/completion", json=body, headers=headers,
-                    ) as resp:
+                    async with await self._completion_opener(headers, body, _ghost) as resp:
                         if resp.status_code in (401, 403, 429):
                             await resp.content
                             last_err = f"HTTP {resp.status_code}"

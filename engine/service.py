@@ -441,6 +441,7 @@ class ChatService:
         """
         results: dict[str, bool] = {
             "qwen": False, "deepseek": False, "zai": False, "gemini": False,
+            "mimo": False,
         }
 
         # --- Qwen WAF (cookies + bx-ua) ---
@@ -493,10 +494,20 @@ class ChatService:
         except Exception as exc:
             logger.warning("refresh_all: Gemini failed: %s: %s", type(exc).__name__, exc)
 
+        # --- MiMo (Xiaomi auth cookies) ---
+        try:
+            jar = await self.get_mimo_cookies()
+            if jar:
+                from connectors.mimo.client import get_client as _mimo
+                _mimo().invalidate_jar()
+                results["mimo"] = True
+        except Exception as exc:
+            logger.warning("refresh_all: MiMo failed: %s: %s", type(exc).__name__, exc)
+
         logger.info(
-            "refresh_all: account=%s qwen=%s deepseek=%s zai=%s gemini=%s",
+            "refresh_all: account=%s qwen=%s deepseek=%s zai=%s gemini=%s mimo=%s",
             account or "active", results["qwen"], results["deepseek"],
-            results["zai"], results["gemini"],
+            results["zai"], results["gemini"], results["mimo"],
         )
         return results
 
@@ -505,17 +516,12 @@ class ChatService:
         (e.g. one a cold warmup left open); closes it only if this call
         launched it AND warmup hasn't started it for live header refresh."""
         async with self._lock:
-            opened_here = not self._browser.is_running
             await self._browser.start()
-            try:
-                return await self._browser.extract_deepseek_token()
-            finally:
-                # Never close the browser here — warmup() intentionally keeps
-                # it alive so get_live_headers() can read fresh tokens per-request.
-                # Only close if we somehow launched it outside of warmup context
-                # and no headers are loaded yet (edge case).
-                if opened_here and not self._headers:
-                    await self._browser.close()
+            # Never close the browser here. Keeping it alive lets the next
+            # provider refresh (qwen/z.ai/…) reuse the SAME running Chromium
+            # instead of relaunching — the old `finally: close()` caused the
+            # open→close→open churn when refreshing providers one after another.
+            return await self._browser.extract_deepseek_token()
 
     async def get_zai_page(self):
         """Return a Playwright page on chat.z.ai from the z.ai browser context.
@@ -568,6 +574,38 @@ class ChatService:
             await browser.start()
             return await browser.extract_zai_token()
 
+    async def get_gemini_at_token(self) -> dict[str, str]:
+        """Read live Gemini session values from the browser page.
+
+        Current build no longer embeds SNlM0e (at=) or the frontend build id
+        in the curl-fetchable HTML — they only live in window.WIZ_global_data.
+        Returns {at, bl, sid} so the connector self-heals when Google ships a
+        new build (a stale `bl` silently drops sends).
+        """
+        browser = self._browser_for_provider("gemini_web")
+        async with self._lock:
+            await browser.start()
+            ctx = browser.context
+            if ctx is None:
+                raise RuntimeError("Browser context is not available")
+            page = await ctx.new_page()
+            try:
+                await page.goto("https://gemini.google.com/app", wait_until="domcontentloaded", timeout=20000)
+                for _ in range(10):
+                    vals = await page.evaluate(
+                        "() => { const w = window.WIZ_global_data || {}; "
+                        "return {at: w.SNlM0e || null, bl: w.cfb2h || null, sid: w.FdrFJe || null}; }"
+                    )
+                    if vals and vals.get("at"):
+                        return {k: str(v) for k, v in vals.items() if v}
+                    await page.wait_for_timeout(500)
+                raise RuntimeError("SNlM0e not found in WIZ_global_data")
+            finally:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+
     async def get_gemini_cookies(self) -> dict[str, str]:
         """Return Google auth cookies for gemini.google.com.
 
@@ -610,6 +648,62 @@ class ChatService:
         raise RuntimeError(
             "No Gemini auth: account has none and no valid disk snapshot"
         )
+
+    async def get_mimo_cookies(self) -> dict[str, str]:
+        """Return MiMo Studio auth cookies for aistudio.xiaomimimo.com.
+
+        MiMo auth is just 3 cookies (xiaomichatbot_serviceToken, userId,
+        xiaomichatbot_ph) — no bearer, no WIZ blob. Read them live from the
+        provider's account browser; snapshot to disk per account as fallback.
+        """
+        import json as _json
+        from pathlib import Path as _Path
+
+        _MIMO_COOKIES = ("xiaomichatbot_serviceToken", "xiaomichatbot_ph", "userId")
+
+        def _has_auth(jar: dict[str, str]) -> bool:
+            return bool(jar.get("xiaomichatbot_serviceToken"))
+
+        def _snap_path(d: str) -> _Path:
+            return _Path(d) / ".mimo_auth.json"
+
+        browser = self._browser_for_provider("mimo")
+        active_dir = browser.user_data_dir
+
+        # 1) live read from the provider's account
+        try:
+            async with self._lock:
+                await browser.start()
+                ctx = browser.context
+                if ctx is not None:
+                    raw = await ctx.cookies("https://aistudio.xiaomimimo.com")
+                    jar = {c["name"]: c["value"] for c in raw}
+                    if _has_auth(jar):
+                        try:
+                            _snap_path(active_dir).write_text(_json.dumps(jar), encoding="utf-8")
+                        except Exception:
+                            pass
+                        return jar
+                    logger.info("account %s has no MiMo auth; trying disk",
+                                _Path(active_dir).name)
+        except Exception as exc:
+            logger.warning("live MiMo cookie read failed (%s); trying disk", exc)
+
+        # 2) disk snapshot fallback (any account)
+        from engine.config import _SYSTEM
+        best = None
+        best_mtime = 0.0
+        for snap in _SYSTEM.glob("browser-data-*/.mimo_auth.json"):
+            try:
+                jar = _json.loads(snap.read_text(encoding="utf-8"))
+                if _has_auth(jar) and snap.stat().st_mtime > best_mtime:
+                    best, best_mtime = jar, snap.stat().st_mtime
+            except Exception:
+                continue
+        if best:
+            return best
+
+        raise RuntimeError("No MiMo auth: account has none and no disk snapshot")
 
     async def create_chat(self, model: str | None = None, bdd: str | None = None) -> str | None:
         headers = await self._ensure_headers(bdd)
@@ -702,6 +796,36 @@ class ChatService:
         bdd: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         print(f"[STREAM] ▶ stream_events START chat_id={chat_id} msg_len={len(message)} bdd={bdd}")
+
+        # --- Ghost tab primary path (2026-09-21) ----------------------------
+        # In-page fetch on a parked ghost tab: Baxia signs at send-time, live
+        # cookies, zero token-staleness race. ghost_stream_events raises
+        # GhostError before yielding anything if the ghost can't produce, so
+        # falling through to the legacy curl path below is always safe.
+        # Skipped when: files pre-attached (legacy upload flow), a non-default
+        # account dir is pinned (ghost uses the active profile), or disabled.
+        import os as _os
+        if (not files and not bdd
+                and _os.environ.get("SABLE_GHOST", "1") == "1"):
+            try:
+                from engine.inpage import GhostError, ghost_stream_events
+                async for _ev in ghost_stream_events(
+                    message=message,
+                    chat_id=chat_id,
+                    parent_id=parent_id,
+                    model=model,
+                    thinking_mode=thinking_mode,
+                ):
+                    yield _ev
+                    if _ev.get("type") in ("done", "error"):
+                        return
+                return
+            except GhostError as _ge:
+                print(f"[STREAM] ghost failed ({_ge}) — falling back to raw API path")
+            except Exception as _gerr:
+                print(f"[STREAM] ghost unexpected failure "
+                      f"({type(_gerr).__name__}: {_gerr}) — raw API path")
+
         try:
             print(f"[STREAM]   ↳ _ensure_headers(bdd={bdd})...")
             headers = await self._ensure_headers(bdd)

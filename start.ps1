@@ -717,7 +717,7 @@ function Setup-AutoStart {
     # Launch via start.bat --background which uses wscript + temp VBS
     # internally. wscript.exe is a GUI-subsystem binary that NEVER allocates
     # a console, guaranteeing ZERO popup at logon.
-    $startBat = Join-Path $SCRIPT_DIR "start.bat"
+    $launcher = Join-Path $SCRIPT_DIR "sable-launch.cmd"
 
     # Clean up legacy registry Run key
     try {
@@ -731,10 +731,10 @@ function Setup-AutoStart {
     try {
         $existingTask = Get-ScheduledTask -TaskName $TASK_NAME -ErrorAction SilentlyContinue
 
-        # Launch via start.bat --background (handles silent VBS wrapping).
+        # Launch the starter directly via the committed launcher.
         $action = New-ScheduledTaskAction `
             -Execute "cmd.exe" `
-            -Argument "/c `"`"$startBat`" --background`"" `
+            -Argument "/c `"`"$launcher`"`"" `
             -WorkingDirectory $SCRIPT_DIR
 
         if (-not $existingTask) {
@@ -771,9 +771,9 @@ function Setup-AutoStart {
                 $needsUpdate = $true
             }
 
-            # Also check if the launch command changed (must be cmd + start.bat --background)
+            # Also check the launch command (must be cmd + sable-launch.cmd)
             $expectedExe = "cmd.exe"
-            if ($existingAction.Execute -notlike "*$expectedExe*" -or $existingAction.Arguments -notlike "*--background*") {
+            if ($existingAction.Execute -notlike "*$expectedExe*" -or $existingAction.Arguments -notlike "*sable-launch.cmd*") {
                 $needsUpdate = $true
             }
 
@@ -822,13 +822,11 @@ function Create-DesktopShortcut {
     Write-Info "Checking desktop shortcut..."
     $desktopPath = [Environment]::GetFolderPath("Desktop")
     $shortcutPath = Join-Path $desktopPath "Sable.lnk"
-    $launcherPs1 = Join-Path $SCRIPT_DIR "start_shortcut.ps1"
+    $launcherCmd = Join-Path $SCRIPT_DIR "sable-launch.cmd"
 
-    # The shortcut runs start_shortcut.ps1 which:
-    #   1. Runs start.bat visibly (setup + background server)
-    #   2. Opens the browser
-    #   3. Tails sable.log live in this window
-    $psArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPs1`""
+    # The shortcut runs the starter directly. cmd stays open (via `cmd /k`)
+    # so the live server output is visible; the starter opens the browser.
+    $psArgs = "/k `"$launcherCmd`""
 
     # Windows .lnk icons MUST be a real .ico (PNG/SVG won't render).
     # Generated from web/assets/sable_icon.svg -> sable_icon.ico (multi-res).
@@ -843,7 +841,7 @@ function Create-DesktopShortcut {
         try {
             $shell = New-Object -ComObject WScript.Shell
             $existing = $shell.CreateShortcut($shortcutPath)
-            if ($existing.TargetPath -eq "powershell.exe" -and $existing.Arguments -eq $psArgs) {
+            if ($existing.TargetPath -eq "cmd.exe" -and $existing.Arguments -eq $psArgs) {
                 $currentIcon = if ($existing.IconLocation) { $existing.IconLocation.Split(',')[0] } else { "" }
                 if (-not $iconPath -or $currentIcon -eq $iconPath) {
                     $needsUpdate = $false
@@ -860,7 +858,7 @@ function Create-DesktopShortcut {
     try {
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($shortcutPath)
-        $shortcut.TargetPath = "powershell.exe"
+        $shortcut.TargetPath = "cmd.exe"
         $shortcut.Arguments = $psArgs
         $shortcut.WorkingDirectory = $SCRIPT_DIR
         $shortcut.Description = "Launch Sable Agentic Chat Platform"
@@ -943,14 +941,22 @@ function Main {
         "PYTHONUNBUFFERED"  = "1"
     }
     try {
+        # Hand off to the starter-first launcher (sable-launch.cmd), which
+        # resolves starter -> python boot -> server.py. Kept inside the same
+        # hidden-console machinery so no popup windows appear.
+        $launcherCmd = Join-Path $SCRIPT_DIR "sable-launch.cmd"
+        if (-not (Test-Path $launcherCmd)) {
+            Write-Err "sable-launch.cmd not found at $launcherCmd"
+            exit 1
+        }
         $proc = Start-SableServerProcess `
-            -FilePath $venvPython `
-            -ArgumentList @("server.py") `
+            -FilePath "cmd.exe" `
+            -ArgumentList @("/c", "`"$launcherCmd`"") `
             -WorkingDirectory $SCRIPT_DIR `
             -StdOutLog (Join-Path $SCRIPT_DIR "sable.log") `
             -StdErrLog (Join-Path $SCRIPT_DIR "sable_error.log") `
             -Environment $serverEnv
-        Write-Ok "Server started (PID $($proc.Id))"
+        Write-Ok "Sable started via launcher (PID $($proc.Id))"
     } catch {
         Write-Err "Failed to launch server: $_"
         exit 1

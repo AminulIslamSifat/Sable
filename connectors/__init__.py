@@ -93,6 +93,9 @@ def get_connector(backend: str, model_id: str | None = None) -> Any:
     elif backend == "gemini_web":
         from connectors.gemini_web.client import get_client
         _registry[backend] = get_client()
+    elif backend == "mimo":
+        from connectors.mimo.client import get_client
+        _registry[backend] = get_client()
     elif backend == "groq":
         from connectors.groq.client import get_client
         _registry[backend] = get_client()

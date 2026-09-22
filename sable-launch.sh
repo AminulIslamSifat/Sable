@@ -1,40 +1,93 @@
 #!/usr/bin/env bash
-# Sable smart launcher — checks if server is running, starts if needed, opens browser
-SABLE_PORT="${SABLE_PORT:-61770}"
-SABLE_URL="http://127.0.0.1:${SABLE_PORT}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# ─────────────────────────────────────────────────────────────────────────────
+#  Sable launcher — boots the SEALED vault through sable-starter.
+#
+#  Starter resolution order:
+#    1. $SABLE_STARTER                             (explicit override)
+#    2. ./sable-tools/starter/sable-starter-bin    (bundled)
+#    3. ./sable-starter                            (beside the vault)
+#    4. sable-starter on PATH
+#    5. ./sable-tools/sable-boot                   (python fallback)
+#    6. ./server.py                                (plaintext dev tree)
+#
+#  Usage:  sable-launch.sh [--no-browser] [--port=N] [-- <starter args>]
+#  Any unrecognised argument is forwarded to the starter verbatim.
+# ─────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
 
-is_server_running() {
-    curl -sf --max-time 2 "${SABLE_URL}/api/health" >/dev/null 2>&1 || \
-    curl -sf --max-time 2 "${SABLE_URL}/" >/dev/null 2>&1
-}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR" || exit 1
+
+VAULT="${SABLE_VAULT:-$SCRIPT_DIR/vault.sable}"
+PORT="${SABLE_PORT:-61770}"
+URL="http://127.0.0.1:${PORT}"
+NO_BROWSER=0
+
+_log() { printf '[Sable] %s\n' "$*"; }
+_die() { printf '[Sable] %s\n' "$*" >&2; exit 1; }
+
+# ── split our own flags from starter passthrough ────────────────
+PASSTHROUGH=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --no-browser) NO_BROWSER=1; shift ;;
+        --port=*)     PORT="${1#*=}"; URL="http://127.0.0.1:${PORT}"; shift ;;
+        *)            PASSTHROUGH+=("$@"); break ;;
+    esac
+done
 
 open_browser() {
+    [ "$NO_BROWSER" -eq 1 ] && return 0
     if command -v xdg-open >/dev/null 2>&1; then
-        xdg-open "$SABLE_URL" 2>/dev/null &
+        xdg-open "$URL" >/dev/null 2>&1 &
     elif command -v python3 >/dev/null 2>&1; then
-        python3 -c "import webbrowser; webbrowser.open('${SABLE_URL}')" 2>/dev/null &
+        python3 -c "import webbrowser;webbrowser.open('$URL')" >/dev/null 2>&1 &
     fi
+    return 0
 }
 
-if is_server_running; then
-    open_browser
-else
-    # Start server in background via the main start script, wait, then open
-    cd "$SCRIPT_DIR" || exit 1
-    nohup bash "$SCRIPT_DIR/start" --background >/dev/null 2>&1 &
-
-    # Wait up to 30s for server to come up
-    elapsed=0
-    while [ $elapsed -lt 30 ]; do
-        sleep 1
-        ((elapsed++))
-        if is_server_running; then
-            open_browser
-            exit 0
-        fi
+find_starter() {
+    if [ -n "${SABLE_STARTER:-}" ]; then
+        [ -x "$SABLE_STARTER" ] || _die "SABLE_STARTER not executable: $SABLE_STARTER"
+        printf '%s\n' "$SABLE_STARTER"; return 0
+    fi
+    for c in \
+        "$SCRIPT_DIR/sable-tools/starter/sable-starter-bin" \
+        "$SCRIPT_DIR/sable-tools/starter/sable-starter" \
+        "$SCRIPT_DIR/sable-starter" \
+        "$SCRIPT_DIR/starter/sable-starter-bin"
+    do
+        [ -x "$c" ] && { printf '%s\n' "$c"; return 0; }
     done
+    if command -v sable-starter >/dev/null 2>&1; then
+        command -v sable-starter; return 0
+    fi
+    return 1
+}
 
-    # Timeout — try opening anyway
+# ── 1) starter ──────────────────────────────────────────────────
+if STARTER="$(find_starter)"; then
+    _log "starter: $STARTER"
+    if [ "${#PASSTHROUGH[@]}" -gt 0 ]; then
+        exec "$STARTER" "${PASSTHROUGH[@]}"
+    fi
+    _log "vault:   $VAULT"
     open_browser
+    exec "$STARTER" --vault "$VAULT" --port "$PORT" --run
 fi
+
+# ── 2) python boot over a vault ─────────────────────────────────
+if [ -f "$VAULT" ] && [ -x "$SCRIPT_DIR/sable-tools/sable-boot" ]; then
+    _log "no starter binary — python boot"
+    open_browser
+    exec "$SCRIPT_DIR/sable-tools/sable-boot" "$VAULT" --run
+fi
+
+# ── 3) plaintext dev tree ───────────────────────────────────────
+if [ -f "$SCRIPT_DIR/server.py" ]; then
+    _log "no starter, no vault — plaintext dev tree"
+    open_browser
+    exec uv run python server.py
+fi
+
+_die "nothing to launch: no starter, no vault.sable, no server.py"

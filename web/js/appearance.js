@@ -345,6 +345,7 @@ window.safeCopy = async function(text) {
         const data = await res.json();
         const providers = data.providers || {};
         const activeAccount = data.active_account;
+        const unregisteredData = data.unregistered_browser_data || [];
 
         // Provider order
         const provOrder = ["qwen", "zai", "gemini_web", "deepseek", "gemini", "groq", "mistral", "openai", "puter", "cloudflare"];
@@ -357,7 +358,7 @@ window.safeCopy = async function(text) {
 
         // Render provider filter buttons
         if (filterBar) {
-          const allCount = provIds.reduce((sum, p) => {
+          const allCount = unregisteredData.length + provIds.reduce((sum, p) => {
             const pd = providers[p];
             if (pd.type === "browser") return sum + (pd.accounts || []).length;
             if (pd.type === "api_key") return sum + (pd.keys || []).length;
@@ -389,6 +390,13 @@ window.safeCopy = async function(text) {
         }
 
         let html = "";
+
+        // Render unregistered browser data first (only in "All" view)
+        if (_activeProviderFilter === "all" && unregisteredData.length > 0) {
+          html += `<div style="font-size:12px;font-weight:600;color:var(--text);margin-top:8px;margin-bottom:4px;display:flex;align-items:center;gap:6px;"><span>Other Browser Data</span><span style="font-size:10px;color:var(--text-dim);font-weight:400;">(unregistered)</span></div>`;
+          html += unregisteredData.map(acc => _renderBrowserCard(acc, null, "unregistered")).join("");
+        }
+
         for (const pid of showProvs) {
           const pd = providers[pid];
           // Section header
@@ -1494,6 +1502,13 @@ window.safeCopy = async function(text) {
         const res = await fetch('/api/settings/gemini_web/refresh-token', { method: 'POST' });
         const d = await res.json();
         showToast(res.ok ? (d.message || 'Gemini (web) token refreshed') : (d.detail || 'Refresh failed'), res.ok ? 'success' : 'error');
+      } catch { showToast('Refresh failed', 'error'); }
+    } else if (action === 'refresh-mimo') {
+      showToast('Refreshing MiMo token…', 'info');
+      try {
+        const res = await fetch('/api/settings/mimo/refresh-token', { method: 'POST' });
+        const d = await res.json();
+        showToast(res.ok ? (d.message || 'MiMo token refreshed') : (d.detail || 'Refresh failed'), res.ok ? 'success' : 'error');
       } catch { showToast('Refresh failed', 'error'); }
     } else if (action === 'refresh-waf') {
       showToast('Refreshing WAF token…', 'info');

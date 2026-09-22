@@ -168,7 +168,7 @@ def save_token_for_account(token: str, account: str | None = None) -> None:
 _ZAI_JS = r"""
 async (args) => {
   const { prompt, model, enableThinking, reasoningEffort, history, bindName,
-          chatId: existingChatId, parentId, requestId, userMessageId } = args;
+          chatId: existingChatId, parentId, requestId, userMessageId, files } = args;
   const report = (kind, payload) => {
     try { window[bindName](kind, payload); } catch (e) {}
   };
@@ -287,6 +287,7 @@ async (args) => {
       stream: true, model, params: {}, extra: {},
       messages: [{ role: 'user', content: prompt }],
       signature_prompt: prompt,
+      files: (files && files.length) ? files : undefined,
       features: {
         image_generation: false, web_search: false, auto_web_search: false,
         preview_mode: true, flags: [], vlm_tools_enable: false,
@@ -327,17 +328,32 @@ async (args) => {
       max_touch_points: String(navigator.maxTouchPoints || 0),
       browser_name: 'Chrome', os_name: 'Linux',
     };
-    const resp = await fetch('/api/v2/chat/completions?' + new URLSearchParams(fp).toString(), {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
-        'X-FE-Version': 'prod-fe-1.1.95', 'X-Signature': sig,
-        'Accept-Language': 'en-US', 'x-region': 'overseas',
-      },
-      body: JSON.stringify(body),
-    });
+    // Stop support: an AbortController whose abort() is exposed on window,
+    // so Python can cancel the in-flight completion (matches the SPA's own
+    // stop button, which fires an AbortController.abort()).
+    const ac = new AbortController();
+    window.__zaiAbort = () => { try { ac.abort(); } catch (e) {} };
+    let resp;
+    try {
+      resp = await fetch('/api/v2/chat/completions?' + new URLSearchParams(fp).toString(), {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+          'X-FE-Version': 'prod-fe-1.1.95', 'X-Signature': sig,
+          'Accept-Language': 'en-US', 'x-region': 'overseas',
+        },
+        body: JSON.stringify(body),
+        signal: ac.signal,
+      });
+    } catch (e) {
+      window.__zaiAbort = null;
+      if (e && e.name === 'AbortError') { report('__aborted__', ''); return; }
+      report('__error__', String(e));
+      return;
+    }
     if (!resp.ok) {
       const t = await resp.text();
+      window.__zaiAbort = null;
       report('__error__', 'HTTP ' + resp.status + ': ' + t.slice(0, 300));
       return;
     }
@@ -366,8 +382,10 @@ async (args) => {
         } catch (e) {}
       }
     }
+    window.__zaiAbort = null;
     report('__done__', JSON.stringify({ chatId: chatId, requestId: requestId }));
   } catch (e) {
+    try { window.__zaiAbort = null; } catch (_) {}
     report('__error__', String(e));
   }
 }
@@ -521,6 +539,109 @@ class ZaiClient:
             raise RuntimeError("No z.ai token in browser profile. Log in to chat.z.ai first.")
         return raw
 
+    # ---- attachments ----
+
+    async def upload_file(self, path: str | Path) -> dict[str, Any]:
+        """Upload a file to z.ai and return the file object for the `files` field.
+
+        Verified against a live capture: `POST /api/v1/files/` is plain
+        multipart with Bearer auth and needs NO X-Signature (only the
+        completions endpoint is signature-gated). The response object is what
+        the SPA later embeds in the completion body's `files` array.
+        """
+        token = self.token or await self.refresh_token()
+        p = Path(path)
+        if not p.is_file():
+            raise FileNotFoundError(f"z.ai upload: no such file: {p}")
+
+        import mimetypes
+        content_type = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+        data = p.read_bytes()
+
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.post(
+                    BASE_URL + "/api/v1/files/",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/json",
+                        "x-region": "overseas",
+                        "X-FE-Version": "prod-fe-1.1.95",
+                    },
+                    files={"file": (p.name, data, content_type)},
+                )
+            status, text = resp.status_code, resp.text
+        except ImportError:
+            import urllib.request
+            boundary = uuid.uuid4().hex
+            body = b"".join([
+                f"--{boundary}\r\n".encode(),
+                f'Content-Disposition: form-data; name="file"; filename="{p.name}"\r\n'.encode(),
+                f"Content-Type: {content_type}\r\n\r\n".encode(),
+                data,
+                f"\r\n--{boundary}--\r\n".encode(),
+            ])
+            req = urllib.request.Request(
+                BASE_URL + "/api/v1/files/", data=body, method="POST",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": f"multipart/form-data; boundary={boundary}",
+                    "Accept": "application/json", "x-region": "overseas",
+                },
+            )
+            loop = asyncio.get_running_loop()
+            def _do():
+                try:
+                    with urllib.request.urlopen(req, timeout=120) as r:
+                        return r.status, r.read().decode("utf-8", "replace")
+                except urllib.error.HTTPError as e:
+                    return e.code, e.read().decode("utf-8", "replace")
+            status, text = await loop.run_in_executor(None, _do)
+
+        if status != 200:
+            raise RuntimeError(f"z.ai upload failed (HTTP {status}): {text[:300]}")
+        up = json.loads(text)
+        fid = up.get("id")
+        if not fid:
+            raise RuntimeError(f"z.ai upload returned no id: {text[:300]}")
+
+        # Build the exact object shape the SPA embeds in the completion body.
+        meta = up.get("meta", {}) or {}
+        return {
+            "type": "file",
+            "id": fid,
+            "url": f"/api/v1/files/{fid}",
+            "name": up.get("filename") or meta.get("name") or p.name,
+            "status": "uploaded",
+            "size": meta.get("size", len(data)),
+            "error": "",
+            "media": "file",
+            "file": {"id": fid, "meta": meta},
+        }
+
+    # ---- stop ----
+
+    async def cancel(self) -> bool:
+        """Abort the in-flight z.ai completion, like the SPA's stop button.
+
+        The SPA aborts via an AbortController; we expose the same hook on
+        `window.__zaiAbort` inside `_ZAI_JS`. Returns True if an abort was
+        signalled, False if there was no live request.
+        """
+        page = self._page
+        if page is None:
+            return False
+        try:
+            if page.is_closed():
+                return False
+            return bool(await page.evaluate(
+                "() => { if (window.__zaiAbort) { window.__zaiAbort(); return true; } return false; }"
+            ))
+        except Exception as exc:
+            logger.debug("z.ai cancel failed: %s", exc)
+            return False
+
     async def close(self) -> None:
         try:
             if self._context is not None:
@@ -583,10 +704,20 @@ class ZaiClient:
         thinking_mode: str | None = None,
         chat_id: str | None = None,
         ref_file_ids: list[str] | None = None,
+        ref_files: list[dict[str, Any]] | None = None,
         inject_instructions: bool = True,
         system_instruction: str | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        # Attachments: prefer fully-built file objects; otherwise wrap bare ids
+        # into the minimal shape z.ai's completion endpoint accepts.
+        files_payload: list[dict[str, Any]] | None = ref_files or None
+        if files_payload is None and ref_file_ids:
+            files_payload = [
+                {"type": "file", "id": fid, "file": {"id": fid}}
+                for fid in ref_file_ids
+                if fid
+            ] or None
         # Anti-burst jitter: one gap per send (each tool-call round / user turn).
         try:
             from connectors.common.jitter import jitter_for as _jitter_for, sleep_jitter as _sleep_jitter
@@ -724,6 +855,7 @@ class ZaiClient:
             "parentId": parent_id,
             "requestId": request_id,
             "userMessageId": user_message_id,
+            "files": files_payload,
         }
 
         # One z.ai stream at a time — the binding name is shared.
@@ -747,6 +879,9 @@ class ZaiClient:
                         except Exception:
                             done_payload = None
                         break
+                    if kind == "__aborted__":
+                        yield {"type": "status", "message": "zai_aborted"}
+                        return
                     if kind == "__error__":
                         yield {"type": "error", "message": payload}
                         return
@@ -782,6 +917,7 @@ class ZaiClient:
         thinking_mode: str | None = None,
         chat_id: str | None = None,
         ref_file_ids: list[str] | None = None,
+        ref_files: list[dict[str, Any]] | None = None,
         inject_instructions: bool = True,
         system_instruction: str | None = None,
         **kwargs: Any,
@@ -791,7 +927,8 @@ class ZaiClient:
         error = None
         async for ev in self.stream_chat(
             message, model=model, thinking_mode=thinking_mode, chat_id=chat_id,
-            ref_file_ids=ref_file_ids, inject_instructions=inject_instructions,
+            ref_file_ids=ref_file_ids, ref_files=ref_files,
+            inject_instructions=inject_instructions,
             system_instruction=system_instruction, **kwargs,
         ):
             t = ev.get("type")

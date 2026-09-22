@@ -446,6 +446,43 @@ MODELS = [
             {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Thinking"},
         ],
     },
+    # ── MiMo Studio (Xiaomi, browser-auth, no API key) ──
+    {
+        "id": "mimo-v2.6-pro",
+        "label": "MiMo V2.6 Pro",
+        "api_backend": "mimo",
+        "api_model_type": "mimo-v2.6-pro",
+        "max_session_chars": 4_000_000,
+        "capabilities": {"image": True, "video": False, "document": True, "audio": False},
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+            {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Thinking"},
+        ],
+    },
+    {
+        "id": "mimo-v2.6-flash",
+        "label": "MiMo V2.6 Flash",
+        "api_backend": "mimo",
+        "api_model_type": "mimo-v2.6-flash",
+        "max_session_chars": 4_000_000,
+        "capabilities": {"image": True, "video": False, "document": True, "audio": False},
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+            {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Thinking"},
+        ],
+    },
+    {
+        "id": "mimo-v2.6-pro-ultraspeed-studio",
+        "label": "MiMo V2.6 Pro UltraSpeed",
+        "api_backend": "mimo",
+        "api_model_type": "mimo-v2.6-pro-ultraspeed-studio",
+        "max_session_chars": 4_000_000,
+        "capabilities": {"image": True, "video": False, "document": True, "audio": False},
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+            {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Thinking"},
+        ],
+    },
 ]
 
 # Default/current model id — kept for backward compatibility with code that
@@ -1067,6 +1104,7 @@ _PROVIDER_ALIASES: dict[str, tuple[str, ...]] = {
     "zai": ("zai",),
     "qwen": ("qwen",),
     "deepseek": ("deepseek",),
+    "mimo": ("mimo", "mimo_studio", "xiaomimimo"),
 }
 
 

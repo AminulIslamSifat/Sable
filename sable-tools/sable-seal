@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# sable-seal — one-word seal. Packs the current tree into a signed vault.
+#
+#   sable-seal [tree] [-o vault.sable]
+#
+# Env: SABLE_BRIDGE, SABLE_BRIDGE_TOKEN
+set -euo pipefail
+
+TREE="${1:-.}"
+shift || true
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+exec uv run --quiet \
+  --with httpx --with cryptography --with pynacl \
+  python "$HERE/seal.py" "$TREE" "$@"

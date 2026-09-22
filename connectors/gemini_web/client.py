@@ -135,12 +135,17 @@ class GeminiWebClient:
 
     def __init__(self) -> None:
         self._cookie_provider: Callable[[], Awaitable[dict[str, str]]] | None = None
+        self._token_provider: Callable[[], Awaitable[Any]] | None = None
+        self._bl: str | None = None    # live frontend build id (WIZ cfb2h)
+        self._sid: str | None = None   # live f.sid (WIZ FdrFJe)
         self._http: AsyncSession | None = None
         self._jar: dict[str, str] | None = None
         self._jar_ts: float = 0.0
         self._at: str | None = None
         self._template: dict[str, Any] | None = None
         self._reqid: int = 0
+        self._wiz: dict[str, str] | None = None
+        self._active_resp = None  # live StreamGenerate response, for cancel()
         # chat_id -> {c, r, rc, token, turn}
         self._chains: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
@@ -150,6 +155,18 @@ class GeminiWebClient:
 
     def set_cookie_provider(self, fn: Callable[[], Awaitable[dict[str, str]]]) -> None:
         self._cookie_provider = fn
+
+    def set_token_provider(self, fn: Callable[[], Awaitable[Any]]) -> None:
+        """Provider returning live session values from the browser page.
+
+        Gemini's build rotates every few days and a stale `bl` silently drops
+        sends (no frames back). `SNlM0e` (at=) and the build string are NOT in
+        the curl-fetchable HTML anymore — they only exist in the page's
+        WIZ_global_data. Return either:
+          - a str  -> treated as the `at=` XSRF token only (legacy), or
+          - a dict -> {at, bl, sid} so build/session self-heal on rollover.
+        """
+        self._token_provider = fn
 
     @property
     def is_available(self) -> bool:
@@ -182,20 +199,147 @@ class GeminiWebClient:
         self._jar_ts = time.time()
         return jar
 
-    async def _xsrf(self, jar: dict[str, str], force: bool = False) -> str:
-        """Fetch the SNlM0e XSRF token StreamGenerate needs as `at=`.
+    async def _wiz_config(self, jar: dict[str, str], force: bool = False) -> dict[str, str]:
+        """Pull WIZ_global_data values the upload flow needs.
 
-        It is embedded in the gemini.google.com page HTML and rotates per
-        session, so it is cached next to the jar and re-read whenever the jar
-        refreshes or a send comes back 400.
+        Confirmed from a live capture: push-id = qKIAYe (feeds/...),
+        x-client-pctx = Ylro7b. Both live in the page's WIZ_global_data blob,
+        so we scrape them from /app HTML alongside the XSRF token.
+        """
+        if not force and getattr(self, "_wiz", None):
+            return self._wiz
+        http = await self._http_session()
+        resp = await http.get(COOKIE_URL + "/app", cookies=jar)
+        html = resp.text
+        wiz: dict[str, str] = {}
+        for key in ("qKIAYe", "Ylro7b"):
+            m = re.search(r'"' + key + r'"\s*:\s*"([^"]+)"', html)
+            if m:
+                wiz[key] = m.group(1)
+        self._wiz = wiz
+        return wiz
+
+    # ---- file upload ----
+
+    async def upload_file(self, path: str | Path) -> dict[str, Any]:
+        """Upload a file to Gemini and return an attachment descriptor.
+
+        Flow (verified live):
+          1. POST push.clients6.google.com/upload/  X-Goog-Upload-Command: start
+             -> X-GUploader-UploadID header = upload_id
+          2. POST .../?upload_id=<id>  X-Goog-Upload-Command: upload, finalize
+             -> body = /contrib_service/ttl_1d/<blob>
+        No API key; auth is cookies + push-id/x-client-pctx from WIZ config.
+        """
+        p = Path(path)
+        if not p.is_file():
+            raise FileNotFoundError(f"gemini upload: no such file: {p}")
+        import mimetypes
+        mime = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+        data = p.read_bytes()
+
+        jar = await self._cookies()
+        wiz = await self._wiz_config(jar)
+        push_id = wiz.get("qKIAYe")
+        pctx = wiz.get("Ylro7b")
+        if not push_id or not pctx:
+            raise RuntimeError("gemini upload: WIZ config missing push-id/pctx")
+
+        http = await self._http_session()
+        base_hdrs = {
+            "Push-ID": push_id,
+            "X-Client-Pctx": pctx,
+            "Origin": "https://gemini.google.com",
+            "Referer": "https://gemini.google.com/",
+        }
+        # 1) start
+        start = await http.post(
+            "https://push.clients6.google.com/upload/",
+            headers={
+                **base_hdrs,
+                "X-Goog-Upload-Protocol": "resumable",
+                "X-Goog-Upload-Command": "start",
+                "X-Goog-Upload-Header-Content-Length": str(len(data)),
+                "X-Goog-Upload-Header-Content-Type": mime,
+                "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
+            },
+            cookies=jar,
+        )
+        upload_id = start.headers.get("X-GUploader-UploadID") or start.headers.get("x-guploader-uploadid")
+        if not upload_id:
+            raise RuntimeError(f"gemini upload start failed: HTTP {start.status_code}")
+
+        # 2) upload + finalize
+        fin = await http.post(
+            f"https://push.clients6.google.com/upload/?upload_id={upload_id}&upload_protocol=resumable",
+            headers={
+                **base_hdrs,
+                "X-Goog-Upload-Command": "upload, finalize",
+                "X-Goog-Upload-Offset": "0",
+                "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
+            },
+            data=data,
+            cookies=jar,
+        )
+        if fin.status_code != 200:
+            raise RuntimeError(f"gemini upload finalize failed: HTTP {fin.status_code}")
+        blob = (fin.text or "").strip()
+        if not blob.startswith("/contrib_service/"):
+            raise RuntimeError(f"gemini upload returned unexpected body: {blob[:120]}")
+        return {"blob": blob, "name": p.name, "mime": mime, "size": len(data)}
+
+    # ---- stop ----
+
+    async def cancel(self) -> bool:
+        """Abort the in-flight StreamGenerate request (Gemini's stop button).
+
+        Gemini has no stop endpoint — the SPA aborts the single long-running
+        XHR client-side. We mirror that by closing the active streaming
+        response, which makes the aiter_content loop raise/stop.
+        """
+        resp = getattr(self, "_active_resp", None)
+        if resp is None:
+            return False
+        try:
+            await resp.aclose()
+            return True
+        except Exception as exc:
+            logger.debug("gemini cancel failed: %s", exc)
+            return False
+
+    async def _xsrf(self, jar: dict[str, str], force: bool = False) -> str:
+        """Get the SNlM0e XSRF token StreamGenerate needs as `at=`.
+
+        Current build: the token is NOT in the curl-fetchable HTML (verified —
+        849KB page, no SNlM0e). It only lives in the page's WIZ_global_data,
+        so we read it from the live browser via the injected token provider.
+        Falls back to HTML scraping for older builds / no browser.
         """
         if not force and self._at:
             return self._at
+        # 1) live browser (authoritative in the current build)
+        if self._token_provider is not None:
+            try:
+                got = await self._token_provider()
+                if isinstance(got, dict):
+                    if got.get("bl"):
+                        self._bl = got["bl"]
+                    if got.get("sid"):
+                        self._sid = got["sid"]
+                    tok = got.get("at")
+                else:
+                    tok = got
+                if tok:
+                    self._at = tok
+                    return tok
+            except Exception as exc:
+                logger.debug("gemini token provider failed (%s); trying HTML", exc)
+        # 2) legacy HTML scrape
         http = await self._http_session()
         resp = await http.get(COOKIE_URL + "/app", cookies=jar)
         m = re.search(r'SNlM0e"?\s*:\s*"([^"]+)"', resp.text)
         if not m:
-            raise RuntimeError("could not extract SNlM0e XSRF token from Gemini page")
+            raise RuntimeError("could not extract SNlM0e XSRF token (no provider + not in HTML)")
         self._at = m.group(1)
         return self._at
 
@@ -217,6 +361,11 @@ class GeminiWebClient:
         tpl = self._load_template()
         q = dict(tpl.get("query", {}))
         q["_reqid"] = str(self._next_reqid())
+        # Live values win — the template's bl/f.sid go stale every few days.
+        if getattr(self, "_bl", None):
+            q["bl"] = self._bl
+        if getattr(self, "_sid", None):
+            q["f.sid"] = self._sid
         qs = "&".join(f"{k}={v}" for k, v in q.items())
         return f"{tpl['base_url']}?{qs}"
 
@@ -230,18 +379,42 @@ class GeminiWebClient:
 
     # ---- chain state ----
 
-    def _fresh_inner(self, message: str) -> list[Any]:
+    @staticmethod
+    def _attach_slot(files: list[dict[str, Any]] | None) -> list[Any] | None:
+        """Build inner[0][3] — the attachment array.
+
+        Confirmed from a live capture, a text-file send carried:
+          [0][3] = [[[<blob>, 3, null, "text/plain"], "name.txt",
+                     null,null,null,null,null,null,[0]]]
+        """
+        if not files:
+            return None
+        out = []
+        for f in files:
+            blob = f.get("blob") or f.get("id") or f.get("url")
+            if not blob:
+                continue
+            out.append([
+                [blob, 3, None, f.get("mime", "application/octet-stream")],
+                f.get("name", "file"),
+                None, None, None, None, None, None, [0],
+            ])
+        return out or None
+
+    def _fresh_inner(self, message: str, files: list[dict[str, Any]] | None = None) -> list[Any]:
         tpl = self._load_template()
         inner = json.loads(json.dumps(tpl["inner"]))  # deep copy
         inner[0][0] = message
+        inner[0][3] = self._attach_slot(files)
         inner[2] = ["", "", "", None, None, None, None, None, None, ""]
         inner[17] = [[0]]
         return inner
 
-    def _resume_inner(self, message: str, chain: dict[str, Any]) -> list[Any]:
+    def _resume_inner(self, message: str, chain: dict[str, Any], files: list[dict[str, Any]] | None = None) -> list[Any]:
         tpl = self._load_template()
         inner = json.loads(json.dumps(tpl["inner"]))
         inner[0][0] = message
+        inner[0][3] = self._attach_slot(files)
         inner[2] = [
             chain.get("c", ""), chain.get("r", ""), chain.get("rc", ""),
             None, None, None, None, None, None, chain.get("token", ""),
@@ -254,6 +427,7 @@ class GeminiWebClient:
     async def _stream(
         self, message: str, *, chat_id: str | None,
         inject_instructions: bool, project_id: str | None, layout_mode: str | None,
+        files: list[dict[str, Any]] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         async with self._stream_lock:
             text = message
@@ -263,7 +437,7 @@ class GeminiWebClient:
                 if instr:
                     text = instr + "\n\n" + text
 
-            inner = self._resume_inner(text, chain) if chain else self._fresh_inner(text)
+            inner = self._resume_inner(text, chain, files) if chain else self._fresh_inner(text, files)
             url = self._build_url()
             tpl = self._load_template()
             headers = {k: v for k, v in tpl.get("headers", {}).items() if k.lower() != "content-length"}
@@ -290,7 +464,11 @@ class GeminiWebClient:
                 yield {"type": "error", "message": f"Gemini web request failed: {exc}"}
                 return
 
+            # Expose the live response so cancel() can abort it (stop button).
+            self._active_resp = resp
+
             if resp.status_code != 200:
+                self._active_resp = None
                 yield {"type": "error", "message": f"HTTP {resp.status_code}: {resp.text[:200]}"}
                 return
 
@@ -355,6 +533,7 @@ class GeminiWebClient:
                 yield {"type": "error", "message": "No parseable frames in response"}
                 return
 
+            self._active_resp = None
             new_chain["turn"] = int(new_chain.get("turn", 0)) + 1
             if chat_id:
                 self._chains[chat_id] = new_chain
@@ -364,9 +543,15 @@ class GeminiWebClient:
     async def stream_chat(
         self, message: str, *, model: str | None = None,
         thinking_mode: str | None = None, chat_id: str | None = None,
-        ref_file_ids: list[str] | None = None, inject_instructions: bool = True,
+        ref_file_ids: list[str] | None = None,
+        ref_files: list[dict[str, Any]] | None = None,
+        inject_instructions: bool = True,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        # Attachments: prefer full file objects (with blob), else wrap bare ids.
+        files_payload: list[dict[str, Any]] | None = ref_files or None
+        if files_payload is None and ref_file_ids:
+            files_payload = [{"blob": fid, "name": "file"} for fid in ref_file_ids if fid] or None
         # Anti-burst jitter: one gap per send (each tool-call round / user turn).
         try:
             from connectors.common.jitter import jitter_for as _jitter_for, sleep_jitter as _sleep_jitter
@@ -382,7 +567,7 @@ class GeminiWebClient:
         layout_mode = kwargs.get("layout_mode")
         async for ev in self._stream(
             message, chat_id=chat_id, inject_instructions=inject_instructions,
-            project_id=project_id, layout_mode=layout_mode,
+            project_id=project_id, layout_mode=layout_mode, files=files_payload,
         ):
             yield ev
 

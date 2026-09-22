@@ -153,6 +153,46 @@ async def stop_generation(request: Request):
     if not chat_id:
         return {"success": False, "error": "chat_id required"}
 
+    # z.ai (GLM): no upstream stop API — the SPA aborts the in-flight fetch
+    # with an AbortController. We mirror that: fire the in-page abort hook the
+    # connector exposed. No response_id needed, so handle it BEFORE the
+    # response_id guard below.
+    _prov = None
+    try:
+        from server.database.chats import get_chat_provider as _get_prov
+        _prov = _get_prov(chat_id)
+    except Exception:
+        _prov = None
+    if _prov == "zai":
+        try:
+            from connectors.zai.client import get_client as _zai_get
+            _ok = await _zai_get().cancel()
+            logger.info("z.ai stop: chat=%s aborted=%s", chat_id, _ok)
+            return {"success": bool(_ok)}
+        except Exception as exc:
+            logger.warning("z.ai stop failed: %s", exc)
+            return {"success": False, "error": str(exc)}
+    # Gemini Web: same story — no stop endpoint, abort the streaming response.
+    if _prov == "gemini_web":
+        try:
+            from connectors.gemini_web.client import get_client as _gw_get
+            _ok = await _gw_get().cancel()
+            logger.info("gemini_web stop: chat=%s aborted=%s", chat_id, _ok)
+            return {"success": bool(_ok)}
+        except Exception as exc:
+            logger.warning("gemini_web stop failed: %s", exc)
+            return {"success": False, "error": str(exc)}
+    # MiMo Studio: same — SPA aborts an AbortSignal, no stop endpoint.
+    if _prov == "mimo":
+        try:
+            from connectors.mimo.client import get_client as _mimo_get
+            _ok = await _mimo_get().cancel()
+            logger.info("mimo stop: chat=%s aborted=%s", chat_id, _ok)
+            return {"success": bool(_ok)}
+        except Exception as exc:
+            logger.warning("mimo stop failed: %s", exc)
+            return {"success": False, "error": str(exc)}
+
     # Frontend may not have the response_id yet (Stop pressed before the first
     # chunk landed). Fall back to the id captured server-side when the
     # response_id event fired. Qwen's stop endpoint REQUIRES response_id.
@@ -924,6 +964,7 @@ async def chat(request: ChatRequest):
         api_message = timestamped_message
 
     resolved_files: list[dict[str, Any]] | None = None
+    _ref_files_full: list[dict[str, Any]] | None = None
     _backend = _resolve_api_backend(request.model) if _is_api_model(request.model) else None
     if request.files:
         # --- Doc→Image conversion for models that accept images but not native docs ---
@@ -978,6 +1019,41 @@ async def chat(request: ChatRequest):
                     else:
                         logger.warning("DeepSeek upload failed for: %s", f["path"])
                 continue
+            # z.ai (GLM): multipart POST /api/v1/files/, returns the full file
+            # object the completion body's `files` array expects.
+            if _backend == "zai":
+                if "id" in f and "url" in f:
+                    resolved_files.append(f)
+                elif "path" in f:
+                    try:
+                        from connectors.zai.client import get_client as _zai_get
+                        meta = await _zai_get().upload_file(f["path"])
+                        resolved_files.append(meta)
+                    except Exception as exc:
+                        logger.warning("z.ai upload failed for %s: %s", f["path"], exc)
+                continue
+            # Gemini Web: resumable upload to push.clients6.google.com, returns
+            # the blob path that rides inner[0][3] of the StreamGenerate body.
+            if _backend == "gemini_web":
+                if "path" in f:
+                    try:
+                        from connectors.gemini_web.client import get_client as _gw_get
+                        meta = await _gw_get().upload_file(f["path"])
+                        resolved_files.append(meta)
+                    except Exception as exc:
+                        logger.warning("gemini_web upload failed for %s: %s", f["path"], exc)
+                continue
+            # MiMo Studio: 3-step genUploadInfo -> FDS PUT -> parse, returns the
+            # multiMedias object the bot/chat body expects.
+            if _backend == "mimo":
+                if "path" in f:
+                    try:
+                        from connectors.mimo.client import get_client as _mimo_get
+                        meta = await _mimo_get().upload_file(f["path"])
+                        resolved_files.append(meta)
+                    except Exception as exc:
+                        logger.warning("mimo upload failed for %s: %s", f["path"], exc)
+                continue
             # Qwen / others: upload to Qwen OSS (images + documents)
             if "id" in f and "url" in f:
                 resolved_files.append(f)
@@ -1005,6 +1081,16 @@ async def chat(request: ChatRequest):
                     _merged.append(_fid)
             request.ref_file_ids = _merged
             logger.info("Attaching %d uploaded file(s) to request: %s", len(_uploaded_file_ids), _uploaded_file_ids)
+        # z.ai (GLM) + Gemini Web need the FULL uploaded file objects, not just
+        # ids: z.ai puts them in the completion `files` array, gemini_web maps
+        # each blob into StreamGenerate's inner[0][3]. Pass them verbatim.
+        _ref_files_full = (
+            [rf for rf in resolved_files if rf.get("id") or rf.get("blob")]
+            if _backend in ("zai", "gemini_web") else None
+        )
+        if _backend == "mimo":
+            # MiMo media objects use `url` (parse id) + `fileUrl`; keep them verbatim.
+            _ref_files_full = [rf for rf in resolved_files if rf.get("fileUrl")] or None
     if not request.stream and scraper_enabled:
         result = await scraper_service.chat(
             message=api_message,
@@ -1076,6 +1162,8 @@ async def chat(request: ChatRequest):
             project_id=_project_id,
             db_history=_db_history,
         )
+        if _ref_files_full:
+            _chat_kwargs["ref_files"] = _ref_files_full
         if _api_backend == "local":
             _chat_kwargs["model_id"] = request.model
         if _max_session_chars:
@@ -1564,6 +1652,8 @@ async def chat(request: ChatRequest):
                         db_history=_db_history_s,
                         layout_mode=_layout_mode,
                     )
+                    if _ref_files_full and round_index == 0:
+                        _stream_kwargs["ref_files"] = _ref_files_full
                     # Agent sub-chats override system prompt (skip Maria persona)
                     if request.system_prompt:
                         _stream_kwargs["system_instruction"] = request.system_prompt
