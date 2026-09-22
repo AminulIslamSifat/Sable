@@ -26,7 +26,7 @@
 
   // ─── API Helpers ────────────────────────────────────────────────────────────
   async function cbFetch(path, opts = {}) {
-    const token = localStorage.getItem("sable_auth_token") || "";
+    const token = localStorage.getItem("sable_token") || "";
     const resp = await fetch("/api/cookbook" + path, {
       ...opts,
       headers: {

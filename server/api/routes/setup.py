@@ -19,6 +19,15 @@ router = APIRouter()
 
 _SYSTEM_DIR = BASE_DIR / "system"
 
+# Browser-login provider → landing URL. Keys must match the setup panel checkboxes.
+_PROVIDER_URLS: dict[str, str] = {
+    "qwen":       "https://chat.qwen.ai",
+    "deepseek":   "https://chat.deepseek.com",
+    "gemini_web": "https://gemini.google.com",
+    "zai":        "https://chat.z.ai",
+    "mimo":       "https://aistudio.xiaomimimo.com",
+}
+
 
 class SetPasswordRequest(BaseModel):
     password: str
@@ -108,11 +117,13 @@ async def available_browsers() -> dict[str, Any]:
 
 
 @router.post("/api/setup/browser-login")
-async def browser_login(payload: dict[str, str] | None = None) -> dict[str, Any]:
-    """Launch headed browser for Qwen login during first-run setup.
+async def browser_login(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Launch a headed browser with one tab per selected provider.
 
     Mirrors /api/settings/accounts/create — uses the same browser resolution,
     extra args, and non-blocking task pattern so behaviour is identical.
+    The caller may pass `providers: [...]` to choose which services to open;
+    unknown names are dropped and an empty/omitted list defaults to all.
     """
     def _next_acc() -> int:
         existing: set[int] = set()
@@ -130,6 +141,12 @@ async def browser_login(payload: dict[str, str] | None = None) -> dict[str, Any]
     profile_name = f"browser-data-acc{acc_num}"
     profile_path = _SYSTEM_DIR / profile_name
     profile_path.mkdir(parents=True, exist_ok=True)
+
+    # Which providers to open (default: all). Unknown names are ignored.
+    requested = (payload or {}).get("providers") or []
+    providers = [p for p in requested if p in _PROVIDER_URLS]
+    if not providers:
+        providers = list(_PROVIDER_URLS.keys())
 
     # Save user's browser choice
     chosen_browser = (payload or {}).get("browser_path", "")
@@ -160,14 +177,20 @@ async def browser_login(payload: dict[str, str] | None = None) -> dict[str, Any]
                 launch_kwargs["executable_path"] = resolved_browser
             async with async_playwright() as p:
                 context = await p.chromium.launch_persistent_context(**launch_kwargs)
-                page = context.pages[0] if context.pages else await context.new_page()
-                await page.goto("https://chat.qwen.ai", timeout=120000)
+                for idx, prov in enumerate(providers):
+                    page = (context.pages[0] if (idx == 0 and context.pages)
+                            else await context.new_page())
+                    try:
+                        await page.goto(_PROVIDER_URLS[prov], timeout=120000)
+                    except Exception as nav_exc:
+                        logger.warning(f"Setup: failed to open {prov}: {nav_exc}")
                 await context.wait_for_event("close", timeout=0)
         except Exception as e:
             logger.warning(f"Setup browser for {profile_name} exited: {e}")
 
     asyncio.create_task(_run_browser())
-    return {"status": "opened", "profile": profile_name}
+    return {"status": "opened", "profile": profile_name,
+            "providers": providers, "count": len(providers)}
 
 
 # ── Setup API key + auto-register models ───────────────────────────────────

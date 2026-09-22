@@ -52,6 +52,7 @@
     const setupAddKeyBtn   = document.getElementById("setupAddKeyBtn");
     const setupApiKeyStatus= document.getElementById("setupApiKeyStatus");
     const setupBrowserSelect = document.getElementById("setupBrowserSelect");
+    const setupProviderChecks = document.getElementById("setupProviderChecks");
     const setupBrowserBtn  = document.getElementById("setupBrowserBtn");
     const setupBrowserStatus = document.getElementById("setupBrowserStatus");
     const setupSkipBtn     = document.getElementById("setupSkipBtn");
@@ -331,18 +332,27 @@
                 // --- Browser login flow ---
                 if (setupBrowserBtn) {
                   setupBrowserBtn.addEventListener("click", async () => {
+                    const providers = setupProviderChecks
+                      ? Array.from(setupProviderChecks.querySelectorAll("input[type=checkbox]:checked")).map(c => c.value)
+                      : [];
+                    if (!providers.length) {
+                      if (setupBrowserStatus) { setupBrowserStatus.textContent = "⚠️ Select at least one provider"; setupBrowserStatus.style.color = "#ff6b6b"; }
+                      return;
+                    }
                     setupBrowserBtn.disabled = true;
                     setupBrowserBtn.textContent = "Opening…";
-                    if (setupBrowserStatus) { setupBrowserStatus.textContent = "Launching browser…"; setupBrowserStatus.style.color = "var(--text-dim)"; }
+                    if (setupBrowserStatus) { setupBrowserStatus.textContent = `Launching browser (${providers.length} tab${providers.length > 1 ? "s" : ""})…`; setupBrowserStatus.style.color = "var(--text-dim)"; }
                     try {
                       const browserPath = setupBrowserSelect ? setupBrowserSelect.value : "";
                       const res = await _origFetch("/api/setup/browser-login", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ browser_path: browserPath }),
+                        body: JSON.stringify({ browser_path: browserPath, providers }),
                       });
                       if (res.ok) {
-                        if (setupBrowserStatus) { setupBrowserStatus.textContent = "✅ Browser opened! Sign in there, then close it to continue."; setupBrowserStatus.style.color = "#4ade80"; }
+                        const body = await res.json().catch(() => ({}));
+                        const n = body.count || providers.length;
+                        if (setupBrowserStatus) { setupBrowserStatus.textContent = `✅ Browser opened with ${n} tab${n > 1 ? "s" : ""}! Sign in on each, then close it to continue.`; setupBrowserStatus.style.color = "#4ade80"; }
                         setTimeout(resolve, 3000);
                       } else {
                         const body = await res.json().catch(() => ({}));

@@ -102,7 +102,7 @@ window.safeCopy = async function(text) {
 
     // Providers whose account selection is per-provider (pinned), not global.
     // Mirrors _PER_PROVIDER_SWITCH in settings.py — keep in sync.
-    const _PER_PROVIDER_SWITCH = ["zai", "gemini_web"];
+    const _PER_PROVIDER_SWITCH = ["zai", "gemini_web", "mimo"];
 
     // Render browser account card (for Qwen/z.ai/Gemini Web)
     function _renderBrowserCard(acc, active, providerId) {
@@ -126,6 +126,7 @@ window.safeCopy = async function(text) {
             ${acc.has_waf ? _badge('qwen') : ''}
             ${acc.has_zai ? _badge('zai') : ''}
             ${acc.has_gemini ? _badge('gemini') : ''}
+            ${acc.has_mimo ? _badge('mimo') : ''}
             ${acc.has_ds ? _badge('ds') : ''}
             ${acc.exhausted ? _badge('exhausted', true) : ''}
             ${acc.captcha_blocked ? _badge('captcha', true) : ''}
@@ -348,7 +349,7 @@ window.safeCopy = async function(text) {
         const unregisteredData = data.unregistered_browser_data || [];
 
         // Provider order
-        const provOrder = ["qwen", "zai", "gemini_web", "deepseek", "gemini", "groq", "mistral", "openai", "puter", "cloudflare"];
+        const provOrder = ["qwen", "zai", "gemini_web", "mimo", "deepseek", "gemini", "groq", "mistral", "openai", "puter", "cloudflare"];
         const provIds = provOrder.filter(p => providers[p]);
 
         // Validate saved filter
@@ -522,6 +523,7 @@ window.safeCopy = async function(text) {
 
 
     const addAccountBtn = document.getElementById("addAccountBtn");
+    const addAccountProviders = document.getElementById("addAccountProviders");
     if (addAccountBtn) {
       addAccountBtn.addEventListener("click", async () => {
         addAccountBtn.disabled = true;
@@ -530,15 +532,27 @@ window.safeCopy = async function(text) {
           const browserPath = addAccountBrowserSelect ? addAccountBrowserSelect.value : "";
           // Remember last selected browser
           if (browserPath) localStorage.setItem("sable_last_browser", browserPath);
+          // Collect the checked login sites. If none are checked, fall back to
+          // the active provider filter (old behaviour) so nothing silently breaks.
+          const checked = addAccountProviders
+            ? Array.from(addAccountProviders.querySelectorAll("input[type=checkbox]:checked")).map(c => c.value)
+            : [];
+          if (!checked.length) {
+            showToast("⚠️ Select at least one login site", "error");
+            addAccountBtn.disabled = false;
+            addAccountBtn.textContent = "Add Account";
+            return;
+          }
           const res = await fetch("/api/settings/accounts/create", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ browser_path: browserPath }),
+            body: JSON.stringify({ browser_path: browserPath, providers: checked }),
           });
           const data = await res.json();
           if (!res.ok) throw new Error(data.detail || "Failed");
           const browserName = addAccountBrowserSelect ? addAccountBrowserSelect.options[addAccountBrowserSelect.selectedIndex]?.text : '';
-          showToast(`🌐 Opened ${data.profile}${browserName ? ' with ' + browserName.split(' (')[0] : ''}`, "success");
+          const n = data.count || checked.length;
+          showToast(`🌐 Opened ${data.profile} — ${n} tab${n > 1 ? 's' : ''}${browserName ? ' with ' + browserName.split(' (')[0] : ''}`, "success");
           await loadAccountProfiles();
           addAccountBtn.textContent = "Opening…";
           setTimeout(() => { addAccountBtn.textContent = "Add Account"; addAccountBtn.disabled = false; }, 3000);

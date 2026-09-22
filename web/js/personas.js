@@ -5,7 +5,7 @@
   let _editingName = null;
 
   async function pFetch(path, opts = {}) {
-    const token = localStorage.getItem("sable_auth_token") || "";
+    const token = localStorage.getItem("sable_token") || "";
     const resp = await fetch(API + path, {
       ...opts,
       headers: {

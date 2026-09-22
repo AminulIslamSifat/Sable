@@ -124,6 +124,19 @@ def _get_available_backends() -> set[str]:
     except Exception as exc:
         logger.debug("Backend zai unavailable: %s", exc)
 
+    # MiMo Studio: browser-auth — available if any account has a cached auth snapshot
+    try:
+        from engine.config import _SYSTEM as _sys_dir3
+        has_mimo = any(
+            (d / ".mimo_auth.json").is_file()
+            for d in _sys_dir3.iterdir()
+            if d.is_dir() and d.name.startswith("browser-data-acc")
+        ) if _sys_dir3.is_dir() else False
+        if has_mimo:
+            available.add("mimo")
+    except Exception as exc:
+        logger.debug("Backend mimo unavailable: %s", exc)
+
     # API-key-based providers
     _key_providers = {
         "gemini": "connectors.gemini.client",

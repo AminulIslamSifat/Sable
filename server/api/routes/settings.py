@@ -1385,6 +1385,17 @@ async def list_accounts_by_provider() -> dict[str, Any]:
     except Exception:
         pass
 
+    # MiMo Studio auth snapshots — per-account {cookies: {...}}
+    mimo_auth: dict = {}
+    try:
+        for _ma in _SYSTEM_DIR.glob("browser-data-*/.mimo_auth.json"):
+            try:
+                mimo_auth[_ma.parent.name] = json.loads(_ma.read_text())
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     from engine.config import get_all_exhaustion_status, get_all_captcha_block_status
     exhaustion = get_all_exhaustion_status()
     captcha_blocks = get_all_captcha_block_status()
@@ -1420,6 +1431,11 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                 _has_gemini = bool(
                     isinstance(_g_entry, dict) and _g_entry.get("cookies")
                 )
+                _mimo_jar = mimo_auth.get(entry.name) if isinstance(mimo_auth, dict) else None
+                _has_mimo = bool(
+                    isinstance(_mimo_jar, dict)
+                    and _mimo_jar.get("xiaomichatbot_serviceToken")
+                )
                 accounts.append({
                     "name": entry.name,
                     "num": int(m.group(1)),
@@ -1429,6 +1445,7 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                     "has_ds": _has_ds,
                     "has_zai": _has_zai,
                     "has_gemini": _has_gemini,
+                    "has_mimo": _has_mimo,
                     "exhausted": exhaustion.get(entry.name, False),
                     "captcha_blocked": captcha_blocks.get(entry.name, False),
                     "browser_path": browser_path,
@@ -1481,6 +1498,7 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                 "has_ds": False,
                 "has_zai": False,
                 "has_gemini": False,
+                "has_mimo": False,
                 "exhausted": False,
                 "captcha_blocked": False,
                 "browser_path": browser_path,
@@ -1537,6 +1555,10 @@ async def list_accounts_by_provider() -> dict[str, Any]:
     # Gemini (web): browser-based, only accounts holding a Google auth snapshot
     gemini_accounts = [a for a in browser_accounts if a.get("has_gemini")]
     providers["gemini_web"] = _browser_provider("gemini_web", "Gemini (Web)", gemini_accounts)
+
+    # MiMo Studio (Xiaomi): browser-based, only accounts holding a MiMo cookie snapshot
+    mimo_accounts = [a for a in browser_accounts if a.get("has_mimo")]
+    providers["mimo"] = _browser_provider("mimo", "MiMo (Xiaomi)", mimo_accounts)
 
     # DeepSeek: present as api_key type — tokens are JWTs, no browser swap needed
     try:
@@ -1700,7 +1722,7 @@ async def switch_api_key(provider: str, payload: dict[str, Any]) -> dict[str, An
 # Providers whose account selection is per-provider (pinned) rather than global.
 # Qwen is deliberately excluded: it IS the global active account, so its switch
 # stays on /accounts/switch and every unpinned provider follows it.
-_PER_PROVIDER_SWITCH = ("zai", "gemini_web", "gemini")
+_PER_PROVIDER_SWITCH = ("zai", "gemini_web", "gemini", "mimo")
 
 
 @router.post("/api/settings/accounts/switch-provider")
@@ -1873,8 +1895,33 @@ async def available_browsers() -> dict[str, Any]:
 
 
 @router.post("/api/settings/accounts/create")
-async def create_account(payload: dict[str, str] | None = None) -> dict[str, Any]:
-    """Find next available acc integer and launch headed browser for login."""
+async def create_account(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Find next available acc integer and launch headed browser for login.
+
+    `payload.providers` (list, optional) decides which login sites open — one
+    tab per entry. Falls back to `payload.provider` (single) and then qwen for
+    backward compatibility. The profile is generic — a browser-data-accN dir —
+    so one account can hold several providers at once.
+    """
+    _LOGIN_URLS = {
+        "qwen": "https://chat.qwen.ai",
+        "zai": "https://chat.z.ai",
+        "gemini_web": "https://gemini.google.com/app",
+        "gemini": "https://gemini.google.com/app",
+        "deepseek": "https://chat.deepseek.com",
+        "mimo": "https://aistudio.xiaomimimo.com",
+    }
+
+    # Resolve the list of login sites to open (default: qwen).
+    _req = (payload or {}).get("providers")
+    if isinstance(_req, list) and _req:
+        _providers = [str(p).lower().strip() for p in _req if str(p).lower().strip() in _LOGIN_URLS]
+    else:
+        _single = str((payload or {}).get("provider", "qwen") or "qwen").lower().strip()
+        _providers = [_single] if _single in _LOGIN_URLS else ["qwen"]
+    if not _providers:
+        _providers = ["qwen"]
+
     def _next_acc() -> int:
         existing: set[int] = set()
         for d in _SYSTEM_DIR.iterdir():
@@ -1919,14 +1966,20 @@ async def create_account(payload: dict[str, str] | None = None) -> dict[str, Any
                 launch_kwargs["executable_path"] = resolved_browser
             async with async_playwright() as p:
                 context = await p.chromium.launch_persistent_context(**launch_kwargs)
-                page = context.pages[0] if context.pages else await context.new_page()
-                await page.goto("https://chat.qwen.ai", timeout=120000)
+                for idx, prov in enumerate(_providers):
+                    page = (context.pages[0] if (idx == 0 and context.pages)
+                            else await context.new_page())
+                    try:
+                        await page.goto(_LOGIN_URLS[prov], timeout=120000)
+                    except Exception as nav_exc:
+                        logger.warning(f"Account create: failed to open {prov}: {nav_exc}")
                 await context.wait_for_event("close", timeout=0)
         except Exception as e:
             logger.warning(f"Account creation browser for {profile_name} exited: {e}")
 
     asyncio.create_task(_run_browser())
-    return {"status": "ok", "profile": profile_name}
+    return {"status": "ok", "profile": profile_name,
+            "providers": _providers, "count": len(_providers)}
 
 
 @router.delete("/api/settings/accounts/delete")

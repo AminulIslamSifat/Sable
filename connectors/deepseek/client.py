@@ -817,6 +817,18 @@ class DeepSeekClient:
             json.dumps(payload, separators=(",", ":")).encode()
         ).decode()
 
+    async def _refresh_pow_header(self, headers: dict[str, str]) -> dict[str, str]:
+        """Solve a fresh PoW challenge and return headers with an updated header value.
+
+        DeepSeek PoW nonces are single-use. Replaying the header from a previous
+        request (including the hello seed) makes the server silently return an
+        empty 200. Must be called before every retry or resend.
+        """
+        challenge = await self._get_challenge(headers=headers)
+        loop = asyncio.get_running_loop()
+        nonce = await loop.run_in_executor(None, self._solve_pow, challenge)
+        return {**headers, "X-DS-PoW-Response": self._build_pow_header(challenge, nonce)}
+
     # ------------------------------------------------------------------
     # API calls
     # ------------------------------------------------------------------
@@ -1307,11 +1319,7 @@ class DeepSeekClient:
                     # X-DS-PoW-Response on the real message causes silent failure
                     # (empty response or rejection). Solve a fresh challenge now.
                     try:
-                        _fresh_challenge = await self._get_challenge(headers=headers)
-                        loop = asyncio.get_running_loop()
-                        _fresh_nonce = await loop.run_in_executor(None, self._solve_pow, _fresh_challenge)
-                        _fresh_pow = self._build_pow_header(_fresh_challenge, _fresh_nonce)
-                        headers = {**headers, "X-DS-PoW-Response": _fresh_pow}
+                        headers = await self._refresh_pow_header(headers)
                         logger.debug("DeepSeek: refreshed PoW after hello seed for chat %s", chat_id)
                     except Exception as _pow_exc:
                         logger.warning("DeepSeek: failed to refresh PoW after hello seed: %s", _pow_exc)
@@ -1350,6 +1358,21 @@ class DeepSeekClient:
 
             # Per-token retry loop
             for _retry in range(_MAX_RETRIES_PER_TOKEN):
+                # PoW nonces are single-use. The header solved in
+                # _prepare_request_with_rotation (or after the hello seed) is only
+                # valid for the FIRST send. Replaying it on a retry makes DeepSeek
+                # return a silent empty 200 - which is why the retry chain never
+                # succeeded. Solve a fresh challenge before each retry.
+                if _retry > 0:
+                    try:
+                        headers = await self._refresh_pow_header(headers)
+                    except Exception as _pow_exc:
+                        last_err = f"pow_refresh_failed: {_pow_exc}"
+                        logger.warning(
+                            "DeepSeek: PoW refresh failed on retry %d (%s), rotating...",
+                            _retry, _pow_exc,
+                        )
+                        break
                 try:
                     full_answer = ""
                     full_thinking = ""

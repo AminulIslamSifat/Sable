@@ -276,6 +276,13 @@ async def auth_middleware(request: Request, call_next):
     ):
         authorized = request.query_params.get("token", "") == _auth_mod.AUTH_TOKEN
     if not authorized:
+        _client = request.client
+        _origin = f"{_client.host}:{_client.port}" if _client else "unknown"
+        _mark = " (empty bearer)" if auth_header == "Bearer " else ""
+        logger.warning(
+            "401 UNAUTHORIZED  %s %s  <- %s%s",
+            request.method, path, _origin, _mark,
+        )
         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     return await call_next(request)
 
