@@ -164,6 +164,50 @@ class MiMoClient:
         return out
 
     # ---- upload ----
+    async def validate_auth(self) -> str:
+        """Probe MiMo auth with a lightweight conversation/save call.
+
+        This is the exact endpoint that 401s when the service token is dead,
+        so it is a faithful liveness check. Returns the authenticated userId
+        on success; raises RuntimeError with a human-readable reason on failure.
+        """
+        jar = await self._cookies(force=True)
+        tok = (jar.get("xiaomichatbot_serviceToken") or "").strip('"')
+        uid = (jar.get("userId") or "").strip('"')
+        ph = self._ph_from_jar(jar)
+        if not tok:
+            raise RuntimeError("no xiaomichatbot_serviceToken cookie")
+        if not uid:
+            raise RuntimeError("no userId cookie")
+        if not ph:
+            raise RuntimeError("no xiaomichatbot_ph cookie")
+        http = await self._http_session()
+        url = f"{BASE_URL}/fastchat/open-apis/chat/conversation/save?xiaomichatbot_ph={ph}"
+        body = {"conversationId": uuid.uuid4().hex, "title": "auth probe", "type": "chat"}
+        resp = await http.post(url, headers=self._headers(), json=body, cookies=jar)
+        if resp.status_code == 401:
+            raise RuntimeError(
+                "MiMo rejected the session token (401). The cookie is present "
+                "but expired — log in to aistudio.xiaomimimo.com again in this "
+                "account's browser profile."
+            )
+        if resp.status_code != 200:
+            raise RuntimeError(f"auth probe HTTP {resp.status_code}: {resp.text[:200]}")
+        try:
+            out = json.loads(resp.text)
+        except Exception:
+            out = {}
+        code = out.get("code")
+        if code == 401:
+            raise RuntimeError(
+                "MiMo rejected the session token (code=401). Log in again to "
+                "aistudio.xiaomimimo.com in this account's browser profile."
+            )
+        if code not in (0, None):
+            raise RuntimeError(f"auth probe code={code} msg={out.get('msg')}")
+        return uid
+
+
 
     async def upload_file(self, path: str | Path) -> dict[str, Any]:
         """Upload a file and return the object for `multiMedias`."""

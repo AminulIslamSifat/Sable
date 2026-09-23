@@ -1501,35 +1501,45 @@ window.safeCopy = async function(text) {
       try {
         const res = await fetch('/api/settings/deepseek/refresh-token', { method: 'POST' });
         const d = await res.json();
-        showToast(res.ok ? (d.message || 'Token refreshed') : (d.error || 'Refresh failed'), res.ok ? 'success' : 'error');
+        const okMsg = d.message || (d.token_preview ? `DeepSeek token refreshed (${d.token_preview})` : 'Token refreshed');
+        const errMsg = d.detail || d.error || (d.token_preview ? `Refresh failed (last token: ${d.token_preview})` : 'Refresh failed');
+        showToast(res.ok ? okMsg : errMsg, res.ok ? 'success' : 'error');
       } catch { showToast('Refresh failed', 'error'); }
     } else if (action === 'refresh-zai') {
       showToast('Refreshing z.ai token…', 'info');
       try {
         const res = await fetch('/api/settings/zai/refresh-token', { method: 'POST' });
         const d = await res.json();
-        showToast(res.ok ? (d.message || 'z.ai token refreshed') : (d.detail || 'Refresh failed'), res.ok ? 'success' : 'error');
+        const okMsg = d.message || (d.token_preview ? `z.ai token refreshed (${d.token_preview})` : 'z.ai token refreshed');
+        const errMsg = d.detail || d.error || (d.token_preview ? `Refresh failed (last token: ${d.token_preview})` : 'Refresh failed');
+        showToast(res.ok ? okMsg : errMsg, res.ok ? 'success' : 'error');
       } catch { showToast('Refresh failed', 'error'); }
     } else if (action === 'refresh-gemini-web') {
       showToast('Refreshing Gemini (web) token…', 'info');
       try {
         const res = await fetch('/api/settings/gemini_web/refresh-token', { method: 'POST' });
         const d = await res.json();
-        showToast(res.ok ? (d.message || 'Gemini (web) token refreshed') : (d.detail || 'Refresh failed'), res.ok ? 'success' : 'error');
+        const okMsg = d.message || (d.token_preview ? `Gemini (web) token refreshed (${d.token_preview})` : 'Gemini (web) token refreshed');
+        const errMsg = d.detail || d.error || (d.token_preview ? `Refresh failed (last token: ${d.token_preview})` : 'Refresh failed');
+        showToast(res.ok ? okMsg : errMsg, res.ok ? 'success' : 'error');
       } catch { showToast('Refresh failed', 'error'); }
     } else if (action === 'refresh-mimo') {
       showToast('Refreshing MiMo token…', 'info');
       try {
         const res = await fetch('/api/settings/mimo/refresh-token', { method: 'POST' });
         const d = await res.json();
-        showToast(res.ok ? (d.message || 'MiMo token refreshed') : (d.detail || 'Refresh failed'), res.ok ? 'success' : 'error');
+        const okMsg = d.message || (d.token_preview ? `MiMo token refreshed (${d.token_preview})` : 'MiMo token refreshed');
+        const errMsg = d.detail || d.error || (d.token_preview ? `Refresh failed (last token: ${d.token_preview})` : 'Refresh failed');
+        showToast(res.ok ? okMsg : errMsg, res.ok ? 'success' : 'error');
       } catch { showToast('Refresh failed', 'error'); }
     } else if (action === 'refresh-waf') {
       showToast('Refreshing WAF token…', 'info');
       try {
         const res = await fetch('/api/settings/browser/refresh-waf', { method: 'POST' });
         const d = await res.json();
-        showToast(res.ok ? (d.message || 'WAF token refreshed') : (d.detail || 'Refresh failed'), res.ok ? 'success' : 'error');
+        const okMsg = d.message || 'WAF token refreshed';
+        const errMsg = d.detail || d.error || 'Refresh failed';
+        showToast(res.ok ? okMsg : errMsg, res.ok ? 'success' : 'error');
       } catch { showToast('Refresh failed', 'error'); }
     } else if (action === 'clear-browser-cache') {
       if (!await sableConfirm('Strip all browser profile caches? This keeps session data but removes cache/junk.')) return;

@@ -170,7 +170,13 @@ async def update_network_settings(payload: dict[str, Any]) -> dict[str, Any]:
 async def refresh_deepseek_token() -> dict[str, Any]:
     try:
         token = await get_deepseek_client().refresh_token()
-        return {"status": "ok", "token_preview": token[:20] + "...", "active": True}
+        preview = token[:20] + "..." if len(token) > 20 else "***"
+        return {
+            "status": "ok",
+            "message": f"DeepSeek token refreshed ({preview})",
+            "token_preview": preview,
+            "active": True,
+        }
     except Exception as exc:
         logger.error("DeepSeek token refresh failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Refresh failed: {exc}")
@@ -180,7 +186,13 @@ async def refresh_deepseek_token() -> dict[str, Any]:
 async def refresh_zai_token() -> dict[str, Any]:
     try:
         token = await get_zai_client().refresh_token()
-        return {"status": "ok", "message": "z.ai token refreshed", "token_preview": token[:20] + "...", "active": True}
+        preview = token[:20] + "..." if len(token) > 20 else "***"
+        return {
+            "status": "ok",
+            "message": f"z.ai token refreshed ({preview})",
+            "token_preview": preview,
+            "active": True,
+        }
     except Exception as exc:
         logger.error("z.ai token refresh failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Refresh failed: {exc}")
@@ -222,7 +234,7 @@ async def refresh_gemini_web_token() -> dict[str, Any]:
                 break
         return {
             "status": "ok",
-            "message": f"Gemini (web) token refreshed for {account}",
+            "message": f"Gemini (web) token refreshed for {account} ({preview})",
             "account": account,
             "token_preview": preview,
             "active": True,
@@ -234,12 +246,13 @@ async def refresh_gemini_web_token() -> dict[str, Any]:
 
 @router.post("/api/settings/mimo/refresh-token")
 async def refresh_mimo_token() -> dict[str, Any]:
-    """Force a live MiMo cookie read from the provider's browser profile.
+    """Force a live MiMo cookie read AND validate it against MiMo.
 
     MiMo auth is 3 cookies (xiaomichatbot_serviceToken, userId,
     xiaomichatbot_ph). Pinned account wins; otherwise the global active
-    account is used. On success the client's in-memory jar is dropped so the
-    next send picks up the fresh cookies.
+    account is used. Unlike the old version, this actually probes MiMo with
+    the token before reporting success — a stale cookie now returns a real
+    error instead of a fake "refreshed" toast.
     """
     try:
         jar = await service.get_mimo_cookies()
@@ -247,18 +260,35 @@ async def refresh_mimo_token() -> dict[str, Any]:
         account = Path(browser.user_data_dir).name
         try:
             from connectors.mimo.client import get_client as _mimo
-            _mimo().invalidate_jar()
+            client = _mimo()
+            client.invalidate_jar()
         except Exception:
-            pass
-        tok = jar.get("xiaomichatbot_serviceToken", "")
+            client = None
+
+        tok = (jar.get("xiaomichatbot_serviceToken", "") or "").strip('"')
         preview = f"{tok[:6]}...{tok[-4:]}" if len(tok) > 12 else "***"
+
+        # Validate against MiMo — this is what the old route skipped.
+        if client is not None:
+            try:
+                await client.validate_auth()
+            except Exception as exc:
+                logger.warning("MiMo token validation failed for %s: %s", account, exc)
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"MiMo rejected token for {account} [{preview}]: {exc}",
+                )
+
         return {
             "status": "ok",
-            "message": f"MiMo token refreshed for {account}",
+            "message": f"MiMo token refreshed & verified for {account} ({preview})",
             "account": account,
             "token_preview": preview,
+            "validated": True,
             "active": True,
         }
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("MiMo token refresh failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Refresh failed: {exc}")
@@ -278,16 +308,26 @@ async def refresh_waf_token() -> dict[str, Any]:
         # launched once and left running (no close), so refreshing all of them
         # is one warm Chromium per account instead of an open→close→open cycle.
         ds_ok = zai_ok = gem_ok = mimo_ok = False
+        previews: dict[str, str] = {}
+
+        def _pv(v: str, n: int = 20) -> str:
+            v = (v or "").strip('"')
+            return (v[:n] + "...") if len(v) > n else (v or "***")
+
         try:
             ds_token = await get_deepseek_client().refresh_token()
             ds_ok = bool(ds_token)
+            previews["deepseek"] = _pv(ds_token)
         except Exception as exc:
             logger.warning("DeepSeek token refresh during WAF refresh failed: %s", exc)
+            previews["deepseek"] = "failed"
         try:
             zai_token = await get_zai_client().refresh_token()
             zai_ok = bool(zai_token)
+            previews["zai"] = _pv(zai_token)
         except Exception as exc:
             logger.warning("z.ai token refresh during WAF refresh failed: %s", exc)
+            previews["zai"] = "failed"
         try:
             from connectors.gemini_web import auth as _gauth
             gem_browser = service._browser_for_provider("gemini_web")
@@ -301,26 +341,48 @@ async def refresh_waf_token() -> dict[str, Any]:
                     from connectors.gemini_web.client import get_client as _gw
                     _gw().invalidate_jar()
                     gem_ok = True
+                    for k in ("SAPISID", "__Secure-1PSID", "__Secure-3PSID"):
+                        if gjar.get(k):
+                            previews["gemini_web"] = _pv(gjar[k])
+                            break
         except Exception as exc:
             logger.warning("Gemini token refresh during WAF refresh failed: %s", exc)
+            previews["gemini_web"] = "failed"
         try:
             mimo_jar = await service.get_mimo_cookies()
             if mimo_jar:
                 from connectors.mimo.client import get_client as _mimo
                 _mimo().invalidate_jar()
                 mimo_ok = True
+                previews["mimo"] = _pv(mimo_jar.get("xiaomichatbot_serviceToken", ""))
         except Exception as exc:
             logger.warning("MiMo token refresh during WAF refresh failed: %s", exc)
+            previews["mimo"] = "failed"
+
+        # Compact token summary for the toast popup.
+        parts = []
+        if has_cookie:
+            parts.append("waf")
+        if ds_ok:
+            parts.append(f"ds={previews.get('deepseek','***')}")
+        if zai_ok:
+            parts.append(f"zai={previews.get('zai','***')}")
+        if gem_ok:
+            parts.append(f"gem={previews.get('gemini_web','***')}")
+        if mimo_ok:
+            parts.append(f"mimo={previews.get('mimo','***')}")
+        summary = " ".join(parts) if parts else "none"
 
         return {
             "status": "ok",
-            "message": "WAF tokens refreshed",
+            "message": f"WAF tokens refreshed: {summary}",
             "has_cookie": has_cookie,
             "has_bx_ua": has_bx,
             "deepseek": ds_ok,
             "zai": zai_ok,
             "gemini_web": gem_ok,
             "mimo": mimo_ok,
+            "token_previews": previews,
         }
     except Exception as exc:
         logger.error("WAF token refresh failed: %s", exc)
