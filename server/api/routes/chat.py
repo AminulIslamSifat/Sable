@@ -861,6 +861,39 @@ async def chat(request: ChatRequest):
     if not _upstream_session_id:
         from server.database import get_upstream_session_id as _get_usid
         _upstream_session_id = _get_usid(active_chat_id)
+
+    # ── Lazy upstream-session creation (fixes forked Qwen chats) ──
+    # A forked chat is created WITHOUT an upstream_session_id, because the fork
+    # may be used with any provider. If the user stays on Qwen, message 1 appears
+    # to work — but only because fork_history is injected inline. Message 2 has
+    # neither a session nor an injection, so the context silently vanishes.
+    # Create the session on the first send and persist it so every later turn
+    # reuses it. No-op for any chat that already has a session.
+    if (
+        not _upstream_session_id
+        and not scraper_enabled
+        and not _is_api_model(request.model)
+        and current_provider == "qwen"
+    ):
+        try:
+            _upstream_session_id = await retry_async(
+                lambda: service.create_chat(model=request.model, bdd=bdd),
+                label="lazy_create_chat",
+            )
+        except Exception as _sess_exc:
+            logger.warning("[session-lazy] create_chat failed for %s: %s", active_chat_id, _sess_exc)
+            _upstream_session_id = None
+        if _upstream_session_id:
+            try:
+                from server.database import set_upstream_session_id as _set_usid_lazy
+                _set_usid_lazy(active_chat_id, _upstream_session_id)
+                logger.info(
+                    "[session-lazy] Created upstream session %s for chat %s (forked=%s)",
+                    _upstream_session_id, active_chat_id, _forked,
+                )
+            except Exception as _set_exc:
+                logger.warning("[session-lazy] Failed to persist session id: %s", _set_exc)
+
     set_title_if_default(active_chat_id, title)
     # Server tail is authoritative — client leaf is fallback for first-message only.
     #

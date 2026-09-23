@@ -16,6 +16,7 @@
   let protectedEntries = [];
   let activeCategories = new Set(['semantic', 'episodic', 'procedural', 'ephemeral', 'protected']);
   let cy = null;              // Cytoscape instance
+  let _kbZoomAbort = null;    // AbortController for the wheel-zoom listener
   let selectedNodeId = null;
   let toastTimer = null;
   let searchDebounce = null;
@@ -239,6 +240,7 @@
     if (filtered.length === 0) {
       loading.classList.add('hidden');
       empty.classList.remove('hidden');
+      if (_kbZoomAbort) { _kbZoomAbort.abort(); _kbZoomAbort = null; }
       if (cy) { cy.destroy(); cy = null; }
       return;
     }
@@ -269,39 +271,48 @@
         }
       }));
 
-      // Build edges using inverted keyword index — O(n*k) instead of O(n²*k)
+      // ── Edges via IDF-weighted keyword co-occurrence ──
+      // A keyword shared by 90 nodes (e.g. "sable") says almost nothing about
+      // relatedness; a keyword shared by 3 nodes says a lot. Weight each shared
+      // keyword by 1/√(df) so generic hubs contribute little and rare terms
+      // dominate. Threshold on the *accumulated* weight, not raw count.
+      const EDGE_WEIGHT_MIN = 0.6;   // tuned against the live vault (~425 entries)
+
       const kwIndex = new Map(); // keyword -> [nodeIndex]
       for (let i = 0; i < nodes.length; i++) {
         for (const kw of nodes[i].data.keywords) {
-          if (!kwIndex.has(kw)) kwIndex.set(kw, []);
-          kwIndex.get(kw).push(i);
+          let bucket = kwIndex.get(kw);
+          if (!bucket) { bucket = []; kwIndex.set(kw, bucket); }
+          bucket.push(i);
         }
       }
 
-      // Count shared keywords per pair via co-occurrence
-      const pairCounts = new Map(); // "i-j" -> count
+      const pairWeights = new Map(); // "i-j" -> accumulated idf weight
       for (const indices of kwIndex.values()) {
+        const df = indices.length;
+        if (df < 2) continue;                  // term appears once — no edges
+        const w = 1 / Math.sqrt(df);           // √-IDF: hub terms decay gently
         for (let a = 0; a < indices.length; a++) {
+          const lo = indices[a];
           for (let b = a + 1; b < indices.length; b++) {
-            const lo = indices[a], hi = indices[b];
+            const hi = indices[b];
             const key = `${lo}-${hi}`;
-            pairCounts.set(key, (pairCounts.get(key) || 0) + 1);
+            pairWeights.set(key, (pairWeights.get(key) || 0) + w);
           }
         }
       }
 
       edges = [];
-      for (const [key, count] of pairCounts) {
-        if (count >= 2) {
-          const [si, ti] = key.split('-').map(Number);
-          edges.push({
-            data: {
-              source: nodes[si].data.id,
-              target: nodes[ti].data.id,
-              weight: Math.min(count, 3),
-            }
-          });
-        }
+      for (const [key, w] of pairWeights) {
+        if (w < EDGE_WEIGHT_MIN) continue;
+        const [si, ti] = key.split('-').map(Number);
+        edges.push({
+          data: {
+            source: nodes[si].data.id,
+            target: nodes[ti].data.id,
+            weight: Math.min(w, 3),   // cap for visual edge thickness
+          }
+        });
       }
 
       // Uniform small circles — Obsidian-style
@@ -331,209 +342,236 @@
       return;
     }
 
-    // Destroy old instance
-    if (cy) { cy.destroy(); cy = null; }
-
     loading.classList.add('hidden');
 
     // Read CSS vars for styling
     const style = getComputedStyle(document.documentElement);
     const borderColor = style.getPropertyValue('--border').trim() || '#2a2720';
-    const textColor = style.getPropertyValue('--text-dim').trim() || '#c4c4c8';
     const accentColor = style.getPropertyValue('--accent').trim() || '#9a7d4a';
-    const accentDim = style.getPropertyValue('--accent-dim').trim() || '#9a7d4a0e';
 
-    cy = cytoscape({
-      container,
-      elements: [...nodes, ...edges],
-      style: [
-        {
-          selector: 'node',
-          style: {
-            'width': 8,
-            'height': 8,
-            'shape': 'ellipse',
-            'background-color': 'data(color)',
-            'background-opacity': 0.85,
-            'border-width': 0,
-            'label': '',
-            'transition-property': 'background-opacity, width, height',
-            'transition-duration': '0.2s',
-          }
-        },
-        {
-          selector: 'node.hover',
-          style: {
-            'width': 12,
-            'height': 12,
-            'background-opacity': 1,
-            'label': 'data(label)',
-            'text-valign': 'bottom',
-            'text-margin-y': 6,
-            'font-size': '4px',
-            'color': '#ffffff',
-            'text-opacity': 1,
-            'font-family': "'Maple Mono', monospace",
-            'text-outline-width': 1,
-            'text-outline-color': '#0f0e17',
-            'text-max-width': '140px',
-            'text-wrap': 'ellipsis',
-            'z-index': 999,
-          }
-        },
-        {
-          selector: 'node:selected',
-          style: {
-            'width': 12,
-            'height': 12,
-            'background-opacity': 1,
-            'label': 'data(label)',
-            'text-valign': 'bottom',
-            'text-margin-y': 6,
-            'font-size': '4px',
-            'color': '#ffffff',
-            'text-opacity': 1,
-            'font-family': "'Maple Mono', monospace",
-            'text-outline-width': 2,
-            'text-outline-color': '#0f0e17',
-            'text-max-width': '140px',
-            'text-wrap': 'ellipsis',
-            'z-index': 999,
-          }
-        },
-        {
-          selector: 'node.faded',
-          style: {
-            'opacity': 0.2,
-          }
-        },
-        {
-          selector: 'edge',
-          style: {
-            'width': 1,
-            'line-color': borderColor,
-            'opacity': 0.25,
-            'curve-style': 'bezier',
-            'transition-property': 'opacity, line-color',
-            'transition-duration': '0.2s',
-          }
-        },
-        {
-          selector: 'edge.highlighted',
-          style: {
-            'line-color': accentColor,
-            'opacity': 0.6,
-            'width': 1.5,
-          }
-        },
-        {
-          selector: 'edge.faded',
-          style: {
-            'opacity': 0.04,
-          }
-        },
-      ],
-      layout: { name: 'preset' },
-      minZoom: 0.1,
-      maxZoom: 8,
-      wheelSensitivity: 0.5,
-      boxSelectionEnabled: false,
-    });
+    const elements = [...nodes, ...edges];
+    const isFresh = !cy || cy.destroyed();
 
-    // ── Concentric layout — Obsidian-style radial rings by connectivity ──
-    const layout = cy.layout({
-      name: 'concentric',
-      animate: 'end',
-      animationDuration: 400,
-      fit: true,
-      padding: 60,
-      concentric: (node) => node.degree(),
-      levelWidth: () => 2,
-      minNodeSpacing: 30,
-      avoidOverlap: true,
-    });
-
-    layout.run();
-
-    // ── Interactions ──
-    cy.on('tap', 'node', (evt) => {
-      const node = evt.target;
-      selectNode(node);
-    });
-
-    cy.on('tap', (evt) => {
-      if (evt.target === cy) {
-        deselectNode();
-      }
-    });
-
-    cy.on('mouseover', 'node', (evt) => {
-      const node = evt.target;
-      node.addClass('hover');
-      // Highlight connected edges and dim others
-      const neighborhood = node.closedNeighborhood();
-      cy.elements().addClass('faded');
-      neighborhood.removeClass('faded');
-      neighborhood.connectedEdges().addClass('highlighted');
-    });
-
-    cy.on('mouseout', 'node', () => {
-      cy.elements().removeClass('faded highlighted hover');
-    });
-
-    // Store entry data on nodes for detail panel
-    cy.nodes().forEach((node, i) => {
-      node.data('entry', filtered[i]);
-    });
-
-    // ── Zoom-based label visibility, dot brightness & screen-space sizing ──
-    const LABEL_ZOOM_THRESHOLD = 3.0;
-    const MIN_SCREEN_PX = 4;   // minimum node size in screen pixels (Obsidian-like)
-    const BASE_NODE_PX = 8;    // natural node size at zoom=1
-    let _lastShowLabels = null;
-    let _lastZoomBucket = -1;
-
-    function updateZoomEffects() {
-      const z = cy.zoom();
-      const showLabels = z >= LABEL_ZOOM_THRESHOLD;
-      // Bucket zoom to avoid per-frame style updates
-      const zoomBucket = Math.round(z * 20);
-      if (showLabels === _lastShowLabels && zoomBucket === _lastZoomBucket) return;
-      _lastShowLabels = showLabels;
-      _lastZoomBucket = zoomBucket;
-
-      // Screen-space compensation: keep nodes at least MIN_SCREEN_PX on screen
-      // At zoom z, a graph-space size of s renders as s*z screen pixels.
-      // We want max(BASE_NODE_PX, MIN_SCREEN_PX / z) so dots never vanish.
-      const compensatedSize = Math.max(BASE_NODE_PX, MIN_SCREEN_PX / z);
-      const t = Math.min(Math.max((z - 0.1) / (LABEL_ZOOM_THRESHOLD - 0.1), 0), 1);
-      const opacity = 1.0 - t * 0.15;
-
-      cy.batch(() => {
-        cy.nodes().forEach(n => {
-          if (n.hasClass('hover') || n.selected()) return;
-          const base = { 'background-opacity': opacity, 'width': compensatedSize, 'height': compensatedSize };
-          if (showLabels) {
-            n.style(Object.assign(base, {
-              'label': n.data('label'),
+    if (isFresh) {
+      cy = cytoscape({
+        container,
+        elements,
+        style: [
+          {
+            selector: 'node',
+            style: {
+              'width': 8,
+              'height': 8,
+              'shape': 'ellipse',
+              'background-color': 'data(color)',
+              'background-opacity': 0.85,
+              'border-width': 0,
+              'label': '',
+              'transition-property': 'background-opacity',
+              'transition-duration': '0.15s',
+            }
+          },
+          {
+            selector: 'node.zoomed',
+            style: {
+              'label': 'data(label)',
+              'text-valign': 'bottom',
+              'text-margin-y': 6,
               'font-size': '4px',
               'color': '#ffffff',
               'text-opacity': 1,
+              'font-family': "'Maple Mono', monospace",
               'text-outline-width': 1,
               'text-outline-color': '#0f0e17',
-            }));
-          } else {
-            n.removeStyle();
-            n.style(Object.assign(base, { 'label': '' }));
-          }
+              'text-max-width': '140px',
+              'text-wrap': 'ellipsis',
+            }
+          },
+          {
+            selector: 'node.hover',
+            style: {
+              'width': 12,
+              'height': 12,
+              'background-opacity': 1,
+              'label': 'data(label)',
+              'text-valign': 'bottom',
+              'text-margin-y': 6,
+              'font-size': '4px',
+              'color': '#ffffff',
+              'text-opacity': 1,
+              'font-family': "'Maple Mono', monospace",
+              'text-outline-width': 1,
+              'text-outline-color': '#0f0e17',
+              'text-max-width': '140px',
+              'text-wrap': 'ellipsis',
+              'z-index': 999,
+            }
+          },
+          {
+            selector: 'node:selected',
+            style: {
+              'width': 12,
+              'height': 12,
+              'background-opacity': 1,
+              'label': 'data(label)',
+              'text-valign': 'bottom',
+              'text-margin-y': 6,
+              'font-size': '4px',
+              'color': '#ffffff',
+              'text-opacity': 1,
+              'font-family': "'Maple Mono', monospace",
+              'text-outline-width': 2,
+              'text-outline-color': '#0f0e17',
+              'text-max-width': '140px',
+              'text-wrap': 'ellipsis',
+              'z-index': 999,
+            }
+          },
+          {
+            selector: 'node.faded',
+            style: { 'opacity': 0.15 }
+          },
+          {
+            selector: 'edge',
+            style: {
+              'width': 1,
+              'line-color': borderColor,
+              'opacity': 0.25,
+              'curve-style': 'bezier',
+              'transition-property': 'opacity, line-color',
+              'transition-duration': '0.15s',
+            }
+          },
+          {
+            selector: 'edge.highlighted',
+            style: {
+              'line-color': accentColor,
+              'opacity': 0.6,
+              'width': 1.5,
+            }
+          },
+          {
+            selector: 'edge.faded',
+            style: { 'opacity': 0.04 }
+          },
+        ],
+        layout: { name: 'preset' },
+        minZoom: 0.1,
+        maxZoom: 8,
+        boxSelectionEnabled: false,
+        userZoomingEnabled: false,   // custom smooth cursor-anchored zoom below
+      });
+
+      // ── One-time interactions ──
+      cy.on('tap', 'node', (evt) => selectNode(evt.target));
+      cy.on('tap', (evt) => { if (evt.target === cy) deselectNode(); });
+
+      // Hover: neighborhood-only, batched — no whole-graph churn
+      let _hovered = null;
+      cy.on('mouseover', 'node', (evt) => {
+        if (_hovered === evt.target) return;
+        _hovered = evt.target;
+        const hood = _hovered.closedNeighborhood();
+        const rest = cy.elements().not(hood);
+        cy.batch(() => {
+          rest.addClass('faded');
+          hood.addClass('hover');
+          hood.connectedEdges().addClass('highlighted');
         });
       });
+      cy.on('mouseout', 'node', () => {
+        if (!_hovered) return;
+        _hovered = null;
+        cy.batch(() => cy.elements().removeClass('faded highlighted hover'));
+      });
+
+      // ── Smooth cursor-anchored zoom (rAF lerp, no native zoom) ──
+      let _zoomTarget = null, _zoomRAF = null, _zoomAnchor = null;
+      function stepZoom() {
+        if (!cy || cy.destroyed()) { _zoomRAF = null; _zoomTarget = null; return; }
+        const cur = cy.zoom();
+        const diff = _zoomTarget - cur;
+        if (Math.abs(diff) < 0.004) {
+          cy.zoom({ level: _zoomTarget, renderedPosition: _zoomAnchor });
+          _zoomRAF = null; _zoomTarget = null;
+          return;
+        }
+        cy.zoom({ level: cur + diff * 0.22, renderedPosition: _zoomAnchor });
+        _zoomRAF = requestAnimationFrame(stepZoom);
+      }
+      // Abort any listener from a previous instance before rebinding
+      if (_kbZoomAbort) _kbZoomAbort.abort();
+      _kbZoomAbort = new AbortController();
+      container.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const rect = container.getBoundingClientRect();
+        _zoomAnchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        const base = _zoomTarget ?? cy.zoom();
+        // trackpad pinch arrives as wheel + ctrlKey — scale it finer
+        const intensity = e.ctrlKey ? 0.012 : 0.0025;
+        const factor = Math.exp(-e.deltaY * intensity);
+        _zoomTarget = Math.max(cy.minZoom(), Math.min(cy.maxZoom(), base * factor));
+        if (!_zoomRAF) _zoomRAF = requestAnimationFrame(stepZoom);
+      }, { passive: false, signal: _kbZoomAbort.signal });
+
+      // ── Zoom-driven label visibility via class toggle (single diff) ──
+      cy.on('zoom', () => {
+        const show = cy.zoom() >= 3.0;
+        cy.batch(() => cy.nodes().toggleClass('zoomed', show));
+      });
+
+      cy.ready(() => cy.emit('zoom'));
+    } else {
+      // Reuse instance — swap elements, keep viewport, no re-init
+      cy.batch(() => {
+        cy.elements().remove();
+        cy.add(elements);
+      });
     }
-    cy.on('zoom', updateZoomEffects);
-    // Wait for layout + fit to fully complete before first check
-    cy.ready(() => {
-      setTimeout(updateZoomEffects, 100);
+
+    // Store entry data on nodes for detail panel
+    cy.batch(() => {
+      cy.nodes().forEach((node, i) => node.data('entry', filtered[i]));
     });
+
+    // ── Layout ──
+    // 'cose-bilkent' = organic force-directed (Obsidian-like)
+    // 'concentric'   = radial rings by connectivity (deterministic, fast)
+    const LAYOUT = 'concentric';
+
+    const layoutOpts = LAYOUT === 'cose-bilkent'
+      ? {
+          name: 'cose-bilkent',
+          animate: 'end',
+          animationDuration: 500,
+          fit: true,
+          padding: 60,
+          // Perf: keep iteration count modest — this runs on every render
+          numIter: 1000,
+          randomize: true,
+          nodeRepulsion: 6000,
+          idealEdgeLength: 80,
+          edgeElasticity: 0.45,
+          gravity: 0.25,
+          nestingFactor: 0.1,
+          tile: true,
+          nodeDimensionsIncludeLabels: false,
+        }
+      : {
+          name: 'concentric',
+          animate: 'end',
+          animationDuration: 400,
+          fit: true,
+          padding: 60,
+          concentric: (node) => node.degree(),
+          levelWidth: () => 2,
+          minNodeSpacing: 30,
+        };
+
+    cy.layout(layoutOpts).run();
+
+    // Re-apply zoom class after layout/element swap
+    cy.emit('zoom');
   }
 
   function selectNode(node) {
@@ -928,7 +966,8 @@
     if (inputEl) inputEl.classList.remove('hidden');
 
     closeDetailPanel();
-    if (cy) { cy.destroy(); cy = null; }
+    // Keep the Cytoscape instance alive — destroying forces a full rebuild +
+    // re-layout on every reopen. Elements are swapped in renderGraph instead.
   }
 
   /* ── Init ── */

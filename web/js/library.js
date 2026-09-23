@@ -122,12 +122,31 @@
       items.forEach((item, li) => {
         const cell = document.createElement("div");
         cell.className = "library-gallery-item";
-        cell.innerHTML = `<img src="${item.url}" alt="${escHtml(item.filename)}" loading="lazy">`;
+        cell.innerHTML = `<img src="${item.url}" alt="${escHtml(item.filename)}" loading="lazy">` +
+          `<button class="ig-cell-dl" title="Download"><i data-lucide="download" class="icon-lucide"></i></button>` +
+          `<button class="ig-cell-del" title="Delete"><i data-lucide="trash-2" class="icon-lucide"></i></button>`;
         cell.title = item.filename;
-        cell.addEventListener("click", () => openLightbox(_libUrls, li));
+        cell.addEventListener("click", (e) => {
+          if (e.target.closest(".ig-cell-dl, .ig-cell-del")) return;
+          openLightbox(_libUrls, li);
+        });
+        cell.querySelector(".ig-cell-dl").addEventListener("click", (e) => {
+          e.stopPropagation();
+          _igDownload(item.url, item.filename || ("image-" + (li + 1) + ".png"));
+        });
+        cell.querySelector(".ig-cell-del").addEventListener("click", async (e) => {
+          e.stopPropagation();
+          const ok = await _igDeleteAsset(item.filename);
+          if (!ok) return;
+          cell.remove();
+          if (!grid.querySelector(".library-gallery-item")) {
+            container.innerHTML = '<div class="library-empty">No images uploaded yet.</div>';
+          }
+        });
         grid.appendChild(cell);
       });
       container.appendChild(grid);
+      if (window.lucide) lucide.createIcons({ nodes: grid.querySelectorAll("[data-lucide]") });
     }
 
     async function renderSkillsPanel(container) {
@@ -1192,14 +1211,21 @@
       `;
       container.appendChild(galleryWrap);
       if (window.lucide) lucide.createIcons({ nodes: galleryWrap.querySelectorAll("[data-lucide]") });
-      galleryWrap.querySelector("#igGalleryRefresh").addEventListener("click", () => _igLoadGallery());
-      _igLoadGallery();
+      galleryWrap.querySelector("#igGalleryRefresh").addEventListener("click", () => _igLoadGallery(container));
+      _igLoadGallery(container);
     }
 
     // Fetch the on-disk gallery and render a clickable thumbnail grid.
     // Distinct from the sidebar (which shows prompt *history*).
-    async function _igLoadGallery() {
-      const list = document.getElementById("igSavedList");
+    //
+    // IMPORTANT: scope all lookups to `container`. renderImageGenPanel() runs in
+    // TWO places (#imageView for the rail, #tab-lib-imagegen for the library
+    // overlay), so a global getElementById("igSavedList") grabbed whichever copy
+    // came first in the DOM — usually the hidden one — leaving the visible panel
+    // stuck on "Loading…" forever.
+    async function _igLoadGallery(container) {
+      const scope = container || document;
+      const list = scope.querySelector("#igSavedList") || document.getElementById("igSavedList");
       if (!list) return;
       try {
         const res = await fetch("/api/library/gallery");
@@ -1216,15 +1242,25 @@
           const cell = document.createElement("div");
           cell.className = "library-gallery-item";
           cell.innerHTML = `<img src="${escHtml(item.url)}" alt="${escHtml(item.filename)}" loading="lazy">` +
-            `<button class="ig-cell-dl" title="Download"><i data-lucide="download" class="icon-lucide"></i></button>`;
+            `<button class="ig-cell-dl" title="Download"><i data-lucide="download" class="icon-lucide"></i></button>` +
+            `<button class="ig-cell-del" title="Delete"><i data-lucide="trash-2" class="icon-lucide"></i></button>`;
           cell.title = item.filename;
           cell.addEventListener("click", (e) => {
-            if (e.target.closest(".ig-cell-dl")) return;
+            if (e.target.closest(".ig-cell-dl, .ig-cell-del")) return;
             openLightbox(urls, idx);
           });
           cell.querySelector(".ig-cell-dl").addEventListener("click", (e) => {
             e.stopPropagation();
             _igDownload(item.url, item.filename || ("image-" + (idx + 1) + ".png"));
+          });
+          cell.querySelector(".ig-cell-del").addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const ok = await _igDeleteAsset(item.filename);
+            if (!ok) return;
+            cell.remove();
+            if (!grid.querySelector(".library-gallery-item")) {
+              list.innerHTML = '<div class="library-empty">No images yet. Generate one above.</div>';
+            }
           });
           grid.appendChild(cell);
         });
