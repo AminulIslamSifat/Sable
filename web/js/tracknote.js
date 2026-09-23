@@ -332,33 +332,29 @@
     async function loadAgentOps() {
       try {
         const data = await tnFetch("/agent-ops");
-        console.log("[TrackNote] loadAgentOps response:", data);
-        if (!tnAgentList) { console.error("[TrackNote] tnAgentList is null!"); return; }
+        if (!tnAgentList) return;
         tnAgentList.innerHTML = "";
         const items = data.ops || [];
-        console.log(`[TrackNote] Rendering ${items.length} agent ops`);
         items.forEach(op => tnAgentList.appendChild(renderAgentOp(op)));
         tnAgentEmpty.style.display = items.length ? "none" : "block";
         if (window.lucide) lucide.createIcons({ nodes: tnAgentList.querySelectorAll("[data-lucide]") });
-      } catch(e) { console.error("[TrackNote] loadAgentOps FAILED:", e); }
+      } catch(e) { console.warn("[TrackNote] loadAgentOps failed", e); }
     }
 
     document.getElementById("tnAgentAdd")?.addEventListener("click", async () => {
       const name = document.getElementById("tnAgentName").value.trim();
       const prompt = document.getElementById("tnAgentPrompt").value.trim();
-      console.log("[TrackNote] Add clicked:", { name, prompt });
-      if (!name || !prompt) { console.warn("[TrackNote] Missing name or prompt"); return; }
+      if (!name || !prompt) { showToast?.("⚠️ Name and prompt are required", "error"); return; }
       const model = tnAgentModelSel?.value || "qwen3.7-max";
       const stype = document.getElementById("tnAgentSchedType").value;
       const time = document.getElementById("tnAgentTime").value || null;
       try {
-        const result = await tnPost("/agent-ops", { name, prompt, model, schedule_type: stype, schedule_time: time });
-        console.log("[TrackNote] Add result:", result);
+        await tnPost("/agent-ops", { name, prompt, model, schedule_type: stype, schedule_time: time });
         document.getElementById("tnAgentName").value = "";
         document.getElementById("tnAgentPrompt").value = "";
         collapseAddForm("tnAgentAddToggle", "tnAgentForm");
         loadAgentOps();
-      } catch(e) { console.error("[TrackNote] Add FAILED:", e); }
+      } catch(e) { console.warn("[TrackNote] add agent op failed", e); }
     });
 
     // ---------- TrackNote: Edit Modal ----------

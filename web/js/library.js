@@ -292,15 +292,38 @@
         const cell = document.createElement("div");
         cell.className = "library-gallery-item";
         cell.innerHTML = `<img src="${imgUrl}" alt="Generated image" loading="lazy">` +
-          `<button class="ig-cell-dl" title="Download image"><i data-lucide="download" class="icon-lucide"></i></button>`;
+          `<button class="ig-cell-dl" title="Download image"><i data-lucide="download" class="icon-lucide"></i></button>` +
+          `<button class="ig-cell-del" title="Delete image"><i data-lucide="trash-2" class="icon-lucide"></i></button>`;
         cell.title = `Seed: ${img.seed} | ${img.width}x${img.height}`;
         cell.addEventListener("click", (e) => {
-          if (e.target.closest(".ig-cell-dl")) return;
+          if (e.target.closest(".ig-cell-dl, .ig-cell-del")) return;
           openLightbox(_igUrls, ii);
         });
         cell.querySelector(".ig-cell-dl").addEventListener("click", (e) => {
           e.stopPropagation();
           _igDownload(imgUrl, img.filename || ("image-" + (ii + 1) + ".png"));
+        });
+        cell.querySelector(".ig-cell-del").addEventListener("click", async (e) => {
+          e.stopPropagation();
+          const ok = await _igDeleteAsset(img.filename);
+          if (!ok) return;
+          // Drop the cell; if it was the last one, tear down the whole output block.
+          cell.remove();
+          const remaining = gallery.querySelectorAll(".library-gallery-item").length;
+          if (!remaining) {
+            gallery.innerHTML = "";
+            outputWrap.style.display = "none";
+            const allBtn = outputWrap.querySelector(".ig-download-all");
+            const delBtn = outputWrap.querySelector(".ig-delete-all");
+            if (allBtn) allBtn.remove();
+            if (delBtn) delBtn.remove();
+          } else {
+            const allBtn = outputWrap.querySelector(".ig-download-all");
+            if (allBtn) allBtn.innerHTML = '<i data-lucide="download" class="icon-lucide"></i> Download all (' + remaining + ')';
+            const delBtn = outputWrap.querySelector(".ig-delete-all");
+            if (delBtn) delBtn.innerHTML = '<i data-lucide="trash-2" class="icon-lucide"></i> Delete all (' + remaining + ')';
+            if (window.lucide) lucide.createIcons({ nodes: [allBtn, delBtn].filter(Boolean) });
+          }
         });
         gallery.appendChild(cell);
       });
@@ -324,8 +347,37 @@
         this.innerHTML = label;
         if (window.lucide) lucide.createIcons({ nodes: [this] });
       });
-      outputWrap.insertBefore(dlAll, metaEl);
-      if (window.lucide) lucide.createIcons({ nodes: [dlAll] });
+      // #igMeta is nested inside .ig-meta-row, so it's NOT a direct child of
+      // outputWrap — insertBefore against it throws. Anchor on the row instead.
+      const metaRow = outputWrap.querySelector(".ig-meta-row");
+      if (metaRow && metaRow.parentNode === outputWrap) {
+        outputWrap.insertBefore(dlAll, metaRow);
+      } else {
+        outputWrap.appendChild(dlAll);
+      }
+      // "Delete all" sits beside "Download all".
+      const delAll = document.createElement("button");
+      delAll.className = "ig-delete-all";
+      delAll.innerHTML = '<i data-lucide="trash-2" class="icon-lucide"></i> Delete all (' + n + ')';
+      delAll.addEventListener("click", async function () {
+        if (!confirm('Delete all ' + n + ' generated image(s) from disk?')) return;
+        this.disabled = true;
+        for (const im of result.images) {
+          await _igDeleteAsset(im.filename);
+        }
+        gallery.innerHTML = "";
+        outputWrap.style.display = "none";
+        this.remove();
+        const allBtn = outputWrap.querySelector(".ig-download-all");
+        if (allBtn) allBtn.remove();
+      });
+      const metaRowForDel = outputWrap.querySelector(".ig-meta-row");
+      if (metaRowForDel && metaRowForDel.parentNode === outputWrap) {
+        outputWrap.insertBefore(delAll, metaRowForDel);
+      } else {
+        outputWrap.appendChild(delAll);
+      }
+      if (window.lucide) lucide.createIcons({ nodes: [dlAll, delAll] });
       const first = result.images[0];
       const totalSize = result.images.reduce((s, i) => s + (i.size_bytes || 0), 0);
       let detailLabel;
@@ -343,6 +395,25 @@
       metaEl.textContent = `✅ ${result.count} image(s) | ${detailLabel} | ${shapeInfo} | Seed: ${first.seed} | ${(totalSize / 1024).toFixed(0)}KB total`;
       if (result.errors) metaEl.textContent += `\n⚠️ Partial: ${result.errors.join("; ")}`;
       outputWrap.style.display = "block";
+    }
+
+    // Delete a generated asset via the library endpoint. Returns true on success.
+    async function _igDeleteAsset(filename) {
+      if (!filename) return false;
+      try {
+        const res = await fetch("/api/library/asset/delete", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ filename: filename }),
+        });
+        const data = await res.json();
+        if (data.error) { showToast?.("⚠️ " + data.error, "error"); return false; }
+        showToast?.("🗑️ Image deleted", "ok");
+        return true;
+      } catch (err) {
+        showToast?.("⚠️ Delete failed", "error");
+        return false;
+      }
     }
 
     // Fetch an image as a blob and trigger a real file download (works
@@ -608,7 +679,6 @@
           <button type="button" class="ig-preset-chip" data-p="product">📦 Product shot</button>
           <button type="button" class="ig-preset-chip" data-p="logo">🎨 Logo / icon</button>
         </div>
-        <div id="igHistory" class="ig-history" aria-label="Recent prompts"></div>
         <div class="promptgen-controls">
           <select id="igProvider" class="promptgen-select" style="width:auto;min-width:130px;">
             <option value="pollinations">Pollinations</option>
@@ -869,38 +939,8 @@
       const modelSel = wrap.querySelector("#igModel");
       const styleSel = wrap.querySelector("#igStyle");
       const usageEl = wrap.querySelector("#igPuterUsage");
-      const historyEl = wrap.querySelector("#igHistory");
 
-      // ── Prompt history (localStorage ring buffer) ──
-      const _IG_HISTORY_KEY = "sable_ig_history";
-      function _loadHistory() {
-        try { return JSON.parse(localStorage.getItem(_IG_HISTORY_KEY)) || []; } catch { return []; }
-      }
-      function _pushHistory(prompt) {
-        if (!prompt) return;
-        let h = _loadHistory().filter((p) => p !== prompt);
-        h.unshift(prompt);
-        h = h.slice(0, 20);
-        try { localStorage.setItem(_IG_HISTORY_KEY, JSON.stringify(h)); } catch {}
-        _renderHistory();
-      }
-      function _renderHistory() {
-        if (!historyEl) return;
-        const h = _loadHistory();
-        if (!h.length) { historyEl.innerHTML = ""; historyEl.style.display = "none"; return; }
-        historyEl.style.display = "flex";
-        historyEl.innerHTML = h.map((p) =>
-          `<button type="button" class="ig-history-chip" title="${escHtml(p)}">${escHtml(p.length > 42 ? p.slice(0, 41) + "…" : p)}</button>`
-        ).join("");
-        historyEl.querySelectorAll(".ig-history-chip").forEach((chip, i) => {
-          chip.addEventListener("click", () => {
-            promptEl.value = h[i];
-            promptEl.focus();
-            promptEl.dispatchEvent(new Event("input", { bubbles: true }));
-          });
-        });
-      }
-      _renderHistory();
+      // Prompt history lives in the sidebar (genHistory), not in this card.
 
       // ── Quick prompt presets — append a style suffix to whatever's typed ──
       const _IG_PRESETS = {
@@ -1055,7 +1095,6 @@
 
         const provider = providerSel.value;
         try { localStorage.setItem("sable_ig_provider", provider); } catch {}
-        _pushHistory(prompt);
         if (window.genHistory) window.genHistory.push("image", prompt, { provider });
 
         // ── DreamForge: use dedicated API with advanced options ──

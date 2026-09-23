@@ -7,6 +7,33 @@
   let sidebarLoaded = false;
   let currentTab = 'single';
 
+  // AbortController for the in-flight OCR request (batch/PDF/multi-PDF streams).
+  // Single-shot requests resolve fast enough that cancel isn't worth the UI.
+  let _ocrAbort = null;
+
+  function _ocrNewAbort() {
+    if (_ocrAbort) { try { _ocrAbort.abort(); } catch {} }
+    _ocrAbort = new AbortController();
+    return _ocrAbort.signal;
+  }
+  function _ocrCancel() {
+    if (_ocrAbort) { try { _ocrAbort.abort(); } catch {} _ocrAbort = null; }
+  }
+  // Injects a Cancel button into a tab's progress area (idempotent).
+  function _ocrShowCancel(progressEl) {
+    if (!progressEl) return;
+    let b = progressEl.querySelector('.ocr-cancel-btn');
+    if (!b) {
+      b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ocr-cancel-btn';
+      b.textContent = '✕ Cancel';
+      b.addEventListener('click', () => _ocrCancel());
+      progressEl.appendChild(b);
+    }
+    b.style.display = '';
+  }
+
   function escHtml(s) {
     const d = document.createElement('div');
     d.textContent = s ?? '';
@@ -39,6 +66,24 @@
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
     return (bytes / 1048576).toFixed(1) + ' MB';
+  }
+
+  /* Wire a click + drag-drop upload zone to a file callback.
+     This exact 6-line dance was copy-pasted into all four tabs; now it lives once.
+     Always resets input.value so re-picking the same file re-fires 'change'. */
+  function wireDropZone(zone, input, onFiles) {
+    zone.addEventListener('click', () => input.click());
+    zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('ocr-zone-drag'); });
+    zone.addEventListener('dragleave', () => zone.classList.remove('ocr-zone-drag'));
+    zone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      zone.classList.remove('ocr-zone-drag');
+      if (e.dataTransfer.files.length) onFiles(e.dataTransfer.files);
+    });
+    input.addEventListener('change', () => {
+      if (input.files.length) onFiles(input.files);
+      input.value = '';
+    });
   }
 
   async function copyToClipboard(text) {
@@ -134,15 +179,7 @@
       progress.classList.add('hidden');
     }
 
-    zone.addEventListener('click', () => input.click());
-    zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('ocr-zone-drag'); });
-    zone.addEventListener('dragleave', () => zone.classList.remove('ocr-zone-drag'));
-    zone.addEventListener('drop', (e) => {
-      e.preventDefault();
-      zone.classList.remove('ocr-zone-drag');
-      if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
-    });
-    input.addEventListener('change', () => { if (input.files.length) setFile(input.files[0]); });
+    wireDropZone(zone, input, (fl) => setFile(fl[0]));
     removeBtn.addEventListener('click', clearFile);
 
     recognizeBtn.addEventListener('click', async () => {
@@ -178,6 +215,7 @@
         status.textContent = `[${engineUsed}] Done — ${data.word_count || data.line_count || '?'} words`;
         textarea.value = data.full_text || '';
         results.classList.remove('hidden');
+        ocrPushHistory(selectedFile?.name || 'OCR result', data.full_text || '', { provider: engineUsed });
       } catch (err) {
         status.textContent = `Error: ${err.message}`;
         fill.style.width = '0%';
@@ -254,15 +292,7 @@
       renderList();
     }
 
-    zone.addEventListener('click', () => input.click());
-    zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('ocr-zone-drag'); });
-    zone.addEventListener('dragleave', () => zone.classList.remove('ocr-zone-drag'));
-    zone.addEventListener('drop', (e) => {
-      e.preventDefault();
-      zone.classList.remove('ocr-zone-drag');
-      addFiles(e.dataTransfer.files);
-    });
-    input.addEventListener('change', () => { addFiles(input.files); input.value = ''; });
+    wireDropZone(zone, input, addFiles);
 
     recognizeBtn.addEventListener('click', async () => {
       if (!files.length) return;
@@ -283,7 +313,8 @@
       statusEl.textContent = `Uploading ${files.length} files…`;
 
       try {
-        const res = await fetch(getProviderEndpoint(true), { method: 'POST', body: form });
+        _ocrShowCancel(progress);
+        const res = await fetch(getProviderEndpoint(true), { method: 'POST', body: form, signal: _ocrNewAbort() });
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: res.statusText }));
           throw new Error(err.detail || 'Batch OCR failed');
@@ -333,6 +364,7 @@
           const text = r.error ? `Error: ${r.error}` : (r.full_text || '');
           const fname = r.source_filename || files[i]?.name || `File ${i + 1}`;
           const pageCount = r.page_count ? ` (${r.page_count} pages)` : '';
+          if (text && !r.error) ocrPushHistory(fname, text, { provider: getProviderName() });
           card.innerHTML = `
             <div class="ocr-batch-card-header" data-idx="${i}">
               <span class="ocr-batch-card-name">${escHtml(fname)}${pageCount}</span>
@@ -380,7 +412,7 @@
 
         resultsDiv.classList.remove('hidden');
       } catch (err) {
-        statusEl.textContent = `Error: ${err.message}`;
+        statusEl.textContent = err.name === "AbortError" ? "Cancelled" : `Error: ${err.message}`;
         fill.style.width = '0%';
       } finally {
         recognizeBtn.disabled = false;
@@ -452,15 +484,7 @@
       progress.classList.add('hidden');
     }
 
-    zone.addEventListener('click', () => input.click());
-    zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('ocr-zone-drag'); });
-    zone.addEventListener('dragleave', () => zone.classList.remove('ocr-zone-drag'));
-    zone.addEventListener('drop', (e) => {
-      e.preventDefault();
-      zone.classList.remove('ocr-zone-drag');
-      if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
-    });
-    input.addEventListener('change', () => { if (input.files.length) setFile(input.files[0]); });
+    wireDropZone(zone, input, (fl) => setFile(fl[0]));
     removeBtn.addEventListener('click', clearFile);
 
     recognizeBtn.addEventListener('click', async () => {
@@ -478,7 +502,8 @@
       }
 
       try {
-        const res = await fetch(getProviderEndpoint(true), { method: 'POST', body: form });
+        _ocrShowCancel(progress);
+        const res = await fetch(getProviderEndpoint(true), { method: 'POST', body: form, signal: _ocrNewAbort() });
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: res.statusText }));
           throw new Error(err.detail || 'PDF OCR failed');
@@ -522,8 +547,9 @@
         statusEl.textContent = `[${getProviderName()}] Done — ${data.page_count || '?'} pages`;
         textarea.value = data.full_text || '';
         results.classList.remove('hidden');
+        ocrPushHistory(selectedFile?.name || 'PDF', data.full_text || '', { provider: getProviderName() });
       } catch (err) {
-        statusEl.textContent = `Error: ${err.message}`;
+        statusEl.textContent = err.name === "AbortError" ? "Cancelled" : `Error: ${err.message}`;
         fill.style.width = '0%';
       } finally {
         recognizeBtn.disabled = false;
@@ -598,15 +624,7 @@
       renderList();
     }
 
-    zone.addEventListener('click', () => input.click());
-    zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('ocr-zone-drag'); });
-    zone.addEventListener('dragleave', () => zone.classList.remove('ocr-zone-drag'));
-    zone.addEventListener('drop', (e) => {
-      e.preventDefault();
-      zone.classList.remove('ocr-zone-drag');
-      addFiles(e.dataTransfer.files);
-    });
-    input.addEventListener('change', () => { addFiles(input.files); input.value = ''; });
+    wireDropZone(zone, input, addFiles);
 
     recognizeBtn.addEventListener('click', async () => {
       if (!files.length) return;
@@ -630,7 +648,8 @@
       let allResults = null;
 
       try {
-        const res = await fetch(getProviderEndpoint(true), { method: 'POST', body: form });
+        _ocrShowCancel(progress);
+        const res = await fetch(getProviderEndpoint(true), { method: 'POST', body: form, signal: _ocrNewAbort() });
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: res.statusText }));
           throw new Error(err.detail || 'Multi-PDF OCR failed');
@@ -667,7 +686,7 @@
 
         if (!allResults) throw new Error('Stream ended without results');
       } catch (err) {
-        statusEl.textContent = `Error: ${err.message}`;
+        statusEl.textContent = err.name === "AbortError" ? "Cancelled" : `Error: ${err.message}`;
         fill.style.width = '0%';
         recognizeBtn.disabled = false;
         return;
@@ -683,6 +702,7 @@
         const text = r.error ? `Error: ${r.error}` : (r.full_text || '');
         const fname = r.source_filename || files[i]?.name || `PDF ${i + 1}`;
         const pageCount = r.page_count ? ` (${r.page_count} pages)` : '';
+        if (text && !r.error) ocrPushHistory(fname, text, { provider: getProviderName() });
         card.innerHTML = `
           <div class="ocr-batch-card-header" data-idx="${i}">
             <span class="ocr-batch-card-name">${escHtml(fname)}${pageCount}</span>
@@ -755,6 +775,25 @@
     return names[selectedProvider] || selectedProvider;
   }
 
+  /* ── OCR result history (shared genHistory store, kind = 'ocr') ── */
+  function ocrPushHistory(filename, text, meta) {
+    if (!window.genHistory || !text) return;
+    window.genHistory.push('ocr', filename || 'OCR result', Object.assign({ result: { full_text: text } }, meta || {}));
+  }
+
+  function renderOcrHistory(contentEl) {
+    const box = contentEl && contentEl.querySelector('#ocrHistorySection');
+    if (!box || !window.genHistory) return;
+    window.genHistory.renderInto('ocr', box, (item) => {
+      const txt = item.meta && item.meta.result && item.meta.result.full_text;
+      if (!txt) return;
+      const ta = document.getElementById('ocrSingleText') || document.getElementById('ocrPdfText');
+      if (ta) { ta.value = txt; }
+      const res = document.getElementById('ocrSingleResults') || document.getElementById('ocrPdfResults');
+      if (res) res.classList.remove('hidden');
+    });
+  }
+
   /* ── Sidebar Widget: Provider Config ── */
   function renderSidebarProviderConfig(contentEl) {
     contentEl.innerHTML = `
@@ -768,7 +807,12 @@
         </select>
         <div class="ocr-config-details" id="ocrConfigDetails"></div>
       </div>
+      <div class="ocr-provider-config" style="margin-top:12px">
+        <label class="ocr-config-label"><i data-lucide="history" class="icon-lucide"></i> Recent Results</label>
+        <div id="ocrHistorySection"></div>
+      </div>
     `;
+    renderOcrHistory(contentEl);
 
     const select = contentEl.querySelector('#ocrProviderSelect');
     const details = contentEl.querySelector('#ocrConfigDetails');
@@ -1028,6 +1072,13 @@
     `;
     document.body.appendChild(widget);
     if (window.lucide) lucide.createIcons({ nodes: widget.querySelectorAll('[data-lucide]') });
+
+    // Keep the Recent Results list live while the panel is open.
+    window.addEventListener('gen-history-change', (e) => {
+      if (e.detail?.kind === 'ocr' && isOpen) {
+        renderOcrHistory(document.getElementById('ocrSidebarContent'));
+      }
+    });
   }
 
   if (document.readyState === 'loading') {

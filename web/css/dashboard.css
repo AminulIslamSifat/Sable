@@ -134,10 +134,17 @@ body.dashboard-open #dashboardView { display: flex !important; }
 }
 
 /* Token burn bar chart — proper graph with Y-axis */
+/* Token chart card fills its grid cell so the graph isn't stranded at the top
+   when a taller sibling stretches the row. */
+.dash-card-chart {
+  display: flex;
+  flex-direction: column;
+}
 .dash-chart-wrap {
   display: flex;
   gap: 6px;
-  height: 180px;
+  flex: 1 1 auto;
+  min-height: 180px;
   margin-top: var(--sp-4);
 }
 
@@ -336,11 +343,24 @@ body.dashboard-open #dashboardView { display: flex !important; }
   gap: var(--sp-2);
 }
 
+/* Stacked per-model layout: head row, then full-width bar, then optional detail.
+   Replaces the cramped 3-across flex that squeezed everything into 340px. */
 .dash-model-row {
   display: flex;
-  align-items: center;
-  gap: var(--sp-3);
+  flex-direction: column;
+  gap: 5px;
   font-size: 12px;
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.dash-model-row:last-child { border-bottom: none; }
+
+.dash-model-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  min-width: 0;
 }
 
 .dash-model-name {
@@ -353,7 +373,7 @@ body.dashboard-open #dashboardView { display: flex !important; }
 }
 
 .dash-model-bar-wrap {
-  flex: 2;
+  width: 100%;
   height: 6px;
   background: var(--panel-2);
   border-radius: 3px;
@@ -373,6 +393,143 @@ body.dashboard-open #dashboardView { display: flex !important; }
   min-width: 60px;
   text-align: right;
   font-family: var(--font-mono);
+}
+
+.dash-model-cost {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.dash-model-detail {
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0.7;
+  font-family: var(--font-mono);
+  line-height: 1.2;
+}
+
+.dash-model-total-cost {
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border-soft);
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 600;
+  text-align: right;
+  font-family: var(--font-mono);
+}
+
+/* Clickable bars */
+.dash-bar-clickable {
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+.dash-bar-clickable:hover {
+  opacity: 0.8;
+}
+.dash-bar-clickable:hover .dash-bar {
+  filter: brightness(1.2);
+}
+
+/* Daily breakdown modal */
+.dash-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(2px);
+}
+.dash-modal-overlay.hidden {
+  display: none;
+}
+.dash-modal {
+  /* --panel-1 is not defined anywhere in the palette (only --panel / --panel-2).
+     The invalid var made the whole modal transparent. */
+  background: var(--panel, #191714);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  width: 520px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+.dash-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border-soft);
+}
+.dash-modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.dash-modal-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1;
+}
+.dash-modal-close:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.dash-modal-body {
+  padding: var(--sp-4) var(--sp-5);
+  overflow-y: auto;
+  /* In a flex column, the default min-height:auto stops this from shrinking,
+     so long tables overflowed the modal instead of scrolling. */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.dash-modal-header {
+  flex-shrink: 0;
+}
+/* Keep the 6-column table from squashing on narrow screens: let the body
+   scroll horizontally rather than the table reflowing into unreadable columns. */
+.dash-modal-body {
+  overflow: auto;
+}
+.dash-modal-table {
+  width: 100%;
+  min-width: 460px;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+.dash-modal-table th {
+  text-align: left;
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--muted);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.dash-modal-table td {
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border-soft);
+}
+.dash-modal-table tfoot td {
+  border-top: 1px solid var(--border-soft);
+  border-bottom: none;
+  padding-top: var(--sp-3);
+}
+.dash-modal-cost {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 /* Recent chats */

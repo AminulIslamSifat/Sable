@@ -440,7 +440,9 @@ const AgentPanel = {
             const content = document.createElement("div");
             content.className = "md-content";
             const raw = typeof marked !== "undefined" ? marked.parse(clean) : escHtml(clean);
-            content.innerHTML = typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(raw, { FORBID_TAGS: ["action", "grep", "glob", "list_dir", "execute_command", "get_file", "view_file", "edit_file", "create_file", "insert_file", "spawn_agent", "ask_user", "mcp_call", "chat_title"] }) : raw;
+            content.innerHTML = typeof DOMPurify !== "undefined"
+              ? DOMPurify.sanitize(raw, { FORBID_TAGS: ["action", "grep", "glob", "list_dir", "execute_command", "get_file", "view_file", "edit_file", "create_file", "insert_file", "spawn_agent", "ask_user", "mcp_call", "chat_title"] })
+              : escHtml(raw); // fail CLOSED: never inject raw HTML if DOMPurify failed to load
             div.appendChild(content);
             this.bodyEl.appendChild(div);
           }

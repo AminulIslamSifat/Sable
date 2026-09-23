@@ -119,8 +119,7 @@ class LoopDetector:
     SAME_TOOL_FAIL_HALT = 8   # Halt at 8
     NO_PROGRESS_WARN = 2      # Warn at 2 identical read-only results
     NO_PROGRESS_BLOCK = 5     # Block at 5
-    CONSECUTIVE_THRESHOLD = 5 # Legacy: consecutive identical calls (any result)
-    STRUCTURE_THRESHOLD = 5
+    CONSECUTIVE_THRESHOLD = 5 # Consecutive identical calls (same tool + args)
 
     # Read-only tools eligible for no-progress detection.
     _READ_ONLY_TOOLS = frozenset({
@@ -139,14 +138,6 @@ class LoopDetector:
         _GUARD_PFX + "[LOOP WARNING] You have run the same command 5 times in a row. "
         "This approach is not working. Try a different strategy, search online, "
         "or summarize what you have so far."
-    )
-
-    STRUCTURE_WARNING = (
-        _GUARD_PFX + "[LOOP WARNING] The same command structure has been repeated 5+ times. "
-        "This approach is not working. Stop repeating and either:\n"
-        "1. Try a completely different strategy\n"
-        "2. Summarize what you have and provide your final answer\n"
-        "Do NOT repeat the same command again."
     )
 
     EXACT_FAIL_WARNING = (
@@ -181,10 +172,8 @@ class LoopDetector:
     def __init__(self):
         self.history: list[str] = []
         self.per_tool_counts: dict[str, int] = defaultdict(int)
-        self.structure_history: list[str] = []  # tag names only (no args)
         self._stuck_warned: bool = False
-        self._structure_warned: bool = False
-        self._last_tool_name: str = ""  # for legacy consecutive warning message
+        self._last_tool_name: str = ""  # for consecutive warning message
 
         # --- Detector 1: Exact failure tracking ---
         # Key: hash(tool_name:args:error_msg) → count
@@ -244,9 +233,6 @@ class LoopDetector:
         self.per_tool_counts[tool_name] += 1
 
         self._last_tool_name = tool_name
-        # Only track non-read-only tools for structural loop detection
-        if tool_name not in self._READ_ONLY_TOOLS:
-            self.structure_history.append(tool_name)
 
         # --- Detector 1: Exact failure ---
         if error_msg:
@@ -474,46 +460,14 @@ class LoopDetector:
                     tool=_np_tn, count=count
                 )
 
-        # --- Legacy: Consecutive identical calls (exact same tool + args) ---
+        # --- Consecutive identical calls (exact same tool + args) ---
         if not self._stuck_warned and len(self.history) >= self.CONSECUTIVE_THRESHOLD:
             recent = self.history[-self.CONSECUTIVE_THRESHOLD:]
             if len(set(recent)) == 1:
                 self._stuck_warned = True
                 return self._GUARD_PFX + f"[LOOP WARNING] You have run '{self._last_tool_name}' {self.CONSECUTIVE_THRESHOLD} times in a row with identical arguments. This approach is not working. Try a different strategy, search online, or summarize what you have so far."
 
-        # --- Structural looping (same tool names in same order) ---
-        if not self._structure_warned and self.is_structure_looping():
-            self._structure_warned = True
-            return self.STRUCTURE_WARNING
-
         return None
-
-    def is_structure_looping(self, threshold: int | None = None) -> bool:
-        """Check if the same sequence of tool names repeats N+ times.
-        
-        Detects patterns like [grep, view_file, grep, view_file, grep, view_file]
-        where the agent keeps using the same tools in the same order without progress.
-        """
-        t = threshold or self.STRUCTURE_THRESHOLD
-        if len(self.structure_history) < t:
-            return False
-        
-        # Try pattern lengths from 1 to t
-        for pat_len in range(1, min(t + 1, len(self.structure_history) // 2 + 1)):
-            pattern = self.structure_history[-pat_len:]
-            match_count = 0
-            pos = len(self.structure_history) - pat_len
-            while pos >= 0:
-                segment = self.structure_history[pos:pos + pat_len]
-                if segment == pattern:
-                    match_count += 1
-                    pos -= pat_len
-                else:
-                    break
-            if match_count >= t:
-                return True
-        
-        return False
 
 
 class TurnCapTracker:

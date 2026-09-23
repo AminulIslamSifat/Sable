@@ -88,15 +88,19 @@
       dots.className = 'cal-event-dots';
       // Show up to 3 dots by type
       const types = [...new Set(events.map(e => e.type))];
-      types.slice(0, 3).forEach(t => {
+      const shown = types.slice(0, 3);
+      shown.forEach(t => {
         const dot = document.createElement('span');
         dot.className = `cal-dot cal-dot-${t}`;
         dots.appendChild(dot);
       });
-      if (events.length > 3) {
+      // Only count events NOT already represented by a visible dot.
+      // (Old code used events.length - 3, which mixed event-count with type-count
+      //  and produced nonsense like "+1" when 4 same-type events showed only 1 dot.)
+      if (events.length > shown.length) {
         const more = document.createElement('span');
         more.className = 'cal-dot-more';
-        more.textContent = `+${events.length - 3}`;
+        more.textContent = `+${events.length - shown.length}`;
         dots.appendChild(more);
       }
       cell.appendChild(dots);
@@ -407,13 +411,14 @@
     if (chatEl) chatEl.classList.remove('hidden');
     if (inputEl) inputEl.classList.remove('hidden');
 
-    // Restore sidebar
+    // Restore sidebar — re-render from source of truth instead of trusting
+    // the HTML snapshot (which goes stale if a chat arrived while calendar was open).
     const chatsSection = document.querySelector('.sidebar-chats');
-    if (chatsSection && sidebarOriginalContent !== null) {
-      chatsSection.innerHTML = sidebarOriginalContent;
+    if (chatsSection) {
+      if (sidebarOriginalContent !== null) chatsSection.innerHTML = sidebarOriginalContent;
       sidebarOriginalContent = null;
-      // Re-trigger chat list render if needed
-      if (window.renderChatList) window.renderChatList();
+      // renderChatList() does not exist; _sableLoadChats() is the real entry point.
+      if (typeof window._sableLoadChats === 'function') window._sableLoadChats();
     }
 
     selectedDate = null;
@@ -472,6 +477,15 @@
         // Any other rail (or null/deselect) — close calendar
         closeCalendar();
       }
+    });
+
+    // Esc closes the calendar + arrow keys navigate the month
+    document.addEventListener('keydown', (e) => {
+      if (!isOpen) return;
+      if (e.key === 'Escape') { closeCalendar(); return; }
+      if (document.getElementById('calOnlineOverlay')) return; // popup owns the keys
+      if (e.key === 'ArrowLeft') { changeMonth(-1); }
+      else if (e.key === 'ArrowRight') { changeMonth(1); }
     });
   }
 

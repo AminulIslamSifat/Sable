@@ -1852,7 +1852,8 @@ textarea:disabled {
   position: relative;
 }
 
-.ig-cell-dl {
+.ig-cell-dl,
+.ig-cell-del {
   position: absolute;
   top: 6px;
   right: 6px;
@@ -1871,9 +1872,15 @@ textarea:disabled {
   backdrop-filter: blur(4px);
 }
 
-.library-gallery-item:hover .ig-cell-dl { opacity: 1; }
+/* Delete sits just left of the download button */
+.ig-cell-del { right: 42px; }
+
+.library-gallery-item:hover .ig-cell-dl,
+.library-gallery-item:hover .ig-cell-del { opacity: 1; }
 .ig-cell-dl:hover { background: var(--accent, #5a5c8c); }
-.ig-cell-dl .icon-lucide, .ig-cell-dl svg { width: 15px; height: 15px; }
+.ig-cell-del:hover { background: var(--danger, #e5646a); }
+.ig-cell-dl .icon-lucide, .ig-cell-dl svg,
+.ig-cell-del .icon-lucide, .ig-cell-del svg { width: 15px; height: 15px; }
 
 .ig-download-all {
   display: inline-flex;
@@ -1893,6 +1900,25 @@ textarea:disabled {
 .ig-download-all:hover { background: var(--accent, #5a5c8c); color: #fff; }
 .ig-download-all:disabled { opacity: 0.6; cursor: default; }
 .ig-download-all .icon-lucide, .ig-download-all svg { width: 14px; height: 14px; }
+
+.ig-delete-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  margin-left: 8px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #333);
+  background: var(--bg-elev, #1a1a22);
+  color: var(--text, #ddd);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.ig-delete-all:hover { background: var(--danger, #e5646a); color: #fff; }
+.ig-delete-all:disabled { opacity: 0.6; cursor: default; }
+.ig-delete-all .icon-lucide, .ig-delete-all svg { width: 14px; height: 14px; }
 
 .research-lib-head {
   display: flex;
@@ -4495,6 +4521,25 @@ body.ocr-open #inputArea { display: none !important; }
 .ocr-action-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* Cancel button injected into .ocr-progress while a stream is in flight */
+.ocr-cancel-btn {
+  margin-top: 8px;
+  padding: 6px 14px;
+  border: 1px solid var(--border, #444);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text, #ddd);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.ocr-cancel-btn:hover {
+  background: #ef4444;
+  border-color: #ef4444;
+  color: #fff;
 }
 
 /* Progress Bar */

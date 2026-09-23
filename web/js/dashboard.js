@@ -109,14 +109,14 @@
       const pct = Math.max((d.tokens / yMax) * 100, 1);
       const dayLabel = d.day.slice(5); // MM-DD
       const valLabel = fmtTokens(d.tokens);
-      barsHtml += `<div class="dash-bar-col">
+      barsHtml += `<div class="dash-bar-col dash-bar-clickable" data-day="${d.day}">
         <div class="dash-bar-val">${valLabel}</div>
-        <div class="dash-bar" style="height:${pct}%" title="${valLabel} tokens · ${d.runs} chats"></div>
+        <div class="dash-bar" style="height:${pct}%" title="${valLabel} tokens · ${d.runs} chats · click for breakdown"></div>
         <span class="dash-bar-label">${dayLabel}</span>
       </div>`;
     });
 
-    return `<div class="dash-card">
+    return `<div class="dash-card dash-card-chart">
       <div class="dash-card-header">
         <i data-lucide="flame" class="dash-card-icon-lucide"></i>
         <span class="dash-card-title">Token Burn (7d)</span>
@@ -131,17 +131,34 @@
     </div>`;
   }
 
+  function fmtCost(n) {
+    if (n == null) return '—';
+    if (n < 0.01) return '$' + n.toFixed(4);
+    if (n < 1) return '$' + n.toFixed(3);
+    return '$' + n.toFixed(2);
+  }
+
   function renderModelBreakdown(stats) {
     const models = stats.token_by_model || [];
     const maxTokens = Math.max(...models.map(m => m.total_tokens), 1);
 
+    // Two-line layout per model: header row (name + total) then a full-width
+    // bar. The old side-by-side flex squeezed name/bar/tokens into 340px and
+    // rendered the in/out detail as an orphan row, breaking vertical alignment.
     let rowsHtml = '';
     models.slice(0, 6).forEach(m => {
       const pct = Math.max((m.total_tokens / maxTokens) * 100, 2);
+      const costLabel = m.estimated_cost != null ? fmtCost(m.estimated_cost) : '';
+      const ioDetail = (m.input_tokens != null && m.output_tokens != null)
+        ? `${fmtTokens(m.input_tokens)} in · ${fmtTokens(m.output_tokens)} out`
+        : '';
       rowsHtml += `<div class="dash-model-row">
-        <span class="dash-model-name">${escHtml(m.model)}</span>
+        <div class="dash-model-head">
+          <span class="dash-model-name" title="${escHtml(m.model)}">${escHtml(m.model)}</span>
+          <span class="dash-model-tokens">${fmtTokens(m.total_tokens)}${costLabel ? ' · <span class="dash-model-cost">' + costLabel + '</span>' : ''}</span>
+        </div>
         <div class="dash-model-bar-wrap"><div class="dash-model-bar" style="width:${pct}%"></div></div>
-        <span class="dash-model-tokens">${fmtTokens(m.total_tokens)}</span>
+        ${ioDetail ? '<div class="dash-model-detail">' + ioDetail + '</div>' : ''}
       </div>`;
     });
 
@@ -149,12 +166,19 @@
       rowsHtml = '<div style="color:var(--muted);font-size:12px;">No model data yet</div>';
     }
 
+    // Total cost across all providers
+    const totalCost = models.reduce((sum, m) => sum + (m.estimated_cost || 0), 0);
+    const totalCostHtml = totalCost > 0
+      ? `<div class="dash-model-total-cost">Total estimated: ${fmtCost(totalCost)}</div>`
+      : '';
+
     return `<div class="dash-card">
       <div class="dash-card-header">
         <i data-lucide="bot" class="dash-card-icon-lucide"></i>
         <span class="dash-card-title">Tokens by Provider</span>
       </div>
       <div class="dash-model-list">${rowsHtml}</div>
+      ${totalCostHtml}
     </div>`;
   }
 
@@ -527,13 +551,82 @@
     }
   }
 
+  /* ── Daily Breakdown Modal ── */
+  async function openDayModal(day) {
+    const overlay = $('dashDayModal');
+    const title = $('dashDayModalTitle');
+    const body = $('dashDayModalBody');
+    if (!overlay || !body) return;
+
+    title.textContent = 'Token Burn — ' + day;
+    body.innerHTML = '<div class="dash-loading">Loading…</div>';
+    overlay.classList.remove('hidden');
+
+    try {
+      const data = await fetchJSON('/api/dashboard/daily-breakdown?day=' + encodeURIComponent(day));
+      if (data.error) {
+        body.innerHTML = '<div style="color:var(--danger);font-size:12px;">' + escHtml(data.error) + '</div>';
+        return;
+      }
+
+      const providers = data.providers || [];
+      if (!providers.length) {
+        body.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:var(--sp-4);">No token data for this day</div>';
+        return;
+      }
+
+      let rows = '';
+      providers.forEach(p => {
+        const costStr = p.estimated_cost != null ? fmtCost(p.estimated_cost) : '—';
+        rows += '<tr>'
+          + '<td>' + escHtml(p.provider) + '</td>'
+          + '<td>' + fmtTokens(p.input_tokens) + '</td>'
+          + '<td>' + fmtTokens(p.output_tokens) + '</td>'
+          + '<td>' + fmtTokens(p.total_tokens) + '</td>'
+          + '<td>' + (p.run_count || 0) + '</td>'
+          + '<td class="dash-modal-cost">' + costStr + '</td>'
+          + '</tr>';
+      });
+
+      const totalCostStr = data.total_cost > 0 ? fmtCost(data.total_cost) : '—';
+      body.innerHTML = '<table class="dash-modal-table">'
+        + '<thead><tr><th>Provider</th><th>Input</th><th>Output</th><th>Total</th><th>Chats</th><th>Cost</th></tr></thead>'
+        + '<tbody>' + rows + '</tbody>'
+        + '<tfoot><tr><td colspan="5" style="text-align:right;font-weight:600;">Total</td>'
+        + '<td class="dash-modal-cost">' + totalCostStr + '</td></tr></tfoot>'
+        + '</table>';
+    } catch (err) {
+      body.innerHTML = '<div style="color:var(--danger);font-size:12px;">Failed to load: ' + escHtml(err.message) + '</div>';
+    }
+  }
+
+  function closeDayModal() {
+    const overlay = $('dashDayModal');
+    if (overlay) overlay.classList.add('hidden');
+  }
+
   /* ── Init ── */
   function init() {
+    // The daily-breakdown modal must not be trapped by a transformed/overflow
+    // ancestor (which would make position:fixed relative to that ancestor
+    // instead of the viewport). Reparent it to <body> once, up front.
+    const dayModal = $('dashDayModal');
+    if (dayModal && dayModal.parentElement !== document.body) {
+      document.body.appendChild(dayModal);
+    }
+
     // Refresh button
     $('dashRefreshBtn')?.addEventListener('click', () => loadDashboard(true));
 
     // Chat click delegation — close dashboard and switch to that chat
     $('dashGrid')?.addEventListener('click', (e) => {
+      // Daily bar click → open breakdown modal
+      const barCol = e.target.closest('.dash-bar-clickable');
+      if (barCol && barCol.dataset.day) {
+        openDayModal(barCol.dataset.day);
+        return;
+      }
+
       const item = e.target.closest('.dash-chat-item');
       if (!item) return;
       const chatId = item.dataset.chatId;
@@ -546,6 +639,17 @@
       window.dispatchEvent(new CustomEvent('rail-switch', { detail: { target: null } }));
       // Dispatch chat selection event
       window.dispatchEvent(new CustomEvent('sable-select-chat', { detail: { chatId } }));
+    });
+
+    // Day modal close handlers
+    $('dashDayModalClose')?.addEventListener('click', closeDayModal);
+    $('dashDayModal')?.addEventListener('click', (e) => {
+      if (e.target === $('dashDayModal')) closeDayModal();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !$('dashDayModal')?.classList.contains('hidden')) {
+        closeDayModal();
+      }
     });
 
     // Listen for rail-switch

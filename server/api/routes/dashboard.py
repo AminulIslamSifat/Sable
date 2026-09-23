@@ -22,10 +22,22 @@ def dashboard_stats() -> dict[str, Any]:
         ).fetchall():
             agent_counts[row["status"]] = row["cnt"]
 
+        # Cost per 1M tokens by provider (input, output)
+        _PROVIDER_COST: dict[str, tuple[float, float]] = {
+            "qwen":       (2.00, 6.00),    # Qwen 3.8 Max
+            "deepseek":   (0.15, 0.60),    # DeepSeek V4.1 Flash (off-peak)
+            "zai":        (1.40, 4.40),    # GLM 5.3
+            "gemini":     (0.75, 3.75),    # Gemini 3.6 Flash (intro rate)
+            "gemini_web": (0.75, 3.75),    # same model family
+            "mimo":       (0.435, 0.87),   # MiMo 2.6 Pro
+        }
+
         # Token usage by provider (from messages table — real tracking)
         token_by_model = []
         for row in conn.execute(
             "SELECT c.provider, "
+            "SUM(m.prompt_tokens) as input_tokens, "
+            "SUM(m.completion_tokens) as output_tokens, "
             "SUM(m.prompt_tokens + m.completion_tokens) as total_tokens, "
             "COUNT(DISTINCT m.chat_id) as run_count "
             "FROM messages m JOIN chats c ON m.chat_id = c.id "
@@ -33,10 +45,24 @@ def dashboard_stats() -> dict[str, Any]:
             "AND c.provider IS NOT NULL "
             "GROUP BY c.provider ORDER BY total_tokens DESC LIMIT 10"
         ).fetchall():
+            provider = row["provider"]
+            input_tok = row["input_tokens"] or 0
+            output_tok = row["output_tokens"] or 0
+            cost_rate = _PROVIDER_COST.get(provider)
+            estimated_cost = None
+            if cost_rate:
+                estimated_cost = round(
+                    (input_tok / 1_000_000) * cost_rate[0]
+                    + (output_tok / 1_000_000) * cost_rate[1],
+                    4,
+                )
             token_by_model.append({
-                "model": row["provider"],
+                "model": provider,
+                "input_tokens": input_tok,
+                "output_tokens": output_tok,
                 "total_tokens": row["total_tokens"],
                 "run_count": row["run_count"],
+                "estimated_cost": estimated_cost,
             })
 
         # Daily token burn (last 7 days) — from messages table
@@ -89,6 +115,68 @@ def dashboard_stats() -> dict[str, Any]:
         },
         "recent_chats": recent_chats,
         "provider_breakdown": provider_breakdown,
+    }
+
+
+@router.get("/api/dashboard/daily-breakdown")
+def dashboard_daily_breakdown(day: str) -> dict[str, Any]:
+    """Per-provider token breakdown with cost for a specific day (YYYY-MM-DD)."""
+    import re
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", day):
+        return {"error": "Invalid date format. Use YYYY-MM-DD."}
+
+    _PROVIDER_COST: dict[str, tuple[float, float]] = {
+        "qwen":       (2.00, 6.00),
+        "deepseek":   (0.15, 0.60),
+        "zai":        (1.40, 4.40),
+        "gemini":     (0.75, 3.75),
+        "gemini_web": (0.75, 3.75),
+        "mimo":       (0.435, 0.87),
+    }
+
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT c.provider, "
+            "SUM(m.prompt_tokens) as input_tokens, "
+            "SUM(m.completion_tokens) as output_tokens, "
+            "SUM(m.prompt_tokens + m.completion_tokens) as total_tokens, "
+            "COUNT(DISTINCT m.chat_id) as run_count "
+            "FROM messages m JOIN chats c ON m.chat_id = c.id "
+            "WHERE (m.prompt_tokens > 0 OR m.completion_tokens > 0) "
+            "AND c.provider IS NOT NULL "
+            "AND DATE(m.created_at) = ? "
+            "GROUP BY c.provider ORDER BY total_tokens DESC",
+            (day,),
+        ).fetchall()
+
+        providers = []
+        total_cost = 0.0
+        for row in rows:
+            provider = row["provider"]
+            input_tok = row["input_tokens"] or 0
+            output_tok = row["output_tokens"] or 0
+            cost_rate = _PROVIDER_COST.get(provider)
+            estimated_cost = None
+            if cost_rate:
+                estimated_cost = round(
+                    (input_tok / 1_000_000) * cost_rate[0]
+                    + (output_tok / 1_000_000) * cost_rate[1],
+                    4,
+                )
+                total_cost += estimated_cost
+            providers.append({
+                "provider": provider,
+                "input_tokens": input_tok,
+                "output_tokens": output_tok,
+                "total_tokens": row["total_tokens"],
+                "run_count": row["run_count"],
+                "estimated_cost": estimated_cost,
+            })
+
+    return {
+        "day": day,
+        "providers": providers,
+        "total_cost": round(total_cost, 4),
     }
 
 

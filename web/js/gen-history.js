@@ -12,7 +12,7 @@
 
   var KEY = 'sable_gen_history';
   var MAX = 40;
-  var KINDS = ['image', 'research', 'prompt'];
+  var KINDS = ['image', 'research', 'prompt', 'ocr'];
 
   function _esc(s) {
     var d = document.createElement('div');

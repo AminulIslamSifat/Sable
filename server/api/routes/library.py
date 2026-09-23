@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 from engine.config import (
     AGENT_OUTPUT_DIR,
@@ -132,6 +132,34 @@ def library_gallery() -> list[dict[str, Any]]:
 
     items.sort(key=lambda x: x["date"], reverse=True)
     return items
+
+
+@router.post("/api/library/asset/delete")
+async def library_asset_delete(request: Request) -> dict[str, Any]:
+    """Delete a generated asset by filename.
+
+    Scoped deliberately to ASSETS_DIR + image extensions: the frontend only ever
+    has a basename from a generation result, so we never accept a path. Uses
+    Path.name to strip any directory component (defeats ../ traversal).
+    """
+    body = await request.json()
+    name = Path(body.get("filename", "")).name
+    if not name:
+        return {"error": "Missing filename"}
+    if Path(name).suffix.lower() not in _IMAGE_EXTS:
+        return {"error": "Not an image file"}
+
+    target = (ASSETS_DIR / name).resolve()
+    if target.parent != ASSETS_DIR.resolve():
+        return {"error": "Access denied"}
+    if not target.exists():
+        return {"error": "Not found"}
+
+    try:
+        target.unlink()
+        return {"ok": True, "filename": name}
+    except Exception as e:
+        return {"error": f"Delete failed: {e}"}
 
 
 @router.get("/api/library/skills")
