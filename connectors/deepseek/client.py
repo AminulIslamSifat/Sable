@@ -1136,11 +1136,7 @@ class DeepSeekClient:
         if not chat_id or chat_id not in self._dsml_warn_chats:
             return ""
         return (
-            "[reminder] HARD RULE: Never emit DSML markup — no "
-            "<|DSML|tool_calls>, <|DSML|invoke>, <|DSML|parameter>, and no "
-            "variants wrapping DSML in '|' or '｜' pipes. You leaked this in "
-            "a previous response. Use ONLY the tool-call format defined in "
-            "your system instructions."
+            "[WARNING - POTENTIAL CRASH] Don't use dsml, Use the defined tool calling structure given to you. "
         )
 
     # ------------------------------------------------------------------

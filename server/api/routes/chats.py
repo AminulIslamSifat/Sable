@@ -1028,9 +1028,10 @@ async def fork_chat(payload: dict[str, str]) -> dict[str, Any]:
     # Providers that use fresh-session-with-history-injection on fork.
     # Qwen: server-side session (upstream_session_id)
     # DeepSeek: client-side chat_session_id, chained via parent_message_id
-    # Both get a fresh upstream session on fork, so history must be injected.
+    # MiMo: server-side conversationId (stateful), requires history injection on fork
+    # All get a fresh upstream session on fork, so history must be injected.
     from server.database import get_chat_provider, get_db as _get_db
-    _INJECTION_PROVIDERS = {"qwen", "deepseek"}
+    _INJECTION_PROVIDERS = {"qwen", "deepseek", "mimo"}
     source_provider = get_chat_provider(source_chat_id)
     needs_injection = source_provider in _INJECTION_PROVIDERS
 

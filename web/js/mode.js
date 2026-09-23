@@ -219,11 +219,25 @@
               const clone = item.cloneNode(true);
               clone.addEventListener('click', (ev) => {
                 ev.stopPropagation();
+                // Pin toggles are handled inline and must not select the model.
+                if (ev.target.closest('.model-pin-btn')) return;
                 // Forward click to the original main menu item (has the real handler)
                 item.click();
                 compactModelDropdown.classList.remove('open');
                 setTimeout(syncCompactStatusBar, 50);
               });
+              // cloneNode(true) strips listeners — rewire the pin button to the
+              // original item's pin button so pinning works from compact mode too.
+              const clonePin = clone.querySelector('.model-pin-btn');
+              const origPin = item.querySelector('.model-pin-btn');
+              if (clonePin && origPin) {
+                clonePin.addEventListener('click', (ev) => {
+                  ev.stopPropagation();
+                  origPin.click();
+                  // Order changed — close the compact menu; it re-clones on next open.
+                  compactModelDropdown.classList.remove('open');
+                });
+              }
               compactModelMenu.appendChild(clone);
             }
           }

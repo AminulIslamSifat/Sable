@@ -1170,24 +1170,64 @@
       let currentThinkSummary = null;
 
       // ── Typewriter animation for thinking reveal ──
+      // Shares the adaptive tuning of the main answer typewriter (_twNow →
+      // twTuneFor): rate scales to the model's measured tok/s, and fast models
+      // flush instead of animating. rAF + fractional carry match _ansTick so
+      // both reveals stay in lockstep at the same speed.
       let _thinkQueue = "";
-      let _thinkTimer = null;
+      let _thinkTimer = null;      // rAF handle
+      let _thinkLast = 0;          // timestamp of previous tick
+      let _thinkFrac = 0;          // fractional char carry — see _thinkTick
+
+      function _thinkCancel() {
+        if (_thinkTimer !== null) { cancelAnimationFrame(_thinkTimer); _thinkTimer = null; }
+      }
+
+      function _thinkStart() {
+        if (_thinkTimer !== null) return;
+        _thinkLast = performance.now();
+        _thinkFrac = 0;
+        _thinkTimer = requestAnimationFrame(_thinkTick);
+      }
+
       function _thinkTick() {
         // Bail if user switched to a different chat while timer was pending
         if (turnChatId !== activeChatId) { _thinkTimer = null; return; }
         if (!_thinkQueue || !currentThinkBody) { _thinkTimer = null; return; }
-        const chunk = _thinkQueue.slice(0, TW_CHARS);
-        _thinkQueue = _thinkQueue.slice(TW_CHARS);
+
+        const tune = _twNow();
+        // Fast model → skip the animation entirely, same as the answer path.
+        if (tune.flush) { _flushThinkQueue(); return; }
+
+        // Rate-based consume mirroring _ansTick: chars/sec × elapsed seconds,
+        // with a clamped dt and a fractional carry so we don't lose rate.
+        const now = performance.now();
+        const dt = Math.min(now - _thinkLast, 100);
+        _thinkLast = now;
+        const cps = ((tune.chars || TW_CHARS) / (tune.ms || TW_MS)) * 1000;
+        _thinkFrac += cps * dt / 1000;
+        const nChars = Math.floor(_thinkFrac);
+        _thinkFrac -= nChars;
+        if (nChars <= 0) {
+          if (_thinkQueue) _thinkTimer = requestAnimationFrame(_thinkTick);
+          else _thinkTimer = null;
+          return;
+        }
+        const chunk = _thinkQueue.slice(0, nChars);
+        _thinkQueue = _thinkQueue.slice(nChars);
         currentThinkBody.textContent += chunk;
         scrollBottom();
-        _thinkTimer = _thinkQueue ? setTimeout(_thinkTick, TW_MS) : null;
+        _thinkTimer = _thinkQueue ? requestAnimationFrame(_thinkTick) : null;
       }
+
       function _enqueueThink(text) {
         _thinkQueue += text;
-        if (!_thinkTimer) _thinkTimer = setTimeout(_thinkTick, TW_MS);
+        _thinkStart();
       }
+
       function _flushThinkQueue() {
-        if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
+        _thinkCancel();
+        _thinkFrac = 0;
         if (_thinkQueue && currentThinkBody) {
           currentThinkBody.textContent += _thinkQueue;
           _thinkQueue = "";
@@ -1583,7 +1623,8 @@
         replaceWithRateLimit(message, hours, debugInfo) {
           hidePending();
           // Kill typewriter queues immediately — don't flush partial content
-          if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
+          _thinkCancel();
+          _thinkFrac = 0;
           _thinkQueue = "";
           _ansCancel();
           _ansQueue = "";
@@ -1628,7 +1669,8 @@
         },
         replaceWithCaptchaBlock(message, debugInfo) {
           hidePending();
-          if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
+          _thinkCancel();
+          _thinkFrac = 0;
           _thinkQueue = "";
           _ansCancel();
           _ansQueue = "";
@@ -1671,7 +1713,8 @@
         replaceWithError(message) {
           hidePending();
           // Kill typewriter queues — don't leave a half-rendered partial answer
-          if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
+          _thinkCancel();
+          _thinkFrac = 0;
           _thinkQueue = "";
           _ansCancel();
           _ansQueue = "";

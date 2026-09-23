@@ -203,6 +203,37 @@ class ChatService:
                 self._scoped_headers.pop(bdd, None)
                 self._scoped_accounts.pop(bdd, None)
 
+    async def close_profile(self, bdd: str) -> bool:
+        """Release EVERY Sable-managed browser holding the *bdd* profile dir.
+
+        A Chromium profile tolerates exactly one live writer. If a second
+        browser opens the same dir, whichever flushes its Cookies DB last wins
+        and the other silently loses its session. So before a profile is handed
+        to a new owner (e.g. the headful login window), all existing holders
+        must be torn down — not just the one whose path happens to match the
+        default browser.
+
+        Covers both the default browser (when bdd is the active account dir)
+        and any scoped browser keyed to bdd. Returns True if anything was
+        closed. The path comparison is done at call time, so an account switch
+        after server start is handled correctly.
+        """
+        closed = False
+        try:
+            default_dir = str(self._browser.user_data_dir)
+        except Exception:
+            default_dir = ""
+
+        if default_dir and os.path.normpath(default_dir) == os.path.normpath(bdd):
+            await self.close()
+            closed = True
+
+        if bdd in self._scoped_browsers:
+            await self.close_scoped(bdd)
+            closed = True
+
+        return closed
+
     async def _ensure_headers(self, bdd: str | None = None) -> dict[str, str]:
         account = self._resolve_account(bdd, provider=None if bdd else "qwen")
 

@@ -313,6 +313,7 @@ def build_instructions(
     """
     proj = None if agent_role else _get_project(project_id)
     parts: list[str] = []
+    _active_tool_format = None  # Default init to prevent UnboundLocalError in non-chat/edge cases
 
     # Persona config is needed for both main chat and subagent paths (output_format toggle)
     _persona_cfg_path = _INSTRUCTION_DIR / ".persona_config.json"

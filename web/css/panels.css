@@ -908,6 +908,47 @@ html[data-mode="light"] .status-dropdown-item {
   flex: 0 0 auto;
   opacity: 0.5;
 }
+.model-item-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.model-pin-btn {
+  flex: 0 0 auto;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.model-pin-btn svg {
+  width: 12px;
+  height: 12px;
+}
+.status-dropdown-item:hover .model-pin-btn {
+  opacity: 0.65;
+}
+.model-pin-btn:hover {
+  opacity: 1;
+  background: var(--panel);
+  color: var(--text);
+}
+.model-pin-btn.pinned {
+  opacity: 1;
+  color: var(--accent);
+}
+.model-pin-btn.pinned svg {
+  fill: currentColor;
+}
 .status-dropdown-item.active .model-backend-badge {
   opacity: 1;
 }

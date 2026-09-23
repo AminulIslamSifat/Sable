@@ -2177,7 +2177,12 @@ async def restore_all_accounts() -> dict[str, Any]:
 
 
 def _kill_browsers_for_profile(profile_path: Path) -> list[int]:
-    """Kill any Chromium/chrome processes using *profile_path* as user-data-dir.
+    """Kill any browser process using *profile_path* as its user-data-dir.
+
+    Matches the exact `--user-data-dir=<path>` argument token, so:
+      - it covers every Chromium-family binary (helium, chrome, chromium) —
+        the old `chrom.*` pgrep never matched Sable's helium build at all;
+      - `browser-data-acc1` can never match `browser-data-acc11`.
 
     Returns the list of PIDs that were killed.
     """
@@ -2185,21 +2190,27 @@ def _kill_browsers_for_profile(profile_path: Path) -> list[int]:
     from engine.process_utils import kill_process_tree
 
     killed: list[int] = []
-    target_str = str(profile_path)
+    flag = f"--user-data-dir={profile_path}"
 
     try:
-        # Find chromium/chrome processes whose cmdline contains this profile path
         result = subprocess.run(
-            ["pgrep", "-f", f"chrom.*{target_str}"],
+            ["ps", "-eo", "pid=,args="],
             capture_output=True,
             text=True,
             timeout=5,
         )
-        pids = [int(p) for p in result.stdout.split() if p.strip().isdigit()]
+        lines = result.stdout.splitlines()
     except Exception:
-        pids = []
+        return killed
 
-    for pid in pids:
+    for line in lines:
+        pid_str, _, args = line.strip().partition(" ")
+        if not pid_str.isdigit() or not args:
+            continue
+        # Exact token compare — a substring test would collide acc1 with acc11.
+        if flag not in args.split():
+            continue
+        pid = int(pid_str)
         try:
             kill_process_tree(pid)
             killed.append(pid)
@@ -2238,19 +2249,25 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
     url = payload.get("url", "https://chat.qwen.ai")
     target_str = str(target_path)
 
-    # 1. Close Sable's own managed browser for this profile first.
-    #    If the default browser is using this profile, restart it closed.
-    #    If a scoped browser exists, tear it down cleanly via Playwright.
+    # 1. Release EVERY existing holder of this profile before opening a new one:
+    #    Sable's default browser, any scoped browser on this dir, and a live
+    #    DeepSeek ghost session. One profile = one writer. Two writers race on
+    #    the Cookies DB and the login you just made gets silently overwritten.
     try:
-        default_bdd = getattr(service._browser, "user_data_dir", None)
-        if default_bdd and str(default_bdd) == target_str:
-            await service.close()
-            logger.info("Closed default Sable browser for %s before headful open", target_name)
-        elif target_str in service._scoped_browsers:
-            await service.close_scoped(target_str)
-            logger.info("Closed scoped Sable browser for %s before headful open", target_name)
+        await service.close_profile(target_str)
+        logger.info("Released Sable-managed browser(s) for %s", target_name)
     except Exception as exc:
-        logger.warning("Failed to close Sable browser for %s: %s", target_name, exc)
+        logger.warning("Failed to release Sable browser for %s: %s", target_name, exc)
+
+    try:
+        from connectors.deepseek.ghost import GhostSession
+        ghost = GhostSession._registry.get(target_name)
+        if ghost is not None:
+            await ghost.close()
+            GhostSession._registry.pop(target_name, None)
+            logger.info("Released DeepSeek ghost session for %s", target_name)
+    except Exception as exc:
+        logger.warning("Failed to release ghost session for %s: %s", target_name, exc)
 
     # 2. Kill any remaining OS-level browser processes using this profile
     killed_pids = await asyncio.to_thread(_kill_browsers_for_profile, target_path)

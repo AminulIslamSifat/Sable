@@ -195,40 +195,99 @@
       return isBrowserBackend(backend) ? "globe" : "key-round";
     }
 
+    const PINNED_MODELS_KEY = "sable_pinned_models";
+    function _getPinnedModels() {
+      try {
+        const raw = JSON.parse(localStorage.getItem(PINNED_MODELS_KEY) || "[]");
+        return Array.isArray(raw) ? raw : [];
+      } catch (err) { return []; }
+    }
+    function _setPinnedModels(list) {
+      try { localStorage.setItem(PINNED_MODELS_KEY, JSON.stringify(list)); } catch (err) {}
+    }
+    function _toggleModelPin(id) {
+      const pins = _getPinnedModels();
+      const idx = pins.indexOf(id);
+      if (idx >= 0) pins.splice(idx, 1);
+      else pins.push(id);
+      _setPinnedModels(pins);
+      syncModelDropdown();
+    }
+
+    function _buildModelItem(opt, pinnedSet) {
+      const model = modelList.find(m => m.id === opt.value);
+      const item = document.createElement("div");
+      item.className = "status-dropdown-item" + (opt.selected ? " active" : "");
+      item.dataset.value = opt.value;
+
+      // Placeholder options (e.g. "__none__") get no badge and no pin button
+      const isPlaceholder = !model || String(model.id).startsWith("__");
+      const label = document.createElement("span");
+      label.className = "model-item-label";
+      label.textContent = opt.textContent;
+
+      if (!isPlaceholder) {
+        item.classList.add("model-backend-item");
+        const browser = isBrowserBackend(model.api_backend);
+        const icon = document.createElement("i");
+        icon.setAttribute("data-lucide", _backendBadgeIcon(model.api_backend));
+        icon.className = "model-backend-badge";
+        icon.title = browser ? "Browser-based" : "API key";
+        item.append(icon, label);
+      } else {
+        item.appendChild(label);
+      }
+
+      item.addEventListener("click", (e) => {
+        e.stopPropagation();
+        modelSelectEl.value = opt.value;
+        modelSelectEl.dispatchEvent(new Event("change"));
+        modelLabel.textContent = opt.textContent;
+        modelDropdown.classList.remove("open");
+        syncModelDropdown();
+      });
+
+      if (!isPlaceholder) {
+        const isPinned = pinnedSet.has(opt.value);
+        const pinBtn = document.createElement("button");
+        pinBtn.type = "button";
+        pinBtn.className = "model-pin-btn" + (isPinned ? " pinned" : "");
+        pinBtn.title = isPinned ? "Unpin model" : "Pin model to top";
+        const pinIcon = document.createElement("i");
+        pinIcon.setAttribute("data-lucide", "pin");
+        pinBtn.appendChild(pinIcon);
+        pinBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          _toggleModelPin(opt.value);
+        });
+        item.appendChild(pinBtn);
+      }
+      return item;
+    }
+
     function syncModelDropdown() {
       modelMenu.innerHTML = "";
-      for (const opt of modelSelectEl.options) {
-        const model = modelList.find(m => m.id === opt.value);
-        const item = document.createElement("div");
-        item.className = "status-dropdown-item" + (opt.selected ? " active" : "");
-        item.dataset.value = opt.value;
+      const pins = _getPinnedModels();
+      const pinnedSet = new Set(pins);
+      const opts = Array.from(modelSelectEl.options);
 
-        // Placeholder options (e.g. "__none__") get no badge
-        if (model && !String(model.id).startsWith("__")) {
-          const browser = isBrowserBackend(model.api_backend);
-          item.classList.add("model-backend-item");
-
-          const icon = document.createElement("i");
-          icon.setAttribute("data-lucide", _backendBadgeIcon(model.api_backend));
-          icon.className = "model-backend-badge";
-          icon.title = browser ? "Browser-based" : "API key";
-
-          const label = document.createElement("span");
-          label.textContent = opt.textContent;
-          item.append(icon, label);
-        } else {
-          item.textContent = opt.textContent;
-        }
-        item.addEventListener("click", (e) => {
-          e.stopPropagation();
-          modelSelectEl.value = opt.value;
-          modelSelectEl.dispatchEvent(new Event("change"));
-          modelLabel.textContent = opt.textContent;
-          modelDropdown.classList.remove("open");
-          syncModelDropdown();
-        });
-        modelMenu.appendChild(item);
+      // Pinned first, preserving pin order; skip stale IDs no longer in the list
+      const pinnedOpts = [];
+      for (const id of pins) {
+        const o = opts.find(x => x.value === id);
+        if (o) pinnedOpts.push(o);
       }
+      const pinnedValues = new Set(pinnedOpts.map(o => o.value));
+      const restOpts = opts.filter(o => !pinnedValues.has(o.value));
+
+      for (const opt of pinnedOpts) modelMenu.appendChild(_buildModelItem(opt, pinnedSet));
+      if (pinnedOpts.length && restOpts.length) {
+        const divider = document.createElement("div");
+        divider.className = "status-dropdown-divider";
+        modelMenu.appendChild(divider);
+      }
+      for (const opt of restOpts) modelMenu.appendChild(_buildModelItem(opt, pinnedSet));
+
       if (window.lucide) lucide.createIcons({ nodes: modelMenu.querySelectorAll("[data-lucide]") });
 
       const sel = modelSelectEl.options[modelSelectEl.selectedIndex];
