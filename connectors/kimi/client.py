@@ -35,6 +35,35 @@ logger = logging.getLogger("sable.kimi_api")
 _IDLE_TIMEOUT_SECS = 30.0
 _DEFAULT_MODEL = "k2d6-chat"
 
+# Instruction cache — rebuilt only when project, layout mode, or the global
+# instruction version changes. Mirrors the DeepSeek connector.
+_instruction_cache: str | None = None
+_cached_project_id: str | None = None
+_cached_version: int | None = None
+_cached_layout_mode: str | None = None
+
+
+def _load_instructions(project_id: str | None = None, layout_mode: str | None = None) -> str:
+    """Load instruction context for first-message injection. Project-aware."""
+    global _instruction_cache, _cached_project_id, _cached_version, _cached_layout_mode
+    from connectors.common.instruction_builder import get_instruction_version
+    current_version = get_instruction_version()
+    # Invalidate cache when project, layout mode, or instruction version changes
+    if (project_id != _cached_project_id
+            or layout_mode != _cached_layout_mode
+            or current_version != _cached_version):
+        _instruction_cache = None
+        _cached_project_id = project_id
+        _cached_layout_mode = layout_mode
+        _cached_version = current_version
+    if _instruction_cache is not None:
+        return _instruction_cache
+    from connectors.common.instruction_builder import build_instructions
+    _instruction_cache = build_instructions(
+        project_id=project_id, provider="kimi", layout_mode=layout_mode,
+    )
+    return _instruction_cache
+
 
 # ----------------------------------------------------------------------
 # Account / settings
@@ -83,6 +112,8 @@ def _build_body(
     effort: str,
     chat_id: str | None,
     history: list[dict[str, str]] | None = None,
+    file_ids: list[str] | None = None,
+    parent_id: str | None = None,
 ) -> dict[str, Any]:
     """Compose the Connect JSON body.
 
@@ -102,18 +133,28 @@ def _build_body(
         lines.append(f"User: {prompt}")
         content = "\n\n".join(lines)
 
+    # Text block first, then one file block per attachment — matches the UI.
+    blocks: list[dict[str, Any]] = [{"message_id": "", "text": {"content": content}}]
+    for fid in (file_ids or []):
+        if str(fid).strip():
+            blocks.append({"file": {"id": str(fid), "status": "PROCESS_STATUS_SUCCESS"}})
+
+    message: dict[str, Any] = {
+        "role": "user",
+        "blocks": blocks,
+        "scenario": "SCENARIO_CHAT",
+        "is_goal": False,
+    }
+    if parent_id:
+        message["parent_id"] = parent_id
+
     body: dict[str, Any] = {
         "scenario": "SCENARIO_CHAT",
         "tools": [
             {"type": "TOOL_TYPE_SEARCH", "search": {}},
             {"type": "TOOL_TYPE_CRON_JOB"},
         ],
-        "message": {
-            "role": "user",
-            "blocks": [{"message_id": "", "text": {"content": content}}],
-            "scenario": "SCENARIO_CHAT",
-            "is_goal": False,
-        },
+        "message": message,
         "options": {
             "thinking": bool(thinking_enabled),
             "enable_plugin": True,
@@ -145,8 +186,7 @@ def _parse_frame(text: str, state: dict[str, Any]) -> list[dict[str, Any]]:
 
     # Top-level transport error frame: {"error": {"code": ...}}
     if isinstance(obj, dict) and "error" in obj and "op" not in obj:
-        err = obj.get("error") or {}
-        events.append({"type": "error", "message": f"kimi: {err.get('code', 'error')}"})
+        events.append({"type": "error", "message": _decode_error(obj.get("error") or {})})
         return events
 
     # Capture the upstream chat id the first time we see it.
@@ -164,6 +204,10 @@ def _parse_frame(text: str, state: dict[str, Any]) -> list[dict[str, Any]]:
         role = msg.get("role")
         mid = msg.get("id")
         status = msg["status"]
+        # Track the parent (the previous assistant message) so the NEXT turn can
+        # chain with parent_id, exactly like the UI does.
+        if role == "assistant" and mid:
+            state["parent_id"] = mid
         # On a continuation, Kimi REPLAYS the existing conversation before the
         # new turn — including the previous assistant message, already marked
         # COMPLETED. Firing on that would end the stream before turn 2 starts.
@@ -213,6 +257,38 @@ def _parse_frame(text: str, state: dict[str, Any]) -> list[dict[str, Any]]:
     return events
 
 
+def _decode_error(err: dict[str, Any]) -> str:
+    """Turn a Kimi error frame into a human message.
+
+    The interesting text is base64 inside ``details[].value`` — e.g. the
+    resource_exhausted gate ("Too many people are chatting with Kimi...").
+    """
+    code = err.get("code", "error")
+    for det in err.get("details") or []:
+        if not isinstance(det, dict):
+            continue
+        val = det.get("value")
+        if not val:
+            continue
+        try:
+            import base64 as _b64
+            decoded = _b64.b64decode(val).decode("utf-8", "replace")
+            # The blob is protobuf-ish; pull the longest printable run.
+            runs = re.findall(r"[\x20-\x7e]{12,}", decoded)
+            text = max(runs, key=len).strip() if runs else decoded.strip()
+            # Protobuf string fields prefix the text with a single length byte.
+            # When that byte is printable it glues onto the front of the run
+            # ("VToo many..."). If the first char numerically equals the
+            # remaining length, it's that prefix — drop it.
+            if len(text) > 1 and ord(text[0]) == len(text) - 1:
+                text = text[1:]
+            if text:
+                return f"kimi: {code} — {text}"
+        except Exception:
+            pass
+    return f"kimi: {code}"
+
+
 # Kimi injects internal memory/status tags into the visible text stream, e.g.
 # "<REF>status✦added memory</REF>". They are Kimi UI chrome, not model output,
 # so strip them (and any trailing whitespace they leave) before yielding.
@@ -234,9 +310,17 @@ class KimiClient:
 
     def __init__(self, account: str | None = None, model_id: str | None = None) -> None:
         self._account = account
-        self._model_id = model_id or "kimi-k2"
+        self._model_id = model_id or "kimi-k2.6"
         # Sable chat_id -> upstream Kimi chat id (for multi-turn continuation).
         self._chat_ids: dict[str, str] = {}
+        # Sable chat_id -> last assistant message id, used as parent_id so Kimi
+        # chains the turn server-side (matches the UI).
+        self._parent_ids: dict[str, str] = {}
+        # Sable chat_id -> the assistant message id currently GENERATING, so a
+        # concurrent cancel() can target the live turn (not the previous one).
+        self._generating: dict[str, str] = {}
+        # Sable chat_id -> live ghost session, for cancel/upload during a stream.
+        self._live_session: Any = None
         # Sable chat_id -> local [{role, content}] history (fallback context).
         self._sessions: dict[str, list[dict[str, str]]] = {}
 
@@ -286,11 +370,21 @@ class KimiClient:
         api_model = cfg.get("api_model_type") or _DEFAULT_MODEL
 
         prompt = message
+        # Full system instruction is prepended ONLY on a fresh chat (no upstream
+        # chat_id yet). Continuations ride on chat_id server-side, so re-sending
+        # it would just waste context.
+        system_instruction = kwargs.pop("system_instruction", None)
+        project_id = kwargs.pop("project_id", None)
+        db_history = kwargs.pop("db_history", None)
+        layout_mode = kwargs.pop("layout_mode", None)
+
         if inject_instructions:
             try:
-                prompt = f"{get_tool_format()}\n\n{message}"
+                _reminder = get_tool_format("kimi") or get_tool_format()
             except Exception:
-                pass
+                _reminder = ""
+            if _reminder:
+                prompt = f"{_reminder}\n\n{message}"
 
         session = await self._resolve_session()
         if session is None:
@@ -302,7 +396,41 @@ class KimiClient:
             return
 
         upstream_chat = self._chat_ids.get(chat_id) if chat_id else None
+        is_fresh = upstream_chat is None
+
+        # First-message instruction injection — mirrors the DeepSeek connector.
+        # On a fresh chat the full system instruction (persona + project + tools)
+        # is prepended to the first user turn. A caller-supplied
+        # ``system_instruction`` (agent sub-chats) wins over the built default.
+        if is_fresh and inject_instructions:
+            _instr: str | None = None
+            if system_instruction:
+                _instr = system_instruction
+            else:
+                try:
+                    _instr = _load_instructions(project_id=project_id, layout_mode=layout_mode)
+                except Exception as exc:
+                    logger.warning("Kimi instruction build failed: %s", exc)
+            if _instr:
+                prompt = f"{_instr}\n\n{prompt}"
+
         history = self._sessions.get(chat_id, []) if chat_id else []
+        # Seed local history from the DB on a fresh session (e.g. a cross-provider
+        # switch) so context isn't lost. Never serialized when an upstream
+        # chat_id exists — the server chains there instead.
+        if db_history and chat_id and not history:
+            history = [
+                {"role": m["role"], "content": m["content"]}
+                for m in db_history
+                if m.get("role") in ("user", "assistant") and m.get("content")
+            ]
+            self._sessions[chat_id] = history
+        # NOTE: we deliberately do NOT send message.parent_id. Empirically,
+        # chat_id alone continues the conversation correctly (context preserved),
+        # while chat_id + a reconstructed parent_id makes Kimi return an empty
+        # stream. The UI tracks parent ids in a way we can't reproduce from the
+        # event stream, so we rely on chat_id and let the server chain.
+        file_ids = [str(fid) for fid in (ref_file_ids or []) if str(fid).strip()]
 
         yield {"type": "status", "message": "kimi_transport_ghost"}
 
@@ -313,12 +441,15 @@ class KimiClient:
             effort=effort,
             chat_id=upstream_chat,
             history=history,
+            file_ids=file_ids,
         )
 
-        state: dict[str, Any] = {"chat_id": upstream_chat, "status": None}
         got_answer = False
 
         for attempt in range(2):
+            # Fresh per-attempt parse state — a stale assistant_id from a
+            # prior attempt would break the terminal-completion match.
+            state: dict[str, Any] = {"chat_id": upstream_chat, "status": None}
             try:
                 async with await session.open_stream(body, idle_secs=_IDLE_TIMEOUT_SECS) as resp:
                     if resp.status_code != 200:
@@ -333,17 +464,27 @@ class KimiClient:
                                 if not ev["text"]:
                                     continue
                                 got_answer = True
+                            # Stash the live generating id so cancel() can target it.
+                            if chat_id and state.get("assistant_id") and state.get("status") == "MESSAGE_STATUS_GENERATING":
+                                self._generating[chat_id] = state["assistant_id"]
                             if ev["type"] == "done":
-                                # Persist upstream chat id for continuation.
+                                # Persist upstream chat id + parent id for continuation.
                                 if chat_id and state.get("chat_id"):
                                     self._chat_ids[chat_id] = state["chat_id"]
+                                if chat_id and state.get("parent_id"):
+                                    self._parent_ids[chat_id] = state["parent_id"]
                                 yield ev
                                 return
                             if ev["type"] == "error":
                                 yield ev
                                 return
                             yield ev
-                    # Stream closed without an explicit done.
+                    # Stream closed without an explicit done. Kimi sometimes
+                    # returns a COMPLETED-but-empty stream on continuation
+                    # (~1 in 3), so an answerless close is retried once.
+                    if not got_answer and attempt == 0:
+                        logger.warning("Kimi empty stream — retrying once")
+                        continue
                     if chat_id and state.get("chat_id"):
                         self._chat_ids[chat_id] = state["chat_id"]
                     yield {"type": "done", "chat_id": state.get("chat_id")}
@@ -357,6 +498,40 @@ class KimiClient:
             except Exception as exc:
                 yield {"type": "error", "message": f"kimi stream failed: {exc}"}
                 return
+
+    # -- files & cancel ------------------------------------------------
+
+    async def upload_file(self, file_path: str, **_kw: Any) -> dict[str, Any]:
+        """Upload one file through the ghost session. Returns file metadata."""
+        from connectors.kimi.upload import upload_file as _up
+        session = await self._resolve_session()
+        if session is None:
+            raise RuntimeError("kimi ghost transport unavailable")
+        if not await session.has_token():
+            raise RuntimeError(f"kimi not logged in on {self.account}")
+        return await _up(session, file_path)
+
+    async def cancel(self, chat_id: str) -> bool:
+        """Stop generation for a Sable chat (maps to the UI stop button).
+
+        Targets the LIVE generating assistant message id, stashed during the
+        stream — cancelling the previous (completed) turn would be a no-op.
+        """
+        session = await self._resolve_session()
+        if session is None:
+            return False
+        upstream = self._chat_ids.get(chat_id)
+        msg_id = self._generating.get(chat_id) or self._parent_ids.get(chat_id)
+        if not upstream or not msg_id:
+            return False
+        try:
+            ok = await session.cancel_chat(upstream, msg_id)
+            if ok:
+                self._generating.pop(chat_id, None)
+            return ok
+        except Exception as exc:
+            logger.warning("Kimi cancel failed (%s)", exc)
+            return False
 
     async def chat(self, message: str, **kwargs: Any) -> dict[str, Any]:
         """Non-streaming convenience wrapper."""

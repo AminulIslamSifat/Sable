@@ -158,6 +158,31 @@ def _get_available_backends() -> set[str]:
     except Exception as exc:
         logger.debug("Backend mimo unavailable: %s", exc)
 
+    # Kimi (kimi.ai): ghost-tab transport. Available if a profile holds a kimi
+    # login — either the ghost marker or a kimi.ai cookie. The pinned provider
+    # account is checked first, then any browser-data-* profile.
+    try:
+        from engine.config import _SYSTEM as _sys_dir4
+        from engine.config import get_provider_account as _get_kimi_pin
+        candidates = []
+        pinned = _get_kimi_pin("kimi")
+        if pinned:
+            candidates.append(_sys_dir4 / pinned)
+        if _sys_dir4.is_dir():
+            candidates += [d for d in _sys_dir4.iterdir()
+                           if d.is_dir() and d.name.startswith("browser-data-")]
+        for d in candidates:
+            try:
+                if (d / ".kimi_ghost.json").is_file():
+                    available.add("kimi"); break
+                ck = d / "Default" / "Cookies"
+                if ck.is_file() and b"kimi.ai" in open(ck, "rb").read():
+                    available.add("kimi"); break
+            except Exception:
+                continue
+    except Exception as exc:
+        logger.debug("Backend kimi unavailable: %s", exc)
+
     # API-key-based providers
     _key_providers = {
         "gemini": "connectors.gemini.client",

@@ -432,6 +432,11 @@ class DeepSeekClient:
         self._account = account  # e.g. "browser-data-acc15"; None = active
         self._model_id = model_id or "deepseek-instant"
         self._http: AsyncSession | None = None
+        # Consecutive failure counter (per-instance). When it hits
+        # _POOL_FAILURE_THRESHOLD, _get_http() recycles the connection pool.
+        # Fixes the "requests hang forever after network change" bug where
+        # curl_cffi's pooled TCP sockets become half-open zombies.
+        self._consecutive_failures: int = 0
         self._lock = asyncio.Lock()
         # Client-side conversation history: chat_id → [message dicts]
         self._sessions: dict[str, list[dict[str, Any]]] = {}
@@ -780,13 +785,35 @@ class DeepSeekClient:
     # HTTP client lifecycle
     # ------------------------------------------------------------------
 
+    # Pool failure threshold (constant, safe as class attr).
+    _POOL_FAILURE_THRESHOLD: int = 2
+
     async def _get_http(self) -> AsyncSession:
         if self._http is None:
             # impersonate="chrome" replicates Chromium's exact TLS fingerprint
             # (cipher suites, extensions, ALPN, HTTP/2 SETTINGS frame).
             # This is what WAF checks — raw httpx/OpenSSL mismatches the Chrome UA.
             self._http = AsyncSession(impersonate="chrome", timeout=120)
+        elif self._consecutive_failures >= self._POOL_FAILURE_THRESHOLD:
+            logger.warning(
+                "DeepSeek: %d consecutive failures — recycling connection pool",
+                self._consecutive_failures,
+            )
+            try:
+                await self._http.close()
+            except Exception:
+                pass
+            self._http = AsyncSession(impersonate="chrome", timeout=120)
+            self._consecutive_failures = 0
         return self._http
+
+    def _mark_success(self) -> None:
+        """Reset failure counter after a successful stream."""
+        self._consecutive_failures = 0
+
+    def _mark_failure(self) -> None:
+        """Increment failure counter; triggers pool recycle at threshold."""
+        self._consecutive_failures += 1
 
     async def close(self) -> None:
         if self._http is not None:
@@ -1629,6 +1656,27 @@ class DeepSeekClient:
                     # all prior context — worse than a clean rotation.
                     if not full_answer and not full_thinking:
                         last_err = "empty_response"
+                        self._mark_failure()
+                        # If we already captured a response message_id from the
+                        # 'done' event, DeepSeek DID create the node upstream —
+                        # only delivery died (mid-stream disconnect). Retrying
+                        # with the SAME parent_message_id would branch the tree
+                        # (X→Y AND X→Z), which is exactly what poisons the chain
+                        # on restart. So: commit whatever id we got and bail to
+                        # the caller instead of re-sending.
+                        if _response_parent_id is not None:
+                            logger.warning(
+                                "DeepSeek empty body but message_id=%s received for chat %s — "
+                                "committing id, NOT retrying (upstream node exists)",
+                                _response_parent_id, chat_id,
+                            )
+                            if chat_id:
+                                self._parent_ids[chat_id] = _response_parent_id
+                            yield {
+                                "type": "error",
+                                "message": "Response interrupted mid-stream; conversation state preserved.",
+                            }
+                            return
                         if _retry < _MAX_RETRIES_PER_TOKEN - 1:
                             logger.warning("DeepSeek empty response, retry %d/%d in %.0fs...",
                                            _retry + 1, _MAX_RETRIES_PER_TOKEN, _RETRY_DELAY_SECS)
@@ -1649,6 +1697,9 @@ class DeepSeekClient:
                                 chat_id,
                             )
                         self._dsml_warn_chats.add(chat_id)
+
+                    # Connection is healthy again — reset failure counter.
+                    self._mark_success()
 
                     # Success — update client-side history and parent chain
                     clean_answer = strip_summarize_tag(full_answer)
@@ -1684,20 +1735,37 @@ class DeepSeekClient:
                     # Idle gate fired — either the connect/header phase (bounded
                     # in _completion_opener) or a mid-stream stall (bounded in
                     # _iter_with_idle_timeout) produced no bytes within 30s.
-                    # Drop this connection and reopen a fresh one next retry.
+                    # This is almost always a stale/zombie pooled socket after a
+                    # network change. Don't burn 8×35s per token — fail fast so
+                    # _get_http() recycles the pool on the next attempt.
                     last_err = f"idle_timeout ({_IDLE_TIMEOUT_SECS:.0f}s)"
-                    if _retry < _MAX_RETRIES_PER_TOKEN - 1:
-                        logger.warning("DeepSeek idle timeout, retry %d/%d in %.0fs...",
-                                       _retry + 1, _MAX_RETRIES_PER_TOKEN, _RETRY_DELAY_SECS)
-                        yield {"type": "status", "message": f"deepseek_retry_{_retry + 1}"}
-                        await asyncio.sleep(_RETRY_DELAY_SECS)
-                        continue
-                    else:
-                        logger.warning("DeepSeek idle timeout after %d retries, rotating...",
-                                       _MAX_RETRIES_PER_TOKEN)
-                        break
+                    self._mark_failure()
+                    if _response_parent_id is not None and chat_id:
+                        # Upstream node was created before the stall — preserve it.
+                        self._parent_ids[chat_id] = _response_parent_id
+                    logger.warning("DeepSeek idle timeout (%s) — breaking to recycle pool", last_err)
+                    break
                 except Exception as exc:
                     last_err = f"{type(exc).__name__}: {exc}"
+                    self._mark_failure()
+                    # Connection-class errors (reset/refused/DNS/TLS) mean the pool
+                    # is poisoned — break immediately instead of hammering dead sockets.
+                    _conn_cls = (
+                        ConnectionError, OSError, TimeoutError,
+                    )
+                    try:
+                        from curl_cffi.requests.exceptions import (
+                            ConnectionError as CurlConnErr,
+                            ConnectTimeout as CurlConnectTimeout,
+                        )
+                        _conn_cls = (*_conn_cls, CurlConnErr, CurlConnectTimeout)
+                    except Exception:
+                        pass
+                    if isinstance(exc, _conn_cls):
+                        logger.warning(
+                            "DeepSeek connection error (%s) — breaking to recycle pool", last_err
+                        )
+                        break
                     if _retry < _MAX_RETRIES_PER_TOKEN - 1:
                         logger.warning("DeepSeek error (%s), retry %d/%d in %.0fs...",
                                        last_err, _retry + 1, _MAX_RETRIES_PER_TOKEN, _RETRY_DELAY_SECS)

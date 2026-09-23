@@ -1474,6 +1474,26 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                 return kw.capitalize() if kw != "msedge" else "Edge"
         return Path(path).stem
 
+    def _profile_has_kimi(entry: Path) -> bool:
+        """True if this browser profile holds a kimi.ai login.
+
+        Two signals: the ghost marker (written when the Kimi connector ran
+        here) or a kimi.ai cookie in the profile's Cookies DB.
+        """
+        try:
+            if (entry / ".kimi_ghost.json").is_file():
+                return True
+        except Exception:
+            pass
+        try:
+            ck = entry / "Default" / "Cookies"
+            if ck.is_file():
+                with open(ck, "rb") as fh:
+                    return b"kimi.ai" in fh.read()
+        except Exception:
+            pass
+        return False
+
     def _scan_browser_accounts() -> list[dict[str, Any]]:
         accounts: list[dict[str, Any]] = []
         for entry in _SYSTEM_DIR.iterdir():
@@ -1498,6 +1518,7 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                     isinstance(_mimo_jar, dict)
                     and _mimo_jar.get("xiaomichatbot_serviceToken")
                 )
+                _has_kimi = _profile_has_kimi(entry)
                 accounts.append({
                     "name": entry.name,
                     "num": int(m.group(1)),
@@ -1508,6 +1529,7 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                     "has_zai": _has_zai,
                     "has_gemini": _has_gemini,
                     "has_mimo": _has_mimo,
+                    "has_kimi": _has_kimi,
                     "exhausted": exhaustion.get(entry.name, False),
                     "captcha_blocked": captcha_blocks.get(entry.name, False),
                     "browser_path": browser_path,
@@ -1561,6 +1583,7 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                 "has_zai": False,
                 "has_gemini": False,
                 "has_mimo": False,
+                "has_kimi": _profile_has_kimi(entry),
                 "exhausted": False,
                 "captcha_blocked": False,
                 "browser_path": browser_path,
@@ -1621,6 +1644,13 @@ async def list_accounts_by_provider() -> dict[str, Any]:
     # MiMo Studio (Xiaomi): browser-based, only accounts holding a MiMo cookie snapshot
     mimo_accounts = [a for a in browser_accounts if a.get("has_mimo")]
     providers["mimo"] = _browser_provider("mimo", "MiMo (Xiaomi)", mimo_accounts)
+
+    # Kimi (kimi.ai): browser-based. Lists every profile holding a kimi login —
+    # both standard acc* profiles AND dedicated non-acc dirs (e.g.
+    # browser-data-kimi), so the connector's own profile shows up too.
+    kimi_accounts = [a for a in browser_accounts if a.get("has_kimi")]
+    kimi_accounts += [a for a in unregistered_browser_data if a.get("has_kimi")]
+    providers["kimi"] = _browser_provider("kimi", "Kimi", kimi_accounts)
 
     # DeepSeek: present as api_key type — tokens are JWTs, no browser swap needed
     try:
@@ -1784,7 +1814,7 @@ async def switch_api_key(provider: str, payload: dict[str, Any]) -> dict[str, An
 # Providers whose account selection is per-provider (pinned) rather than global.
 # Qwen is deliberately excluded: it IS the global active account, so its switch
 # stays on /accounts/switch and every unpinned provider follows it.
-_PER_PROVIDER_SWITCH = ("zai", "gemini_web", "gemini", "mimo")
+_PER_PROVIDER_SWITCH = ("zai", "gemini_web", "gemini", "mimo", "kimi")
 
 
 @router.post("/api/settings/accounts/switch-provider")
@@ -1811,8 +1841,8 @@ async def switch_provider_account(payload: dict[str, Any]) -> dict[str, Any]:
     from engine.config import set_provider_account, get_provider_browser_dir
 
     if target_name:
-        if not re.match(r"^browser-data-acc\d+$", target_name):
-            raise HTTPException(status_code=400, detail="Profile must match 'browser-data-acc*'")
+        if not re.match(r"^browser-data-[a-z0-9-]+$", target_name):
+            raise HTTPException(status_code=400, detail="Profile must match 'browser-data-*'")
         if not (_SYSTEM_DIR / target_name).is_dir():
             raise HTTPException(status_code=404, detail=f"Profile directory '{target_name}' not found")
 

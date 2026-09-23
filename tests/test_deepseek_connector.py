@@ -175,6 +175,12 @@ async def _make_client(fake_http: FakeHttpSession) -> Any:
     client._last_prepare_error = None
     client._max_session_chars = 100_000
     client._instruction_cache: dict[str, str] = {}
+    # Attrs __init__ normally sets — required because we bypass __init__ via __new__.
+    client._dsml_warn_chats: set[str] = set()
+    client._lock = asyncio.Lock()
+    client._token_refresher = None
+    client._model_id = "deepseek-instant"
+    client._consecutive_failures = 0
     return client
 
 

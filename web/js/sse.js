@@ -1195,16 +1195,22 @@
         if (turnChatId !== activeChatId) { _thinkTimer = null; return; }
         if (!_thinkQueue || !currentThinkBody) { _thinkTimer = null; return; }
 
-        const tune = _twNow();
-        // Fast model → skip the animation entirely, same as the answer path.
-        if (tune.flush) { _flushThinkQueue(); return; }
+        let tune = _twNow();
+        // Thinking is a cheap textContent append (no markdown re-parse), so keep
+        // the reveal animation alive even for fast models — just crank the rate
+        // instead of dumping the whole block at once. The old flush here is what
+        // made fast thinking pop in fully-formed ("frog jump") instead of typing.
+        if (tune.flush) tune = { chars: TW_MAX_CHARS, ms: TW_MIN_MS, flush: false };
 
         // Rate-based consume mirroring _ansTick: chars/sec × elapsed seconds,
         // with a clamped dt and a fractional carry so we don't lose rate.
         const now = performance.now();
         const dt = Math.min(now - _thinkLast, 100);
         _thinkLast = now;
-        const cps = ((tune.chars || TW_CHARS) / (tune.ms || TW_MS)) * 1000;
+        let cps = ((tune.chars || TW_CHARS) / (tune.ms || TW_MS)) * 1000;
+        // Backlog catch-up — same trick as _ansTick: drain a growing queue at a
+        // steady, elevated rate rather than letting it dump in one burst.
+        if (_thinkQueue.length > 0) cps = Math.max(cps, _thinkQueue.length / 0.2);
         _thinkFrac += cps * dt / 1000;
         const nChars = Math.floor(_thinkFrac);
         _thinkFrac -= nChars;
@@ -1216,6 +1222,9 @@
         const chunk = _thinkQueue.slice(0, nChars);
         _thinkQueue = _thinkQueue.slice(nChars);
         currentThinkBody.textContent += chunk;
+        // Pin synchronously in the same frame as the write, otherwise the rAF
+        // scroll lands a frame late and the block visibly bounces while growing.
+        pinScrollIfAtBottom();
         scrollBottom();
         _thinkTimer = _thinkQueue ? requestAnimationFrame(_thinkTick) : null;
       }
@@ -1337,11 +1346,11 @@
         if (turnChatId !== activeChatId) { _ansTimer = null; return; }
         if (!_ansQueue || !answerContent) { _ansTimer = null; return; }
 
-        const tune = _twNow();
-        // Fast model → skip the animation entirely. Draining in one render per
-        // SSE event is far cheaper than thousands of O(n) markdown re-parses,
-        // and at this speed the reply lands in under a second anyway.
-        if (tune.flush) { _flushAnswerQueue(); return; }
+        let tune = _twNow();
+        // Even at flush speeds keep the reveal paced. A full dump reads as a
+        // "frog jump"; pure-prose chunks now append cheaply (see _flushAnswerQueue),
+        // so animating the fast path is no longer expensive — just run at max rate.
+        if (tune.flush) tune = { chars: TW_MAX_CHARS, ms: TW_MIN_MS, flush: false };
 
         // Rate-based consume: chars/sec × elapsed seconds. dt is clamped so a
         // backgrounded tab or long GC pause can't dump the whole queue in one
@@ -1352,7 +1361,12 @@
         // Carry the fractional remainder between frames. Rounding 2.49 down to
         // 2 every frame silently loses 20% of the target rate, making the
         // animation lag the model and dump the tail. Accumulate instead.
-        const cps = ((tune.chars || TW_CHARS) / (tune.ms || TW_MS)) * 1000;
+        let cps = ((tune.chars || TW_CHARS) / (tune.ms || TW_MS)) * 1000;
+        // Backlog catch-up: if the producer outruns the reveal, raise the rate so
+        // we drain the queue smoothly (~8% of backlog per frame) instead of
+        // letting it pile up and then dumping a whole burst. This is what keeps
+        // the motion continuous — jiggle, not hop.
+        if (_ansQueue.length > 0) cps = Math.max(cps, _ansQueue.length / 0.2);
         _ansFrac += cps * dt / 1000;
         const nChars = Math.floor(_ansFrac);
         _ansFrac -= nChars;
@@ -1424,7 +1438,10 @@
         if (chunk.includes("data-lucide") || !_ansTimer) {
           activateLucideIcons(answerContent);
         }
-        if (!_ansTimer) {
+        // Only run the full re-render when the last append wasn't already applied
+        // via the fast text-node path. Rebuilding on every queue-drain mid-stream
+        // tore the DOM down each burst — the other half of the "frog jump".
+        if (!_ansTimer && !fast) {
           // Final tick render: produce proper mermaid-wrap but defer heavy rendering
           // to closeAnswer() which runs after stream truly ends or segment closes.
           // This prevents partial math/mermaid from rendering mid-stream.
@@ -1448,16 +1465,29 @@
       }
       function _flushAnswerQueue() {
         _ansCancel();
-        if (_ansQueue && answerContent) {
-          raw += _ansQueue;
-          _ansQueue = "";
-          // Only do lightweight markdown render here; heavy mermaid/math rendering
-          // is deferred to closeAnswer() to avoid rendering partial content mid-stream.
-          answerContent.innerHTML = renderMarkdown(raw);
-          pinScrollIfAtBottom();
-          activateLucideIcons(answerContent);
-          scrollBottom();
+        if (!_ansQueue || !answerContent) return;
+        const chunk = _ansQueue;
+        _ansQueue = "";
+        raw += chunk;
+        // Fast path: pure-prose chunks append straight onto the trailing text
+        // node instead of rebuilding the whole answer. The old unconditional
+        // `innerHTML = renderMarkdown(raw)` here is what made high-tok/s models
+        // "frog jump" — every flush tore down and re-laid-out the entire block.
+        let fast = false;
+        if (!_ansInFence && !_ANS_STRUCTURAL_RE.test(chunk)) {
+          const lastP = answerContent.lastElementChild;
+          if (lastP && lastP.tagName === "P" && lastP.lastChild && lastP.lastChild.nodeType === 3) {
+            lastP.lastChild.textContent += chunk;
+            fast = true;
+          }
         }
+        if (!fast) {
+          answerContent.innerHTML = renderMarkdown(raw);
+          _ansInFence = countOpenFences(raw).inFence;
+        }
+        pinScrollIfAtBottom();
+        activateLucideIcons(answerContent);
+        scrollBottom();
       }
 
       function closeAnswer() {
@@ -1510,6 +1540,13 @@
         showRoundThinking(text) {
           if (!text) return;
           hidePending();
+          // If the live `thinking` stream already built this round's block, the
+          // same text is already there — just finalize it. Collapsing + rebuilding
+          // (the old path) re-typed the whole block and made it jump up and down.
+          if (currentThinkWrap && currentThinkBody) {
+            _flushThinkQueue();
+            return;
+          }
           closeCurrentThinking();
           lastCommandGroup = null;
           // Build an open thinking block and animate its content via typewriter
