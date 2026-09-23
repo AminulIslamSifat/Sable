@@ -1,7 +1,7 @@
 [
   {
     "name": "execute_command",
-    "description": "Run a shell command. Use bg=true for long-running processes. Process will be killed after timeout without bg true",
+    "description": "Run a shell command. Process is killed after timeout unless bg=true (use bg for long-running processes like servers).",
     "parameters": {
       "type": "object",
       "properties": {
@@ -9,31 +9,66 @@
           "type": "string",
           "description": "Shell command to execute"
         },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory for the command. Defaults to the user's home directory."
+        },
+        "env": {
+          "type": "object",
+          "description": "Extra environment variables to set for this command (merged over the inherited env).",
+          "additionalProperties": {"type": "string"}
+        },
         "timeout": {
           "type": "integer",
-          "description": "Timeout in seconds (default 15, max 180)"
+          "description": "Timeout in seconds (default 15, max 180). Ignored when bg=true.",
+          "minimum": 1,
+          "maximum": 180
         },
         "bg": {
           "type": "boolean",
-          "description": "Set true to run in background (returns PID), To run in the background. Process is killed after timeout if bg=False. Must be true for continuous running project liek server and others."
+          "description": "Set true to run in background (returns PID). Process is killed after timeout if bg=false. Must be true for long-running processes like servers."
         }
       },
-      "required": [
-        "command"
-      ]
+      "required": ["command"]
     }
   },
   {
     "name": "check_command",
-    "description": "Check status of background job(s).",
+    "description": "Check status of background job(s). Returns running state, exit code, and recent log tail.",
     "parameters": {
       "type": "object",
       "properties": {
         "pid": {
           "type": "integer",
-          "description": "PID of background job to check. Omit to check all."
+          "description": "PID of background job to check. Omit to list all tracked jobs."
+        },
+        "tail": {
+          "type": "integer",
+          "description": "Number of trailing log lines to return for a specific pid (default 50).",
+          "minimum": 1,
+          "maximum": 2000
         }
-      }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "kill_command",
+    "description": "Terminate a background job started with bg=true, killing the whole process group.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "description": "PID of the background job to kill."
+        },
+        "signal": {
+          "type": "string",
+          "enum": ["TERM", "KILL"],
+          "description": "Signal to send: TERM (graceful, default) or KILL (force)."
+        }
+      },
+      "required": ["pid"]
     }
   }
 ]

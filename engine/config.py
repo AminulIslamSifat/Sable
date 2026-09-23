@@ -48,17 +48,12 @@ AGENT_OUTPUT_DIR = OUTPUT_ROOT / "agent"
 ASSETS_DIR = OUTPUT_ROOT / "assets"
 LOGS_DIR = OUTPUT_ROOT / "logs"
 
-# SSD vs HDD tree detection — used by security guards to prevent
-# accidental writes to the live SSD deployment tree.
-# Override with SABLE_SSD_TREE / SABLE_HDD_TREE env vars if needed.
-SSD_TREE = os.getenv("SABLE_SSD_TREE", str(HOME_DIR / "Projects" / "Sable"))
-HDD_TREE = os.getenv("SABLE_HDD_TREE", str(HOME_DIR / "hdd" / "projects" / "Sable"))
-
 # Display name for the user (used in session personalization)
 USER_NAME = os.getenv("SABLE_USER_NAME", "User")
 
-# Port selection: prefer env var, otherwise detect HDD vs SSD instance
-_DEFAULT_PORT = "61771" if HDD_TREE in str(_ROOT) else "61770"
+# Port selection: env var wins, otherwise a single stable default.
+# Run multiple instances by setting SABLE_PORT explicitly.
+_DEFAULT_PORT = "61770"
 PORT = int(os.getenv("PORT", os.getenv("SABLE_PORT", _DEFAULT_PORT)))
 
 # --------------------------------------------------------------------------

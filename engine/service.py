@@ -723,42 +723,15 @@ class ChatService:
                         except Exception:
                             pass
                         return jar
-                    logger.info("account %s has no MiMo auth; checking other profiles",
+                    logger.info("account %s has no MiMo auth; trying disk",
                                 _Path(active_dir).name)
         except Exception as exc:
-            logger.warning("live MiMo cookie read failed (%s); trying other sources", exc)
+            logger.warning("live MiMo cookie read failed (%s); trying disk", exc)
 
-        # 2) lock-free read of other accounts, then their live browsers
+        # 2) disk snapshot fallback — mirrors get_gemini_cookies(). The active
+        #    account was already live-read above; we do NOT boot browsers for
+        #    other profiles. Freshness on refresh comes from the active account.
         from engine.config import _SYSTEM
-        for other in _SYSTEM.glob("browser-data-*"):
-            if other.name.endswith(".bak") or other == active_dir:
-                continue
-            # 2a) lock-free first
-            try:
-                from engine.cookie_reader import read_mimo_cookies as _read_mimo2
-                jar = _read_mimo2(str(other))
-                if _has_auth(jar):
-                    logger.info("using lock-free MiMo auth from %s", other.name)
-                    return jar
-            except Exception:
-                pass
-            # 2b) live browser as last resort
-            try:
-                async with self._lock:
-                    bm = self._get_browser(str(other))
-                    await bm.start()
-                    octx = bm.context
-                    if octx is None:
-                        continue
-                    raw = await octx.cookies("https://aistudio.xiaomimimo.com")
-                    jar = {c["name"]: c["value"] for c in raw}
-                    if _has_auth(jar):
-                        logger.info("using live MiMo auth from %s", other.name)
-                        return jar
-            except Exception:
-                continue
-
-        # 3) disk snapshot fallback (any account)
         best = None
         best_mtime = 0.0
         for snap in _SYSTEM.glob("browser-data-*/.mimo_auth.json"):

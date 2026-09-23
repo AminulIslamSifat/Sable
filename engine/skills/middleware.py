@@ -69,25 +69,55 @@ class ValidationMiddleware:
         else:
             ctx.skill = skill
 
-        # Content-required tags
-        content_required = {"execute_command", "create_file", "create_note"}
-        if ctx.name in content_required and not ctx.content.strip():
-            ctx.error = f"Tag '{ctx.name}' requires non-empty content"
-            yield end_event(ctx.tag_id, ctx.name, False, ctx.started, error=ctx.error)
-            return
+        # NOTE: the old `content_required` set was removed. It was redundant with
+        # SchemaValidationMiddleware (which checks required args against the real
+        # tool.json) and subtly wrong — `execute_command` supplies its command via
+        # attrs, not the tag body. Schema validation is now the single source of
+        # truth for what a tool needs.
 
         yield from next_fn(ctx)
 
 
-class PermissionMiddleware:
-    """Permission checks (stub — pass-through for now).
+# NOTE: PermissionMiddleware used to live here as a pass-through stub. It was
+# dead code — engine/skills/engine.py wires in SecurityMiddleware
+# (engine/security/middleware.py) instead, which does the real work: prompt
+# injection guard, destructive-command gate, CWD guard, approval flow.
+# Removed to avoid implying permissions are unenforced.
 
-    Future: scope validation, dangerous command confirmation,
-    per-agent permission policies.
+
+class SchemaValidationMiddleware:
+    """Validates tag attrs against the tool's JSON schema before execution.
+
+    Turns permissive-schema runtime errors ("missing value", "unknown action")
+    into clean pre-execution failures with actionable messages. Uses the
+    lightweight validator in engine.skills.schema_check — no jsonschema dep.
+
+    Runs after SecurityMiddleware so security blocks still take precedence.
     """
 
     def process(self, ctx: TagContext, next_fn: Callable[[TagContext], Generator[dict[str, Any], None, None]]) -> Generator[dict[str, Any], None, None]:
-        # Pass-through — all tags permitted
+        try:
+            from engine.skills.schema_check import validate_arguments
+            from engine.tools_loader import load_single_tool
+        except Exception:
+            # If the loader isn't importable, don't block execution
+            yield from next_fn(ctx)
+            return
+
+        schema_list = load_single_tool(ctx.name)
+        if not schema_list:
+            yield from next_fn(ctx)
+            return
+
+        params = (schema_list[0].get("function") or {}).get("parameters") or {}
+        ok, errors = validate_arguments(ctx.attrs, params)
+        if not ok:
+            detail = "; ".join(errors)
+            ctx.error = f"Invalid arguments for '{ctx.name}': {detail}"
+            logger.warning("SCHEMA REJECT: tag=%s %s", ctx.name, detail)
+            yield end_event(ctx.tag_id, ctx.name, False, ctx.started, error=ctx.error)
+            return
+
         yield from next_fn(ctx)
 
 

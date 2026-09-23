@@ -49,7 +49,9 @@
         },
         "clicks": {
           "type": "integer",
-          "description": "Number of clicks (2 = double-click). Default: 1."
+          "description": "Number of clicks (2 = double-click). Default: 1.",
+          "minimum": 1,
+          "maximum": 10
         },
         "text": {
           "type": "string",
@@ -66,7 +68,9 @@
         },
         "amount": {
           "type": "integer",
-          "description": "Scroll amount in clicks/steps. Default: 3."
+          "description": "Scroll amount in clicks/steps. Default: 3.",
+          "minimum": 1,
+          "maximum": 100
         },
         "window_id": {
           "type": "string",
@@ -86,10 +90,70 @@
         },
         "max_elements": {
           "type": "integer",
-          "description": "For screen_parse: max elements to return. Default: 50."
+          "description": "For screen_parse: max elements to return. Default: 50.",
+          "minimum": 1,
+          "maximum": 500
         }
       },
-      "required": ["action"]
+      "required": ["action"],
+      "oneOf": [
+        {
+          "properties": {"action": {"const": "mouse_click"}},
+          "required": ["action", "x", "y"]
+        },
+        {
+          "properties": {"action": {"const": "mouse_move"}},
+          "required": ["action", "x", "y"]
+        },
+        {
+          "properties": {"action": {"const": "mouse_drag"}},
+          "required": ["action", "x", "y", "x2", "y2"]
+        },
+        {
+          "properties": {"action": {"const": "keyboard_type"}},
+          "required": ["action", "text"]
+        },
+        {
+          "properties": {"action": {"const": "keyboard_key"}},
+          "required": ["action", "keys"]
+        },
+        {
+          "properties": {"action": {"const": "window_focus"}},
+          "required": ["action", "window_id"]
+        },
+        {
+          "properties": {"action": {"const": "window_close"}},
+          "required": ["action", "window_id"]
+        },
+        {
+          "properties": {"action": {"const": "clipboard_set"}},
+          "required": ["action", "text"]
+        },
+        {
+          "properties": {"action": {"const": "mouse_scroll"}},
+          "required": ["action"]
+        },
+        {
+          "properties": {"action": {"const": "screenshot"}},
+          "required": ["action"]
+        },
+        {
+          "properties": {"action": {"const": "window_list"}},
+          "required": ["action"]
+        },
+        {
+          "properties": {"action": {"const": "clipboard_get"}},
+          "required": ["action"]
+        },
+        {
+          "properties": {"action": {"const": "screen_info"}},
+          "required": ["action"]
+        },
+        {
+          "properties": {"action": {"const": "screen_parse"}},
+          "required": ["action"]
+        }
+      ]
     }
   }
 ]

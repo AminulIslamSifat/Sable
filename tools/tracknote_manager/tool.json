@@ -7,62 +7,64 @@
       "properties": {
         "action": {
           "type": "string",
-          "description": "One of: list_notes, list_schedules, list_ops, add_note, add_todo, add_schedule, toggle_item, delete"
+          "enum": [
+            "list_notes",
+            "list_schedules",
+            "list_ops",
+            "add_note",
+            "add_todo",
+            "add_schedule",
+            "add_op",
+            "toggle_item",
+            "toggle_op",
+            "delete"
+          ],
+          "description": "Operation to perform."
         },
-        "title": {
-          "type": "string",
-          "description": "Title for note/schedule"
-        },
-        "content": {
-          "type": "string",
-          "description": "Body content for note"
-        },
+        "title": {"type": "string", "description": "Title for note/schedule/op."},
+        "content": {"type": "string", "description": "Body content for a note."},
         "type": {
           "type": "string",
-          "description": "note/checklist for notes; type for schedules"
+          "description": "note/checklist for notes; schedule type (daily/weekly/once)."
         },
         "items": {
           "type": "array",
-          "items": {
-            "type": "object"
-          },
-          "description": "Checklist items [{text, done}]"
+          "items": {"type": "object"},
+          "description": "Checklist items [{text, done}] for add_todo, or note body items."
         },
-        "time": {
-          "type": "string",
-          "description": "Time for schedule (HH:MM)"
-        },
-        "day_of_week": {
-          "type": "string",
-          "description": "Day(s) for schedule"
-        },
-        "start_date": {
-          "type": "string",
-          "description": "Start date for schedule"
-        },
-        "note_id": {
-          "type": "string",
-          "description": "Note ID (prefix-matchable)"
-        },
-        "index": {
-          "type": "integer",
-          "description": "Checklist item index to toggle"
-        },
+        "time": {"type": "string", "description": "Time for schedule (HH:MM)."},
+        "day_of_week": {"type": "string", "description": "Day(s) for schedule."},
+        "start_date": {"type": "string", "description": "Start date for schedule."},
+        "description": {"type": "string", "description": "Description for a schedule."},
+        "note_id": {"type": "string", "description": "Note ID (prefix-matchable) for toggle_item."},
+        "index": {"type": "integer", "description": "Checklist item index to toggle.", "minimum": 0},
         "kind": {
           "type": "string",
-          "description": "notes/schedules/ops for delete"
+          "enum": ["notes", "schedules", "ops"],
+          "description": "Which collection to delete from."
         },
-        "id": {
-          "type": "string",
-          "description": "Entry ID to delete"
-        },
-        "all": {
-          "type": "boolean",
-          "description": "List all entries"
-        }
+        "id": {"type": "string", "description": "Entry ID to delete."},
+        "all": {"type": "boolean", "description": "List all entries (including archived)."},
+        "name": {"type": "string", "description": "Name for an op (add_op)."},
+        "prompt": {"type": "string", "description": "Prompt text for an op (add_op)."},
+        "model": {"type": "string", "description": "Model override for an op."},
+        "cron": {"type": "string", "description": "Cron expression for an op."},
+        "policy": {"type": "string", "description": "Execution policy for an op."},
+        "enabled": {"type": "boolean", "description": "Whether an op is enabled."},
+        "op_id": {"type": "string", "description": "Op ID for toggle_op."}
       },
-      "required": [
-        "action"
+      "required": ["action"],
+      "oneOf": [
+        {"properties": {"action": {"const": "list_notes"}}, "required": ["action"]},
+        {"properties": {"action": {"const": "list_schedules"}}, "required": ["action"]},
+        {"properties": {"action": {"const": "list_ops"}}, "required": ["action"]},
+        {"properties": {"action": {"const": "add_note"}}, "required": ["action", "title"]},
+        {"properties": {"action": {"const": "add_todo"}}, "required": ["action", "title", "items"]},
+        {"properties": {"action": {"const": "add_schedule"}}, "required": ["action", "title", "time"]},
+        {"properties": {"action": {"const": "add_op"}}, "required": ["action", "name", "prompt"]},
+        {"properties": {"action": {"const": "toggle_item"}}, "required": ["action", "note_id", "index"]},
+        {"properties": {"action": {"const": "toggle_op"}}, "required": ["action", "op_id"]},
+        {"properties": {"action": {"const": "delete"}}, "required": ["action", "kind", "id"]}
       ]
     }
   }

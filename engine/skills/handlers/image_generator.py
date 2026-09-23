@@ -298,6 +298,39 @@ def handle_generate_image(
     model = attrs.get("model", "@cf/black-forest-labs/flux-1-schnell")
     provider_pref = attrs.get("provider", "auto")
 
+    # Per-provider model IDs are disjoint namespaces — a Cloudflare ID sent to
+    # Puter (or vice versa) fails deep in the provider call with a cryptic error.
+    # Catch it here and substitute the provider's default instead.
+    _PROVIDER_MODEL_PREFIX: dict[str, str] = {
+        "cloudflare": "@cf/",
+        "puter": "openai/",
+        "pollinations": "",  # plain names: flux, turbo
+        "perchance": "",     # model ignored
+        "dreamforge": "",    # model ignored
+        "advanced-sdxl": "",  # model ignored
+    }
+    _PROVIDER_DEFAULT_MODEL: dict[str, str] = {
+        "cloudflare": "@cf/black-forest-labs/flux-1-schnell",
+        "puter": "openai/gpt-image-1-mini",
+        "pollinations": "flux",
+    }
+    if provider_pref in _PROVIDER_MODEL_PREFIX and provider_pref in _PROVIDER_DEFAULT_MODEL:
+        expected_prefix = _PROVIDER_MODEL_PREFIX[provider_pref]
+        # Only reject when the model clearly belongs to another provider
+        looks_foreign = (
+            (expected_prefix and not model.startswith(expected_prefix))
+            or (not expected_prefix and ("/" in model or model.startswith("@")))
+        )
+        if looks_foreign:
+            fallback = _PROVIDER_DEFAULT_MODEL[provider_pref]
+            yield _output_event(
+                tag_id,
+                f"⚠ model {model!r} is not valid for provider '{provider_pref}' "
+                f"— using default {fallback!r}\n",
+                "stderr",
+            )
+            model = fallback
+
     try:
         seed = int(seed_str)
     except (ValueError, TypeError):

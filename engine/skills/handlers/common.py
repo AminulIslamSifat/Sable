@@ -62,14 +62,6 @@ def safe_under(base: Path, raw: str) -> Path:
 
 
 
-# --- SSD tree write guard ---
-def is_ssd_tree_write(path: str) -> bool:
-    """Return True if the resolved path falls inside the SSD live tree."""
-    from engine.config import SSD_TREE
-    resolved = str(Path(path).resolve()) if not os.path.isabs(path) else path
-    return resolved.startswith(SSD_TREE)
-
-
 def strip_html(text: str) -> str:
     """Remove HTML tags and unescape entities."""
     return html_lib.unescape(re.sub(r"<[^>]+>", "", text)).strip()

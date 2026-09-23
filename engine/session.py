@@ -304,8 +304,15 @@ class BrowserManager:
             return False
         return True
 
+    _start_failed: bool = False
+
     async def start(self):
         """Lazy-starts the browser context and page if not already running."""
+        if self._start_failed:
+            raise RuntimeError(
+                f"Browser start previously failed for {self.user_data_dir}. "
+                f"Re-login via browser_opener.py or delete the profile directory."
+            )
         if self.playwright and self.context:
             return
         if not self._check_profile_lock():
@@ -315,8 +322,11 @@ class BrowserManager:
             raise RuntimeError(
                 f"Browser profile locked by a live process: {self.user_data_dir}"
             )
+        import traceback as _tb
         launch_num = _increment_playwright_counter()
         print(f"[DEBUG] Launching persistent browser context #{launch_num} (headless={self.headless})...")
+        _caller = _tb.extract_stack()[-2]
+        print(f"[CALLER] start() #{launch_num} from {_caller.filename}:{_caller.lineno} in {_caller.name}")
         from playwright.async_api import async_playwright
         from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
         try:
@@ -368,7 +378,9 @@ class BrowserManager:
             except Exception as exc:
                 print(f"[WARN] Aliyun OSS SDK load failed (non-fatal): {exc}")
         except Exception:
-            # Reset state so a subsequent retry doesn't see a half-initialized manager
+            # Mark as permanently failed so callers can't loop on this profile.
+            # One failure = done. Re-login or delete the profile to recover.
+            self._start_failed = True
             await self.close()
             raise
 
@@ -376,6 +388,7 @@ class BrowserManager:
         """Close and relaunch the browser with an optional new headless flag."""
         if headless is not None:
             self.headless = headless
+        self._start_failed = False
         await self.close()
         await self.start()
 

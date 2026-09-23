@@ -89,6 +89,13 @@ def handle_ask_user(
         yield end_event(tag_id, name, ok=False, started=started, error=str(exc))
         return
 
+    # Enforce the 'Other' escape hatch rather than trusting the model to add it.
+    # Models drop it constantly; the UI needs a manual-entry path regardless.
+    _OTHER = "Other (type manually)"
+    if not any(o.strip().lower().startswith("other") for o in options):
+        options.append(_OTHER)
+    options = options[:8]
+
     payload = {
         "question": question,
         "options": options,
@@ -96,8 +103,11 @@ def handle_ask_user(
     }
     if default is not None:
         try:
-            payload["default"] = int(default)
-        except ValueError:
+            idx = int(default)
+            # Bounds-check against the FINAL option list (Other may have been appended)
+            if 0 <= idx < len(options):
+                payload["default"] = idx
+        except (ValueError, TypeError):
             pass
 
     out = output_event(tag_id, json.dumps(payload, ensure_ascii=False))

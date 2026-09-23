@@ -1,4 +1,3 @@
-
 """Tool discovery and schema loading with core/outer tier support.
 
 Core tools: full schema always loaded into context.
@@ -6,11 +5,13 @@ Outer tools: only name + description loaded; full schema fetched on demand via l
 
 Tier is declared per-tool-folder in a manifest.json file:
   {"tier": "core"} or {"tier": "outer"}
-If no manifest.json exists, defaults to "core" for backward compatibility.
+A missing manifest defaults to "outer" — the CHEAP direction — so accidentally
+adding a tool can never silently bloat every prompt with a full schema.
+tools/validate.py flags missing manifests as an error so CI still catches them.
 
-Scans the tools/ directory for tool.json manifests (flat arrays of
-OpenAI-compatible function definitions) and provides schema data for
-API endpoints and instruction injection.
+Discovery results are cached in-process so repeated schema lookups during a
+single chat turn do not re-glob and re-parse the tools/ tree.  Call
+``reload_tools()`` after adding/removing a tool at runtime.
 """
 
 from __future__ import annotations
@@ -18,7 +19,9 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,16 @@ _ALWAYS_CORE = frozenset({
     "chat_title", "file_uploader",
 })
 
+# Valid tier values
+_TIERS = frozenset({"core", "outer"})
+
+# Default when a tool folder has no manifest.json. "outer" is the safe choice:
+# a forgotten manifest costs a lazy load, not permanent context bloat.
+_DEFAULT_TIER = "outer"
+
+# Fields every function definition in tool.json must carry
+_REQUIRED_FN_FIELDS = ("name", "description")
+
 
 @dataclass(slots=True)
 class ToolMeta:
@@ -40,58 +53,115 @@ class ToolMeta:
     tier: str = "core"  # "core" or "outer"
 
 
+# ─── Manifest parsing ────────────────────────────────────────────────────────
+
 def _read_tier(tool_dir: Path) -> str:
-    """Read tier from manifest.json, default to 'core'."""
+    """Read tier from manifest.json. Missing/invalid -> 'outer' (the cheap, safe default)."""
     manifest = tool_dir / "manifest.json"
-    if manifest.exists():
-        try:
-            data = json.loads(manifest.read_text(encoding="utf-8"))
-            tier = data.get("tier", "core").lower()
-            if tier in ("core", "outer"):
-                return tier
-        except (json.JSONDecodeError, OSError):
-            pass
-    return "core"
+    if not manifest.exists():
+        logger.warning("No manifest.json in %s — defaulting to '%s'", tool_dir, _DEFAULT_TIER)
+        return _DEFAULT_TIER
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Invalid manifest.json at %s: %s", manifest, exc)
+        return _DEFAULT_TIER
+    if not isinstance(data, dict):
+        logger.warning("manifest.json is not an object: %s", manifest)
+        return _DEFAULT_TIER
+    tier = str(data.get("tier", _DEFAULT_TIER)).lower()
+    if tier not in _TIERS:
+        logger.warning("Unknown tier '%s' in %s, defaulting to '%s'", tier, manifest, _DEFAULT_TIER)
+        return _DEFAULT_TIER
+    return tier
 
 
-def discover_tools(tools_dir: Path | None = None) -> list[ToolMeta]:
-    """Scan tools_dir for tool.json files (flat arrays) and parse them."""
-    if tools_dir is None:
-        tools_dir = _TOOLS_DIR
+def _validate_function(fn: Any, manifest_path: Path) -> dict | None:
+    """Validate a single function definition. Returns a normalized dict or None."""
+    if not isinstance(fn, dict):
+        logger.warning("Non-object entry in %s: %r", manifest_path, fn)
+        return None
+
+    missing = [f for f in _REQUIRED_FN_FIELDS if not fn.get(f)]
+    if missing:
+        logger.warning("Entry in %s missing %s: %r", manifest_path, missing, fn.get("name"))
+        return None
+
+    name = fn["name"]
+    if not isinstance(name, str) or not name.strip():
+        logger.warning("Invalid tool name in %s: %r", manifest_path, name)
+        return None
+
+    params = fn.get("parameters")
+    if params is None:
+        params = {"type": "object", "properties": {}}
+    elif not isinstance(params, dict):
+        logger.warning("Invalid 'parameters' for %s in %s (expected object)", name, manifest_path)
+        params = {"type": "object", "properties": {}}
+
+    return {
+        "name": name,
+        "description": fn.get("description", ""),
+        "parameters": params,
+    }
+
+
+# ─── Discovery (cached) ──────────────────────────────────────────────────────
+
+@lru_cache(maxsize=1)
+def _discover_cached(tools_dir_str: str) -> tuple[ToolMeta, ...]:
+    """Cached discovery keyed by directory path. Returns an immutable tuple."""
+    tools_dir = Path(tools_dir_str)
     if not tools_dir.is_dir():
         logger.error("Tools directory does not exist: %s", tools_dir)
-        return []
+        return ()
 
     tools: list[ToolMeta] = []
     for manifest_path in sorted(tools_dir.glob("*/tool.json")):
         try:
             raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning("Failed to parse %s: %s", manifest_path, e)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Failed to parse %s: %s", manifest_path, exc)
             continue
 
-        # tool.json is a flat array of function definitions
         if not isinstance(raw, list):
             logger.warning("tool.json is not an array: %s", manifest_path)
             continue
 
+        functions = [f for f in (_validate_function(fn, manifest_path) for fn in raw) if f]
+        if not functions:
+            logger.warning("No valid functions in %s — skipping group", manifest_path)
+            continue
+
         key = manifest_path.parent.name
         tier = _read_tier(manifest_path.parent)
-        # Safety net: some tools must always be core
         if key in _ALWAYS_CORE:
             tier = "core"
 
-        meta = ToolMeta(
+        tools.append(ToolMeta(
             key=key,
-            functions=raw,
+            functions=functions,
             dir_path=manifest_path.parent,
             tier=tier,
-        )
-        tools.append(meta)
+        ))
 
-    logger.info("Discovered %d tool groups (%d functions)", len(tools), sum(len(t.functions) for t in tools))
-    return tools
+    total_fns = sum(len(t.functions) for t in tools)
+    logger.info("Discovered %d tool groups (%d functions)", len(tools), total_fns)
+    return tuple(tools)
 
+
+def discover_tools(tools_dir: Path | None = None) -> list[ToolMeta]:
+    """Return discovered tool groups (cached). Returns a fresh list per call."""
+    key = str((tools_dir or _TOOLS_DIR).resolve())
+    return list(_discover_cached(key))
+
+
+def reload_tools() -> None:
+    """Invalidate the discovery cache. Call after adding/removing a tool at runtime."""
+    _discover_cached.cache_clear()
+
+
+# ─── Public schema helpers ───────────────────────────────────────────────────
 
 def list_tools() -> list[dict]:
     """Return tool summaries for the /api/tools endpoint."""
@@ -103,15 +173,16 @@ def list_tools() -> list[dict]:
 
 def browse_tools() -> list[dict]:
     """Return detailed tool info for the /api/tools/browse endpoint."""
-    result = []
-    for t in discover_tools():
-        result.append({
+    return [
+        {
             "key": t.key,
             "name": t.key.replace("_", " ").title(),
             "tools": t.functions,
             "path": str(t.dir_path),
-        })
-    return result
+            "tier": t.tier,
+        }
+        for t in discover_tools()
+    ]
 
 
 def get_all_tool_schemas(
@@ -127,7 +198,7 @@ def get_all_tool_schemas(
         tier: "core" = only core, "outer" = only outer, None = all.
     """
     disabled = disabled or []
-    schemas = []
+    schemas: list[dict] = []
     for t in discover_tools():
         if t.key in disabled:
             continue
@@ -154,7 +225,7 @@ def get_outer_tool_stubs(disabled: list[str] | None = None) -> list[dict]:
     and can request full schemas via load_tool.
     """
     disabled = disabled or []
-    stubs = []
+    stubs: list[dict] = []
     for t in discover_tools():
         if t.key in disabled or t.tier != "outer":
             continue
@@ -164,10 +235,7 @@ def get_outer_tool_stubs(disabled: list[str] | None = None) -> list[dict]:
                 "function": {
                     "name": fn["name"],
                     "description": fn.get("description", "") + " [OUTER: use load_tool to activate]",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {},
-                    },
+                    "parameters": {"type": "object", "properties": {}},
                 },
             })
     return stubs
@@ -196,7 +264,7 @@ def load_single_tool(tool_name: str) -> list[dict] | None:
 def list_outer_tools(disabled: list[str] | None = None) -> list[dict]:
     """Return summary of available outer tools for the load_tool description."""
     disabled = disabled or []
-    result = []
+    result: list[dict] = []
     for t in discover_tools():
         if t.key in disabled or t.tier != "outer":
             continue
@@ -218,13 +286,10 @@ def get_tools_prompt_section(
     Returns just the <tools>...</tools> block.
     """
     disabled = disabled or []
-    core_schemas = get_all_tool_schemas(disabled, tier="core")
-    outer_stubs = get_outer_tool_stubs(disabled)
+    all_schemas = get_all_tool_schemas(disabled, tier="core")
+    all_schemas.extend(get_outer_tool_stubs(disabled))
 
-    # Inject load_tool as a core tool
     load_tool_schema = _build_load_tool_schema(disabled)
-
-    all_schemas = core_schemas + outer_stubs
     if load_tool_schema:
         all_schemas.append(load_tool_schema)
 
@@ -232,10 +297,8 @@ def get_tools_prompt_section(
         return ""
 
     lines = ["<tools>"]
-    for s in all_schemas:
-        lines.append(json.dumps(s, ensure_ascii=False))
+    lines.extend(json.dumps(s, ensure_ascii=False) for s in all_schemas)
     lines.append("</tools>")
-
     return "\n".join(lines)
 
 

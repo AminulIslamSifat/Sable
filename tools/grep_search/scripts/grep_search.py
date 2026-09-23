@@ -19,6 +19,64 @@ ALLOWED_ROOTS = [
     Path("/tmp").resolve(),
 ]
 
+_IS_WINDOWS = os.name == "nt"
+
+
+def _no_window_kwargs() -> dict:
+    """Suppress the console window that Windows pops for console-subsystem
+    children of a GUI-subsystem parent. No-op on POSIX."""
+    if _IS_WINDOWS:
+        return {"creationflags": 0x08000000}  # CREATE_NO_WINDOW
+    return {}
+
+
+def _find_ripgrep() -> str | None:
+    r"""Locate the ripgrep binary.
+
+    Resolution order (first hit wins):
+      1. PATH                                — user already has rg
+      2. <project>/system/rg.exe             — bundled by start.ps1
+      3. %LOCALAPPDATA%\Programs\ripgrep\rg.exe — common manual install
+      4. WinGet package dir                   — winget install BurntSushi.ripgrep
+
+    Returns the full path, or None if ripgrep isn't available anywhere.
+    """
+    found = shutil.which("rg")
+    if found:
+        return found
+
+    if not _IS_WINDOWS:
+        return None
+
+    candidates: list[str] = []
+
+    # 2. project-local (where start.ps1 drops it)
+    candidates.append(str(_SCRIPT_PROJECT_ROOT / "system" / "rg.exe"))
+
+    # 3. standard manual install location
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    if local_appdata:
+        candidates.append(os.path.join(local_appdata, "Programs", "ripgrep", "rg.exe"))
+
+    for cand in candidates:
+        if os.path.isfile(cand):
+            return cand
+
+    # 4. WinGet — glob is kept as a last resort. The running process may hold a
+    #    stale PATH after winget installs, so the file can exist but not resolve.
+    if local_appdata:
+        for pattern in (
+            r"Microsoft\WinGet\Packages\BurntSushi.ripgrep*\rg.exe",
+            r"Microsoft\WinGet\Links\rg.exe",
+            r"Microsoft\WinGet\Packages\BurntSushi.ripgrep*\**\rg.exe",
+        ):
+            matches = _glob.glob(os.path.join(local_appdata, pattern), recursive=True)
+            for m in matches:
+                if os.path.isfile(m):
+                    return m
+
+    return None
+
 MAX_RESULTS_CAP = 200
 MAX_OUTPUT_CHARS = 25_000  # default output budget (~25k chars)
 LINE_TRUNCATE = 300        # per-line truncation
@@ -36,6 +94,91 @@ def validate_path(raw: str) -> Path:
     raise PermissionError(f"Path outside allowed roots: {p}")
 
 
+def _python_grep(pattern: str, root: Path, ignore_case: bool, glob_filter: str | None,
+                 excludes: list[str], max_results: int, full_output: bool) -> list[str]:
+    """Pure-Python grep fallback.
+
+    Used when ripgrep isn't available AND the system `grep` can't be trusted
+    (Windows has no `grep` at all). Slower than rg, but correct and portable.
+    """
+    try:
+        regex = re.compile(pattern, re.IGNORECASE if ignore_case else 0)
+    except re.error as exc:
+        return [f"Error: invalid regex '{pattern}': {exc}"]
+
+    # Mirrors ripgrep's practical behavior closely enough: junk dirs pruned,
+    # editor backup trees and .bak files skipped (rg ignores them via .gitignore).
+    _DEFAULT_SKIP_DIRS = {
+        "vendor", "node_modules", ".git", "__pycache__",
+        ".venv", "venv", "dist", "build", ".mypy_cache",
+        ".pytest_cache", ".ruff_cache", "target",
+        ".editor_tools_backups", ".sable_backups",
+    }
+    _DEFAULT_SKIP_SUFFIX = (
+        ".min.js", ".min.css", ".pyc", ".pyo", ".so", ".dll", ".exe",
+        ".bak", ".lock", ".zip", ".gz", ".tar",
+    )
+
+    skip_dirs = set(_DEFAULT_SKIP_DIRS)
+    skip_globs: list[str] = []
+    for excl in excludes:
+        if excl.endswith("/"):
+            skip_dirs.add(excl.rstrip("/"))
+        elif "*" in excl:
+            skip_globs.append(excl)
+        elif "." in excl:
+            skip_globs.append(excl)
+        else:
+            skip_dirs.add(excl)
+
+    results: list[str] = []
+    total_chars = 0
+    truncated = False
+    files_scanned = 0
+    _MAX_FILES = 20_000  # hard stop so a huge tree can't hang the turn
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        # prune skip dirs in-place so os.walk doesn't descend into them
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        for fname in filenames:
+            if any(fname.endswith(sfx) for sfx in _DEFAULT_SKIP_SUFFIX):
+                continue
+            if skip_globs and any(Path(fname).match(g) for g in skip_globs):
+                continue
+            if glob_filter and not Path(fname).match(glob_filter):
+                continue
+
+            files_scanned += 1
+            if files_scanned > _MAX_FILES:
+                results.append(f"[⚠️ Scanned {_MAX_FILES:,} files, stopping. Narrow the path for full results.]")
+                return results
+
+            fpath = Path(dirpath) / fname
+            try:
+                with fpath.open("r", encoding="utf-8", errors="replace") as fh:
+                    for lineno, line in enumerate(fh, 1):
+                        if len(results) >= max_results:
+                            return results
+                        text = line.rstrip("\n")
+                        if not regex.search(text):
+                            continue
+                        if len(text) > LINE_TRUNCATE:
+                            text = text[:LINE_TRUNCATE] + "…"
+                        entry = f"{fpath}:{lineno}:{text}"
+                        if not full_output and total_chars + len(entry) > MAX_OUTPUT_CHARS:
+                            truncated = True
+                            break
+                        total_chars += len(entry)
+                        results.append(entry)
+                if truncated:
+                    results.append(f"[⚠️ Output truncated at {total_chars:,} chars. Use full=\"true\" to get all results.]")
+                    return results
+            except (OSError, UnicodeError):
+                continue
+
+    return results
+
+
 def cmd_grep(args: dict) -> list[str]:
     pattern = args.get("pattern", "")
     if not pattern:
@@ -50,51 +193,41 @@ def cmd_grep(args: dict) -> list[str]:
     extra_excludes = [e.strip() for e in exclude_raw.split(",") if e.strip()] if exclude_raw else []
 
     # Try ripgrep first
-    rg = shutil.which("rg")
-    if not rg and os.name == "nt":
-        # ponytail: WinGet fallback — running process may have stale PATH
-        winget_matches = _glob.glob(os.path.expandvars(
-            r"%LOCALAPPDATA%\Microsoft\WinGet\Packages\BurntSushi.ripgrep*\rg.exe"
-        ))
-        if winget_matches:
-            rg = winget_matches[0]
-    if rg:
-        cmd = [rg, "--json", "--max-count=1", f"--max-count={max_results}"]
-        if ignore_case:
-            cmd.append("-i")
-        # Default exclusions for junk dirs/files
-        for excl in ("vendor/", "node_modules/", "*.min.js", "*.min.css", ".git/"):
-            cmd.extend(["--glob", f"!{excl}"])
-        # User-specified exclusions
-        for excl in extra_excludes:
-            cmd.extend(["--glob", f"!{excl}"])
-        if glob_filter:
-            cmd.extend(["--glob", glob_filter])
-        cmd.extend([pattern, str(search_path)])
-    else:
-        # Fallback to grep -rn
-        cmd = ["grep", "-rn", "--max-count=1"]
-        if ignore_case:
-            cmd.append("-i")
-        default_excl_dirs = ["vendor", "node_modules"]
-        default_excl_files = ["*.min.js", "*.min.css"]
-        for excl in extra_excludes:
-            if excl.endswith("/"):
-                default_excl_dirs.append(excl.rstrip("/"))
-            elif "*" in excl or "." in excl:
-                default_excl_files.append(excl)
-            else:
-                default_excl_dirs.append(excl)
-        for d in default_excl_dirs:
-            cmd.append(f"--exclude-dir={d}")
-        for f in default_excl_files:
-            cmd.append(f"--exclude={f}")
-        if glob_filter:
-            cmd.extend(["--include", glob_filter])
-        cmd.extend([pattern, str(search_path)])
+    rg = _find_ripgrep()
+
+    # No ripgrep? Use the pure-Python walker.
+    #
+    # NOTE: this deliberately does NOT shell out to `grep -rn`. Windows has no
+    # `grep` binary, so the old fallback silently returned zero matches on every
+    # Windows box without ripgrep — the worst possible failure mode (looks like
+    # "no results" instead of "tool missing"). The Python path works everywhere.
+    if not rg:
+        py_results = _python_grep(
+            pattern, search_path, ignore_case, glob_filter,
+            extra_excludes, max_results, full_output,
+        )
+        if not py_results:
+            return [f"No matches found for '{pattern}' in {search_path}"]
+        return py_results
+
+    cmd = [rg, "--json", f"--max-count={max_results}"]
+    if ignore_case:
+        cmd.append("-i")
+    # Default exclusions for junk dirs/files
+    for excl in ("vendor/", "node_modules/", "*.min.js", "*.min.css", ".git/"):
+        cmd.extend(["--glob", f"!{excl}"])
+    # User-specified exclusions
+    for excl in extra_excludes:
+        cmd.extend(["--glob", f"!{excl}"])
+    if glob_filter:
+        cmd.extend(["--glob", glob_filter])
+    cmd.extend([pattern, str(search_path)])
 
     try:
-        proc = subprocess.run(cmd, capture_output=True, encoding="utf-8", timeout=30)
+        proc = subprocess.run(
+            cmd, capture_output=True, encoding="utf-8",
+            errors="replace", timeout=30, **_no_window_kwargs(),
+        )
     except subprocess.TimeoutExpired:
         return ["Error: search timed out after 30s"]
     except Exception as e:
@@ -105,43 +238,29 @@ def cmd_grep(args: dict) -> list[str]:
     truncated = False
     total_match_count = 0
 
-    if rg:
-        # Parse ripgrep JSON lines
-        for line in proc.stdout.splitlines():
-            if len(lines) >= max_results:
-                break
-            try:
-                obj = json.loads(line)
-                if obj.get("type") == "match":
-                    total_match_count += 1
-                    data = obj["data"]
-                    path = data["path"]["text"]
-                    line_num = data["line_number"]
-                    text = data["lines"]["text"].rstrip("\n")
-                    if len(text) > LINE_TRUNCATE:
-                        text = text[:LINE_TRUNCATE] + "…"
-                    entry = f"{path}:{line_num}:{text}"
-                    # Check output budget
-                    if not full_output and total_chars + len(entry) > MAX_OUTPUT_CHARS:
-                        truncated = True
-                        break
-                    total_chars += len(entry)
-                    lines.append(entry)
-            except (json.JSONDecodeError, KeyError):
-                continue
-    else:
-        # grep output is already file:line:match
-        for line in proc.stdout.splitlines():
-            if len(lines) >= max_results:
-                break
-            total_match_count += 1
-            if len(line) > LINE_TRUNCATE:
-                line = line[:LINE_TRUNCATE] + "…"
-            if not full_output and total_chars + len(line) > MAX_OUTPUT_CHARS:
-                truncated = True
-                break
-            total_chars += len(line)
-            lines.append(line)
+    # Parse ripgrep JSON lines
+    for line in proc.stdout.splitlines():
+        if len(lines) >= max_results:
+            break
+        try:
+            obj = json.loads(line)
+            if obj.get("type") == "match":
+                total_match_count += 1
+                data = obj["data"]
+                path = data["path"]["text"]
+                line_num = data["line_number"]
+                text = data["lines"]["text"].rstrip("\n")
+                if len(text) > LINE_TRUNCATE:
+                    text = text[:LINE_TRUNCATE] + "…"
+                entry = f"{path}:{line_num}:{text}"
+                # Check output budget
+                if not full_output and total_chars + len(entry) > MAX_OUTPUT_CHARS:
+                    truncated = True
+                    break
+                total_chars += len(entry)
+                lines.append(entry)
+        except (json.JSONDecodeError, KeyError):
+            continue
 
     if truncated:
         lines.append(f"[⚠️ Output truncated at {total_chars:,} chars ({len(lines)}/{total_match_count} matches shown). Use full=\"true\" to get all results.]")

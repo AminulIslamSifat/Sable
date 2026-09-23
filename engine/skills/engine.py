@@ -18,6 +18,7 @@ from engine.skills.middleware import (
     ExecutionMiddleware,
     LoggingMiddleware,
     MiddlewarePipeline,
+    SchemaValidationMiddleware,
     TagContext,
     ValidationMiddleware,
 )
@@ -73,6 +74,7 @@ class SkillEngine:
         self._pipeline = MiddlewarePipeline([
             ValidationMiddleware(self._tag_ownership, set(handlers.keys())),
             SecurityMiddleware(),
+            SchemaValidationMiddleware(),
             ExecutionMiddleware(handlers),
             LoggingMiddleware(),
         ])

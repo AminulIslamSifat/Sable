@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import json
+import os
+import re
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -30,6 +32,11 @@ from engine.skills.handlers.common import (
 # Module-level background job store (replaces old global BG_JOBS)
 BG_JOBS: dict[int, dict[str, Any]] = {}
 
+# Command policy patterns — compiled once at import.
+_SABLE_SERVICE_RE = re.compile(r"systemctl\s+(--user\s+)?(restart|stop)\s+sable\.service")
+_GIT_CHECKOUT_RE = re.compile(r"\bgit\s+checkout\b")
+_SUDO_TOKEN_RE = re.compile(r"(?<![\w-])sudo(?![\w-])")
+
 
 def handle_execute_command(
     tag_id: str, name: str, attrs: dict[str, str], content: str
@@ -42,54 +49,39 @@ def handle_execute_command(
     started = time.time()
     cmd = content.strip()
 
+    # Working directory: explicit cwd= wins, else the user's home.
+    run_cwd = attrs.get("cwd", "").strip()
+    if run_cwd:
+        run_cwd = os.path.expandvars(os.path.expanduser(run_cwd))
+    else:
+        run_cwd = str(home_dir())
+
+    # Extra environment variables (JSON object string, merged over inherited env).
+    run_env: dict[str, str] | None = None
+    _env_raw = attrs.get("env", "").strip()
+    if _env_raw:
+        try:
+            _parsed = json.loads(_env_raw) if _env_raw.startswith("{") else None
+            if isinstance(_parsed, dict):
+                run_env = {**os.environ, **{str(k): str(v) for k, v in _parsed.items()}}
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    from engine.config import USER_NAME
+
     # Block agent-issued restart/stop of sable.service (user can still do it manually)
-    import re as _re
-    from engine.config import SSD_TREE, HDD_TREE, USER_NAME
-    if _re.search(r'systemctl\s+(--user\s+)?(restart|stop)\s+sable\.service', cmd):
+    if _SABLE_SERVICE_RE.search(cmd):
         msg = f"[BLOCKED] Agent cannot restart/stop sable.service mid-session.\nAsk {USER_NAME} to run it manually in a terminal.\n"
         yield _output_event(tag_id, msg, "stderr")
         yield _end_event(tag_id, name, False, started, error="Blocked: sable.service restart not allowed via execute_command")
         return
 
     # Block git checkout universally — destroys uncommitted work
-    if _re.search(r'\bgit\s+checkout\b', cmd):
+    if _GIT_CHECKOUT_RE.search(cmd):
         msg = f"[BLOCKED] git checkout is not allowed. It destroys uncommitted working changes.\nIf you need to revert, ask {USER_NAME} first or use targeted file restoration.\n"
         yield _output_event(tag_id, msg, "stderr")
         yield _end_event(tag_id, name, False, started, error="Blocked: git checkout not allowed")
         return
-
-    # --- SSD tree write guard ---
-    # Only allow reads and explicit cp from HDD tree (the sanctioned sync path).
-    _ssd_escaped = _re.escape(SSD_TREE)
-    _hdd_escaped = _re.escape(HDD_TREE)
-    _ssd_pattern = _re.compile(
-        rf'({_ssd_escaped}|~/Projects/Sable|\$PROJECT_ROOT)'
-    )
-    if _ssd_pattern.search(cmd):
-        # Reads ALWAYS pass. Only block destructive/code-overwriting ops.
-        # Sync (HDD->SSD copy) is always allowed — that's the sanctioned path.
-        _has_hdd = bool(_re.search(rf'({_hdd_escaped}|~/hdd/projects/Sable)', cmd))
-        _is_cp = bool(_re.search(r'(?:^|\s|;|&&|\|\||\|)\s*cp\b', cmd))
-        is_sync = _is_cp and _has_hdd
-        is_write = False
-        # 1. shell redirection INTO an SSD path  (> or >> or 2>)
-        if _re.search(rf'(>>?|2>)\s*["\']?({_ssd_escaped}|~/Projects/Sable)', cmd):
-            is_write = True
-        # 2. destructive / in-place-mutating verbs (mkdir excluded — safe, needed for sync)
-        _mutate = r'(?:^|\s|;|&&|\|\||\|)\s*(rm|mv|touch|tee|chmod|chown|truncate|shred|sed\s+-i|perl\s+-i)\b'
-        if _re.search(_mutate, cmd):
-            is_write = True
-        # 3. cp whose destination is SSD but source is NOT the HDD tree
-        if _is_cp and not _has_hdd:
-            is_write = True
-        # 4. git write verbs (add/commit/push/etc.)
-        if _re.search(r'\bgit\s+(add|commit|push|merge|rebase|reset|checkout|pull|clone|rm|mv)\b', cmd):
-            is_write = True
-        if is_write and not is_sync:
-            msg = f"[BLOCKED] Direct write to {SSD_TREE} is not allowed.\nEdit in {HDD_TREE} first, dont touch ssd Sable.\n"
-            yield _output_event(tag_id, msg, 'stderr')
-            yield _end_event(tag_id, name, False, started, error='Blocked: SSD tree write guard')
-            return
 
     editor_target = parse_editor_command(cmd)
     editor_chunks: list[str] = []
@@ -110,7 +102,13 @@ def handle_execute_command(
     # sudo is POSIX-only; skip injection on Windows
     use_sudo = (not IS_WINDOWS) and cmd.lstrip().startswith("sudo ")
     if use_sudo and "sudo -S" not in cmd:
-        cmd = cmd.replace("sudo", "sudo -S -p ''", 1)
+        # Replace only the first standalone `sudo` token (word-boundary safe)
+        cmd = _SUDO_TOKEN_RE.sub("sudo -S -p ''", cmd, count=1)
+
+    if not os.path.isdir(run_cwd):
+        yield _output_event(tag_id, f"Working directory not found: {run_cwd}\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error=f"cwd not found: {run_cwd}")
+        return
 
     proc = subprocess.Popen(
         cmd,
@@ -120,7 +118,8 @@ def handle_execute_command(
         stdin=subprocess.PIPE if use_sudo else subprocess.DEVNULL,
         text=True,
         errors="replace",
-        cwd=home_dir(),
+        cwd=run_cwd,
+        env=run_env,
         **popen_kwargs(),
     )
 
@@ -277,11 +276,21 @@ def handle_check_command(
         from engine.platform_paths import tmp_path, pid_exists
         log_path = Path(info.get("log", str(tmp_path(f"ghost_bg_{pid}.log"))))
         running = pid_exists(pid)
+
+        # Optional tail line-count limit
+        try:
+            tail_lines = int(attrs.get("tail", "0") or 0)
+        except (TypeError, ValueError):
+            tail_lines = 0
+
         tail = ""
         if log_path.exists():
             try:
                 data = log_path.read_text(errors="replace")
-                tail = data[-RESULT_PREVIEW_CHARS:]
+                if tail_lines > 0:
+                    tail = "\n".join(data.splitlines()[-tail_lines:])
+                else:
+                    tail = data[-RESULT_PREVIEW_CHARS:]
             except Exception as exc:
                 tail = f"Could not read log: {exc}"
         if not tail:
@@ -318,4 +327,51 @@ def handle_check_command(
             f"{job_pid} [{info['status']}] {info.get('command', '')} -> {info.get('log', '')}\n",
         )
     yield _end_event(tag_id, name, True, started, {"jobs": jobs})
-#
+
+
+def handle_kill_command(
+    tag_id: str, name: str, attrs: dict[str, str], content: str
+) -> Generator[dict[str, Any], None, None]:
+    """Terminate a background job started with bg=true, killing its process group."""
+    started = time.time()
+    pid_raw = attrs.get("pid") or content.strip()
+    try:
+        pid = int(pid_raw)
+    except (TypeError, ValueError):
+        yield _output_event(tag_id, "Missing or invalid 'pid'\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Missing pid")
+        return
+
+    if pid <= 0:
+        yield _output_event(tag_id, "Invalid pid\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Invalid pid")
+        return
+
+    from engine.platform_paths import pid_exists
+
+    if not pid_exists(pid):
+        info = BG_JOBS.pop(pid, None)
+        yield _output_event(tag_id, f"Process {pid} is not running" + (" (removed from job list)\n" if info else "\n"))
+        yield _end_event(tag_id, name, True, started, {"pid": pid, "killed": False, "reason": "not running"})
+        return
+
+    sig_name = (attrs.get("signal") or "TERM").upper()
+    import signal as _signal
+    sig = _signal.SIGKILL if sig_name == "KILL" else _signal.SIGTERM
+
+    from engine.process_utils import kill_process_tree
+
+    try:
+        kill_process_tree(pid, sig=sig)
+    except Exception as exc:
+        yield _output_event(tag_id, f"Failed to kill {pid}: {exc}\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error=str(exc))
+        return
+
+    info = BG_JOBS.get(pid)
+    if info is not None:
+        info["status"] = "killed"
+    BG_JOBS.pop(pid, None)
+
+    yield _output_event(tag_id, f"Sent SIG{sig_name} to process group {pid}\n")
+    yield _end_event(tag_id, name, True, started, {"pid": pid, "killed": True, "signal": sig_name})

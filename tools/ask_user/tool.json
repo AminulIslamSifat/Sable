@@ -1,34 +1,32 @@
 [
   {
     "name": "ask_user",
-    "description": "Ask the user a structured question with selectable options.",
+    "description": "Ask the user a structured question with selectable options. Use when you need a decision from the user before proceeding.",
     "parameters": {
       "type": "object",
       "properties": {
         "question": {
           "type": "string",
-          "description": "Clear question to ask the user"
+          "description": "Clear question to ask the user."
         },
         "options": {
           "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "JSON array of 2-8 choices. Last must be 'Other (type manually)'"
+          "items": {"type": "string"},
+          "minItems": 2,
+          "maxItems": 8,
+          "description": "2-8 choices. An 'Other (type manually)' option is appended automatically — do not add it yourself."
         },
         "multi": {
           "type": "boolean",
-          "description": "Allow multiple selections (default false)"
+          "description": "Allow multiple selections (default false)."
         },
         "default": {
           "type": "integer",
-          "description": "Pre-selected option index (0-based)"
+          "description": "Pre-selected option index (0-based). Must be < number of options.",
+          "minimum": 0
         }
       },
-      "required": [
-        "question",
-        "options"
-      ]
+      "required": ["question", "options"]
     }
   }
 ]

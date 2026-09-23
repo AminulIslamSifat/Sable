@@ -1,0 +1,20 @@
+[
+  {
+    "name": "mcp_list",
+    "description": "List connected MCP servers and the tools each one exposes, with parameter schemas. Use this before mcp_call to discover available servers and tools.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "server": {
+          "type": "string",
+          "description": "Only show tools for this server. Omit to list all connected servers."
+        },
+        "tool": {
+          "type": "string",
+          "description": "Only show this tool's full input schema across servers. Omit to list all tools."
+        }
+      },
+      "required": []
+    }
+  }
+]

@@ -34,44 +34,11 @@ def handle_load_tool(
         yield _end_event(tag_id, name, False, started, error=f"Unknown tool: {tool_name}")
         return
 
-    # For mcp_call, also include connected server tool listings
-    extra_info = ""
-    if tool_name == "mcp_call":
-        try:
-            from engine.mcp.manager import get_mcp_manager
-            mgr = get_mcp_manager()
-            connected = {
-                srv: conn for srv, conn in mgr._connections.items()
-                if conn.connected and conn.tools
-            }
-            if connected:
-                lines = ["\nConnected MCP servers and their tools:"]
-                for server_name, conn in connected.items():
-                    lines.append(f"\n### Server: `{server_name}`")
-                    for tool in conn.tools:
-                        desc = tool.get("description", "").strip()
-                        if len(desc) > 120:
-                            desc = desc[:117] + "..."
-                        schema_info = tool.get("inputSchema", {})
-                        props = schema_info.get("properties", {})
-                        required = schema_info.get("required", [])
-                        if props:
-                            params = []
-                            for pname, pinfo in props.items():
-                                req_mark = "*" if pname in required else ""
-                                ptype = pinfo.get("type", "any")
-                                params.append(f"{pname}{req_mark}: {ptype}")
-                            lines.append(f"- **{tool['name']}**({', '.join(params)})")
-                        else:
-                            lines.append(f"- **{tool['name']}**()")
-                        if desc:
-                            lines.append(f"  {desc}")
-                lines.append("\n> `*` = required param. Pass arguments as JSON in the tag body.")
-                extra_info = "\n".join(lines)
-        except Exception:
-            pass
-
-    # Return the full schema so the model can see parameters on next turn
+    # Return the full schema so the model can see parameters on next turn.
+    # MCP discovery lives in the dedicated mcp_list tool — no side-channel here.
     schema_json = json.dumps(schema, indent=2, ensure_ascii=False)
-    yield _output_event(tag_id, f"Loaded full schema for '{tool_name}':\n{schema_json}{extra_info}\n")
+    hint = ""
+    if tool_name == "mcp_call":
+        hint = "\n> Use `mcp_list` to discover connected servers and their tool schemas."
+    yield _output_event(tag_id, f"Loaded full schema for '{tool_name}':\n{schema_json}{hint}\n")
     yield _end_event(tag_id, name, True, started, {"loaded": tool_name, "schemas": schema})

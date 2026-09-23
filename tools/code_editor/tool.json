@@ -5,26 +5,12 @@
     "parameters": {
       "type": "object",
       "properties": {
-        "path": {
-          "type": "string",
-          "description": "File or directory path"
-        },
-        "start": {
-          "type": "integer",
-          "description": "Start line"
-        },
-        "end": {
-          "type": "integer",
-          "description": "End line"
-        },
-        "full": {
-          "type": "boolean",
-          "description": "Read entire file"
-        }
+        "path": {"type": "string", "description": "File or directory path"},
+        "start": {"type": "integer", "description": "Start line", "minimum": 1},
+        "end": {"type": "integer", "description": "End line", "minimum": 1},
+        "full": {"type": "boolean", "description": "Read entire file"}
       },
-      "required": [
-        "path"
-      ]
+      "required": ["path"]
     }
   },
   {
@@ -33,19 +19,21 @@
     "parameters": {
       "type": "object",
       "properties": {
-        "path": {
-          "type": "string",
-          "description": "File path"
-        },
+        "path": {"type": "string", "description": "File path"},
         "body": {
           "type": "string",
-          "description": "SEARCH/REPLACE block(s). Format: <<<<<<< SEARCH\\nold_code\\n=======\\nnew_code\\n>>>>>>> REPLACE. Multiple blocks separated by newlines. old_str must match exactly once in the file."
+          "description": "SEARCH/REPLACE block(s). Format: <<<<<<< SEARCH\nold_code\n=======\nnew_code\n>>>>>>> REPLACE. Multiple blocks separated by newlines. old_str must match exactly once in the file."
+        },
+        "replace_all": {
+          "type": "boolean",
+          "description": "Allow a SEARCH block to match multiple times and replace every occurrence. Default false (exactly-one match required)."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Validate the edit and report what would change without writing to disk. No backup is made. Default false."
         }
       },
-      "required": [
-        "path",
-        "body"
-      ]
+      "required": ["path", "body"]
     }
   },
   {
@@ -54,23 +42,15 @@
     "parameters": {
       "type": "object",
       "properties": {
-        "path": {
-          "type": "string",
-          "description": "File path to create"
-        },
-        "overwrite": {
+        "path": {"type": "string", "description": "File path to create"},
+        "content": {"type": "string", "description": "Full file content to write"},
+        "overwrite": {"type": "boolean", "description": "Overwrite if exists"},
+        "dry_run": {
           "type": "boolean",
-          "description": "Overwrite if exists"
-        },
-        "content": {
-          "type": "string",
-          "description": "Full file content to write"
+          "description": "Report what would be written without touching disk. Default false."
         }
       },
-      "required": [
-        "path",
-        "content"
-      ]
+      "required": ["path", "content"]
     }
   },
   {
@@ -79,27 +59,16 @@
     "parameters": {
       "type": "object",
       "properties": {
-        "path": {
-          "type": "string",
-          "description": "File path"
-        },
-        "at_line": {
-          "type": "integer",
-          "description": "Line number to insert before"
-        },
-        "after_str": {
-          "type": "string",
-          "description": "String to insert after"
-        },
-        "content": {
-          "type": "string",
-          "description": "Lines to insert"
+        "path": {"type": "string", "description": "File path"},
+        "content": {"type": "string", "description": "Lines to insert"},
+        "at_line": {"type": "integer", "description": "Line number to insert before (1-based). Mutually exclusive with after_str.", "minimum": 1},
+        "after_str": {"type": "string", "description": "Insert immediately after the first line containing this string. Mutually exclusive with at_line."},
+        "dry_run": {
+          "type": "boolean",
+          "description": "Report what would be inserted without touching disk. Default false."
         }
       },
-      "required": [
-        "path",
-        "content"
-      ]
+      "required": ["path", "content"]
     }
   },
   {
@@ -108,14 +77,8 @@
     "parameters": {
       "type": "object",
       "properties": {
-        "chat_id": {
-          "type": "string",
-          "description": "Filter by chat ID (omit for current chat)"
-        },
-        "limit": {
-          "type": "integer",
-          "description": "Max results to return (default 20)"
-        }
+        "chat_id": {"type": "string", "description": "Filter by chat ID (omit for current chat)"},
+        "limit": {"type": "integer", "description": "Max results to return (default 20)", "minimum": 1, "maximum": 200}
       },
       "required": []
     }
@@ -126,14 +89,9 @@
     "parameters": {
       "type": "object",
       "properties": {
-        "sha": {
-          "type": "string",
-          "description": "Commit SHA from list_checkpoints output"
-        }
+        "sha": {"type": "string", "description": "Commit SHA from list_checkpoints output"}
       },
-      "required": [
-        "sha"
-      ]
+      "required": ["sha"]
     }
   }
 ]

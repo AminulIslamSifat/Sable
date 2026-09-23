@@ -12,7 +12,6 @@ from collections.abc import Generator
 from typing import Any
 
 from engine.skills.handlers.common import (
-    is_ssd_tree_write,
     RESULT_PREVIEW_CHARS,
     _end_event,
     _output_event,
@@ -74,12 +73,6 @@ def handle_edit_file(
 
     path = os.path.expandvars(os.path.expanduser(path))
 
-    if is_ssd_tree_write(path):
-        from engine.config import SSD_TREE, HDD_TREE
-        yield _output_event(tag_id, f"[BLOCKED] Cannot edit files in {SSD_TREE} directly.\nEdit in {HDD_TREE} first, dont touch ssd Sable.\n", "stderr")
-        yield _end_event(tag_id, name, False, started, error="Blocked: SSD tree write guard")
-        return
-
     if not content.strip():
         yield _output_event(tag_id, "No SEARCH/REPLACE blocks in edit_file body\n", "stderr")
         yield _end_event(tag_id, name, False, started, error="Empty edit body")
@@ -124,12 +117,21 @@ def handle_create_file(
 
     path = os.path.expandvars(os.path.expanduser(path))
 
-    if is_ssd_tree_write(path):
-        from engine.config import SSD_TREE, HDD_TREE
-        yield _output_event(tag_id, f"[BLOCKED] Cannot edit files in {SSD_TREE} directly.\nEdit in {HDD_TREE} first, dont touch ssd Sable.\n", "stderr")
-        yield _end_event(tag_id, name, False, started, error="Blocked: SSD tree write guard")
-        return
     overwrite = attrs.get("overwrite", "").lower() in ("true", "1", "yes")
+    dry_run = attrs.get("dry_run", "").lower() in ("true", "1", "yes")
+
+    # dry_run: report intent without touching disk or taking a backup
+    if dry_run:
+        exists = os.path.exists(path)
+        action = "overwrite" if exists else "create"
+        would_fail = exists and not overwrite
+        msg = (
+            f"[dry_run] would {action} {path} ({len(content)} chars)"
+            + (" — BLOCKED: file exists and overwrite=false" if would_fail else "")
+        )
+        yield _output_event(tag_id, msg + "\n", "stderr" if would_fail else "stdout")
+        yield _end_event(tag_id, name, not would_fail, started, {"path": path, "dry_run": True, "would_fail": would_fail})
+        return
 
     backup_path = make_backup(path) if overwrite else None
 
@@ -166,12 +168,6 @@ def handle_insert_file(
 
     path = os.path.expandvars(os.path.expanduser(path))
 
-    if is_ssd_tree_write(path):
-        from engine.config import SSD_TREE, HDD_TREE
-        yield _output_event(tag_id, f"[BLOCKED] Cannot edit files in {SSD_TREE} directly.\nEdit in {HDD_TREE} first, dont touch ssd Sable.\n", "stderr")
-        yield _end_event(tag_id, name, False, started, error="Blocked: SSD tree write guard")
-        return
-
     at_line_raw = attrs.get("at_line") or attrs.get("at-line")
     after_str = attrs.get("after_str") or attrs.get("after-str")
     dry_run = attrs.get("dry_run", "").lower() in ("true", "1", "yes")
@@ -181,7 +177,19 @@ def handle_insert_file(
         yield _end_event(tag_id, name, False, started, error="Missing at_line or after_str")
         return
 
-    at_line = int(at_line_raw) if at_line_raw else None
+    # Reject the ambiguous both-given case instead of picking silently
+    if at_line_raw and after_str:
+        yield _output_event(tag_id, "Provide either at_line or after_str, not both\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="at_line and after_str are mutually exclusive")
+        return
+
+    try:
+        at_line = int(at_line_raw) if at_line_raw else None
+    except (TypeError, ValueError):
+        yield _output_event(tag_id, f"Invalid at_line: {at_line_raw!r}\n", "stderr")
+        yield _end_event(tag_id, name, False, started, error="Invalid at_line")
+        return
+
     backup_path = make_backup(path) if not dry_run else None
 
     try:
@@ -197,12 +205,12 @@ def handle_insert_file(
     output_trimmed = output[:RESULT_PREVIEW_CHARS]
     yield _output_event(tag_id, output_trimmed + "\n")
 
-    if ok:
+    if ok and not dry_run:
         file_event = build_file_edit_event(tag_id, "insert", path, output_trimmed, backup_path)
         if file_event is not None:
             yield file_event
 
-    yield _end_event(tag_id, name, ok, started, {"path": path}, None if ok else output_trimmed[:500])
+    yield _end_event(tag_id, name, ok, started, {"path": path, "dry_run": dry_run}, None if ok else output_trimmed[:500])
 
 
 def handle_list_checkpoints(

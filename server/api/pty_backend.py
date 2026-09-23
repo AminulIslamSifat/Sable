@@ -14,19 +14,21 @@ Public API:
 from __future__ import annotations
 
 import os
-import sys
 
-IS_WINDOWS = sys.platform == "win32"
+# Single source of truth lives in engine.platform_paths — re-export here so
+# terminal code has one import site without duplicating the platform logic.
+from engine.platform_paths import IS_WINDOWS, pick_shell as _pick_shell
 
 
 def pick_shell() -> str:
-    """Return the best available interactive shell for this platform."""
+    """Return the best available interactive shell for this platform.
+
+    Honors the SABLE_TERM_SHELL override before falling back to auto-detection.
+    """
     override = os.environ.get("SABLE_TERM_SHELL")
     if override and os.path.exists(override):
         return override
-
-    from engine.platform_paths import pick_shell as _pick
-    return _pick()
+    return _pick_shell()
 
 
 if IS_WINDOWS:

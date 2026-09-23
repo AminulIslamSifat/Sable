@@ -1,0 +1,20 @@
+[
+  {
+    "name": "create_note",
+    "description": "Create a markdown note in the notes directory. Accepts a filename and body content.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Note filename (relative to the notes dir). '.md' is appended if missing. Defaults to a timestamped name."
+        },
+        "content": {
+          "type": "string",
+          "description": "Markdown body of the note."
+        }
+      },
+      "required": ["content"]
+    }
+  }
+]

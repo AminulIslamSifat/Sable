@@ -8,7 +8,7 @@ from engine.skills.middleware import (
     ExecutionMiddleware,
     LoggingMiddleware,
     MiddlewarePipeline,
-    PermissionMiddleware,
+    SchemaValidationMiddleware,
     TagContext,
     ValidationMiddleware,
 )
@@ -28,7 +28,7 @@ __all__ = [
     "TagContext",
     "MiddlewarePipeline",
     "ValidationMiddleware",
-    "PermissionMiddleware",
+    "SchemaValidationMiddleware",
     "ExecutionMiddleware",
     "LoggingMiddleware",
     "build_tag_ownership",

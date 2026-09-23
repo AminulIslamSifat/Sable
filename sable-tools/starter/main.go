@@ -1,9 +1,18 @@
 // sable-starter — Blob A: compiled trust root that boots a vault.sable.
 //
-// v3 format: ONE master DEK from the cloud, per-file keys derived via
-// HKDF(master, "sable/v3/file/"+path). Each file carries its own nonce,
-// AEAD tag, and sha256. Brain/, instruction/, system/ are encrypted but
-// excluded from the hash check (they mutate at runtime).
+// v3 format: ONE master DEK from the bridge, per-file keys derived via
+// HKDF(master, "sable/v3/file/"+path). Brain/, instruction/, system/ are
+// encrypted but excluded from the hash check (they mutate at runtime).
+//
+// v4 format: same construction, but the HKDF salt is a KEK derived from the
+// user's passphrase via Argon2id. Every file key then needs BOTH the bridge
+// master DEK and the user passphrase.
+//
+// Trust root: the trusted Ed25519 signing pubkey is pinned at build time via
+//   go build -ldflags "-X main.trustedSignerHex=<64 hex chars>"
+// or via $SABLE_TRUSTED_SIGNER at runtime. The vault header's `signer` field
+// MUST match the pinned key — verifying against the header's own signer would
+// be self-signed and worthless.
 //
 // Per boot the master rotates: decrypt-under-A → re-encrypt-under-B → overwrite.
 // The bridge keeps a key history so a crash mid-boot still recovers.
@@ -17,6 +26,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -31,14 +41,36 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
+	"golang.org/x/crypto/pbkdf2"
+	"golang.org/x/term"
 )
 
 const (
-	magic         = "SABLEV03"
+	magicV3       = "SABLEV03"
+	magicV4       = "SABLEV04"
 	defaultBridge = "http://127.0.0.1:8765"
+
+	// v4 KDF parameters — MUST stay in lockstep with sable_crypto.py.
+	argon2Time   = 3
+	argon2MemKiB = 256 * 1024
+	argon2Lanes  = 4
+	kekLen       = 32
+
+	kdfArgon2   = "argon2id"
+	kdfPBKDF2   = "pbkdf2-sha256"
+	pbkdf2Iters = 600_000
 )
+
+// trustedSignerHex is injected at build time:
+//
+//	go build -ldflags "-X main.trustedSignerHex=<64 hex chars>"
+//
+// If empty, $SABLE_TRUSTED_SIGNER is consulted. If still empty, boot refuses
+// to start — a self-signed vault must never be accepted.
+var trustedSignerHex string
 
 type FileMeta struct {
 	Path   string `json:"path"`
@@ -91,13 +123,89 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(s[:])
 }
 
-func deriveFileKey(master []byte, path string) ([]byte, error) {
-	r := hkdf.New(sha256.New, master, nil, []byte("sable/v3/file/"+path))
+// ── Trusted signer resolution ──────────────────────────────────────────
+
+func resolveTrustedSigner() ([]byte, error) {
+	hexStr := trustedSignerHex
+	if hexStr == "" {
+		hexStr = os.Getenv("SABLE_TRUSTED_SIGNER")
+	}
+	if hexStr == "" {
+		return nil, errors.New(
+			"no trusted signer configured.\n" +
+				"  Build with:  go build -ldflags \"-X main.trustedSignerHex=<64 hex>\"\n" +
+				"  Or set:      SABLE_TRUSTED_SIGNER=<64 hex>")
+	}
+	key, err := hex.DecodeString(strings.TrimSpace(hexStr))
+	if err != nil {
+		return nil, fmt.Errorf("trusted signer is not valid hex: %w", err)
+	}
+	if len(key) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("trusted signer must be %d bytes, got %d", ed25519.PublicKeySize, len(key))
+	}
+	return key, nil
+}
+
+// ── Key derivation ─────────────────────────────────────────────────────
+
+func deriveFileKey(master []byte, path string, kek []byte) ([]byte, error) {
+	var salt []byte
+	if kek != nil {
+		salt = kek
+	}
+	r := hkdf.New(sha256.New, master, salt, []byte("sable/v3/file/"+path))
 	key := make([]byte, 32)
 	if _, err := io.ReadFull(r, key); err != nil {
 		return nil, err
 	}
 	return key, nil
+}
+
+func deriveKEK(passphrase string, salt []byte, kdf string) ([]byte, error) {
+	switch kdf {
+	case kdfArgon2:
+		return argon2.IDKey(
+			[]byte(passphrase), salt,
+			argon2Time, argon2MemKiB, argon2Lanes, kekLen,
+		), nil
+	case kdfPBKDF2:
+		return pbkdf2.Key([]byte(passphrase), salt, pbkdf2Iters, kekLen, sha256.New), nil
+	default:
+		return nil, fmt.Errorf("unknown KDF %q in vault header", kdf)
+	}
+}
+
+// ── Header / vault parsing ─────────────────────────────────────────────
+
+func vaultVersionFromMagic(magic string) (int, error) {
+	switch magic {
+	case magicV3:
+		return 3, nil
+	case magicV4:
+		return 4, nil
+	}
+	return 0, fmt.Errorf("not a sable vault (magic=%q)", magic)
+}
+
+func magicForVersion(v int) (string, error) {
+	switch v {
+	case 3:
+		return magicV3, nil
+	case 4:
+		return magicV4, nil
+	}
+	return "", fmt.Errorf("unsupported vault version %d", v)
+}
+
+// signedFieldList mirrors sable_crypto.SIGNED_FIELDS.
+func signedFieldList(v int) []string {
+	switch v {
+	case 3:
+		return []string{"v", "created", "alg", "manifest"}
+	case 4:
+		return []string{"v", "created", "alg", "key_hash", "salt", "kdf", "manifest"}
+	}
+	return nil
 }
 
 // canonicalJSON matches Python's json.dumps(v, sort_keys=True, separators=(",", ":")).
@@ -115,75 +223,115 @@ func canonicalJSON(v any) ([]byte, error) {
 	return b, nil
 }
 
-func readVault(path string) (headerRaw, body []byte, err error) {
+func readVault(path string) (version int, headerRaw, body []byte, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, err
+		return 0, nil, nil, err
 	}
 	if len(data) < 12 {
-		return nil, nil, fmt.Errorf("file too small to be a vault")
+		return 0, nil, nil, fmt.Errorf("file too small to be a vault")
 	}
-	if string(data[:8]) != magic {
-		return nil, nil, fmt.Errorf("not a sable v3 vault (magic=%q)", data[:8])
+	v, err := vaultVersionFromMagic(string(data[:8]))
+	if err != nil {
+		return 0, nil, nil, err
 	}
 	hlen := binary.BigEndian.Uint32(data[8:12])
 	if int(12+hlen) > len(data) {
-		return nil, nil, fmt.Errorf("header length overruns file")
+		return 0, nil, nil, fmt.Errorf("header length overruns file")
 	}
-	return data[12 : 12+hlen], data[12+hlen:], nil
+	return v, data[12 : 12+hlen], data[12+hlen:], nil
 }
 
-// verifyHeader checks the signature (over v/created/alg/manifest only) and
-// returns the full header map plus the typed manifest.
-func verifyHeader(raw []byte) (map[string]any, Manifest, error) {
+// verifyHeader checks that the header's `signer` matches the pinned trust root,
+// then verifies the Ed25519 signature against that pinned key over the
+// version-appropriate field set.
+func verifyHeader(raw []byte, trusted ed25519.PublicKey) (map[string]any, Manifest, int, error) {
 	var m Manifest
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var h map[string]any
 	if err := dec.Decode(&h); err != nil {
-		return nil, m, fmt.Errorf("header parse: %w", err)
+		return nil, m, 0, fmt.Errorf("header parse: %w", err)
 	}
+
+	// version
+	vNum, ok := h["v"].(json.Number)
+	if !ok {
+		return nil, m, 0, fmt.Errorf("header missing 'v'")
+	}
+	vInt, err := vNum.Int64()
+	if err != nil {
+		return nil, m, 0, fmt.Errorf("bad 'v' value: %w", err)
+	}
+	version := int(vInt)
+	fields := signedFieldList(version)
+	if fields == nil {
+		return nil, m, 0, fmt.Errorf("unsupported vault version %d", version)
+	}
+
+	// signature + signer fields
 	sigHex, _ := h["sig"].(string)
 	signerHex, _ := h["signer"].(string)
 	if sigHex == "" || signerHex == "" {
-		return nil, m, fmt.Errorf("header missing sig/signer")
+		return nil, m, 0, fmt.Errorf("header missing sig/signer")
 	}
 	sig, err := hex.DecodeString(sigHex)
 	if err != nil {
-		return nil, m, fmt.Errorf("bad sig hex: %w", err)
+		return nil, m, 0, fmt.Errorf("bad sig hex: %w", err)
 	}
 	signer, err := hex.DecodeString(signerHex)
 	if err != nil {
-		return nil, m, fmt.Errorf("bad signer hex: %w", err)
+		return nil, m, 0, fmt.Errorf("bad signer hex: %w", err)
 	}
 	if len(signer) != ed25519.PublicKeySize {
-		return nil, m, fmt.Errorf("signer key is %d bytes", len(signer))
+		return nil, m, 0, fmt.Errorf("signer key is %d bytes", len(signer))
 	}
-	// sig body: only v, created, alg, manifest
-	bodyMap := map[string]any{
-		"v":        h["v"],
-		"created":  h["created"],
-		"alg":      h["alg"],
-		"manifest": h["manifest"],
+
+	// ★ Pin: header signer MUST equal the build-time trusted key.
+	if !bytes.Equal(signer, trusted) {
+		return nil, m, 0, fmt.Errorf(
+			"vault signer %s does not match trusted key %s — refusing to boot",
+			shortHex(signer), shortHex(trusted))
+	}
+
+	// Build the signed body from the version's field list.
+	bodyMap := make(map[string]any, len(fields))
+	for _, k := range fields {
+		val, ok := h[k]
+		if !ok {
+			return nil, m, 0, fmt.Errorf("header missing signed field %q", k)
+		}
+		bodyMap[k] = val
 	}
 	body, err := canonicalJSON(bodyMap)
 	if err != nil {
-		return nil, m, fmt.Errorf("re-marshal header: %w", err)
+		return nil, m, 0, fmt.Errorf("re-marshal header: %w", err)
 	}
-	if !ed25519.Verify(ed25519.PublicKey(signer), body, sig) {
-		return nil, m, fmt.Errorf("manifest signature invalid — vault tampered with")
+	if !ed25519.Verify(trusted, body, sig) {
+		return nil, m, 0, fmt.Errorf("manifest signature invalid — vault tampered with")
 	}
+
 	manRaw, _ := json.Marshal(h["manifest"])
 	if err := json.Unmarshal(manRaw, &m); err != nil {
-		return nil, m, fmt.Errorf("manifest parse: %w", err)
+		return nil, m, 0, fmt.Errorf("manifest parse: %w", err)
 	}
-	return h, m, nil
+	return h, m, version, nil
 }
+
+func shortHex(b []byte) string {
+	s := hex.EncodeToString(b)
+	if len(s) > 16 {
+		return s[:16] + "…"
+	}
+	return s
+}
+
+// ── Bridge / cloud ─────────────────────────────────────────────────────
 
 func fetchCloudToken(cloud, vaultHash string) (string, error) {
 	body, _ := json.Marshal(map[string]string{"vault_hash": vaultHash})
-	url := strings.TrimRight(cloud, "/") + "/v1/token"
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	u := strings.TrimRight(cloud, "/") + "/v1/token"
+	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -270,9 +418,36 @@ func rotateForBoot(bridge, token, vaultHash string) ([]byte, string, error) {
 	return dek, out.Hash, nil
 }
 
-// decryptAll walks the concatenated per-file ciphertexts, decrypts each under
-// its derived key, and hash-verifies the ones marked verify=true.
-func decryptAll(master []byte, nonces []string, man Manifest, body []byte) ([][]byte, error) {
+// ── Passphrase resolution ──────────────────────────────────────────────
+
+func resolvePassphrase(flagVal, envVar string, noCache bool) (string, error) {
+	if flagVal != "" {
+		return flagVal, nil
+	}
+	if v := os.Getenv("SABLE_PASSPHRASE"); v != "" {
+		return v, nil
+	}
+	_ = noCache // keyring integration deferred; env/flag/tty are the supported paths
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return "", errors.New(
+			"v4 vault needs a passphrase but stdin is not a TTY.\n" +
+				"  pass --passphrase or set SABLE_PASSPHRASE")
+	}
+	fmt.Fprint(os.Stderr, "[auth] vault passphrase: ")
+	pw, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", fmt.Errorf("read passphrase: %w", err)
+	}
+	if len(pw) == 0 {
+		return "", errors.New("empty passphrase")
+	}
+	return string(pw), nil
+}
+
+// ── Decrypt / reseal ───────────────────────────────────────────────────
+
+func decryptAll(master []byte, kek []byte, nonces []string, man Manifest, body []byte) ([][]byte, error) {
 	if len(nonces) != len(man.Files) {
 		return nil, fmt.Errorf("nonce count %d != file count %d", len(nonces), len(man.Files))
 	}
@@ -286,7 +461,7 @@ func decryptAll(master []byte, nonces []string, man Manifest, body []byte) ([][]
 		}
 		ct := body[off : off+ctLen]
 		off += ctLen
-		key, err := deriveFileKey(master, fm.Path)
+		key, err := deriveFileKey(master, fm.Path, kek)
 		if err != nil {
 			return nil, err
 		}
@@ -300,6 +475,9 @@ func decryptAll(master []byte, nonces []string, man Manifest, body []byte) ([][]
 		}
 		plain, err := aead.Open(nil, nonce, ct, nil)
 		if err != nil {
+			if kek != nil && i == 0 {
+				return nil, fmt.Errorf("wrong passphrase (or tampered vault) — first file %s failed to decrypt", fm.Path)
+			}
 			return nil, fmt.Errorf("decrypt failed for %s — tampered or corrupt", fm.Path)
 		}
 		if fm.Verify {
@@ -328,11 +506,16 @@ func writeTree(plains [][]byte, man Manifest, mount string) error {
 }
 
 // reseal re-encrypts all plaintexts under a fresh master and overwrites the vault.
-func reseal(vaultPath string, header map[string]any, man Manifest, plains [][]byte, newMaster []byte, newHash string) error {
+// The KEK (if any) is preserved — passphrase and salt do not change during rotation.
+func reseal(vaultPath string, version int, header map[string]any, man Manifest, plains [][]byte, kek, newMaster []byte, newHash string) error {
+	magic, err := magicForVersion(version)
+	if err != nil {
+		return err
+	}
 	nonces := make([]string, len(man.Files))
 	blobs := make([][]byte, len(man.Files))
 	for i, fm := range man.Files {
-		key, err := deriveFileKey(newMaster, fm.Path)
+		key, err := deriveFileKey(newMaster, fm.Path, kek)
 		if err != nil {
 			return err
 		}
@@ -370,6 +553,8 @@ func reseal(vaultPath string, header map[string]any, man Manifest, plains [][]by
 	return os.Rename(tmp, vaultPath)
 }
 
+// ── Python resolution ──────────────────────────────────────────────────
+
 func findPython(venv string) (string, error) {
 	var candidates []string
 	if venv != "" {
@@ -399,9 +584,11 @@ func findPython(venv string) (string, error) {
 	return "", fmt.Errorf("no python interpreter found (tried --venv and PATH)")
 }
 
+// ── main ───────────────────────────────────────────────────────────────
+
 func main() {
 	fmt.Println("╭─ Sable Starter (Blob A)")
-	fmt.Println("│  per-file keys from one master — no plaintext ever on disk")
+	fmt.Println("│  pinned signer · per-file keys · no plaintext ever on disk")
 	fmt.Println("╰─")
 
 	vaultPath := flag.String("vault", defaultVaultPath(), "path to vault.sable")
@@ -411,30 +598,40 @@ func main() {
 	mountFlag := flag.String("mount", "", "extract dir")
 	venvFlag := flag.String("venv", "", "python venv")
 	portFlag := flag.String("port", envOr("SABLE_PORT", "61772"), "port for the Sable server")
+	passphraseFlag := flag.String("passphrase", "", "v4 passphrase (avoid: leaks to ps)")
 	run := flag.Bool("run", true, "spawn the server after extract")
 	rotate := flag.Bool("rotate", true, "rotate the master key and re-seal on this boot")
 	flag.Parse()
 
+	trusted, err := resolveTrustedSigner()
+	if err != nil {
+		fail("%v", err)
+	}
+	fmt.Printf("[ok] trusted signer pinned: %s\n", shortHex(trusted))
+
 	fmt.Printf("\n[vault] %s\n", *vaultPath)
-	headerRaw, body, err := readVault(*vaultPath)
+	version, headerRaw, body, err := readVault(*vaultPath)
 	if err != nil {
 		fail("%v", err)
 	}
 
-	header, man, err := verifyHeader(headerRaw)
+	header, man, headerVersion, err := verifyHeader(headerRaw, trusted)
 	if err != nil {
 		fail("%v", err)
 	}
-	fmt.Println("[ok] manifest signature valid")
+	if headerVersion != version {
+		fail("magic/version mismatch (magic=v%d, header=v%d)", version, headerVersion)
+	}
+	fmt.Printf("[ok] manifest signature valid (v%d)\n", version)
 
 	keyHash, _ := header["key_hash"].(string)
 	created, _ := header["created"].(string)
-	fmt.Printf("[ok] sealed %s · %d files (%d hash-checked)\n", created, man.Count, man.Verified)
+	alg, _ := header["alg"].(string)
+	fmt.Printf("[ok] sealed %s · %s · %d files (%d hash-checked)\n", created, alg, man.Count, man.Verified)
 
 	bearer := *token
 	if bearer == "" {
 		cloudURL := *cloud
-		// default the cloud endpoint to the bridge — same host, one URL.
 		if cloudURL == "" {
 			cloudURL = *bridge
 			fmt.Printf("[auth] no cloud given — assuming bridge serves tokens (%s)\n", cloudURL)
@@ -456,6 +653,30 @@ func main() {
 	}
 	fmt.Println("[ok] master key matches")
 
+	// ── v4: passphrase → KEK ────────────────────────────────────
+	var kek []byte
+	if version == 4 {
+		saltHex, _ := header["salt"].(string)
+		kdf, _ := header["kdf"].(string)
+		if saltHex == "" || kdf == "" {
+			fail("v4 vault missing salt/kdf in header")
+		}
+		salt, err := hex.DecodeString(saltHex)
+		if err != nil {
+			fail("bad salt hex: %v", err)
+		}
+		passphrase, err := resolvePassphrase(*passphraseFlag, "SABLE_PASSPHRASE", false)
+		if err != nil {
+			fail("%v", err)
+		}
+		fmt.Printf("[auth] deriving KEK (%s, %d MiB, %d iters)…\n", kdf, argon2MemKiB/1024, argon2Time)
+		kek, err = deriveKEK(passphrase, salt, kdf)
+		if err != nil {
+			fail("%v", err)
+		}
+		fmt.Println("[ok] KEK derived — verifying on first file…")
+	}
+
 	// nonces: []any of strings
 	var nonces []string
 	if arr, ok := header["nonces"].([]any); ok {
@@ -469,7 +690,7 @@ func main() {
 		fail("no nonces in header")
 	}
 
-	plains, err := decryptAll(master, nonces, man, body)
+	plains, err := decryptAll(master, kek, nonces, man, body)
 	if err != nil {
 		fail("%v", err)
 	}
@@ -480,7 +701,7 @@ func main() {
 		if err != nil {
 			fail("rotate: %v", err)
 		}
-		if err := reseal(*vaultPath, header, man, plains, newMaster, newHash); err != nil {
+		if err := reseal(*vaultPath, version, header, man, plains, kek, newMaster, newHash); err != nil {
 			fail("resel: %v", err)
 		}
 		fmt.Printf("[key] rotated: %s → %s\n", keyHash[:12], newHash[:12])

@@ -7,54 +7,92 @@
       "properties": {
         "action": {
           "type": "string",
-          "description": "One of: list, get, add, update, delete, merge, search"
+          "enum": ["list", "get", "add", "update", "delete", "merge", "search"],
+          "description": "Operation to perform."
         },
         "category": {
           "type": "string",
-          "description": "Memory category: semantic, episodic, ephemeral, procedural, protected"
+          "enum": ["semantic", "episodic", "ephemeral", "procedural", "protected"],
+          "description": "Memory category."
         },
         "key": {
           "type": "string",
-          "description": "Entry key (required for get/update/delete; used as primary identifier)"
+          "description": "Entry key (primary identifier)."
         },
         "value": {
           "type": "string",
-          "description": "Entry value/content (for add/update)"
+          "description": "Entry value/content."
         },
         "tags": {
           "type": "array",
           "items": {"type": "string"},
-          "description": "Tags for the entry (for add/update)"
+          "description": "Tags for the entry."
         },
         "triggers": {
           "type": "array",
           "items": {"type": "string"},
-          "description": "Trigger phrases (for add/update)"
+          "description": "Trigger phrases."
         },
         "keywords": {
           "type": "array",
           "items": {"type": "string"},
-          "description": "Keywords for procedural entries"
+          "description": "Keywords for procedural entries."
         },
         "trigger": {
           "type": "string",
-          "description": "Trigger string for procedural entries"
+          "description": "Trigger string for procedural entries."
         },
         "query": {
           "type": "string",
-          "description": "Search query (for search action)"
+          "description": "Search query (for search action)."
+        },
+        "top_k": {
+          "type": "integer",
+          "description": "Max results for search.",
+          "minimum": 1,
+          "maximum": 100
         },
         "target_key": {
           "type": "string",
-          "description": "Target key for merge (merge source key INTO target key)"
+          "description": "Target key for merge (merge source keys INTO this key)."
         },
         "source_keys": {
           "type": "array",
           "items": {"type": "string"},
-          "description": "Source keys to merge from (merge these into target_key)"
+          "description": "Source keys to merge from."
         }
       },
-      "required": ["action"]
+      "required": ["action"],
+      "oneOf": [
+        {
+          "properties": {"action": {"const": "list"}},
+          "required": ["action"]
+        },
+        {
+          "properties": {"action": {"const": "get"}},
+          "required": ["action", "key"]
+        },
+        {
+          "properties": {"action": {"const": "add"}},
+          "required": ["action", "key", "value"]
+        },
+        {
+          "properties": {"action": {"const": "update"}},
+          "required": ["action", "key"]
+        },
+        {
+          "properties": {"action": {"const": "delete"}},
+          "required": ["action", "key"]
+        },
+        {
+          "properties": {"action": {"const": "merge"}},
+          "required": ["action", "target_key", "source_keys"]
+        },
+        {
+          "properties": {"action": {"const": "search"}},
+          "required": ["action", "query"]
+        }
+      ]
     }
   }
 ]

@@ -5,6 +5,7 @@ from engine.skills.handlers.execute import (
     BG_JOBS,
     handle_check_command,
     handle_execute_command,
+    handle_kill_command,
 )
 from engine.skills.handlers.file_ops import (
     handle_create_file,
@@ -41,6 +42,7 @@ from engine.skills.handlers.image_generator import handle_generate_image
 from engine.skills.handlers.computer_use import handle_computer_use
 from engine.skills.handlers.load_tool import handle_load_tool
 from engine.mcp.handler import handle_mcp_call
+from engine.skills.handlers.mcp_list import handle_mcp_list
 from engine.skills.handlers.critique import handle_critique
 
 HANDLER_MAP: dict[str, object] = {
@@ -50,6 +52,7 @@ HANDLER_MAP: dict[str, object] = {
     "read_file": handle_get_file,
 
     "check_command": handle_check_command,
+    "kill_command": handle_kill_command,
     "openweb": handle_openweb,
     "web_search": handle_online_search,
     "web_fetch": handle_online_search,
@@ -78,6 +81,7 @@ HANDLER_MAP: dict[str, object] = {
     "computer_use": handle_computer_use,
     "load_tool": handle_load_tool,
     "mcp_call": handle_mcp_call,
+    "mcp_list": handle_mcp_list,
 }
 
 __all__ = [
@@ -88,6 +92,7 @@ __all__ = [
     "handle_create_note",
     "handle_edit_file",
     "handle_execute_command",
+    "handle_kill_command",
     "handle_get_file",
     "handle_insert_file",
     "handle_online_search",
@@ -110,4 +115,5 @@ __all__ = [
     "handle_computer_use",
     "handle_load_tool",
     "handle_mcp_call",
+    "handle_mcp_list",
 ]

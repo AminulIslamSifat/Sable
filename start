@@ -216,6 +216,24 @@ ensure_ffmpeg() {
     fi
 }
 
+# ── Ensure ripgrep (grep backend) ────────────────────────────────────────────
+ensure_ripgrep() {
+    if command -v rg >/dev/null 2>&1; then
+        _ok "ripgrep available"
+        return 0
+    fi
+    _info "Installing ripgrep ..."
+    # Arch package is 'ripgrep' on all of these except Alpine ('ripgrep' too),
+    # but Debian/Ubuntu historically shipped it as 'ripgrep' as well.
+    install_pkg "ripgrep" "ripgrep" "ripgrep" "ripgrep" "ripgrep"
+    if ! command -v rg >/dev/null 2>&1; then
+        _warn "ripgrep not found — grep falls back to the slower system grep"
+        _warn "Install manually: https://github.com/BurntSushi/ripgrep#installation"
+    else
+        _ok "ripgrep installed"
+    fi
+}
+
 # ── Ensure Docker ────────────────────────────────────────────────────────────
 ensure_docker() {
     _info "Checking Docker..."
@@ -725,6 +743,7 @@ main() {
     ensure_uv
     ensure_git
     ensure_ffmpeg
+    ensure_ripgrep
     cleanup_stale_pid
     bootstrap_files
     setup_playwright

@@ -667,6 +667,79 @@ function Setup-GitHubMcp {
     Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
 }
 
+# -- ripgrep (bundled grep backend) ------------------------------------------
+$RIPGREP_VERSION = "15.2.0"
+
+function Setup-Ripgrep {
+    Write-Info "Checking ripgrep..."
+
+    # Already on PATH?
+    if (Test-Command "rg") {
+        Write-Ok "ripgrep already installed"
+        return
+    }
+
+    # Project-local install from a previous run?
+    $localBin = Join-Path (Join-Path $SCRIPT_DIR "system") "rg.exe"
+    if (Test-Path $localBin) {
+        Write-Ok "ripgrep found in system/"
+        $env:Path += ";$(Join-Path $SCRIPT_DIR 'system')"
+        return
+    }
+
+    # Map PROCESSOR_ARCHITECTURE -> ripgrep asset triple
+    $arch = $env:PROCESSOR_ARCHITECTURE
+    $assetArch = switch ($arch) {
+        "AMD64" { "x86_64-pc-windows-msvc" }
+        "ARM64" { "aarch64-pc-windows-msvc" }
+        "x86"   { "i686-pc-windows-msvc" }
+        default { $null }
+    }
+
+    if (-not $assetArch) {
+        Write-Warn "Unsupported architecture ($arch) - ripgrep skipped"
+        Write-Warn "grep falls back to the system 'grep'; install ripgrep manually for speed"
+        return
+    }
+
+    $assetName = "ripgrep-${RIPGREP_VERSION}-${assetArch}.zip"
+    $downloadUrl = "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGREP_VERSION}/${assetName}"
+
+    Write-Info "Downloading ripgrep ${RIPGREP_VERSION} (Windows/${assetArch})..."
+    $tmpZip = Join-Path $env:TEMP $assetName
+    $tmpDir = Join-Path $env:TEMP "ripgrep-extract"
+
+    try {
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpZip -UseBasicParsing -ErrorAction Stop
+    } catch {
+        Write-Warn "Failed to download ripgrep - grep will use the slower system fallback"
+        return
+    }
+
+    if (Test-Path $tmpDir) { Remove-Item -Recurse -Force $tmpDir }
+    try {
+        Expand-Archive -Path $tmpZip -DestinationPath $tmpDir -Force
+    } catch {
+        Write-Warn "Failed to extract ripgrep archive - skipped"
+        Remove-Item $tmpZip -ErrorAction SilentlyContinue
+        return
+    }
+
+    $exe = Get-ChildItem -Path $tmpDir -Filter "rg.exe" -Recurse | Select-Object -First 1
+    if ($exe) {
+        $sysDir = Join-Path $SCRIPT_DIR "system"
+        if (-not (Test-Path $sysDir)) { New-Item -ItemType Directory -Path $sysDir | Out-Null }
+        Copy-Item $exe.FullName $localBin -Force
+        $env:Path += ";$sysDir"
+        Write-Ok "ripgrep installed to system/rg.exe"
+    } else {
+        Write-Warn "Extracted archive but rg.exe not found - skipped"
+    }
+
+    Remove-Item $tmpZip -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+}
+
 # -- Install BurntToast Notifications ----------------------------------------
 function Setup-BurntToast {
     Write-Info "Checking BurntToast notification module..."
@@ -908,6 +981,7 @@ function Main {
     Bootstrap-Files
     Setup-Playwright
     Setup-GitHubMcp
+    Setup-Ripgrep
     Setup-SearXNG
     Sync-Dependencies
     Setup-BurntToast

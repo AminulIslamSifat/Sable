@@ -12,29 +12,29 @@ Public API:
 
 from __future__ import annotations
 
-import os
 import signal
 import subprocess
 import sys
 
 IS_WINDOWS = sys.platform == "win32"
 
+# Windows process-creation flags
+_CREATE_NEW_PROCESS_GROUP = 0x00000200  # independent group for tree-kill
+_CREATE_NO_WINDOW = 0x08000000          # suppress the cmd.exe console popup
+
 
 def popen_kwargs() -> dict:
     """Return extra keyword arguments for ``subprocess.Popen`` that create an
     independent process group.
 
-    On POSIX this is ``{"preexec_fn": os.setsid}``.
+    On POSIX this is ``{"start_new_session": True}`` (a thread-safe equivalent
+    of ``preexec_fn=os.setsid`` — ``preexec_fn`` is documented as unsafe in the
+    presence of threads, and this engine dispatches from a threaded server).
     On Windows this is ``{"creationflags": CREATE_NEW_PROCESS_GROUP}``.
     """
     if IS_WINDOWS:
-        # CREATE_NEW_PROCESS_GROUP = 0x00000200  (independent group for tree-kill)
-        # CREATE_NO_WINDOW         = 0x08000000  (NO visible console — this is
-        #                                          what stops the cmd.exe popup
-        #                                          every time the engine runs a
-        #                                          shell command on Windows)
-        return {"creationflags": 0x00000200 | 0x08000000}
-    return {"preexec_fn": os.setsid}
+        return {"creationflags": _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW}
+    return {"start_new_session": True}
 
 
 def kill_process_tree(
