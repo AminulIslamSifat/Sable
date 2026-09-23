@@ -370,6 +370,22 @@ _MAX_SESSION_CHARS = 100_000
 from connectors.common.context_summarizer import strip_summarize_tag
 
 
+def _account_for_token(token: str | None) -> str | None:
+    """Reverse-lookup: which account owns this JWT (from the token store).
+
+    Ghost transport MUST impersonate the same browser profile the token
+    belongs to — sending account A's JWT from account B's browser produces
+    mismatched device headers (x-device-id, x-hif-leim, cookies), which is
+    exactly the anomaly pattern that gets DeepSeek accounts silently banned.
+    """
+    if not token:
+        return None
+    for acct, toks in _load_token_store().items():
+        if token in toks:
+            return acct
+    return None
+
+
 def _msg_chars(msg: dict[str, Any]) -> int:
     """Character count of a DeepSeek-format history message."""
     return len(msg.get("content", ""))
@@ -813,6 +829,10 @@ class DeepSeekClient:
     # Pool failure threshold (constant, safe as class attr).
     _POOL_FAILURE_THRESHOLD: int = 2
 
+    # Set True when the ghost transport fails mid-stream. _resolve_ghost()
+    # then serves None (curl) for the rest of the current stream_chat() call.
+    _ghost_broken: bool = False
+
     async def _get_http(self) -> AsyncSession:
         if self._http is None:
             # impersonate="chrome" replicates Chromium's exact TLS fingerprint
@@ -883,7 +903,18 @@ class DeepSeekClient:
             from connectors.deepseek import ghost as _ghost
             if not _ghost.ghost_enabled():
                 return None
-            return await _ghost.GhostSession.for_account(self.account)
+            if self._ghost_broken:
+                logger.info("DeepSeek: ghost failed earlier this message — using curl")
+                return None
+            # Ghost profile follows the ACTIVE TOKEN's account — NOT the global
+            # active account. The rotation pool may be serving acc2 while the
+            # global setting says acc3; opening acc3's browser with acc2's JWT
+            # is an identity mismatch (device headers ≠ token account).
+            _tok_acct = _account_for_token(self._current_rotate_token)
+            if _tok_acct and _tok_acct != self.account:
+                logger.info("DeepSeek: ghost opening profile %s (token's account) instead of %s (global active)",
+                            _tok_acct, self.account)
+            return await _ghost.GhostSession.for_account(_tok_acct or self.account)
         except Exception as exc:
             logger.warning("Ghost unavailable (%s) — using curl", exc)
             return None
@@ -1386,6 +1417,8 @@ class DeepSeekClient:
         No full-context serialization ever happens here. Fork history injection
         is handled at the route level by prepending to the message string.
         """
+        # Fresh message — give ghost another chance (curl fallback is per-message).
+        self._ghost_broken = False
         thinking_enabled = str(thinking_mode or "").lower() in ("thinking", "deepthink")
         file_ids = [str(fid) for fid in (ref_file_ids or []) if str(fid).strip()]
         project_id = kwargs.pop("project_id", None)
@@ -1486,7 +1519,15 @@ class DeepSeekClient:
                     logger.info("DeepSeek rotation #%d: dropped session for chat %s, token %s",
                                 _attempt, chat_id, self._mask_token(_tok))
 
-            prepared = await self._prepare_request_with_rotation(chat_id=chat_id)
+            # Bound the whole prepare step (session create + PoW + rotation)
+            # so a wedged upstream can't stall the stream silently.
+            yield {"type": "status", "message": "deepseek_prepare"}
+            try:
+                prepared = await asyncio.wait_for(
+                    self._prepare_request_with_rotation(chat_id=chat_id), timeout=90)
+            except asyncio.TimeoutError:
+                logger.warning("DeepSeek: prepare timed out after 90s (chat %s)", chat_id)
+                prepared = None
             if prepared is None:
                 yield {"type": "error", "message": _all_failed_message()}
                 return
@@ -1540,7 +1581,13 @@ class DeepSeekClient:
 
             # Resolve the transport once per token attempt.
             # Ghost (browser identity) is preferred; curl is the fallback.
-            _ghost = await self._resolve_ghost()
+            # Ghost resolution launches Playwright/CDP — bound it so a wedged
+            # browser tab can't hang the stream. Falls back to curl on timeout.
+            try:
+                _ghost = await asyncio.wait_for(self._resolve_ghost(), timeout=20)
+            except asyncio.TimeoutError:
+                logger.warning("DeepSeek: ghost resolve timed out after 20s — using curl")
+                _ghost = None
             if _ghost is not None:
                 yield {"type": "status", "message": "deepseek_transport_ghost"}
             else:
@@ -1775,13 +1822,19 @@ class DeepSeekClient:
 
                     return  # Success — done
 
-                except (asyncio.TimeoutError, CurlReadTimeout):
+                except (asyncio.TimeoutError, CurlReadTimeout) as _idle_exc:
                     # Idle gate fired — either the connect/header phase (bounded
                     # in _completion_opener) or a mid-stream stall (bounded in
                     # _iter_with_idle_timeout) produced no bytes within 30s.
                     # This is almost always a stale/zombie pooled socket after a
                     # network change. Don't burn 8×35s per token — fail fast so
                     # _get_http() recycles the pool on the next attempt.
+                    if "ghost" in str(_idle_exc).lower():
+                        # Ghost raised the idle gate — don't retry the same dead
+                        # transport; force curl for every remaining attempt.
+                        logger.warning("DeepSeek ghost idle-failed (%s) — forcing curl fallback", _idle_exc)
+                        self._ghost_broken = True
+                        _ghost = None
                     last_err = f"idle_timeout ({_IDLE_TIMEOUT_SECS:.0f}s)"
                     self._mark_failure()
                     if _response_parent_id is not None and chat_id:
@@ -1792,6 +1845,13 @@ class DeepSeekClient:
                 except Exception as exc:
                     last_err = f"{type(exc).__name__}: {exc}"
                     self._mark_failure()
+                    if isinstance(exc, RuntimeError) and "ghost" in str(exc).lower():
+                        # In-page fetch died (page closed, bridge gone, fetch
+                        # error). Retrying ghost just burns the retry budget —
+                        # switch to curl immediately.
+                        logger.warning("DeepSeek ghost stream failed (%s) — forcing curl fallback", exc)
+                        self._ghost_broken = True
+                        _ghost = None
                     # Connection-class errors (reset/refused/DNS/TLS) mean the pool
                     # is poisoned — break immediately instead of hammering dead sockets.
                     _conn_cls = (
