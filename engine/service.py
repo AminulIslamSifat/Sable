@@ -9,6 +9,7 @@ import logging
 import os
 import signal
 import sys
+import time
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from pathlib import Path
@@ -71,6 +72,9 @@ class ChatService:
         # Which account self._headers belong to (guards against fast double-switch
         # races where a stale in-memory header set outlives the active symlink).
         self._headers_account: str | None = None
+        # When _headers were last fetched (epoch seconds) — lets us skip a
+        # redundant get_fresh_headers() when warmup() just ran.
+        self._headers_ts: float = 0.0
         self._lock = asyncio.Lock()
         # Derive account name from user_data_dir for token lookup
         # e.g. ".../system/browser-data-acc3" → "browser-data-acc3"
@@ -378,6 +382,7 @@ class ChatService:
                 if not self._headers or self._headers_account != account:
                     self._headers = await self._browser.get_fresh_headers()
                     self._headers_account = account
+                    self._headers_ts = time.time()
                     # Persist WAF tokens to per-account cache
                     save_qwen_tokens_for_account(
                         cookies=self._headers.get("Cookie", ""),
@@ -403,15 +408,31 @@ class ChatService:
         async with self._lock:
             try:
                 await self._browser.start()
-                self._headers = await self._browser.get_fresh_headers()
-                self._headers_account = account
-                save_qwen_tokens_for_account(
-                    cookies=self._headers.get("Cookie", ""),
-                    bx_ua=self._headers.get("bx-ua", ""),
-                    bx_umidtoken=self._headers.get("bx-umidtoken", ""),
-                    account=account,
+                # warmup() already fetched fresh headers for this account a
+                # moment ago — get_fresh_headers() costs ~9s (2 probes + WAF
+                # cookie poll), so re-running it back-to-back is pure waste.
+                # Same browser either way; this skips the duplicate fetch only.
+                _fresh_enough = (
+                    self._headers
+                    and self._headers_account == account
+                    and (time.time() - self._headers_ts) < 15
                 )
-                logger.info("Force-refreshed WAF tokens for %s via browser", account)
+                if _fresh_enough:
+                    logger.info(
+                        "force_refresh_waf: reusing headers fetched %.1fs ago for %s",
+                        time.time() - self._headers_ts, account,
+                    )
+                else:
+                    self._headers = await self._browser.get_fresh_headers()
+                    self._headers_account = account
+                    self._headers_ts = time.time()
+                    save_qwen_tokens_for_account(
+                        cookies=self._headers.get("Cookie", ""),
+                        bx_ua=self._headers.get("bx-ua", ""),
+                        bx_umidtoken=self._headers.get("bx-umidtoken", ""),
+                        account=account,
+                    )
+                    logger.info("Force-refreshed WAF tokens for %s via browser", account)
             except Exception as exc:
                 logger.warning("Force WAF refresh failed for %s: %s: %s", account, type(exc).__name__, exc)
                 # Fall back to cached tokens so we're not left empty-handed

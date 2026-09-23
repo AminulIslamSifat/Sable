@@ -1041,53 +1041,74 @@
       const chars = md ? md.innerText.trim().length : 0;
       if (chars < 24) return;   // skip empty / trivial replies
 
-      const tokens = Math.max(1, Math.round(chars / 4));
       const totalMs = s.tEnd - s.t0;
-      let genMs = s.tFirst ? (s.tEnd - s.tFirst) : totalMs;
-      if (genMs < 50) genMs = totalMs;           // guard tiny windows
-      const tps = tokens / (genMs / 1000);
       const totalS = totalMs / 1000;
+
+      // Token-weighted mean of per-segment speeds. A flat average let a
+      // 30-char segment at 20 tok/s count as much as a 500-char segment at
+      // 140 tok/s, dragging the result down — and tool-heavy turns produce
+      // more short segments, so the bias hit exactly that case.
+      const bursts = s.bursts || [];
+      const measurable = bursts.length > 0;
+      let activeMs = 0;
+      let tokens = 0;
+      let weighted = 0;
+      for (let i = 0; i < bursts.length; i++) {
+        activeMs += bursts[i].ms;
+        tokens += bursts[i].tokens;
+        weighted += bursts[i].tokens * bursts[i].tps;
+      }
+      const tps = tokens > 0 ? weighted / tokens : 0;
+      const activeS = activeMs / 1000;
+      const burstCount = bursts.length;
+
+      // Label is honest about what was measured. When the whole reply arrived
+      // in one or two chunks there is no emission signal to measure, so we
+      // show the timing alone rather than inventing a speed.
+      const label = measurable
+        ? `${tps.toFixed(1)} tok/s \u00b7 ${totalS.toFixed(1)}s`
+        : `${totalS.toFixed(1)}s`;
 
       const badge = document.createElement("span");
       badge.className = "msg-stats";
       const useLucide = document.documentElement.getAttribute("data-icon-style") === "lucide"
         && window.lucide && window.lucide.icons && window.lucide.icons["zap"];
       if (useLucide) {
-        const [tag, attrs, children] = window.lucide.icons["zap"];
+        const children = window.lucide.icons["zap"][2];
         let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="msg-lucide-icon lucide-zap" style="vertical-align:-2px;margin-right:3px;">`;
         if (children) for (const child of children) { if (Array.isArray(child)) { const [cTag, cAttrs] = child; svg += `<${cTag}`; for (const [k, v] of Object.entries(cAttrs)) svg += ` ${k}="${v}"`; svg += "/>"; } }
         svg += "</svg>";
-        badge.innerHTML = `${svg}${tps.toFixed(1)} tok/s \u00b7 ${totalS.toFixed(1)}s`;
+        badge.innerHTML = `${svg}${label}`;
       } else {
-        badge.textContent = `\u26a1 ${tps.toFixed(1)} tok/s \u00b7 ${totalS.toFixed(1)}s`;
+        badge.textContent = `\u26a1 ${label}`;
       }
       badge.title =
         `Tokens: ~${tokens} (${chars} chars / 4)\n` +
         `Speed: ${tps.toFixed(1)} tok/s\n` +
-        `Generation: ${(genMs / 1000).toFixed(2)}s\n` +
+        `Text time: ${activeS.toFixed(2)}s in ${burstCount} segment${burstCount === 1 ? "" : "s"}\n` +
         `Total: ${totalS.toFixed(2)}s` +
         (s.tFirst ? `\nFirst token: ${((s.tFirst - s.t0) / 1000).toFixed(2)}s` : "");
       toolbar.appendChild(badge);
 
-      // Feed the local ring buffer so the typewriter adapts immediately —
-      // no refetch needed. Server still gets the durable copy below.
-      if (typeof twRecord === "function") twRecord(selectedModel || "unknown", tps);
-
-      // Persist for the adaptive typewriter (fire-and-forget). Server rejects
-      // degenerate readings, so we don't need to filter hard here.
-      try {
-        fetch("/api/stats/response", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: selectedModel || "unknown",
-            tokens,
-            gen_ms: Math.round(genMs),
-            total_ms: Math.round(totalMs),
-            tps,
-          }),
-        }).catch(() => {});
-      } catch (_) { /* never let stats break the UI */ }
+      // Only feed the adaptive typewriter when we actually measured something.
+      // A tps of 0 is rejected downstream anyway (twRecord guards tps<=0 and
+      // the server requires tps>0), but skipping keeps the intent explicit.
+      if (measurable) {
+        if (typeof twRecord === "function") twRecord(selectedModel || "unknown", tps);
+        try {
+          fetch("/api/stats/response", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: selectedModel || "unknown",
+              tokens,
+              gen_ms: Math.round(activeMs),
+              total_ms: Math.round(totalMs),
+              tps,
+            }),
+          }).catch(() => {});
+        } catch (_) { /* never let stats break the UI */ }
+      }
     }
 
     function addBotStreaming(pane = activePane, chatId = activeChatId) {
@@ -1101,9 +1122,26 @@
       turn.className = "turn";
       pane.appendChild(turn);
 
-      // ── Response timing (t0 = request sent, tFirst = first answer token) ──
-      const _stats = { t0: performance.now(), tFirst: 0, tEnd: 0 };
+      // ── Response timing ────────────────────────────────────────────────
+      // A turn may be several separate text segments separated by tool calls.
+      // Each segment is measured on its own: start when text begins, end when
+      // a tool starts (or the stream ends). Speed per segment = tokens / its
+      // own duration. Final speed = average of all segment speeds.
+      const _stats = { t0: performance.now(), tFirst: 0, tEnd: 0, bursts: [] };
       turn._sableStats = _stats;
+      let _burstStart = 0;
+      let _burstChars = 0;
+
+      function _closeBurst() {
+        if (!_burstStart) return;
+        const ms = performance.now() - _burstStart;
+        _burstStart = 0;
+        if (ms > 0 && _burstChars > 0) {
+          const toks = Math.max(1, Math.round(_burstChars / 4));
+          _stats.bursts.push({ tokens: toks, ms: ms, tps: toks / (ms / 1000) });
+        }
+        _burstChars = 0;
+      }
 
       // Immediate feedback: create the backend status card right away with
       // a shimmering "processing…" label in the header.  The text stays
@@ -1510,6 +1548,8 @@
         nextSkillRound() {
           if (skillRounds[skillRounds.length - 1].length) skillRounds.push([]);
         },
+        closeBurst() { _closeBurst(); },
+
         attachToolMemory(memories) {
           // Memories injected from a tool result — pin the chip inline
           // inside the last skill card's header-right.
@@ -1532,7 +1572,12 @@
           ensureAnswer();
           answerEl.style.display = "";
           if (text && text.trim() && !/\[(error|stopped|client error)\]/.test(text)) sawNormalAnswer = true;
-          if (!_stats.tFirst && text && text.trim()) _stats.tFirst = performance.now();
+          if (text && text.trim()) {
+            const _now = performance.now();
+            if (!_stats.tFirst) _stats.tFirst = _now;
+            if (!_burstStart) _burstStart = _now;
+            _burstChars += text.length;
+          }
           // Errors/stop messages render instantly; normal text gets typewriter
           if (/\[(error|stopped|client error)\]/.test(text)) {
             _flushAnswerQueue();
@@ -1765,6 +1810,7 @@
         },
         finalize() {
           _stats.tEnd = performance.now();
+          _closeBurst();
           hidePending();
           closeCurrentThinking();
           // If auto-switch didn't recover, render the permanent error card now.
@@ -2361,6 +2407,12 @@
             const _trText = evt.data?.text || evt.data?.output || "";
             ui.addEvent(`✓ result: ${String(_trText).slice(0, 300)}`);
           } else if (evt.type === "tool_pending") {
+            // The parser emits this the instant it sees a tool-call tag open —
+            // exactly when prose stops and XML begins. Closing here keeps the
+            // tool-call XML generation time out of the measurement window; the
+            // XML never reaches us as text, so it would otherwise be counted
+            // as time spent writing characters we never saw.
+            ui.closeBurst();
             ui.showToolPending(evt);
           } else if (evt.type === "tool_progress") {
             ui.showToolProgress(evt);
@@ -2374,6 +2426,7 @@
             }
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }
             ui.showToolDone();
+            ui.closeBurst();
             ui.addSkillStart(evt);
             // Track path for preview card injection at skill_end
             if (evt.name === "create_file" || evt.name === "edit_file" || evt.name === "save_svg" || evt.name === "create_svg") {

@@ -63,5 +63,14 @@ signal.signal(signal.SIGTERM, _sigterm_deadman)
 
 if __name__ == "__main__":
     _write_pid()
-    uvicorn.run(app, host=HOST, port=PORT, reload=False)
+    # Print a clear readiness box once the port is actually live, without
+    # blocking startup. Runs in a daemon thread so uvicorn still owns the main
+    # thread; the banner waits for the port instead of guessing a delay.
+    from engine.startup_banner import print_startup_banner
+    threading.Thread(
+        target=print_startup_banner, args=(HOST, PORT), daemon=True
+    ).start()
+    # log_level="warning" suppresses uvicorn's own "Uvicorn running on ..."
+    # line so it can't get buried in (or compete with) the banner above.
+    uvicorn.run(app, host=HOST, port=PORT, reload=False, log_level="warning")
 #

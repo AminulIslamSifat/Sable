@@ -238,43 +238,83 @@ class BrowserManager:
         """True if the persistent browser context is currently up."""
         return self.playwright is not None
 
+    @staticmethod
+    def _pid_is_browser(pid: int) -> bool:
+        """True only if `pid` is alive AND looks like a Chromium-family process.
+
+        Guards against PID recycling: a live *unrelated* process must not count
+        as holding the profile lock. This is what caused the phantom
+        "profile locked for no reason" warnings.
+        """
+        try:
+            import signal
+            os.kill(pid, 0)  # raises OSError/ProcessLookupError if dead
+        except (OSError, ProcessLookupError):
+            return False
+
+        # Linux: inspect /proc/<pid>/cmdline for a browser-ish executable.
+        try:
+            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\x00", b" ").lower()
+        except OSError:
+            # Non-Linux (or unreadable): fall back to "alive == locked".
+            return True
+        return any(tok in cmdline for tok in (
+            b"chrom", b"chrome", b"chromium", b"brave", b"msedge", b"browser",
+        ))
+
     def _check_profile_lock(self) -> bool:
-        """Check if the profile is locked by another Chromium instance."""
+        """Check if the profile is locked by another Chromium instance.
+
+        The lock is a symlink to "<hostname>-<pid>". `os.kill(pid, 0)` alone is
+        NOT enough to call it live: PIDs get recycled, so a dead Chromium's PID
+        can be owned by some unrelated process, making a stale lock look real
+        ("profile locked for no reason"). We additionally verify the hostname
+        matches and that the PID actually belongs to a browser process.
+        """
         lock_file = Path(self.user_data_dir) / "SingletonLock"
         # Use is_symlink() | exists() because SingletonLock is a symlink to
         # "hostname-PID". If the target process is dead, exists() returns False
         # but the dangling symlink still blocks Chromium from launching.
-        if lock_file.is_symlink() or lock_file.exists():
-            # Check if the PID in the symlink target is actually alive
-            stale = True
-            if lock_file.is_symlink():
-                try:
-                    target = lock_file.readlink().name  # e.g. "Archie-24367"
-                    pid_str = target.rsplit("-", 1)[-1]
-                    pid = int(pid_str)
-                    import signal
-                    os.kill(pid, 0)  # raises OSError if process doesn't exist
-                    stale = False  # process is alive — real lock
-                except (ValueError, OSError, ProcessLookupError):
-                    stale = True
-            
-            if stale:
-                print("[DEBUG] Removing stale SingletonLock...")
-                try:
-                    lock_file.unlink()
-                except OSError as e:
-                    print(f"[ERROR] Could not remove lock: {e}")
-                    return False
-            else:
-                print("[WARN] Profile locked by active Chromium process")
+        if not (lock_file.is_symlink() or lock_file.exists()):
+            return True
+
+        stale = True
+        if lock_file.is_symlink():
+            try:
+                target = lock_file.readlink().name  # e.g. "Archie-24367"
+                host, _, pid_str = target.rpartition("-")
+                pid = int(pid_str)
+
+                import socket
+                same_host = (not host) or host == socket.gethostname()
+                if same_host and self._pid_is_browser(pid):
+                    stale = False  # genuinely alive browser on this host
+            except (ValueError, OSError, ProcessLookupError):
+                stale = True
+
+        if stale:
+            print("[DEBUG] Removing stale SingletonLock...")
+            try:
+                lock_file.unlink()
+            except OSError as e:
+                print(f"[ERROR] Could not remove lock: {e}")
                 return False
+        else:
+            print("[WARN] Profile locked by active Chromium process")
+            return False
         return True
 
     async def start(self):
         """Lazy-starts the browser context and page if not already running."""
         if self.playwright and self.context:
             return
-        self._check_profile_lock()
+        if not self._check_profile_lock():
+            # A genuine live browser owns this profile — launching anyway is
+            # what produced the doomed double-launch. Fail loudly instead so
+            # callers (warmup etc.) can fall back to cached headers.
+            raise RuntimeError(
+                f"Browser profile locked by a live process: {self.user_data_dir}"
+            )
         launch_num = _increment_playwright_counter()
         print(f"[DEBUG] Launching persistent browser context #{launch_num} (headless={self.headless})...")
         from playwright.async_api import async_playwright
@@ -321,8 +361,12 @@ class BrowserManager:
             else:
                 print("[DEBUG] ✅ Auth token hydrated successfully.")
 
-            await self.page.add_script_tag(url="https://gosspublic.alicdn.com/aliyun-oss-sdk-6.18.1.min.js")
-            await self.page.wait_for_timeout(1000)
+            # Await the SDK load directly — the old fixed 1s sleep added dead
+            # time to every cold launch with no guarantee it had loaded.
+            try:
+                await self.page.add_script_tag(url="https://gosspublic.alicdn.com/aliyun-oss-sdk-6.18.1.min.js")
+            except Exception as exc:
+                print(f"[WARN] Aliyun OSS SDK load failed (non-fatal): {exc}")
         except Exception:
             # Reset state so a subsequent retry doesn't see a half-initialized manager
             await self.close()
@@ -555,8 +599,14 @@ class BrowserManager:
         page = await self.context.new_page()
         try:
             await page.goto("https://chat.deepseek.com", wait_until="domcontentloaded", timeout=15000)
-            await page.wait_for_timeout(2000)  # let JS hydrate localStorage
-            raw = await page.evaluate("() => localStorage.getItem('userToken')")
+            # Poll for the token instead of a fixed 2s sleep — returns the
+            # moment localStorage hydrates (usually a few hundred ms).
+            raw = None
+            for _ in range(10):  # up to ~3s
+                raw = await page.evaluate("() => localStorage.getItem('userToken')")
+                if raw:
+                    break
+                await page.wait_for_timeout(300)
         finally:
             await page.close()
 
@@ -586,8 +636,14 @@ class BrowserManager:
         page = await self.context.new_page()
         try:
             await page.goto("https://chat.z.ai", wait_until="domcontentloaded", timeout=15000)
-            await page.wait_for_timeout(2000)  # let JS hydrate localStorage
-            raw = await page.evaluate("() => localStorage.getItem('token')")
+            # Poll for the token instead of a fixed 2s sleep — returns the
+            # moment localStorage hydrates (usually a few hundred ms).
+            raw = None
+            for _ in range(10):  # up to ~3s
+                raw = await page.evaluate("() => localStorage.getItem('token')")
+                if raw:
+                    break
+                await page.wait_for_timeout(300)
         finally:
             await page.close()
 

@@ -155,22 +155,38 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
 
 
 
-    await service.warmup()
-    # Refresh ALL providers (Qwen WAF + DeepSeek + z.ai + Gemini) so every
-    # backend starts on the active profile's credentials, not a stale one.
-    try:
-        _tok = await service.refresh_all_provider_tokens()
-        logger.info("Startup provider token refresh: %s", _tok)
-    except Exception as exc:
-        logger.warning("Startup provider token refresh failed: %s: %s", type(exc).__name__, exc)
-    # Auto-sync context for the active browser profile on startup
-    try:
-        await service.sync_context()
-        logger.info("Context synced on startup")
-    except Exception as exc:
-        logger.warning("Startup sync_context failed: %s: %s", type(exc).__name__, exc)
+    # Browser warmup + provider token refresh + context sync used to run inline
+    # here, blocking `yield` for 30-60s+ (each Chromium launch costs 8-24s, and
+    # the provider chain runs them serially). None of it is required for the
+    # server to serve requests, so run it in the background and come up instantly.
+    async def _startup_warmup() -> None:
+        # Qwen WAF headers (cached tokens load instantly; browser fills in live ones)
+        try:
+            await service.warmup()
+        except Exception as exc:
+            logger.warning("Startup warmup failed: %s: %s", type(exc).__name__, exc)
+        # Refresh ALL providers (Qwen WAF + DeepSeek + z.ai + Gemini) so every
+        # backend starts on the active profile's credentials, not a stale one.
+        try:
+            _tok = await service.refresh_all_provider_tokens()
+            logger.info("Startup provider token refresh: %s", _tok)
+        except Exception as exc:
+            logger.warning("Startup provider token refresh failed: %s: %s", type(exc).__name__, exc)
+        # Auto-sync context for the active browser profile on startup
+        try:
+            await service.sync_context()
+            logger.info("Context synced on startup")
+        except Exception as exc:
+            logger.warning("Startup sync_context failed: %s: %s", type(exc).__name__, exc)
+
+    # Strong reference so the task isn't silently GC'd mid-flight.
+    app.state._warmup_task = _aio.create_task(_startup_warmup())
     yield
     # ── Fast shutdown (≤1s budget) ──
+    # 0. Stop the background warmup so it can't relaunch browsers mid-shutdown
+    _warm = getattr(app.state, "_warmup_task", None)
+    if _warm is not None and not _warm.done():
+        _warm.cancel()
     # 1. Cancel running agents immediately
     try:
         from engine.agents import get_runtime as _get_rt

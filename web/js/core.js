@@ -394,6 +394,10 @@
             if (getToken()) {
               _authReady = true;
               showPhase(null);
+              // Token acquired during the account gate — resolve ensureAuth so
+              // the boot sequence (loadModels + loadChats) can continue without
+              // a page reload.
+              return;
             }
             return waitForLogin();
           }
