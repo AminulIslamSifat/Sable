@@ -59,7 +59,13 @@
         </div>
         <textarea id="researchQuery" class="research-query" rows="3"
           placeholder="e.g. Compare Rust and Go for a high-throughput web API in 2026…"></textarea>
+        <div class="research-presets" role="group" aria-label="Research depth presets">
+          <button type="button" class="research-preset-chip" data-depth="2" data-time="600" data-pages="2" title="~10 min · shallow sweep">⚡ Quick</button>
+          <button type="button" class="research-preset-chip active" data-depth="3" data-time="1500" data-pages="3" title="~25 min · balanced">🎯 Standard</button>
+          <button type="button" class="research-preset-chip" data-depth="5" data-time="3600" data-pages="5" title="~60 min · thorough">🔬 Deep</button>
+        </div>
         <div class="research-controls">
+          <span id="researchSavedHint" class="research-saved-hint" aria-live="polite"></span>
           <label class="research-field">Depth
             <select id="researchDepth">
               <option value="1">1</option><option value="2">2</option>
@@ -83,10 +89,19 @@
         </div>
         <div class="research-controls research-controls-fallback">
           <div class="research-fallback-col">
-            <div class="research-fallback-label"><span class="icon-emoji">🧠</span><i data-lucide="cpu" class="icon-lucide"></i> Model <span class="research-hint">top = 1st choice, then fallbacks</span></div>
-            <select id="researchModel1" class="research-select"></select>
-            <select id="researchModel2" class="research-select"></select>
-            <select id="researchModel3" class="research-select"></select>
+            <div class="research-fallback-label"><span class="icon-emoji">🧠</span><i data-lucide="cpu" class="icon-lucide"></i> Model <span class="research-hint">tried in order, top first</span></div>
+            <div class="research-model-slot research-model-slot-primary">
+              <span class="research-slot-num">1</span>
+              <select id="researchModel1" class="research-select"></select>
+            </div>
+            <div class="research-model-slot">
+              <span class="research-slot-num">2</span>
+              <select id="researchModel2" class="research-select"></select>
+            </div>
+            <div class="research-model-slot">
+              <span class="research-slot-num">3</span>
+              <select id="researchModel3" class="research-select"></select>
+            </div>
           </div>
 
         </div>
@@ -118,7 +133,10 @@
       const libWrap = document.createElement("div");
       libWrap.className = "research-library";
       libWrap.innerHTML = `
-        <div class="research-lib-head"><i data-lucide="file-text" style="width:14px;height:14px;display:inline;vertical-align:middle;margin-right:4px;"></i> Past Research</div>
+        <div class="research-lib-head">
+          <span><i data-lucide="file-text" style="width:14px;height:14px;display:inline;vertical-align:middle;margin-right:4px;"></i> Past Research</span>
+          <button id="researchImportPdf" class="icon-btn" title="Import PDF as research"><i data-lucide="file-up" class="icon-lucide"></i></button>
+        </div>
         <div id="researchLibList" class="library-loading">Loading…</div>
       `;
       container.appendChild(libWrap);
@@ -126,6 +144,34 @@
       launch.querySelector("#researchStartBtn").addEventListener("click", startResearch);
       launch.querySelector("#researchQuery").addEventListener("keydown", (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === "Enter") startResearch();
+      });
+      // Depth presets — set all three dropdowns at once, then sync the chip
+      // highlight to whatever combination is currently selected.
+      launch.querySelectorAll(".research-preset-chip").forEach((chip) => {
+        chip.addEventListener("click", () => {
+          const d = launch.querySelector("#researchDepth");
+          const t = launch.querySelector("#researchTime");
+          const p = launch.querySelector("#researchPages");
+          if (d) d.value = chip.dataset.depth;
+          if (t) t.value = chip.dataset.time;
+          if (p) p.value = chip.dataset.pages;
+          _syncPresetChips(launch);
+          _saveResearchConfig();
+          _flashSavedHint();
+        });
+      });
+      // Keep chip state honest if the user tweaks a dropdown manually.
+      ["#researchDepth", "#researchTime", "#researchPages"].forEach((sel) => {
+        const el = launch.querySelector(sel);
+        if (el) el.addEventListener("change", () => _syncPresetChips(launch));
+      });
+      _syncPresetChips(launch);
+      libWrap.querySelector("#researchImportPdf").addEventListener("click", () => {
+        if (typeof window.importPdfToLibrary === "function") {
+          window.importPdfToLibrary("research", () => loadResearchLibrary());
+        } else {
+          showToast("Import helper unavailable", "error");
+        }
       });
 
       loadIncompleteResearch();
@@ -407,6 +453,35 @@
       try { localStorage.setItem(_R_STORAGE_KEY, JSON.stringify(cfg)); } catch {}
     }
 
+    // Highlight the preset chip matching the current depth/time/pages combo.
+    function _syncPresetChips(scope) {
+      if (!scope) return;
+      const d = scope.querySelector("#researchDepth")?.value;
+      const t = scope.querySelector("#researchTime")?.value;
+      const p = scope.querySelector("#researchPages")?.value;
+      let matched = false;
+      scope.querySelectorAll(".research-preset-chip").forEach((chip) => {
+        const hit = chip.dataset.depth === d && chip.dataset.time === t && chip.dataset.pages === p;
+        chip.classList.toggle("active", hit);
+        if (hit) matched = true;
+      });
+      if (!matched) scope.querySelectorAll(".research-preset-chip").forEach((c) => c.classList.remove("active"));
+    }
+
+    // Brief "✓ Saved" flash next to the controls — mirrors rail-settings.js.
+    let _savedHintTimer = null;
+    function _flashSavedHint() {
+      const el = document.getElementById("researchSavedHint");
+      if (!el) return;
+      el.textContent = "✓ Saved";
+      el.classList.add("show");
+      clearTimeout(_savedHintTimer);
+      _savedHintTimer = setTimeout(() => {
+        el.classList.remove("show");
+        el.textContent = "";
+      }, 1600);
+    }
+
     async function populateResearchSelectors(scope) {
       const saved = _loadResearchConfig();
       const allModels = ((typeof modelList !== "undefined" && Array.isArray(modelList)) ? modelList : [])
@@ -428,13 +503,14 @@
 
       // Auto-save on any selector change.
       scope.querySelectorAll("#researchModel1,#researchModel2,#researchModel3,#researchDepth,#researchTime,#researchPages")
-        .forEach((el) => el.addEventListener("change", _saveResearchConfig));
+        .forEach((el) => el.addEventListener("change", () => { _saveResearchConfig(); _flashSavedHint(); }));
     }
 
     async function startResearch() {
       const qEl = document.getElementById("researchQuery");
       const query = qEl ? qEl.value.trim() : "";
       if (!query) { flashResearchStatus("Type a research question first.", true); return; }
+      if (window.genHistory) window.genHistory.push("research", query, {});
       const depth = parseInt(document.getElementById("researchDepth")?.value || "3", 10);
       const maxTime = parseInt(document.getElementById("researchTime")?.value || "1500", 10);
       const pagesPerTopic = parseInt(document.getElementById("researchPages")?.value || "3", 10);
@@ -456,6 +532,8 @@
         createRunCard(data.session_id, query);
         renderRunProgress(_researchRuns.get(data.session_id), data.progress || { phase: "starting", status: "queued" });
         attachResearchStream(data.session_id);
+        // Attach the session id so history entries can be re-opened later.
+        if (window.genHistory) window.genHistory.update("research", query, { sid: data.session_id });
       } catch (e) {
         flashResearchStatus("Start failed: " + e.message, true);
       }
@@ -470,6 +548,12 @@
         <div class="research-run-head">
           <span class="research-run-title" title="${escHtml(query)}">${escHtml(query)}</span>
           <button class="research-stop-btn" title="Stop this research">⏹ Stop</button>
+        </div>
+        <div class="research-legend" aria-hidden="true">
+          <span class="rlg-item"><span class="rlg-dot rlg-root"></span>topic</span>
+          <span class="rlg-item"><span class="rlg-dot rlg-page"></span>page</span>
+          <span class="rlg-item"><span class="rlg-dot rlg-done"></span>done</span>
+          <span class="rlg-item"><span class="rlg-dot rlg-pending"></span>pending</span>
         </div>
         <div class="research-anim"><svg class="rg-svg" preserveAspectRatio="xMidYMid meet"></svg></div>
         <div class="research-run-status"></div>
@@ -655,7 +739,12 @@
         <div class="settings-panel library-reader-panel">
           <div class="settings-header">
             <h2>Research Report</h2>
-            <button class="icon-btn" id="libraryReaderClose"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
+            <div style="display:flex;gap:4px;">
+              <button class="icon-btn" id="researchReportCopy" title="Copy report"><i data-lucide="copy" class="icon-lucide"></i></button>
+              <button class="icon-btn" id="researchReportDownload" title="Download .md"><i data-lucide="download" class="icon-lucide"></i></button>
+              <button class="icon-btn" id="researchReportPdf" title="Export as PDF"><i data-lucide="file-down" class="icon-lucide"></i></button>
+              <button class="icon-btn" id="libraryReaderClose"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
+            </div>
           </div>
           <div class="library-reader-content">${renderMarkdownSimple(markdown)}${srcHtml}</div>
         </div>
@@ -663,7 +752,26 @@
       document.body.appendChild(overlay);
       overlay.querySelector("#libraryReaderClose").addEventListener("click", () => overlay.remove());
       overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+      overlay.querySelector("#researchReportCopy").addEventListener("click", function () {
+        const original = this.innerHTML;
+        navigator.clipboard.writeText(markdown || "").then(() => {
+          this.innerHTML = '<i data-lucide="check" class="icon-lucide"></i>';
+          this.style.color = "#4ade80";
+          if (window.lucide) lucide.createIcons({ nodes: [this] });
+          setTimeout(() => { this.innerHTML = original; this.style.color = ""; if (window.lucide) lucide.createIcons({ nodes: [this] }); }, 2000);
+        });
+      });
+      overlay.querySelector("#researchReportDownload").addEventListener("click", () => {
+        if (typeof window.downloadTextFile === "function") window.downloadTextFile(markdown || "", "research-report.md");
+      });
+      overlay.querySelector("#researchReportPdf").addEventListener("click", function () {
+        if (typeof window.exportReaderToPdf === "function") window.exportReaderToPdf(this, "Research Report", markdown || "");
+      });
       if (window.lucide) lucide.createIcons({ nodes: overlay.querySelectorAll("[data-lucide]") });
+      // Typeset math / render mermaid AFTER the HTML is in the DOM.
+      if (typeof window.postRenderContent === "function") {
+        window.postRenderContent(overlay.querySelector(".library-reader-content"));
+      }
     }
 
     function flashResearchStatus(msg, isError) {
@@ -714,6 +822,7 @@
             </div>
             ${item.error ? '<div class="ric-error">' + escHtml(item.error) + '</div>' : ''}
             <div class="ric-actions">
+              ${(findings > 0 || sources > 0) ? `<button class="ric-btn ric-view" data-sid="${escHtml(item.session_id)}">👁 Findings</button>` : ''}
               <button class="ric-btn ric-resume" data-sid="${escHtml(item.session_id)}">▶ Resume</button>
               <button class="ric-btn ric-delete" data-sid="${escHtml(item.session_id)}">🗑 Delete</button>
             </div>
@@ -755,6 +864,40 @@
           });
         });
 
+        list.querySelectorAll(".ric-view").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const sid = btn.dataset.sid;
+            btn.disabled = true;
+            const original = btn.textContent;
+            btn.textContent = "Loading…";
+            try {
+              const res = await fetch("/api/research/result/" + sid, { method: "POST" });
+              const data = await res.json().catch(() => ({}));
+              if (!res.ok) { showToast(data.detail || "No findings available", "error"); return; }
+              const findings = data.findings || [];
+              const sources = data.sources || [];
+              // If a full report exists, show it; otherwise render findings as markdown.
+              if (data.result && data.result.trim()) {
+                openResearchReportViewer(data.result, sources);
+              } else if (findings.length) {
+                let md = "# Partial Findings\n\n_This research did not finish, but here is what was gathered.\n\n";
+                findings.forEach((f, i) => {
+                  const text = typeof f === "string" ? f : (f.text || f.summary || JSON.stringify(f));
+                  md += "## Finding " + (i + 1) + "\n\n" + text + "\n\n";
+                });
+                openResearchReportViewer(md, sources);
+              } else {
+                showToast("No findings saved for this session", "error");
+              }
+            } catch (e) {
+              showToast("Failed to load findings: " + e.message, "error");
+            } finally {
+              btn.disabled = false;
+              btn.textContent = original;
+            }
+          });
+        });
+
         list.querySelectorAll(".ric-delete").forEach((btn) => {
           btn.addEventListener("click", async () => {
             const sid = btn.dataset.sid;
@@ -786,6 +929,19 @@
       }
     }
 
+    // "Run again" from a library card — prefill the query + params and scroll
+    // the launch card into view. Does NOT auto-start (avoids surprise spend).
+    function _rerunResearch(item) {
+      const qEl = document.getElementById("researchQuery");
+      if (!qEl) { showToast("Research panel not open", "error"); return; }
+      qEl.value = item.title || "";
+      qEl.focus();
+      qEl.dispatchEvent(new Event("input", { bubbles: true }));
+      const launch = document.querySelector(".research-launch");
+      if (launch) launch.scrollIntoView({ behavior: "smooth", block: "start" });
+      showToast("Query loaded — review & hit Start", "info");
+    }
+
     async function loadResearchLibrary() {
       const list = document.getElementById("researchLibList");
       if (!list) return;
@@ -801,13 +957,21 @@
         grid.className = "library-card-grid";
         items.forEach((item) => {
           const card = document.createElement("div");
-          card.className = "library-card";
+          card.className = "library-card library-card-actions";
           card.innerHTML = `
             <div class="library-card-title">${escHtml(item.title)}</div>
             <div class="library-card-date">${item.date || ""}</div>
             <div class="library-card-preview">${escHtml(item.preview || "")}</div>
+            <button class="library-card-rerun" title="Run this query again"><i data-lucide="rotate-ccw" class="icon-lucide"></i></button>
           `;
-          card.addEventListener("click", () => openLibraryReader("research", item.filename, item.title));
+          card.addEventListener("click", (e) => {
+            if (e.target.closest(".library-card-rerun")) return;
+            openLibraryReader("research", item.filename, item.title);
+          });
+          card.querySelector(".library-card-rerun").addEventListener("click", (e) => {
+            e.stopPropagation();
+            _rerunResearch(item);
+          });
           grid.appendChild(card);
         });
         list.appendChild(grid);

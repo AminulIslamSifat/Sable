@@ -1071,17 +1071,7 @@
 
       const badge = document.createElement("span");
       badge.className = "msg-stats";
-      const useLucide = document.documentElement.getAttribute("data-icon-style") === "lucide"
-        && window.lucide && window.lucide.icons && window.lucide.icons["zap"];
-      if (useLucide) {
-        const children = window.lucide.icons["zap"][2];
-        let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="msg-lucide-icon lucide-zap" style="vertical-align:-2px;margin-right:3px;">`;
-        if (children) for (const child of children) { if (Array.isArray(child)) { const [cTag, cAttrs] = child; svg += `<${cTag}`; for (const [k, v] of Object.entries(cAttrs)) svg += ` ${k}="${v}"`; svg += "/>"; } }
-        svg += "</svg>";
-        badge.innerHTML = `${svg}${label}`;
-      } else {
-        badge.textContent = `\u26a1 ${label}`;
-      }
+      badge.innerHTML = `<span class="msg-stats-icon">${lucideIcon("\u26a1")}</span>${label}`;
       badge.title =
         `Tokens: ~${tokens} (${chars} chars / 4)\n` +
         `Speed: ${tps.toFixed(1)} tok/s\n` +

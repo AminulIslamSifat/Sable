@@ -1003,6 +1003,43 @@
     .tn-item-action:hover { color: var(--text); background: var(--border); }
     .tn-item-action.danger:hover { color: #e74c3c; }
 
+    /* Image variant — thumbnail card matching the notes list style */
+    .tn-item-with-thumb {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+    }
+    .tn-item-thumb {
+      flex-shrink: 0;
+      width: 46px;
+      height: 46px;
+      border-radius: 8px;
+      overflow: hidden;
+      background: color-mix(in srgb, var(--panel-2) 60%, transparent);
+    }
+    .tn-item-thumb img { width: 100%; height: 100%; object-fit: cover; }
+    .tn-item-thumb-body { flex: 1; min-width: 0; }
+    .tn-item-thumb-body .tn-item-title {
+      font-size: var(--font-size-system);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Shared generation-history cards (image / research / prompt sidebars) */
+    .gen-history-item .tn-item-title {
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      font-weight: 500;
+    }
+    .gen-history-has-result {
+      color: var(--accent-text, var(--accent));
+      font-weight: 600;
+    }
+
     .tn-checklist { margin-top: 6px; padding-left: 4px; }
     .tn-checklist-item { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: var(--font-size-system); }
     .tn-checklist-item.done { text-decoration: line-through; opacity: .5; }

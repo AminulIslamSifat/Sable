@@ -291,11 +291,41 @@
         const imgUrl = "/assets/" + img.filename;
         const cell = document.createElement("div");
         cell.className = "library-gallery-item";
-        cell.innerHTML = `<img src="${imgUrl}" alt="Generated image" loading="lazy">`;
+        cell.innerHTML = `<img src="${imgUrl}" alt="Generated image" loading="lazy">` +
+          `<button class="ig-cell-dl" title="Download image"><i data-lucide="download" class="icon-lucide"></i></button>`;
         cell.title = `Seed: ${img.seed} | ${img.width}x${img.height}`;
-        cell.addEventListener("click", () => openLightbox(_igUrls, ii));
+        cell.addEventListener("click", (e) => {
+          if (e.target.closest(".ig-cell-dl")) return;
+          openLightbox(_igUrls, ii);
+        });
+        cell.querySelector(".ig-cell-dl").addEventListener("click", (e) => {
+          e.stopPropagation();
+          _igDownload(imgUrl, img.filename || ("image-" + (ii + 1) + ".png"));
+        });
         gallery.appendChild(cell);
       });
+      if (window.lucide) lucide.createIcons({ nodes: gallery.querySelectorAll("[data-lucide]") });
+      // "Download all" sits next to the meta line so it persists until the
+      // next generation overwrites the gallery.
+      const existingAll = outputWrap.querySelector(".ig-download-all");
+      if (existingAll) existingAll.remove();
+      const dlAll = document.createElement("button");
+      dlAll.className = "ig-download-all";
+      dlAll.innerHTML = '<i data-lucide="download" class="icon-lucide"></i> Download all (' + n + ')';
+      dlAll.addEventListener("click", async function () {
+        this.disabled = true;
+        const label = this.innerHTML;
+        for (let k = 0; k < result.images.length; k++) {
+          const im = result.images[k];
+          await _igDownload("/assets/" + im.filename, im.filename || ("image-" + (k + 1) + ".png"), true);
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        this.disabled = false;
+        this.innerHTML = label;
+        if (window.lucide) lucide.createIcons({ nodes: [this] });
+      });
+      outputWrap.insertBefore(dlAll, metaEl);
+      if (window.lucide) lucide.createIcons({ nodes: [dlAll] });
       const first = result.images[0];
       const totalSize = result.images.reduce((s, i) => s + (i.size_bytes || 0), 0);
       let detailLabel;
@@ -315,10 +345,52 @@
       outputWrap.style.display = "block";
     }
 
+    // Fetch an image as a blob and trigger a real file download (works
+    // cross-origin-free since /assets is same-origin; keeps the original ext).
+    async function _igDownload(url, filename, silent) {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const blob = await res.blob();
+        const objUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = objUrl;
+        a.download = (filename || "image.png").replace(/[\/:*?"<>|]/g, "_");
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(objUrl), 2000);
+        if (!silent) showToast("Downloaded " + a.download, "success");
+      } catch (e) {
+        showToast("Download failed: " + e.message, "error");
+      }
+    }
+
     function _igRenderError(metaEl, outputWrap, msg) {
       metaEl.textContent = "❌ " + msg;
       outputWrap.style.display = "block";
     }
+
+    // ── Elapsed-time ticker for the generate button ──
+    // Generators are single-request (no streamed progress), so instead of a
+    // fake bar we show honest elapsed seconds — matters for 15-image batches.
+    let _igTimerId = null;
+    function _igStartTimer(btn, baseText) {
+      _igStopTimer();
+      if (!btn) return;
+      const startedAt = Date.now();
+      btn.textContent = baseText + " · 0s";
+      _igTimerId = setInterval(() => {
+        const live = _igGetLiveRefs();
+        if (!live || !live.genBtn) { _igStopTimer(); return; }
+        const secs = Math.floor((Date.now() - startedAt) / 1000);
+        live.genBtn.textContent = baseText + " · " + secs + "s";
+      }, 1000);
+    }
+    function _igStopTimer() {
+      if (_igTimerId) { clearInterval(_igTimerId); _igTimerId = null; }
+    }
+    window._igStopTimer = _igStopTimer;
 
     // ── Get current live DOM refs for image gen panel (if visible) ──
     function _igGetLiveRefs() {
@@ -346,6 +418,7 @@
       if (uiRefs) {
         uiRefs.genBtn.disabled = true;
         uiRefs.genBtn.textContent = "⏳ Generating…";
+        _igStartTimer(uiRefs.genBtn, "⏳ Generating");
         uiRefs.outputWrap.style.display = "none";
         uiRefs.gallery.innerHTML = "";
         uiRefs.metaEl.textContent = "";
@@ -365,6 +438,7 @@
 
         if (result.ok && result.images && result.images.length > 0) {
           _igState.result = result;
+          if (window.genHistory && attrs && attrs.prompt) { window.genHistory.update("image", attrs.prompt, { result: result, provider: attrs.provider }); }
           showToast(`✅ ${result.count} image(s) generated!`, "success");
           if (live) _igRenderResult(live.gallery, live.metaEl, live.outputWrap, result, attrs);
         } else {
@@ -379,6 +453,7 @@
         const live = _igGetLiveRefs();
         if (live) _igRenderError(live.metaEl, live.outputWrap, e.message);
       } finally {
+        _igStopTimer();
         _igState.generating = false;
         _igState.promise = null;
         const live = _igGetLiveRefs();
@@ -400,6 +475,7 @@
       if (uiRefs) {
         uiRefs.genBtn.disabled = true;
         uiRefs.genBtn.textContent = "⏳ Generating…";
+        _igStartTimer(uiRefs.genBtn, "⏳ Generating");
         uiRefs.outputWrap.style.display = "none";
         uiRefs.gallery.innerHTML = "";
         uiRefs.metaEl.textContent = "";
@@ -418,6 +494,7 @@
 
         if (result.ok && result.images && result.images.length > 0) {
           _igState.result = result;
+          if (window.genHistory && attrs && attrs.prompt) { window.genHistory.update("image", attrs.prompt, { result: result, provider: attrs.provider }); }
           showToast(`✅ ${result.count} image(s) generated!`, "success");
           if (live) _igRenderResult(live.gallery, live.metaEl, live.outputWrap, result, attrs);
         } else {
@@ -432,6 +509,7 @@
         const live = _igGetLiveRefs();
         if (live) _igRenderError(live.metaEl, live.outputWrap, e.message);
       } finally {
+        _igStopTimer();
         _igState.generating = false;
         _igState.promise = null;
         const live = _igGetLiveRefs();
@@ -452,6 +530,7 @@
       if (uiRefs) {
         uiRefs.genBtn.disabled = true;
         uiRefs.genBtn.textContent = "⏳ Generating…";
+        _igStartTimer(uiRefs.genBtn, "⏳ Generating");
         uiRefs.outputWrap.style.display = "none";
         uiRefs.gallery.innerHTML = "";
         uiRefs.metaEl.textContent = "";
@@ -470,6 +549,7 @@
 
         if (result.ok && result.images && result.images.length > 0) {
           _igState.result = result;
+          if (window.genHistory && attrs && attrs.prompt) { window.genHistory.update("image", attrs.prompt, { result: result, provider: attrs.provider }); }
           showToast(`✅ ${result.count} image(s) generated!`, "success");
           if (live) _igRenderResult(live.gallery, live.metaEl, live.outputWrap, result, attrs);
         } else {
@@ -484,6 +564,7 @@
         const live = _igGetLiveRefs();
         if (live) _igRenderError(live.metaEl, live.outputWrap, e.message);
       } finally {
+        _igStopTimer();
         _igState.generating = false;
         _igState.promise = null;
         const live = _igGetLiveRefs();
@@ -493,6 +574,20 @@
         }
       }
     }
+
+    // Restore a previously-generated result into the live panel. Used by the
+    // sidebar history when the user clicks an entry that has a saved result.
+    function _igRestoreResult(result, params) {
+      const live = _igGetLiveRefs();
+      if (!live) return false;
+      if (live.promptEl && params && params.prompt) live.promptEl.value = params.prompt;
+      if (result && result.images && result.images.length) {
+        _igRenderResult(live.gallery, live.metaEl, live.outputWrap, result, params || {});
+        return true;
+      }
+      return false;
+    }
+    window._igRestoreResult = _igRestoreResult;
 
     function renderImageGenPanel(container) {
       container.innerHTML = "";
@@ -506,6 +601,14 @@
           <div class="promptgen-launch-sub">Free · No login · Multiple providers</div>
         </div>
         <textarea id="igPrompt" class="promptgen-query" rows="3" placeholder="Describe what you want to generate…"></textarea>
+        <div class="ig-presets" aria-label="Quick prompt presets">
+          <button type="button" class="ig-preset-chip" data-p="portrait">👤 Portrait</button>
+          <button type="button" class="ig-preset-chip" data-p="landscape">🏞️ Landscape</button>
+          <button type="button" class="ig-preset-chip" data-p="anime">🇯🇵 Anime</button>
+          <button type="button" class="ig-preset-chip" data-p="product">📦 Product shot</button>
+          <button type="button" class="ig-preset-chip" data-p="logo">🎨 Logo / icon</button>
+        </div>
+        <div id="igHistory" class="ig-history" aria-label="Recent prompts"></div>
         <div class="promptgen-controls">
           <select id="igProvider" class="promptgen-select" style="width:auto;min-width:130px;">
             <option value="pollinations">Pollinations</option>
@@ -537,8 +640,8 @@
         </div>
         <div id="igPuterUsage" style="display:none;margin-top:6px;font-size:11px;color:var(--text);opacity:0.7;"></div>
         <input id="igNegPrompt" class="promptgen-query" style="margin-top:8px;min-height:auto;padding:8px 12px;font-size:12px;" placeholder="Negative prompt (optional): things to avoid…">
-        <div id="igDfControls" style="display:none;margin-top:10px;border-top:1px solid var(--border);padding-top:10px;">
-          <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;">🔮 DreamForge Options</div>
+        <details id="igDfControls" class="ig-advanced" style="display:none;">
+          <summary>🔮 DreamForge Options</summary>
           <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;">
             <label style="display:flex;flex-direction:column;gap:2px;font-size:11px;color:var(--text-muted);">
               <span>Art Style</span>
@@ -642,9 +745,9 @@
             <label class="df-checkbox-label"><input type="checkbox" id="igDfRemoveBg"> Remove background</label>
             <label class="df-checkbox-label"><input type="checkbox" id="igDfEnhancePrompt"> Auto-enhance prompt</label>
           </div>
-        </div>
-        <div id="igAsdxlControls" style="display:none;margin-top:10px;border-top:1px solid var(--border);padding-top:10px;">
-          <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;">⚡ Advanced SDXL Options</div>
+        </details>
+        <details id="igAsdxlControls" class="ig-advanced" style="display:none;">
+          <summary>⚡ Advanced SDXL Options</summary>
           <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;">
             <label style="display:flex;flex-direction:column;gap:2px;font-size:11px;color:var(--text-muted);">
               <span>Model Type</span>
@@ -745,10 +848,13 @@
               <input id="igAsdxlSeed" type="number" class="promptgen-input" style="width:100%;box-sizing:border-box;" value="-1">
             </label>
           </div>
-        </div>
+        </details>
         <div id="igOutputWrap" class="promptgen-output-wrap" style="display:none;">
           <div id="igGallery" class="library-gallery-grid" style="margin-bottom:10px;"></div>
-          <pre id="igMeta" class="promptgen-output" style="max-height:120px;font-size:11px;"></pre>
+          <div class="ig-meta-row">
+            <pre id="igMeta" class="promptgen-output" style="max-height:120px;font-size:11px;"></pre>
+            <button id="igCopyParams" class="ig-copy-params" title="Copy generation params"><i data-lucide="clipboard-copy" class="icon-lucide"></i></button>
+          </div>
         </div>
       `;
       container.appendChild(wrap);
@@ -763,6 +869,74 @@
       const modelSel = wrap.querySelector("#igModel");
       const styleSel = wrap.querySelector("#igStyle");
       const usageEl = wrap.querySelector("#igPuterUsage");
+      const historyEl = wrap.querySelector("#igHistory");
+
+      // ── Prompt history (localStorage ring buffer) ──
+      const _IG_HISTORY_KEY = "sable_ig_history";
+      function _loadHistory() {
+        try { return JSON.parse(localStorage.getItem(_IG_HISTORY_KEY)) || []; } catch { return []; }
+      }
+      function _pushHistory(prompt) {
+        if (!prompt) return;
+        let h = _loadHistory().filter((p) => p !== prompt);
+        h.unshift(prompt);
+        h = h.slice(0, 20);
+        try { localStorage.setItem(_IG_HISTORY_KEY, JSON.stringify(h)); } catch {}
+        _renderHistory();
+      }
+      function _renderHistory() {
+        if (!historyEl) return;
+        const h = _loadHistory();
+        if (!h.length) { historyEl.innerHTML = ""; historyEl.style.display = "none"; return; }
+        historyEl.style.display = "flex";
+        historyEl.innerHTML = h.map((p) =>
+          `<button type="button" class="ig-history-chip" title="${escHtml(p)}">${escHtml(p.length > 42 ? p.slice(0, 41) + "…" : p)}</button>`
+        ).join("");
+        historyEl.querySelectorAll(".ig-history-chip").forEach((chip, i) => {
+          chip.addEventListener("click", () => {
+            promptEl.value = h[i];
+            promptEl.focus();
+            promptEl.dispatchEvent(new Event("input", { bubbles: true }));
+          });
+        });
+      }
+      _renderHistory();
+
+      // ── Quick prompt presets — append a style suffix to whatever's typed ──
+      const _IG_PRESETS = {
+        portrait: ", professional portrait photo, 85mm lens, shallow depth of field, soft studio lighting, highly detailed",
+        landscape: ", breathtaking landscape, golden hour, wide angle, dramatic sky, ultra detailed, cinematic",
+        anime: ", anime style, vibrant colors, clean lineart, detailed background, studio quality",
+        product: ", professional product photography, clean white background, soft shadows, commercial quality, studio lighting",
+        logo: ", minimalist logo design, vector art, flat design, clean lines, iconic, professional branding",
+      };
+      wrap.querySelectorAll(".ig-preset-chip").forEach((chip) => {
+        chip.addEventListener("click", () => {
+          const suffix = _IG_PRESETS[chip.dataset.p] || "";
+          const cur = promptEl.value.trim();
+          if (!suffix) return;
+          if (cur.endsWith(suffix.trim())) return; // already applied
+          promptEl.value = (cur ? cur.replace(/,\s*$/, "") : "a beautiful subject") + suffix;
+          promptEl.focus();
+          promptEl.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+      });
+
+      // ── Copy params button ──
+      const copyParamsBtn = wrap.querySelector("#igCopyParams");
+      if (copyParamsBtn) {
+        copyParamsBtn.addEventListener("click", () => {
+          const txt = metaEl.textContent || "";
+          if (!txt) return;
+          const original = copyParamsBtn.innerHTML;
+          navigator.clipboard.writeText(txt).then(() => {
+            copyParamsBtn.innerHTML = '<i data-lucide="check" class="icon-lucide"></i>';
+            copyParamsBtn.style.color = "#4ade80";
+            if (window.lucide) lucide.createIcons({ nodes: [copyParamsBtn] });
+            setTimeout(() => { copyParamsBtn.innerHTML = original; copyParamsBtn.style.color = ""; if (window.lucide) lucide.createIcons({ nodes: [copyParamsBtn] }); }, 2000);
+          });
+        });
+      }
 
       // Cloudflare models catalog
       const _CF_MODELS = {
@@ -780,6 +954,10 @@
       // Toggle model/style visibility based on provider
       async function updateProviderUI() {
         const prov = providerSel.value;
+        // Negative prompt is only honored by these providers — hide it elsewhere.
+        const negEl = wrap.querySelector("#igNegPrompt");
+        const negSupported = ["dreamforge", "advanced-sdxl", "pollinations", "cloudflare"].includes(prov);
+        if (negEl) negEl.style.display = negSupported ? "" : "none";
         if (prov === "dreamforge") {
           modelSel.style.display = "none";
           styleSel.style.display = "none";
@@ -848,11 +1026,18 @@
           promptEl.style.display = "";
           wrap.querySelector("#igShape").style.display = "";
           wrap.querySelector("#igCount").style.display = "";
-          wrap.querySelector("#igNegPrompt").style.display = "";
+          wrap.querySelector("#igNegPrompt").style.display = negSupported ? "" : "none";
           dfControls.style.display = "none";
           asdxlControls.style.display = "none";
         }
       }
+      // Restore last-used provider (persisted across panel re-renders).
+      try {
+        const savedProvider = localStorage.getItem("sable_ig_provider");
+        if (savedProvider && [...providerSel.options].some((o) => o.value === savedProvider)) {
+          providerSel.value = savedProvider;
+        }
+      } catch {}
       providerSel.addEventListener("change", updateProviderUI);
       updateProviderUI();
 
@@ -869,6 +1054,9 @@
         if (_igState.generating) return; // prevent double-click
 
         const provider = providerSel.value;
+        try { localStorage.setItem("sable_ig_provider", provider); } catch {}
+        _pushHistory(prompt);
+        if (window.genHistory) window.genHistory.push("image", prompt, { provider });
 
         // ── DreamForge: use dedicated API with advanced options ──
         if (provider === "dreamforge") {
@@ -952,6 +1140,60 @@
         _igRenderError(metaEl, outputWrap, _igState.error);
         if (_igState.params?.prompt) promptEl.value = _igState.params.prompt;
       }
+
+      // ── Recent Images (inline gallery, mirrors "Saved Prompts") ──
+      const galleryWrap = document.createElement("div");
+      galleryWrap.className = "research-library";
+      galleryWrap.innerHTML = `
+        <div class="research-lib-head">
+          <span><i data-lucide="images" style="width:14px;height:14px;display:inline;vertical-align:middle;margin-right:4px;"></i> Recent Images</span>
+          <button id="igGalleryRefresh" class="icon-btn" title="Refresh"><i data-lucide="refresh-cw" class="icon-lucide"></i></button>
+        </div>
+        <div id="igSavedList" class="library-loading">Loading…</div>
+      `;
+      container.appendChild(galleryWrap);
+      if (window.lucide) lucide.createIcons({ nodes: galleryWrap.querySelectorAll("[data-lucide]") });
+      galleryWrap.querySelector("#igGalleryRefresh").addEventListener("click", () => _igLoadGallery());
+      _igLoadGallery();
+    }
+
+    // Fetch the on-disk gallery and render a clickable thumbnail grid.
+    // Distinct from the sidebar (which shows prompt *history*).
+    async function _igLoadGallery() {
+      const list = document.getElementById("igSavedList");
+      if (!list) return;
+      try {
+        const res = await fetch("/api/library/gallery");
+        const items = await res.json();
+        if (!items || !items.length) {
+          list.innerHTML = '<div class="library-empty">No images yet. Generate one above.</div>';
+          return;
+        }
+        const urls = items.map((x) => x.url);
+        list.innerHTML = "";
+        const grid = document.createElement("div");
+        grid.className = "library-gallery-grid ig-saved-grid";
+        items.forEach((item, idx) => {
+          const cell = document.createElement("div");
+          cell.className = "library-gallery-item";
+          cell.innerHTML = `<img src="${escHtml(item.url)}" alt="${escHtml(item.filename)}" loading="lazy">` +
+            `<button class="ig-cell-dl" title="Download"><i data-lucide="download" class="icon-lucide"></i></button>`;
+          cell.title = item.filename;
+          cell.addEventListener("click", (e) => {
+            if (e.target.closest(".ig-cell-dl")) return;
+            openLightbox(urls, idx);
+          });
+          cell.querySelector(".ig-cell-dl").addEventListener("click", (e) => {
+            e.stopPropagation();
+            _igDownload(item.url, item.filename || ("image-" + (idx + 1) + ".png"));
+          });
+          grid.appendChild(cell);
+        });
+        list.appendChild(grid);
+        if (window.lucide) lucide.createIcons({ nodes: grid.querySelectorAll("[data-lucide]") });
+      } catch {
+        list.innerHTML = '<div class="library-empty">Failed to load gallery.</div>';
+      }
     }
 
     async function renderPromptGenPanel(container) {
@@ -1020,6 +1262,7 @@
       startBtn.addEventListener("click", async () => {
         const task = queryEl.value.trim();
         if (!task) { showToast("⚠️ Describe a task first", "error"); return; }
+        if (window.genHistory) window.genHistory.push("prompt", task, {});
 
         const _ordered = (...vals) => vals.filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
         const models = _ordered(
@@ -1088,6 +1331,7 @@ ${task}`;
 
           outputEl.textContent = cleaned;
           outputWrap.style.display = "block";
+          if (window.genHistory) window.genHistory.update("prompt", task, { output: cleaned, task: task });
           showToast("✅ Prompt generated", "success");
 
           // Auto-save to ~/sable_output/prompts/

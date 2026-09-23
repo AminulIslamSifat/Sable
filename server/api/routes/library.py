@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from engine.config import (
     AGENT_OUTPUT_DIR,
@@ -169,3 +169,105 @@ def library_read_file(section: str, filename: str) -> dict[str, Any]:
         return {"content": target.read_text(encoding="utf-8")}
     except Exception:
         return {"error": "read failed"}
+
+
+# ── PDF import ───────────────────────────────────────────────────────────────
+
+_IMPORT_SECTION_DIRS = {
+    "research": RESEARCH_DIR,
+    "notes": NOTES_DIR,
+}
+
+
+def _slugify(text: str, fallback: str = "imported") -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", (text or "").strip().lower()).strip("-")
+    return (slug or fallback)[:60]
+
+
+def _extract_pdf_text(raw: bytes) -> str:
+    """Extract text from a PDF. Prefers PyMuPDF (better layout), falls back to pypdf."""
+    # Primary: PyMuPDF
+    try:
+        import fitz  # type: ignore
+
+        doc = fitz.open(stream=raw, filetype="pdf")
+        pages: list[str] = []
+        for page in doc:
+            pages.append(page.get_text("text") or "")
+        doc.close()
+        text = "\n\n".join(p for p in pages if p.strip())
+        if text.strip():
+            return text
+    except Exception:
+        pass
+
+    # Fallback: pypdf
+    try:
+        import io
+
+        from pypdf import PdfReader  # type: ignore
+
+        reader = PdfReader(io.BytesIO(raw))
+        pages = [(page.extract_text() or "") for page in reader.pages]
+        return "\n\n".join(p for p in pages if p.strip())
+    except Exception:
+        return ""
+
+
+def _dedupe_path(target: Path) -> Path:
+    if not target.exists():
+        return target
+    stem, suffix = target.stem, target.suffix
+    for i in range(2, 1000):
+        candidate = target.with_name(f"{stem}-{i}{suffix}")
+        if not candidate.exists():
+            return candidate
+    return target
+
+
+@router.post("/api/library/import-pdf")
+async def library_import_pdf(
+    file: UploadFile = File(...),
+    section: str = Form("notes"),
+    title: str = Form(""),
+) -> dict[str, Any]:
+    """Convert an uploaded PDF into a markdown note/research item."""
+    if section not in _IMPORT_SECTION_DIRS:
+        raise HTTPException(status_code=400, detail="section must be 'notes' or 'research'")
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="missing filename")
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="only PDF files are supported")
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="empty file")
+    if len(raw) > 100 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="file too large (max 100 MB)")
+
+    text = _extract_pdf_text(raw)
+    if not text.strip():
+        raise HTTPException(status_code=422, detail="no extractable text (scanned/image PDF?)")
+
+    base_title = (title or "").strip() or Path(file.filename).stem
+    out_dir = _IMPORT_SECTION_DIRS[section]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = _dedupe_path(out_dir / f"{_slugify(base_title)}.md")
+
+    frontmatter = (
+        "---\n"
+        f"title: {base_title}\n"
+        f"source: {file.filename}\n"
+        "type: pdf-import\n"
+        "---\n\n"
+    )
+    target.write_text(frontmatter + text.strip() + "\n", encoding="utf-8")
+
+    return {
+        "imported": True,
+        "section": section,
+        "filename": target.name,
+        "title": base_title,
+        "chars": len(text),
+    }
+

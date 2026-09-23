@@ -38,6 +38,25 @@ logger = logging.getLogger("sable.deepseek_api")
 _IDLE_TIMEOUT_SECS = 30.0
 
 BASE_URL = "https://chat.deepseek.com"
+
+
+def _is_session_invalid(biz_code: Any, biz_msg: str | None) -> bool:
+    """True when the biz_error means the upstream chat_session_id is gone.
+
+    DeepSeek returns HTTP 200 + biz_code=1 with biz_msg "invalid chat session id"
+    when the session UUID is stale, deleted, or belongs to another account.
+    This is a SESSION-level failure — token rotation will NOT fix it, and
+    nulling the parent chain just causes amnesia. The only correct recovery is
+    to create a fresh upstream session and re-seed it with the full local
+    conversation history.
+    """
+    msg = (biz_msg or "").lower()
+    if "session" not in msg:
+        return False
+    return any(
+        k in msg
+        for k in ("invalid", "not found", "not_found", "expired", "deleted", "does not exist")
+    )
 _SOLVER_DIR = Path(__file__).resolve().parent / "pow_solver"
 _SOLVER_NAME = "pow_solver.exe" if sys.platform == "win32" else "pow_solver"
 SOLVER_PATH = _SOLVER_DIR / _SOLVER_NAME
@@ -1127,9 +1146,21 @@ class DeepSeekClient:
         async for raw_line in resp.aiter_lines():
             # curl_cffi yields bytes; httpx yielded str. Normalize.
             line = raw_line.decode("utf-8", errors="replace") if isinstance(raw_line, bytes) else raw_line
-            if not line.startswith("data: "):
+            line = line.strip()
+            if not line:
                 continue
-            payload = line[6:]
+            # Accept BOTH SSE-framed lines ("data: {...}") AND a raw JSON body.
+            # DeepSeek returns errors as a plain application/json body with no
+            # SSE framing. The old `data: ` guard silently dropped those, which
+            # is exactly why an "invalid chat session id" error surfaced to the
+            # user as an empty response (and then got retried/rotated into
+            # amnesia instead of being handled as a session failure).
+            if line.startswith("data: "):
+                payload = line[6:].strip()
+            elif line.startswith("{"):
+                payload = line
+            else:
+                continue
             if payload == "[DONE]":
                 break
             try:
@@ -1137,13 +1168,25 @@ class DeepSeekClient:
             except json.JSONDecodeError:
                 continue
 
-            # Check for business-layer errors (muted account, etc.)
-            # DeepSeek returns HTTP 200 with biz_code for account-level issues
+            # Check for business-layer errors (muted account, invalid session, etc.)
+            # DeepSeek returns HTTP 200 with biz_code — sometimes top-level,
+            # sometimes nested one level under `data` (plain JSON error body).
             biz_code = obj.get("biz_code")
-            if biz_code is not None and biz_code != 0:
-                biz_msg = obj.get("biz_msg", "unknown")
+            biz_msg = obj.get("biz_msg")
+            biz_data = obj.get("biz_data")
+            if biz_code in (None, 0):
+                _inner = obj.get("data")
+                if isinstance(_inner, dict):
+                    _inner_bc = _inner.get("biz_code")
+                    if _inner_bc not in (None, 0):
+                        biz_code = _inner_bc
+                        biz_msg = _inner.get("biz_msg", biz_msg)
+                        if biz_data is None:
+                            biz_data = _inner.get("biz_data")
+            if biz_code not in (None, 0):
+                if not biz_msg:
+                    biz_msg = obj.get("msg") or "unknown"
                 mute_until = None
-                biz_data = obj.get("biz_data")
                 if isinstance(biz_data, dict):
                     mute_until = biz_data.get("mute_until")
                 logger.warning("DeepSeek biz_code=%s: %s (mute_until=%s)", biz_code, biz_msg, mute_until)
@@ -1331,11 +1374,15 @@ class DeepSeekClient:
         except Exception as _jexc:
             logger.debug("DeepSeek jitter skipped: %s", _jexc)
 
+        _prev_token: str | None = None
         for _attempt in range(attempts):
-            # On rotation, drop this chat's cached session so we get a fresh one
+            # SAME token + SAME chat => NEVER drop the cached session.
+            # All retries stay in the same upstream conversation. A new
+            # session is ONLY created for a real token change (different
+            # account = different session namespace) or an explicit fork.
             if _attempt > 0 and chat_id:
                 _tok = self._current_rotate_token
-                if _tok:
+                if _tok and _prev_token and _tok != _prev_token:
                     self._chat_sessions.pop((_tok, chat_id), None)
                     self._chat_sessions.pop((_tok, "__ephemeral__"), None)
                     logger.info("DeepSeek rotation #%d: dropped session for chat %s, token %s",
@@ -1401,6 +1448,12 @@ class DeepSeekClient:
             else:
                 yield {"type": "status", "message": "deepseek_transport_curl"}
 
+            # Session-invalid recovery state — a stale chat_session_id is a
+            # SESSION failure, not a token failure. We recreate the upstream
+            # session and re-seed it with local history exactly once per
+            # stream_chat() call.
+            _session_recreated = False
+
             # Per-token retry loop
             for _retry in range(_MAX_RETRIES_PER_TOKEN):
                 # PoW nonces are single-use. The header solved in
@@ -1437,6 +1490,7 @@ class DeepSeekClient:
 
                         _response_parent_id: int | None = None
                         _got_biz_error = False
+                        _session_invalid = False
                         async for event in self._iter_with_idle_timeout(resp):
                             etype = event.get("type")
                             if etype == "answer":
@@ -1447,12 +1501,92 @@ class DeepSeekClient:
                                 _response_parent_id = event.get("parent_id")
                             elif etype == "biz_error":
                                 _got_biz_error = True
-                                last_err = f"biz_code:{event.get('biz_code')} ({event.get('biz_msg', 'unknown')})"
+                                _bc = event.get("biz_code")
+                                _bm = event.get("biz_msg", "unknown")
+                                last_err = f"biz_code:{_bc} ({_bm})"
                                 logger.warning("DeepSeek biz_error: %s", last_err)
+                                if _is_session_invalid(_bc, _bm):
+                                    _session_invalid = True
                                 break
                             yield event
 
                         if _got_biz_error:
+                            # --- Session-invalid recovery ---
+                            # The upstream chat_session_id is gone (stale UUID,
+                            # deleted server-side, or bound to a different
+                            # account). Token rotation will NOT fix this, and
+                            # nulling the parent chain just causes amnesia. The
+                            # correct recovery: create a fresh session and
+                            # re-seed it with the ENTIRE local conversation so
+                            # the model picks up where we left off.
+                            if _session_invalid and chat_id and not _session_recreated:
+                                _session_recreated = True
+                                logger.warning(
+                                    "DeepSeek: session invalid for chat %s — recreating session and re-seeding %d history msgs",
+                                    chat_id, len(history),
+                                )
+                                yield {"type": "status", "message": "deepseek_session_recreate"}
+                                _tok = self._current_rotate_token
+                                if not _tok:
+                                    last_err = "session_recreate_no_token"
+                                    break
+                                # Drop the poisoned session from every cache slot
+                                self._chat_sessions.pop((_tok, chat_id), None)
+                                self._chat_sessions.pop((_tok, "__ephemeral__"), None)
+                                try:
+                                    _auth = self._auth_headers_for(_tok)
+                                    _new_sid = await self._create_session(headers=_auth)
+                                except Exception as _recreate_exc:
+                                    last_err = f"session_recreate_failed: {_recreate_exc}"
+                                    logger.error("DeepSeek: failed to recreate session for %s: %s", chat_id, _recreate_exc)
+                                    break
+                                self._chat_sessions[(_tok, chat_id)] = _new_sid
+                                try:
+                                    from server.database import set_upstream_session_id as _set_usid
+                                    _set_usid(chat_id, _new_sid)
+                                except Exception:
+                                    pass
+                                # New session has no nodes — clear the stale parent.
+                                self._parent_ids[chat_id] = None
+                                # Point the Referer at the fresh session too.
+                                headers["Referer"] = f"https://chat.deepseek.com/a/chat/s/{_new_sid}"
+
+                                # Serialize the full local conversation into the
+                                # first message of the new session. Skip the
+                                # system prompt — it's re-injected separately.
+                                _hist_lines: list[str] = []
+                                for _m in history:
+                                    _role = _m.get("role", "user")
+                                    if _role == "system":
+                                        continue
+                                    _content = _m.get("content", "")
+                                    if _content:
+                                        _hist_lines.append(f"{_role}: {_content}")
+                                _hist_block = "\n\n".join(_hist_lines)
+                                _recovered = (
+                                    "The previous upstream session was lost (invalid chat session id). "
+                                    "The full conversation so far is reproduced below — continue naturally, "
+                                    "do not acknowledge this preamble, do not repeat the history back.\n\n"
+                                    "=== CONVERSATION HISTORY ===\n"
+                                    f"{_hist_block}\n"
+                                    "=== END HISTORY ===\n\n"
+                                    f"{message}"
+                                )
+                                _reminder_r = self._get_reminder()
+                                if _reminder_r:
+                                    _recovered = f"{_reminder_r}\n\n{_recovered}"
+                                body["chat_session_id"] = _new_sid
+                                body["parent_message_id"] = None
+                                body["model_type"] = "default"
+                                body["prompt"] = _recovered
+                                logger.info(
+                                    "DeepSeek: re-seeded fresh session %s for chat %s with %d history msgs",
+                                    _new_sid[:12], chat_id, len(_hist_lines),
+                                )
+                                # Let the next loop iteration refresh PoW and retry.
+                                _got_biz_error = False
+                                _session_invalid = False
+                                continue
                             break
 
                     _log_raw("RESPONSE (raw)", (full_thinking + "\n---\n" + full_answer) if full_thinking else full_answer)
@@ -1483,12 +1617,19 @@ class DeepSeekClient:
                     if response_content:
                         history.append({"role": "assistant", "content": response_content})
 
-                    # Store the assistant message ID for next-turn chaining
+                    # Store the assistant message ID for next-turn chaining.
+                    # SAME token + SAME chat => NEVER null the parent on a
+                    # missing message_id. A missing id is a transient upstream
+                    # glitch; nulling it would silently re-root the conversation
+                    # (full amnesia on the next turn). Keep the previous parent
+                    # so the chain survives.
                     if chat_id and _response_parent_id:
                         self._parent_ids[chat_id] = _response_parent_id
                     elif chat_id and not _response_parent_id:
-                        self._parent_ids[chat_id] = None
-                        logger.warning("DeepSeek: no message_id in response for chat %s, chain reset", chat_id)
+                        logger.warning(
+                            "DeepSeek: no message_id in response for chat %s — keeping previous parent=%s (chain preserved)",
+                            chat_id, self._parent_ids.get(chat_id),
+                        )
 
                     # Trim client-side history if needed
                     if chat_id:
@@ -1528,25 +1669,36 @@ class DeepSeekClient:
                                        _MAX_RETRIES_PER_TOKEN, last_err)
                         break
 
-            # All retries exhausted for this token → record why, then rotate
-            if chat_id:
-                self._parent_ids[chat_id] = None
+            # All retries exhausted for this token → record why, then rotate.
             _old_token = self._current_rotate_token
             token_errors.append(f"token {self._mask_token(_old_token)}: {last_err}")
             self._advance_rotation()
             _new_token = self._current_rotate_token
-            logger.warning("DeepSeek rotated token: %s → %s (reason: %s)",
-                           self._mask_token(_old_token), self._mask_token(_new_token), last_err)
-            yield {
-                "type": "token_rotation",
-                "reason": last_err,
-                "from_token": self._mask_token(_old_token),
-                "to_token": self._mask_token(_new_token),
-                "from_index": (_attempt) % len(self._rotate_tokens) if self._rotate_tokens else 0,
-                "to_index": self._rotate_idx,
-                "total_tokens": len(self._rotate_tokens),
-                "new_chat": True,
-            }
+            _prev_token = _old_token
+
+            # SAME token + SAME chat => NEVER touch the parent chain.
+            # Every retry stays in the same upstream conversation. Only a
+            # real token change (different account) may reset the chain,
+            # because the new account cannot see the old session's messages.
+            if chat_id and _new_token != _old_token:
+                self._parent_ids[chat_id] = None
+
+            if _new_token != _old_token:
+                logger.warning("DeepSeek rotated token: %s → %s (reason: %s)",
+                               self._mask_token(_old_token), self._mask_token(_new_token), last_err)
+                yield {
+                    "type": "token_rotation",
+                    "reason": last_err,
+                    "from_token": self._mask_token(_old_token),
+                    "to_token": self._mask_token(_new_token),
+                    "from_index": (_attempt) % len(self._rotate_tokens) if self._rotate_tokens else 0,
+                    "to_index": self._rotate_idx,
+                    "total_tokens": len(self._rotate_tokens),
+                    "new_chat": True,
+                }
+            else:
+                logger.warning("DeepSeek retries exhausted on token %s (reason: %s), no rotation available — chain preserved",
+                               self._mask_token(_old_token), last_err)
 
         yield {"type": "error", "message": _all_failed_message()}
 

@@ -315,6 +315,16 @@
       color: var(--text);
       border-color: var(--accent);
     }
+    .msg-toolbar .msg-stats .msg-stats-icon {
+      display: inline-flex;
+      align-items: center;
+      margin-right: 3px;
+      vertical-align: -2px;
+    }
+    .msg-toolbar .msg-stats .msg-stats-icon svg {
+      width: 13px;
+      height: 13px;
+    }
     @keyframes tts-pulse {
       0%, 100% { opacity: 1; }
       50% { opacity: 0.7; }

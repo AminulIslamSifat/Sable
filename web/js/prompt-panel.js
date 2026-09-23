@@ -71,45 +71,35 @@
     isOpen = false;
   }
 
-  /* ── Sidebar: Recent Prompts ── */
-  async function loadSidebarPrompts() {
+  /* ── Sidebar: Prompt History (results live in the main window) ──
+     Clicking an entry restores the saved generated prompt into the output
+     area, or refills the task box if no output was captured. */
+  function loadSidebarPrompts() {
     const content = document.getElementById('pgSidebarContent');
     if (!content) return;
-    content.innerHTML = '<div class="pg-sidebar-loading">Loading…</div>';
-    try {
-      const res = await fetch('/api/library/prompts');
-      const items = await res.json();
-      if (!items || !items.length) {
-        content.innerHTML = '<div class="pg-sidebar-empty">No prompts yet.<br>Generate one from the main panel!</div>';
-        return;
-      }
-      content.innerHTML = '';
-      const list = document.createElement('div');
-      list.className = 'pg-sidebar-list';
-      items.slice(0, 20).forEach(item => {
-        const card = document.createElement('div');
-        card.className = 'pg-sidebar-card';
-        card.innerHTML = `
-          <div class="pg-card-icon"><i data-lucide="sparkles"></i></div>
-          <div class="pg-card-body">
-            <div class="pg-card-title">${escHtml(item.title)}</div>
-            <div class="pg-card-date">${item.date || ''}</div>
-            <div class="pg-card-preview">${escHtml((item.preview || '').slice(0, 100))}</div>
-          </div>
-        `;
-        card.addEventListener('click', () => {
-          if (typeof openLibraryReader === 'function') {
-            openLibraryReader('prompts', item.filename, item.title);
-          }
-        });
-        list.appendChild(card);
-      });
-      content.appendChild(list);
-      if (window.lucide) lucide.createIcons({ nodes: list.querySelectorAll('[data-lucide]') });
-      sidebarLoaded = true;
-    } catch {
-      content.innerHTML = '<div class="pg-sidebar-empty">Failed to load prompts.</div>';
+    if (!window.genHistory) {
+      content.innerHTML = '<div class="tracknote-empty">History module not loaded.</div>';
+      return;
     }
+    window.genHistory.renderInto('prompt', content, (item) => {
+      const meta = item.meta || {};
+      const outputEl = document.getElementById('pgOutput');
+      const wrap = document.getElementById('pgOutputWrap');
+      if (meta.output && outputEl && wrap) {
+        outputEl.textContent = meta.output;
+        wrap.style.display = 'block';
+        const task = document.getElementById('pgQuery');
+        if (task && meta.task) task.value = meta.task;
+      } else {
+        const task = document.getElementById('pgQuery');
+        if (task) {
+          task.value = item.text;
+          task.focus();
+          task.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }
+    });
+    sidebarLoaded = true;
   }
 
   /* ── Rail-switch handler ── */
@@ -131,20 +121,24 @@
     // Create sidebar widget and insert into DOM
     const widget = document.createElement('div');
     widget.id = 'pgSidebarWidget';
-    widget.className = 'pg-sidebar-widget hidden';
+    widget.className = 'tracknote-standalone hidden';
     widget.innerHTML = `
-      <div class="pg-sidebar-header">
-        <span class="pg-sidebar-title">✨ Recent Prompts</span>
-        <button class="pg-sidebar-refresh" id="pgSidebarRefresh" title="Refresh"><i data-lucide="refresh-cw"></i></button>
+      <div class="tracknote-standalone-header">
+        <span class="tracknote-standalone-title"><i data-lucide="history" class="icon-lucide"></i> Prompt History</span>
+        <button class="tn-add-toggle" id="pgSidebarClear" title="Clear history"><i data-lucide="trash-2" class="icon-lucide"></i></button>
       </div>
-      <div class="pg-sidebar-content" id="pgSidebarContent"></div>
+      <div class="tracknote-body" id="pgSidebarContent"></div>
     `;
     document.body.appendChild(widget);
 
-    // Bind refresh button
-    widget.querySelector('#pgSidebarRefresh')?.addEventListener('click', () => {
-      sidebarLoaded = false;
-      loadSidebarPrompts();
+    widget.querySelector('#pgSidebarClear')?.addEventListener('click', () => {
+      if (!window.genHistory) return;
+      if (!confirm('Clear all prompt history?')) return;
+      window.genHistory.clear('prompt');
+    });
+
+    window.addEventListener('gen-history-change', (e) => {
+      if (e.detail?.kind === 'prompt' && isOpen) loadSidebarPrompts();
     });
 
     if (window.lucide) lucide.createIcons({ nodes: widget.querySelectorAll('[data-lucide]') });

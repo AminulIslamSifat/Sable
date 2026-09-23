@@ -663,6 +663,8 @@
               <h2>${escHtml(title)}</h2>
               <div style="display:flex;gap:4px;">
                 <button class="icon-btn" id="libraryReaderCopy" title="Copy content"><i data-lucide="copy" class="icon-lucide"></i></button>
+                <button class="icon-btn" id="libraryReaderDownload" title="Download .md"><i data-lucide="download" class="icon-lucide"></i></button>
+                <button class="icon-btn" id="libraryReaderPdf" title="Export as PDF"><i data-lucide="file-down" class="icon-lucide"></i></button>
                 <button class="icon-btn" id="libraryReaderDock" title="Dock to sidebar"><i data-lucide="panel-right" class="icon-lucide"></i></button>
                 <button class="icon-btn" id="libraryReaderClose"><span class="icon-emoji">✕</span><i data-lucide="x" class="icon-lucide"></i></button>
               </div>
@@ -704,9 +706,133 @@
           overlay.remove();
           dockLibraryToSidebar(title, htmlContent);
         });
+        overlay.querySelector("#libraryReaderDownload").addEventListener("click", () => {
+          downloadTextFile(data.content || "", filename || (title + ".md"));
+        });
+        overlay.querySelector("#libraryReaderPdf").addEventListener("click", function () {
+          exportReaderToPdf(this, title, data.content || "");
+        });
         lucide.createIcons({ nodes: overlay.querySelectorAll("[data-lucide]") });
+        // MathJax + Mermaid need to run AFTER the HTML is in the DOM.
+        if (typeof window.postRenderContent === "function") {
+          window.postRenderContent(overlay.querySelector(".library-reader-content"));
+        }
       } catch { showToast("Failed to load file", "error"); }
     }
+
+    /* ---------- reader helpers: download / PDF export ---------- */
+
+    function downloadTextFile(text, filename) {
+      try {
+        const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = (filename || "document.md").replace(/[\/:*?"<>|]/g, "_");
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (e) {
+        showToast("Download failed: " + e.message, "error");
+      }
+    }
+    window.downloadTextFile = downloadTextFile;
+
+    // Print-to-PDF via a hidden iframe — keeps the main app untouched and
+    // lets the browser's native "Save as PDF" do the heavy lifting.
+    function exportReaderToPdf(btn, title, rawMd) {
+      const original = btn ? btn.innerHTML : "";
+      const restore = () => {
+        if (!btn) return;
+        btn.innerHTML = original;
+        btn.style.color = "";
+        if (window.lucide) lucide.createIcons({ nodes: [btn] });
+      };
+      if (btn) {
+        btn.innerHTML = '<i data-lucide="loader" class="icon-lucide"></i>';
+        if (window.lucide) lucide.createIcons({ nodes: [btn] });
+      }
+      try {
+        const bodyHtml = typeof renderMarkdown === "function"
+          ? renderMarkdown(rawMd)
+          : "<pre>" + escHtml(rawMd) + "</pre>";
+        const frame = document.createElement("iframe");
+        frame.setAttribute("aria-hidden", "true");
+        frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;";
+        document.body.appendChild(frame);
+        const doc = frame.contentDocument;
+        doc.open();
+        doc.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escHtml(title)}</title>
+          <style>
+            @page { margin: 18mm 16mm; }
+            body { font-family: Georgia, 'Times New Roman', serif; color:#111; line-height:1.55; font-size:12pt; }
+            h1,h2,h3,h4 { font-family: Helvetica, Arial, sans-serif; line-height:1.25; margin:1.2em 0 0.5em; }
+            h1 { font-size:20pt; } h2 { font-size:16pt; } h3 { font-size:13pt; }
+            code, pre { font-family: 'DejaVu Sans Mono', monospace; font-size:9.5pt; background:#f4f4f6; }
+            pre { padding:9px 11px; border-radius:5px; white-space:pre-wrap; word-break:break-word; }
+            table { border-collapse:collapse; width:100%; margin:0.8em 0; }
+            th,td { border:1px solid #bbb; padding:6px 8px; text-align:left; font-size:10.5pt; }
+            th { background:#eee; }
+            blockquote { border-left:3px solid #999; margin:0.8em 0; padding:2px 14px; color:#444; }
+            a { color:#1a4fa0; text-decoration:none; }
+            img { max-width:100%; }
+            .mermaid-error, .mermaid-wrap { display:none; }
+          </style>
+          <script>window.MathJax={tex:{inlineMath:[['$','$'],['\(','\)']],displayMath:[['$$','$$'],['\[','\]']]},startup:{typeset:false}};<\/script>
+          <script src="/static/vendor/mathjax-tex-chtml.js" async><\/script>
+          </head><body>${bodyHtml}</body></html>`);
+        doc.close();
+        const waitForMath = window.MathJax && window.MathJax.typesetPromise
+          ? window.MathJax.typesetPromise([frame.contentDocument.body]).catch(() => {})
+          : Promise.resolve();
+        waitForMath.then(() => setTimeout(() => {
+          try { frame.contentWindow.focus(); frame.contentWindow.print(); }
+          catch (e) { showToast("PDF export blocked: " + e.message, "error"); }
+          setTimeout(() => frame.remove(), 60000);
+          restore();
+        }, 350));
+        showToast("Opening print dialog — choose 'Save as PDF'", "success");
+      } catch (e) {
+        showToast("PDF export failed: " + e.message, "error");
+        restore();
+      }
+    }
+    window.exportReaderToPdf = exportReaderToPdf;
+
+    // Shared PDF → markdown importer. Opens a file picker, posts to the
+    // backend converter, and calls onDone() so the caller can refresh its list.
+    function importPdfToLibrary(section, onDone) {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "application/pdf,.pdf";
+      input.style.display = "none";
+      input.addEventListener("change", async () => {
+        const file = input.files && input.files[0];
+        input.remove();
+        if (!file) return;
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("section", section || "notes");
+        fd.append("title", file.name.replace(/\.pdf$/i, ""));
+        showToast("Importing PDF…" + file.name, "info");
+        try {
+          const res = await fetch("/api/library/import-pdf", { method: "POST", body: fd });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.error || data.detail) {
+            throw new Error(data.detail || data.error || ("HTTP " + res.status));
+          }
+          showToast(`Imported "${data.title}" ✓`, "success");
+          if (typeof onDone === "function") onDone(data);
+        } catch (e) {
+          showToast("Import failed: " + e.message, "error");
+        }
+      });
+      document.body.appendChild(input);
+      input.click();
+    }
+    window.importPdfToLibrary = importPdfToLibrary;
+
     window.openLibraryReader = openLibraryReader;
 
     // ponytail: Library reader docking now uses an overlay instead of hijacking #diffSidebar (removed).

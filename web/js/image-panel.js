@@ -71,49 +71,32 @@
     isOpen = false;
   }
 
-  /* ── Sidebar: Recent Generated Images ── */
-  async function loadSidebarImages() {
+  /* ── Sidebar: Prompt History (results live in the main window) ──
+     Each entry: click → restore the saved result into the main panel, or
+     re-fill the prompt box if no result was captured for that run. */
+  function loadSidebarImages() {
     const content = document.getElementById('igSidebarContent');
     if (!content) return;
-    content.innerHTML = '<div class="ig-sidebar-loading">Loading…</div>';
-    try {
-      const res = await fetch('/api/library/gallery');
-      const items = await res.json();
-      if (!items || !items.length) {
-        content.innerHTML = '<div class="ig-sidebar-empty">No images yet.<br>Generate one from the main panel!</div>';
-        return;
-      }
-      content.innerHTML = '';
-      const list = document.createElement('div');
-      list.className = 'ig-sidebar-list';
-      const shown = items.slice(0, 20);
-      const shownUrls = shown.map((x) => x.url);
-      shown.forEach((item, si) => {
-        const card = document.createElement('div');
-        card.className = 'ig-sidebar-card';
-        const dateStr = item.date
-          ? new Date(item.date * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-          : '';
-        card.innerHTML = `
-          <div class="ig-card-thumb">
-            <img src="${escHtml(item.url)}" alt="${escHtml(item.filename)}" loading="lazy">
-          </div>
-          <div class="ig-card-body">
-            <div class="ig-card-name">${escHtml(item.filename)}</div>
-            <div class="ig-card-date">${dateStr}</div>
-            <div class="ig-card-meta">${item.type?.toUpperCase() || ''} · ${formatSize(item.size)}</div>
-          </div>
-        `;
-        card.addEventListener('click', () => {
-          openLightbox(shownUrls, si);
-        });
-        list.appendChild(card);
-      });
-      content.appendChild(list);
-      sidebarLoaded = true;
-    } catch {
-      content.innerHTML = '<div class="ig-sidebar-empty">Failed to load images.</div>';
+    if (!window.genHistory) {
+      content.innerHTML = '<div class="tracknote-empty">History module not loaded.</div>';
+      return;
     }
+    window.genHistory.renderInto('image', content, (item) => {
+      const meta = item.meta || {};
+      const restored = meta.result && typeof window._igRestoreResult === 'function'
+        ? window._igRestoreResult(meta.result, { prompt: item.text, provider: meta.provider })
+        : false;
+      if (!restored) {
+        const ta = document.getElementById('igPrompt');
+        if (ta) {
+          ta.value = item.text;
+          ta.focus();
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }
+      sidebarLoaded = true;
+    });
+    sidebarLoaded = true;
   }
 
   function formatSize(bytes) {
@@ -142,20 +125,25 @@
     // Create sidebar widget and insert into DOM
     const widget = document.createElement('div');
     widget.id = 'imageSidebarWidget';
-    widget.className = 'ig-sidebar-widget hidden';
+    widget.className = 'tracknote-standalone hidden';
     widget.innerHTML = `
-      <div class="ig-sidebar-header">
-        <span class="ig-sidebar-title"><i data-lucide="image" class="icon-lucide"></i> Recent Images</span>
-        <button class="ig-sidebar-refresh" id="igSidebarRefresh" title="Refresh"><i data-lucide="refresh-cw"></i></button>
+      <div class="tracknote-standalone-header">
+        <span class="tracknote-standalone-title"><i data-lucide="history" class="icon-lucide"></i> Prompt History</span>
+        <button class="tn-add-toggle" id="igSidebarClear" title="Clear history"><i data-lucide="trash-2" class="icon-lucide"></i></button>
       </div>
-      <div class="ig-sidebar-content" id="igSidebarContent"></div>
+      <div class="tracknote-body" id="igSidebarContent"></div>
     `;
     document.body.appendChild(widget);
 
-    // Bind refresh button
-    widget.querySelector('#igSidebarRefresh')?.addEventListener('click', () => {
-      sidebarLoaded = false;
-      loadSidebarImages();
+    widget.querySelector('#igSidebarClear')?.addEventListener('click', () => {
+      if (!window.genHistory) return;
+      if (!confirm('Clear all image prompt history?')) return;
+      window.genHistory.clear('image');
+    });
+
+    // Keep the list live while the panel is open.
+    window.addEventListener('gen-history-change', (e) => {
+      if (e.detail?.kind === 'image' && isOpen) loadSidebarImages();
     });
 
     if (window.lucide) lucide.createIcons({ nodes: widget.querySelectorAll('[data-lucide]') });

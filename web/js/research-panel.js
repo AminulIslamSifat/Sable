@@ -72,45 +72,28 @@
     isOpen = false;
   }
 
-  /* ── Sidebar: Recent Research ── */
-  async function loadSidebarResearch() {
+  /* ── Sidebar: Query History (results live in the main window) ──
+     Clicking an entry refills the research question so it can be re-run.
+     Saved reports are still reachable from the Past Research list in the
+     main panel, so history here stays focused on *what you asked*. */
+  function loadSidebarResearch() {
     const content = document.getElementById('rpSidebarContent');
     if (!content) return;
-    content.innerHTML = '<div class="rp-sidebar-loading">Loading…</div>';
-    try {
-      const res = await fetch('/api/library/research');
-      const items = await res.json();
-      if (!items || !items.length) {
-        content.innerHTML = '<div class="rp-sidebar-empty">No research yet.<br>Start one from the main panel!</div>';
-        return;
-      }
-      content.innerHTML = '';
-      const list = document.createElement('div');
-      list.className = 'rp-sidebar-list';
-      items.slice(0, 20).forEach(item => {
-        const card = document.createElement('div');
-        card.className = 'rp-sidebar-card';
-        card.innerHTML = `
-          <div class="rp-card-icon"><i data-lucide="file-text"></i></div>
-          <div class="rp-card-body">
-            <div class="rp-card-title">${escHtml(item.title)}</div>
-            <div class="rp-card-date">${item.date || ''}</div>
-            <div class="rp-card-preview">${escHtml((item.preview || '').slice(0, 100))}</div>
-          </div>
-        `;
-        card.addEventListener('click', () => {
-          if (typeof openLibraryReader === 'function') {
-            openLibraryReader('research', item.filename, item.title);
-          }
-        });
-        list.appendChild(card);
-      });
-      content.appendChild(list);
-      if (window.lucide) lucide.createIcons({ nodes: list.querySelectorAll('[data-lucide]') });
-      sidebarLoaded = true;
-    } catch {
-      content.innerHTML = '<div class="rp-sidebar-empty">Failed to load research.</div>';
+    if (!window.genHistory) {
+      content.innerHTML = '<div class="tracknote-empty">History module not loaded.</div>';
+      return;
     }
+    window.genHistory.renderInto('research', content, (item) => {
+      const ta = document.getElementById('researchQuery');
+      if (ta) {
+        ta.value = item.text;
+        ta.focus();
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        const launch = document.querySelector('.research-launch');
+        if (launch) launch.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    });
+    sidebarLoaded = true;
   }
 
   /* ── Rail-switch handler ── */
@@ -132,20 +115,24 @@
     // Create sidebar widget and insert into DOM
     const widget = document.createElement('div');
     widget.id = 'researchSidebarWidget';
-    widget.className = 'rp-sidebar-widget hidden';
+    widget.className = 'tracknote-standalone hidden';
     widget.innerHTML = `
-      <div class="rp-sidebar-header">
-        <span class="rp-sidebar-title">🔬 Recent Research</span>
-        <button class="rp-sidebar-refresh" id="rpSidebarRefresh" title="Refresh"><i data-lucide="refresh-cw"></i></button>
+      <div class="tracknote-standalone-header">
+        <span class="tracknote-standalone-title"><i data-lucide="history" class="icon-lucide"></i> Query History</span>
+        <button class="tn-add-toggle" id="rpSidebarClear" title="Clear history"><i data-lucide="trash-2" class="icon-lucide"></i></button>
       </div>
-      <div class="rp-sidebar-content" id="rpSidebarContent"></div>
+      <div class="tracknote-body" id="rpSidebarContent"></div>
     `;
     document.body.appendChild(widget);
 
-    // Bind refresh button
-    widget.querySelector('#rpSidebarRefresh')?.addEventListener('click', () => {
-      sidebarLoaded = false;
-      loadSidebarResearch();
+    widget.querySelector('#rpSidebarClear')?.addEventListener('click', () => {
+      if (!window.genHistory) return;
+      if (!confirm('Clear all research query history?')) return;
+      window.genHistory.clear('research');
+    });
+
+    window.addEventListener('gen-history-change', (e) => {
+      if (e.detail?.kind === 'research' && isOpen) loadSidebarResearch();
     });
 
     if (window.lucide) lucide.createIcons({ nodes: widget.querySelectorAll('[data-lucide]') });

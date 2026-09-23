@@ -235,6 +235,13 @@
       });
     }
     setupAddToggle("notesAddToggle", "notesAddForm");
+    document.getElementById("notesImportPdf")?.addEventListener("click", () => {
+      if (typeof window.importPdfToLibrary === "function") {
+        window.importPdfToLibrary("notes", () => loadNotesOnly());
+      } else {
+        alert("Import helper unavailable");
+      }
+    });
     setupAddToggle("tnAddToggle", "tnAddForm");
     setupAddToggle("tnAgentAddToggle", "tnAgentForm");
 

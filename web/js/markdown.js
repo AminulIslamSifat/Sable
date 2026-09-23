@@ -519,6 +519,60 @@
       return text;
     }
 
+    /* ---------- math stashing ----------
+       TeX must be pulled out of the markdown source BEFORE marked runs.
+       Otherwise marked interprets `_` and `*` inside formulas as emphasis
+       (`$a_b$` -> `a<em>b</em>`) and MathJax receives mangled input.
+       We swap every math span for an opaque token, render markdown, then
+       swap the raw TeX back in (HTML-escaped) so MathJax sees it intact. */
+    let _MATH_STASH = [];
+
+    function _stashMath(md) {
+      _MATH_STASH = [];
+      if (md.indexOf("$") === -1 && md.indexOf("\\(") === -1 && md.indexOf("\\[") === -1) {
+        return md; // fast path — no math at all
+      }
+      let out = md;
+
+      // 1. Protect fenced code blocks first so we never touch TeX inside them.
+      const fences = [];
+      out = out.replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g, (m) => {
+        const t = `@@SABLEFENCE${fences.length}@@`;
+        fences.push(m);
+        return t;
+      });
+
+      const put = (tex, display) => {
+        const token = `@@SABLEMATH${_MATH_STASH.length}@@`;
+        _MATH_STASH.push({ token, tex, display });
+        return token;
+      };
+
+      // 2. Display math: $$...$$ and \[...\]
+      out = out.replace(/\$\$([\s\S]+?)\$\$/g, (_, tex) => put(tex, true));
+      out = out.replace(/\\\[([\s\S]+?)\\\]/g, (_, tex) => put(tex, true));
+
+      // 3. Inline math: $...$ (single line, not part of $$) and \(...\)
+      out = out.replace(/(?<!\$)\$(?!\$)([^\n$]+?)\$(?!\$)/g, (_, tex) => put(tex, false));
+      out = out.replace(/\\(([\s\S]+?)\\)/g, (_, tex) => put(tex, false));
+
+      // 4. Restore code fences untouched.
+      out = out.replace(/@@SABLEFENCE(\d+)@@/g, (_, n) => fences[Number(n)]);
+      return out;
+    }
+
+    function _unstashMath(html) {
+      if (!_MATH_STASH.length) return html;
+      let out = html;
+      _MATH_STASH.forEach(({ token, tex, display }) => {
+        // Re-emit as MathJax delimiters. escHtml keeps `<`/`>`/`&` in TeX
+        // from being parsed as markup once this string hits innerHTML.
+        const wrapped = display ? `\\[${tex}\\]` : `\\(${tex}\\)`;
+        out = out.split(token).join(escHtml(wrapped));
+      });
+      return out;
+    }
+
     function renderMarkdown(raw) {
       if (!raw) return "";
       // Backend parser already strips <tool_call> and <action> tags from the
@@ -527,22 +581,23 @@
       raw = _s.trim();
       const normalized = normalizeMd(raw.replace(/\r\n/g, "\n"));
       const safe = closeUnclosedFences(normalized);
+      const guarded = _stashMath(safe);
 
       ensureMarked();
-      if (window.marked && window.DOMPurify && !usesLegacyExtras(safe)) {
+      if (window.marked && window.DOMPurify && !usesLegacyExtras(guarded)) {
         try {
           // escapeNonHtmlTags only feeds the marked+DOMPurify path — it stops
           // unknown prose tags from being swallowed. The legacy parser below
           // escapes everything itself, so pre-escaping here would double-encode.
-          const html = marked.parse(escapeNonHtmlTags(safe));
-          return lucideReplaceEmoji(DOMPurify.sanitize(html, { ADD_ATTR: ["target", "data-lucide"] }));
+          const html = marked.parse(escapeNonHtmlTags(guarded));
+          return _unstashMath(lucideReplaceEmoji(DOMPurify.sanitize(html, { ADD_ATTR: ["target", "data-lucide"] })));
         } catch (err) {
           console.error("marked render failed:", err);
         }
       }
 
       try {
-        return lucideReplaceEmoji(parseBlocks(safe.split("\n")));
+        return _unstashMath(lucideReplaceEmoji(parseBlocks(guarded.split("\n"))));
       } catch (err) {
         console.error("Markdown render error:", err);
         return `<p>${escHtml(raw)}</p>`;
@@ -708,5 +763,29 @@
       const target = container || document.body;
       MathJax.typesetPromise([target]).catch(err => console.warn("MathJax typeset error:", err));
     }
+
+    /* ---------- unified post-render ----------
+       Call this AFTER inserting rendered HTML into the DOM. It lazily pulls in
+       MathJax + Mermaid (and the raise/lower Mermaid zoom controls) only when
+       the target actually contains that content — so a plain popup costs
+       nothing. Every surface that shows markdown should end with this.
+       Returns a promise so callers can await if they care. */
+    async function postRenderContent(container) {
+      if (!container) return;
+      const jobs = [];
+
+      if (/[$\\]/.test(container.textContent || "")) {
+        jobs.push(renderMathJax(container));
+      }
+      if (container.querySelector(".mermaid, code.language-mermaid, [data-mermaid]")) {
+        jobs.push(renderMermaidDiagrams(container));
+      }
+      await Promise.allSettled(jobs);
+    }
+
+    window.postRenderContent = postRenderContent;
+    window.renderMathJax = renderMathJax;
+    window.renderMarkdown = renderMarkdown;
+    window.renderMarkdownSimple = renderMarkdown;
 
     /* ============================= end markdown ============================= */
