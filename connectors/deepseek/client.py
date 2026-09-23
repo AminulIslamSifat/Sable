@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import random
+import re
 import subprocess
 import sys
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -36,6 +37,16 @@ logger = logging.getLogger("sable.deepseek_api")
 # connecting or mid-stream — the connection is dropped and reopened via the
 # normal retry loop. Treated as a plain failure (retry, then rotate).
 _IDLE_TIMEOUT_SECS = 30.0
+
+# Per-message tool-format reminder is disabled — the format is already defined
+# in the system prompt, and re-injecting it on every turn wasted tokens and
+# nudged the model toward the very DSML tags we don't want. We now inject a
+# guard only when a leak is actually detected (see _get_dsml_guard).
+_FORMAT_REMINDER_ENABLED = False
+
+# Detects DSML/pipe-tag tool syntax in a model response, e.g. <|DSML|tool_calls>,
+# <｜DSML｜invoke>, or any "| DSML |" / "｜ DSML ｜" variant.
+_DSML_LEAK_RE = re.compile(r"[|｜]\s*DSML|DSML\s*[|｜]", re.IGNORECASE)
 
 BASE_URL = "https://chat.deepseek.com"
 
@@ -436,6 +447,9 @@ class DeepSeekClient:
         # chaining works correctly. Never shared across chats.
         self._chat_sessions: dict[tuple[str, str], str] = {}
         self._last_prepare_error: str | None = None  # surfaced when all tokens fail
+        # Chats whose last response leaked DSML markup. Armed by the leak
+        # detector; drives the hard no-DSML reminder on subsequent turns.
+        self._dsml_warn_chats: set[str] = set()
 
         # Load per-model max session chars from config
         from engine.config import get_model_config
@@ -1060,6 +1074,9 @@ class DeepSeekClient:
         Uses placeholder tag names / non-parseable JSON so Sable's own
         response parser never fires on these examples.
         """
+        if not _FORMAT_REMINDER_ENABLED:
+            return ""
+
         fmt = get_tool_format("deepseek")
         if not fmt:
             return ""
@@ -1108,6 +1125,23 @@ class DeepSeekClient:
                 + _ao + '[{"name": "TOOL_A", "arguments": {}}, {"name": "TOOL_B", "arguments": {}}]' + _ac + "\n"
                 + "[user message]"
             )
+
+    def _get_dsml_guard(self, chat_id: str | None) -> str:
+        """Hard reminder injected ONLY when DeepSeek leaked DSML markup.
+
+        Armed per-chat by the leak detector after a response contained DSML
+        pipe tags. Persists for the life of the client, so every subsequent
+        turn in that chat keeps getting corrected.
+        """
+        if not chat_id or chat_id not in self._dsml_warn_chats:
+            return ""
+        return (
+            "[reminder] HARD RULE: Never emit DSML markup — no "
+            "<|DSML|tool_calls>, <|DSML|invoke>, <|DSML|parameter>, and no "
+            "variants wrapping DSML in '|' or '｜' pipes. You leaked this in "
+            "a previous response. Use ONLY the tool-call format defined in "
+            "your system instructions."
+        )
 
     # ------------------------------------------------------------------
     # SSE response parsing
@@ -1333,7 +1367,7 @@ class DeepSeekClient:
 
         # The prompt is ALWAYS just the current message (+ optional reminder).
         # Never the full serialized history. DeepSeek chains server-side.
-        _reminder = self._get_reminder()
+        _reminder = self._get_reminder() or self._get_dsml_guard(chat_id)
         prompt = f"{_reminder}\n\n{message}" if _reminder else message
 
         # Build the instruction payload for first-message hello-seed flow.
@@ -1572,7 +1606,7 @@ class DeepSeekClient:
                                     "=== END HISTORY ===\n\n"
                                     f"{message}"
                                 )
-                                _reminder_r = self._get_reminder()
+                                _reminder_r = self._get_reminder() or self._get_dsml_guard(chat_id)
                                 if _reminder_r:
                                     _recovered = f"{_reminder_r}\n\n{_recovered}"
                                 body["chat_session_id"] = _new_sid
@@ -1609,6 +1643,16 @@ class DeepSeekClient:
                             logger.warning("DeepSeek empty response after %d retries, rotating...",
                                            _MAX_RETRIES_PER_TOKEN)
                             break
+
+                    # DSML leak detection — if the model emitted DSML/pipe tags,
+                    # arm the hard reminder for this chat's next turn.
+                    if chat_id and _DSML_LEAK_RE.search(full_thinking + "\n" + full_answer):
+                        if chat_id not in self._dsml_warn_chats:
+                            logger.warning(
+                                "DeepSeek leaked DSML markup for chat %s — arming hard reminder",
+                                chat_id,
+                            )
+                        self._dsml_warn_chats.add(chat_id)
 
                     # Success — update client-side history and parent chain
                     clean_answer = strip_summarize_tag(full_answer)
