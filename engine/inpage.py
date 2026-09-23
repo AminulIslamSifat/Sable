@@ -39,6 +39,13 @@ GHOST_HOME = "https://chat.qwen.ai"
 STS_URL = "https://chat.qwen.ai/api/v2/files/getstsToken"
 RAW_TEXT_LIMIT = 100_000  # safe margin under the ~120k RGV587 punish wall
 
+# Idle timeout: if no event arrives within this window — while connecting or
+# mid-stream — the in-page fetch is aborted and a fresh connection is opened.
+# Only retried while NOTHING has been emitted yet (a stall after partial
+# content can't be replayed without duplicating the answer).
+_GHOST_IDLE_SECS = 30.0
+_GHOST_MAX_ATTEMPTS = 3
+
 
 class GhostError(Exception):
     """Ghost path failed — caller must fall back to the raw curl_cffi API."""
@@ -102,7 +109,7 @@ async ({url, model}) => {
 """
 
 JS_STREAM_COMPLETIONS = r"""
-async ({url, body}) => {
+async ({url, body, rid, idleMs}) => {
   try {
     const h = {
       'accept': 'application/json',
@@ -112,21 +119,30 @@ async ({url, body}) => {
       'x-request-id': crypto.randomUUID(),
       'timezone': new Date().toString(),
     };
+    const ctrl = new AbortController();
+    let idleTimer = setTimeout(() => ctrl.abort(), idleMs);
     const res = await fetch(url, {method: 'POST', credentials: 'include',
-                                  headers: h, body: JSON.stringify(body)});
-    await window.__ghostEvent({t: 'status', status: res.status});
-    if (!res.body) { await window.__ghostEvent({t: 'done'}); return 'nobody'; }
+                                  headers: h, body: JSON.stringify(body),
+                                  signal: ctrl.signal});
+    await window.__ghostEvent({rid, t: 'status', status: res.status});
+    if (!res.body) { await window.__ghostEvent({rid, t: 'done'}); return 'nobody'; }
     const reader = res.body.getReader();
     const dec = new TextDecoder();
-    while (true) {
-      const {done, value} = await reader.read();
-      if (done) break;
-      await window.__ghostEvent({t: 'chunk', data: dec.decode(value, {stream: true})});
+    try {
+      while (true) {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => ctrl.abort(), idleMs);
+        const {done, value} = await reader.read();
+        if (done) break;
+        await window.__ghostEvent({rid, t: 'chunk', data: dec.decode(value, {stream: true})});
+      }
+    } finally {
+      clearTimeout(idleTimer);
     }
-    await window.__ghostEvent({t: 'done'});
+    await window.__ghostEvent({rid, t: 'done'});
     return 'ok';
   } catch (e) {
-    await window.__ghostEvent({t: 'error', err: String(e)});
+    await window.__ghostEvent({rid, t: 'error', err: String(e)});
     return 'err';
   }
 }
@@ -181,6 +197,10 @@ class GhostEngine:
         self._exposed_pages: set = set()
         self._stream_lock = asyncio.Lock()
         self._pipe = _Pipe()
+        # Request id for the in-flight stream. Events tagged with a stale rid
+        # (from a connection we already dropped) are ignored so a retry can't
+        # be polluted by the abandoned fetch's trailing chunks.
+        self._current_rid: str | None = None
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -364,6 +384,9 @@ class GhostEngine:
         print("[GHOST] ghost tab ready (token + WAF cookies baked)")
 
     def _on_event(self, ev: dict) -> None:
+        # Drop events from a connection we've already abandoned (rid mismatch).
+        if ev.get("rid") != self._current_rid:
+            return
         self._pipe.q.put_nowait(ev)
 
     async def shutdown(self) -> None:
@@ -421,26 +444,70 @@ class GhostEngine:
             raise GhostError("chats/new returned no id")
         return cid
 
-    async def stream(self, url: str, body: dict) -> AsyncIterator[dict]:
-        """Yield events: {t:'status'|'chunk'|'error'|'done', ...} from one in-page fetch."""
+    async def stream(
+        self, url: str, body: dict,
+        idle_secs: float = _GHOST_IDLE_SECS,
+        max_attempts: int = _GHOST_MAX_ATTEMPTS,
+    ) -> AsyncIterator[dict]:
+        """Yield events: {t:'status'|'chunk'|'error'|'done', ...} from one in-page fetch.
+
+        Idle gate + reconnect: if no event arrives within `idle_secs` — while
+        connecting or mid-stream — the in-page fetch is aborted and a FRESH
+        connection is opened (up to `max_attempts`). A stall after any chunk
+        has been yielded is fatal (can't replay partial content), so it raises
+        immediately for the caller's curl fallback.
+        """
         async with self._stream_lock:
-            ghost = await self.ensure()
-            self._pipe = _Pipe()
-            task = asyncio.create_task(
-                ghost.evaluate(JS_STREAM_COMPLETIONS, {"url": url, "body": body}))
-            try:
-                while True:
-                    try:
-                        ev = await asyncio.wait_for(self._pipe.q.get(), timeout=60)
-                    except asyncio.TimeoutError:
-                        raise GhostError("stream stall >60s (tarpit / silent hold)")
-                    yield ev
-                    if ev.get("t") in ("done", "error"):
-                        break
-                await asyncio.wait_for(task, timeout=10)
-            finally:
-                if not task.done():
-                    task.cancel()
+            for attempt in range(max_attempts):
+                ghost = await self.ensure()
+                rid = uuid.uuid4().hex
+                self._current_rid = rid
+                self._pipe = _Pipe()
+                # In-page idle abort is set ABOVE the Python deadline (+5s) so
+                # Python's wait_for always fires first — a stall is then handled
+                # as a reconnect, not as an in-page 'error' event. The JS timer
+                # still runs as the actual network cleanup for the dropped fetch.
+                task = asyncio.create_task(
+                    ghost.evaluate(JS_STREAM_COMPLETIONS, {
+                        "url": url, "body": body, "rid": rid,
+                        "idleMs": int((idle_secs + 5) * 1000),
+                    }))
+                yielded_chunk = False
+                stalled = False
+                try:
+                    while True:
+                        try:
+                            ev = await asyncio.wait_for(
+                                self._pipe.q.get(), timeout=idle_secs)
+                        except asyncio.TimeoutError:
+                            stalled = True
+                            break
+                        yield ev
+                        if ev.get("t") == "chunk":
+                            yielded_chunk = True
+                        if ev.get("t") in ("done", "error"):
+                            try:
+                                await asyncio.wait_for(task, timeout=10)
+                            except Exception:
+                                pass
+                            return
+                finally:
+                    # Drop the connection: cancel the evaluate; the in-page
+                    # AbortController (fired at the same idle deadline) kills
+                    # the underlying fetch so no further bytes are read.
+                    if not task.done():
+                        task.cancel()
+                    self._current_rid = None
+                if not stalled:
+                    return
+                if yielded_chunk or attempt == max_attempts - 1:
+                    raise GhostError(
+                        f"stream stall >{idle_secs:.0f}s "
+                        f"(attempt {attempt + 1}/{max_attempts}, "
+                        f"chunk_seen={yielded_chunk})")
+                print(f"[GHOST] stream stall — reconnecting (attempt {attempt + 2}/{max_attempts})")
+                # Surface the reconnect to the caller's status stream.
+                yield {"t": "reconnect", "attempt": attempt + 2, "max": max_attempts}
 
     async def upload_file_inpage(self, path: str) -> dict:
         """STS via in-page fetch (live cookies, never stale) + oss2 PUT + file_obj."""
@@ -703,9 +770,12 @@ async def ghost_stream_events(
     """Server-protocol event generator (mirrors ChatService.stream_events).
 
     Fallback contract with stream_events:
+      * A {"type": "status", "message": "qwen_transport_ghost"} is emitted
+        first, then status/retry events as the in-page stream progresses.
       * If the ghost produces NOTHING parseable (create fails, status != 200,
-        empty stream, tarpit), this raises GhostError BEFORE yielding any
-        event — the caller falls back to the raw API path cleanly.
+        empty stream, tarpit), this raises GhostError — the caller falls back
+        to the raw API path cleanly. Status events already yielded are purely
+        informational and safe to precede a fallback.
       * Once content has been emitted, a failure becomes a terminal
         {"type": "error"} event instead (falling back then would duplicate
         a partial answer).
@@ -735,9 +805,18 @@ async def ghost_stream_events(
     emitted = False
     buf = ""
 
+    # Committed to the ghost transport — chat is created and the in-page fetch
+    # is about to open. Emitted before any content so the status card shows the
+    # real path even if the stream later stalls and falls back to curl.
+    yield {"type": "status", "message": "qwen_transport_ghost"}
+
     async for sev in eng.stream(url, body):
         t = sev.get("t")
-        if t == "chunk":
+        if t == "reconnect":
+            # Idle stall — a fresh connection is opening (not a fatal error yet).
+            yield {"type": "status",
+                   "message": f"retrying_stall_{sev.get('attempt', 2)}"}
+        elif t == "chunk":
             data = sev.get("data", "")
             if "RGV587" in data:
                 if emitted:

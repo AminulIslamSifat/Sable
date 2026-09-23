@@ -154,6 +154,10 @@
       position: absolute;
       inset: 0;
       overflow-y: auto;
+      /* We manage scroll position manually during streaming. Browser scroll
+         anchoring tries to do the same job and fights our scrollTop writes,
+         producing the visible bounce. Turn it off. */
+      overflow-anchor: none;
       padding: 60px 22px 120px;
       display: none;
       flex-direction: column;
@@ -290,15 +294,46 @@
       border-color: var(--danger, #e53e3e);
       animation: tts-pulse 1.2s ease-in-out infinite;
     }
+
+    /* Response speed badge — pinned to the right of the toolbar */
+    .msg-toolbar .msg-stats {
+      margin-left: auto;
+      align-self: center;
+      padding: 3px 9px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      font-family: ui-monospace, "JetBrains Mono", "Fira Code", monospace;
+      white-space: nowrap;
+      cursor: default;
+      user-select: text;
+    }
+    .msg-toolbar .msg-stats:hover {
+      color: var(--text);
+      border-color: var(--accent);
+    }
     @keyframes tts-pulse {
       0%, 100% { opacity: 1; }
       50% { opacity: 0.7; }
     }
 
+    /* Streaming cursor. Absolutely positioned with reserved padding so it never
+       participates in text flow. As an inline-block it wrapped onto a new line
+       whenever the last line filled up, which pushed the message up by a full
+       line and then snapped back — the "new line cramp". */
+    .bot.streaming .md-content {
+      position: relative;
+      padding-bottom: 1.5em;
+    }
     .bot.streaming .md-content::after {
       content: 'processing…';
-      display: inline-block;
-      margin-left: 8px;
+      position: absolute;
+      left: 6px;
+      bottom: 0;
+      line-height: 1;
       font-size: var(--font-size-system);
       font-family: var(--font-mono);
       letter-spacing: 0.04em;
@@ -316,7 +351,6 @@
       background-clip: text;
       -webkit-text-fill-color: transparent;
       animation: shimmer-text 0.6s linear infinite;
-      vertical-align: baseline;
       will-change: background-position;
     }
 

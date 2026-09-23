@@ -86,7 +86,9 @@
       content.innerHTML = '';
       const list = document.createElement('div');
       list.className = 'ig-sidebar-list';
-      items.slice(0, 20).forEach(item => {
+      const shown = items.slice(0, 20);
+      const shownUrls = shown.map((x) => x.url);
+      shown.forEach((item, si) => {
         const card = document.createElement('div');
         card.className = 'ig-sidebar-card';
         const dateStr = item.date
@@ -103,8 +105,7 @@
           </div>
         `;
         card.addEventListener('click', () => {
-          // Open image in a new tab or lightbox
-          window.open(item.url, '_blank');
+          openLightbox(shownUrls, si);
         });
         list.appendChild(card);
       });

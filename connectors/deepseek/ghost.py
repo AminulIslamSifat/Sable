@@ -10,11 +10,25 @@ DeepSeek's anomaly detector flags the account and silently bans it.
 Ghost-injected matches the browser byte-for-byte. Verified 20/20 header
 match in deepseek_v9_test.py.
 
+Streaming model (matches engine/inpage.py's Qwen ghost):
+  The in-page fetch pushes every chunk to Python via the exposed
+  `window.__ghostEvent` bridge. A per-request asyncio.Queue feeds the
+  caller line-by-line, so tokens arrive as they are produced instead of
+  being buffered into one blob.
+
+Idle timeout:
+  A 30s gap with no event — during connect or mid-stream — aborts the
+  in-page fetch (AbortController) AND raises asyncio.TimeoutError from the
+  queue drain. The caller's retry loop drops the connection and opens a
+  fresh one.
+
 Public API
 ----------
     session = await GhostSession.for_account("browser-data-acc5")
-    result = await session.fetch_completion(token, body, pow_header)
-    # result = {"status": int, "raw": str, "ms": int}
+    resp = await session.open_stream(token, body, pow_header, idle_secs=30)
+    async with resp as r:
+        async for line in r.aiter_lines():
+            ...
     await GhostSession.close_all()
 
 Settings (system/settings.json)
@@ -28,6 +42,8 @@ import asyncio
 import json
 import logging
 import os
+import signal
+import socket
 import time
 from pathlib import Path
 
@@ -80,92 +96,168 @@ def _save_identity_store(store: dict) -> None:
 
 
 # ----------------------------------------------------------------------
-# Stale lock cleanup (avoid ProcessSingleton failure on relaunch)
+# Lock helpers — distinguish "our orphan" from a live foreign browser
 # ----------------------------------------------------------------------
 
-def _clean_stale_lock(profile: Path) -> bool:
-    """Return True if we're clear to launch. Remove Singleton* only if the
-    process the lock points to is dead. If a live process owns it, refuse."""
+def _lock_pid(profile: Path) -> int | None:
     lock = profile / "SingletonLock"
-    if not lock.exists() and not lock.is_symlink():
-        return True
+    if not (lock.is_symlink() or lock.exists()):
+        return None
     try:
         target = os.readlink(lock)
         _, _, pid_str = target.rpartition("-")
-        pid = int(pid_str)
-        try:
-            os.kill(pid, 0)
-            return False  # alive — do not touch
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            return False
+        return int(pid_str)
     except Exception:
-        pass
+        return None
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _clear_singleton(profile: Path) -> None:
     for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
-        p = profile / name
         try:
-            p.unlink()
-        except Exception:
+            (profile / name).unlink(missing_ok=True)
+        except OSError:
             pass
-    return True
 
 
 # ----------------------------------------------------------------------
-# In-page fetch (runs inside the helium page's JS context, credentials
-# included automatically → cookies + native TLS + native referer)
+# In-page streaming fetch
 # ----------------------------------------------------------------------
 
-JS_FETCH = """
-async ({url, body, token, pow, extraHeaders}) => {
-  const h = Object.assign({
-    'Content-Type': 'application/json',
-    'Authorization': 'Bearer ' + token,
-    'X-DS-PoW-Response': pow,
-  }, extraHeaders || {});
-  const t0 = performance.now();
-  const res = await fetch(url, {
-    method: 'POST', credentials: 'include', headers: h,
-    body: JSON.stringify(body),
-  });
-  const reader = res.body.getReader();
-  const dec = new TextDecoder();
-  let raw = '';
-  while (true) {
-    const {done, value} = await reader.read();
-    if (done) break;
-    raw += dec.decode(value, {stream: true});
+JS_STREAM = r"""
+async ({url, body, token, pow, extraHeaders, idleMs}) => {
+  try {
+    const h = Object.assign({
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + token,
+      'X-DS-PoW-Response': pow,
+    }, extraHeaders || {});
+    const ctrl = new AbortController();
+    let idleTimer = setTimeout(() => ctrl.abort(), idleMs);
+    const res = await fetch(url, {
+      method: 'POST', credentials: 'include', headers: h,
+      body: JSON.stringify(body), signal: ctrl.signal,
+    });
+    await window.__ghostEvent({t: 'status', status: res.status});
+    if (!res.body) { await window.__ghostEvent({t: 'done'}); return 'nobody'; }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    try {
+      while (true) {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => ctrl.abort(), idleMs);
+        const {done, value} = await reader.read();
+        if (done) break;
+        await window.__ghostEvent({t: 'chunk', data: dec.decode(value, {stream: true})});
+      }
+    } finally {
+      clearTimeout(idleTimer);
+    }
+    await window.__ghostEvent({t: 'done'});
+    return 'ok';
+  } catch (e) {
+    await window.__ghostEvent({t: 'error', err: String(e)});
+    return 'err';
   }
-  return {status: res.status, raw, ms: Math.round(performance.now() - t0)};
 }
 """
 
 
 # ----------------------------------------------------------------------
-# Response shim — satisfies the interface _iter_completion_events expects
+# Streaming response shim
 # ----------------------------------------------------------------------
 
-class GhostResponse:
+class GhostStreamResponse:
     """Async context manager mimicking curl_cffi's streamed Response.
-    Supports: __aenter__/__aexit__, .status_code, await .content, .aiter_lines()."""
 
-    def __init__(self, status_code: int, text: str):
-        self.status_code = status_code
-        self._text = text
+    Events are pulled from a per-request asyncio.Queue fed by the in-page
+    `window.__ghostEvent` bridge. `aiter_lines()` yields SSE lines as they
+    arrive; a gap longer than `idle_secs` raises asyncio.TimeoutError.
+    """
 
-    @property
-    async def content(self) -> bytes:
-        return self._text.encode("utf-8")
-
-    async def aiter_lines(self):
-        for line in self._text.split("\n"):
-            yield line
+    def __init__(self, page, eval_task: "asyncio.Task", queue: "asyncio.Queue",
+                 idle_secs: float, on_close=None):
+        self._page = page
+        self._task = eval_task
+        self._q = queue
+        self._idle = idle_secs
+        self._on_close = on_close
+        self._closed = False
+        self.status_code: int = 200
+        self._status_seen = False
+        self._buf = ""
+        self._raw = ""
+        self._done = False
+        self._drained = False
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, *exc):
+        if not self._task.done():
+            self._task.cancel()
+        try:
+            await self._task
+        except (asyncio.CancelledError, Exception):
+            pass
+        # Release the session stream lock exactly once, even on error paths.
+        if not self._closed and self._on_close is not None:
+            self._closed = True
+            self._on_close()
         return False
+
+    @property
+    async def content(self) -> bytes:
+        # Drain any remaining events so non-200 branches can read the body.
+        if not self._drained:
+            async for _ in self.aiter_lines():
+                pass
+        return self._raw.encode("utf-8", errors="replace")
+
+    async def aiter_lines(self):
+        while not self._done:
+            try:
+                ev = await asyncio.wait_for(self._q.get(), timeout=self._idle)
+            except asyncio.TimeoutError:
+                # Idle gate — no event within the window. Surface as the same
+                # TimeoutError the retry loop already handles for curl.
+                raise asyncio.TimeoutError(
+                    f"ghost idle >{self._idle:.0f}s (connect or mid-stream stall)")
+            t = ev.get("t")
+            if t == "status":
+                try:
+                    self.status_code = int(ev.get("status", 200))
+                except Exception:
+                    self.status_code = 200
+                self._status_seen = True
+                continue
+            if t == "chunk":
+                data = ev.get("data", "")
+                self._raw += data
+                self._buf += data
+                while "\n" in self._buf:
+                    line, self._buf = self._buf.split("\n", 1)
+                    yield line
+                continue
+            if t == "error":
+                self._done = True
+                raise RuntimeError(f"ghost stream error: {ev.get('err')}")
+            if t == "done":
+                self._done = True
+                if self._buf:
+                    yield self._buf
+                    self._buf = ""
+                break
+        self._drained = True
 
 
 # ----------------------------------------------------------------------
@@ -183,8 +275,13 @@ class GhostSession:
         self._playwright = None
         self._ctx = None
         self._page = None
+        self._cdp_browser = None
         self._identity: dict[str, str] = {}
         self._started_at: float = 0.0
+        self._exposed_pages: set = set()
+        self._pipe_q: asyncio.Queue | None = None
+        self._stream_lock = asyncio.Lock()
+        self._marker = profile_dir / ".deepseek_ghost.json"
 
     # -- lifecycle -----------------------------------------------------
 
@@ -216,26 +313,24 @@ class GhostSession:
         cls._registry.clear()
 
     async def start(self) -> None:
-        from playwright.async_api import async_playwright
-
         if not self.profile_dir.exists():
             raise RuntimeError(f"profile dir missing: {self.profile_dir}")
-        if not _clean_stale_lock(self.profile_dir):
-            raise RuntimeError(f"profile locked by live process: {self.profile_dir}")
 
-        self._playwright = await async_playwright().start()
-        self._ctx = await self._playwright.chromium.launch_persistent_context(
-            executable_path=self.helium_bin,
-            user_data_dir=str(self.profile_dir),
-            headless=True,
-            args=_LAUNCH_ARGS,
-        )
-        self._page = self._ctx.pages[0] if self._ctx.pages else await self._ctx.new_page()
-        await self._page.goto("https://chat.deepseek.com/",
-                              wait_until="domcontentloaded", timeout=60000)
-        await self._page.wait_for_timeout(3000)
+        # 1) Reclaim our own orphaned browser over CDP (marker + live port).
+        if await self._adopt_existing():
+            await self._after_browser_ready()
+            return
+
+        # 2) Free the profile: kill a dead-owner lock, or a live orphan that
+        #    doesn't answer CDP. A genuinely foreign live browser → refuse.
+        await self._ensure_profile_free()
+
+        # 3) Fresh launch with a CDP port so the next process can adopt us.
+        await self._launch()
+        await self._after_browser_ready()
+
+    async def _after_browser_ready(self) -> None:
         self._started_at = time.time()
-
         cached = self._load_identity()
         if cached:
             self._identity = cached
@@ -246,7 +341,96 @@ class GhostSession:
                         self.account)
             await self._sniff_identity()
 
+    async def _launch(self) -> None:
+        from playwright.async_api import async_playwright
+
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+
+        self._playwright = await async_playwright().start()
+        self._ctx = await self._playwright.chromium.launch_persistent_context(
+            executable_path=self.helium_bin,
+            user_data_dir=str(self.profile_dir),
+            headless=True,
+            args=_LAUNCH_ARGS + [f"--remote-debugging-port={port}"],
+        )
+        self._page = self._ctx.pages[0] if self._ctx.pages else await self._ctx.new_page()
+        await self._page.goto("https://chat.deepseek.com/",
+                              wait_until="domcontentloaded", timeout=60000)
+        await self._page.wait_for_timeout(2000)
+        try:
+            self._marker.write_text(json.dumps({"port": port, "ts": time.time()}))
+        except OSError:
+            pass
+
+    async def _adopt_existing(self) -> bool:
+        """If our marker points at a live CDP endpoint, reuse that browser."""
+        if not self._marker.exists():
+            return False
+        try:
+            m = json.loads(self._marker.read_text())
+            port = int(m["port"])
+        except Exception:
+            return False
+        from playwright.async_api import async_playwright
+        try:
+            self._playwright = await async_playwright().start()
+            self._cdp_browser = await self._playwright.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{port}", timeout=5000)
+            ctxs = self._cdp_browser.contexts
+            if not ctxs:
+                raise RuntimeError("no contexts over CDP")
+            self._ctx = ctxs[0]
+            pages = self._ctx.pages
+            self._page = pages[0] if pages else await self._ctx.new_page()
+            logger.info("[ghost:%s] adopted existing browser over CDP (port %d)",
+                        self.account, port)
+            return True
+        except Exception as exc:
+            logger.info("[ghost:%s] CDP adopt failed (%s) — will relaunch",
+                        self.account, exc)
+            try:
+                if self._playwright is not None:
+                    await self._playwright.stop()
+            except Exception:
+                pass
+            self._playwright = None
+            self._cdp_browser = None
+            self._marker.unlink(missing_ok=True)
+            return False
+
+    async def _ensure_profile_free(self) -> None:
+        """Kill a live-but-unadoptable orphan on this profile, or clear a stale
+        lock. A live browser we can't talk to is presumed to be ours (leftover
+        from an interrupted launch) and is terminated."""
+        pid = _lock_pid(self.profile_dir)
+        if pid is not None and _pid_alive(pid):
+            logger.warning("[ghost:%s] live orphan on profile (pid %d) — killing",
+                           self.account, pid)
+            try:
+                os.kill(pid, signal.SIGTERM)
+                for _ in range(10):
+                    await asyncio.sleep(0.3)
+                    if not _pid_alive(pid):
+                        break
+                else:
+                    os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        _clear_singleton(self.profile_dir)
+        try:
+            self._marker.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     async def close(self) -> None:
+        try:
+            if self._cdp_browser is not None:
+                await self._cdp_browser.close()
+        except Exception:
+            pass
         try:
             if self._ctx is not None:
                 await self._ctx.close()
@@ -260,6 +444,7 @@ class GhostSession:
         self._page = None
         self._ctx = None
         self._playwright = None
+        self._cdp_browser = None
 
     # -- health --------------------------------------------------------
 
@@ -346,24 +531,49 @@ class GhostSession:
 
     # -- send ----------------------------------------------------------
 
-    async def fetch_completion(
-        self, token: str, body: dict, pow_header: str,
-    ) -> dict:
-        """Fire a ghost fetch of /chat/completion. Returns {status, raw, ms}."""
+    def _on_event(self, ev: dict) -> None:
+        if self._pipe_q is not None:
+            self._pipe_q.put_nowait(ev)
+
+    async def _ensure_bridge(self) -> None:
         if self._page is None:
             raise RuntimeError("ghost session not started")
         if self._page.is_closed():
             raise RuntimeError("ghost page closed")
-        return await asyncio.wait_for(
-            self._page.evaluate(JS_FETCH, {
+        if self._page not in self._exposed_pages:
+            await self._page.expose_function("__ghostEvent", self._on_event)
+            self._exposed_pages.add(self._page)
+
+    async def open_stream(
+        self, token: str, body: dict, pow_header: str, idle_secs: float = 30.0,
+    ) -> GhostStreamResponse:
+        """Open a streaming in-page fetch. Returns a GhostStreamResponse whose
+        `aiter_lines()` yields SSE lines as they arrive. Serialized per session
+        (one active stream at a time) so the shared event bridge stays coherent."""
+        await self._ensure_bridge()
+        await self._stream_lock.acquire()
+
+        def _release() -> None:
+            # Single release point, guarded so a double close can't over-release.
+            if self._stream_lock.locked():
+                self._stream_lock.release()
+            self._pipe_q = None
+
+        try:
+            queue: asyncio.Queue = asyncio.Queue()
+            self._pipe_q = queue
+            task = asyncio.create_task(self._page.evaluate(JS_STREAM, {
                 "url": "/api/v0/chat/completion",
                 "body": body,
                 "token": token,
                 "pow": pow_header,
                 "extraHeaders": self._identity,
-            }),
-            timeout=300,
-        )
+                "idleMs": int(idle_secs * 1000),
+            }))
+            return GhostStreamResponse(self._page, task, queue, idle_secs, on_close=_release)
+        except Exception:
+            _release()
+            raise
 
 
 # ----------------------------------------------------------------------

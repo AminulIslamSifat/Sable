@@ -1029,6 +1029,67 @@
     // one "turn" holds everything for a single response: thinking, then any
     // skill/tool runs it made, then the final answer — all stacked in order,
     // scoped to just this response (not shared globally).
+    // ── Response speed badge (tok/s + total time) ──────────────────────
+    // Consumes the timing object stashed on the turn by addBotStreaming().
+    function attachSpeedBadge(toolbar, turn) {
+      if (!toolbar || !turn || toolbar.querySelector(".msg-stats")) return;
+      const s = turn._sableStats;
+      if (!s || !s.t0) return;
+      if (!s.tEnd) s.tEnd = performance.now();   // ordering-safe fallback
+
+      const md = turn.querySelector(".msg.bot .md-content");
+      const chars = md ? md.innerText.trim().length : 0;
+      if (chars < 24) return;   // skip empty / trivial replies
+
+      const tokens = Math.max(1, Math.round(chars / 4));
+      const totalMs = s.tEnd - s.t0;
+      let genMs = s.tFirst ? (s.tEnd - s.tFirst) : totalMs;
+      if (genMs < 50) genMs = totalMs;           // guard tiny windows
+      const tps = tokens / (genMs / 1000);
+      const totalS = totalMs / 1000;
+
+      const badge = document.createElement("span");
+      badge.className = "msg-stats";
+      const useLucide = document.documentElement.getAttribute("data-icon-style") === "lucide"
+        && window.lucide && window.lucide.icons && window.lucide.icons["zap"];
+      if (useLucide) {
+        const [tag, attrs, children] = window.lucide.icons["zap"];
+        let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="msg-lucide-icon lucide-zap" style="vertical-align:-2px;margin-right:3px;">`;
+        if (children) for (const child of children) { if (Array.isArray(child)) { const [cTag, cAttrs] = child; svg += `<${cTag}`; for (const [k, v] of Object.entries(cAttrs)) svg += ` ${k}="${v}"`; svg += "/>"; } }
+        svg += "</svg>";
+        badge.innerHTML = `${svg}${tps.toFixed(1)} tok/s \u00b7 ${totalS.toFixed(1)}s`;
+      } else {
+        badge.textContent = `\u26a1 ${tps.toFixed(1)} tok/s \u00b7 ${totalS.toFixed(1)}s`;
+      }
+      badge.title =
+        `Tokens: ~${tokens} (${chars} chars / 4)\n` +
+        `Speed: ${tps.toFixed(1)} tok/s\n` +
+        `Generation: ${(genMs / 1000).toFixed(2)}s\n` +
+        `Total: ${totalS.toFixed(2)}s` +
+        (s.tFirst ? `\nFirst token: ${((s.tFirst - s.t0) / 1000).toFixed(2)}s` : "");
+      toolbar.appendChild(badge);
+
+      // Feed the local ring buffer so the typewriter adapts immediately —
+      // no refetch needed. Server still gets the durable copy below.
+      if (typeof twRecord === "function") twRecord(selectedModel || "unknown", tps);
+
+      // Persist for the adaptive typewriter (fire-and-forget). Server rejects
+      // degenerate readings, so we don't need to filter hard here.
+      try {
+        fetch("/api/stats/response", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: selectedModel || "unknown",
+            tokens,
+            gen_ms: Math.round(genMs),
+            total_ms: Math.round(totalMs),
+            tps,
+          }),
+        }).catch(() => {});
+      } catch (_) { /* never let stats break the UI */ }
+    }
+
     function addBotStreaming(pane = activePane, chatId = activeChatId) {
       clearPaneEmptyState(pane);
 
@@ -1039,6 +1100,10 @@
       const turn = document.createElement("div");
       turn.className = "turn";
       pane.appendChild(turn);
+
+      // ── Response timing (t0 = request sent, tFirst = first answer token) ──
+      const _stats = { t0: performance.now(), tFirst: 0, tEnd: 0 };
+      turn._sableStats = _stats;
 
       // Immediate feedback: create the backend status card right away with
       // a shimmering "processing…" label in the header.  The text stays
@@ -1161,17 +1226,76 @@
       }
 
       // ── Typewriter animation for answer reveal ──
+      // Driven by requestAnimationFrame at ~60fps and rate-based: chars are
+      // consumed proportional to elapsed time, not a fixed count per tick.
+      // That makes the reveal framerate-independent AND smooth — a fixed
+      // 5-chars-every-33ms reads as a word-by-word slideshow, while 2-3 chars
+      // at 60fps reads as typing. rAF also auto-pauses in background tabs,
+      // which removes the throttle-to-1000ms dump problem entirely.
       let _ansQueue = "";
-      let _ansTimer = null;
+      let _ansTimer = null;      // rAF handle
+      let _ansLast = 0;          // timestamp of previous tick
+      let _ansFrac = 0;          // fractional char carry — see _ansTick
       let _ansInFence = false;
-      const _ANS_STRUCTURAL_RE = /[\n`|<>#*_\[~=~-]/;
+      // Chars that can change markdown *structure* mid-line and therefore force
+      // a full re-render. Deliberately excludes `-` and `#`: both are only
+      // structural at line start, which is always preceded by \n (already in
+      // the set). Keeping them meant every hyphenated word — "well-known",
+      // "1-5", "e-mail" — triggered a full DOM rebuild, which was the main
+      // source of streaming jank.
+      const _ANS_STRUCTURAL_RE = /[\n`|<>*_~=\[]/;
+
+      function _ansCancel() {
+        if (_ansTimer !== null) { cancelAnimationFrame(_ansTimer); _ansTimer = null; }
+      }
+
+      function _ansStart() {
+        if (_ansTimer !== null) return;
+        _ansLast = performance.now();
+        _ansFrac = 0;
+        _ansTimer = requestAnimationFrame(_ansTick);
+      }
+
+      // Per-turn typewriter tuning. Reads the model's measured median tok/s
+      // (loaded at init) and scales the reveal rate to match it.
+      function _twNow() {
+        return (typeof twTuneFor === "function")
+          ? twTuneFor(selectedModel)
+          : { chars: TW_CHARS, ms: TW_MS, flush: false };
+      }
 
       function _ansTick() {
         // Bail if user switched to a different chat while timer was pending
         if (turnChatId !== activeChatId) { _ansTimer = null; return; }
         if (!_ansQueue || !answerContent) { _ansTimer = null; return; }
-        const chunk = _ansQueue.slice(0, TW_CHARS);
-        _ansQueue = _ansQueue.slice(TW_CHARS);
+
+        const tune = _twNow();
+        // Fast model → skip the animation entirely. Draining in one render per
+        // SSE event is far cheaper than thousands of O(n) markdown re-parses,
+        // and at this speed the reply lands in under a second anyway.
+        if (tune.flush) { _flushAnswerQueue(); return; }
+
+        // Rate-based consume: chars/sec × elapsed seconds. dt is clamped so a
+        // backgrounded tab or long GC pause can't dump the whole queue in one
+        // frame — we catch up smoothly over the next few frames instead.
+        const now = performance.now();
+        const dt = Math.min(now - _ansLast, 100);
+        _ansLast = now;
+        // Carry the fractional remainder between frames. Rounding 2.49 down to
+        // 2 every frame silently loses 20% of the target rate, making the
+        // animation lag the model and dump the tail. Accumulate instead.
+        const cps = ((tune.chars || TW_CHARS) / (tune.ms || TW_MS)) * 1000;
+        _ansFrac += cps * dt / 1000;
+        const nChars = Math.floor(_ansFrac);
+        _ansFrac -= nChars;
+        if (nChars <= 0) {
+          // Not enough accumulated for a char yet — keep the loop alive.
+          if (_ansQueue) _ansTimer = requestAnimationFrame(_ansTick);
+          else _ansTimer = null;
+          return;
+        }
+        const chunk = _ansQueue.slice(0, nChars);
+        _ansQueue = _ansQueue.slice(nChars);
         raw += chunk;
 
         // Fast path: plain text append — skip full markdown pipeline
@@ -1194,6 +1318,7 @@
             if (!countOpenFences(raw).inFence) {
               _ansInFence = false;
               answerContent.innerHTML = renderMarkdown(raw);
+              pinScrollIfAtBottom();
               answerContent.querySelectorAll(".mermaid-wrap").forEach(wrap => {
                 const pre = wrap.querySelector("pre.mermaid");
                 if (!pre) return;
@@ -1209,6 +1334,7 @@
         }
         if (!fast) {
           answerContent.innerHTML = renderMarkdown(raw);
+          pinScrollIfAtBottom();
           // During streaming, neutralize mermaid-wrap to plain code (prevents flicker)
           answerContent.querySelectorAll(".mermaid-wrap").forEach(wrap => {
             const pre = wrap.querySelector("pre.mermaid");
@@ -1223,7 +1349,8 @@
         }
 
         scrollBottom();
-        _ansTimer = _ansQueue ? setTimeout(_ansTick, TW_MS) : null;
+        if (_ansQueue) { _ansTimer = requestAnimationFrame(_ansTick); }
+        else { _ansTimer = null; }
         // Only activate lucide icons when chunk contains a data-lucide placeholder
         // or at end-of-stream — avoids calling createIcons() every 12ms tick
         if (chunk.includes("data-lucide") || !_ansTimer) {
@@ -1234,6 +1361,7 @@
           // to closeAnswer() which runs after stream truly ends or segment closes.
           // This prevents partial math/mermaid from rendering mid-stream.
           answerContent.innerHTML = renderMarkdown(raw);
+          pinScrollIfAtBottom();
           // Neutralize mermaid during streaming to prevent flicker
           answerContent.querySelectorAll(".mermaid-wrap").forEach(wrap => {
             const pre = wrap.querySelector("pre.mermaid");
@@ -1248,16 +1376,17 @@
       }
       function _enqueueAnswer(text) {
         _ansQueue += text;
-        if (!_ansTimer) _ansTimer = setTimeout(_ansTick, TW_MS);
+        _ansStart();
       }
       function _flushAnswerQueue() {
-        if (_ansTimer) { clearTimeout(_ansTimer); _ansTimer = null; }
+        _ansCancel();
         if (_ansQueue && answerContent) {
           raw += _ansQueue;
           _ansQueue = "";
           // Only do lightweight markdown render here; heavy mermaid/math rendering
           // is deferred to closeAnswer() to avoid rendering partial content mid-stream.
           answerContent.innerHTML = renderMarkdown(raw);
+          pinScrollIfAtBottom();
           activateLucideIcons(answerContent);
           scrollBottom();
         }
@@ -1273,11 +1402,16 @@
         // segment is truly done (stream end or skill interleave boundary).
         if (answerContent && raw && !_isSpecialCard) {
           answerContent.innerHTML = renderMarkdown(raw);
+          pinScrollIfAtBottom();
           renderMermaidDiagrams(answerContent);
           renderMathJax(answerContent);
           activateLucideIcons(answerContent);
         }
         answerEl.classList.remove("streaming");
+        // Removing .streaming also drops the reserved cursor padding, so the
+        // content shrinks by 1.5em. Re-pin in the same tick or that shrink
+        // reads as a jump at the exact moment the response finishes.
+        pinScrollIfAtBottom();
         if (!_isSpecialCard && !raw.trim()) answerEl.remove();
         answerEl = null;
         answerContent = null;
@@ -1398,11 +1532,13 @@
           ensureAnswer();
           answerEl.style.display = "";
           if (text && text.trim() && !/\[(error|stopped|client error)\]/.test(text)) sawNormalAnswer = true;
+          if (!_stats.tFirst && text && text.trim()) _stats.tFirst = performance.now();
           // Errors/stop messages render instantly; normal text gets typewriter
           if (/\[(error|stopped|client error)\]/.test(text)) {
             _flushAnswerQueue();
             raw += text;
             answerContent.innerHTML = renderMarkdown(raw);
+            pinScrollIfAtBottom();
             activateLucideIcons(answerContent);
             scrollBottom();
           } else {
@@ -1414,7 +1550,7 @@
           // Kill typewriter queues immediately — don't flush partial content
           if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
           _thinkQueue = "";
-          if (_ansTimer) { clearTimeout(_ansTimer); _ansTimer = null; }
+          _ansCancel();
           _ansQueue = "";
           currentThinkWrap = null;
           currentThinkBody = null;
@@ -1459,7 +1595,7 @@
           hidePending();
           if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
           _thinkQueue = "";
-          if (_ansTimer) { clearTimeout(_ansTimer); _ansTimer = null; }
+          _ansCancel();
           _ansQueue = "";
           currentThinkWrap = null;
           currentThinkBody = null;
@@ -1502,7 +1638,7 @@
           // Kill typewriter queues — don't leave a half-rendered partial answer
           if (_thinkTimer) { clearTimeout(_thinkTimer); _thinkTimer = null; }
           _thinkQueue = "";
-          if (_ansTimer) { clearTimeout(_ansTimer); _ansTimer = null; }
+          _ansCancel();
           _ansQueue = "";
           currentThinkWrap = null;
           currentThinkBody = null;
@@ -1628,6 +1764,7 @@
           }, 600);
         },
         finalize() {
+          _stats.tEnd = performance.now();
           hidePending();
           closeCurrentThinking();
           // If auto-switch didn't recover, render the permanent error card now.
@@ -1776,6 +1913,7 @@
             toolbar.appendChild(copyBtn);
             toolbar.appendChild(regenBtn);
             toolbar.appendChild(ttsBtn);
+            attachSpeedBadge(toolbar, turn);
             botEl.appendChild(toolbar);
             activateLucideIcons(toolbar);
           });
@@ -2514,6 +2652,10 @@
 // ── Backend Status Card (retries, errors, recovery) ─────────────────────────
 const _BACKEND_STATUS_MAP = {
   processing:                              { label: "Processing request…",              icon: "loader" },
+  qwen_transport_ghost:                    { label: "Qwen via ghost tab",               icon: "ghost" },
+  qwen_transport_curl:                     { label: "Qwen via raw API (curl)",          icon: "terminal" },
+  deepseek_transport_ghost:                { label: "DeepSeek via ghost tab",           icon: "ghost" },
+  deepseek_transport_curl:                 { label: "DeepSeek via raw API (curl)",      icon: "terminal" },
   first_chunk_timeout_triggering_switch:   { label: "No response after 3 attempts — switching…", icon: "triangle-alert" },
   stream_stall_timeout_triggering_switch:  { label: "Stream stalled — switching…",      icon: "triangle-alert" },
   empty_response_exhausted_triggering_switch: { label: "Empty responses exhausted — switching…", icon: "triangle-alert" },
@@ -2555,7 +2697,7 @@ function handleBackendStatusEvent(evt, container) {
   if (delayMatch) {
     const provider = delayMatch[1].charAt(0).toUpperCase() + delayMatch[1].slice(1);
     const seconds = delayMatch[2];
-    parsedLabel = `${provider} rate-limit delay — waiting ${seconds}s…`;
+    parsedLabel = `${provider} jitter delay — waiting ${seconds}s…`;
     parsedIcon = "timer";
   }
 

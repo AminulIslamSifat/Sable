@@ -22,7 +22,7 @@ from server.config import (
 from server.models import RevertRequest
 from server.utils import logger
 from ..dependencies import service, sse
-from server.database import list_chats
+from server.database import list_chats, add_response_stat, get_model_speeds
 
 from server.logging_setup import _log_buffer
 
@@ -49,7 +49,28 @@ def ui_config() -> dict[str, Any]:
     return {
         "typewriter_chars_per_tick": TYPEWRITER_CHARS_PER_TICK,
         "typewriter_tick_ms": TYPEWRITER_TICK_MS,
+        "model_speeds": get_model_speeds(30),
     }
+
+
+@router.post("/api/stats/response")
+def record_response_stat(payload: dict[str, Any]) -> dict[str, Any]:
+    """Record one response's generation speed. Fire-and-forget from the client."""
+    model = str(payload.get("model") or "unknown")
+    tps = float(payload.get("tps") or 0)
+    tokens = int(payload.get("tokens") or 0)
+    gen_ms = int(payload.get("gen_ms") or 0)
+    total_ms = int(payload.get("total_ms") or 0)
+    # Sanity floor — ignore degenerate readings (stops, errors, sub-100ms blips)
+    if tps <= 0 or tokens < 8 or gen_ms < 100:
+        return {"ok": False, "skipped": True}
+    add_response_stat(model, tokens, gen_ms, total_ms, tps)
+    return {"ok": True}
+
+
+@router.get("/api/stats/model_speeds")
+def model_speeds() -> dict[str, Any]:
+    return {"speeds": get_model_speeds(30)}
 
 @router.get("/api/logs")
 async def stream_logs():

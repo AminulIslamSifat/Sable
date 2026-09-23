@@ -16,6 +16,11 @@ from engine.config import RESEARCH_DIR
 logger = logging.getLogger("sable.research.manager")
 
 _SESSION_RE = re.compile(r"^[A-Za-z0-9-]{1,128}$")
+# Strict pattern: session IDs are uuid4().hex[:16] → exactly 16 lowercase hex chars.
+# Prevents random JSON artifacts (OCR dumps, fetch summaries, experiment logs, etc.)
+# from being treated as incomplete sessions in the UI.
+_SESSION_FILE_RE = re.compile(r"^[0-9a-f]{16}\.json$")
+_VALID_INCOMPLETE_STATUSES = {"cancelled", "error", "interrupted", "running"}
 RESEARCH_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -236,16 +241,20 @@ class ResearchManager:
                 out.append(self.public_status(sid))
                 seen_ids.add(sid)
 
-        # On-disk sessions
+        # On-disk sessions — only consider UUID-named files to avoid picking up
+        # unrelated JSON artifacts (fetch summaries, OCR dumps, experiment logs, etc.)
         try:
             for p in RESEARCH_DIR.glob("*.json"):
+                if not _SESSION_FILE_RE.match(p.name):
+                    continue
                 sid = p.stem
                 if sid in seen_ids:
                     continue
                 try:
                     data = json.loads(p.read_text(encoding="utf-8"))
-                    status = data.get("status", "unknown")
-                    if status == "done":
+                    status = data.get("status")
+                    # Skip completed sessions and files without a recognized status
+                    if status == "done" or status not in _VALID_INCOMPLETE_STATUSES:
                         continue
                     # Treat 'running' on disk as interrupted (server died mid-run)
                     if status == "running":
@@ -260,7 +269,7 @@ class ResearchManager:
                         "finished_at": data.get("finished_at"),
                     })
                     seen_ids.add(sid)
-                except Exception:
+                except (json.JSONDecodeError, Exception):
                     continue
         except Exception as e:
             logger.warning("list_incomplete | failed to scan disk: %s", e)

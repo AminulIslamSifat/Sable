@@ -118,12 +118,13 @@
       container.innerHTML = "";
       const grid = document.createElement("div");
       grid.className = "library-gallery-grid";
-      items.forEach((item) => {
+      const _libUrls = items.map((x) => x.url);
+      items.forEach((item, li) => {
         const cell = document.createElement("div");
         cell.className = "library-gallery-item";
         cell.innerHTML = `<img src="${item.url}" alt="${escHtml(item.filename)}" loading="lazy">`;
         cell.title = item.filename;
-        cell.addEventListener("click", () => window.open(item.url, "_blank"));
+        cell.addEventListener("click", () => openLightbox(_libUrls, li));
         grid.appendChild(cell);
       });
       container.appendChild(grid);
@@ -285,15 +286,16 @@
       const cols = n === 1 ? 1 : n === 2 ? 2 : 2;
       gallery.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
       gallery.innerHTML = "";
-      for (const img of result.images) {
+      const _igUrls = result.images.map((i) => "/assets/" + i.filename);
+      result.images.forEach((img, ii) => {
         const imgUrl = "/assets/" + img.filename;
         const cell = document.createElement("div");
         cell.className = "library-gallery-item";
         cell.innerHTML = `<img src="${imgUrl}" alt="Generated image" loading="lazy">`;
         cell.title = `Seed: ${img.seed} | ${img.width}x${img.height}`;
-        cell.addEventListener("click", () => window.open(imgUrl, "_blank"));
+        cell.addEventListener("click", () => openLightbox(_igUrls, ii));
         gallery.appendChild(cell);
-      }
+      });
       const first = result.images[0];
       const totalSize = result.images.reduce((s, i) => s + (i.size_bytes || 0), 0);
       let detailLabel;

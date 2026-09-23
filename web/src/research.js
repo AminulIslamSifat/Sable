@@ -692,13 +692,15 @@
         items.forEach((item) => {
           const card = document.createElement("div");
           card.className = "research-incomplete-card";
-          const icon = _STATUS_ICON[item.status] || "❓";
-          const label = _STATUS_LABEL[item.status] || item.status;
+          // Skip ghost entries with no meaningful data (defensive guard)
+          if (!item.status || item.status === "unknown") return;
+          const icon = _STATUS_ICON[item.status] || "⚡";
+          const label = _STATUS_LABEL[item.status] || item.status || "Interrupted";
           const progress = item.progress || {};
           const findings = progress.findings || 0;
           const sources = progress.sources || 0;
           const topics = progress.topics || 0;
-          const startedAt = item.started_at ? new Date(item.started_at * 1000).toLocaleString() : "unknown";
+          const startedAt = item.started_at ? new Date(item.started_at * 1000).toLocaleString() : "—";
           card.innerHTML = `
             <div class="ric-header">
               <span class="ric-status">${icon} ${escHtml(label)}</span>

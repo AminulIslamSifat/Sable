@@ -20,7 +20,10 @@
   // Sidebar sections we hide while in study mode.
   // NOTE: keep .sidebar-top visible — it holds the mode switcher, so hiding it
   // would trap the user in study mode.
-  const HIDE_IN_STUDY = ['sidebar-chats'];
+  // .sidebar-chats lives inside a .sidebar-content-slot wrapper created by
+  // sidebar-host.js — both are flex:1, so BOTH must collapse or the study
+  // panel only gets half the sidebar.
+  const HIDE_IN_STUDY = ['sidebar-content-slot', 'sidebar-chats'];
   let sidebarPanel = null; // our injected contextual panel
   let activeTab = 'library';
 
@@ -119,7 +122,16 @@
     sidebarPanel.className = 'study-sidebar-content';
     sidebarPanel.id = 'studySidebarPanel';
     sidebarPanel.hidden = true;
-    sidebar.appendChild(sidebarPanel);
+    // Insert right after .sidebar-top (before .sidebar-chats) so it renders
+    // from the top of the sidebar, not pushed to the bottom by the flex column.
+    const top = sidebar.querySelector('.sidebar-top');
+    if (top && top.nextSibling) {
+      sidebar.insertBefore(sidebarPanel, top.nextSibling);
+    } else if (top) {
+      top.after(sidebarPanel);
+    } else {
+      sidebar.appendChild(sidebarPanel);
+    }
     return sidebarPanel;
   }
 

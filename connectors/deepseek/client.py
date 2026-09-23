@@ -32,6 +32,11 @@ from connectors.common.instruction_builder import get_tool_format
 
 logger = logging.getLogger("sable.deepseek_api")
 
+# Idle timeout: if no bytes/events arrive within this window — whether while
+# connecting or mid-stream — the connection is dropped and reopened via the
+# normal retry loop. Treated as a plain failure (retry, then rotate).
+_IDLE_TIMEOUT_SECS = 30.0
+
 BASE_URL = "https://chat.deepseek.com"
 _SOLVER_DIR = Path(__file__).resolve().parent / "pow_solver"
 _SOLVER_NAME = "pow_solver.exe" if sys.platform == "win32" else "pow_solver"
@@ -352,6 +357,23 @@ def _load_instructions(project_id: str | None = None, layout_mode: str | None = 
         project_id=project_id, provider="deepseek", layout_mode=layout_mode,
     )
     return _instruction_cache
+
+
+class _EnterTimeoutCM:
+    """Wrap a curl_cffi stream context manager so that *opening* it — which is
+    what actually fires the HTTP request and blocks for response headers — is
+    bounded by an idle timeout. The body stream is left untouched so long
+    responses aren't capped; only a stalled connect/header phase is killed."""
+
+    def __init__(self, cm, timeout: float):
+        self._cm = cm
+        self._timeout = timeout
+
+    async def __aenter__(self):
+        return await asyncio.wait_for(self._cm.__aenter__(), timeout=self._timeout)
+
+    async def __aexit__(self, *exc):
+        return await self._cm.__aexit__(*exc)
 
 
 class DeepSeekAPIError(Exception):
@@ -775,13 +797,17 @@ class DeepSeekClient:
                 token = token[7:]
             pow_hdr = headers.get("X-DS-PoW-Response", "")
             try:
-                r = await ghost.fetch_completion(token, body, pow_hdr)
-                from connectors.deepseek.ghost import GhostResponse
-                return GhostResponse(int(r.get("status", 0)), r.get("raw", ""))
+                # Streaming in-page fetch: SSE lines arrive as they're produced,
+                # with a 30s idle gate enforced both in-page and in the queue drain.
+                return await ghost.open_stream(
+                    token, body, pow_hdr, idle_secs=_IDLE_TIMEOUT_SECS)
             except Exception as exc:
-                logger.warning("Ghost fetch failed (%s) — falling back to curl for this request", exc)
+                logger.warning("Ghost stream open failed (%s) — falling back to curl for this request", exc)
         http = await self._get_http()
-        return http.stream("POST", f"{BASE_URL}/api/v0/chat/completion", json=body, headers=headers)
+        cm = http.stream("POST", f"{BASE_URL}/api/v0/chat/completion", json=body, headers=headers)
+        # Bound the connect + response-header phase at 30s idle. Ghost path
+        # enforces its own idle abort inside the page JS, so it's not wrapped.
+        return _EnterTimeoutCM(cm, _IDLE_TIMEOUT_SECS)
 
     # ------------------------------------------------------------------
     # PoW solving
@@ -966,7 +992,7 @@ class DeepSeekClient:
                     await resp.content
                     logger.warning("DeepSeek %s HTTP %s", tag, resp.status_code)
                     return None
-                async for event in self._iter_completion_events(resp):
+                async for event in self._iter_with_idle_timeout(resp):
                     etype = event.get("type")
                     if etype == "done":
                         pid = event.get("parent_id")
@@ -1067,6 +1093,25 @@ class DeepSeekClient:
     # ------------------------------------------------------------------
     # SSE response parsing
     # ------------------------------------------------------------------
+
+    async def _iter_with_idle_timeout(
+        self,
+        resp,
+        timeout_secs: float = _IDLE_TIMEOUT_SECS,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Wrap SSE parsing with an idle watchdog.
+
+        If no event arrives within `timeout_secs` — connection open, first
+        token, or a mid-stream stall — raise asyncio.TimeoutError so the
+        caller's retry loop drops this connection and opens a fresh one.
+        """
+        agen = self._iter_completion_events(resp)
+        while True:
+            try:
+                event = await asyncio.wait_for(agen.__anext__(), timeout=timeout_secs)
+            except StopAsyncIteration:
+                break
+            yield event
 
     async def _iter_completion_events(
         self,
@@ -1392,7 +1437,7 @@ class DeepSeekClient:
 
                         _response_parent_id: int | None = None
                         _got_biz_error = False
-                        async for event in self._iter_completion_events(resp):
+                        async for event in self._iter_with_idle_timeout(resp):
                             etype = event.get("type")
                             if etype == "answer":
                                 full_answer += event.get("text", "")
@@ -1412,21 +1457,14 @@ class DeepSeekClient:
 
                     _log_raw("RESPONSE (raw)", (full_thinking + "\n---\n" + full_answer) if full_thinking else full_answer)
 
-                    # Empty response detection
+                    # Empty response detection — NO unchained fallback.
+                    # An empty 200 is treated like any other transient failure:
+                    # retry the SAME chained request (with a fresh PoW each time)
+                    # up to the per-token cap, then rotate. Dropping the parent
+                    # chain here silently re-rooted the conversation and orphaned
+                    # all prior context — worse than a clean rotation.
                     if not full_answer and not full_thinking:
                         last_err = "empty_response"
-                        # Self-heal: DeepSeek returns an empty 200 when a large
-                        # chained message follows the tiny hello seed. Drop the
-                        # parent chain and resend UNCHAINED with model_type=default
-                        # (the known-good first-message path) instead of burning
-                        # retries on a request that will never answer.
-                        if body.get("parent_message_id") is not None:
-                            logger.warning("DeepSeek empty response on chained message — dropping parent chain, retrying unchained")
-                            body["parent_message_id"] = None
-                            body["model_type"] = "default"
-                            yield {"type": "status", "message": "deepseek_retry_unchained"}
-                            await asyncio.sleep(_RETRY_DELAY_SECS)
-                            continue
                         if _retry < _MAX_RETRIES_PER_TOKEN - 1:
                             logger.warning("DeepSeek empty response, retry %d/%d in %.0fs...",
                                            _retry + 1, _MAX_RETRIES_PER_TOKEN, _RETRY_DELAY_SECS)
@@ -1461,16 +1499,20 @@ class DeepSeekClient:
 
                     return  # Success — done
 
-                except CurlReadTimeout:
-                    last_err = "timeout (120s)"
+                except (asyncio.TimeoutError, CurlReadTimeout):
+                    # Idle gate fired — either the connect/header phase (bounded
+                    # in _completion_opener) or a mid-stream stall (bounded in
+                    # _iter_with_idle_timeout) produced no bytes within 30s.
+                    # Drop this connection and reopen a fresh one next retry.
+                    last_err = f"idle_timeout ({_IDLE_TIMEOUT_SECS:.0f}s)"
                     if _retry < _MAX_RETRIES_PER_TOKEN - 1:
-                        logger.warning("DeepSeek timeout, retry %d/%d in %.0fs...",
+                        logger.warning("DeepSeek idle timeout, retry %d/%d in %.0fs...",
                                        _retry + 1, _MAX_RETRIES_PER_TOKEN, _RETRY_DELAY_SECS)
                         yield {"type": "status", "message": f"deepseek_retry_{_retry + 1}"}
                         await asyncio.sleep(_RETRY_DELAY_SECS)
                         continue
                     else:
-                        logger.warning("DeepSeek timeout after %d retries, rotating...",
+                        logger.warning("DeepSeek idle timeout after %d retries, rotating...",
                                        _MAX_RETRIES_PER_TOKEN)
                         break
                 except Exception as exc:

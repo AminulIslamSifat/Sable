@@ -1835,6 +1835,185 @@
     loadSidebarTree();
   }
 
+  /* ==========================================================
+     LEFT SIDEBAR — DEDICATED CONTEXT MENU
+     Separate menu element from the overlay tree. Items are
+     context-aware: file/folder/empty-space each get only the
+     operations that actually apply.
+     ========================================================== */
+  const leftCtxMenu = (() => {
+    let el = document.getElementById("fsLeftCtxMenu");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "fsLeftCtxMenu";
+      el.className = "fs-ctx-menu";
+      document.body.appendChild(el);
+    }
+    return el;
+  })();
+
+  function hideLeftCtx() { leftCtxMenu.classList.remove("open"); }
+
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("#fsLeftCtxMenu")) hideLeftCtx();
+  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideLeftCtx(); });
+  window.addEventListener("blur", hideLeftCtx);
+  if (leftTree) leftTree.addEventListener("scroll", hideLeftCtx, { passive: true });
+
+  function showLeftCtx(x, y, items) {
+    leftCtxMenu.innerHTML = "";
+    items.forEach((item) => {
+      if (item.separator) {
+        const sep = document.createElement("div");
+        sep.className = "fs-ctx-sep";
+        leftCtxMenu.appendChild(sep);
+        return;
+      }
+      const btn = document.createElement("button");
+      btn.className = "fs-ctx-item" + (item.danger ? " fs-ctx-danger" : "");
+      btn.innerHTML = `${icon(item.icon, 13)} <span>${esc(item.label)}</span>`;
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        hideLeftCtx();
+        item.action();
+      });
+      leftCtxMenu.appendChild(btn);
+    });
+
+    const menuW = 190, menuH = leftCtxMenu.offsetHeight || 220;
+    leftCtxMenu.style.left = Math.max(6, Math.min(x, window.innerWidth - menuW)) + "px";
+    leftCtxMenu.style.top = Math.max(6, Math.min(y, window.innerHeight - menuH - 6)) + "px";
+    leftCtxMenu.classList.add("open");
+    refreshIcons();
+  }
+
+  /** Reload left tree + keep the right sidebar tree in sync */
+  async function refreshLeftAfterOp() {
+    await loadLeftTree();
+    if (sidebarRoot) { try { await loadSidebarTree(); } catch (_) {} }
+  }
+
+  function toastOrAlert(msg) {
+    if (window.showToast) window.showToast(msg, "error");
+    else alert(msg);
+  }
+
+  async function leftCreate(dir, type) {
+    const name = prompt(type === "file" ? "New file name:" : "New folder name:");
+    if (!name || !name.trim()) return;
+    const fullPath = dir.replace(/\/+$/, "") + "/" + name.trim();
+    const endpoint = type === "file" ? "/api/filesystem/write" : "/api/filesystem/mkdir";
+    const body = type === "file" ? { path: fullPath, content: "" } : { path: fullPath };
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (data.error) return toastOrAlert(data.error);
+      if (type === "dir") leftExpanded.add(fullPath);
+      await refreshLeftAfterOp();
+    } catch { toastOrAlert("Create failed"); }
+  }
+
+  /** Rename = move within the same parent directory */
+  async function leftRename(path) {
+    const oldName = pathBasename(path);
+    const newName = prompt("Rename to:", oldName);
+    if (!newName || !newName.trim() || newName.trim() === oldName) return;
+    const parent = pathDirname(path) || "/";
+    const dest = parent.replace(/\/+$/, "") + "/" + newName.trim();
+    try {
+      const res = await fetch("/api/filesystem/move", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path, dest }),
+      });
+      const data = await res.json();
+      if (data.error) return toastOrAlert(data.error);
+      // Keep expansion state pointing at the new path
+      if (leftExpanded.has(path)) { leftExpanded.delete(path); leftExpanded.add(dest); }
+      await refreshLeftAfterOp();
+    } catch { toastOrAlert("Rename failed"); }
+  }
+
+  async function leftDelete(path) {
+    if (!confirm(`Delete "${pathBasename(path)}"? This cannot be undone.`)) return;
+    try {
+      const res = await fetch("/api/filesystem/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      const data = await res.json();
+      if (data.error) return toastOrAlert(data.error);
+      await refreshLeftAfterOp();
+    } catch { toastOrAlert("Delete failed"); }
+  }
+
+  function copyToClipboard(text) {
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+
+  /**
+   * Change the working directory (chat / terminal / agent cwd) WITHOUT moving
+   * the left tree view. `sidebarRoot` is the source of truth for getIdeCwd().
+   */
+  function leftSetCwd(path) {
+    if (!path) return;
+    sidebarRoot = path;
+    localStorage.setItem("fs_ide_last_folder", path);
+    sidebarExpanded.clear();
+    sidebarExpanded.add(path);
+    window.dispatchEvent(new Event("cwd-changed"));
+    try { loadSidebarTree(); } catch (_) {}
+    if (window.showToast) window.showToast("Working directory: " + path, "success");
+  }
+
+  if (leftTree) {
+    leftTree.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const row = e.target.closest(".fs-item");
+      const path = row && row.dataset ? row.dataset.path : null;
+      const isDir = !!(path && row.dataset.type === "dir");
+      const items = [];
+
+      if (isDir) {
+        /* --- Folder: create inside, then folder-only ops --- */
+        items.push({ label: "New File",   icon: "file-plus-2",  action: () => leftCreate(path, "file") });
+        items.push({ label: "New Folder", icon: "folder-plus",   action: () => leftCreate(path, "dir") });
+        items.push({ separator: true });
+        items.push({ label: "Open Folder", icon: "folder-open",  action: () => pickLeftRoot(path) });
+        items.push({ label: "Set as Working Directory", icon: "terminal-square", action: () => leftSetCwd(path) });
+        items.push({ separator: true });
+        items.push({ label: "Rename",     icon: "pencil",        action: () => leftRename(path) });
+        items.push({ label: "Copy Path",  icon: "clipboard",     action: () => copyToClipboard(path) });
+        items.push({ label: "Delete",     icon: "trash-2", danger: true, action: () => leftDelete(path) });
+      } else if (path) {
+        /* --- File: NO New File/New Folder/Open Folder --- */
+        items.push({ label: "Open",       icon: "file-text",     action: () => openSidebarFile(path, pathBasename(path)) });
+        items.push({ separator: true });
+        items.push({ label: "Rename",     icon: "pencil",        action: () => leftRename(path) });
+        items.push({ label: "Copy Path",  icon: "clipboard",     action: () => copyToClipboard(path) });
+        items.push({ label: "Delete",     icon: "trash-2", danger: true, action: () => leftDelete(path) });
+      } else {
+        /* --- Empty space: create + set cwd for the current root --- */
+        const targetDir = leftRoot || "/";
+        items.push({ label: "New File",   icon: "file-plus-2",  action: () => leftCreate(targetDir, "file") });
+        items.push({ label: "New Folder", icon: "folder-plus",   action: () => leftCreate(targetDir, "dir") });
+        items.push({ separator: true });
+        items.push({ label: "Set as Working Directory", icon: "terminal-square", action: () => leftSetCwd(targetDir) });
+        items.push({ label: "Copy Path",  icon: "clipboard",     action: () => copyToClipboard(targetDir) });
+      }
+
+      showLeftCtx(e.clientX, e.clientY, items);
+    });
+  }
+
   if (leftOpenFolderBtn) {
     leftOpenFolderBtn.addEventListener("click", async () => {
       try {

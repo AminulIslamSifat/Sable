@@ -1428,6 +1428,21 @@ textarea:disabled {
   object-fit: cover;
 }
 
+/* Image-gen results: show the FULL generated image, never crop it. */
+#igGallery .library-gallery-item {
+  aspect-ratio: auto;
+  border-radius: 10px;
+  background: var(--panel-2, var(--shadow-inner-glow));
+}
+
+#igGallery .library-gallery-item img {
+  width: 100%;
+  height: auto;
+  max-height: 70vh;
+  object-fit: contain;
+  display: block;
+}
+
 
 /* ── Deep Research panel ─────────────────────────────────────────────── */
 .research-panel {

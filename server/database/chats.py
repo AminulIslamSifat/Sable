@@ -289,6 +289,64 @@ def update_message(
         _write_skill_events(conn, message_id, skill_events)
 
 
+def _median(vals: list[float]) -> float:
+    """Median of a list — robust against single-response outliers."""
+    if not vals:
+        return 0.0
+    s = sorted(vals)
+    n = len(s)
+    mid = n // 2
+    return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2.0
+
+
+def add_response_stat(
+    model: str,
+    tokens: int,
+    gen_ms: int,
+    total_ms: int,
+    tps: float,
+) -> None:
+    """Record one response's generation speed for a model."""
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO response_stats (model, tokens, gen_ms, total_ms, tps, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (model, tokens, gen_ms, total_ms, tps, utcnow()),
+        )
+
+
+def get_model_speeds(limit: int = 30) -> dict[str, dict[str, float]]:
+    """Per-model speed summary from the last `limit` responses each.
+
+    Returns {model: {median_tps, avg_tps, samples}}. Median is the primary
+    value — one stalled response shouldn't skew the typewriter for 30 turns.
+    """
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT model, tps FROM (
+                SELECT model, tps,
+                       ROW_NUMBER() OVER (PARTITION BY model ORDER BY id DESC) AS rn
+                FROM response_stats
+            ) WHERE rn <= ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    grouped: dict[str, list[float]] = {}
+    for row in rows:
+        grouped.setdefault(row["model"], []).append(float(row["tps"]))
+
+    out: dict[str, dict[str, float]] = {}
+    for model, vals in grouped.items():
+        out[model] = {
+            "median_tps": round(_median(vals), 2),
+            "avg_tps": round(sum(vals) / len(vals), 2),
+            "samples": len(vals),
+        }
+    return out
+
+
 def append_skill_event(chat_id: str, event: dict[str, Any]) -> None:
     """Append a single event to the last assistant message's skill_events table."""
     event_json = json.dumps(event, ensure_ascii=False)

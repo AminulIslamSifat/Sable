@@ -328,6 +328,22 @@
       });
     }
 
+    // Synchronously pin to bottom when we're already there. A full markdown
+    // re-render (innerHTML =) tears down every node, which destroys the scroll
+    // anchor; the rAF-queued scrollBottom can then land a frame late, and that
+    // one-frame gap is what reads as the screen "bouncing" during streaming.
+    // Writing scrollTop in the same tick as the re-render closes the gap.
+    function pinScrollIfAtBottom() {
+      if (window._historyLoading) return;
+      if (!activePane) return;
+      if (_scrollForChat !== activeChatId) {
+        _atBottom = true;
+        _scrollForChat = activeChatId;
+      }
+      if (!_atBottom) return;
+      activePane.scrollTop = activePane.scrollHeight;
+    }
+
     function clearEmptyState() {
       if (!activePane) return;
       const empty = activePane.querySelector(".empty");
@@ -649,21 +665,22 @@
           if (imagesArr.length > 1) {
             const gallery = document.createElement("div");
             gallery.className = "skill-image-gallery";
-            for (const imgData of imagesArr) {
+            const _galUrls = imagesArr.map((x) => x.url);
+            imagesArr.forEach((imgData, gi) => {
               const img = document.createElement("img");
               img.src = imgData.url;
               img.className = "skill-image";
               img.alt = "Generated image";
-              img.addEventListener("click", () => window.open(imgData.url, "_blank"));
+              img.addEventListener("click", () => openLightbox(_galUrls, gi));
               gallery.appendChild(img);
-            }
+            });
             placeholder.replaceWith(gallery);
           } else {
             const img = document.createElement("img");
             img.src = result.url;
             img.className = "skill-image";
             img.alt = "Generated image";
-            img.addEventListener("click", () => window.open(result.url, "_blank"));
+            img.addEventListener("click", () => openLightbox(result.url));
             placeholder.replaceWith(img);
           }
         } else {
@@ -713,12 +730,12 @@
         if (Array.isArray(images) && images.length) {
           const imgWrap = document.createElement("div");
           imgWrap.className = "user-images";
-          for (const src of images) {
+          images.forEach((src, ui) => {
             const img = document.createElement("img");
             img.src = src;
-            img.addEventListener("click", () => window.open(src, "_blank"));
+            img.addEventListener("click", () => openLightbox(images, ui));
             imgWrap.appendChild(img);
-          }
+          });
           div.appendChild(imgWrap);
         }
         // Copy toolbar for user messages

@@ -49,8 +49,8 @@
   <link rel="stylesheet" href="/static/css/base.css?v=100">
   <link rel="stylesheet" href="/static/css/layout.css?v=100">
   <link rel="stylesheet" href="/static/css/ide.css?v=100">
-  <link rel="stylesheet" href="/static/css/chat.css?v=101">
-  <link rel="stylesheet" href="/static/css/panels.css?v=100">
+  <link rel="stylesheet" href="/static/css/chat.css?v=103">
+  <link rel="stylesheet" href="/static/css/panels.css?v=101">
   <link rel="stylesheet" href="/static/css/components.css?v=101">
   <link rel="stylesheet" href="/static/css/responsive.css?v=100">
   <link rel="stylesheet" href="/static/css/agents.css?v=101">
@@ -59,7 +59,7 @@
   <link rel="stylesheet" href="/static/css/dashboard.css?v=100">
   <link rel="stylesheet" href="/static/css/calendar.css?v=100">
   <link rel="stylesheet" href="/static/css/knowledge.css?v=100">
-  <link rel="stylesheet" href="/static/css/study.css?v=1">
+  <link rel="stylesheet" href="/static/css/study.css?v=4">
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v=2">
 
   <link rel="manifest" href="/static/assets/manifest.json">
@@ -619,14 +619,14 @@
     <div id="studyView" class="study-view hidden">
       <div class="study-header">
         <h2 class="study-title">Study</h2>
+        <div class="study-tabs" id="studyTabs">
+          <button class="study-tab active" data-study-tab="library"><i data-lucide="book-open" class="icon-lucide"></i> Library</button>
+          <button class="study-tab" data-study-tab="rooms"><i data-lucide="users" class="icon-lucide"></i> Rooms</button>
+          <button class="study-tab" data-study-tab="academics"><i data-lucide="graduation-cap" class="icon-lucide"></i> Academics</button>
+        </div>
         <div class="study-header-actions">
           <button class="study-icon-btn" id="studyUploadBtn" title="Upload PDF"><i data-lucide="upload" class="icon-lucide"></i></button>
         </div>
-      </div>
-      <div class="study-tabs">
-        <button class="study-tab active" data-study-tab="library"><i data-lucide="book-open" class="icon-lucide"></i> Library</button>
-        <button class="study-tab" data-study-tab="rooms"><i data-lucide="users" class="icon-lucide"></i> Rooms</button>
-        <button class="study-tab" data-study-tab="academics"><i data-lucide="graduation-cap" class="icon-lucide"></i> Academics</button>
       </div>
       <div class="study-content" id="studyContent">
         <!-- Populated by study.js -->
@@ -2274,37 +2274,38 @@
     })();
   </script>
   <!-- app.js split into domain modules (load order matters) -->
-  <script src="/static/js/core.js?v=6"></script>
+  <script src="/static/js/core.js?v=7"></script>
   <script src="/static/js/tts.js?v=4"></script>
   <script src="/static/js/markdown.js?v=1"></script>
-  <script src="/static/js/chat.js?v=8"></script>
+  <script src="/static/js/lightbox.js?v=2"></script>
+  <script src="/static/js/chat.js?v=10"></script>
   <script src="/static/js/sidebar-host.js?v=10"></script>
   <script src="/static/js/tracknote.js?v=8"></script>
-  <script src="/static/js/sse.js?v=13"></script>
+  <script src="/static/js/sse.js?v=17"></script>
   <script src="/static/js/sidebar.js?v=2"></script>
   <script src="/static/js/statusbar.js?v=2"></script>
   <script src="/static/js/settings-projects.js?v=3"></script>
   <script src="/static/js/projects-panel.js?v=6"></script>
-  <script src="/static/js/settings-init.js?v=7"></script>
+  <script src="/static/js/settings-init.js?v=8"></script>
   <script src="/static/js/settings-ui.js?v=5"></script>
   <script src="/static/js/profile.js?v=1"></script>
   <script src="/static/js/rail-settings.js?v=1"></script>
   <script src="/static/js/account-auth.js?v=1"></script>
   <script src="/static/js/settings-bot.js?v=1"></script>
   <script src="/static/js/settings-schedules.js?v=1"></script>
-  <script src="/static/js/library.js?v=2"></script>
+  <script src="/static/js/library.js?v=3"></script>
   <script src="/static/js/telegram.js?v=4"></script>
   <script src="/static/js/memory-panel.js?v=1"></script>
   <script src="/static/js/skills-panel.js?v=101"></script>
   <script src="/static/js/appearance.js?v=5"></script>
   <script src="/static/src/research.js?v=10"></script>
   <script src="/static/js/research-panel.js?v=3"></script>
-  <script src="/static/js/image-panel.js?v=1"></script>
+  <script src="/static/js/image-panel.js?v=2"></script>
   <script src="/static/js/prompt-panel.js?v=1"></script>
   <script src="/static/js/ocr-panel.js?v=1"></script>
   <script src="/static/js/agents.js?v=34"></script>
   <script src="/static/js/filesystem.js?v=32"></script>
-  <script src="/static/js/study.js?v=1"></script>
+  <script src="/static/js/study.js?v=3"></script>
   <script src="/static/js/mode.js?v=22"></script>
   <script src="/static/js/resize-panels.js?v=3"></script>
   <script src="/static/js/terminal.js?v=9"></script>

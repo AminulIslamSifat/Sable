@@ -826,6 +826,11 @@ class ChatService:
                 print(f"[STREAM] ghost unexpected failure "
                       f"({type(_gerr).__name__}: {_gerr}) — raw API path")
 
+        # Legacy raw API path — curl_cffi with browser-impersonated TLS. Reached
+        # when ghost is disabled, files are pre-attached, an account is pinned,
+        # or the ghost raised before producing content.
+        yield {"type": "status", "message": "qwen_transport_curl"}
+
         try:
             print(f"[STREAM]   ↳ _ensure_headers(bdd={bdd})...")
             headers = await self._ensure_headers(bdd)

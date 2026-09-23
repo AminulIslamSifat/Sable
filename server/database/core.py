@@ -93,6 +93,24 @@ def init_db() -> None:
         if "last_thinking_mode" not in chat_cols:
             conn.execute("ALTER TABLE chats ADD COLUMN last_thinking_mode TEXT")
 
+        # --- Response speed stats (drives adaptive typewriter speed) ---
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS response_stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model TEXT NOT NULL,
+                tokens INTEGER NOT NULL,
+                gen_ms INTEGER NOT NULL,
+                total_ms INTEGER NOT NULL,
+                tps REAL NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_stats_model ON response_stats(model, id DESC)"
+        )
+
         # --- Multi-agent tables ---
         conn.execute(
             """

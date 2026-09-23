@@ -26,17 +26,17 @@ body[data-mode="study"] .rail-btn[data-rail="calendar"] + .rail-sep {
   display: flex;
   flex-direction: column;
   background: var(--bg);
-  z-index: 5;
+  z-index: 20; /* above .input-area (z-index:10) and other main overlays */
   overflow: hidden;
 }
 #studyView.hidden { display: none !important; }
 
-/* --- Study header --- */
+/* --- Study header (title · tabs · actions on one row) --- */
 .study-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 16px 24px 0;
+  gap: 16px;
+  padding: 14px 24px 10px;
   flex-shrink: 0;
 }
 .study-title {
@@ -49,6 +49,8 @@ body[data-mode="study"] .rail-btn[data-rail="calendar"] + .rail-sep {
 .study-header-actions {
   display: flex;
   gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 .study-icon-btn {
   width: 36px;
@@ -70,19 +72,23 @@ body[data-mode="study"] .rail-btn[data-rail="calendar"] + .rail-sep {
 }
 .study-icon-btn .icon-lucide { width: 18px; height: 18px; }
 
-/* --- Study tabs --- */
+/* --- Study tabs (inline pills in the header) --- */
 .study-tabs {
   display: flex;
   gap: 4px;
-  padding: 12px 24px 0;
-  flex-shrink: 0;
+  padding: 4px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 50%, transparent);
+  box-shadow: inset 0 0 0 1px var(--border-soft);
+  flex: 0 1 auto;
+  min-width: 0;
 }
 .study-tab {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 16px;
-  border-radius: 10px 10px 0 0;
+  padding: 7px 14px;
+  border-radius: 9px;
   border: none;
   background: transparent;
   color: var(--muted);
@@ -90,18 +96,18 @@ body[data-mode="study"] .rail-btn[data-rail="calendar"] + .rail-sep {
   font-weight: 600;
   font-family: inherit;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s, background 0.15s;
   position: relative;
+  white-space: nowrap;
 }
-.study-tab .icon-lucide { width: 16px; height: 16px; }
+.study-tab .icon-lucide { width: 15px; height: 15px; }
 .study-tab:hover {
   color: var(--text);
-  background: color-mix(in srgb, var(--panel) 50%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 .study-tab.active {
   color: var(--accent);
-  background: var(--panel);
-  box-shadow: 0 -2px 0 var(--accent) inset;
+  background: var(--accent-dim);
 }
 
 /* --- Study content area --- */
@@ -378,7 +384,30 @@ body[data-mode="study"] .rail-btn[data-rail="calendar"] + .rail-sep {
 
 /* --- Study sidebar (contextual left panel) --- */
 .study-sidebar-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   padding: 12px;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--panel) 50%, transparent);
+  box-shadow:
+    inset 0 0 0 1px var(--shadow-inner-glow),
+    inset 1.5px 2.5px 0px -1.5px var(--shadow-inner-glow),
+    inset -1.5px -1.5px 0px -1.5px var(--shadow-inner-glow),
+    inset -2px -6px 1px -5px var(--shadow-inner-glow),
+    inset -0.3px -1px 3px 0px rgba(0, 0, 0, 0.15),
+    inset -1px 2px 3px -1px rgba(0, 0, 0, 0.2),
+    inset 0px 2px 3px -1px rgba(0, 0, 0, 0.2),
+    inset 1.5px -4px 1px -3px rgba(0, 0, 0, 0.1),
+    0px 1px 4px 0px rgba(0, 0, 0, 0.12),
+    0px 4px 12px 0px rgba(0, 0, 0, 0.1);
+}
+.study-sidebar-content[hidden] { display: none !important; }
+
+/* Hide the chat composer + compact panel while in study mode */
+body[data-mode="study"] #inputArea,
+body[data-mode="study"] #chatCompact {
+  display: none !important;
 }
 .study-sidebar-section {
   margin-bottom: 16px;

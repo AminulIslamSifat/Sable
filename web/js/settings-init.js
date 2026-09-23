@@ -778,6 +778,10 @@
     fetch("/api/config/ui").then(r => r.json()).then(cfg => {
       if (cfg.typewriter_chars_per_tick) TW_CHARS = cfg.typewriter_chars_per_tick;
       if (cfg.typewriter_tick_ms) TW_MS = cfg.typewriter_tick_ms;
+      if (cfg.model_speeds) {
+        TW_MODEL_SPEEDS = cfg.model_speeds;
+        if (typeof twSeedFromServer === "function") twSeedFromServer(cfg.model_speeds);
+      }
     }).catch(() => {});
 
     // Load chats filtered by current mode so sidebar matches active mode

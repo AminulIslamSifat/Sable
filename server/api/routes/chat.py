@@ -1254,6 +1254,11 @@ async def chat(request: ChatRequest):
         # chat_session_id keyed on the local chat_id). fork_history is written
         # by the fork endpoint and NULLed after injection — its presence is
         # the signal, no provider gate needed here.
+        # NOTE: read + prepend only. fork_history is NOT cleared here — it is
+        # NULLed after a fully successful turn (see success path below). Clearing
+        # at injection time meant any failed / empty-200 / rotated first send lost
+        # the fork context permanently — the "context vanishes for no reason" bug.
+        _fork_history_injected = False
         if parent_id is None:
             try:
                 with get_db() as _fh_conn:
@@ -1262,10 +1267,7 @@ async def chat(request: ChatRequest):
                     ).fetchone()
                     if _fh_row and _fh_row["fork_history"]:
                         current_message = _fh_row["fork_history"] + current_message
-                        _fh_conn.execute(
-                            "UPDATE chats SET fork_history = NULL WHERE id = ?",
-                            (active_chat_id,),
-                        )
+                        _fork_history_injected = True
                         logger.info("[fork-history] Injected fork history into first message for %s", active_chat_id)
             except Exception as _fh_err:
                 logger.warning("[fork-history] Failed to inject fork history: %s", _fh_err)
@@ -3155,6 +3157,20 @@ async def chat(request: ChatRequest):
                 touch_chat(active_chat_id, str(_tail_msg_id))
             else:
                 touch_chat(active_chat_id, final_parent)
+            # Consume fork history ONLY after a clean, successful turn. A real
+            # answer was produced and the upstream session is established, so the
+            # injected block is no longer needed. On failure/abort the block stays
+            # in the DB so the next send re-injects it instead of losing context.
+            if _fork_history_injected and not error_message and not _agent_killed:
+                try:
+                    with get_db() as _fh_conn:
+                        _fh_conn.execute(
+                            "UPDATE chats SET fork_history = NULL WHERE id = ?",
+                            (active_chat_id,),
+                        )
+                    logger.info("[fork-history] Consumed fork history after successful turn for %s", active_chat_id)
+                except Exception as _fh_err:
+                    logger.warning("[fork-history] Failed to clear fork history: %s", _fh_err)
             _ACTIVE_RESPONSE_IDS.pop(active_chat_id, None)
             if _agent_run and not _agent_killed:
                 from server.database import update_agent_status

@@ -419,6 +419,92 @@
     let TW_CHARS = _lowMem ? 12 : 3;
     let TW_MS = _lowMem ? 50 : 12;
 
+    // ── Adaptive typewriter speed ─────────────────────────────────────
+    // Per-model median tok/s (last 30 responses, from /api/config/ui).
+    // TW_CHARS is scaled so the reveal matches the model's real speed.
+    // Above FLUSH_TPS we skip animation entirely — at that speed the reply
+    // lands in under a second and animating it is pure CPU theatre.
+    const TW_FLUSH_TPS = 300;      // skip animation above this
+    const TW_MAX_CHARS = 60;       // hard ceiling per tick
+    const TW_MIN_MS    = 33;       // ~30 renders/sec — the practical CPU ceiling
+    let TW_MODEL_SPEEDS = {};      // model id → {median_tps, avg_tps, samples}
+
+    function twSpeedFor(model) {
+      const s = TW_MODEL_SPEEDS[model];
+      if (!s) return 0;
+      return s.median_tps || s.avg_tps || 0;
+    }
+
+    // Returns {chars, ms, flush} tuned to the model's measured speed.
+    function twTuneFor(model) {
+      const s = TW_MODEL_SPEEDS[model];
+      const tps = twSpeedFor(model);
+      if (!tps) return { chars: TW_CHARS, ms: TW_MS, flush: false };
+
+      // Flush if EITHER the median or the single most recent reading is fast.
+      // Median alone is sluggish to react (a stale disk seed outvotes it), but
+      // the last reading is direct evidence that *this* model can outrun the
+      // animation — and flushing is always safe, it just renders in one pass.
+      if (tps >= TW_FLUSH_TPS || (s && s.last_tps >= TW_FLUSH_TPS)) {
+        return { chars: 0, ms: TW_MS, flush: true };
+      }
+
+      // chars/tick = tok/s × 4 chars/tok × (tick_ms / 1000)
+      const ms = Math.max(TW_MIN_MS, TW_MS);
+      let chars = Math.round(tps * 4 * (ms / 1000));
+      // Respect a low-memory override as the floor
+      chars = Math.max(_lowMem ? 12 : 1, Math.min(chars, TW_MAX_CHARS));
+      return { chars, ms, flush: false };
+    }
+
+    // ── Local ring buffer ─────────────────────────────────────────────
+    // The server DB is the durable store; this is the session-local top-up so
+    // the meter adapts live without refetching. Seeded once from disk at init,
+    // then fed by every completed response. No further network calls.
+    const TW_RING = {};        // model → [tps, ...]
+    const TW_RING_MAX = 30;
+
+    // Seeded prior weight. Deliberately small: the disk value is a *summary*
+    // of past responses, not N independent observations of the model's speed
+    // right now. If we seed all 30, a stale median outvotes 15 fresh readings
+    // and the meter takes ~15 turns to correct — exactly the DeepSeek problem.
+    // At 6, live data takes over after ~7 responses while the disk value still
+    // damps the first few noisy readings. Best of both.
+    const TW_SEED_WEIGHT = 6;
+
+    function twSeedFromServer(speeds) {
+      for (const model in speeds) {
+        const s = speeds[model];
+        const n = Math.min(s.samples || 0, TW_SEED_WEIGHT);
+        const m = s.median_tps || 0;
+        if (!n || !m) continue;
+        TW_RING[model] = new Array(n).fill(m);
+      }
+    }
+
+    function _twMedian(arr) {
+      const s = arr.slice().sort((a, b) => a - b);
+      const mid = s.length >> 1;
+      return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+    }
+
+    // Record one live reading and recompute the model's median in place.
+    function twRecord(model, tps) {
+      if (!model || !isFinite(tps) || tps <= 0) return;
+      const r = TW_RING[model] || (TW_RING[model] = []);
+      r.push(tps);
+      while (r.length > TW_RING_MAX) r.shift();
+      const median = _twMedian(r);
+      let sum = 0;
+      for (let i = 0; i < r.length; i++) sum += r[i];
+      TW_MODEL_SPEEDS[model] = {
+        median_tps: Math.round(median * 100) / 100,
+        avg_tps: Math.round((sum / r.length) * 100) / 100,
+        last_tps: Math.round(tps * 100) / 100,
+        samples: r.length,
+      };
+    }
+
     // Used only if /api/models isn't available yet — keep in sync with
     // engine/config.py's MODELS list so the dropdowns work either way.
     const FALLBACK_MODELS = [
