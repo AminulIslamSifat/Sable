@@ -952,6 +952,20 @@ html[data-mode="light"] .status-dropdown-item {
 .status-dropdown-item.active .model-backend-badge {
   opacity: 1;
 }
+/* Drag-to-reorder states */
+.status-dropdown-item.dragging {
+  opacity: 0.45;
+  background: var(--panel-2);
+}
+.status-dropdown-item.drag-over {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.model-backend-item[draggable="true"] {
+  cursor: grab;
+}
+.model-backend-item[draggable="true"]:active {
+  cursor: grabbing;
+}
 html[data-mode="light"] .status-dropdown-item:hover {
   background: color-mix(in srgb, var(--accent) 10%, var(--panel-2));
   color: var(--text);

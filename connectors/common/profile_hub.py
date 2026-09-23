@@ -1,0 +1,548 @@
+"""Shared per-profile browser hub for ghost connectors.
+
+Problem
+-------
+Kimi, DeepSeek, Gemini-web, etc. each need a real browser page so the SPA mints
+per-request auth/shield tokens (localStorage bearer JWT, WAF cookies). The naive
+design gives each connector its own ``--user-data-dir``, but Chromium allows
+only ONE browser process per profile dir (SingletonLock). When Sable's
+``provider_accounts`` points several connectors at the SAME profile:
+
+  * each ghost launches its own Helium on that dir -> the loser dies on the lock;
+  * each ghost only adopts its OWN marker (``.kimi_ghost.json`` vs
+    ``.deepseek_ghost.json``), so neither can see the other's live browser;
+  * ``_pid_is_our_helium()`` matches BOTH (same binary + same profile dir), so
+    each connector treats the other's browser as its own orphan and kills it.
+
+That is the kill-war the README warns about.
+
+Fix
+---
+One shared browser per profile dir, multiplexed by TAB. Each connector opens its
+own tab on its own origin (localStorage is per-origin, so tokens never clash),
+while the browser process + CDP endpoint are shared. A profile-level marker
+(``.profile_hub.json``) records the CDP port so ANY process can adopt the live
+browser instead of launching a rival.
+
+Usage::
+
+    hub  = await ProfileHub.acquire(profile_dir, helium_bin)
+    page = await hub.new_tab("https://www.kimi.ai/")
+    ...  # expose_function / evaluate on `page`
+    await hub.close_tab(page)   # browser stays up for other connectors
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import signal
+import socket
+import time
+from pathlib import Path
+from urllib.parse import urlparse
+
+logger = logging.getLogger("sable.profile_hub")
+
+MARKER_NAME = ".profile_hub.json"
+
+_LAUNCH_ARGS = [
+    "--no-sandbox",
+    "--disable-blink-features=AutomationControlled",
+    "--disable-infobars",
+    "--disable-gpu",
+]
+
+
+# ----------------------------------------------------------------------
+# Process / lock helpers
+# ----------------------------------------------------------------------
+
+def _lock_pid(profile: Path) -> int | None:
+    lock = profile / "SingletonLock"
+    if not (lock.is_symlink() or lock.exists()):
+        return None
+    try:
+        target = os.readlink(lock)
+        _, _, pid_str = target.rpartition("-")
+        return int(pid_str)
+    except Exception:
+        return None
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _cmdline_tokens(pid: int) -> list[str]:
+    """Tokenize a process's cmdline.
+
+    ``/proc/<pid>/cmdline`` is *supposed* to be NUL-separated, but some
+    launchers (and Helium's own wrapper) rewrite it as a single
+    space-separated string with no NUL bytes. Splitting only on ``\0`` then
+    yields one giant token and every arg check fails — a silent false
+    negative. Normalize NULs to spaces and split on whitespace so both
+    layouts parse identically.
+    """
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return []
+    text = raw.replace(b"\0", b" ").decode("utf-8", "replace")
+    return text.split()
+
+
+def _pid_is_our_helium(pid: int, profile_dir: Path, helium_bin: str) -> bool:
+    """True if ``pid`` is a Helium browser launched on *this* profile dir.
+
+    Requires BOTH the binary basename AND the exact ``--user-data-dir`` to
+    match, so a foreign connector's browser sharing the profile is never
+    mistaken for ours.
+    """
+    toks = _cmdline_tokens(pid)
+    if not toks:
+        return False
+    if Path(toks[0]).name != Path(helium_bin).name:
+        return False
+    want = {
+        f"--user-data-dir={profile_dir}",
+        f"--user-data-dir={profile_dir.resolve()}",
+    }
+    return any(t in want for t in toks)
+
+
+def _profile_helium_pids(profile_dir: Path, helium_bin: str) -> list[int]:
+    """Every Helium pid bound to ``profile_dir`` (main + forked children)."""
+    out: list[int] = []
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return out
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            pid = int(entry.name)
+            if _pid_is_our_helium(pid, profile_dir, helium_bin):
+                out.append(pid)
+        except Exception:
+            continue
+    return out
+
+
+def _lock_hostname(profile: Path) -> str | None:
+    """Host half of the ``hostname-pid`` SingletonLock symlink target."""
+    lock = profile / "SingletonLock"
+    if not (lock.is_symlink() or lock.exists()):
+        return None
+    try:
+        host, _, _pid = os.readlink(lock).rpartition("-")
+        return host or None
+    except Exception:
+        return None
+
+
+def _profile_holder_pids(profile_dir: Path) -> list[int]:
+    """Every live process bound to ``profile_dir``, whatever its binary.
+
+    Distinguishes a *real* foreign browser (a process genuinely holding the
+    profile) from a **recycled PID** — the lock names a pid the kernel later
+    handed to an unrelated process, which is how a long-dead browser could
+    wedge the profile behind a bogus "foreign browser" error.
+    """
+    want = {
+        f"--user-data-dir={profile_dir}",
+        f"--user-data-dir={profile_dir.resolve()}",
+    }
+    out: list[int] = []
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return out
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            pid = int(entry.name)
+            if any(t in want for t in _cmdline_tokens(pid)):
+                out.append(pid)
+        except Exception:
+            continue
+    return out
+
+
+def _lock_is_stale(profile: Path) -> bool:
+    """True when SingletonLock is junk and safe to delete.
+
+    Junk means: unparsable pid, dead pid, lock minted on another host, or —
+    the case that used to wedge us — **no process actually holds the
+    profile**, i.e. the pid was recycled onto something unrelated.
+    """
+    pid = _lock_pid(profile)
+    if pid is None or not _pid_alive(pid):
+        return True
+    host = _lock_hostname(profile)
+    if host and host != socket.gethostname():
+        return True
+    return not _profile_holder_pids(profile)
+
+
+def _devtools_port(profile: Path) -> int | None:
+    """Port from Chromium's ``DevToolsActivePort`` file, if present.
+
+    Standard chromium writes this whenever remote debugging is on. Helium
+    does **not** (verified: its profile dir only ever holds ``Singleton*``),
+    so this is a bonus source, not the primary one — ``_cmdline_cdp_ports``
+    covers Helium.
+    """
+    try:
+        first = (profile / "DevToolsActivePort").read_text(
+            encoding="utf-8", errors="replace").splitlines()[0]
+        port = int(first.strip())
+    except Exception:
+        return None
+    return port if port > 0 else None
+
+
+def _cmdline_cdp_ports(pids: list[int]) -> list[int]:
+    """Explicit ``--remote-debugging-port`` values from the holders' cmdlines.
+
+    The reliable source for Helium, which writes no port file. A flag of
+    ``=0`` means "pick a free port", which the listening-port sweep resolves.
+    """
+    ports: list[int] = []
+    for pid in pids:
+        for tok in _cmdline_tokens(pid):
+            if not tok.startswith("--remote-debugging-port="):
+                continue
+            try:
+                port = int(tok.split("=", 1)[1])
+            except ValueError:
+                continue
+            if port > 0 and port not in ports:
+                ports.append(port)
+    return ports
+
+
+def _listening_ports(pids: list[int]) -> set[int]:
+    """TCP ports ``pids`` are LISTENing on, via /proc/net/tcp{,6} + fd inodes."""
+    inodes: set[str] = set()
+    for pid in pids:
+        try:
+            for fd in Path(f"/proc/{pid}/fd").iterdir():
+                try:
+                    link = os.readlink(fd)
+                except OSError:
+                    continue
+                if link.startswith("socket:["):
+                    inodes.add(link[8:-1])
+        except OSError:
+            continue
+    if not inodes:
+        return set()
+    ports: set[int] = set()
+    for proc_file in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            lines = Path(proc_file).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 10 or parts[3] != "0A" or parts[9] not in inodes:
+                continue
+            try:
+                ports.add(int(parts[1].split(":")[1], 16))
+            except Exception:
+                continue
+    return ports
+
+
+def _clear_singleton(profile: Path) -> None:
+    for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        try:
+            (profile / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+# ----------------------------------------------------------------------
+# The hub
+# ----------------------------------------------------------------------
+
+class ProfileHub:
+    """Owns (or adopts) the ONE browser for a profile dir."""
+
+    _hubs: dict[str, "ProfileHub"] = {}
+    _registry_lock: asyncio.Lock | None = None
+
+    # -- factory -------------------------------------------------------
+
+    @classmethod
+    async def acquire(cls, profile_dir: Path, helium_bin: str,
+                      headless: bool = True) -> "ProfileHub":
+        """Return the live hub for ``profile_dir``, launching it if needed."""
+        if cls._registry_lock is None:
+            cls._registry_lock = asyncio.Lock()
+        key = str(Path(profile_dir).resolve())
+        async with cls._registry_lock:
+            hub = cls._hubs.get(key)
+            if hub is not None and hub.is_alive:
+                return hub
+            if hub is not None:
+                await hub._teardown()
+            hub = cls(Path(profile_dir), helium_bin, headless)
+            await hub._ensure()
+            cls._hubs[key] = hub
+            return hub
+
+    def __init__(self, profile_dir: Path, helium_bin: str, headless: bool):
+        self.profile_dir = profile_dir
+        self.helium_bin = helium_bin
+        self.headless = headless
+        self._pw = None
+        self._context = None
+        self._cdp_browser = None
+        self._tabs: set = set()
+        self._marker = profile_dir / MARKER_NAME
+        # False when we adopted someone else's browser: teardown must drop the
+        # CDP link, never close a browser we don't own.
+        self._owns_browser = False
+
+    # -- state ---------------------------------------------------------
+
+    @property
+    def context(self):
+        return self._context
+
+    @property
+    def is_alive(self) -> bool:
+        return self._context is not None
+
+    # -- lifecycle -----------------------------------------------------
+
+    async def _ensure(self) -> None:
+        if not self.profile_dir.exists():
+            raise RuntimeError(f"profile dir missing: {self.profile_dir}")
+        if await self._adopt():
+            return
+        await self._free_profile()
+        try:
+            await self._launch()
+        except Exception:
+            # Lost a cross-process launch race — the winner's browser should be
+            # live now; adopt it instead of failing.
+            if await self._adopt():
+                return
+            raise
+
+    async def _adopt(self) -> bool:
+        """Attach to a live CDP browser on this profile, whoever launched it.
+
+        Candidate ports, in order:
+          1. our own marker (``.profile_hub.json``) — fastest, no probing;
+          2. the holders' ``--remote-debugging-port`` flag — the only source
+             that works for Helium, which writes no ``DevToolsActivePort``;
+          3. ``DevToolsActivePort`` — standard chromium, kept as a bonus;
+          4. a listening-port sweep of the holders' fds — resolves ``=0``
+             (random port) launches and anything the flags miss.
+
+        A dead pid in the lock means there is nothing to adopt, so bail early;
+        a *stale* lock (recycled pid) falls through to ``_free_profile`` once
+        every candidate port refuses the connection.
+        """
+        pid = _lock_pid(self.profile_dir)
+        if pid is not None and not _pid_alive(pid):
+            self._marker.unlink(missing_ok=True)
+            return False
+
+        holders = _profile_holder_pids(self.profile_dir)
+
+        ports: list[int] = []
+        if self._marker.exists():
+            try:
+                ports.append(int(json.loads(self._marker.read_text())["port"]))
+            except Exception:
+                pass
+        for cp in _cmdline_cdp_ports(holders):
+            if cp not in ports:
+                ports.append(cp)
+        dp = _devtools_port(self.profile_dir)
+        if dp is not None and dp not in ports:
+            ports.append(dp)
+        for lp in sorted(_listening_ports(holders)):
+            if lp not in ports:
+                ports.append(lp)
+
+        if not ports:
+            self._marker.unlink(missing_ok=True)
+            return False
+
+        from playwright.async_api import async_playwright
+        last_exc: Exception | None = None
+        for port in ports:
+            try:
+                self._pw = await async_playwright().start()
+                self._cdp_browser = await self._pw.chromium.connect_over_cdp(
+                    f"http://127.0.0.1:{port}", timeout=8000)
+                ctxs = self._cdp_browser.contexts
+                if not ctxs:
+                    raise RuntimeError("no contexts over CDP")
+                self._context = ctxs[0]
+                self._owns_browser = False
+                logger.info("[hub:%s] adopted live browser over CDP (port %d)",
+                            self.profile_dir.name, port)
+                return True
+            except Exception as exc:
+                last_exc = exc
+                try:
+                    if self._pw is not None:
+                        await self._pw.stop()
+                except Exception:
+                    pass
+                self._pw = None
+                self._cdp_browser = None
+                continue
+
+        logger.info("[hub:%s] CDP adopt failed on ports %s (%s) — relaunching",
+                    self.profile_dir.name, ports, last_exc)
+        self._marker.unlink(missing_ok=True)
+        return False
+
+    async def _free_profile(self) -> None:
+        """Clear a stale lock, or reclaim our own orphan (same helium binary on
+        this profile). A genuinely foreign browser is left alone — the hub is
+        the single owner of the profile, so it cannot proceed past one."""
+        pid = _lock_pid(self.profile_dir)
+        if pid is not None and not _lock_is_stale(self.profile_dir):
+            if _pid_is_our_helium(pid, self.profile_dir, self.helium_bin):
+                await self._reclaim()
+                return
+            raise RuntimeError(
+                f"profile {self.profile_dir.name} is held by foreign browser "
+                f"pid {pid} that isn't our helium binary — refusing to kill it")
+        # Dead pid, foreign host, or a recycled pid with no real holder — the
+        # lock is junk, not a live browser. Clear it and move on.
+        _clear_singleton(self.profile_dir)
+        self._marker.unlink(missing_ok=True)
+
+    async def _reclaim(self) -> None:
+        victims = _profile_helium_pids(self.profile_dir, self.helium_bin)
+        for vp in victims:
+            try:
+                os.kill(vp, signal.SIGTERM)
+            except OSError:
+                pass
+        for _ in range(30):
+            if not any(_pid_alive(vp) for vp in victims):
+                break
+            await asyncio.sleep(0.1)
+        for vp in victims:
+            if _pid_alive(vp):
+                try:
+                    os.kill(vp, signal.SIGKILL)
+                except OSError:
+                    pass
+        await asyncio.sleep(0.2)
+        _clear_singleton(self.profile_dir)
+        self._marker.unlink(missing_ok=True)
+        logger.info("[hub:%s] reclaimed %d orphaned process(es)",
+                    self.profile_dir.name, len(victims))
+
+    async def _launch(self) -> None:
+        from playwright.async_api import async_playwright
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        # Write the marker BEFORE launch so a crash mid-launch still records
+        # our port and the next process can adopt instead of orphaning.
+        try:
+            self._marker.write_text(json.dumps({"port": port, "ts": time.time()}))
+        except OSError:
+            pass
+        self._pw = await async_playwright().start()
+        self._context = await self._pw.chromium.launch_persistent_context(
+            executable_path=self.helium_bin,
+            user_data_dir=str(self.profile_dir),
+            headless=self.headless,
+            args=_LAUNCH_ARGS + [f"--remote-debugging-port={port}"],
+        )
+        self._owns_browser = True
+        logger.info("[hub:%s] launched shared browser (port %d)",
+                    self.profile_dir.name, port)
+
+    # -- tabs ----------------------------------------------------------
+
+    async def new_tab(self, url: str):
+        """Open (or reuse) a tab on ``url``'s origin. Reuses an existing tab on
+        the same host so re-acquires don't pile up duplicate tabs."""
+        if self._context is None:
+            raise RuntimeError("hub has no browser context")
+        want_host = urlparse(url).netloc
+        for p in self._context.pages:
+            try:
+                if not p.is_closed() and urlparse(p.url).netloc == want_host:
+                    self._tabs.add(p)
+                    return p
+            except Exception:
+                continue
+        page = await self._context.new_page()
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(1500)
+        except Exception:
+            try:
+                await page.close()
+            except Exception:
+                pass
+            raise
+        self._tabs.add(page)
+        return page
+
+    async def close_tab(self, page) -> None:
+        self._tabs.discard(page)
+        try:
+            if page is not None and not page.is_closed():
+                await page.close()
+        except Exception:
+            pass
+
+    async def _teardown(self) -> None:
+        for page in list(self._tabs):
+            try:
+                if not page.is_closed():
+                    await page.close()
+            except Exception:
+                pass
+        self._tabs.clear()
+        # Only close the browser if WE launched it. An adopted browser belongs
+        # to another launcher — closing it here would kill their session.
+        if self._owns_browser:
+            try:
+                if self._cdp_browser is not None:
+                    await self._cdp_browser.close()
+            except Exception:
+                pass
+            try:
+                if self._context is not None:
+                    await self._context.close()
+            except Exception:
+                pass
+        try:
+            if self._pw is not None:
+                await self._pw.stop()
+        except Exception:
+            pass
+        # Don't delete a marker we didn't write — it may be another Sable
+        # process's adopt handle.
+        if self._owns_browser:
+            self._marker.unlink(missing_ok=True)
+        self._owns_browser = False
+        self._context = None
+        self._pw = None
+        self._cdp_browser = None

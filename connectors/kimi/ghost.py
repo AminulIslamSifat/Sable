@@ -338,6 +338,7 @@ class KimiGhostSession:
         self._active_rid: str | None = None
         self._stream_lock = asyncio.Lock()
         self._marker = profile_dir / ".kimi_ghost.json"
+        self._hub = None
 
     # -- lifecycle -----------------------------------------------------
 
@@ -371,10 +372,17 @@ class KimiGhostSession:
     async def start(self) -> None:
         if not self.profile_dir.exists():
             raise RuntimeError(f"profile dir missing: {self.profile_dir}")
-        if await self._adopt_existing():
-            return
-        await self._ensure_profile_free()
-        await self._launch()
+        # Shared per-profile browser (ProfileHub): multiplex this connector's
+        # origin tab onto the ONE browser that owns the profile dir, so Kimi +
+        # DeepSeek + Gemini-web coexist on the same profile without the
+        # SingletonLock kill-war. See connectors/common/profile_hub.py.
+        from connectors.common.profile_hub import ProfileHub
+        self._hub = await ProfileHub.acquire(
+            self.profile_dir, self.helium_bin, headless=True)
+        self._ctx = self._hub.context
+        self._page = await self._hub.new_tab(KIMI_URL)
+        logger.info("[kimi:%s] tab ready on shared browser (%s)",
+                    self.account, self.profile_dir.name)
 
     async def _launch(self) -> None:
         from playwright.async_api import async_playwright
@@ -517,13 +525,16 @@ class KimiGhostSession:
                     self.account, len(victims))
 
     async def close(self) -> None:
-        for closer in (self._cdp_browser, self._ctx, self._playwright):
+        # Only this connector's tab dies; the shared browser (owned by the
+        # ProfileHub) stays up for other connectors on the same profile.
+        if self._hub is not None and self._page is not None:
             try:
-                if closer is not None:
-                    await closer.close() if closer is not self._playwright else await closer.stop()
+                await self._hub.close_tab(self._page)
             except Exception:
                 pass
         self._page = self._ctx = self._playwright = self._cdp_browser = None
+        self._hub = None
+        self._exposed_pages.clear()
 
     async def is_healthy(self) -> bool:
         if self._page is None or self._ctx is None:

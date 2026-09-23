@@ -214,6 +214,73 @@
       syncModelDropdown();
     }
 
+    /* ---------- Model drag-to-reorder ---------- */
+    const MODEL_ORDER_KEY = "sable_model_order";
+    let _dragModelId = null;
+
+    function _getModelOrder() {
+      try {
+        const raw = JSON.parse(localStorage.getItem(MODEL_ORDER_KEY) || "[]");
+        return Array.isArray(raw) ? raw : [];
+      } catch (err) { return []; }
+    }
+    function _setModelOrder(list) {
+      try { localStorage.setItem(MODEL_ORDER_KEY, JSON.stringify(list)); } catch (err) {}
+    }
+    // Stable sort: ranked ids follow saved order, unranked fall to the end
+    // keeping their natural position.
+    function _sortByCustomOrder(opts) {
+      const order = _getModelOrder();
+      if (!order.length) return opts;
+      const rank = new Map(order.map((id, i) => [id, i]));
+      return opts
+        .map((o, i) => ({ o, i }))
+        .sort((a, b) => {
+          const ra = rank.has(a.o.value) ? rank.get(a.o.value) : Infinity;
+          const rb = rank.has(b.o.value) ? rank.get(b.o.value) : Infinity;
+          if (ra !== rb) return ra - rb;
+          return a.i - b.i;
+        })
+        .map(x => x.o);
+    }
+    // Snapshot the current visual order (divider + placeholders skipped).
+    function _persistMenuOrder() {
+      const ids = Array.from(modelMenu.querySelectorAll(".status-dropdown-item"))
+        .map(el => el.dataset.value)
+        .filter(v => v && !String(v).startsWith("__"));
+      if (ids.length) _setModelOrder(ids);
+    }
+    function _wireModelDrag(item, opt) {
+      item.draggable = true;
+      item.addEventListener("dragstart", (e) => {
+        _dragModelId = opt.value;
+        item.classList.add("dragging");
+        e.dataTransfer.effectAllowed = "move";
+        try { e.dataTransfer.setData("text/plain", opt.value); } catch (err) {}
+      });
+      item.addEventListener("dragend", () => {
+        item.classList.remove("dragging");
+        modelMenu.querySelectorAll(".drag-over").forEach(n => n.classList.remove("drag-over"));
+        _persistMenuOrder();
+        _dragModelId = null;
+      });
+      item.addEventListener("dragover", (e) => {
+        if (!_dragModelId || _dragModelId === opt.value) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        const srcEl = modelMenu.querySelector(".status-dropdown-item.dragging");
+        if (!srcEl || srcEl === item) return;
+        const rect = item.getBoundingClientRect();
+        const after = e.clientY > rect.top + rect.height / 2;
+        modelMenu.insertBefore(srcEl, after ? item.nextSibling : item);
+      });
+      item.addEventListener("drop", (e) => {
+        e.preventDefault();
+        item.classList.remove("drag-over");
+        _persistMenuOrder();
+      });
+    }
+
     function _buildModelItem(opt, pinnedSet) {
       const model = modelList.find(m => m.id === opt.value);
       const item = document.createElement("div");
@@ -248,6 +315,7 @@
       });
 
       if (!isPlaceholder) {
+        _wireModelDrag(item, opt);
         const isPinned = pinnedSet.has(opt.value);
         const pinBtn = document.createElement("button");
         pinBtn.type = "button";
@@ -278,15 +346,17 @@
         if (o) pinnedOpts.push(o);
       }
       const pinnedValues = new Set(pinnedOpts.map(o => o.value));
-      const restOpts = opts.filter(o => !pinnedValues.has(o.value));
+      // Custom drag order wins inside each group; pins still control the split.
+      const orderedPinned = _sortByCustomOrder(pinnedOpts);
+      const orderedRest = _sortByCustomOrder(opts.filter(o => !pinnedValues.has(o.value)));
 
-      for (const opt of pinnedOpts) modelMenu.appendChild(_buildModelItem(opt, pinnedSet));
-      if (pinnedOpts.length && restOpts.length) {
+      for (const opt of orderedPinned) modelMenu.appendChild(_buildModelItem(opt, pinnedSet));
+      if (orderedPinned.length && orderedRest.length) {
         const divider = document.createElement("div");
         divider.className = "status-dropdown-divider";
         modelMenu.appendChild(divider);
       }
-      for (const opt of restOpts) modelMenu.appendChild(_buildModelItem(opt, pinnedSet));
+      for (const opt of orderedRest) modelMenu.appendChild(_buildModelItem(opt, pinnedSet));
 
       if (window.lucide) lucide.createIcons({ nodes: modelMenu.querySelectorAll("[data-lucide]") });
 

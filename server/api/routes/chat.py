@@ -192,6 +192,21 @@ async def stop_generation(request: Request):
         except Exception as exc:
             logger.warning("mimo stop failed: %s", exc)
             return {"success": False, "error": str(exc)}
+    # DeepSeek: ghost-tab in-page fetch has no upstream stop endpoint. Abort
+    # the in-page AbortController + force-release the per-account ghost stream
+    # lock. Without this the lock stayed held forever and EVERY subsequent
+    # message (any chat, same account) wedged on "deepseek via ghost tab".
+    if _prov == "deepseek":
+        try:
+            from connectors.deepseek.client import cancel_active_streams as _ds_cancel
+            _ok = await _ds_cancel()
+            logger.info("deepseek stop: chat=%s aborted=%s", chat_id, _ok)
+            # Always report success — the abort is best-effort and the lock is
+            # reclaimed by the bounded acquire in open_stream() regardless.
+            return {"success": True, "aborted": bool(_ok)}
+        except Exception as exc:
+            logger.warning("deepseek stop failed: %s", exc)
+            return {"success": True, "aborted": False, "error": str(exc)}
 
     # Frontend may not have the response_id yet (Stop pressed before the first
     # chunk landed). Fall back to the id captured server-side when the
@@ -1086,6 +1101,17 @@ async def chat(request: ChatRequest):
                         resolved_files.append(meta)
                     except Exception as exc:
                         logger.warning("mimo upload failed for %s: %s", f["path"], exc)
+                continue
+            # Kimi (kimi.ai): ghost-session multipart upload, returns `file_id`
+            # which rides on the Chat message's file blocks via ref_file_ids.
+            if _backend == "kimi":
+                if "path" in f:
+                    try:
+                        from connectors.kimi.client import get_client as _kimi_get
+                        meta = await _kimi_get().upload_file(f["path"])
+                        resolved_files.append(meta)
+                    except Exception as exc:
+                        logger.warning("kimi upload failed for %s: %s", f["path"], exc)
                 continue
             # Qwen / others: upload to Qwen OSS (images + documents)
             if "id" in f and "url" in f:
@@ -3102,7 +3128,12 @@ async def chat(request: ChatRequest):
             # (stop before first token), leave the previous tail untouched rather
             # than clobbering it.
             try:
-                if final_parent and not str(final_parent).isdigit():
+                # DeepSeek uses small integers (2, 4, 6…) as upstream
+                # response_message_ids — a digit is a VALID node there, unlike
+                # Qwen. Pinning it is what lets the next turn chain instead of
+                # branching from root / raising "invalid message id".
+                _is_ds_stop = current_provider == "deepseek"
+                if final_parent and (_is_ds_stop or not str(final_parent).isdigit()):
                     touch_chat(active_chat_id, str(final_parent))
                     logger.info("[event_stream] STOP: tail kept at upstream token %s for chat %s", final_parent, active_chat_id)
                 else:
@@ -3186,7 +3217,12 @@ async def chat(request: ChatRequest):
             #    continues the server-side session naturally.
             # final_parent can be a stale/partial token on abort — never trust it
             # when _agent_killed is set.
-            if _agent_killed or not final_parent:
+            # DeepSeek: even on a mid-turn stop, `final_parent` is a real
+            # upstream response_message_id (an integer). Pinning the local row
+            # id instead makes DeepSeek reject it as "invalid message id" on
+            # the next turn — so prefer the upstream token for DeepSeek.
+            _is_ds_tail = current_provider == "deepseek"
+            if (not _is_ds_tail and _agent_killed) or not final_parent:
                 touch_chat(active_chat_id, str(_tail_msg_id))
             else:
                 touch_chat(active_chat_id, final_parent)

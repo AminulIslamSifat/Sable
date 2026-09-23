@@ -103,6 +103,10 @@ def main() -> None:
         from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
         profile_name = user_data_dir.name
         exe_path = resolve_browser_for_profile(profile_name)
+        # Fixed CDP port so Sable can ATTACH to the browser the user is
+        # logging into, instead of fighting it over the profile lock.
+        import os as _os
+        cdp_port = int(_os.environ.get('SABLE_CDP_PORT', '9222'))
         launch_kwargs: dict = dict(
             user_data_dir=str(user_data_dir),
             headless=False,
@@ -112,6 +116,7 @@ def main() -> None:
                 "--disk-cache-size=2097152",
                 "--disable-gpu-shader-cache",
                 "--disable-component-update",
+                f"--remote-debugging-port={cdp_port}",
             ] + extra_browser_args(exe_path),
         )
         if exe_path:

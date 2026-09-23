@@ -478,6 +478,23 @@ MODELS = [
             {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Thinking"},
         ],
     },
+    # ── Kimi (kimi.ai, browser-auth ghost tab, no API key) ──
+    # thinking_mode values MUST stay lowercase (low/medium/high) — the kimi
+    # client maps them via _EFFORT; anything else silently falls back to LOW.
+    {
+        "id": "kimi-k2.6",
+        "label": "Kimi K2.6",
+        "api_backend": "kimi",
+        "api_model_type": "k2d6-chat",
+        "max_session_chars": 2_000_000,
+        "capabilities": {"image": True, "video": False, "document": True, "audio": False},
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "low"},
+            {"id": "low", "label": "Thinking (Low)", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "low"},
+            {"id": "medium", "label": "Thinking (Medium)", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "medium"},
+            {"id": "high", "label": "Thinking (High)", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "high"},
+        ],
+    },
 ]
 
 # Default/current model id — kept for backward compatibility with code that

@@ -1396,6 +1396,7 @@
       // Load general settings (tool output limit)
       loadGeneralSettings();
     }
+    window.loadBrowserSettings = loadBrowserSettings;
 
     // ── General Settings (tool output cap) ──
     const maxToolOutputInput = document.getElementById("maxToolOutputInput");

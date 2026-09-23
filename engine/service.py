@@ -493,7 +493,7 @@ class ChatService:
         """
         results: dict[str, bool] = {
             "qwen": False, "deepseek": False, "zai": False, "gemini": False,
-            "mimo": False,
+            "mimo": False, "kimi": False,
         }
 
         # --- Qwen WAF (cookies + bx-ua) ---
@@ -556,12 +556,33 @@ class ChatService:
         except Exception as exc:
             logger.warning("refresh_all: MiMo failed: %s: %s", type(exc).__name__, exc)
 
+        # --- Kimi (ghost-tab localStorage bearer) ---
+        try:
+            results["kimi"] = await self.refresh_kimi_token(account=account)
+        except Exception as exc:
+            logger.warning("refresh_all: Kimi failed: %s: %s", type(exc).__name__, exc)
+
         logger.info(
-            "refresh_all: account=%s qwen=%s deepseek=%s zai=%s gemini=%s mimo=%s",
+            "refresh_all: account=%s qwen=%s deepseek=%s zai=%s gemini=%s mimo=%s kimi=%s",
             account or "active", results["qwen"], results["deepseek"],
-            results["zai"], results["gemini"], results["mimo"],
+            results["zai"], results["gemini"], results["mimo"], results["kimi"],
         )
         return results
+
+    async def refresh_kimi_token(self, account: str | None = None) -> bool:
+        """Ensure a live Kimi ghost session holding a login token.
+
+        Kimi's bearer lives in the ghost page's localStorage and the SPA
+        refreshes it silently — there is no standalone refresh endpoint. The
+        meaningful 'refresh' is (re)acquiring the ghost session for `account`,
+        respawning it if it died, and confirming it still holds an
+        ``access_token``. Returns True when the session is ready.
+        """
+        from connectors.kimi.client import get_client as _kimi_client
+        from connectors.kimi.ghost import KimiGhostSession
+        acct = (_kimi_client(account) if account else _kimi_client()).account
+        session = await KimiGhostSession.for_account(acct)
+        return await session.has_token()
 
     async def refresh_deepseek_token(self) -> str:
         """Extract a fresh DeepSeek token. Reuses an already-running browser

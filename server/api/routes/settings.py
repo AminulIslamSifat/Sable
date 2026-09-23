@@ -294,6 +294,51 @@ async def refresh_mimo_token() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Refresh failed: {exc}")
 
 
+@router.post("/api/settings/kimi/refresh-token")
+async def refresh_kimi_token() -> dict[str, Any]:
+    """Ensure a live Kimi ghost session that holds a login token.
+
+    Kimi auth is a localStorage bearer the SPA refreshes silently, so this
+    (re)acquires the ghost tab for the active/pinned account and verifies the
+    token is present — respawning the session if it had died.
+    """
+    try:
+        ok = await service.refresh_kimi_token()
+        if not ok:
+            raise HTTPException(
+                status_code=502,
+                detail="Kimi ghost session has no login token (not logged in?)",
+            )
+        return {"status": "ok", "message": "Kimi token refreshed", "active": True}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Kimi token refresh failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Refresh failed: {exc}")
+
+
+@router.post("/api/settings/refresh-all-tokens")
+async def refresh_all_tokens() -> dict[str, Any]:
+    """Refresh every browser-backed provider token for the active account.
+
+    One warm browser pass covers Qwen WAF, DeepSeek, z.ai, Gemini (web), MiMo,
+    and Kimi. Each provider is isolated — one failure never blocks the rest —
+    and the per-provider result map is returned alongside a summary string.
+    """
+    try:
+        results = await service.refresh_all_provider_tokens()
+    except Exception as exc:
+        logger.error("Refresh-all tokens failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Refresh all failed: {exc}")
+
+    ok = [k for k, v in results.items() if v]
+    failed = [k for k, v in results.items() if not v]
+    msg = f"Refreshed {len(ok)}/{len(results)}: {', '.join(ok) or 'none'}"
+    if failed:
+        msg += f" · failed: {', '.join(failed)}"
+    return {"status": "ok", "message": msg, "results": results}
+
+
 @router.post("/api/settings/browser/refresh-waf")
 async def refresh_waf_token() -> dict[str, Any]:
     """Re-launch browser briefly to extract fresh Qwen WAF/cookie headers,

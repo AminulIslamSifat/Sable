@@ -30,6 +30,7 @@
   const PINNED = new Set([
     "chat", "search", "files", "terminal",       // top
     "dashboard", "library", "settings",           // bottom
+    "study",                                      // study-mode home (JS-controlled visibility)
   ]);
 
   function _getDisabled() {

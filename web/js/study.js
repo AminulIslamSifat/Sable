@@ -14,6 +14,7 @@
   const view = document.getElementById('studyView');
   const content = document.getElementById('studyContent');
   const sidebar = document.querySelector('.sidebar');
+  const railStudyBtn = document.getElementById('railStudyBtn');
 
   if (!view || !content) return;
 
@@ -217,11 +218,67 @@
     if (isStudy()) {
       view.classList.remove('hidden');
       enterStudySidebar();
+      activeTab = 'library';
       setTab(activeTab);
+      showStudyRail();
     } else {
       view.classList.add('hidden');
       exitStudySidebar();
+      hideStudyRail();
     }
+  }
+
+  // ─── Study rail button (visible only in study mode) ───
+
+  function showStudyRail() {
+    if (railStudyBtn) railStudyBtn.style.display = '';
+    const rail = document.getElementById('activityRail');
+    if (!rail) return;
+    rail.querySelectorAll('.rail-btn').forEach((b) => b.classList.remove('active'));
+    if (railStudyBtn) railStudyBtn.classList.add('active');
+  }
+
+  function hideStudyRail() {
+    if (railStudyBtn) railStudyBtn.style.display = 'none';
+  }
+
+  // ─── Rail switching inside study mode ───
+  // Selecting another rail view yields the stage to it (hides the study UI);
+  // the study rail button brings the study UI back.
+
+  function openStudyStage() {
+    view.classList.remove('hidden');
+    enterStudySidebar();
+    activeTab = 'library';
+    setTab(activeTab);
+    // Ensure the study rail button is the active one after any switch
+    const rail = document.getElementById('activityRail');
+    if (rail && railStudyBtn) {
+      rail.querySelectorAll('.rail-btn').forEach((b) => b.classList.remove('active'));
+      railStudyBtn.classList.add('active');
+    }
+  }
+
+  function wireRailSwitch() {
+    // Dedicated click handler: the study button ALWAYS brings the stage back,
+    // even when mode.js reports it as a toggle-off (target: null).
+    if (railStudyBtn) {
+      railStudyBtn.addEventListener('click', () => {
+        if (isStudy()) openStudyStage();
+      });
+    }
+
+    window.addEventListener('rail-switch', (e) => {
+      if (!isStudy()) return;
+      const target = e.detail && e.detail.target;
+      if (target == null) return; // deselect of some active button — leave stage as-is
+      if (target === 'study') {
+        openStudyStage();
+      } else {
+        view.classList.add('hidden');
+        exitStudySidebar();
+      }
+    });
   }
 
   // ─── Event wiring ───
@@ -272,6 +329,7 @@
 
   function init() {
     wireTabs();
+    wireRailSwitch();
     content.addEventListener('click', handleContentClick);
     if (sidebarPanel) sidebarPanel.addEventListener('click', handleContentClick);
 

@@ -48,6 +48,31 @@ _FORMAT_REMINDER_ENABLED = False
 # <｜DSML｜invoke>, or any "| DSML |" / "｜ DSML ｜" variant.
 _DSML_LEAK_RE = re.compile(r"[|｜]\s*DSML|DSML\s*[|｜]", re.IGNORECASE)
 
+# Regex to strip ALL DSML artifacts from text, including partial/truncated tags.
+# Handles:
+# 1. Full blocks: <｜DSML｜...> ... </｜DSML｜...>
+# 2. Partial opens: <｜DSML｜call, <｜DSML｜invoke name="..." (missing >)
+# 3. Partial closes: </｜DSML｜cal, </｜DSML｜> (with typos/incomplete chars)
+# 4. Stray pipes: | DSML |, ｜ DSML ｜
+_DSML_STRIP_RE = re.compile(
+    r"(?:<｜DSML｜[^>]*?>.*?</｜DSML｜[^>]*?>)"   # Full paired blocks
+    r"|(?:<｜DSML｜[a-zA-Z_0-9\s=\"']*)"         # Partial opening tags (no closing >)
+    r"|(?:</｜DSML｜[a-zA-Z_0-9\s=\"']*>)?"      # Partial closing tags (optional >)
+    r"|(?:[|｜]\s*DSML\s*[|｜])",               # Stray pipe-wrapped fragments
+    re.DOTALL | re.IGNORECASE
+)
+
+
+def _strip_dsml(text: str) -> str:
+    """Remove all DSML markup, including partial/truncated tags."""
+    if not text:
+        return text
+    cleaned = _DSML_STRIP_RE.sub("", text)
+    # Collapse excessive whitespace left behind by stripping
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = re.sub(r" {2,}", " ", cleaned)
+    return cleaned.strip()
+
 BASE_URL = "https://chat.deepseek.com"
 
 
@@ -830,6 +855,22 @@ class DeepSeekClient:
                 _ghost.GhostSession._registry.pop(self.account, None)
         except Exception:
             pass
+
+    async def cancel(self) -> bool:
+        """Out-of-band stop for an in-flight ghost stream on this account.
+
+        Called from /api/chat/stop. Aborts the in-page fetch, unblocks the
+        queue drainer, and releases the ghost stream lock so the next message
+        isn't wedged. Returns True if a stream was active.
+        """
+        try:
+            from connectors.deepseek import ghost as _ghost
+            s = _ghost.GhostSession._registry.get(self.account)
+            if s is not None:
+                return s.cancel_stream()
+        except Exception as exc:
+            logger.warning("DeepSeek cancel failed: %s", exc)
+        return False
 
     # ------------------------------------------------------------------
     # Completion transport — ghost-tab (browser identity) or curl (fallback)
@@ -1618,7 +1659,10 @@ class DeepSeekClient:
                                         continue
                                     _content = _m.get("content", "")
                                     if _content:
-                                        _hist_lines.append(f"{_role}: {_content}")
+                                        # Strip all DSML artifacts (full/partial) before re-seeding
+                                        _clean_content = _strip_dsml(_content)
+                                        if _clean_content:
+                                            _hist_lines.append(f"{_role}: {_clean_content}")
                                 _hist_block = "\n\n".join(_hist_lines)
                                 _recovered = (
                                     "The previous upstream session was lost (invalid chat session id). "
@@ -1879,3 +1923,23 @@ def get_client(account: str | None = None) -> DeepSeekClient:
     if account not in _clients:
         _clients[account] = DeepSeekClient(account=account)
     return _clients[account]
+
+
+async def cancel_active_streams() -> bool:
+    """Cancel any in-flight ghost stream across all DeepSeek clients.
+
+    Used by /api/chat/stop. Iterates every cached client (each owns one
+    account's ghost session) plus the default. Returns True if at least one
+    stream was torn down.
+    """
+    cancelled = False
+    clients: list[DeepSeekClient] = list(_clients.values())
+    if _default_client is not None:
+        clients.append(_default_client)
+    for c in clients:
+        try:
+            if await c.cancel():
+                cancelled = True
+        except Exception:
+            pass
+    return cancelled

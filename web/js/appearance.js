@@ -1338,12 +1338,75 @@ window.safeCopy = async function(text) {
 
   // ── Context Menu ──────────────────────────────────────────
   const ctxMenu = document.getElementById('contextMenu');
+  const ctxRefreshSub = document.getElementById('ctxRefreshSubmenu');
+  const ctxRefreshItem = document.getElementById('ctxRefreshProviderItem');
+
+  // ── Provider-token refresh (submenu) ──────────────────────
+  const _PROVIDER_REFRESH = {
+    'refresh-waf':        { label: 'Qwen WAF',     url: '/api/settings/browser/refresh-waf' },
+    'refresh-deepseek':   { label: 'DeepSeek',     url: '/api/settings/deepseek/refresh-token' },
+    'refresh-zai':        { label: 'z.ai',         url: '/api/settings/zai/refresh-token' },
+    'refresh-gemini-web': { label: 'Gemini (Web)', url: '/api/settings/gemini_web/refresh-token' },
+    'refresh-mimo':       { label: 'MiMo',         url: '/api/settings/mimo/refresh-token' },
+    'refresh-kimi':       { label: 'Kimi',         url: '/api/settings/kimi/refresh-token' },
+  };
+
+  async function refreshProviderTokens(action) {
+    const cfg = _PROVIDER_REFRESH[action];
+    if (!cfg) return;
+    showToast(`Refreshing ${cfg.label} token…`, 'info');
+    try {
+      const res = await fetch(cfg.url, { method: 'POST' });
+      const d = await res.json();
+      const okMsg = d.message || `${cfg.label} token refreshed`;
+      const errMsg = d.detail || d.error || `${cfg.label} refresh failed`;
+      showToast(res.ok ? okMsg : errMsg, res.ok ? 'success' : 'error');
+    } catch { showToast(`${cfg.label} refresh failed`, 'error'); }
+  }
+
+  function closeSubmenu() { ctxRefreshSub?.classList.remove('open'); }
+
+  function positionSubmenu() {
+    if (!ctxRefreshSub || !ctxRefreshItem) return;
+    const r = ctxRefreshItem.getBoundingClientRect();
+    const sx = Math.min(r.right - 6, window.innerWidth - ctxRefreshSub.offsetWidth - 12);
+    const sy = Math.min(r.top - 5, window.innerHeight - ctxRefreshSub.offsetHeight - 12);
+    ctxRefreshSub.style.left = Math.max(6, sx) + 'px';
+    ctxRefreshSub.style.top = Math.max(6, sy) + 'px';
+  }
+
+  function openSubmenu() {
+    if (!ctxRefreshSub) return;
+    positionSubmenu();
+    ctxRefreshSub.classList.add('open');
+  }
+
+  let _subHideTimer = null;
+  function cancelHideSubmenu() { clearTimeout(_subHideTimer); }
+  function scheduleHideSubmenu() {
+    clearTimeout(_subHideTimer);
+    _subHideTimer = setTimeout(closeSubmenu, 180);
+  }
+
+  ctxRefreshItem?.addEventListener('mouseenter', () => { cancelHideSubmenu(); openSubmenu(); });
+  ctxRefreshItem?.addEventListener('mouseleave', scheduleHideSubmenu);
+  ctxRefreshSub?.addEventListener('mouseenter', cancelHideSubmenu);
+  ctxRefreshSub?.addEventListener('mouseleave', scheduleHideSubmenu);
+
+  ctxRefreshSub?.addEventListener('click', async (e) => {
+    const item = e.target.closest('.ctx-item');
+    if (!item) return;
+    e.stopPropagation();
+    closeCtx();
+    if (item.dataset.action?.startsWith('refresh-')) await refreshProviderTokens(item.dataset.action);
+  });
 
   document.addEventListener('contextmenu', (e) => {
     // Only on main area / sidebar, not on inputs or textareas.
     // .chat-row has its own pin/delete menu (sidebar.js) — don't open the generic one too.
     if (e.target.closest('textarea, input, select, .ctx-menu, #fsOverlay, .chat-row')) return;
     e.preventDefault();
+    closeSubmenu();
 
     const x = Math.min(e.clientX, window.innerWidth - ctxMenu.offsetWidth - 12);
     const y = Math.min(e.clientY, window.innerHeight - ctxMenu.offsetHeight - 12);
@@ -1352,7 +1415,7 @@ window.safeCopy = async function(text) {
     ctxMenu.classList.add('open');
   });
 
-  function closeCtx() { ctxMenu.classList.remove('open'); }
+  function closeCtx() { ctxMenu.classList.remove('open'); closeSubmenu(); }
 
   document.addEventListener('click', (e) => {
     if (!e.target.closest('.ctx-menu')) closeCtx();
@@ -1424,8 +1487,15 @@ window.safeCopy = async function(text) {
   ctxMenu.addEventListener('click', async (e) => {
     const item = e.target.closest('.ctx-item');
     if (!item) return;
-    closeCtx();
     const action = item.dataset.action;
+
+    if (action === 'refresh-provider-submenu') {
+      cancelHideSubmenu();
+      openSubmenu();
+      return;
+    }
+
+    closeCtx();
 
     if (action === 'copy') {
       const sel = window.getSelection()?.toString() || '';
@@ -1497,51 +1567,15 @@ window.safeCopy = async function(text) {
         const d = await res.json();
         showToast(res.ok ? (d.message || 'Context synced') : (d.error || 'Sync failed'), res.ok ? 'success' : 'error');
       } catch { showToast('Sync failed', 'error'); }
-    } else if (action === 'refresh-deepseek') {
-      showToast('Refreshing DeepSeek token…', 'info');
+    } else if (action === 'refresh-all-tokens') {
+      showToast('Refreshing all provider tokens…', 'info');
       try {
-        const res = await fetch('/api/settings/deepseek/refresh-token', { method: 'POST' });
+        const res = await fetch('/api/settings/refresh-all-tokens', { method: 'POST' });
         const d = await res.json();
-        const okMsg = d.message || (d.token_preview ? `DeepSeek token refreshed (${d.token_preview})` : 'Token refreshed');
-        const errMsg = d.detail || d.error || (d.token_preview ? `Refresh failed (last token: ${d.token_preview})` : 'Refresh failed');
-        showToast(res.ok ? okMsg : errMsg, res.ok ? 'success' : 'error');
+        showToast(res.ok ? (d.message || 'All tokens refreshed') : (d.detail || d.error || 'Refresh failed'), res.ok ? 'success' : 'error');
       } catch { showToast('Refresh failed', 'error'); }
-    } else if (action === 'refresh-zai') {
-      showToast('Refreshing z.ai token…', 'info');
-      try {
-        const res = await fetch('/api/settings/zai/refresh-token', { method: 'POST' });
-        const d = await res.json();
-        const okMsg = d.message || (d.token_preview ? `z.ai token refreshed (${d.token_preview})` : 'z.ai token refreshed');
-        const errMsg = d.detail || d.error || (d.token_preview ? `Refresh failed (last token: ${d.token_preview})` : 'Refresh failed');
-        showToast(res.ok ? okMsg : errMsg, res.ok ? 'success' : 'error');
-      } catch { showToast('Refresh failed', 'error'); }
-    } else if (action === 'refresh-gemini-web') {
-      showToast('Refreshing Gemini (web) token…', 'info');
-      try {
-        const res = await fetch('/api/settings/gemini_web/refresh-token', { method: 'POST' });
-        const d = await res.json();
-        const okMsg = d.message || (d.token_preview ? `Gemini (web) token refreshed (${d.token_preview})` : 'Gemini (web) token refreshed');
-        const errMsg = d.detail || d.error || (d.token_preview ? `Refresh failed (last token: ${d.token_preview})` : 'Refresh failed');
-        showToast(res.ok ? okMsg : errMsg, res.ok ? 'success' : 'error');
-      } catch { showToast('Refresh failed', 'error'); }
-    } else if (action === 'refresh-mimo') {
-      showToast('Refreshing MiMo token…', 'info');
-      try {
-        const res = await fetch('/api/settings/mimo/refresh-token', { method: 'POST' });
-        const d = await res.json();
-        const okMsg = d.message || (d.token_preview ? `MiMo token refreshed (${d.token_preview})` : 'MiMo token refreshed');
-        const errMsg = d.detail || d.error || (d.token_preview ? `Refresh failed (last token: ${d.token_preview})` : 'Refresh failed');
-        showToast(res.ok ? okMsg : errMsg, res.ok ? 'success' : 'error');
-      } catch { showToast('Refresh failed', 'error'); }
-    } else if (action === 'refresh-waf') {
-      showToast('Refreshing WAF token…', 'info');
-      try {
-        const res = await fetch('/api/settings/browser/refresh-waf', { method: 'POST' });
-        const d = await res.json();
-        const okMsg = d.message || 'WAF token refreshed';
-        const errMsg = d.detail || d.error || 'Refresh failed';
-        showToast(res.ok ? okMsg : errMsg, res.ok ? 'success' : 'error');
-      } catch { showToast('Refresh failed', 'error'); }
+    } else if (action.startsWith('refresh-')) {
+      await refreshProviderTokens(action);
     } else if (action === 'clear-browser-cache') {
       if (!await sableConfirm('Strip all browser profile caches? This keeps session data but removes cache/junk.')) return;
       showToast('Stripping browser profiles…', 'info');

@@ -37,6 +37,23 @@ def _increment_playwright_counter() -> int:
         pass
     return count
 
+def _pid_is_headless(pid: int) -> bool | None:
+    '''True = headless, False = headed, None = cmdline unreadable.'''
+    try:
+        raw = Path('/proc/%d/cmdline' % pid).read_bytes()
+    except OSError:
+        return None
+    toks = raw.replace(bytes([0]), b' ').decode('utf-8', 'replace').split()
+    if not toks:
+        return None
+    for tok in toks:
+        if tok == '--headless' or tok.startswith('--headless='):
+            return True
+        if tok.startswith('--ozone-platform=headless'):
+            return True
+    return False
+
+
 def _display_available(display: str | None = None) -> bool:
     """True if an X display socket exists for the given DISPLAY value."""
     disp = display or os.environ.get("DISPLAY")
@@ -228,6 +245,10 @@ class BrowserManager:
         self.playwright = None
         self.context = None
         self.page = None
+        # Set when we attached to a browser we did not launch: teardown must
+        # drop the CDP link, never close someone else browser.
+        self._adopted = False
+        self._cdp_browser = None
 
     @property
     def browser_headless(self) -> bool:
@@ -304,6 +325,85 @@ class BrowserManager:
             return False
         return True
 
+
+    async def _adopt_existing(self) -> bool:
+        '''Attach to a live HEADED browser already holding this profile.
+
+        z.ai's Aliyun captcha rejects headless Chromium, so only a headed
+        holder is worth sharing. Ports come from the holders'
+        --remote-debugging-port flag, DevToolsActivePort, and listening fds.
+        '''
+        from connectors.common import profile_hub as _ph
+        profile = Path(self.user_data_dir)
+        holders = _ph._profile_holder_pids(profile)
+        if not holders:
+            return False
+        if any(_pid_is_headless(p) is True for p in holders):
+            print('[DEBUG] live browser on profile is headless - not usable for z.ai')
+            return False
+
+        ports = _ph._cmdline_cdp_ports(holders)
+        dp = _ph._devtools_port(profile)
+        if dp is not None and dp not in ports:
+            ports.append(dp)
+        for lp in sorted(_ph._listening_ports(holders)):
+            if lp not in ports:
+                ports.append(lp)
+        if not ports:
+            print('[DEBUG] live headed browser exposes no CDP port - cannot adopt')
+            return False
+
+        from playwright.async_api import async_playwright
+        for port in ports:
+            try:
+                self.playwright = await async_playwright().start()
+                self._cdp_browser = await self.playwright.chromium.connect_over_cdp(
+                    'http://127.0.0.1:%d' % port, timeout=8000)
+                ctxs = self._cdp_browser.contexts
+                if not ctxs:
+                    raise RuntimeError('no contexts over CDP')
+                self.context = ctxs[0]
+                self.page = ctxs[0].pages[0] if ctxs[0].pages else await ctxs[0].new_page()
+                self._adopted = True
+                self.headless = False
+                print('[DEBUG] adopted live headed browser over CDP (port %d)' % port)
+                return True
+            except Exception as exc:
+                print('[DEBUG] CDP adopt failed on port %d: %s' % (port, exc))
+                try:
+                    if self.playwright is not None:
+                        await self.playwright.stop()
+                except Exception:
+                    pass
+                self.playwright = None
+                self._cdp_browser = None
+        return False
+
+    async def _reclaim_profile(self) -> None:
+        '''Kill every process holding this profile so we can launch our own.'''
+        import signal
+        from connectors.common import profile_hub as _ph
+        profile = Path(self.user_data_dir)
+        victims = _ph._profile_holder_pids(profile)
+        for pid in victims:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        for _ in range(30):
+            if not any(_ph._pid_alive(p) for p in victims):
+                break
+            await asyncio.sleep(0.1)
+        for pid in victims:
+            if _ph._pid_alive(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+        await asyncio.sleep(0.2)
+        _ph._clear_singleton(profile)
+        print('[DEBUG] reclaimed %d process(es) on profile' % len(victims))
+
     _start_failed: bool = False
 
     async def start(self):
@@ -315,13 +415,28 @@ class BrowserManager:
             )
         if self.playwright and self.context:
             return
-        if not self._check_profile_lock():
-            # A genuine live browser owns this profile — launching anyway is
-            # what produced the doomed double-launch. Fail loudly instead so
-            # callers (warmup etc.) can fall back to cached headers.
-            raise RuntimeError(
-                f"Browser profile locked by a live process: {self.user_data_dir}"
-            )
+
+        # 1) Attach to a live HEADED browser already holding this profile.
+        if await self._adopt_existing():
+            return
+
+        # 2) A live holder we could not adopt: a headless one is useless for
+        #    z.ai, so reclaim it; a headed one with no CDP port is a real
+        #    conflict, so fail loudly instead of double-launching.
+        from connectors.common import profile_hub as _ph
+        _profile = Path(self.user_data_dir)
+        if _ph._lock_is_stale(_profile):
+            _ph._clear_singleton(_profile)
+        else:
+            _holders = _ph._profile_holder_pids(_profile)
+            if any(_pid_is_headless(p) is True for p in _holders):
+                print('[DEBUG] headless browser holds the profile - reclaiming for headed z.ai')
+                await self._reclaim_profile()
+            else:
+                raise RuntimeError(
+                    'Browser profile locked by a live headed process with no '
+                    'CDP port to adopt: %s' % self.user_data_dir
+                )
         import traceback as _tb
         launch_num = _increment_playwright_counter()
         print(f"[DEBUG] Launching persistent browser context #{launch_num} (headless={self.headless})...")
@@ -940,6 +1055,24 @@ class BrowserManager:
         # FIX: context.close() and playwright.stop() are coroutines in the async
         # API — the old sync `def close` never awaited them, so the browser
         # process was never actually torn down (silent leak + RuntimeWarning).
+        # Never close a browser we adopted - it belongs to another launcher.
+        if self._adopted:
+            if self._cdp_browser is not None:
+                try:
+                    await self._cdp_browser.close()
+                except Exception:
+                    pass
+            self._cdp_browser = None
+            if self.playwright:
+                try:
+                    await self.playwright.stop()
+                except Exception:
+                    pass
+            self.playwright = None
+            self.context = None
+            self.page = None
+            self._adopted = False
+            return
         if self.context:
             await self.context.close()
             self.context = None

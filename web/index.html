@@ -241,6 +241,10 @@
         <span class="icon-emoji">📋</span><i data-lucide="panel-left-close" class="icon-lucide"></i>
       </button>
       <div class="rail-sep"></div>
+      <!-- Study mode home (only visible in study mode) -->
+      <button class="rail-btn" id="railStudyBtn" data-rail="study" title="Study Mode" style="display:none;">
+        <span class="icon-emoji">🎓</span><i data-lucide="graduation-cap" class="icon-lucide"></i>
+      </button>
       <!-- Core -->
       <button class="rail-btn active" data-rail="chat" title="Chat">
         <span class="icon-emoji">💬</span><i data-lucide="message-square" class="icon-lucide"></i>
@@ -792,24 +796,37 @@
     <button class="ctx-item" data-action="sync-context">
       <span class="ctx-icon"><span class="icon-emoji">⟳</span><i data-lucide="refresh-cw" class="icon-lucide"></i></span> Sync Context
     </button>
-    <button class="ctx-item" data-action="refresh-deepseek">
-      <span class="ctx-icon"><span class="icon-emoji">🔑</span><i data-lucide="key-round" class="icon-lucide"></i></span> Refresh DeepSeek Token
+    <button class="ctx-item" data-action="refresh-all-tokens">
+      <span class="ctx-icon"><span class="icon-emoji">🔑</span><i data-lucide="key-round" class="icon-lucide"></i></span> Refresh All Tokens
     </button>
-    <button class="ctx-item" data-action="refresh-zai">
-      <span class="ctx-icon"><span class="icon-emoji">🔑</span><i data-lucide="key-round" class="icon-lucide"></i></span> Refresh z.ai Token
-    </button>
-    <button class="ctx-item" data-action="refresh-gemini-web">
-      <span class="ctx-icon"><span class="icon-emoji">✨</span><i data-lucide="sparkles" class="icon-lucide"></i></span> Refresh Gemini (Web) Token
-    </button>
-    <button class="ctx-item" data-action="refresh-mimo">
-      <span class="ctx-icon"><span class="icon-emoji">🔑</span><i data-lucide="key-round" class="icon-lucide"></i></span> Refresh MiMo Token
-    </button>
-    <div class="ctx-sep"></div>
-    <button class="ctx-item" data-action="refresh-waf">
-      <span class="ctx-icon"><span class="icon-emoji">🛡️</span><i data-lucide="shield-check" class="icon-lucide"></i></span> Refresh WAF Token
+    <button class="ctx-item ctx-has-submenu" data-action="refresh-provider-submenu" id="ctxRefreshProviderItem">
+      <span class="ctx-icon"><span class="icon-emoji">🔄</span><i data-lucide="refresh-cw" class="icon-lucide"></i></span> Refresh specific provider
+      <span class="ctx-arrow">›</span>
     </button>
     <button class="ctx-item ctx-danger" data-action="clear-browser-cache">
       <span class="ctx-icon"><span class="icon-emoji">🧹</span><i data-lucide="trash-2" class="icon-lucide"></i></span> Clear Browser Cache
+    </button>
+  </div>
+
+  <!-- Refresh-specific-provider submenu -->
+  <div id="ctxRefreshSubmenu" class="ctx-menu ctx-submenu">
+    <button class="ctx-item" data-action="refresh-waf">
+      <span class="ctx-icon"><span class="icon-emoji">🛡️</span><i data-lucide="shield-check" class="icon-lucide"></i></span> Qwen (WAF)
+    </button>
+    <button class="ctx-item" data-action="refresh-deepseek">
+      <span class="ctx-icon"><span class="icon-emoji">🔑</span><i data-lucide="key-round" class="icon-lucide"></i></span> DeepSeek
+    </button>
+    <button class="ctx-item" data-action="refresh-zai">
+      <span class="ctx-icon"><span class="icon-emoji">🔑</span><i data-lucide="key-round" class="icon-lucide"></i></span> z.ai
+    </button>
+    <button class="ctx-item" data-action="refresh-gemini-web">
+      <span class="ctx-icon"><span class="icon-emoji">✨</span><i data-lucide="sparkles" class="icon-lucide"></i></span> Gemini (Web)
+    </button>
+    <button class="ctx-item" data-action="refresh-mimo">
+      <span class="ctx-icon"><span class="icon-emoji">🔑</span><i data-lucide="key-round" class="icon-lucide"></i></span> MiMo
+    </button>
+    <button class="ctx-item" data-action="refresh-kimi">
+      <span class="ctx-icon"><span class="icon-emoji">🌙</span><i data-lucide="moon" class="icon-lucide"></i></span> Kimi
     </button>
   </div>
 
@@ -2306,7 +2323,7 @@
   <script src="/static/js/settings-init.js?v=8"></script>
   <script src="/static/js/settings-ui.js?v=5"></script>
   <script src="/static/js/profile.js?v=1"></script>
-  <script src="/static/js/rail-settings.js?v=1"></script>
+  <script src="/static/js/rail-settings.js?v=2"></script>
   <script src="/static/js/account-auth.js?v=1"></script>
   <script src="/static/js/settings-bot.js?v=1"></script>
   <script src="/static/js/settings-schedules.js?v=1"></script>
@@ -2322,7 +2339,7 @@
   <script src="/static/js/ocr-panel.js?v=1"></script>
   <script src="/static/js/agents.js?v=34"></script>
   <script src="/static/js/filesystem.js?v=32"></script>
-  <script src="/static/js/study.js?v=3"></script>
+  <script src="/static/js/study.js?v=5"></script>
   <script src="/static/js/mode.js?v=22"></script>
   <script src="/static/js/resize-panels.js?v=3"></script>
   <script src="/static/js/terminal.js?v=9"></script>

@@ -10,6 +10,10 @@
     function openSettings() {
       settingsOverlay.classList.remove("hidden");
       if (!logSource) connectLogs();
+      // Lazy-loaded tabs (esp. the default 'general' tab) have no click event
+      // on first open — run the active tab's loader so its content populates.
+      const activeTab = document.querySelector(".settings-tab.active")?.dataset.tab;
+      if (activeTab) _loadSettingsTab(activeTab);
       // If update available, scroll to Updates tab and show hint
       if (_updateData?.update_available) {
         requestAnimationFrame(() => _setUpdateDot(true));
@@ -52,6 +56,22 @@
       }
     }
 
+    // Single source of truth for per-tab lazy loading.
+    function _loadSettingsTab(tabName) {
+      if (tabName === 'general') { loadBrowserSettings(); }
+      else if (tabName === 'account') { if (window.loadAvailableBrowsers) window.loadAvailableBrowsers(); loadAccountProfiles(); }
+      else if (tabName === 'mcp') loadMcpServers();
+      else if (tabName === 'cookbook') { if (window._cbInit) window._cbInit(); }
+      else if (tabName === 'personalization') { if (window._personaInit) window._personaInit(); }
+      else if (tabName === 'bot') { if (window._botSettingsInit) window._botSettingsInit(); }
+      else if (tabName === 'schedules') { if (window._schedulesSettingsInit) window._schedulesSettingsInit(); }
+      else if (tabName === 'tools') loadTools();
+      else if (tabName === 'shortcuts') renderShortcutsTab();
+      else if (tabName === 'updates') loadUpdatesTab();
+      else if (tabName === 'profile') { if (window.loadProfileTab) window.loadProfileTab(); }
+      else if (tabName === 'appearance') { if (window.loadRailTab) window.loadRailTab(); }
+    }
+
     function openSettingsTab(tabName) {
       if (settingsOverlay.classList.contains('hidden')) openSettings();
       document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
@@ -61,15 +81,7 @@
         tab.classList.add('active');
         const target = document.getElementById('tab-' + tabName);
         if (target) target.classList.add('active');
-        if (tabName === 'general') { loadBrowserSettings(); }
-        else if (tabName === 'account') { if (window.loadAvailableBrowsers) window.loadAvailableBrowsers(); loadAccountProfiles(); }
-        else if (tabName === 'mcp') loadMcpServers();
-        else if (tabName === 'cookbook') { if (window._cbInit) window._cbInit(); }
-        else if (tabName === 'tools') loadTools();
-        else if (tabName === 'shortcuts') renderShortcutsTab();
-        else if (tabName === 'updates') loadUpdatesTab();
-        else if (tabName === 'profile') { if (window.loadProfileTab) window.loadProfileTab(); }
-        else if (tabName === 'appearance') { if (window.loadRailTab) window.loadRailTab(); }
+        _loadSettingsTab(tabName);
       }
     }
 
@@ -270,18 +282,7 @@
         tab.classList.add("active");
         const target = document.getElementById("tab-" + tab.dataset.tab);
         if (target) target.classList.add("active");
-        const tabName = tab.dataset.tab;
-        if (tabName === 'general') { loadBrowserSettings(); }
-        else if (tabName === 'account') { if (window.loadAvailableBrowsers) window.loadAvailableBrowsers(); loadAccountProfiles(); }
-        else if (tabName === 'mcp') loadMcpServers();
-        else if (tabName === 'cookbook') { if (window._cbInit) window._cbInit(); }
-        else if (tabName === 'personalization') { if (window._personaInit) window._personaInit(); }
-        else if (tabName === 'bot') { if (window._botSettingsInit) window._botSettingsInit(); }
-        else if (tabName === 'schedules') { if (window._schedulesSettingsInit) window._schedulesSettingsInit(); }
-        else if (tabName === 'shortcuts') renderShortcutsTab();
-        else if (tabName === 'updates') loadUpdatesTab();
-        else if (tabName === 'profile') { if (window.loadProfileTab) window.loadProfileTab(); }
-        else if (tabName === 'appearance') { if (window.loadRailTab) window.loadRailTab(); }
+        _loadSettingsTab(tab.dataset.tab);
       });
     });
 

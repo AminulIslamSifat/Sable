@@ -142,6 +142,11 @@ async ({url, body, token, pow, extraHeaders, idleMs}) => {
       'X-DS-PoW-Response': pow,
     }, extraHeaders || {});
     const ctrl = new AbortController();
+    // Expose the controller so the server can abort this fetch out-of-band
+    // (Stop button) without waiting for the 30s idle gate. Only one stream
+    // runs at a time per session (enforced by _stream_lock), so a single
+    // page-global slot is safe.
+    window.__ghostAbort = ctrl;
     let idleTimer = setTimeout(() => ctrl.abort(), idleMs);
     const res = await fetch(url, {
       method: 'POST', credentials: 'include', headers: h,
@@ -161,6 +166,7 @@ async ({url, body, token, pow, extraHeaders, idleMs}) => {
       }
     } finally {
       clearTimeout(idleTimer);
+      if (window.__ghostAbort === ctrl) window.__ghostAbort = null;
     }
     await window.__ghostEvent({t: 'done'});
     return 'ok';
@@ -203,17 +209,65 @@ class GhostStreamResponse:
         return self
 
     async def __aexit__(self, *exc):
+        # Abort the in-page fetch first so the Playwright evaluate task can
+        # actually settle — otherwise cancel()ing the Python task leaves the
+        # browser fetch streaming and the task never finishes.
+        await self._abort_in_page()
         if not self._task.done():
             self._task.cancel()
         try:
-            await self._task
-        except (asyncio.CancelledError, Exception):
+            # Bound this — a wedged evaluate task must not hold the lock open.
+            await asyncio.wait_for(self._task, timeout=5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
             pass
-        # Release the session stream lock exactly once, even on error paths.
+        self._release_once()
+        return False
+
+    async def _abort_in_page(self) -> None:
+        """Fire the in-page AbortController so the fetch stops server-side."""
+        try:
+            if self._page is not None and not self._page.is_closed():
+                await self._page.evaluate(
+                    "() => { if (window.__ghostAbort) { try { window.__ghostAbort.abort(); } catch (e) {} window.__ghostAbort = null; } }"
+                )
+        except Exception:
+            pass
+
+    def _release_once(self) -> None:
+        """Release the session stream lock exactly once (idempotent)."""
         if not self._closed and self._on_close is not None:
             self._closed = True
             self._on_close()
-        return False
+
+    def force_close(self) -> None:
+        """Synchronous out-of-band teardown for the Stop button.
+
+        Called from /api/chat/stop. Aborts the in-page fetch (scheduled),
+        cancels the evaluate task, unblocks any drainer waiting on the queue,
+        and releases the stream lock immediately — so a new message can't
+        wedge on a lock held by a stream the user already abandoned.
+        """
+        if self._closed:
+            return
+        # 1. Unblock aiter_lines() if it's parked on queue.get(). A "done"
+        # event makes the drainer break cleanly instead of raising, so the
+        # client's async-for ends gracefully and the chat generator's finally
+        # block (tail-persist) still runs.
+        try:
+            self._q.put_nowait({"t": "done"})
+        except Exception:
+            pass
+        self._done = True
+        # 2. Abort the browser fetch + cancel the evaluate task (best effort).
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._abort_in_page())
+        except Exception:
+            pass
+        if not self._task.done():
+            self._task.cancel()
+        # 3. Release the lock NOW — never wait on the task.
+        self._release_once()
 
     @property
     async def content(self) -> bytes:
@@ -281,7 +335,11 @@ class GhostSession:
         self._exposed_pages: set = set()
         self._pipe_q: asyncio.Queue | None = None
         self._stream_lock = asyncio.Lock()
+        # The response object owning the current stream (None when idle). Lets
+        # /api/chat/stop reach in and force-close an in-flight stream.
+        self._active_response: "GhostStreamResponse | None" = None
         self._marker = profile_dir / ".deepseek_ghost.json"
+        self._hub = None
 
     # -- lifecycle -----------------------------------------------------
 
@@ -315,18 +373,14 @@ class GhostSession:
     async def start(self) -> None:
         if not self.profile_dir.exists():
             raise RuntimeError(f"profile dir missing: {self.profile_dir}")
-
-        # 1) Reclaim our own orphaned browser over CDP (marker + live port).
-        if await self._adopt_existing():
-            await self._after_browser_ready()
-            return
-
-        # 2) Free the profile: kill a dead-owner lock, or a live orphan that
-        #    doesn't answer CDP. A genuinely foreign live browser → refuse.
-        await self._ensure_profile_free()
-
-        # 3) Fresh launch with a CDP port so the next process can adopt us.
-        await self._launch()
+        # Shared per-profile browser (ProfileHub): adopt the ONE browser that
+        # owns the profile dir and open our own DeepSeek origin tab on it, so
+        # co-located connectors don't kill-war over SingletonLock.
+        from connectors.common.profile_hub import ProfileHub
+        self._hub = await ProfileHub.acquire(
+            self.profile_dir, self.helium_bin, headless=True)
+        self._ctx = self._hub.context
+        self._page = await self._hub.new_tab("https://chat.deepseek.com/")
         await self._after_browser_ready()
 
     async def _after_browser_ready(self) -> None:
@@ -426,25 +480,18 @@ class GhostSession:
             pass
 
     async def close(self) -> None:
-        try:
-            if self._cdp_browser is not None:
-                await self._cdp_browser.close()
-        except Exception:
-            pass
-        try:
-            if self._ctx is not None:
-                await self._ctx.close()
-        except Exception:
-            pass
-        try:
-            if self._playwright is not None:
-                await self._playwright.stop()
-        except Exception:
-            pass
+        # Only this connector's tab dies; the shared browser (owned by the
+        # ProfileHub) stays up for other connectors on the same profile.
+        if self._hub is not None and self._page is not None:
+            try:
+                await self._hub.close_tab(self._page)
+            except Exception:
+                pass
         self._page = None
         self._ctx = None
         self._playwright = None
         self._cdp_browser = None
+        self._hub = None
 
     # -- health --------------------------------------------------------
 
@@ -551,13 +598,33 @@ class GhostSession:
         `aiter_lines()` yields SSE lines as they arrive. Serialized per session
         (one active stream at a time) so the shared event bridge stays coherent."""
         await self._ensure_bridge()
-        await self._stream_lock.acquire()
+        # Bounded acquire: a lock left held by an abandoned stream (Stop before
+        # __aexit__ ran) must NOT wedge every future message on this account.
+        # If it times out, force-close the stale owner and take the lock.
+        try:
+            await asyncio.wait_for(self._stream_lock.acquire(), timeout=8.0)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[ghost:%s] stream lock stuck >8s — force-closing stale stream",
+                self.account,
+            )
+            stale = self._active_response
+            if stale is not None:
+                stale.force_close()
+            # The force-close released it; grab it for real.
+            try:
+                await asyncio.wait_for(self._stream_lock.acquire(), timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.error("[ghost:%s] could not reclaim stream lock — resetting", self.account)
+                self._stream_lock = asyncio.Lock()
+                await self._stream_lock.acquire()
 
         def _release() -> None:
             # Single release point, guarded so a double close can't over-release.
             if self._stream_lock.locked():
                 self._stream_lock.release()
             self._pipe_q = None
+            self._active_response = None
 
         try:
             queue: asyncio.Queue = asyncio.Queue()
@@ -570,10 +637,21 @@ class GhostSession:
                 "extraHeaders": self._identity,
                 "idleMs": int(idle_secs * 1000),
             }))
-            return GhostStreamResponse(self._page, task, queue, idle_secs, on_close=_release)
+            resp = GhostStreamResponse(self._page, task, queue, idle_secs, on_close=_release)
+            self._active_response = resp
+            return resp
         except Exception:
             _release()
             raise
+
+    def cancel_stream(self) -> bool:
+        """Out-of-band cancel for /api/chat/stop. Returns True if a stream was
+        active and got torn down."""
+        resp = self._active_response
+        if resp is None:
+            return False
+        resp.force_close()
+        return True
 
 
 # ----------------------------------------------------------------------
