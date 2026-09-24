@@ -588,6 +588,200 @@ body[data-mode="study"] #chatCompact {
   display: none;
 }
 
+/* --- Batch upload modal --- */
+.study-upload-modal {
+  width: min(560px, calc(100vw - 32px));
+}
+.study-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 22px 16px;
+  border: 1.5px dashed var(--border-soft);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--muted);
+  text-align: center;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+  cursor: default;
+}
+.study-dropzone .icon-lucide {
+  width: 26px;
+  height: 26px;
+}
+.study-dropzone.over {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text);
+}
+.study-dropzone p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+.study-dropzone-hint {
+  font-size: 10.5px;
+  color: var(--muted-2);
+  letter-spacing: 0.2px;
+}
+.study-dropzone-browse {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.study-upload-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 12px 0 4px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.study-upload-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  background: var(--bg);
+  border: 1px solid var(--border-soft);
+  font-size: 12.5px;
+}
+.study-upload-item .icon-lucide {
+  width: 15px;
+  height: 15px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.study-upload-item.bad {
+  border-color: var(--danger, #ef4444);
+}
+.study-upload-item.bad .study-upload-status {
+  color: var(--danger, #ef4444);
+}
+.study-upload-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.study-upload-status {
+  font-size: 11px;
+  color: var(--muted-2);
+  flex-shrink: 0;
+}
+.study-upload-remove {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.study-upload-remove:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.study-upload-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 12px;
+  margin-top: 8px;
+}
+.study-upload-fields .study-field { margin-bottom: 8px; }
+
+/* --- Full-view drop veil --- */
+.study-drop-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  backdrop-filter: blur(3px);
+  pointer-events: none;
+}
+.study-drop-veil.show { display: flex; }
+.study-drop-veil-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 28px 40px;
+  border: 2px dashed var(--accent);
+  border-radius: 18px;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+}
+.study-drop-veil-inner .icon-lucide {
+  width: 34px;
+  height: 34px;
+  color: var(--accent);
+}
+
+/* --- Session chips (academics manager) --- */
+.study-acad-sessions {
+  margin: 4px 0 20px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+}
+.study-acad-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.study-acad-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 12px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border-soft);
+  font-size: 12.5px;
+  color: var(--text);
+}
+.study-acad-chip-count {
+  font-size: 10.5px;
+  color: var(--muted-2);
+  background: var(--panel-2);
+  border-radius: 999px;
+  padding: 1px 6px;
+}
+.study-acad-chip-del {
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.study-acad-chip-del:hover {
+  background: var(--danger, #ef4444);
+  color: #fff;
+}
+
 /* --- Generic study modal (doc grouping) --- */
 .study-modal-overlay {
   position: fixed;

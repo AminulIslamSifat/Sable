@@ -27,7 +27,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from engine.config import (
@@ -51,7 +51,7 @@ logger = logging.getLogger("sable.study")
 _MAX_PDF_BYTES = 100 * 1024 * 1024  # 100 MB
 _MAX_RECTS = 200  # highlight rectangles per selection
 _META_VERSION = 1
-_ACADEMICS_VERSION = 1
+_ACADEMICS_VERSION = 2
 
 # Formats we accept. Anything not .pdf is converted to PDF via LibreOffice
 # before entering the (page-based) reader pipeline.
@@ -250,6 +250,7 @@ def _read_group(meta: dict[str, Any]) -> dict[str, Any]:
     g = meta.get("group") or {}
     return {
         "semester": str(g.get("semester") or ""),
+        "session": str(g.get("session") or ""),
         "subject": str(g.get("subject") or ""),
         "topic": str(g.get("topic") or ""),
     }
@@ -259,7 +260,7 @@ def _read_group(meta: dict[str, Any]) -> dict[str, Any]:
 
 
 def _empty_academics() -> dict[str, Any]:
-    return {"version": _ACADEMICS_VERSION, "semesters": []}
+    return {"version": _ACADEMICS_VERSION, "semesters": [], "sessions": []}
 
 
 def _read_academics() -> dict[str, Any]:
@@ -275,6 +276,10 @@ def _read_academics() -> dict[str, Any]:
     data.setdefault("version", _ACADEMICS_VERSION)
     if not isinstance(data.get("semesters"), list):
         data["semesters"] = []
+    # Sessions are a flat cohort list (e.g. "2019-2020") — a sibling axis to
+    # semesters, not nested inside them.
+    if not isinstance(data.get("sessions"), list):
+        data["sessions"] = []
     return data
 
 
@@ -354,13 +359,23 @@ def study_list_docs() -> list[dict[str, Any]]:
 
 
 @router.post("/api/study/upload")
-async def study_upload(file: UploadFile = File(...)) -> dict[str, Any]:
+async def study_upload(
+    file: UploadFile = File(...),
+    semester: str = Form(""),
+    session: str = Form(""),
+    subject: str = Form(""),
+    topic: str = Form(""),
+) -> dict[str, Any]:
     """Accept a document, normalize it to PDF, extract text, persist the meta.
 
     PDFs go straight in. DOCX/PPTX/ODT/etc. are converted to PDF via headless
     LibreOffice first — the reader, progress, and highlights all key off pages,
     so everything downstream stays format-agnostic. The original file is kept
     under originals/ so "download source" remains possible.
+
+    Optional ``semester``/``session``/``subject``/``topic`` form fields file
+    the document into the academics tree on the way in, so a batch upload can
+    be grouped without a second trip through the doc menu.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="missing filename")
@@ -411,6 +426,22 @@ async def study_upload(file: UploadFile = File(...)) -> dict[str, Any]:
     if converted:
         (LIBRARY_ORIG_DIR / f"{doc_id}{ext}").write_bytes(raw)
 
+    group = {
+        "semester": semester.strip()[:80],
+        "session": session.strip()[:80],
+        "subject": subject.strip()[:80],
+        "topic": topic.strip()[:80],
+    }
+    # A subject without its parent semester is meaningless — drop it.
+    if not group["semester"]:
+        group["subject"] = ""
+    if not group["subject"]:
+        group["topic"] = ""
+    if any(group.values()):
+        _ensure_academic_path(
+            group["semester"], group["subject"], group["topic"], group["session"]
+        )
+
     meta: dict[str, Any] = {
         "version": _META_VERSION,
         "id": doc_id,
@@ -426,7 +457,7 @@ async def study_upload(file: UploadFile = File(...)) -> dict[str, Any]:
         "progress": {"current_page": 1, "percent": 0, "last_opened": 0},
         "highlights": [],
         "bookmarked": False,
-        "group": {"semester": "", "subject": "", "topic": ""},
+        "group": group,
     }
     _write_page_text(doc_id, extracted["page_text"])
     _write_meta(doc_id, meta)
@@ -650,7 +681,7 @@ def study_update_group(doc_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """
     def mutate(meta: dict[str, Any]) -> dict[str, Any]:
         group = _read_group(meta)
-        for key in ("semester", "subject", "topic"):
+        for key in ("semester", "session", "subject", "topic"):
             if key in payload:
                 group[key] = str(payload.get(key) or "").strip()[:80]
 
@@ -661,7 +692,9 @@ def study_update_group(doc_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             group["topic"] = ""
 
         if any(group.values()):
-            _ensure_academic_path(group["semester"], group["subject"], group["topic"])
+            _ensure_academic_path(
+                group["semester"], group["subject"], group["topic"], group["session"]
+            )
 
         meta["group"] = group
         return group
@@ -695,18 +728,32 @@ def study_delete_doc(doc_id: str) -> dict[str, Any]:
 # ── Academics: semesters → subjects → topics ─────────────────────────────────
 
 
-def _ensure_academic_path(semester: str, subject: str = "", topic: str = "") -> None:
-    """Idempotently create the semester/subject/topic chain in the store."""
+def _ensure_academic_path(
+    semester: str, subject: str = "", topic: str = "", session: str = ""
+) -> None:
+    """Idempotently create the semester/session/subject/topic chain.
+
+    ``session`` is an independent axis (a cohort), so it's created regardless
+    of whether a semester was supplied.
+    """
     data = _read_academics()
     changed = False
 
-    sem = next((s for s in data["semesters"] if s.get("name") == semester), None)
-    if sem is None:
-        sem = {"id": uuid.uuid4().hex[:12], "name": semester, "subjects": []}
-        data["semesters"].append(sem)
-        changed = True
+    if session:
+        sessions = data.setdefault("sessions", [])
+        if not any(s.get("name") == session for s in sessions):
+            sessions.append({"id": uuid.uuid4().hex[:12], "name": session})
+            changed = True
 
-    if subject:
+    sem = None
+    if semester:
+        sem = next((s for s in data["semesters"] if s.get("name") == semester), None)
+        if sem is None:
+            sem = {"id": uuid.uuid4().hex[:12], "name": semester, "subjects": []}
+            data["semesters"].append(sem)
+            changed = True
+
+    if sem is not None and subject:
         subj = next((s for s in sem["subjects"] if s.get("name") == subject), None)
         if subj is None:
             subj = {"id": uuid.uuid4().hex[:12], "name": subject, "topics": []}
@@ -725,8 +772,61 @@ def _ensure_academic_path(semester: str, subject: str = "", topic: str = "") -> 
 
 @router.get("/api/study/academics")
 def academics_get() -> dict[str, Any]:
-    """The full semester → subject → topic tree."""
+    """The full semester → subject → topic tree, plus the session list."""
     return _read_academics()
+
+
+# ── Sessions (flat cohort axis) ─────────────────────────────────────────────
+
+
+def _find_session(data: dict[str, Any], session_id: str) -> dict[str, Any] | None:
+    for s in data.get("sessions", []):
+        if s.get("id") == session_id:
+            return s
+    return None
+
+
+@router.post("/api/study/academics/sessions")
+def academics_add_session(payload: dict[str, Any]) -> dict[str, Any]:
+    name = str(payload.get("name") or "").strip()[:80]
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    data = _read_academics()
+    sessions = data.setdefault("sessions", [])
+    if any(s.get("name") == name for s in sessions):
+        raise HTTPException(status_code=409, detail="session already exists")
+    session = {"id": uuid.uuid4().hex[:12], "name": name}
+    sessions.append(session)
+    _write_academics(data)
+    return session
+
+
+@router.patch("/api/study/academics/sessions/{session_id}")
+def academics_rename_session(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    name = str(payload.get("name") or "").strip()[:80]
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    data = _read_academics()
+    session = _find_session(data, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    old = session["name"]
+    session["name"] = name
+    _write_academics(data)
+    _retag_docs("session", old, name)
+    return session
+
+
+@router.delete("/api/study/academics/sessions/{session_id}")
+def academics_delete_session(session_id: str) -> dict[str, Any]:
+    data = _read_academics()
+    session = _find_session(data, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    data["sessions"] = [s for s in data.get("sessions", []) if s.get("id") != session_id]
+    _write_academics(data)
+    _retag_docs("session", session["name"], "")
+    return {"deleted": True, "id": session_id}
 
 
 @router.post("/api/study/academics/semesters")

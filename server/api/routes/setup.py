@@ -175,40 +175,20 @@ async def browser_login(payload: dict[str, Any] | None = None) -> dict[str, Any]
         await asyncio.to_thread(_set_account_browser, profile_name, chosen_browser)
 
     # Resolve actual binary to use (same as settings flow)
-    from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
+    from engine.platform_paths import resolve_browser_for_profile
     resolved_browser = await asyncio.to_thread(resolve_browser_for_profile, profile_name)
+    if not resolved_browser:
+        raise HTTPException(status_code=500, detail="No browser found. Set one in settings.")
 
-    async def _run_browser() -> None:
-        from playwright.async_api import async_playwright
-        try:
-            launch_kwargs: dict[str, Any] = {
-                "user_data_dir": str(profile_path),
-                "headless": False,
-                "timeout": 0,
-                "args": [
-                    "--no-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disk-cache-size=2097152",
-                    "--disable-gpu-shader-cache",
-                    "--disable-component-update",
-                ] + extra_browser_args(resolved_browser),
-            }
-            if resolved_browser:
-                launch_kwargs["executable_path"] = resolved_browser
-            async with async_playwright() as p:
-                context = await p.chromium.launch_persistent_context(**launch_kwargs)
-                for idx, prov in enumerate(providers):
-                    page = (context.pages[0] if (idx == 0 and context.pages)
-                            else await context.new_page())
-                    try:
-                        await page.goto(_PROVIDER_URLS[prov], timeout=120000)
-                    except Exception as nav_exc:
-                        logger.warning(f"Setup: failed to open {prov}: {nav_exc}")
-                await context.wait_for_event("close", timeout=0)
-        except Exception as e:
-            logger.warning(f"Setup browser for {profile_name} exited: {e}")
-
-    asyncio.create_task(_run_browser())
+    # Fire-and-forget: raw subprocess, no Playwright
+    cmd: list[str] = [resolved_browser, f"--user-data-dir={profile_path}"]
+    cmd.extend(_PROVIDER_URLS[p] for p in providers)
+    try:
+        import subprocess
+        subprocess.Popen(cmd, start_new_session=True)
+    except Exception as e:
+        logger.warning(f"Setup browser for {profile_name} failed to start: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to launch browser: {e}")
     return {"status": "opened", "profile": profile_name,
             "providers": providers, "count": len(providers)}
 

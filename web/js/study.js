@@ -61,14 +61,14 @@
 
   const GROUP_LABELS = {
     recent: 'Recent', none: 'None', collection: 'Drive folder',
-    semester: 'Semester', subject: 'Subject', topic: 'Topic',
+    semester: 'Semester', session: 'Session', subject: 'Subject', topic: 'Topic',
   };
   // View modes offered in the sidebar, in display order. `recent` is special —
   // it's a flat list sorted by last opened, not a grouping.
-  const GROUP_MODES = ['recent', 'none', 'collection', 'semester', 'subject', 'topic'];
+  const GROUP_MODES = ['recent', 'none', 'collection', 'semester', 'session', 'subject', 'topic'];
   const GROUP_ICONS = {
     recent: 'clock', none: 'layout-grid', collection: 'folder-tree',
-    semester: 'graduation-cap', subject: 'book', topic: 'tag',
+    semester: 'graduation-cap', session: 'calendar', subject: 'book', topic: 'tag',
   };
 
   function renderLibrary() {
@@ -200,7 +200,7 @@
     const g = d.group || {};
     const ext = String(d.source_ext || 'pdf').toLowerCase();
     const icon = EXT_ICON[ext] || 'file-text';
-    const tags = [g.semester, g.subject, g.topic].filter(Boolean);
+    const tags = [g.semester, g.session, g.subject, g.topic].filter(Boolean);
     const tagHtml = tags.length
       ? `<div class="study-doc-tags">${tags.map((t) => `<span class="study-doc-tag">${escapeHtml(t)}</span>`).join('')}</div>`
       : '';
@@ -300,63 +300,227 @@
     }
   }
 
-  // Upload with a real progress bar — plain fetch() can't report upload progress,
-  // so this is the one place XHR is the right tool.
-  function uploadPdf(file) {
-    if (!file) return;
+  // ─── Upload (batch + drag & drop + inline grouping) ───
+
+  const TAG_FIELDS = ['semester', 'session', 'subject', 'topic'];
+  const FILE_INPUT_ACCEPT = () => (FORMATS.accept || ['.pdf']).join(',');
+
+  /** Validate a file against the backend's accepted formats. Returns error or null. */
+  function fileRejection(file) {
     const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
-    const allowed = FORMATS.accept || ['.pdf'];
-    if (!allowed.includes(ext)) {
-      return notify(`Can't upload ${ext} files 🙂 — accepted: ${allowed.join(', ')}`);
-    }
-    const willConvert = ext !== '.pdf';
-    if (willConvert && FORMATS.converter === false) {
-      return notify('LibreOffice isn\'t installed — only PDF uploads work right now.');
-    }
+    if (!(FORMATS.accept || ['.pdf']).includes(ext)) return `unsupported type ${ext}`;
+    if (ext !== '.pdf' && FORMATS.converter === false) return 'LibreOffice not installed — PDF only';
+    return null;
+  }
 
-    const fd = new FormData();
-    fd.append('file', file);
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/study/upload');
-
-    // XHR bypasses the global fetch() auth wrapper in core.js, so the bearer
-    // token must be set by hand. getToken() there is IIFE-scoped, not global —
-    // read the same localStorage key directly.
-    const token = localStorage.getItem('sable_token') || '';
-    if (token) xhr.setRequestHeader('Authorization', 'Bearer ' + token);
-
-    notify(`Uploading ${file.name}…`);
-    xhr.upload.onprogress = (e) => {
-      if (!e.lengthComputable) return;
-      const pct = Math.round((e.loaded / e.total) * 100);
-      notify(`Uploading ${file.name} — ${pct}%`);
-    };
-    xhr.onload = async () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        let doc = null;
-        try { doc = JSON.parse(xhr.responseText); } catch {}
-        await loadDocs();
-        notify(doc && doc.converted ? 'Converted & indexed ✓' : 'Uploaded and indexed ✓');
-        if (doc && doc.id) openDoc(doc.id);
-      } else {
-        let msg = `Upload failed (${xhr.status})`;
-        try { msg = JSON.parse(xhr.responseText).detail || msg; } catch {}
-        notify(msg);
+  // Upload one file, reporting progress via callback. Plain fetch() can't
+  // report upload progress, so XHR is the right tool here. Resolves with the
+  // doc summary; rejects with an Error carrying the server's detail message.
+  function uploadOne(file, tags, onProgress) {
+    return new Promise((resolve, reject) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      if (tags) {
+        for (const k of TAG_FIELDS) if (tags[k]) fd.append(k, tags[k]);
       }
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/study/upload');
+      // XHR bypasses the global fetch() auth wrapper in core.js, so the bearer
+      // token must be set by hand. Read the same localStorage key directly.
+      const token = localStorage.getItem('sable_token') || '';
+      if (token) xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          let doc = null;
+          try { doc = JSON.parse(xhr.responseText); } catch {}
+          resolve(doc);
+        } else {
+          let msg = `Upload failed (${xhr.status})`;
+          try { msg = JSON.parse(xhr.responseText).detail || msg; } catch {}
+          reject(new Error(msg));
+        }
+      };
+      xhr.onerror = () => reject(new Error('network error'));
+      xhr.send(fd);
+    });
+  }
+
+  // Open the batch upload dialog. `initialFiles` seeds the list (from the file
+  // picker or a drop); files can be added/removed before hitting Upload. Tags
+  // chosen here are stamped onto every file in the batch.
+  function openUploadDialog(initialFiles) {
+    let files = (initialFiles || []).filter(Boolean);
+    const overlay = document.createElement('div');
+    overlay.className = 'study-modal-overlay';
+    const p = buildGroupPicker({ group: {} });
+    overlay.innerHTML = `
+      <div class="study-modal study-upload-modal" role="dialog" aria-modal="true">
+        <div class="study-modal-head">
+          <h3>Upload documents</h3>
+          <button class="study-modal-x" data-modal-close>&times;</button>
+        </div>
+        <div class="study-dropzone" data-dropzone>
+          <i data-lucide="upload-cloud" class="icon-lucide"></i>
+          <p><strong>Drop files here</strong> or <button type="button" class="study-dropzone-browse" data-browse>browse</button></p>
+          <span class="study-dropzone-hint">${(FORMATS.accept || ['.pdf']).join(' · ')}</span>
+        </div>
+        <div class="study-upload-list" data-filelist></div>
+        <div class="study-upload-fields">
+          <label class="study-field">
+            <span>Semester / Class</span>
+            <select data-field="semester">${p.semesters}</select>
+          </label>
+          <label class="study-field">
+            <span>Session</span>
+            <select data-field="session">${p.sessions}</select>
+          </label>
+          <label class="study-field">
+            <span>Subject</span>
+            <select data-field="subject"${p.disabledSubject ? ' disabled' : ''}>${p.subjects}</select>
+          </label>
+          <label class="study-field">
+            <span>Topic</span>
+            <select data-field="topic"${p.disabledTopic ? ' disabled' : ''}>${p.topics}</select>
+          </label>
+        </div>
+        <div class="study-modal-actions">
+          <button class="study-room-action secondary" data-modal-cancel>Cancel</button>
+          <button class="study-room-action primary" data-upload-go>Upload</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    if (window.lucide) window.lucide.createIcons();
+
+    const $ = (sel) => overlay.querySelector(sel);
+    const listEl = $('[data-filelist]');
+    const goBtn = $('[data-upload-go]');
+    const close = () => overlay.remove();
+
+    function renderList() {
+      listEl.innerHTML = files.map((f, i) => {
+        const err = fileRejection(f);
+        return `<div class="study-upload-item${err ? ' bad' : ''}" data-idx="${i}">
+          <i data-lucide="file-text" class="icon-lucide"></i>
+          <span class="study-upload-name">${escapeHtml(f.name)}</span>
+          <span class="study-upload-status">${err ? escapeHtml(err) : fmtSize(f.size)}</span>
+          <button class="study-upload-remove" data-remove="${i}" title="Remove">&times;</button>
+        </div>`;
+      }).join('');
+      const n = files.filter((f) => !fileRejection(f)).length;
+      goBtn.disabled = n === 0;
+      goBtn.textContent = n > 1 ? `Upload ${n} files` : 'Upload';
+      if (window.lucide) window.lucide.createIcons();
+    }
+
+    function addFiles(incoming) {
+      for (const f of incoming) {
+        if (!files.some((x) => x.name === f.name && x.size === f.size)) files.push(f);
+      }
+      renderList();
+    }
+
+    // Tag cascade — semester drives subjects, subject drives topics.
+    const tagVal = (f) => {
+      const el = overlay.querySelector(`[data-field="${f}"]`);
+      return el && !el.disabled ? el.value : '';
     };
-    xhr.onerror = () => notify('Upload failed — network error');
-    xhr.send(fd);
+    $('[data-field="semester"]').addEventListener('change', () => {
+      rebuildFor(overlay, { semester: tagVal('semester') });
+    });
+    $('[data-field="subject"]').addEventListener('change', () => {
+      rebuildFor(overlay, { semester: tagVal('semester'), subject: tagVal('subject') });
+    });
+
+    const browse = document.createElement('input');
+    browse.type = 'file';
+    browse.multiple = true;
+    browse.accept = FILE_INPUT_ACCEPT();
+    browse.addEventListener('change', () => { addFiles([...browse.files]); browse.value = ''; });
+    $('[data-browse]').onclick = () => browse.click();
+
+    // Dropzone — the modal owns its own drag handling.
+    const dz = $('[data-dropzone]');
+    ['dragenter', 'dragover'].forEach((ev) => dz.addEventListener(ev, (e) => {
+      e.preventDefault(); e.stopPropagation(); dz.classList.add('over');
+    }));
+    ['dragleave', 'drop'].forEach((ev) => dz.addEventListener(ev, (e) => {
+      e.preventDefault(); e.stopPropagation(); dz.classList.remove('over');
+    }));
+    dz.addEventListener('drop', (e) => {
+      const dropped = e.dataTransfer ? [...e.dataTransfer.files] : [];
+      if (dropped.length) addFiles(dropped);
+    });
+
+    listEl.addEventListener('click', (e) => {
+      const rm = e.target.closest('[data-remove]');
+      if (!rm) return;
+      files.splice(Number(rm.dataset.remove), 1);
+      renderList();
+    });
+
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    $('[data-modal-close]').onclick = close;
+    $('[data-modal-cancel]').onclick = close;
+
+    goBtn.onclick = async () => {
+      // Resolve any "+ New …" picks to real names before uploading.
+      const tags = {};
+      for (const f of TAG_FIELDS) {
+        let v = tagVal(f);
+        if (v === '__new__') {
+          v = (window.prompt(`New ${f} name:`) || '').trim();
+          if (!v) return; // cancelled — keep the dialog open
+        }
+        tags[f] = v;
+      }
+      if (!tags.semester) { tags.subject = ''; tags.topic = ''; }
+      if (!tags.subject) tags.topic = '';
+
+      goBtn.disabled = true;
+      const queue = files.filter((f) => !fileRejection(f));
+      let ok = 0;
+      for (let i = 0; i < queue.length; i++) {
+        const file = queue[i];
+        const row = listEl.querySelector(`[data-idx="${files.indexOf(file)}"] .study-upload-status`);
+        if (row) row.textContent = 'uploading…';
+        try {
+          await uploadOne(file, tags, (pct) => { if (row) row.textContent = pct + '%'; });
+          if (row) row.textContent = 'indexed ✓';
+          ok++;
+        } catch (err) {
+          if (row) row.textContent = err.message;
+        }
+      }
+      await loadDocs();
+      close();
+      notify(ok === queue.length
+        ? `${ok} file${ok === 1 ? '' : 's'} indexed ✓`
+        : `${ok}/${queue.length} uploaded — check the rest`);
+    };
+
+    renderList();
   }
 
   function pickAndUpload() {
     const input = document.createElement('input');
     input.type = 'file';
+    input.multiple = true;
     // Accept everything the backend allows — PDFs plus convertible office docs.
-    input.accept = (FORMATS.accept || ['.pdf']).join(',');
+    input.accept = FILE_INPUT_ACCEPT();
     input.addEventListener('change', () => {
-      if (input.files && input.files[0]) uploadPdf(input.files[0]);
+      if (input.files && input.files.length) openUploadDialog([...input.files]);
     });
     input.click();
+  }
+
+  function fmtSize(n) {
+    if (!n) return '0 B';
+    const u = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.min(u.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+    return (n / Math.pow(1024, i)).toFixed(i ? 1 : 0) + ' ' + u[i];
   }
 
   async function loadFormats() {
@@ -469,7 +633,7 @@
         </div>
         <div class="study-sidebar-section">
           <div class="study-sidebar-label">Actions</div>
-          <button class="study-sidebar-item" data-study-action="upload"><i data-lucide="upload" class="icon-lucide"></i> Upload PDF</button>
+          <button class="study-sidebar-item" data-study-action="upload"><i data-lucide="upload" class="icon-lucide"></i> Upload documents</button>
           <button class="study-sidebar-item" data-study-action="refresh-library"><i data-lucide="refresh-cw" class="icon-lucide"></i> Refresh</button>
         </div>`;
     } else if (tab === 'rooms') {
@@ -495,6 +659,7 @@
         <div class="study-sidebar-section">
           <div class="study-sidebar-label">Overview</div>
           <button class="study-sidebar-item active"><i data-lucide="graduation-cap" class="icon-lucide"></i> Semesters <span class="sidebar-count">${sems.length}</span></button>
+          <button class="study-sidebar-item"><i data-lucide="calendar" class="icon-lucide"></i> Sessions <span class="sidebar-count">${(ACADEMICS.sessions || []).length}</span></button>
           <button class="study-sidebar-item"><i data-lucide="book" class="icon-lucide"></i> Subjects <span class="sidebar-count">${nSubj}</span></button>
           <button class="study-sidebar-item"><i data-lucide="tag" class="icon-lucide"></i> Topics <span class="sidebar-count">${nTopic}</span></button>
         </div>
@@ -750,6 +915,15 @@
         if (!name) return;
         await apiSend('/api/study/academics/semesters', 'POST', { name });
 
+      } else if (action === 'add-session') {
+        const name = (window.prompt('Session name (e.g. "2019-2020"):') || '').trim();
+        if (!name) return;
+        await apiSend('/api/study/academics/sessions', 'POST', { name });
+
+      } else if (action === 'del-session') {
+        if (!confirm('Delete this session? Documents in it will become ungrouped.')) return;
+        await apiSend(`/api/study/academics/sessions/${id}`, 'DELETE');
+
       } else if (action === 'del-semester') {
         if (!confirm('Delete this semester? Documents in it will become ungrouped.')) return;
         await apiSend(`/api/study/academics/semesters/${id}`, 'DELETE');
@@ -806,6 +980,8 @@
     return {
       semesters: blank + semesters.map((s) => opt(s.name, s.name === g.semester)).join('') +
         '<option value="__new__">+ New semester…</option>',
+      sessions: blank + (ACADEMICS.sessions || []).map((s) => opt(s.name, s.name === g.session)).join('') +
+        '<option value="__new__">+ New session…</option>',
       subjects: blank + subjects.map((s) => opt(s.name, s.name === g.subject)).join('') +
         (g.semester ? '<option value="__new__">+ New subject…</option>' : ''),
       topics: blank + topics.map((t) => opt(t.name, t.name === g.topic)).join('') +
@@ -832,6 +1008,10 @@
         <label class="study-field">
           <span>Semester / Class</span>
           <select data-field="semester">${p.semesters}</select>
+        </label>
+        <label class="study-field">
+          <span>Session</span>
+          <select data-field="session">${p.sessions}</select>
         </label>
         <label class="study-field">
           <span>Subject</span>
@@ -893,7 +1073,10 @@
       }
       return v;
     };
-    const group = { semester: val('semester'), subject: val('subject'), topic: val('topic') };
+    const group = {
+      semester: val('semester'), session: val('session'),
+      subject: val('subject'), topic: val('topic'),
+    };
 
     try {
       const res = await fetch(`/api/study/doc/${doc.id}/group`, {
@@ -919,11 +1102,31 @@
     const sems = ACADEMICS.semesters || [];
     const countDocs = (pred) => LIBRARY_DOCS.filter((d) => pred(d.group || {})).length;
 
+    const sessions = ACADEMICS.sessions || [];
+    const sessionDocs = (name) => LIBRARY_DOCS.filter((d) => (d.group || {}).session === name).length;
+    const sessionsCard = `
+      <div class="study-acad-sessions">
+        <div class="study-acad-row top">
+          <span class="study-acad-name"><i data-lucide="calendar" class="icon-lucide"></i> Sessions</span>
+          <button class="study-acad-mini" data-acad="add-session" title="Add session"><i data-lucide="plus" class="icon-lucide"></i></button>
+        </div>
+        <div class="study-acad-chips">
+          ${sessions.length
+            ? sessions.map((s) => `
+                <span class="study-acad-chip">
+                  ${escapeHtml(s.name)}
+                  <span class="study-acad-chip-count">${sessionDocs(s.name)}</span>
+                  <button class="study-acad-chip-del" data-acad="del-session" data-id="${s.id}" title="Delete session">&times;</button>
+                </span>`).join('')
+            : '<div class="study-acad-empty">No sessions yet</div>'}
+        </div>
+      </div>`;
+
     const header = `
       <div class="study-acad-head">
         <div>
           <h3>Academics</h3>
-          <p>Organize your library into semesters, subjects, and topics.</p>
+          <p>Organize your library into semesters, sessions, subjects, and topics.</p>
         </div>
         <button class="study-room-action primary" data-acad="add-semester">
           <i data-lucide="plus" class="icon-lucide"></i> Add semester
@@ -977,7 +1180,7 @@
         </div>`;
     }).join('');
 
-    return `<div class="study-academics-manager">${header}<div class="study-acad-tree">${tree}</div></div>`;
+    return `<div class="study-academics-manager">${header}${sessionsCard}<div class="study-acad-tree">${tree}</div></div>`;
   }
 
   function notify(msg) {
@@ -1035,6 +1238,40 @@
     // Upload button in the study header
     const uploadBtn = document.getElementById('studyUploadBtn');
     if (uploadBtn) uploadBtn.addEventListener('click', pickAndUpload);
+
+    // Drop files anywhere on the study view → batch upload dialog. A full-view
+    // veil shows while a drag hovers so the affordance is obvious. Counter
+    // guards against dragenter/leave firing for child elements.
+    const dropVeil = document.createElement('div');
+    dropVeil.className = 'study-drop-veil';
+    dropVeil.innerHTML = '<div class="study-drop-veil-inner"><i data-lucide="upload-cloud" class="icon-lucide"></i><span>Drop to upload</span></div>';
+    view.appendChild(dropVeil);
+    let dragDepth = 0;
+    const hasFiles = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
+    view.addEventListener('dragenter', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragDepth++;
+      dropVeil.classList.add('show');
+    });
+    view.addEventListener('dragover', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    });
+    view.addEventListener('dragleave', (e) => {
+      if (!hasFiles(e)) return;
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) dropVeil.classList.remove('show');
+    });
+    view.addEventListener('drop', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragDepth = 0;
+      dropVeil.classList.remove('show');
+      const files = [...e.dataTransfer.files];
+      if (files.length) openUploadDialog(files);
+    });
 
     // Refresh the grid when the reader closes (progress / highlights changed)
     window.addEventListener('study-reader-closed', () => { loadDocs(); });
