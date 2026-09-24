@@ -183,6 +183,30 @@ def _get_available_backends() -> set[str]:
     except Exception as exc:
         logger.debug("Backend kimi unavailable: %s", exc)
 
+    # Mistral (Web): browser-auth — available if any profile holds a Mistral
+    # session (an ory_session_* cookie on chat.mistral.ai) or a saved snapshot.
+    try:
+        from engine.config import _SYSTEM as _sys_dir5
+        from engine.config import get_provider_account as _get_mw_pin
+        candidates = []
+        pinned = _get_mw_pin("mistral_web")
+        if pinned:
+            candidates.append(_sys_dir5 / pinned)
+        if _sys_dir5.is_dir():
+            candidates += [d for d in _sys_dir5.iterdir()
+                           if d.is_dir() and d.name.startswith("browser-data-")]
+        for d in candidates:
+            try:
+                if (d / ".mistral_web_auth.json").is_file():
+                    available.add("mistral_web"); break
+                ck = d / "Default" / "Cookies"
+                if ck.is_file() and b"chat.mistral.ai" in open(ck, "rb").read():
+                    available.add("mistral_web"); break
+            except Exception:
+                continue
+    except Exception as exc:
+        logger.debug("Backend mistral_web unavailable: %s", exc)
+
     # API-key-based providers
     _key_providers = {
         "gemini": "connectors.gemini.client",

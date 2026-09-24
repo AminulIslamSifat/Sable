@@ -416,6 +416,9 @@ class ZaiClient:
         # Stable per-page chunk dispatcher target; swapped each turn.
         self._chunk_handler: Callable[[str, str], None] | None = None
         self._binding_exposed = False
+        from connectors.common.error_ctx import ErrorContext
+        self.ctx = ErrorContext("zai")
+        self.ctx.account = self._account
 
     # ---- token management ----
 
@@ -731,6 +734,7 @@ class ZaiClient:
 
         page = await self._ensure_page()
         model_id = model or "x-preview-l"
+        self.ctx.model = model_id
         enable_thinking, reasoning_effort = self._resolve_thinking(thinking_mode)
 
         # History / instruction seeding.
@@ -883,7 +887,7 @@ class ZaiClient:
                         yield {"type": "status", "message": "zai_aborted"}
                         return
                     if kind == "__error__":
-                        yield {"type": "error", "message": payload}
+                        yield self.ctx.error(payload)
                         return
                     if kind == "__usage__":
                         continue

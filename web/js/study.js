@@ -28,44 +28,343 @@
   let sidebarPanel = null; // our injected contextual panel
   let activeTab = 'library';
 
-  // ─── Dummy data (replace with API later) ───
-  const LIBRARY_DOCS = [];
+  // ─── Library state (backed by /api/study/*) ───
+  let LIBRARY_DOCS = [];
+  let libraryFilter = 'all';   // all | progress | bookmarked | highlights
+  let libraryQuery = '';
+  let groupBy = 'recent';      // recent | none | collection | semester | subject | topic
+  let COLLECTIONS = [];        // Drive folders that have imported docs
+  let DRIVE_FOLDERS = [];      // Drive links saved in the Drive tab (shown as cards)
+  let userChoseGroup = false;  // don't override an explicit group-by choice
+  let ACADEMICS = { semesters: [] };
+  let collapsedGroups = {};    // group key → true when collapsed
+  // Accepted upload formats, fetched from the backend. Falls back to a sane
+  // default so the picker works even before /formats responds.
+  let FORMATS = { accept: ['.pdf'], converter: true };
   const ROOMS = [];
 
   // ─── Tab meta ───
-  const TABS = ['library', 'rooms', 'academics'];
+  const TABS = ['library', 'rooms', 'drive', 'academics'];
 
   // ─── Rendering ───
 
+  function docsMatchingFilter() {
+    const q = libraryQuery.trim().toLowerCase();
+    return LIBRARY_DOCS.filter((d) => {
+      if (q && !String(d.title || '').toLowerCase().includes(q)) return false;
+      if (libraryFilter === 'progress') return (d.progress && d.progress.percent) > 0;
+      if (libraryFilter === 'bookmarked') return !!d.bookmarked;
+      if (libraryFilter === 'highlights') return (d.highlights || 0) > 0;
+      return true;
+    });
+  }
+
+  const GROUP_LABELS = {
+    recent: 'Recent', none: 'None', collection: 'Drive folder',
+    semester: 'Semester', subject: 'Subject', topic: 'Topic',
+  };
+  // View modes offered in the sidebar, in display order. `recent` is special —
+  // it's a flat list sorted by last opened, not a grouping.
+  const GROUP_MODES = ['recent', 'none', 'collection', 'semester', 'subject', 'topic'];
+  const GROUP_ICONS = {
+    recent: 'clock', none: 'layout-grid', collection: 'folder-tree',
+    semester: 'graduation-cap', subject: 'book', topic: 'tag',
+  };
+
   function renderLibrary() {
-    if (!LIBRARY_DOCS.length) {
+    if (!LIBRARY_DOCS.length && !DRIVE_FOLDERS.length) {
       return `
         <div class="study-empty">
           <div class="study-empty-icon">📚</div>
           <h3>Your library is empty</h3>
-          <p>Upload PDFs, lecture slides, or notes. Nova will OCR them and you can study right here.</p>
+          <p>Upload PDFs, Word docs, slides, or notes. Sable extracts the text and you can study right here.</p>
           <button class="study-empty-btn" data-study-action="upload">Upload a document</button>
         </div>`;
     }
-    return `<div class="study-library">${LIBRARY_DOCS.map(docCard).join('')}</div>`;
+
+    // Recent — every document opened recently, newest first, regardless of
+    // where it came from (local upload or Drive).
+    if (groupBy === 'recent') return renderRecent();
+
+    const docs = docsMatchingFilter();
+    const folders = DRIVE_FOLDERS.map(folderCard).join('');
+    if (!docs.length && !folders) {
+      return `<div class="study-empty"><div class="study-empty-icon">🔍</div><h3>Nothing matches</h3><p>No documents fit this filter or search.</p></div>`;
+    }
+
+    // Flat grid when grouping is off — documents first, then Drive folders.
+    if (groupBy === 'none') {
+      const docGrid = `<div class="study-library">${docs.map(docCard).join('')}</div>`;
+      const folderSection = folders
+        ? `<div class="study-folders">
+             <div class="study-folders-label">
+               <i data-lucide="folder-open" class="icon-lucide"></i> Drive folders
+             </div>
+             <div class="study-library">${folders}</div>
+           </div>`
+        : '';
+      return `${docGrid}${folderSection}`;
+    }
+
+    return renderGrouped(docs);
   }
 
-  function docCard(d) {
+  /** A Drive folder the user added, shown as a card in the library. */
+  function folderCard(s) {
+    const n = s.count || 0;
     return `
-      <div class="study-doc-card" data-doc-id="${d.id}">
+      <div class="study-doc-card study-folder-card" data-drive-folder="${s.id}" role="button" tabindex="0">
         <div class="study-doc-thumb">
-          ${d.thumb ? `<img src="${d.thumb}" alt="">` : '📄'}
-          <div class="study-doc-progress" style="width:${d.progress || 0}%"></div>
+          <i data-lucide="folder-open" class="icon-lucide study-doc-icon"></i>
         </div>
-        <button class="study-doc-menu" title="More">⋯</button>
         <div class="study-doc-info">
-          <div class="study-doc-title">${escapeHtml(d.title)}</div>
+          <div class="study-doc-title">${escapeHtml(s.name)}</div>
           <div class="study-doc-meta">
-            <span>${d.pages || 0} pages</span>
-            <span>${d.progress || 0}%</span>
+            <span>Drive folder</span>
+            ${n ? `<span>${n} item${n === 1 ? '' : 's'}</span>` : ''}
           </div>
         </div>
       </div>`;
+  }
+
+  /** Documents by most-recently-opened, ignoring where they live. */
+  function renderRecent() {
+    const recent = LIBRARY_DOCS
+      .filter((d) => d.progress && d.progress.last_opened > 0)
+      .sort((a, b) => (b.progress.last_opened || 0) - (a.progress.last_opened || 0));
+    if (!recent.length) {
+      // Fall back to the full library when nothing has been opened yet, so the
+      // default view is never a dead-end empty screen for a fresh library.
+      if (LIBRARY_DOCS.length) {
+        return `<div class="study-library">${LIBRARY_DOCS.map(docCard).join('')}</div>`;
+      }
+      return `<div class="study-empty"><div class="study-empty-icon">🕘</div>
+                <h3>Nothing opened yet</h3>
+                <p>Documents you read will show up here, newest first.</p></div>`;
+    }
+    return `<div class="study-library">${recent.map(docCard).join('')}</div>`;
+  }
+
+  /** Build the group → docs map for the active groupBy dimension. */
+  function groupDocs(docs) {
+    const map = new Map();
+    for (const d of docs) {
+      // 'collection' groups by the Drive folder a doc was imported from.
+      const label = groupBy === 'collection'
+        ? ((d.collection || '').trim() || 'Ungrouped')
+        : (((d.group || {})[groupBy] || '').trim() || 'Ungrouped');
+      if (!map.has(label)) map.set(label, []);
+      map.get(label).push(d);
+    }
+    // Named groups first (alphabetical), "Ungrouped" always last.
+    return [...map.entries()].sort((a, b) => {
+      if (a[0] === 'Ungrouped') return 1;
+      if (b[0] === 'Ungrouped') return -1;
+      return a[0].localeCompare(b[0]);
+    });
+  }
+
+  function renderGrouped(docs) {
+    const groups = groupDocs(docs);
+    const sections = groups.map(([label, items]) => {
+      const key = groupBy + ':' + label;
+      const isCollapsed = !!collapsedGroups[key];
+      // A Drive collection gets a folder icon so it reads as a source, not a tag.
+      const icon = groupBy === 'collection' ? 'folder-open' : 'folder-tree';
+      return `
+        <div class="study-group${isCollapsed ? ' collapsed' : ''}" data-group-key="${escapeHtml(key)}">
+          <button class="study-group-head" data-group-toggle="${escapeHtml(key)}">
+            <i data-lucide="chevron-down" class="icon-lucide study-group-caret"></i>
+            <i data-lucide="${icon}" class="icon-lucide study-group-icon"></i>
+            <span class="study-group-name">${escapeHtml(label)}</span>
+            <span class="study-group-count">${items.length}</span>
+          </button>
+          <div class="study-library study-group-body">${items.map(docCard).join('')}</div>
+        </div>`;
+    });
+    return `<div class="study-groups">${sections.join('')}</div>`;
+  }
+
+  // Source-format → display icon + accent label.
+  const EXT_ICON = {
+    pdf: 'file-text',
+    doc: 'file-text', docx: 'file-text',
+    ppt: 'presentation', pptx: 'presentation',
+    odt: 'file-text', odp: 'presentation', ods: 'table',
+    xls: 'table', xlsx: 'table', csv: 'table',
+    rtf: 'file-text', txt: 'file-text', md: 'file-code', epub: 'book-open',
+  };
+
+  function docCard(d) {
+    const pct = (d.progress && d.progress.percent) || 0;
+    const g = d.group || {};
+    const ext = String(d.source_ext || 'pdf').toLowerCase();
+    const icon = EXT_ICON[ext] || 'file-text';
+    const tags = [g.semester, g.subject, g.topic].filter(Boolean);
+    const tagHtml = tags.length
+      ? `<div class="study-doc-tags">${tags.map((t) => `<span class="study-doc-tag">${escapeHtml(t)}</span>`).join('')}</div>`
+      : '';
+    // Non-PDF uploads get a small "converted from .docx" style badge.
+    const srcBadge = d.converted
+      ? `<span class="study-doc-src" title="Converted from .${escapeHtml(ext)} to PDF">${escapeHtml(ext)}</span>`
+      : '';
+    // Page-1 preview when we have one (cached JPEG); icon as the fallback.
+    // A plain <img> can't send an Authorization header, so the thumb request
+    // authenticates via ?token= (the endpoint accepts it, see application.py).
+    const tok = localStorage.getItem('sable_token') || '';
+    const thumb = d.has_thumb
+      ? `<img class="study-doc-preview" src="/api/study/doc/${d.id}/thumb${tok ? '?token=' + encodeURIComponent(tok) : ''}" alt=""
+              loading="lazy" decoding="async"
+              onerror="this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='')">
+         <i data-lucide="${icon}" class="icon-lucide study-doc-icon" style="display:none"></i>`
+      : `<i data-lucide="${icon}" class="icon-lucide study-doc-icon"></i>`;
+    return `
+      <div class="study-doc-card" data-doc-id="${d.id}" role="button" tabindex="0">
+        <div class="study-doc-thumb">
+          ${thumb}
+          ${srcBadge}
+          <div class="study-doc-progress" style="width:${pct}%"></div>
+        </div>
+        <button class="study-doc-menu" data-doc-menu="${d.id}" title="More">⋯</button>
+        <div class="study-doc-info">
+          <div class="study-doc-title">${escapeHtml(d.title)}</div>
+          ${tagHtml}
+          <div class="study-doc-meta">
+            <span>${d.pages || 0} pages</span>
+            <span>${pct}%</span>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  // ─── API ───
+
+  async function loadDocs() {
+    try {
+      const res = await fetch('/api/study/docs');
+      if (!res.ok) throw new Error(res.statusText);
+      LIBRARY_DOCS = await res.json();
+    } catch (err) {
+      LIBRARY_DOCS = [];
+      notify('Could not load library: ' + err.message);
+    }
+    await loadCollections();
+    await loadDriveFolders();
+    await loadAcademics();
+    if (activeTab === 'library') {
+      content.innerHTML = renderLibrary();
+      if (window.lucide) window.lucide.createIcons();
+      refreshSidebarCounts();
+    }
+  }
+
+  async function loadCollections() {
+    try {
+      const res = await fetch('/api/study/collections');
+      if (!res.ok) throw new Error(res.statusText);
+      COLLECTIONS = await res.json();
+    } catch (err) {
+      COLLECTIONS = [];
+    }
+    return COLLECTIONS;
+  }
+
+  /** Drive links the user added — surfaced in the library as folder cards. */
+  async function loadDriveFolders() {
+    try {
+      const res = await fetch('/api/drive/sources');
+      if (!res.ok) throw new Error(res.statusText);
+      DRIVE_FOLDERS = await res.json();
+    } catch (err) {
+      DRIVE_FOLDERS = [];
+    }
+    return DRIVE_FOLDERS;
+  }
+
+  async function loadAcademics() {
+    try {
+      const res = await fetch('/api/study/academics');
+      if (!res.ok) throw new Error(res.statusText);
+      ACADEMICS = await res.json();
+    } catch (err) {
+      ACADEMICS = { semesters: [] };
+    }
+    return ACADEMICS;
+  }
+
+  function openDoc(id) {
+    if (window.studyReader && typeof window.studyReader.open === 'function') {
+      window.studyReader.open(id);
+    } else {
+      notify('Reader still loading…');
+    }
+  }
+
+  // Upload with a real progress bar — plain fetch() can't report upload progress,
+  // so this is the one place XHR is the right tool.
+  function uploadPdf(file) {
+    if (!file) return;
+    const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
+    const allowed = FORMATS.accept || ['.pdf'];
+    if (!allowed.includes(ext)) {
+      return notify(`Can't upload ${ext} files 🙂 — accepted: ${allowed.join(', ')}`);
+    }
+    const willConvert = ext !== '.pdf';
+    if (willConvert && FORMATS.converter === false) {
+      return notify('LibreOffice isn\'t installed — only PDF uploads work right now.');
+    }
+
+    const fd = new FormData();
+    fd.append('file', file);
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/study/upload');
+
+    // XHR bypasses the global fetch() auth wrapper in core.js, so the bearer
+    // token must be set by hand. getToken() there is IIFE-scoped, not global —
+    // read the same localStorage key directly.
+    const token = localStorage.getItem('sable_token') || '';
+    if (token) xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+
+    notify(`Uploading ${file.name}…`);
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      const pct = Math.round((e.loaded / e.total) * 100);
+      notify(`Uploading ${file.name} — ${pct}%`);
+    };
+    xhr.onload = async () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        let doc = null;
+        try { doc = JSON.parse(xhr.responseText); } catch {}
+        await loadDocs();
+        notify(doc && doc.converted ? 'Converted & indexed ✓' : 'Uploaded and indexed ✓');
+        if (doc && doc.id) openDoc(doc.id);
+      } else {
+        let msg = `Upload failed (${xhr.status})`;
+        try { msg = JSON.parse(xhr.responseText).detail || msg; } catch {}
+        notify(msg);
+      }
+    };
+    xhr.onerror = () => notify('Upload failed — network error');
+    xhr.send(fd);
+  }
+
+  function pickAndUpload() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    // Accept everything the backend allows — PDFs plus convertible office docs.
+    input.accept = (FORMATS.accept || ['.pdf']).join(',');
+    input.addEventListener('change', () => {
+      if (input.files && input.files[0]) uploadPdf(input.files[0]);
+    });
+    input.click();
+  }
+
+  async function loadFormats() {
+    try {
+      const res = await fetch('/api/study/formats');
+      if (!res.ok) return;
+      FORMATS = await res.json();
+    } catch { /* keep defaults */ }
   }
 
   function renderRooms() {
@@ -87,16 +386,12 @@
       </div>`;
   }
 
-  function renderAcademics() {
-    return `
-      <div class="study-academics">
-        <div class="study-academics-badge"><i data-lucide="construction" class="icon-lucide"></i> Coming soon</div>
-        <h3>Academics</h3>
-        <p>Courses, semesters, assignments, and grades — a full academic hub for your CSE life. Still baking. 🍞</p>
-      </div>`;
-  }
-
-  const RENDERERS = { library: renderLibrary, rooms: renderRooms, academics: renderAcademics };
+  const RENDERERS = {
+    library: renderLibrary,
+    rooms: renderRooms,
+    drive: () => (window.driveMode ? window.driveMode.render() : ''),
+    academics: renderAcademics,
+  };
 
   function setTab(tab) {
     if (!TABS.includes(tab)) tab = 'library';
@@ -141,21 +436,41 @@
     let html = '';
 
     if (tab === 'library') {
+      const nAll = LIBRARY_DOCS.length;
+      const nProg = LIBRARY_DOCS.filter((d) => (d.progress && d.progress.percent) > 0).length;
+      const nMark = LIBRARY_DOCS.filter((d) => d.bookmarked).length;
+      const nHigh = LIBRARY_DOCS.filter((d) => (d.highlights || 0) > 0).length;
+      const sel = (f) => (libraryFilter === f ? ' active' : '');
       html = `
         <div class="study-sidebar-search-wrap">
           <i data-lucide="search" class="icon-lucide"></i>
-          <input class="study-sidebar-search" placeholder="Search library..." id="studyLibSearch">
+          <input class="study-sidebar-search" placeholder="Search library..." id="studyLibSearch" value="${escapeHtml(libraryQuery)}">
         </div>
         <div class="study-sidebar-section">
           <div class="study-sidebar-label">Smart filters</div>
-          <button class="study-sidebar-item active"><i data-lucide="layers" class="icon-lucide"></i> All documents <span class="sidebar-count">0</span></button>
-          <button class="study-sidebar-item"><i data-lucide="clock" class="icon-lucide"></i> In progress <span class="sidebar-count">0</span></button>
-          <button class="study-sidebar-item"><i data-lucide="bookmark" class="icon-lucide"></i> Bookmarked <span class="sidebar-count">0</span></button>
-          <button class="study-sidebar-item"><i data-lucide="highlighter" class="icon-lucide"></i> Highlights <span class="sidebar-count">0</span></button>
+          <button class="study-sidebar-item${sel('all')}" data-lib-filter="all"><i data-lucide="layers" class="icon-lucide"></i> All documents <span class="sidebar-count">${nAll}</span></button>
+          <button class="study-sidebar-item${sel('progress')}" data-lib-filter="progress"><i data-lucide="clock" class="icon-lucide"></i> In progress <span class="sidebar-count">${nProg}</span></button>
+          <button class="study-sidebar-item${sel('bookmarked')}" data-lib-filter="bookmarked"><i data-lucide="bookmark" class="icon-lucide"></i> Bookmarked <span class="sidebar-count">${nMark}</span></button>
+          <button class="study-sidebar-item${sel('highlights')}" data-lib-filter="highlights"><i data-lucide="highlighter" class="icon-lucide"></i> Highlights <span class="sidebar-count">${nHigh}</span></button>
         </div>
         <div class="study-sidebar-section">
-          <div class="study-sidebar-label">Folders</div>
-          <button class="study-sidebar-item" data-study-action="new-folder"><i data-lucide="folder-plus" class="icon-lucide"></i> New folder</button>
+          <div class="study-sidebar-label">Group by</div>
+          ${GROUP_MODES.map((mode) => {
+            const n = mode === 'collection'
+              ? COLLECTIONS.length
+              : (mode === 'none' ? null : new Set(
+                  LIBRARY_DOCS.map((d) => ((d.group || {})[mode] || '').trim()).filter(Boolean)
+                ).size);
+            const badge = n ? `<span class="sidebar-count">${n}</span>` : '';
+            return `<button class="study-sidebar-item${groupBy === mode ? ' active' : ''}" data-group-by="${mode}">
+                      <i data-lucide="${GROUP_ICONS[mode]}" class="icon-lucide"></i> ${GROUP_LABELS[mode]} ${badge}
+                    </button>`;
+          }).join('')}
+        </div>
+        <div class="study-sidebar-section">
+          <div class="study-sidebar-label">Actions</div>
+          <button class="study-sidebar-item" data-study-action="upload"><i data-lucide="upload" class="icon-lucide"></i> Upload PDF</button>
+          <button class="study-sidebar-item" data-study-action="refresh-library"><i data-lucide="refresh-cw" class="icon-lucide"></i> Refresh</button>
         </div>`;
     } else if (tab === 'rooms') {
       html = `
@@ -170,19 +485,47 @@
           <button class="study-sidebar-item" data-study-action="create-room"><i data-lucide="plus-circle" class="icon-lucide"></i> New room</button>
           <button class="study-sidebar-item" data-study-action="join-room"><i data-lucide="log-in" class="icon-lucide"></i> Join by code</button>
         </div>`;
+    } else if (tab === 'drive') {
+      html = window.driveMode ? window.driveMode.renderSidebar() : '';
     } else {
+      const sems = ACADEMICS.semesters || [];
+      const nSubj = sems.reduce((n, s) => n + (s.subjects || []).length, 0);
+      const nTopic = sems.reduce((n, s) => n + (s.subjects || []).reduce((m, x) => m + (x.topics || []).length, 0), 0);
       html = `
         <div class="study-sidebar-section">
-          <div class="study-sidebar-label">Academics</div>
-          <button class="study-sidebar-item active"><i data-lucide="graduation-cap" class="icon-lucide"></i> Courses</button>
-          <button class="study-sidebar-item"><i data-lucide="clipboard-list" class="icon-lucide"></i> Assignments</button>
-          <button class="study-sidebar-item"><i data-lucide="calendar" class="icon-lucide"></i> Schedule</button>
-          <button class="study-sidebar-item"><i data-lucide="bar-chart" class="icon-lucide"></i> Grades</button>
+          <div class="study-sidebar-label">Overview</div>
+          <button class="study-sidebar-item active"><i data-lucide="graduation-cap" class="icon-lucide"></i> Semesters <span class="sidebar-count">${sems.length}</span></button>
+          <button class="study-sidebar-item"><i data-lucide="book" class="icon-lucide"></i> Subjects <span class="sidebar-count">${nSubj}</span></button>
+          <button class="study-sidebar-item"><i data-lucide="tag" class="icon-lucide"></i> Topics <span class="sidebar-count">${nTopic}</span></button>
+        </div>
+        <div class="study-sidebar-section">
+          <div class="study-sidebar-label">Actions</div>
+          <button class="study-sidebar-item" data-acad="add-semester"><i data-lucide="plus-circle" class="icon-lucide"></i> Add semester</button>
+          <button class="study-sidebar-item" data-study-action="refresh-library"><i data-lucide="refresh-cw" class="icon-lucide"></i> Refresh</button>
         </div>`;
     }
 
     panel.innerHTML = html;
     if (window.lucide) window.lucide.createIcons();
+
+    // Wire the library search box (rebuilt on every render, so re-bind each time).
+    const searchInput = panel.querySelector('#studyLibSearch');
+    if (searchInput) {
+      searchInput.addEventListener('input', debounce(() => {
+        libraryQuery = searchInput.value;
+        content.innerHTML = renderLibrary();
+        if (window.lucide) window.lucide.createIcons();
+      }, 150));
+    }
+  }
+
+  function refreshSidebarCounts() {
+    if (activeTab === 'library') renderSidebar('library');
+  }
+
+  function debounce(fn, ms) {
+    let t;
+    return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
   }
 
   // ─── Sidebar show/hide for study mode ───
@@ -290,17 +633,351 @@
   }
 
   function handleContentClick(e) {
-    const actionEl = e.target.closest('[data-study-action]');
-    if (!actionEl) return;
-    const action = actionEl.dataset.studyAction;
-    if (action === 'upload') {
-      if (window.openLibrary) window.openLibrary();
-      else notify('Upload coming soon');
-    } else if (action === 'create-room' || action === 'join-room') {
-      notify('Rooms are a demo for now 🚧');
-    } else if (action === 'new-folder') {
-      notify('Folders coming soon');
+    // A Drive folder card in the library opens that source in the Drive tab.
+    const folderEl = e.target.closest('[data-drive-folder]');
+    if (folderEl) {
+      if (window.driveMode && window.driveMode.openFolder) {
+        window.driveMode.openFolder(folderEl.dataset.driveFolder);
+      }
+      return;
     }
+
+    // Drive tab owns its own actions — delegate before anything else.
+    const driveEl = e.target.closest('[data-drive-action]');
+    if (driveEl && window.driveMode) {
+      e.preventDefault();
+      window.driveMode.handleAction(driveEl.dataset.driveAction, driveEl);
+      return;
+    }
+
+    // Doc "⋯" menu first — its stopImmediatePropagation must beat the card
+    // handler, otherwise opening the menu also opens the doc.
+    const menuEl = e.target.closest('[data-doc-menu]');
+    if (menuEl) {
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      openDocMenu(menuEl.dataset.docMenu);
+      return;
+    }
+
+    // Library filter buttons live in the sidebar, not the content pane.
+    const filterEl = e.target.closest('[data-lib-filter]');
+    if (filterEl) {
+      libraryFilter = filterEl.dataset.libFilter;
+      renderSidebar('library');
+      content.innerHTML = renderLibrary();
+      if (window.lucide) window.lucide.createIcons();
+      return;
+    }
+
+    // "Group by" selector (sidebar)
+    const groupEl = e.target.closest('[data-group-by]');
+    if (groupEl) {
+      groupBy = groupEl.dataset.groupBy;
+      userChoseGroup = true;
+      renderSidebar('library');
+      content.innerHTML = renderLibrary();
+      if (window.lucide) window.lucide.createIcons();
+      return;
+    }
+
+    // Collapse/expand a rendered group (content pane)
+    const toggleEl = e.target.closest('[data-group-toggle]');
+    if (toggleEl) {
+      const key = toggleEl.dataset.groupToggle;
+      collapsedGroups[key] = !collapsedGroups[key];
+      const wrap = toggleEl.closest('.study-group');
+      if (wrap) wrap.classList.toggle('collapsed', !!collapsedGroups[key]);
+      return;
+    }
+
+    // Academics manager buttons (content pane)
+    const acadEl = e.target.closest('[data-acad]');
+    if (acadEl) {
+      handleAcadAction(acadEl.dataset.acad, acadEl.dataset.id);
+      return;
+    }
+
+    const actionEl = e.target.closest('[data-study-action]');
+    if (actionEl) {
+      const action = actionEl.dataset.studyAction;
+      if (action === 'upload') {
+        pickAndUpload();
+      } else if (action === 'refresh-library') {
+        loadDocs().then(() => notify('Library refreshed'));
+      } else if (action === 'create-room' || action === 'join-room') {
+        notify('Rooms are a demo for now 🚧');
+      } else if (action === 'new-folder') {
+        notify('Folders coming soon');
+      }
+      return;
+    }
+
+    // Nothing above matched — treat it as a doc-card open (last resort, so
+    // buttons inside a card don't accidentally open it).
+    const card = e.target.closest('.study-doc-card');
+    if (card) openDoc(card.dataset.docId);
+  }
+
+  // ─── Academics CRUD wiring ───
+
+  async function apiSend(url, method, body) {
+    const res = await fetch(url, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(detail);
+    }
+    return res.status === 204 ? null : res.json().catch(() => null);
+  }
+
+  async function refreshAcademicsView() {
+    await loadAcademics();
+    if (activeTab === 'academics') {
+      content.innerHTML = renderAcademics();
+      if (window.lucide) window.lucide.createIcons();
+    }
+  }
+
+  async function handleAcadAction(action, id) {
+    try {
+      if (action === 'add-semester') {
+        const name = (window.prompt('Semester / class name (e.g. "5th Semester"):') || '').trim();
+        if (!name) return;
+        await apiSend('/api/study/academics/semesters', 'POST', { name });
+
+      } else if (action === 'del-semester') {
+        if (!confirm('Delete this semester? Documents in it will become ungrouped.')) return;
+        await apiSend(`/api/study/academics/semesters/${id}`, 'DELETE');
+
+      } else if (action === 'add-subject') {
+        const name = (window.prompt('Subject name (e.g. "Data Structures"):') || '').trim();
+        if (!name) return;
+        await apiSend(`/api/study/academics/semesters/${id}/subjects`, 'POST', { name });
+
+      } else if (action === 'del-subject') {
+        if (!confirm('Delete this subject? Its topics go too, and docs become ungrouped.')) return;
+        await apiSend(`/api/study/academics/subjects/${id}`, 'DELETE');
+
+      } else if (action === 'add-topic') {
+        const name = (window.prompt('Topic name (e.g. "Trees & Graphs"):') || '').trim();
+        if (!name) return;
+        await apiSend(`/api/study/academics/subjects/${id}/topics`, 'POST', { name });
+
+      } else if (action === 'del-topic') {
+        if (!confirm('Delete this topic?')) return;
+        await apiSend(`/api/study/academics/topics/${id}`, 'DELETE');
+
+      } else {
+        return;
+      }
+      await loadDocs();          // doc tags may have been retagged
+      await refreshAcademicsView();
+      notify('Updated ✓');
+    } catch (err) {
+      notify(err.message || 'Action failed');
+    }
+  }
+
+
+  // ─── Doc "⋯" menu → academic grouping modal ───
+
+  function findDoc(id) {
+    return LIBRARY_DOCS.find((d) => d.id === id) || null;
+  }
+
+  /** Cascade options from the academics tree for the three assignment selects. */
+  function buildGroupPicker(doc) {
+    const g = (doc && doc.group) || {};
+    const semesters = ACADEMICS.semesters || [];
+
+    const sem = semesters.find((s) => s.name === g.semester);
+    const subjects = sem ? (sem.subjects || []) : [];
+    const subj = subjects.find((s) => s.name === g.subject);
+    const topics = subj ? (subj.topics || []) : [];
+
+    const opt = (v, sel) => `<option value="${escapeHtml(v)}"${sel ? ' selected' : ''}>${escapeHtml(v)}</option>`;
+    const blank = '<option value="">— none —</option>';
+
+    return {
+      semesters: blank + semesters.map((s) => opt(s.name, s.name === g.semester)).join('') +
+        '<option value="__new__">+ New semester…</option>',
+      subjects: blank + subjects.map((s) => opt(s.name, s.name === g.subject)).join('') +
+        (g.semester ? '<option value="__new__">+ New subject…</option>' : ''),
+      topics: blank + topics.map((t) => opt(t.name, t.name === g.topic)).join('') +
+        (g.subject ? '<option value="__new__">+ New topic…</option>' : ''),
+      disabledSubject: !g.semester,
+      disabledTopic: !g.subject,
+    };
+  }
+
+  function openDocMenu(docId) {
+    const doc = findDoc(docId);
+    if (!doc) return;
+    const p = buildGroupPicker(doc);
+
+    const overlay = document.createElement('div');
+    overlay.className = 'study-modal-overlay';
+    overlay.innerHTML = `
+      <div class="study-modal" role="dialog" aria-modal="true">
+        <div class="study-modal-head">
+          <h3>Group document</h3>
+          <button class="study-modal-x" data-modal-close>&times;</button>
+        </div>
+        <p class="study-modal-doc">${escapeHtml(doc.title)}</p>
+        <label class="study-field">
+          <span>Semester / Class</span>
+          <select data-field="semester">${p.semesters}</select>
+        </label>
+        <label class="study-field">
+          <span>Subject</span>
+          <select data-field="subject"${p.disabledSubject ? ' disabled' : ''}>${p.subjects}</select>
+        </label>
+        <label class="study-field">
+          <span>Topic</span>
+          <select data-field="topic"${p.disabledTopic ? ' disabled' : ''}>${p.topics}</select>
+        </label>
+        <div class="study-modal-actions">
+          <button class="study-room-action secondary" data-modal-cancel>Cancel</button>
+          <button class="study-room-action primary" data-modal-save>Save</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    const $ = (sel) => overlay.querySelector(sel);
+    const close = () => overlay.remove();
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    $('[data-modal-close]').onclick = close;
+    $('[data-modal-cancel]').onclick = close;
+
+    // Cascade: changing semester rebuilds subject options, etc.
+    $('[data-field="semester"]').addEventListener('change', (e) => {
+      if (e.target.value === '__new__') return; // handled on save
+      rebuildFor(overlay, { semester: e.target.value, subject: '', topic: '' });
+    });
+    $('[data-field="subject"]').addEventListener('change', (e) => {
+      if (e.target.value === '__new__') return;
+      const sem = $('[data-field="semester"]').value;
+      rebuildFor(overlay, { semester: sem, subject: e.target.value, topic: '' });
+    });
+
+    $('[data-modal-save]').onclick = () => saveGroup(overlay, doc, close);
+  }
+
+  /** Re-render the modal's selects against a partial group selection. */
+  function rebuildFor(overlay, partial) {
+    const fake = { group: partial };
+    const p = buildGroupPicker(fake);
+    const sem = overlay.querySelector('[data-field="semester"]');
+    const subj = overlay.querySelector('[data-field="subject"]');
+    const top = overlay.querySelector('[data-field="topic"]');
+    sem.innerHTML = p.semesters;
+    subj.innerHTML = p.subjects;
+    subj.disabled = p.disabledSubject;
+    top.innerHTML = p.topics;
+    top.disabled = p.disabledTopic;
+  }
+
+  async function saveGroup(overlay, doc, close) {
+    const val = (f) => {
+      const el = overlay.querySelector(`[data-field="${f}"]`);
+      if (!el || el.disabled) return '';
+      let v = el.value;
+      if (v === '__new__') {
+        v = (window.prompt(`New ${f} name:`) || '').trim();
+        if (!v) return '';
+      }
+      return v;
+    };
+    const group = { semester: val('semester'), subject: val('subject'), topic: val('topic') };
+
+    try {
+      const res = await fetch(`/api/study/doc/${doc.id}/group`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(group),
+      });
+      if (!res.ok) throw new Error(res.statusText);
+      doc.group = await res.json();
+      close();
+      await loadAcademics();
+      content.innerHTML = renderLibrary();
+      if (window.lucide) window.lucide.createIcons();
+      notify('Grouping updated ✓');
+    } catch (err) {
+      notify('Could not save grouping: ' + err.message);
+    }
+  }
+
+  // ─── Academics manager ───
+
+  function renderAcademics() {
+    const sems = ACADEMICS.semesters || [];
+    const countDocs = (pred) => LIBRARY_DOCS.filter((d) => pred(d.group || {})).length;
+
+    const header = `
+      <div class="study-acad-head">
+        <div>
+          <h3>Academics</h3>
+          <p>Organize your library into semesters, subjects, and topics.</p>
+        </div>
+        <button class="study-room-action primary" data-acad="add-semester">
+          <i data-lucide="plus" class="icon-lucide"></i> Add semester
+        </button>
+      </div>`;
+
+    if (!sems.length) {
+      return `<div class="study-academics-manager">${header}
+        <div class="study-empty">
+          <div class="study-empty-icon">🎓</div>
+          <h3>No semesters yet</h3>
+          <p>Add your first semester or class, then nest subjects and topics inside it.</p>
+        </div>
+      </div>`;
+    }
+
+    const tree = sems.map((sem) => {
+      const semDocs = countDocs((g) => g.semester === sem.name);
+      const subjects = (sem.subjects || []).map((subj) => {
+        const subjDocs = countDocs((g) => g.subject === subj.name);
+        const topics = (subj.topics || []).map((t) => {
+          const tDocs = countDocs((g) => g.topic === t.name);
+          return `
+            <div class="study-acad-topic">
+              <span class="study-acad-name">${escapeHtml(t.name)}</span>
+              <span class="study-acad-count">${tDocs}</span>
+              <button class="study-acad-del" data-acad="del-topic" data-id="${t.id}" title="Delete topic">&times;</button>
+            </div>`;
+        }).join('');
+        return `
+          <div class="study-acad-subject">
+            <div class="study-acad-row">
+              <span class="study-acad-name"><i data-lucide="book" class="icon-lucide"></i> ${escapeHtml(subj.name)}</span>
+              <span class="study-acad-count">${subjDocs} docs</span>
+              <button class="study-acad-mini" data-acad="add-topic" data-id="${subj.id}" title="Add topic"><i data-lucide="plus" class="icon-lucide"></i></button>
+              <button class="study-acad-del" data-acad="del-subject" data-id="${subj.id}" title="Delete subject">&times;</button>
+            </div>
+            ${topics ? `<div class="study-acad-topics">${topics}</div>` : ''}
+          </div>`;
+      }).join('');
+
+      return `
+        <div class="study-acad-semester">
+          <div class="study-acad-row top">
+            <span class="study-acad-name"><i data-lucide="graduation-cap" class="icon-lucide"></i> ${escapeHtml(sem.name)}</span>
+            <span class="study-acad-count">${semDocs} docs</span>
+            <button class="study-acad-mini" data-acad="add-subject" data-id="${sem.id}" title="Add subject"><i data-lucide="plus" class="icon-lucide"></i></button>
+            <button class="study-acad-del" data-acad="del-semester" data-id="${sem.id}" title="Delete semester">&times;</button>
+          </div>
+          <div class="study-acad-subjects">${subjects || '<div class="study-acad-empty">No subjects yet</div>'}</div>
+        </div>`;
+    }).join('');
+
+    return `<div class="study-academics-manager">${header}<div class="study-acad-tree">${tree}</div></div>`;
   }
 
   function notify(msg) {
@@ -331,7 +1008,42 @@
     wireTabs();
     wireRailSwitch();
     content.addEventListener('click', handleContentClick);
-    if (sidebarPanel) sidebarPanel.addEventListener('click', handleContentClick);
+    content.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const folder = e.target.closest('[data-drive-folder]');
+      if (folder) {
+        e.preventDefault();
+        if (window.driveMode && window.driveMode.openFolder) {
+          window.driveMode.openFolder(folder.dataset.driveFolder);
+        }
+        return;
+      }
+      const card = e.target.closest('.study-doc-card');
+      if (!card) return;
+      e.preventDefault();
+      openDoc(card.dataset.docId);
+    });
+
+    // The sidebar panel is created lazily, so bind via delegation on .sidebar
+    // instead of on the panel element itself.
+    if (sidebar) sidebar.addEventListener('click', handleContentClick);
+
+    // Timer / stopwatch / alarm widget in the study header.
+    const timerHost = document.getElementById('studyTimerHost');
+    if (timerHost && window.studyTimer) window.studyTimer.mount(timerHost);
+
+    // Upload button in the study header
+    const uploadBtn = document.getElementById('studyUploadBtn');
+    if (uploadBtn) uploadBtn.addEventListener('click', pickAndUpload);
+
+    // Refresh the grid when the reader closes (progress / highlights changed)
+    window.addEventListener('study-reader-closed', () => { loadDocs(); });
+
+    // Drive imports add docs — reload the library when one lands.
+    window.addEventListener('study-library-changed', () => { loadDocs(); });
+
+    // A Drive link added/removed changes the folder cards in the library.
+    window.addEventListener('drive-sources-changed', () => { loadDriveFolders().then(() => loadDocs()); });
 
     // Watch body[data-mode] so we react to mode.js switches
     const obs = new MutationObserver(() => syncToMode());
@@ -339,9 +1051,17 @@
 
     // Initial state
     syncToMode();
+    loadFormats();
+    loadDocs();
 
     // expose for other modules
-    window.studyMode = { setTab, getTab: () => activeTab };
+    window.studyMode = {
+      setTab,
+      getTab: () => activeTab,
+      // Lets the Drive module re-draw the sidebar once its async status
+      // arrives, instead of leaving it stuck on "Checking…".
+      refreshSidebar: () => renderSidebar(activeTab),
+    };
   }
 
   if (document.readyState === 'loading') {

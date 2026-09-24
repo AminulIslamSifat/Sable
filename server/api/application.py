@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -37,6 +38,9 @@ from .routes.chat import router as chat_router
 from .routes.misc import router as misc_router
 from .routes.agents import router as agents_router
 from .routes.library import router as library_router
+from .routes.study import router as study_router
+from .routes.study_ai import router as study_ai_router
+from .routes.drive import router as drive_router
 from .routes.email import router as email_router
 from .routes.filesystem import router as filesystem_router
 from .routes.terminal import router as terminal_router
@@ -243,9 +247,25 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
 
 app = FastAPI(title="Sable API", version="0.4.0", lifespan=lifespan)
 
+# CORS: auth is a Bearer header (not a cookie) and credentials are disabled, so
+# a wildcard isn't session-riding. Still, we narrow it to loopback + private
+# LAN ranges (phone access) and allow extra origins via SABLE_CORS_ORIGINS for
+# tunnels / reverse proxies. Multiple entries are comma-separated.
+_EXTRA_CORS_ORIGINS = [
+    o.strip() for o in os.getenv("SABLE_CORS_ORIGINS", "").split(",") if o.strip()
+]
+_LOCAL_ORIGIN_RE = (
+    r"https?://(localhost|127\.0\.0\.1|0\.0\.0\.0"
+    r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+    r"|192\.168\.\d{1,3}\.\d{1,3}"
+    r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})"
+    r"(?::\d+)?"
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_EXTRA_CORS_ORIGINS,
+    allow_origin_regex=_LOCAL_ORIGIN_RE,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -290,6 +310,14 @@ async def auth_middleware(request: Request, call_next):
         path == "/api/logs"
         or path.endswith("/agent-events")
         or path.startswith("/api/research/events/")
+        # OAuth start is a full-page browser navigation, so it can't carry a
+        # Bearer header. Accepting ?token= keeps it authenticated (unlike the
+        # callback, which Google calls directly and is separately exempted).
+        or path == "/api/drive/oauth/start"
+        # Study thumbnails render inside a plain <img src>, which can't set an
+        # Authorization header. The grid appends ?token= so the request still
+        # authenticates (same pattern as oauth/start above).
+        or path.endswith("/thumb")
     ):
         authorized = request.query_params.get("token", "") == _auth_mod.AUTH_TOKEN
     if not authorized:
@@ -326,6 +354,9 @@ app.include_router(chat_router)
 app.include_router(misc_router)
 app.include_router(agents_router)
 app.include_router(library_router)
+app.include_router(study_router)
+app.include_router(study_ai_router)
+app.include_router(drive_router)
 app.include_router(email_router)
 app.include_router(filesystem_router)
 app.include_router(terminal_router)

@@ -67,7 +67,8 @@ def _lock_pid(profile: Path) -> int | None:
         target = os.readlink(lock)
         _, _, pid_str = target.rpartition("-")
         return int(pid_str)
-    except Exception:
+    except (OSError, ValueError) as exc:
+        logger.debug("[hub:%s] unreadable SingletonLock: %s", profile.name, exc)
         return None
 
 
@@ -366,8 +367,9 @@ class ProfileHub:
         if self._marker.exists():
             try:
                 ports.append(int(json.loads(self._marker.read_text())["port"]))
-            except Exception:
-                pass
+            except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+                logger.debug("[hub:%s] marker unreadable, ignoring: %s",
+                             self.profile_dir.name, exc)
         for cp in _cmdline_cdp_ports(holders):
             if cp not in ports:
                 ports.append(cp)
@@ -463,8 +465,11 @@ class ProfileHub:
         # our port and the next process can adopt instead of orphaning.
         try:
             self._marker.write_text(json.dumps({"port": port, "ts": time.time()}))
-        except OSError:
-            pass
+        except OSError as exc:
+            # Non-fatal, but a failed marker write means the next process
+            # can't adopt this browser — worth knowing about.
+            logger.warning("[hub:%s] could not write adopt marker: %s",
+                           self.profile_dir.name, exc)
         self._pw = await async_playwright().start()
         self._context = await self._pw.chromium.launch_persistent_context(
             executable_path=self.helium_bin,
@@ -494,7 +499,10 @@ class ProfileHub:
         page = await self._context.new_page()
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(1500)
+            # Give the SPA time to hydrate auth state (silent token refresh via
+            # cookies). Too short and has_token() polls against an empty
+            # localStorage; too long wastes startup. 3s is a safe middle ground.
+            await page.wait_for_timeout(3000)
         except Exception:
             try:
                 await page.close()

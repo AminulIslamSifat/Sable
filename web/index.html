@@ -59,7 +59,9 @@
   <link rel="stylesheet" href="/static/css/dashboard.css?v=100">
   <link rel="stylesheet" href="/static/css/calendar.css?v=100">
   <link rel="stylesheet" href="/static/css/knowledge.css?v=100">
-  <link rel="stylesheet" href="/static/css/study.css?v=4">
+  <link rel="stylesheet" href="/static/css/study.css?v=7">
+  <link rel="stylesheet" href="/static/css/drive.css?v=1">
+  <link rel="stylesheet" href="/static/css/study-reader.css?v=7">
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v=2">
 
   <link rel="manifest" href="/static/assets/manifest.json">
@@ -151,6 +153,7 @@
           <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;cursor:pointer;"><input type="checkbox" value="gemini_web" checked> Gemini (Web)</label>
           <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;cursor:pointer;"><input type="checkbox" value="zai" checked> GLM (z.ai)</label>
           <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;cursor:pointer;"><input type="checkbox" value="mimo" checked> Xiaomi MiMo</label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;cursor:pointer;"><input type="checkbox" value="mistral_web" checked> Mistral (Web)</label>
         </div>
         <select id="setupBrowserSelect" style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:13px;margin-bottom:10px;">
           <option value="default">Default (Auto-detect)</option>
@@ -639,9 +642,11 @@
         <div class="study-tabs" id="studyTabs">
           <button class="study-tab active" data-study-tab="library"><i data-lucide="book-open" class="icon-lucide"></i> Library</button>
           <button class="study-tab" data-study-tab="rooms"><i data-lucide="users" class="icon-lucide"></i> Rooms</button>
+          <button class="study-tab" data-study-tab="drive"><i data-lucide="hard-drive-download" class="icon-lucide"></i> Drive</button>
           <button class="study-tab" data-study-tab="academics"><i data-lucide="graduation-cap" class="icon-lucide"></i> Academics</button>
         </div>
         <div class="study-header-actions">
+          <div id="studyTimerHost"></div>
           <button class="study-icon-btn" id="studyUploadBtn" title="Upload PDF"><i data-lucide="upload" class="icon-lucide"></i></button>
         </div>
       </div>
@@ -827,6 +832,9 @@
     </button>
     <button class="ctx-item" data-action="refresh-kimi">
       <span class="ctx-icon"><span class="icon-emoji">🌙</span><i data-lucide="moon" class="icon-lucide"></i></span> Kimi
+    </button>
+    <button class="ctx-item" data-action="refresh-mistral-web">
+      <span class="ctx-icon"><span class="icon-emoji">🌬️</span><i data-lucide="wind" class="icon-lucide"></i></span> Mistral (Web)
     </button>
   </div>
 
@@ -1600,6 +1608,7 @@
               <label style="display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer;"><input type="checkbox" value="gemini_web" checked> Gemini (Web)</label>
               <label style="display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer;"><input type="checkbox" value="zai" checked> GLM (z.ai)</label>
               <label style="display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer;"><input type="checkbox" value="mimo" checked> Xiaomi MiMo</label>
+              <label style="display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer;"><input type="checkbox" value="mistral_web" checked> Mistral (Web)</label>
             </div>
           </details>
           <!-- Provider filter buttons -->
@@ -2339,7 +2348,13 @@
   <script src="/static/js/ocr-panel.js?v=1"></script>
   <script src="/static/js/agents.js?v=34"></script>
   <script src="/static/js/filesystem.js?v=32"></script>
-  <script src="/static/js/study.js?v=5"></script>
+  <script src="/static/js/study-timer.js?v=2"></script>
+  <script src="/static/js/study.js?v=12"></script>
+  <script src="/static/js/drive.js?v=1"></script>
+  <!-- Shared Study AI surface (popup + full pane) — loaded before the reader -->
+  <script src="/static/js/study-ai.js?v=3"></script>
+  <!-- ES module: pdf.js 6.x ships .mjs only, so the reader can't be a classic script -->
+  <script type="module" src="/static/js/study-reader.js?v=5"></script>
   <script src="/static/js/mode.js?v=22"></script>
   <script src="/static/js/resize-panels.js?v=3"></script>
   <script src="/static/js/terminal.js?v=9"></script>

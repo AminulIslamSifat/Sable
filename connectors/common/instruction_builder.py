@@ -229,7 +229,17 @@ _TOOL_FORMAT_MIMO = f"""\
 <tool_call><function=execute_command><parameter=command>echo hello</parameter></function></tool_call>
 """
 
-_TOOL_FORMAT_NONE = """\
+
+_TOOL_CHANNEL_MANDATE = """
+## HELPER TOOL:
+The listed tool here are helper tool which you can use to extend your capabilities. 
+These tools run and parse in user machine (other listed tool run in cloud sandbox), so act and response accordingly.
+Use helper tool to work on user machine.
+
+Follow the structure provided in the instruction to call those helper tool.
+"""
+
+_TOOL_FORMAT_NONE = """
 ## Tool Call Format
 
 Tool calls are handled via native API function calling. No prompt-based format needed.
@@ -253,6 +263,7 @@ _PROVIDER_TOOL_FORMATS: dict[str, str] = {
     "zai": _TOOL_FORMAT_QWEN,
     "mimo": _TOOL_FORMAT_MIMO,
     "kimi": _TOOL_FORMAT_QWEN,
+    "mistral_web": _TOOL_FORMAT_QWEN,
     "native": _TOOL_FORMAT_NATIVE,
     "none": _TOOL_FORMAT_NONE,
 }
@@ -508,6 +519,14 @@ def build_instructions(
     # this is the MOST WEIGHTED instruction in the entire prompt.
     if _active_tool_format:
         parts.append(_active_tool_format)
+        # Channel mandate, dead-last: this deployment has no native tool API.
+        # Models with heavy native tool-call pretraining sometimes ignore the
+        # prompt format and emit their own syntax (function_call blocks,
+        # invoke tags, to=functions.* routing); those calls never reach the
+        # host. Naming the failure makes channel exclusivity the final,
+        # heaviest instruction in the prompt.
+        if _active_tool_format not in (_TOOL_FORMAT_NONE, _TOOL_FORMAT_NATIVE):
+            parts.append(_TOOL_CHANNEL_MANDATE)
 
     return "\n\n".join(parts)
 

@@ -1,0 +1,1580 @@
+/**
+ * study-reader.js — full-screen PDF reader for Study mode.
+ *
+ * Layout: fixed overlay (covers the app sidebar too, so the reader owns the
+ * whole viewport). Left panel = page thumbnails / outline / highlights / info.
+ * Main pane = continuously rendered PDF pages with a real text layer, which is
+ * what makes selection + highlighting possible.
+ *
+ * Exposes: window.studyReader = { open(docId), close(), isOpen() }
+ *
+ * Loaded as an ES module (pdf.js 6.x ships .mjs only), so it must stay out of
+ * the classic-script bundle and be wired via <script type="module">.
+ */
+
+import * as pdfjsLib from '/static/vendor/pdfjs/build/pdf.min.mjs';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = '/static/vendor/pdfjs/build/pdf.worker.min.mjs';
+
+const CMAP_URL = '/static/vendor/pdfjs/cmaps/';
+const FONT_URL = '/static/vendor/pdfjs/standard_fonts/';
+
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 3;
+const ZOOM_STEP = 0.15;
+const HIGHLIGHT_COLORS = ['#ffd400', '#7ee787', '#79c0ff', '#ff9ec7', '#ffab70'];
+
+// ── State ────────────────────────────────────────────────────────────────────
+
+let overlay = null;
+let pdfDoc = null;
+let meta = null;        // backend meta record
+let scale = 1.2;
+let currentPage = 1;
+let pageEls = [];       // index 0 = page 1
+let pageObserver = null;
+let thumbObserver = null;
+let rendering = false;
+let renderGen = 0;      // bumps on every renderAllPages rebuild — stale renders bail
+let progressTimer = null;
+let activeSideTab = 'pages';
+let pendingSelection = null;
+let built = false;
+
+// ── AI state ─────────────────────────────────────────────────────────────────
+let aiConfig = null;              // {model, thinking_mode, persona, custom_prompt}
+let aiModels = [];                // [{id,label,thinking_modes}]
+let aiPersonas = [];              // [name, ...]
+let aiController = null;          // AbortController for the active answer stream
+let aiCurrent = null;             // {action, question, scope, page, selection, rects, answer, model}
+let aiNotes = [];                 // saved answers for this doc
+let aiConfigLoaded = false;
+let isRemote = false;   // true when reading a Drive doc not yet in the library
+let lastRemoteSaved = false;  // did the server auto-ingest this remote download?
+
+const AI_ACTION_LABELS = {
+  explain: 'Explain', meaning: 'Meaning', summarize: 'Summarize',
+  define: 'Define', ask: 'Ask', summary: 'Summary',
+  concepts: 'Key concepts', exam: 'Exam questions', glossary: 'Glossary',
+};
+
+// ── Small helpers ────────────────────────────────────────────────────────────
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+function toast(msg, kind) {
+  if (typeof window.showToast === 'function') return window.showToast(msg, kind);
+  console.log('[study-reader]', msg);
+}
+
+function fmtBytes(n) {
+  if (!n) return '0 B';
+  const u = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.min(u.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+  return `${(n / 1024 ** i).toFixed(i ? 1 : 0)} ${u[i]}`;
+}
+
+function debounce(fn, ms) {
+  let t;
+  return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+
+/**
+ * Fetch a URL and render a live progress bar into `host` while it downloads.
+ *
+ * Uses XHR rather than fetch: only XHR exposes byte-level upload/download
+ * progress. Falls back to an indeterminate bar when the server sends no
+ * Content-Length (Drive doesn't always).
+ */
+function downloadWithProgress(url, host) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.responseType = 'arraybuffer';
+
+    // Bypass the global fetch auth wrapper — set the bearer token by hand.
+    const token = localStorage.getItem('sable_token') || '';
+    if (token) xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+
+    let started = false;
+    const paint = (pct, got, total) => {
+      if (!host) return;
+      const known = total > 0;
+      const label = known
+        ? `${fmtBytes(got)} of ${fmtBytes(total)}`
+        : `${fmtBytes(got)} downloaded`;
+      host.innerHTML = `
+        <div class="rdr-dl">
+          <div class="rdr-dl-icon"><i data-lucide="hard-drive-download" class="icon-lucide"></i></div>
+          <div class="rdr-dl-title">Downloading from Drive…</div>
+          <div class="rdr-dl-track${known ? '' : ' indeterminate'}">
+            <div class="rdr-dl-fill" style="width:${known ? pct : 30}%"></div>
+          </div>
+          <div class="rdr-dl-meta">${label}${known ? ` · ${pct}%` : ''}</div>
+        </div>`;
+      if (window.lucide) window.lucide.createIcons();
+    };
+
+    xhr.onprogress = (e) => {
+      started = true;
+      const total = e.lengthComputable ? e.total : 0;
+      const pct = total ? Math.round((e.loaded / total) * 100) : 0;
+      paint(pct, e.loaded, total);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        // The server reports whether it also saved this download to the
+        // library, so the caller knows to refresh the library on close.
+        lastRemoteSaved = xhr.getResponseHeader('X-Drive-Save') === '1';
+        return resolve(xhr.response);
+      }
+      let detail = xhr.statusText;
+      try {
+        detail = JSON.parse(new TextDecoder().decode(xhr.response)).detail || detail;
+      } catch (_) { /* non-JSON error body */ }
+      reject(new Error(detail));
+    };
+    xhr.onerror = () => reject(new Error('network error'));
+    xhr.onabort = () => reject(new Error('download cancelled'));
+    xhr.send();
+    // Paint immediately so the user sees the bar before the first chunk lands.
+    paint(0, 0, 0);
+  });
+}
+
+async function api(path, opts) {
+  // A remote (un-imported) Drive doc has no library record, so every
+  // /api/study/doc/<id>/... write would 404. Swallow them — the doc is
+  // view-only until it's imported.
+  if (isRemote && String(path).startsWith('/api/study/doc/')) {
+    return null;
+  }
+  const res = await fetch(path, opts);          // global fetch injects the bearer token
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch {}
+    throw new Error(detail);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+// ── Build the overlay shell (once) ───────────────────────────────────────────
+
+function build() {
+  if (built) return;
+  built = true;
+
+  overlay = document.createElement('div');
+  overlay.id = 'studyReader';
+  overlay.className = 'rdr hidden';
+  overlay.innerHTML = `
+    <div class="rdr-header">
+      <button class="rdr-btn" id="rdrBack" title="Back to library (Esc)">
+        <i data-lucide="arrow-left" class="icon-lucide"></i>
+      </button>
+      <div class="rdr-title" id="rdrTitle">Document</div>
+      <div class="rdr-docchat" id="rdrDocChat" role="tablist" aria-label="Document or chat">
+        <button class="rdr-docchat-btn active" id="rdrTabDoc" role="tab" aria-selected="true">
+          <i data-lucide="file-text" class="icon-lucide"></i> Doc
+        </button>
+        <button class="rdr-docchat-btn" id="rdrTabChat" role="tab" aria-selected="false">
+          <i data-lucide="message-square" class="icon-lucide"></i> Chat
+        </button>
+      </div>
+      <div class="rdr-spacer"></div>
+      <div class="rdr-pager">
+        <button class="rdr-btn" id="rdrPrev" title="Previous page"><i data-lucide="chevron-left" class="icon-lucide"></i></button>
+        <span class="rdr-pageno"><input id="rdrPageInput" type="text" inputmode="numeric" value="1"> / <span id="rdrPageTotal">1</span></span>
+        <button class="rdr-btn" id="rdrNext" title="Next page"><i data-lucide="chevron-right" class="icon-lucide"></i></button>
+      </div>
+      <div class="rdr-zoom">
+        <button class="rdr-btn" id="rdrZoomOut" title="Zoom out"><i data-lucide="minus" class="icon-lucide"></i></button>
+        <span class="rdr-zoomval" id="rdrZoomVal">120%</span>
+        <button class="rdr-btn" id="rdrZoomIn" title="Zoom in"><i data-lucide="plus" class="icon-lucide"></i></button>
+      </div>
+      <div id="rdrTimerHost"></div>
+      <button class="rdr-btn" id="rdrAi" title="AI settings"><i data-lucide="sparkles" class="icon-lucide"></i></button>
+      <button class="rdr-btn" id="rdrBookmark" title="Bookmark"><i data-lucide="bookmark" class="icon-lucide"></i></button>
+      <button class="rdr-btn" id="rdrDownload" title="Download"><i data-lucide="download" class="icon-lucide"></i></button>
+    </div>
+    <div class="rdr-body">
+      <aside class="rdr-side">
+        <div class="rdr-side-tabs">
+          <button class="rdr-side-tab active" data-rdr-tab="pages"><i data-lucide="layout-grid" class="icon-lucide"></i> Pages</button>
+          <button class="rdr-side-tab" data-rdr-tab="outline"><i data-lucide="list-tree" class="icon-lucide"></i> Outline</button>
+          <button class="rdr-side-tab" data-rdr-tab="notes"><i data-lucide="highlighter" class="icon-lucide"></i> Notes</button>
+          <button class="rdr-side-tab" data-rdr-tab="ai"><i data-lucide="sparkles" class="icon-lucide"></i> AI</button>
+          <button class="rdr-side-tab" data-rdr-tab="info"><i data-lucide="info" class="icon-lucide"></i> Info</button>
+        </div>
+        <div class="rdr-side-panel" id="rdrSidePanel"></div>
+      </aside>
+      <main class="rdr-main" id="rdrMain">
+        <div class="rdr-pages" id="rdrPages"></div>
+      </main>
+      <!-- Study AI pane — swaps with the PDF area via the header Doc/Chat toggle -->
+      <section class="rdr-chatpane hidden" id="rdrChatPane"></section>
+    </div>
+    <div class="rdr-hl-bar hidden" id="rdrHlBar"></div>
+    <!-- Floating Study AI launcher (bottom-right) -->
+    <div class="rdr-ai-launch" id="rdrAiLaunch"></div>
+
+    <!-- AI answer card — full thread, minimal controls (new chat + send) -->
+    <div class="rdr-ai-card hidden" id="rdrAiCard">
+      <div class="rdr-ai-card-head">
+        <span class="rdr-ai-card-title" id="rdrAiCardTitle">AI</span>
+        <span class="rdr-ai-card-model" id="rdrAiCardModel"></span>
+        <div class="rdr-ai-card-spacer"></div>
+        <button class="rdr-ai-card-btn" id="rdrAiSave" title="Save thread"><i data-lucide="bookmark-plus" class="icon-lucide"></i></button>
+        <button class="rdr-ai-card-btn" id="rdrAiNew" title="New chat"><i data-lucide="plus" class="icon-lucide"></i></button>
+        <button class="rdr-ai-card-btn" id="rdrAiClose" title="Close"><i data-lucide="x" class="icon-lucide"></i></button>
+      </div>
+      <div class="rdr-ai-card-body" id="rdrAiCardBody"></div>
+      <div class="rdr-ai-card-foot">
+        <input class="rdr-ai-followup" id="rdrAiFollowup" type="text" placeholder="Ask a follow-up…">
+        <button class="rdr-ai-card-btn" id="rdrAiFollowupSend" title="Send"><i data-lucide="send" class="icon-lucide"></i></button>
+      </div>
+    </div>
+
+    <!-- AI config popover -->
+    <div class="rdr-ai-config hidden" id="rdrAiConfig">
+      <div class="rdr-ai-config-head">
+        <i data-lucide="sparkles" class="icon-lucide"></i>
+        <span>Study AI</span>
+        <div class="rdr-ai-card-spacer"></div>
+        <button class="rdr-ai-card-btn" id="rdrAiConfigClose"><i data-lucide="x" class="icon-lucide"></i></button>
+      </div>
+      <div class="rdr-ai-config-body">
+        <label class="rdr-ai-field">
+          <span>Model</span>
+          <select id="rdrAiModel"></select>
+        </label>
+        <label class="rdr-ai-field">
+          <span>Thinking</span>
+          <select id="rdrAiThinking"></select>
+        </label>
+        <label class="rdr-ai-field">
+          <span>Persona</span>
+          <select id="rdrAiPersona"></select>
+        </label>
+        <label class="rdr-ai-field rdr-ai-field-col">
+          <span>Custom instructions</span>
+          <textarea id="rdrAiCustom" rows="3" placeholder="e.g. answer like I'm 10, use Bangla for explanations…"></textarea>
+        </label>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  // Highlight colour choices in the selection popup
+  const bar = overlay.querySelector('#rdrHlBar');
+  bar.innerHTML =
+    HIGHLIGHT_COLORS.map((c) =>
+      `<button class="rdr-hl-dot" data-rdr-color="${c}" style="background:${c}" title="Highlight"></button>`
+    ).join('') +
+    '<button class="rdr-hl-note" data-rdr-color="note"><i data-lucide="sticky-note" class="icon-lucide"></i></button>' +
+    '<span class="rdr-hl-sep"></span>' +
+    '<button class="rdr-hl-ai" data-rdr-ai="explain"><i data-lucide="sparkles" class="icon-lucide"></i>Explain</button>' +
+    '<button class="rdr-hl-ai" data-rdr-ai="meaning"><i data-lucide="book-open" class="icon-lucide"></i>Meaning</button>' +
+    '<button class="rdr-hl-ai" data-rdr-ai="summarize"><i data-lucide="list" class="icon-lucide"></i>Summarize</button>' +
+    '<button class="rdr-hl-ai" data-rdr-ai="define"><i data-lucide="type" class="icon-lucide"></i>Define</button>' +
+    '<button class="rdr-hl-ai" data-rdr-ai="ask"><i data-lucide="message-circle-question" class="icon-lucide"></i>Ask…</button>' +
+    '<button class="rdr-hl-cancel" id="rdrHlCancel"><i data-lucide="x" class="icon-lucide"></i></button>';
+
+  wire();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+// ── Event wiring ─────────────────────────────────────────────────────────────
+
+function wire() {
+  const $ = (id) => overlay.querySelector(id);
+  const bar = $('#rdrHlBar');
+
+  $("#rdrBack").addEventListener('click', close);
+  $("#rdrPrev").addEventListener('click', () => scrollToPage(currentPage - 1));
+  $("#rdrNext").addEventListener('click', () => scrollToPage(currentPage + 1));
+  $("#rdrZoomIn").addEventListener('click', () => setScale(scale + ZOOM_STEP));
+  $("#rdrZoomOut").addEventListener('click', () => setScale(scale - ZOOM_STEP));
+  $("#rdrBookmark").addEventListener('click', toggleBookmark);
+  $("#rdrDownload").addEventListener('click', () => {
+    if (!meta) return;
+    const a = document.createElement('a');
+    a.href = isRemote
+      ? `/api/drive/file/${encodeURIComponent(meta.id)}/pdf`
+      : `/api/study/doc/${meta.id}/pdf`;
+    a.download = meta.filename || `${meta.title}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+
+  const pageInput = $("#rdrPageInput");
+  pageInput.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const n = parseInt(pageInput.value, 10);
+    if (Number.isFinite(n)) scrollToPage(n);
+    pageInput.blur();
+  });
+  pageInput.addEventListener('blur', () => { pageInput.value = currentPage; });
+
+  overlay.querySelectorAll('.rdr-side-tab').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      activeSideTab = btn.dataset.rdrTab;
+      overlay.querySelectorAll('.rdr-side-tab').forEach((b) =>
+        b.classList.toggle('active', b === btn));
+      renderSidePanel();
+    });
+  });
+
+  // Selection → highlight bar
+  const main = $("#rdrMain");
+  main.addEventListener('mouseup', onSelection);
+  main.addEventListener('scroll', onMainScroll, { passive: true });
+  document.addEventListener('mousedown', (e) => {
+    if (!overlay.classList.contains('hidden') && !bar.contains(e.target)) hideHlBar();
+  });
+
+  bar.addEventListener('click', onHighlightBarClick);
+
+  // Doc/Chat toggle — swaps the PDF area for the Study AI pane.
+  $("#rdrTabDoc").addEventListener('click', () => setReaderTab('doc'));
+  $("#rdrTabChat").addEventListener('click', () => setReaderTab('chat'));
+
+  // AI buttons
+  $("#rdrAi").addEventListener('click', toggleAiConfig);
+  $("#rdrAiConfigClose").addEventListener('click', () => $("#rdrAiConfig").classList.add('hidden'));
+  $("#rdrAiClose").addEventListener('click', closeAiCard);
+  $("#rdrAiSave").addEventListener('click', saveAiNote);
+  $("#rdrAiNew").addEventListener('click', newAiChat);
+  $("#rdrAiFollowupSend").addEventListener('click', sendFollowup);
+  $("#rdrAiFollowup").addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); sendFollowup(); }
+  });
+  $("#rdrAiModel").addEventListener('change', onAiModelChange);
+  $("#rdrAiThinking").addEventListener('change', persistAiConfig);
+  $("#rdrAiPersona").addEventListener('change', persistAiConfig);
+  $("#rdrAiCustom").addEventListener('blur', persistAiConfig);
+
+  document.addEventListener('keydown', onKeydown);
+  window.addEventListener('resize', debounce(() => { if (isOpen()) relayout(); }, 200));
+}
+
+function onKeydown(e) {
+  if (!isOpen()) return;
+  const tag = (e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea') return;
+  if (e.key === 'Escape') {
+    // Escape closes the AI card / config first, then the highlight bar, then the reader.
+    if (!overlay.querySelector('#rdrAiConfig').classList.contains('hidden')) {
+      overlay.querySelector('#rdrAiConfig').classList.add('hidden');
+      return;
+    }
+    if (!overlay.querySelector('#rdrAiCard').classList.contains('hidden')) {
+      closeAiCard();
+      return;
+    }
+    hideHlBar();
+    close();
+    return;
+  }
+  if (e.key === 'ArrowRight' || e.key === 'PageDown') { e.preventDefault(); scrollToPage(currentPage + 1); }
+  if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); scrollToPage(currentPage - 1); }
+}
+
+// ── Open / close ─────────────────────────────────────────────────────────────
+
+/**
+ * open(docId)                    — a library document
+ * open(fileId, { remote: true }) — a Drive file streamed straight from Drive
+ *
+ * Remote mode renders the PDF without importing it: bytes come from
+ * /api/drive/file/<id>/pdf, and every study-library write (progress,
+ * highlights, notes, AI) is skipped since there is no library record yet.
+ */
+async function open(docId, opts) {
+  isRemote = !!(opts && opts.remote);
+  build();
+  overlay.classList.remove('hidden');
+  document.body.classList.add('rdr-open');
+  overlay.querySelector('#rdrPages').innerHTML = '<div class="rdr-loading">Loading document…</div>';
+  overlay.querySelector('#rdrSidePanel').innerHTML = '';
+  teardown();
+
+  if (isRemote) {
+    // Synthesize a meta record so the rest of the viewer works unchanged.
+    meta = {
+      id: docId,
+      title: (opts && opts.title) || 'Drive document',
+      filename: (opts && opts.title) || 'document.pdf',
+      remote: true,
+      progress: { current_page: 1, percent: 0 },
+      highlights: [],
+      outline: [],
+    };
+  } else {
+    try {
+      meta = await api(`/api/study/doc/${docId}`);
+    } catch (err) {
+      overlay.querySelector('#rdrPages').innerHTML =
+        `<div class="rdr-loading rdr-error">Could not load document: ${esc(err.message)}</div>`;
+      return;
+    }
+  }
+
+  // Fetch bytes ourselves so the auth-wrapped fetch applies the bearer token.
+  let buffer;
+  try {
+    if (isRemote) {
+      // Drive files are downloaded on first open. Show real progress — this can
+      // be megabytes, and a dead spinner reads as a hang.
+      const t = encodeURIComponent((opts && opts.title) || 'document.pdf');
+      const src = `/api/drive/file/${encodeURIComponent(docId)}/pdf?title=${t}&save=true`;
+      buffer = await downloadWithProgress(src, overlay.querySelector('#rdrPages'));
+    } else {
+      const res = await fetch(`/api/study/doc/${docId}/pdf`);
+      if (!res.ok) throw new Error(res.statusText);
+      buffer = await res.arrayBuffer();
+    }
+  } catch (err) {
+    overlay.querySelector('#rdrPages').innerHTML =
+      `<div class="rdr-loading rdr-error">Could not fetch PDF: ${esc(err.message)}</div>`;
+    return;
+  }
+
+  try {
+    pdfDoc = await pdfjsLib.getDocument({
+      data: buffer,
+      cMapUrl: CMAP_URL,
+      cMapPacked: true,
+      standardFontDataUrl: FONT_URL,
+    }).promise;
+  } catch (err) {
+    overlay.querySelector('#rdrPages').innerHTML =
+      `<div class="rdr-loading rdr-error">Could not parse PDF: ${esc(err.message)}</div>`;
+    return;
+  }
+
+  meta.pages = pdfDoc.numPages;
+  aiNotes = meta.ai_notes || [];
+  if (!isRemote) loadAiConfig();
+  // Remote docs are view-only — nothing to bookmark or persist yet. Study AI
+  // grounds answers in the library record (progress/text), so it's unavailable
+  // until the doc is imported.
+  for (const sel of ['#rdrBookmark', '#rdrAi', '#rdrDocChat', '#rdrAiLaunch']) {
+    const el = overlay.querySelector(sel);
+    if (el) el.style.display = isRemote ? 'none' : '';
+  }
+  overlay.querySelector('#rdrTitle').textContent = meta.title || 'Document';
+  overlay.querySelector('#rdrTitle').title = meta.title || '';
+  // Fresh AI surfaces for this doc (the context resolves meta lazily).
+  aiPane = null;
+  aiFloat = null;
+  const chatHost = overlay.querySelector('#rdrChatPane');
+  if (chatHost) chatHost.innerHTML = '';
+  const launchHost = overlay.querySelector('#rdrAiLaunch');
+  if (launchHost) launchHost.innerHTML = '';
+  setReaderTab('doc');
+  if (window.studyAI && !isRemote) {
+    window.studyAI.loadModels(aiContext(overlay));
+    // Mount the floating launcher now that the shell exists.
+    ensureAiFloat();
+  }
+  // Timer / stopwatch / alarm widget in the reader header (available for any
+  // doc, remote or not).
+  const timerHost = overlay.querySelector('#rdrTimerHost');
+  if (timerHost && window.studyTimer && !timerHost.dataset.mounted) {
+    timerHost.dataset.mounted = '1';
+    window.studyTimer.mount(timerHost);
+  }
+  overlay.querySelector('#rdrPageTotal').textContent = pdfDoc.numPages;
+  overlay.querySelector('#rdrZoomVal').textContent = Math.round(scale * 100) + '%';
+  overlay.querySelector('#rdrBookmark').classList.toggle('active', !!meta.bookmarked);
+
+  await renderAllPages();
+  renderSidePanel();
+
+  const start = (meta.progress && meta.progress.current_page) || 1;
+  requestAnimationFrame(() => scrollToPage(start, false));
+}
+
+function close() {
+  if (!overlay) return;
+  overlay.classList.add('hidden');
+  document.body.classList.remove('rdr-open');
+  hideHlBar();
+  teardown();
+  const wasRemote = isRemote;
+  const savedRemote = wasRemote && lastRemoteSaved;
+  isRemote = false;
+  lastRemoteSaved = false;
+  if (!wasRemote) {
+    window.dispatchEvent(new CustomEvent('study-reader-closed'));
+  } else if (savedRemote) {
+    // A remote Drive doc is auto-ingested server-side while it streams
+    // (X-Drive-Save). That just added/changed a library entry, so tell the
+    // library to reload — otherwise the new doc only appears after a restart.
+    window.dispatchEvent(new CustomEvent('study-library-changed'));
+  }
+}
+
+function teardown() {
+  if (pageObserver) { pageObserver.disconnect(); pageObserver = null; }
+  if (thumbObserver) { thumbObserver.disconnect(); thumbObserver = null; }
+  if (pdfDoc) { try { pdfDoc.destroy(); } catch {} pdfDoc = null; }
+  if (aiController) { try { aiController.abort(); } catch {} aiController = null; }
+  pageCache.clear();
+  pageEls = [];
+  pendingSelection = null;
+  aiCurrent = null;
+  aiNotes = [];
+  rendering = false;
+  // AI pane/popup are per-document; drop them so the next open rebuilds.
+  if (aiPane && aiPane.view && aiPane.view.dispose) { try { aiPane.view.dispose(); } catch {} }
+  if (aiFloat && aiFloat.getView && aiFloat.getView()) {
+    const v = aiFloat.getView();
+    if (v && v.dispose) { try { v.dispose(); } catch {} }
+  }
+  aiPane = null;
+  aiFloat = null;
+}
+
+function isOpen() {
+  return !!overlay && !overlay.classList.contains('hidden');
+}
+
+// ── Page rendering ───────────────────────────────────────────────────────────
+
+// pdf.js hands back a fresh PDFPageProxy per getPage() call, but they're cheap
+// to hold and re-fetching churns the worker. Cache per document load.
+const pageCache = new Map();
+
+async function getPage(n) {
+  let p = pageCache.get(n);
+  if (!p) {
+    p = await pdfDoc.getPage(n);
+    pageCache.set(n, p);
+  }
+  return p;
+}
+
+async function renderAllPages() {
+  const gen = ++renderGen;
+  // Tear down the previous observer; otherwise the old one keeps firing
+  // renderPage on detached nodes after a zoom rebuild.
+  if (pageObserver) {
+    pageObserver.disconnect();
+    pageObserver = null;
+  }
+
+  const host = overlay.querySelector('#rdrPages');
+  host.innerHTML = '';
+  pageEls = [];
+
+  // Placeholder geometry from page 1 only. Awaiting getPage() for every page
+  // here serialises N round-trips into the worker and stalls the whole reader
+  // on large documents — the real viewport is applied lazily in renderPage().
+  const first = await getPage(1);
+  if (gen !== renderGen) return;  // a newer rebuild superseded this one
+  const vp0 = first.getViewport({ scale });
+  const w = Math.floor(vp0.width);
+  const h = Math.floor(vp0.height);
+
+  const frag = document.createDocumentFragment();
+  for (let n = 1; n <= pdfDoc.numPages; n++) {
+    const el = document.createElement('div');
+    el.className = 'rdr-page';
+    el.dataset.page = String(n);
+    el.style.width = `${w}px`;
+    el.style.height = `${h}px`;
+    el.innerHTML = `
+      <canvas class="rdr-canvas"></canvas>
+      <div class="rdr-text-layer"></div>
+      <div class="rdr-hl-layer"></div>
+      <div class="rdr-ai-layer"></div>
+      <div class="rdr-page-num">${n}</div>
+    `;
+    frag.appendChild(el);
+    pageEls.push({ n, el, rendered: false });
+  }
+  host.appendChild(frag);
+
+  layoutHighlights();
+  layoutAiNotes();
+
+  // Render only what's near the viewport.
+  const main = overlay.querySelector('#rdrMain');
+  pageObserver = new IntersectionObserver((entries) => {
+    if (gen !== renderGen) return;  // stale observer from an older layout
+    for (const entry of entries) {
+      const n = parseInt(entry.target.dataset.page, 10);
+      if (entry.isIntersecting) {
+        renderPage(n);
+        if (n !== currentPage) setCurrentPage(n);
+      }
+    }
+  }, { root: main, rootMargin: '600px 0px', threshold: 0.01 });
+  pageEls.forEach((p) => pageObserver.observe(p.el));
+}
+
+async function renderPage(n) {
+  const rec = pageEls[n - 1];
+  if (!rec || rec.rendered) return;
+  rec.rendered = true;
+  const gen = renderGen;
+
+  const page = await getPage(n);
+  if (gen !== renderGen) return;  // layout changed while we were fetching
+  const canvas = rec.el.querySelector('.rdr-canvas');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const viewport = page.getViewport({ scale });
+
+  // Correct the placeholder size now that the true viewport is known.
+  rec.el.style.width = `${Math.floor(viewport.width)}px`;
+  rec.el.style.height = `${Math.floor(viewport.height)}px`;
+
+  canvas.width = Math.floor(viewport.width * dpr);
+  canvas.height = Math.floor(viewport.height * dpr);
+  canvas.style.width = `${Math.floor(viewport.width)}px`;
+  canvas.style.height = `${Math.floor(viewport.height)}px`;
+
+  try {
+    await page.render({
+      canvasContext: ctx,
+      viewport,
+      transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null,
+    }).promise;
+  } catch {
+    return;
+  }
+
+  await renderTextLayer(rec, page, viewport);
+  layoutHighlights();
+  layoutAiNotes();
+}
+
+async function renderTextLayer(rec, page, viewport) {
+  const container = rec.el.querySelector('.rdr-text-layer');
+  // Cancel any in-flight layer before wiping — two renders into one container
+  // leaves duplicated spans and broken selection geometry.
+  if (rec.textLayer) { try { rec.textLayer.cancel(); } catch {} rec.textLayer = null; }
+  container.innerHTML = '';
+  // pdf.js positions text spans using these CSS vars — both are needed across v5/v6.
+  rec.el.style.setProperty('--scale-factor', String(scale));
+  rec.el.style.setProperty('--total-scale-factor', String(scale));
+  container.style.setProperty('--scale-factor', String(scale));
+  container.style.setProperty('--total-scale-factor', String(scale));
+  container.style.width = `${Math.floor(viewport.width)}px`;
+  container.style.height = `${Math.floor(viewport.height)}px`;
+
+  try {
+    const textContent = await page.getTextContent();
+    const layer = new pdfjsLib.TextLayer({
+      textContentSource: textContent,
+      container,
+      viewport,
+    });
+    await layer.render();
+    rec.textLayer = layer;
+  } catch (err) {
+    console.warn('[study-reader] text layer failed', err);
+  }
+}
+
+// ── Zoom / relayout ──────────────────────────────────────────────────────────
+
+function setScale(next) {
+  const clamped = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, next));
+  if (Math.abs(clamped - scale) < 0.001) return;
+  const anchorPage = currentPage;
+  scale = clamped;
+  overlay.querySelector('#rdrZoomVal').textContent = Math.round(scale * 100) + '%';
+
+  // renderAllPages() resets every page's `rendered` flag and re-observes, so
+  // the IntersectionObserver re-rasterises the visible pages itself. Resetting
+  // the flags again here raced the observer into double-rendering (flicker).
+  renderAllPages().then(() => requestAnimationFrame(() => scrollToPage(anchorPage, false)));
+}
+
+function relayout() {
+  if (!pdfDoc) return;
+  const anchor = currentPage;
+  renderAllPages().then(() => requestAnimationFrame(() => scrollToPage(anchor, false)));
+}
+
+// ── Navigation ───────────────────────────────────────────────────────────────
+
+function scrollToPage(n, smooth = true) {
+  const target = Math.max(1, Math.min(n, pageEls.length));
+  const rec = pageEls[target - 1];
+  if (!rec) return;
+  const main = overlay.querySelector('#rdrMain');
+  const top = rec.el.offsetTop - 16;
+  main.scrollTo({ top, behavior: smooth ? 'smooth' : 'auto' });
+  setCurrentPage(target);
+}
+
+function setCurrentPage(n) {
+  if (n === currentPage) return;
+  currentPage = n;
+  overlay.querySelector('#rdrPageInput').value = n;
+  renderThumbActive();
+  scheduleProgress();
+}
+
+function onMainScroll() {
+  hideHlBar();
+}
+
+function scheduleProgress() {
+  if (!meta) return;
+  clearTimeout(progressTimer);
+  progressTimer = setTimeout(async () => {
+    const total = pageEls.length || 1;
+    const percent = Math.round(((currentPage - 1) / total) * 100);
+    meta.progress = { current_page: currentPage, percent };
+    try {
+      await api(`/api/study/doc/${meta.id}/progress`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ current_page: currentPage, percent }),
+      });
+    } catch { /* progress is best-effort */ }
+  }, 700);
+}
+
+async function toggleBookmark() {
+  if (!meta) return;
+  try {
+    const r = await api(`/api/study/doc/${meta.id}/bookmark`, { method: 'POST' });
+    meta.bookmarked = r.bookmarked;
+    overlay.querySelector('#rdrBookmark').classList.toggle('active', !!r.bookmarked);
+    toast(r.bookmarked ? 'Bookmarked' : 'Bookmark removed', 'success');
+  } catch (err) {
+    toast('Bookmark failed: ' + err.message, 'error');
+  }
+}
+
+// ── Sidebar ──────────────────────────────────────────────────────────────────
+
+function renderSidePanel() {
+  const host = overlay.querySelector('#rdrSidePanel');
+  if (!meta) { host.innerHTML = ''; return; }
+
+  if (activeSideTab === 'pages') return renderThumbs(host);
+  if (activeSideTab === 'outline') return renderOutline(host);
+  if (activeSideTab === 'notes') return renderHighlights(host);
+  if (activeSideTab === 'ai') return renderAiPanel(host);
+  return renderInfo(host);
+}
+
+// ── AI side panel ────────────────────────────────────────────────────────────
+
+function renderAiPanel(host) {
+  const notes = aiNotes.slice().sort((a, b) => (a.page || 0) - (b.page || 0) || a.created - b.created);
+  host.innerHTML = `
+    <div class="rdr-ai-panel">
+      <div class="rdr-ai-actions">
+        <button class="rdr-ai-action" data-ai-doc="summary"><i data-lucide="file-text" class="icon-lucide"></i>Summarize doc</button>
+        <button class="rdr-ai-action" data-ai-doc="concepts"><i data-lucide="lightbulb" class="icon-lucide"></i>Key concepts</button>
+        <button class="rdr-ai-action" data-ai-doc="exam"><i data-lucide="graduation-cap" class="icon-lucide"></i>Exam questions</button>
+        <button class="rdr-ai-action" data-ai-doc="glossary"><i data-lucide="book-a" class="icon-lucide"></i>Glossary</button>
+        <button class="rdr-ai-action" data-ai-page="1"><i data-lucide="file-search" class="icon-lucide"></i>Summarize this page</button>
+      </div>
+      <div class="rdr-ai-notes-title">Saved answers (${notes.length})</div>
+      <div class="rdr-ai-notes">
+        ${notes.length ? notes.map((n) => `
+          <div class="rdr-ai-note" data-page="${n.page}" data-note="${n.id}">
+            <div class="rdr-ai-note-top">
+              <span class="rdr-ai-note-badge">${esc(AI_ACTION_LABELS[n.action] || n.action)}</span>
+              <span class="rdr-ai-note-page">${n.page ? 'p.' + n.page : 'doc'}</span>
+              <button class="rdr-hl-del" data-del-ai="${n.id}" title="Delete"><i data-lucide="trash-2" class="icon-lucide"></i></button>
+            </div>
+            <div class="rdr-ai-note-q">${esc((n.question || n.text || '').slice(0, 140))}</div>
+            <button class="rdr-ai-note-view" data-view-ai="${n.id}"><i data-lucide="eye" class="icon-lucide"></i>View answer</button>
+          </div>`).join('')
+          : '<div class="rdr-empty">No saved answers yet.<br><span>Select text and pick an AI action, then hit save.</span></div>'}
+      </div>
+    </div>`;
+
+  host.querySelectorAll('[data-ai-doc]').forEach((b) =>
+    b.addEventListener('click', () => runAi({ action: b.dataset.aiDoc, scope: 'doc' })));
+  host.querySelectorAll('[data-ai-page]').forEach((b) =>
+    b.addEventListener('click', () => runAi({ action: 'summarize', scope: 'page', page: currentPage })));
+  host.querySelectorAll('[data-view-ai]').forEach((b) =>
+    b.addEventListener('click', (e) => { e.stopPropagation(); viewSavedNote(b.dataset.viewAi); }));
+  host.querySelectorAll('[data-del-ai]').forEach((b) =>
+    b.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        await api(`/api/study/doc/${meta.id}/notes/${b.dataset.delAi}`, { method: 'DELETE' });
+        aiNotes = aiNotes.filter((n) => n.id !== b.dataset.delAi);
+        meta.ai_notes = aiNotes;
+        layoutAiNotes();
+        renderAiPanel(host);
+        if (window.lucide) window.lucide.createIcons();
+      } catch (err) { toast('Delete failed: ' + err.message, 'error'); }
+    }));
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function renderThumbs(host) {
+  host.innerHTML = `<div class="rdr-thumbs" id="rdrThumbs">${pageEls.map((p) => `
+    <button class="rdr-thumb" data-page="${p.n}">
+      <canvas class="rdr-thumb-canvas" width="120" height="160"></canvas>
+      <span class="rdr-thumb-num">${p.n}</span>
+    </button>`).join('')}</div>`;
+
+  host.querySelectorAll('.rdr-thumb').forEach((btn) => {
+    btn.addEventListener('click', () => scrollToPage(parseInt(btn.dataset.page, 10)));
+  });
+
+  const scroller = host.querySelector('#rdrThumbs');
+  thumbObserver = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (e.isIntersecting) drawThumb(parseInt(e.target.dataset.page, 10));
+    }
+  }, { root: scroller, rootMargin: '200px 0px' });
+  host.querySelectorAll('.rdr-thumb').forEach((b) => thumbObserver.observe(b));
+  renderThumbActive();
+}
+
+async function drawThumb(n) {
+  const btn = overlay.querySelector(`.rdr-thumb[data-page="${n}"]`);
+  if (!btn || btn.dataset.drawn === '1') return;
+  btn.dataset.drawn = '1';
+  try {
+    const page = await getPage(n);
+    const canvas = btn.querySelector('canvas');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    const base = page.getViewport({ scale: 1 });
+    const s = Math.min(120 / base.width, 160 / base.height);
+    const vp = page.getViewport({ scale: s });
+    canvas.width = Math.floor(vp.width);
+    canvas.height = Math.floor(vp.height);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  } catch { /* ignore */ }
+}
+
+function renderThumbActive() {
+  overlay.querySelectorAll('.rdr-thumb').forEach((b) =>
+    b.classList.toggle('active', parseInt(b.dataset.page, 10) === currentPage));
+  const active = overlay.querySelector('.rdr-thumb.active');
+  if (active && active.scrollIntoView) active.scrollIntoView({ block: 'nearest' });
+}
+
+function renderOutline(host) {
+  const outline = meta.outline || [];
+  if (!outline.length) {
+    host.innerHTML = '<div class="rdr-empty">This PDF has no outline.</div>';
+    return;
+  }
+  host.innerHTML = `<div class="rdr-outline">${outline.map((o) => `
+    <button class="rdr-outline-item" data-page="${o.page}" style="padding-left:${8 + (o.level - 1) * 12}px">
+      ${esc(o.title)}
+    </button>`).join('')}</div>`;
+  host.querySelectorAll('.rdr-outline-item').forEach((b) =>
+    b.addEventListener('click', () => scrollToPage(parseInt(b.dataset.page, 10))));
+}
+
+function renderHighlights(host) {
+  const hls = (meta.highlights || []).slice().sort((a, b) => a.page - b.page || a.created - b.created);
+  if (!hls.length) {
+    host.innerHTML = '<div class="rdr-empty">No highlights yet.<br><span>Select text in the document to add one.</span></div>';
+    return;
+  }
+  host.innerHTML = `<div class="rdr-hl-list">${hls.map((h) => `
+    <div class="rdr-hl-item" data-page="${h.page}" data-hl="${h.id}">
+      <div class="rdr-hl-top">
+        <span class="rdr-hl-swatch" style="background:${esc(h.color)}"></span>
+        <span class="rdr-hl-page">Page ${h.page}</span>
+        <button class="rdr-hl-del" data-del="${h.id}" title="Delete"><i data-lucide="trash-2" class="icon-lucide"></i></button>
+      </div>
+      <div class="rdr-hl-text">${esc(h.text || '(no text)')}</div>
+      ${h.note ? `<div class="rdr-hl-note">${esc(h.note)}</div>` : ''}
+    </div>`).join('')}</div>`;
+
+  host.querySelectorAll('.rdr-hl-item').forEach((el) =>
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('[data-del]')) return;
+      scrollToPage(parseInt(el.dataset.page, 10));
+    }));
+  host.querySelectorAll('[data-del]').forEach((b) =>
+    b.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = b.dataset.del;
+      try {
+        await api(`/api/study/doc/${meta.id}/highlights/${id}`, { method: 'DELETE' });
+        meta.highlights = (meta.highlights || []).filter((h) => h.id !== id);
+        renderHighlights(host);
+        layoutHighlights();
+        if (window.lucide) window.lucide.createIcons();
+      } catch (err) {
+        toast('Delete failed: ' + err.message, 'error');
+      }
+    }));
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function renderInfo(host) {
+  const p = meta.progress || {};
+  const added = meta.added ? new Date(meta.added * 1000).toLocaleString() : '—';
+  host.innerHTML = `
+    <div class="rdr-info">
+      <div class="rdr-info-title">${esc(meta.title || '')}</div>
+      <div class="rdr-info-grid">
+        <span>Pages</span><b>${meta.pages || 0}</b>
+        <span>Size</span><b>${fmtBytes(meta.size)}</b>
+        <span>Added</span><b>${esc(added)}</b>
+        <span>Progress</span><b>${p.percent || 0}%</b>
+        <span>Highlights</span><b>${(meta.highlights || []).length}</b>
+        <span>Bookmarked</span><b>${meta.bookmarked ? 'Yes' : 'No'}</b>
+      </div>
+      <div class="rdr-info-file">${esc(meta.filename || '')}</div>
+    </div>`;
+}
+
+// ── Selection & highlighting ─────────────────────────────────────────────────
+
+function onSelection() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return hideHlBar();
+
+  const range = sel.getRangeAt(0);
+  const text = sel.toString().trim();
+  if (!text) return hideHlBar();
+
+  let node = range.startContainer;
+  if (node.nodeType === 3) node = node.parentNode;
+  const pageEl = node.closest && node.closest('.rdr-page');
+  if (!pageEl) return hideHlBar();
+
+  const pageRect = pageEl.getBoundingClientRect();
+  const rects = Array.from(range.getClientRects())
+    .filter((r) => r.width > 0 && r.height > 0)
+    .map((r) => ({
+      x: (r.left - pageRect.left) / pageRect.width,
+      y: (r.top - pageRect.top) / pageRect.height,
+      w: r.width / pageRect.width,
+      h: r.height / pageRect.height,
+    }))
+    // Drop rects that fall outside this page (multi-page selections).
+    .filter((r) => r.y > -0.02 && r.y < 1.02 && r.w > 0 && r.h > 0);
+
+  if (!rects.length) return hideHlBar();
+
+  pendingSelection = {
+    page: parseInt(pageEl.dataset.page, 10),
+    rects,
+    text: text.slice(0, 2000),
+    anchor: rects[rects.length - 1],
+    pageRect,
+  };
+  showHlBar(pendingSelection);
+}
+
+function showHlBar(sel) {
+  const bar = overlay.querySelector('#rdrHlBar');
+  bar.classList.remove('hidden');
+  // Icons first — swapping <i> for SVGs changes the bar's real size.
+  if (window.lucide) window.lucide.createIcons();
+  const a = sel.anchor;
+  const x = sel.pageRect.left + (a.x + a.w / 2) * sel.pageRect.width;
+  const y = sel.pageRect.top + a.y * sel.pageRect.height;
+  const bottom = sel.pageRect.top + (a.y + a.h) * sel.pageRect.height;
+  // Measure the bar instead of guessing: with the AI buttons it's much wider
+  // than the old 220px constant and used to run off the window's right edge.
+  const bw = bar.offsetWidth || 220;
+  const bh = bar.offsetHeight || 40;
+  bar.style.left = `${Math.max(8, Math.min(window.innerWidth - bw - 8, x - bw / 2))}px`;
+  // Sit above the selection; flip below it when there's no headroom.
+  let top = y - bh - 10;
+  if (top < 8) top = bottom + 10;
+  bar.style.top = `${Math.max(8, Math.min(top, window.innerHeight - bh - 8))}px`;
+}
+
+function hideHlBar() {
+  if (!overlay) return;
+  const bar = overlay.querySelector('#rdrHlBar');
+  if (bar) bar.classList.add('hidden');
+  pendingSelection = null;
+}
+
+async function onHighlightBarClick(e) {
+  if (e.target.closest('#rdrHlCancel')) {
+    hideHlBar();
+    window.getSelection()?.removeAllRanges();
+    return;
+  }
+
+  // AI action buttons (Explain / Meaning / Summarize / Define / Ask…)
+  const aiBtn = e.target.closest('[data-rdr-ai]');
+  if (aiBtn) {
+    if (!pendingSelection) return;
+    const action = aiBtn.dataset.rdrAi;
+    const sel = pendingSelection;
+    hideHlBar();
+    window.getSelection()?.removeAllRanges();
+    runAi({
+      action,
+      scope: 'selection',
+      page: sel.page,
+      selection: sel.text,
+      rects: sel.rects,
+    });
+    return;
+  }
+
+  const btn = e.target.closest('[data-rdr-color]');
+  if (!btn || !pendingSelection || !meta) return;
+
+  const isNote = btn.dataset.rdrColor === 'note';
+  let note = '';
+  if (isNote) {
+    note = window.prompt('Note for this highlight:') || '';
+    if (!note.trim()) return hideHlBar();
+  }
+
+  const payload = {
+    page: pendingSelection.page,
+    rects: pendingSelection.rects,
+    color: isNote ? '#79c0ff' : btn.dataset.rdrColor,
+    text: pendingSelection.text,
+    note,
+  };
+
+  try {
+    const saved = await api(`/api/study/doc/${meta.id}/highlights`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    meta.highlights = meta.highlights || [];
+    meta.highlights.push(saved);
+    layoutHighlights();
+    if (activeSideTab === 'notes') renderSidePanel();
+    toast('Highlight saved', 'success');
+  } catch (err) {
+    toast('Highlight failed: ' + err.message, 'error');
+  }
+  hideHlBar();
+  window.getSelection()?.removeAllRanges();
+}
+
+function layoutHighlights() {
+  if (!meta || !pageEls.length) return;
+  const byPage = {};
+  for (const h of meta.highlights || []) {
+    (byPage[h.page] = byPage[h.page] || []).push(h);
+  }
+  pageEls.forEach((rec) => {
+    const layer = rec.el.querySelector('.rdr-hl-layer');
+    if (!layer) return;
+    layer.innerHTML = '';
+    for (const h of byPage[rec.n] || []) {
+      for (const r of h.rects || []) {
+        const d = document.createElement('div');
+        d.className = 'rdr-hl';
+        d.style.left = `${r.x * 100}%`;
+        d.style.top = `${r.y * 100}%`;
+        d.style.width = `${r.w * 100}%`;
+        d.style.height = `${r.h * 100}%`;
+        d.style.background = h.color;
+        d.title = h.note ? `${h.text}\n\nNote: ${h.note}` : h.text;
+        layer.appendChild(d);
+      }
+    }
+  });
+}
+
+// ── AI: on-page answer pins ──────────────────────────────────────────────────
+// Saved answers don't clutter the document — each one leaves a small sparkle
+// marker on the page. Press it to reopen the answer; press elsewhere to ignore.
+function layoutAiNotes() {
+  if (!meta || !pageEls.length) return;
+  const byPage = {};
+  for (const n of aiNotes) {
+    if (n.page) (byPage[n.page] = byPage[n.page] || []).push(n);
+  }
+  pageEls.forEach((rec) => {
+    const layer = rec.el.querySelector('.rdr-ai-layer');
+    if (!layer) return;
+    layer.innerHTML = '';
+    // Pins live in the page's right margin so they never sit on the text they
+    // belong to. The page clips its overflow, so placement is computed in px
+    // against the real page box and clamped inside it — a pin can't be cut
+    // off at any edge, at any zoom. Multiple pins stack down the margin.
+    const notes = (byPage[rec.n] || []).slice().sort((a, b) =>
+      ((a.rects && a.rects[0] ? a.rects[0].y : 0.03) - (b.rects && b.rects[0] ? b.rects[0].y : 0.03)));
+    const PW = rec.el.clientWidth || 1;
+    const PH = rec.el.clientHeight || 1;
+    const PIN = 20, PAD = 4, STEP = 23;
+    const x = Math.max(PAD, PW - PIN - PAD);
+    let prevY = -Infinity;
+    notes.forEach((note) => {
+      const anchor = (note.rects && note.rects[0]) || { y: 0.03 };
+      // Centre on the anchor's line, then push clear of the previous pin.
+      let y = anchor.y * PH - PIN / 2;
+      y = Math.max(PAD, Math.min(y, PH - PIN - PAD));
+      if (y < prevY + STEP) y = Math.min(prevY + STEP, PH - PIN - PAD);
+      prevY = y;
+      const pin = document.createElement('button');
+      pin.className = 'rdr-ai-pin';
+      pin.style.left = `${x}px`;
+      pin.style.top = `${y}px`;
+      pin.title = `${AI_ACTION_LABELS[note.action] || 'AI'} — press to view`;
+      pin.innerHTML = '<i data-lucide="sparkles" class="icon-lucide"></i>';
+      pin.addEventListener('click', (e) => { e.stopPropagation(); viewSavedNote(note.id); });
+      layer.appendChild(pin);
+    });
+  });
+  if (window.lucide) window.lucide.createIcons({ nodes: overlay.querySelectorAll('.rdr-ai-layer [data-lucide]') });
+}
+
+// ── AI: config ───────────────────────────────────────────────────────────────
+
+async function loadAiConfig(force = false) {
+  if (aiConfigLoaded && !force) return;
+  try {
+    const [cfg, modelsRes, personasRes] = await Promise.all([
+      api('/api/study/ai/config'),
+      api('/api/study/ai/models'),
+      api('/api/study/ai/personas'),
+    ]);
+    aiConfig = cfg;
+    aiModels = modelsRes.models || [];
+    aiPersonas = personasRes.personas || [];
+    aiConfigLoaded = true;
+    fillAiConfigForm();
+  } catch (err) {
+    console.warn('[study-reader] ai config load failed', err);
+  }
+}
+
+function fillAiConfigForm() {
+  const modelSel = overlay.querySelector('#rdrAiModel');
+  const personaSel = overlay.querySelector('#rdrAiPersona');
+  const custom = overlay.querySelector('#rdrAiCustom');
+  if (!modelSel || !aiConfig) return;
+
+  modelSel.innerHTML = aiModels.map((m) =>
+    `<option value="${esc(m.id)}"${m.id === aiConfig.model ? ' selected' : ''}>${esc(m.label)}</option>`).join('');
+  fillThinkingOptions();
+
+  personaSel.innerHTML = '<option value="">Default</option>' +
+    aiPersonas.map((p) => `<option value="${esc(p)}"${p === aiConfig.persona ? ' selected' : ''}>${esc(p)}</option>`).join('');
+
+  custom.value = aiConfig.custom_prompt || '';
+}
+
+function fillThinkingOptions() {
+  const thinkSel = overlay.querySelector('#rdrAiThinking');
+  const m = aiModels.find((x) => x.id === aiConfig.model) || aiModels[0];
+  const modes = (m && m.thinking_modes) || [];
+  thinkSel.innerHTML = modes.map((t) =>
+    `<option value="${esc(t.id)}"${t.id === aiConfig.thinking_mode ? ' selected' : ''}>${esc(t.label)}</option>`).join('');
+  // Fall back to the model's first mode when the saved one isn't supported.
+  if (modes.length && !modes.some((t) => t.id === aiConfig.thinking_mode)) {
+    aiConfig.thinking_mode = modes[0].id;
+    thinkSel.value = modes[0].id;
+  }
+}
+
+async function persistAiConfig() {
+  if (!aiConfig) return;
+  aiConfig.model = overlay.querySelector('#rdrAiModel').value;
+  aiConfig.thinking_mode = overlay.querySelector('#rdrAiThinking').value;
+  aiConfig.persona = overlay.querySelector('#rdrAiPersona').value;
+  aiConfig.custom_prompt = overlay.querySelector('#rdrAiCustom').value;
+  try {
+    await api('/api/study/ai/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(aiConfig),
+    });
+  } catch (err) { toast('Could not save AI config: ' + err.message, 'error'); }
+}
+
+function onAiModelChange() {
+  if (!aiConfig) return;
+  aiConfig.model = overlay.querySelector('#rdrAiModel').value;
+  aiConfig.thinking_mode = '';
+  fillThinkingOptions();
+  persistAiConfig();
+}
+
+function toggleAiConfig() {
+  const pop = overlay.querySelector('#rdrAiConfig');
+  const opening = pop.classList.contains('hidden');
+  pop.classList.toggle('hidden', !opening);
+  if (opening) {
+    loadAiConfig().then(fillAiConfigForm);
+    if (window.lucide) window.lucide.createIcons();
+  }
+}
+
+// ── AI: running an answer ────────────────────────────────────────────────────
+
+function runAi({ action, scope, page = 0, selection = '', rects = null, question = '' }) {
+  if (!meta) return;
+  if (action === 'ask' && !question) {
+    question = window.prompt('Ask about this document:') || '';
+    if (!question.trim()) return;
+  }
+
+  // A new action starts a fresh thread; the selection/scope anchor every turn
+  // in it so follow-ups keep the same document grounding.
+  const userText = question || AI_ACTION_LABELS[action] || action;
+  aiCurrent = {
+    action, scope, page, selection, rects, question,
+    model: aiConfig?.model || '',
+    turns: [{ role: 'user', content: userText }],
+    answer: '',
+  };
+
+  const card = overlay.querySelector('#rdrAiCard');
+  card.classList.remove('hidden');
+  overlay.querySelector('#rdrAiCardTitle').textContent = AI_ACTION_LABELS[action] || 'AI';
+  overlay.querySelector('#rdrAiCardModel').textContent = aiConfig?.model || '';
+  overlay.querySelector('#rdrAiFollowup').value = '';
+  renderAiThread();
+  if (window.lucide) window.lucide.createIcons();
+
+  streamAi();
+}
+
+/** Render every turn (user + assistant) plus the in-flight assistant answer. */
+function renderAiThread(streamingText) {
+  const body = overlay.querySelector('#rdrAiCardBody');
+  if (!aiCurrent) { body.innerHTML = ''; return; }
+  const turns = aiCurrent.turns || [];
+  const parts = turns.map((t) => {
+    if (t.role === 'user') {
+      return `<div class="rdr-ai-turn rdr-ai-turn-user"><div class="rdr-ai-bubble">${esc(t.content)}</div></div>`;
+    }
+    return `<div class="rdr-ai-turn rdr-ai-turn-ai"><div class="rdr-ai-bubble">${renderAiAnswerHtml(t.content || '')}</div></div>`;
+  });
+  if (streamingText != null) {
+    parts.push(`<div class="rdr-ai-turn rdr-ai-turn-ai"><div class="rdr-ai-bubble">${renderAiAnswerHtml(streamingText) || '<span class="rdr-ai-spinner"></span>'}</div></div>`);
+  }
+  body.innerHTML = parts.join('');
+  typesetAiBody(body);
+}
+
+function renderAiAnswerHtml(text) {
+  if (!text) return '';
+  if (typeof window.renderMarkdown === 'function') {
+    try { return window.renderMarkdown(text); } catch { /* fall through */ }
+  }
+  return `<div class="rdr-ai-plain">${esc(text)}</div>`;
+}
+
+function typesetAiBody(body) {
+  if (window.lucide) window.lucide.createIcons({ nodes: body.querySelectorAll('[data-lucide]') });
+  if (window.MathJax && MathJax.typesetPromise) {
+    MathJax.typesetPromise([body]).catch(() => {});
+  } else if (typeof window._lazyLoadMathJax === 'function') {
+    window._lazyLoadMathJax()
+      .then(() => { if (window.MathJax?.typesetPromise) MathJax.typesetPromise([body]).catch(() => {}); })
+      .catch(() => {});
+  }
+  if (window.mermaid && window.renderMermaidDiagrams) window.renderMermaidDiagrams(body);
+}
+
+async function streamAi() {
+  if (!aiCurrent || !meta) return;
+  if (aiController) aiController.abort();
+  aiController = new AbortController();
+
+  const body = overlay.querySelector('#rdrAiCardBody');
+  let raw = '';
+  let thinking = '';
+
+  // Show the thread with an empty streaming bubble while we wait.
+  renderAiThread('');
+
+  try {
+    const res = await fetch(`/api/study/doc/${meta.id}/ai`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: aiCurrent.action,
+        question: aiCurrent.question,
+        selection: aiCurrent.selection,
+        scope: aiCurrent.scope,
+        page: aiCurrent.page,
+      }),
+      signal: aiController.signal,
+    });
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      let nl;
+      while ((nl = buf.indexOf('\n\n')) !== -1) {
+        const chunk = buf.slice(0, nl);
+        buf = buf.slice(nl + 2);
+        const line = chunk.split('\n').find((l) => l.startsWith('data:'));
+        if (!line) continue;
+        let ev;
+        try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
+
+        if (ev.type === 'thinking') {
+          thinking += ev.text || '';
+        } else if (ev.type === 'answer') {
+          raw += ev.text || '';
+          // innerHTML re-render resets scrollTop to 0; forcing it to the bottom
+          // on every chunk made manual scroll-up impossible. Only stick to the
+          // bottom when the user was already there; otherwise restore position.
+          const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 48;
+          const prevTop = body.scrollTop;
+          renderAiThread(raw);
+          body.scrollTop = atBottom ? body.scrollHeight : prevTop;
+        } else if (ev.type === 'done') {
+          if (ev.text) raw = ev.text;
+        } else if (ev.type === 'error') {
+          raw = `⚠️ ${ev.message || 'AI error'}`;
+        }
+      }
+    }
+
+    const answer = raw || thinking || '(empty response)';
+    aiCurrent.turns.push({ role: 'assistant', content: answer });
+    aiCurrent.answer = answer;
+    renderAiThread();
+  } catch (err) {
+    if (err.name === 'AbortError') return;
+    aiCurrent.turns.push({ role: 'assistant', content: `⚠️ ${err.message}` });
+    aiCurrent.answer = '';
+    renderAiThread();
+  } finally {
+    aiController = null;
+  }
+}
+
+function closeAiCard() {
+  if (aiController) { aiController.abort(); aiController = null; }
+  overlay.querySelector('#rdrAiCard').classList.add('hidden');
+  aiCurrent = null;
+}
+
+/** Start a fresh thread in the card, keeping the current document anchors. */
+function newAiChat() {
+  if (!aiCurrent) return;
+  if (aiController) { aiController.abort(); aiController = null; }
+  aiCurrent.turns = [];
+  aiCurrent.answer = '';
+  aiCurrent.question = '';
+  overlay.querySelector('#rdrAiFollowup').value = '';
+  overlay.querySelector('#rdrAiCardBody').innerHTML =
+    '<div class="rdr-ai-empty">Ask a follow-up below to continue with a fresh thread.</div>';
+}
+
+function sendFollowup() {
+  const input = overlay.querySelector('#rdrAiFollowup');
+  const q = input.value.trim();
+  if (!q || !aiCurrent) return;
+  input.value = '';
+  // Append the turn to the SAME thread — every prior turn stays in the card.
+  aiCurrent.turns.push({ role: 'user', content: q });
+  aiCurrent.question = q;
+  aiCurrent.action = 'ask';
+  overlay.querySelector('#rdrAiCardTitle').textContent = 'Ask';
+  streamAi();
+}
+
+// ── AI: saving / viewing notes ───────────────────────────────────────────────
+
+async function saveAiNote() {
+  if (!aiCurrent || !meta) return;
+  const turns = aiCurrent.turns || [];
+  if (!turns.some((t) => t.role === 'assistant' && t.content)) {
+    return toast('Nothing to save yet', 'error');
+  }
+  const lastAnswer = [...turns].reverse().find((t) => t.role === 'assistant');
+  try {
+    const saved = await api(`/api/study/doc/${meta.id}/notes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        page: aiCurrent.page,
+        rects: aiCurrent.rects || [],
+        text: aiCurrent.selection,
+        action: aiCurrent.action,
+        question: aiCurrent.question,
+        // Keep the legacy single-answer fields AND the full thread.
+        answer: (lastAnswer && lastAnswer.content) || aiCurrent.answer || '',
+        messages: turns.map((t) => ({ role: t.role, content: t.content })),
+        model: aiCurrent.model,
+        scope: aiCurrent.scope,
+      }),
+    });
+    aiNotes.push(saved);
+    meta.ai_notes = aiNotes;
+    layoutAiNotes();
+    toast('Thread saved', 'success');
+    if (activeSideTab === 'ai') renderSidePanel();
+  } catch (err) { toast('Save failed: ' + err.message, 'error'); }
+}
+
+function viewSavedNote(id) {
+  const note = aiNotes.find((n) => n.id === id);
+  if (!note) return;
+  // Prefer the stored full thread; fall back to a single Q/A turn.
+  let turns = Array.isArray(note.messages) && note.messages.length ? note.messages.slice() : [];
+  if (!turns.length) {
+    if (note.question || note.text) turns.push({ role: 'user', content: note.question || note.text });
+    if (note.answer) turns.push({ role: 'assistant', content: note.answer });
+  }
+  aiCurrent = {
+    action: note.action, scope: note.scope, page: note.page,
+    selection: note.text, rects: note.rects, question: note.question,
+    answer: note.answer, model: note.model, turns,
+  };
+  const card = overlay.querySelector('#rdrAiCard');
+  card.classList.remove('hidden');
+  overlay.querySelector('#rdrAiCardTitle').textContent = AI_ACTION_LABELS[note.action] || note.action;
+  overlay.querySelector('#rdrAiCardModel').textContent = note.model || '';
+  renderAiThread();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+// ── Doc / Chat toggle + Study AI pane ────────────────────────────────────────
+
+let readerTab = 'doc';        // 'doc' | 'chat'
+let aiPane = null;            // { el, view } from studyAI.createPane
+let aiFloat = null;           // { open, close } from studyAI.mountFloating
+
+function setReaderTab(tab) {
+  readerTab = tab === 'chat' ? 'chat' : 'doc';
+  const isChat = readerTab === 'chat';
+  const main = overlay.querySelector('#rdrMain');
+  const pane = overlay.querySelector('#rdrChatPane');
+  if (main) main.classList.toggle('hidden', isChat);
+  if (pane) pane.classList.toggle('hidden', !isChat);
+  overlay.querySelector('#rdrTabDoc').classList.toggle('active', !isChat);
+  overlay.querySelector('#rdrTabChat').classList.toggle('active', isChat);
+  overlay.querySelector('#rdrTabDoc').setAttribute('aria-selected', String(!isChat));
+  overlay.querySelector('#rdrTabChat').setAttribute('aria-selected', String(isChat));
+  // The floating launcher is redundant while the full chat pane is showing.
+  const launch = overlay.querySelector('#rdrAiLaunch');
+  if (launch) launch.style.display = isChat ? 'none' : '';
+  if (window.lucide) window.lucide.createIcons();
+  if (isChat) {
+    const p = ensureAiPane();
+    if (p) p.view.render();
+  }
+}
+
+/** Render one page to a PNG data URL (vision models get the real image). */
+async function pageToImage(page) {
+  try {
+    const p = await getPage(page);
+    const vp = p.getViewport({ scale: 1.6 });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.floor(vp.width);
+    canvas.height = Math.floor(vp.height);
+    const ctx2d = canvas.getContext('2d', { alpha: false });
+    ctx2d.fillStyle = '#fff';
+    ctx2d.fillRect(0, 0, canvas.width, canvas.height);
+    await p.render({ canvasContext: ctx2d, viewport: vp }).promise;
+    return canvas.toDataURL('image/png');
+  } catch { return null; }
+}
+
+/** Extracted text for one page (fallback for non-vision models). */
+async function pageToText(page) {
+  try {
+    const p = await getPage(page);
+    const tc = await p.getTextContent();
+    return (tc.items || []).map((it) => it.str || '').join(' ').trim();
+  } catch { return ''; }
+}
+
+/** Whole PDF as base64 (document-capable models). */
+async function pdfToBase64() {
+  try {
+    const src = isRemote
+      ? `/api/drive/file/${encodeURIComponent(meta.id)}/pdf?title=${encodeURIComponent(meta.title || '')}&save=false`
+      : `/api/study/doc/${meta.id}/pdf`;
+    const res = await fetch(src);
+    if (!res.ok) return null;
+    const buf = await res.arrayBuffer();
+    let binary = '';
+    const bytes = new Uint8Array(buf);
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    }
+    return { data: btoa(binary), name: (meta.filename || meta.title || 'document') + '.pdf' };
+  } catch { return null; }
+}
+
+/** Whole-document extracted text (fallback for non-document models). */
+async function pdfToText() {
+  try {
+    if (isRemote) {
+      // Remote docs have no library text store; concatenate page text.
+      const parts = [];
+      for (let i = 1; i <= pageEls.length; i += 1) parts.push(await pageToText(i));
+      return parts.join('\n\n').slice(0, 60000);
+    }
+    const r = await api(`/api/study/doc/${meta.id}/text`);
+    return ((r && r.page_text) || []).join('\n\n').slice(0, 60000);
+  } catch { return ''; }
+}
+
+/** Build the ctx object study-ai.js needs to read the open document. */
+function aiContext(host) {
+  return {
+    host,
+    getDocId: () => (meta && meta.id) || '',
+    getTitle: () => (meta && meta.title) || 'Document',
+    isRemote: () => isRemote,
+    getCurrentPage: () => currentPage,
+    api: (path, opts) => api(path, opts),
+    toast,
+    getPageImage: pageToImage,
+    getPageText: pageToText,
+    getPdfBase64: pdfToBase64,
+    getPdfText: pdfToText,
+  };
+}
+
+function ensureAiPane() {
+  if (aiPane || !window.studyAI || !meta) return aiPane;
+  const host = overlay.querySelector('#rdrChatPane');
+  if (!host) return null;
+  aiPane = window.studyAI.createPane(aiContext(host));
+  host.appendChild(aiPane.el);
+  return aiPane;
+}
+
+function ensureAiFloat() {
+  if (aiFloat || !window.studyAI || !meta) return aiFloat;
+  const host = overlay.querySelector('#rdrAiLaunch');
+  if (!host) return null;
+  aiFloat = window.studyAI.mountFloating(aiContext(host));
+  return aiFloat;
+}
+
+// ── Public API ───────────────────────────────────────────────────────────────
+
+window.studyReader = {
+  open,
+  close,
+  isOpen,
+  openRemote: (fileId, title) => open(fileId, { remote: true, title }),
+};

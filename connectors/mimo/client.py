@@ -95,6 +95,8 @@ class MiMoClient:
     """Browser-auth MiMo Studio client. Cookies come from an injected provider."""
 
     def __init__(self) -> None:
+        from connectors.common.error_ctx import ErrorContext
+        self.ctx = ErrorContext("mimo")
         self._cookie_provider: Callable[[], Awaitable[dict[str, str]]] | None = None
         self._http: AsyncSession | None = None
         self._jar: dict[str, str] | None = None
@@ -327,7 +329,7 @@ class MiMoClient:
             try:
                 jar = await self._cookies()
             except Exception as exc:
-                yield {"type": "error", "message": f"MiMo auth failed: {exc}"}
+                yield self.ctx.error(f"auth failed: {exc}")
                 return
             ph = self._ph_from_jar(jar)
 
@@ -336,7 +338,7 @@ class MiMoClient:
                 if not conv_id:
                     conv_id = await self._create_conversation(base)
             except Exception as exc:
-                yield {"type": "error", "message": f"MiMo conversation setup failed: {exc}"}
+                yield self.ctx.error(f"conversation setup failed: {exc}")
                 return
 
             medias = []
@@ -368,13 +370,13 @@ class MiMoClient:
                 http = await self._http_session()
                 resp = await http.post(url, headers=headers, json=body, cookies=jar, stream=True)
             except Exception as exc:
-                yield {"type": "error", "message": f"MiMo request failed: {exc}"}
+                yield self.ctx.error(f"request failed: {exc}")
                 return
 
             self._active_resp = resp
             if resp.status_code != 200:
                 self._active_resp = None
-                yield {"type": "error", "message": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+                yield self.ctx.error(f"HTTP {resp.status_code}: {resp.text[:200]}", status_code=resp.status_code)
                 return
 
             buf = ""
@@ -432,7 +434,7 @@ class MiMoClient:
                 # expected, not an error. Any content we already streamed stands.
                 self._active_resp = None
                 if not answer and not thinking_buf:
-                    yield {"type": "error", "message": f"MiMo stream read failed: {exc}"}
+                    yield self.ctx.error(f"stream read failed: {exc}")
                     return
                 logger.debug("MiMo stream interrupted (likely cancel): %s", exc)
 

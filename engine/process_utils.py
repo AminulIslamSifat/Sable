@@ -15,6 +15,7 @@ from __future__ import annotations
 import signal
 import subprocess
 import sys
+import os
 
 IS_WINDOWS = sys.platform == "win32"
 

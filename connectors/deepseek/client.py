@@ -190,6 +190,25 @@ def _resolve_active_account() -> str:
     return get_active_account()
 
 
+def _read_pinned_token() -> str | None:
+    """The user's manually pinned DeepSeek token, read from settings.json.
+
+    Single source of truth for the pin — both the store loader and the
+    client's resolution path read it through here so they can never disagree
+    about which token is selected.
+    """
+    try:
+        path = _SYSTEM_DIR / "settings.json"
+        if not path.is_file():
+            return None
+        tok = json.loads(path.read_text(encoding="utf-8")).get("deepseek_preferred_token")
+        if tok and isinstance(tok, str) and tok != "None":
+            return tok
+    except Exception:
+        pass
+    return None
+
+
 def _load_token_store() -> dict[str, list[str]]:
     """Load the per-account token store, migrating legacy formats if needed.
 
@@ -205,6 +224,8 @@ def _load_token_store() -> dict[str, list[str]]:
         except Exception:
             pass
 
+    pinned = _read_pinned_token()
+
     store: dict[str, list[str]] = {}
     for key, val in raw.items():
         if isinstance(val, list):
@@ -214,10 +235,16 @@ def _load_token_store() -> dict[str, list[str]]:
             valid = [val]
         else:
             valid = []
-        # Collapse to the single CURRENT token. An account has exactly one
-        # live auth token; anything older is a stale duplicate left behind by
-        # a refresh. Keeping only the latest also cleans the file on next save.
-        store[key] = valid[-1:]
+        # Collapse to the CURRENT token (latest) — older entries are stale
+        # duplicates left behind by a refresh. The manually PINNED token is the
+        # one exception: it must survive a refresh, otherwise the user's
+        # selection dangles out of the list, no key renders as active, and the
+        # rotation start silently reroutes to another account. Kept first so
+        # `valid[-1]` is still the newest token.
+        keep = valid[-1:]
+        if pinned and pinned in valid and pinned not in keep:
+            keep.insert(0, pinned)
+        store[key] = keep
 
     # One-time migration from legacy single-token file (guarded)
     if not store and not _LEGACY_MIGRATED and _LEGACY_TOKEN_CACHE.exists():
@@ -350,7 +377,10 @@ def save_token_for_account(token: str, account: str | None = None) -> None:
         return
     acct = account or _resolve_active_account()
     store = _load_token_store()
-    store[acct] = [token]
+    # Append instead of replace: _load_token_store() trims the list back to
+    # [pinned, newest], so refreshing an account adds its new token to the
+    # rotation pool WITHOUT destroying the token the user pinned for it.
+    store[acct] = [*store.get(acct, []), token]
     _save_token_store(store)
 
 # Application-level headers only.
@@ -492,6 +522,9 @@ class DeepSeekClient:
         # Each Sable chat gets its own upstream session so parent_message_id
         # chaining works correctly. Never shared across chats.
         self._chat_sessions: dict[tuple[str, str], str] = {}
+        from connectors.common.error_ctx import ErrorContext
+        self.ctx = ErrorContext("deepseek")
+        self.ctx.model = self._model_id
         self._last_prepare_error: str | None = None  # surfaced when all tokens fail
         # Chats whose last response leaked DSML markup. Armed by the leak
         # detector; drives the hard no-DSML reminder on subsequent turns.
@@ -517,12 +550,19 @@ class DeepSeekClient:
 
     @property
     def token(self) -> str | None:
-        if self._token:
-            return self._token
-        # Check persisted user preference before generic fallback
+        """The effective token — the SAME one the send path will use.
+
+        The pinned preference is checked FIRST, not last. Checking the
+        in-memory `self._token` first let an automatic refresh (set_token) make
+        this report the freshly scraped JWT while _init_rotation() still
+        started on the pinned one — so the UI flagged the new key as selected
+        and the request went out on a different one.
+        """
         preferred = self._get_preferred_token_from_settings()
         if preferred:
             self._token = preferred
+            return preferred
+        if self._token:
             return self._token
         # Resolve from per-account store (with fallback)
         self._token = get_token_for_account(self._account)
@@ -533,12 +573,27 @@ class DeepSeekClient:
         """Whether the connector has valid credentials."""
         return self.token is not None
 
-    def set_token(self, token: str, account: str | None = None, *, persist: bool = True) -> None:
+    def set_token(
+        self,
+        token: str,
+        account: str | None = None,
+        *,
+        persist: bool = True,
+        pin: bool = False,
+    ) -> None:
         """Set and (optionally) persist token under the given account.
 
         Pass persist=False when the token came from a cross-account fallback
         (e.g. rotation handoff) so it is used in-memory but NOT written under
         an account it doesn't belong to.
+
+        Pass pin=True from the REFRESH path only. It promotes the fresh token
+        to `deepseek_preferred_token` in settings.json, i.e. makes it the
+        user's current selection. The UI (settings.py) and _init_rotation()
+        both resolve the effective key through that pin, so a refresh that
+        skipped this left the OLD token showing as selected while the fresh
+        one sat unused. Manual switches/rotation handoffs must NOT pin —
+        otherwise a handoff would silently steal the user's selection.
         """
         self._token = token
         # Invalidate rotation cache so next request picks up the new token
@@ -555,6 +610,33 @@ class DeepSeekClient:
                 del self._chat_sessions[k]
         if persist and token:
             save_token_for_account(token, account or self._account)
+        if pin and token:
+            self._pin_token(token, account or self.account)
+
+    @staticmethod
+    def _pin_token(token: str, account: str | None = None) -> None:
+        """Write the effective DeepSeek selection into settings.json.
+
+        `deepseek_preferred_token` is the single source of truth the settings
+        UI (via .token) and _init_rotation() both read. Refresh must update it
+        or the freshly scraped key never becomes the selected one.
+        """
+        try:
+            path = _SYSTEM_DIR / "settings.json"
+            settings: dict[str, Any] = {}
+            if path.is_file():
+                try:
+                    settings = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    settings = {}
+            settings["deepseek_preferred_token"] = token
+            if account:
+                settings["deepseek_preferred_account"] = account
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+        except Exception as exc:
+            logger.warning("Could not pin DeepSeek token: %s", exc)
 
     # ------------------------------------------------------------------
     # Token rotation (automatic round-robin + failover, like Gemini/Mistral)
@@ -605,7 +687,15 @@ class DeepSeekClient:
             if preferred and preferred in self._rotate_tokens:
                 self._rotate_idx = self._rotate_tokens.index(preferred)
             else:
-                self._rotate_idx = 0
+                # A dangling pin must NOT silently reroute rotation to
+                # all_tokens[0]: that sent the request on one account's token
+                # and made the UI report a foreign key as selected. Fall back
+                # to this client's OWN account before anything else.
+                own = get_own_token_for_account(self.account)
+                if own and own in self._rotate_tokens:
+                    self._rotate_idx = self._rotate_tokens.index(own)
+                else:
+                    self._rotate_idx = 0
             # Keep in-memory token in sync with rotation starting point so
             # the .token property, is_available, etc. reflect the actual active key.
             start_token = self._current_rotate_token
@@ -641,7 +731,11 @@ class DeepSeekClient:
 
     def _auth_headers_for(self, token: str) -> dict[str, str]:
         headers = {"Authorization": f"Bearer {token}", **CLIENT_HEADERS}
-        fp = get_fp_for_account(self._account)
+        # Impersonate the profile the TOKEN belongs to, not the active account.
+        # A pinned token from another account sent with the active account's
+        # device header (x-hif-leim) is exactly the token/device mismatch
+        # _account_for_token()'s docstring warns gets accounts muted.
+        fp = get_fp_for_account(_account_for_token(token) or self._account)
         if fp:
             headers["x-hif-leim"] = fp
         return headers
@@ -781,7 +875,9 @@ class DeepSeekClient:
             token = await self._token_refresher()
             if not token:
                 raise DeepSeekAPIError("Token refresher returned an empty token.")
-            self.set_token(token)
+            # pin=True: a refresh is a user-visible "use this token now" action,
+            # so the fresh key must become the selected one in settings.
+            self.set_token(token, pin=True)
             logger.info("Token refreshed successfully via injected browser session.")
             return token
         return await self._refresh_token_from_browser()
@@ -807,7 +903,8 @@ class DeepSeekClient:
             raise DeepSeekAPIError("No userToken found in browser profile. Log in to chat.deepseek.com first.")
 
         token = self._parse_localstorage_token(token)
-        self.set_token(token)
+        # pin=True: same rationale as the injected-refresher path above.
+        self.set_token(token, pin=True)
         logger.info("Token refreshed successfully from standalone browser.")
         return token
 
@@ -1529,7 +1626,7 @@ class DeepSeekClient:
                 logger.warning("DeepSeek: prepare timed out after 90s (chat %s)", chat_id)
                 prepared = None
             if prepared is None:
-                yield {"type": "error", "message": _all_failed_message()}
+                yield self.ctx.error(_all_failed_message())
                 return
             session_id, headers = prepared
 
@@ -1912,7 +2009,7 @@ class DeepSeekClient:
                 logger.warning("DeepSeek retries exhausted on token %s (reason: %s), no rotation available — chain preserved",
                                self._mask_token(_old_token), last_err)
 
-        yield {"type": "error", "message": _all_failed_message()}
+        yield self.ctx.error(_all_failed_message())
 
     # ------------------------------------------------------------------
     # Public interface — non-streaming

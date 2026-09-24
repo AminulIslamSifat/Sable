@@ -383,7 +383,23 @@
 
     const _HTML_TAGS = new Set("a,abbr,address,area,article,aside,audio,b,base,bdi,bdo,blockquote,body,br,button,canvas,caption,cite,code,col,colgroup,data,datalist,dd,del,details,dfn,dialog,div,dl,dt,em,embed,fieldset,figcaption,figure,footer,form,h1,h2,h3,h4,h5,h6,head,header,hr,html,i,iframe,img,input,ins,kbd,label,legend,li,link,main,map,mark,meta,meter,nav,noscript,object,ol,optgroup,option,output,p,param,picture,pre,progress,q,rp,rt,ruby,s,samp,script,section,select,slot,small,source,span,strong,style,sub,summary,sup,table,tbody,td,template,textarea,tfoot,th,thead,time,title,tr,track,u,ul,var,video,wbr,svg,path,rect,circle,ellipse,line,polyline,polygon,text,g,defs,use,symbol,linearGradient,radialGradient,stop,clipPath,mask,pattern,image,foreignObject,animate,animateTransform,animateMotion,desc,title,metadata,marker,solidColor,solidColorRef,switch,unknown".split(","));
 
+    // DSML tag stripper — frontend safety net. Backend normalizer strips these
+    // from the stream, but chunk-boundary races or provider quirks can let
+    // fragments through. Matches both ASCII | and fullwidth ｜ pipes.
+    // Two phases: tag-shaped fragments first, then bare pipe-delimited markers.
+    const _DSML_TAG_RE = /<\/?<?[|\uff5c]*DSML[|\uff5c]+(?:tool_calls|invoke|parameter)(?:\s[^>]*)?>?/gi;
+    const _DSML_BARE_RE = /[|\uff5c]*DSML[|\uff5c]+(?:tool_calls|invoke|parameter)(?:\s+(?:name|string)\s*=\s*"[^"]*")*/gi;
+
+    function stripDsmlLeak(text) {
+      return text.replace(_DSML_TAG_RE, "").replace(_DSML_BARE_RE, "");
+    }
+
     function escapeNonHtmlTags(text) {
+      // Strip any leaked DSML tags/markers BEFORE processing HTML tags.
+      // These use fullwidth pipes that the HTML tag regex below won't match,
+      // so they'd render as raw visible text in the chat UI.
+      text = stripDsmlLeak(text);
+
       // Escape angle brackets for tags that aren't valid HTML/SVG so marked +
       // DOMPurify don't swallow them silently. Fenced blocks and inline code
       // spans are skipped entirely via line scan (no regex stash) to avoid
@@ -575,9 +591,11 @@
 
     function renderMarkdown(raw) {
       if (!raw) return "";
-      // Backend parser already strips <tool_call> and <action> tags from the
-      // answer stream. No frontend stripping needed.
+      // Strip any leaked DSML tags/markers early — before either render path.
+      // Backend normalizer handles this in-stream, but chunk-boundary races or
+      // provider quirks can let fragments through to the UI.
       var _s = String(raw);
+      _s = stripDsmlLeak(_s);
       raw = _s.trim();
       const normalized = normalizeMd(raw.replace(/\r\n/g, "\n"));
       const safe = closeUnclosedFences(normalized);

@@ -98,9 +98,10 @@ def _kimi_ghost_enabled() -> bool:
 
 # Sable thinking-mode labels -> Kimi reasoning effort enum.
 _EFFORT = {
-    "low": "REASONING_EFFORT_LOW",
+    "none":   "REASONING_EFFORT_NONE",
+    "low":    "REASONING_EFFORT_LOW",
     "medium": "REASONING_EFFORT_MEDIUM",
-    "high": "REASONING_EFFORT_HIGH",
+    "high":   "REASONING_EFFORT_HIGH",
 }
 
 
@@ -309,6 +310,8 @@ class KimiClient:
     """Ghost-tab Kimi connector."""
 
     def __init__(self, account: str | None = None, model_id: str | None = None) -> None:
+        from connectors.common.error_ctx import ErrorContext
+        self.ctx = ErrorContext("kimi")
         self._account = account
         self._model_id = model_id or "kimi-k2.6"
         # Sable chat_id -> upstream Kimi chat id (for multi-turn continuation).
@@ -326,7 +329,9 @@ class KimiClient:
 
     @property
     def account(self) -> str:
-        return self._account or _provider_account() or _resolve_active_account()
+        acct = self._account or _provider_account() or _resolve_active_account()
+        self.ctx.account = acct
+        return acct
 
     @property
     def is_available(self) -> bool:
@@ -344,7 +349,11 @@ class KimiClient:
             from connectors.kimi.ghost import KimiGhostSession
             return await KimiGhostSession.for_account(self.account)
         except Exception as exc:
-            logger.warning("Kimi ghost unavailable (%s)", exc)
+            # Log at ERROR with full traceback so restart issues (stale locks,
+            # Helium crashes, CDP adopt failures) are immediately visible
+            # instead of surfacing as a cryptic "no ghost available" in the UI.
+            logger.error("Kimi ghost unavailable for account '%s': %s",
+                         self.account, exc, exc_info=True)
             return None
 
     # -- streaming -----------------------------------------------------
@@ -388,11 +397,11 @@ class KimiClient:
 
         session = await self._resolve_session()
         if session is None:
-            yield {"type": "error", "message": "kimi ghost transport unavailable"}
+            yield self.ctx.error("ghost unavailable — check server logs (stale lock / Helium crash / CDP adopt failure)")
             return
 
         if not await session.has_token():
-            yield {"type": "error", "message": f"kimi not logged in on {self.account}"}
+            yield self.ctx.error(f"not logged in on {self.account}")
             return
 
         upstream_chat = self._chat_ids.get(chat_id) if chat_id else None
@@ -453,7 +462,7 @@ class KimiClient:
             try:
                 async with await session.open_stream(body, idle_secs=_IDLE_TIMEOUT_SECS) as resp:
                     if resp.status_code != 200:
-                        yield {"type": "error", "message": f"kimi HTTP {resp.status_code}"}
+                        yield self.ctx.error(f"HTTP {resp.status_code}", status_code=resp.status_code)
                         return
                     async for flag, text in resp.aiter_frames():
                         if flag == 2:
@@ -493,10 +502,10 @@ class KimiClient:
                 if attempt == 0 and not got_answer:
                     logger.warning("Kimi stream idle — retrying once")
                     continue
-                yield {"type": "error", "message": "kimi stream idle timeout"}
+                yield self.ctx.error("stream idle timeout")
                 return
             except Exception as exc:
-                yield {"type": "error", "message": f"kimi stream failed: {exc}"}
+                yield self.ctx.error(f"stream failed: {exc}")
                 return
 
     # -- files & cancel ------------------------------------------------

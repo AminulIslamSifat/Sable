@@ -14,29 +14,46 @@ from engine.config import MODEL, MODELS, URL, get_model_config
 from engine.payloads import build_body
 from engine.session import BrowserManager, create_new_chat, sanitize_fetch_headers
 
-# --- Raw response logger (Qwen only) ---
-_LOG_DIR = Path(__file__).resolve().parent.parent / "output" / "qwen_raw"
-_LOG_DIR.mkdir(parents=True, exist_ok=True)
+# --- Raw response logger (Qwen only) ------------------------------------
+# These write to disk on EVERY SSE chunk when enabled, which is extremely
+# expensive during a live stream. They're diagnostic-only, so they are OFF
+# unless SABLE_RAW_LOG=1 is explicitly set. Prefer the structured logger for
+# anything that needs to be visible in normal operation.
+import logging as _logging
+
+_RAW_LOG_DIR = Path(__file__).resolve().parent.parent / "output" / "qwen_raw"
+_raw_log = _logging.getLogger("sable.qwen.raw")
+
+
+def _raw_logging_enabled() -> bool:
+    return os.environ.get("SABLE_RAW_LOG", "0") == "1"
 
 
 def _log_raw_line(line: str) -> None:
-    """Append a single raw SSE line to today's log file."""
-    logfile = _LOG_DIR / f"{datetime.now():%Y-%m-%d}.txt"
-    with open(logfile, "a", encoding="utf-8") as f:
-        f.write(f"[{datetime.now():%H:%M:%S.%f}] {line}\n")
-
-
-_CHUNK_LOG_DIR = _LOG_DIR.parent / "qwen_chunks"
-_CHUNK_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    """Append a single raw SSE line to today's log file (opt-in only)."""
+    if not _raw_logging_enabled():
+        return
+    try:
+        _RAW_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        logfile = _RAW_LOG_DIR / f"{datetime.now():%Y-%m-%d}.txt"
+        with open(logfile, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now():%H:%M:%S.%f}] {line}\n")
+    except OSError as exc:
+        _raw_log.debug("raw line log write failed: %s", exc)
 
 
 def _log_stream_chunk(phase: str, content: str) -> None:
-    """Log a single parsed streaming content delta to today's chunk log."""
-    if not content:
+    """Append a parsed streaming delta to today's chunk log (opt-in only)."""
+    if not content or not _raw_logging_enabled():
         return
-    logfile = _CHUNK_LOG_DIR / f"{datetime.now():%Y-%m-%d}.txt"
-    with open(logfile, "a", encoding="utf-8") as f:
-        f.write(f"[{datetime.now():%H:%M:%S.%f}] [{phase}] {content!r}\n")
+    try:
+        chunk_dir = _RAW_LOG_DIR.parent / "qwen_chunks"
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+        logfile = chunk_dir / f"{datetime.now():%Y-%m-%d}.txt"
+        with open(logfile, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now():%H:%M:%S.%f}] [{phase}] {content!r}\n")
+    except OSError as exc:
+        _raw_log.debug("raw chunk log write failed: %s", exc)
 
 # Initialize single persistent browser manager instance
 bm = BrowserManager()

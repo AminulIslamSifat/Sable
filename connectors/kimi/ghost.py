@@ -54,6 +54,7 @@ Settings (system/settings.json)
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -65,9 +66,49 @@ from pathlib import Path
 logger = logging.getLogger("sable.kimi_ghost")
 
 _SYSTEM_DIR = Path(__file__).resolve().parent.parent.parent / "system"
+TOKEN_STORE_PATH = _SYSTEM_DIR / ".kimi_tokens.json"
 DEFAULT_HELIUM = "/opt/helium-browser-bin/helium"
 KIMI_URL = "https://www.kimi.ai/"
 CHAT_PATH = "/apiv2/kimi.gateway.chat.v1.ChatService/Chat"
+
+
+# ----------------------------------------------------------------------
+# Per-account token persistence (mirrors DeepSeek's .deepseek_tokens.json)
+# ----------------------------------------------------------------------
+
+def _load_token_store() -> dict[str, str]:
+    """Load {account: jwt} map from disk."""
+    try:
+        if TOKEN_STORE_PATH.exists():
+            return json.loads(TOKEN_STORE_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Could not load kimi token store: %s", exc)
+    return {}
+
+
+def _save_token_store(store: dict[str, str]) -> None:
+    try:
+        TOKEN_STORE_PATH.write_text(
+            json.dumps(store, indent=2), encoding="utf-8"
+        )
+    except Exception as exc:
+        logger.warning("Could not save kimi token store: %s", exc)
+
+
+def save_token_for_account(token: str, account: str) -> None:
+    """Persist a fresh JWT for ``account`` so cold starts don't need the SPA."""
+    store = _load_token_store()
+    store[account] = token
+    _save_token_store(store)
+
+
+def get_saved_token(account: str) -> str | None:
+    """Return the last-saved JWT for ``account``, or None."""
+    store = _load_token_store()
+    token = store.get(account)
+    if token and _jwt_not_expired(token):
+        return token
+    return None
 
 _LAUNCH_ARGS = [
     "--no-sandbox",
@@ -159,6 +200,29 @@ async ({url, body, extraHeaders, idleMs, rid}) => {
 # ----------------------------------------------------------------------
 # Lock helpers — distinguish "our orphan" from a live foreign browser
 # ----------------------------------------------------------------------
+
+def _jwt_not_expired(token: str, skew: int = 30) -> bool:
+    """True if ``token`` is a JWT whose ``exp`` is still in the future.
+
+    Returns False for a malformed token or one already expired (with a small
+    clock-skew margin). Kimi's bearer is a standard JWT, so the ``exp`` claim
+    is the authoritative "is this still usable" signal — unlike mere presence.
+    """
+    try:
+        parts = token.split('.')
+        if len(parts) < 2:
+            return False
+        payload = parts[1]
+        payload += '=' * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload).decode('utf-8', 'replace'))
+        exp = claims.get('exp')
+        if not isinstance(exp, (int, float)):
+            # No exp claim — can't prove it's live; treat as usable.
+            return True
+        return exp > (time.time() + skew)
+    except Exception:
+        return False
+
 
 def _lock_pid(profile: Path) -> int | None:
     lock = profile / "SingletonLock"
@@ -567,13 +631,67 @@ class KimiGhostSession:
             await self._page.expose_function("__ghostEvent", self._on_event)
             self._exposed_pages.add(self._page)
 
-    async def has_token(self) -> bool:
-        """True if the page currently holds a login token in localStorage."""
+    async def inject_saved_token(self) -> bool:
+        """Inject a previously-saved JWT into the page's localStorage.
+
+        Called on cold start BEFORE the SPA hydrates, so the ghost session
+        immediately has a usable token without waiting for the SPA's silent
+        refresh flow. Returns True if injection succeeded.
+        """
+        saved = get_saved_token(self.account)
+        if not saved:
+            return False
         try:
             await self._ensure_bridge()
-            return bool(await self._page.evaluate("() => !!localStorage.getItem('access_token')"))
+            await self._page.evaluate(
+                "(tok) => localStorage.setItem('access_token', tok)", saved
+            )
+            logger.info("[kimi:%s] injected saved token from disk", self.account)
+            return True
+        except Exception as exc:
+            logger.warning("[kimi:%s] failed to inject saved token: %s",
+                           self.account, exc)
+            return False
+
+    async def has_token(self, wait_secs: float = 8.0, poll: float = 1.0) -> bool:
+        """True if the page holds a *non-expired* login token in localStorage.
+
+        Kimi's bearer JWT expires ~900s after issue; the SPA silently refreshes
+        it while the page is alive. A bare presence check reports "logged in"
+        for an expired token — which is exactly what made the refresh endpoint
+        lie. We decode the JWT ``exp`` claim and reject anything expired.
+
+        On server restart the SPA needs time to hydrate its auth state (silent
+        refresh via cookies). ``wait_secs`` gives the page up to that many
+        seconds to produce a valid token before we give up.
+
+        When a valid token IS found, it is automatically persisted to disk
+        so future cold starts can inject it without waiting for the SPA.
+        """
+        try:
+            await self._ensure_bridge()
         except Exception:
             return False
+
+        # Fast path: try injecting a saved token first
+        await self.inject_saved_token()
+
+        deadline = time.monotonic() + wait_secs
+        while True:
+            try:
+                token = await self._page.evaluate(
+                    "() => localStorage.getItem('access_token')"
+                )
+                if token and _jwt_not_expired(token):
+                    # Persist to disk whenever we find a live token
+                    save_token_for_account(token, self.account)
+                    return True
+            except Exception:
+                pass
+
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(poll)
 
     async def open_stream(self, body: dict, idle_secs: float = 30.0) -> KimiStreamResponse:
         """Open a streaming in-page Connect fetch. Serialized per session so the

@@ -57,14 +57,47 @@ _ORPHAN_TAG_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Safety net: strip orphaned DSML inner tags (invoke, parameter) that leak
-# through when models emit them outside the outer tool_calls wrapper or when
-# chunk-boundary races split the block awkwardly.
+# Safety net: strip ALL orphaned DSML tags/markers that leak through when models
+# emit them outside the outer tool_calls wrapper or when chunk-boundary races
+# split the block awkwardly. Covers invoke, parameter, AND tool_calls tags.
 # Matches both ASCII pipe | (U+007C) and fullwidth pipe ｜ (U+FF5C).
+#
+# Handles every variant in one pass:
+#   <｜DSML｜invoke name="x">  </｜DSML｜parameter>  <｜DSML｜tool_calls>
+#   <DSML|invoke>  (missing leading pipe)
+#   ｜DSML｜parameter  (no angle brackets at all — chunk split ate them)
+#   /｜DSML｜invoke>  (leading < consumed by partial-tag hold)
+#   stray > after keyword
+_P = r'[|\uff5c]+'        # one or more pipes (ASCII or fullwidth, handles ｜｜ double pipes)
+_PO = r'[|\uff5c]*'       # zero or more pipes
+_KW = r'(?:tool_calls|invoke|parameter)'
+
+# Phase 1: Strip anything resembling a DSML tag (with or without angle brackets).
+# The key insight: every DSML marker contains pipe-DSML-pipe-keyword. We match
+# from an optional </ or < prefix through the keyword and any trailing attrs/>, 
+# OR we match the bare pipe-DSML-pipe-keyword sequence with optional attrs.
 _ORPHAN_DSML_RE = re.compile(
-    r'</?[|\uff5c]?DSML[|\uff5c](?:invoke|parameter)[^>]*>',
+    rf'</?<?{_PO}DSML{_P}{_KW}(?:\s[^>]*)?>?',
     re.IGNORECASE,
 )
+
+# Phase 2: After phase 1, catch any remaining bare DSML markers that had no
+# angle brackets at all (just the pipe-delimited keyword sitting in prose).
+# Only strips the marker + XML-like attributes (name="...", string="..."),
+# NOT arbitrary trailing prose.
+_BARE_DSML_MARKER_RE = re.compile(
+    rf'{_PO}DSML{_P}{_KW}(?:\s+(?:name|string)\s*=\s*"[^"]*")*',
+    re.IGNORECASE,
+)
+
+
+def _strip_orphan_dsml(text: str) -> str:
+    """Two-pass DSML orphan stripper. Phase 1 removes tag-shaped fragments
+    (with angle brackets), phase 2 removes bare pipe-delimited markers that
+    lost their brackets during chunk splits."""
+    text = _ORPHAN_DSML_RE.sub("", text)
+    text = _BARE_DSML_MARKER_RE.sub("", text)
+    return text
 
 
 def _parse_json_action(content: str) -> dict[str, Any] | None:
@@ -164,22 +197,14 @@ def _extract_actions_from_text(text: str) -> tuple[str, list[dict[str, Any]]]:
 #
 # Models sometimes drop the leading ｜, so we make it optional.
 
-# Matches both ASCII pipe | (U+007C) and fullwidth pipe ｜ (U+FF5C) in any combination
-_P = r'[\|\uff5c]'   # required pipe (ASCII or fullwidth)
-_PO = r'[\|\uff5c]?'  # optional pipe
+# All DSML regexes use _P / _PO defined above (one-or-more / zero-or-more pipes).
 
 _DSML_OPEN_RE = re.compile(rf'<{_PO}DSML{_P}tool_calls>')
 _DSML_CLOSE_RE = re.compile(rf'</{_PO}DSML{_P}tool_calls>')
 
-# For streaming buffer detection — all possible variants
-_DSML_OPEN_VARIANTS = [
-    "<|DSML|tool_calls>", "<｜DSML｜tool_calls>",
-    "<DSML|tool_calls>", "<DSML｜tool_calls>",
-]
-_DSML_CLOSE_VARIANTS = [
-    "</|DSML|tool_calls>", "</｜DSML｜tool_calls>",
-    "</DSML|tool_calls>", "</DSML｜tool_calls>",
-]
+# For streaming buffer detection — regex-based to handle any pipe count.
+_DSML_OPEN_SEARCH_RE = _DSML_OPEN_RE   # same pattern
+_DSML_CLOSE_SEARCH_RE = _DSML_CLOSE_RE  # same pattern
 
 _DSML_INVOKE_RE = re.compile(
     rf'<{_PO}DSML{_P}invoke\s+name="([^"]+)">(.*?)</{_PO}DSML{_P}invoke>',
@@ -365,43 +390,49 @@ async def normalize_stream(
                 return prefix
         return ""
 
-    # --- Debug: log raw chunks to file for leak diagnosis ---
+    # --- Debug raw-chunk logging -------------------------------------
+    # These write + flush to disk on EVERY streamed chunk, which is far too
+    # hot for normal operation. They exist purely for leak diagnosis, so they
+    # are OFF unless SABLE_DEBUG_CHUNKS=1 is set explicitly.
     import os as _os
-    _debug_log_path = _os.path.join(
-        _os.environ.get("SABLE_OUTPUT_DIR", "/home/sifat/sable_output"),
-        "logs", "raw_qwen_chunks.txt"
-    )
-    _os.makedirs(_os.path.dirname(_debug_log_path), exist_ok=True)
-    _debug_fh = open(_debug_log_path, "a", encoding="utf-8")
     from datetime import datetime as _dt
 
-    def _dlog(msg: str):
+    _debug_on = _os.environ.get("SABLE_DEBUG_CHUNKS", "0") == "1"
+    _debug_fh = None
+    _raw_fh = None
+
+    if _debug_on:
+        _debug_log_path = _os.path.join(
+            _os.environ.get("SABLE_OUTPUT_DIR", "/home/sifat/sable_output"),
+            "logs", "raw_qwen_chunks.txt",
+        )
+        _os.makedirs(_os.path.dirname(_debug_log_path), exist_ok=True)
+        _debug_fh = open(_debug_log_path, "a", encoding="utf-8")
+
+        _raw_log_dir = _os.path.join(_os.path.dirname(__file__), "..", "tests")
+        _os.makedirs(_raw_log_dir, exist_ok=True)
+        _raw_fh = open(_os.path.join(_raw_log_dir, "qwen_output.txt"), "a", encoding="utf-8")
+        _raw_fh.write(f"\n{'='*60}\n=== STREAM START | provider={provider} | {_dt.now().isoformat()} ===\n{'='*60}\n")
+        _raw_fh.flush()
+
+    def _dlog(msg: str) -> None:
+        if not _debug_on or _debug_fh is None:
+            return
         ts = _dt.now().strftime("%H:%M:%S.%f")[:-3]
-        line = f"[{ts}] {msg}"
-        print(line, flush=True)
-        _debug_fh.write(line + "\n")
+        _debug_fh.write(f"[{ts}] {msg}\n")
         _debug_fh.flush()
 
     _dlog("=== normalize_stream START (provider=%s) ===" % provider)
 
-    # --- Raw response logger: dump every chunk verbatim for debugging ---
-    import os as _os_raw
-    _raw_log_dir = _os_raw.path.join(_os_raw.path.dirname(__file__), "..", "tests")
-    _os_raw.makedirs(_raw_log_dir, exist_ok=True)
-    _raw_log_path = _os_raw.path.join(_raw_log_dir, "qwen_output.txt")
-    _raw_fh = open(_raw_log_path, "a", encoding="utf-8")
-    from datetime import datetime as _dt_raw
-    _raw_fh.write(f"\n{'='*60}\n=== STREAM START | provider={provider} | {_dt_raw.now().isoformat()} ===\n{'='*60}\n")
-    _raw_fh.flush()
-
     async for event in stream:
-        # Log every raw event before any processing
-        try:
-            _ts = _dt_raw.now().strftime("%H:%M:%S.%f")[:-3]
-            _raw_fh.write(f"[{_ts}] {json.dumps(event, ensure_ascii=False)}\n")
-            _raw_fh.flush()
-        except Exception:
-            pass
+        # Log every raw event before any processing (opt-in only).
+        if _debug_on and _raw_fh is not None:
+            try:
+                _ts = _dt.now().strftime("%H:%M:%S.%f")[:-3]
+                _raw_fh.write(f"[{_ts}] {json.dumps(event, ensure_ascii=False)}\n")
+                _raw_fh.flush()
+            except Exception:
+                pass
 
         etype = event.get("type")
 
@@ -449,9 +480,7 @@ async def normalize_stream(
                 # chunks and we're not currently inside a tool block)
                 if not _in_action:
                     if _use_dsml:
-                        for _cv in _DSML_CLOSE_VARIANTS:
-                            if _cv in text:
-                                text = text.replace(_cv, "")
+                        text = _DSML_CLOSE_SEARCH_RE.sub("", text)
                     else:
                         for _ct_strip in ["</" + "tool_call>", "</action>"]:
                             if _ct_strip in text:
@@ -493,7 +522,7 @@ async def normalize_stream(
                                 for fc in more_calls:
                                     yield fc
                                 cleaned_r = _ORPHAN_TAG_RE.sub("", cleaned_r)
-                                cleaned_r = _ORPHAN_DSML_RE.sub("", cleaned_r)
+                                cleaned_r = _strip_orphan_dsml(cleaned_r)
                                 if cleaned_r.strip():
                                     yield {"type": "answer", "text": cleaned_r}
                         else:
@@ -511,14 +540,9 @@ async def normalize_stream(
 
                 # Select closing tag and extraction function based on provider
                 if _use_dsml:
-                    # Try both close tag variants
-                    _close_tag = None
-                    for _cv in _DSML_CLOSE_VARIANTS:
-                        if _cv in _action_buffer:
-                            _close_tag = _cv
-                            break
-                    if not _close_tag:
-                        _close_tag = _DSML_CLOSE_VARIANTS[0]  # default
+                    # Find close tag via regex (handles any pipe count)
+                    _close_match = _DSML_CLOSE_SEARCH_RE.search(_action_buffer)
+                    _close_tag = _close_match.group(0) if _close_match else None
                     _extract_fn = _extract_dsml_from_text
                     _check_complete = None  # DSML uses XML structure, not JSON completeness
                 else:
@@ -554,7 +578,7 @@ async def normalize_stream(
                             for fc in more_calls:
                                 yield fc
                             # Strip any orphaned DSML inner tags from remainder
-                            cleaned = _ORPHAN_DSML_RE.sub("", cleaned)
+                            cleaned = _strip_orphan_dsml(cleaned)
                             cleaned = _ORPHAN_TAG_RE.sub("", cleaned)
                             if cleaned.strip():
                                 yield {"type": "answer", "text": cleaned}
@@ -612,28 +636,21 @@ async def normalize_stream(
                 continue
 
             # --- DSML extraction (DeepSeek) ---
-            # Check for any DSML open tag variant
-            _dsml_open_found = None
-            if _use_dsml:
-                for _ov in _DSML_OPEN_VARIANTS:
-                    if _ov in text:
-                        _dsml_open_found = _ov
-                        break
-            if _dsml_open_found:
-                before_dsml, _, after_dsml = text.partition(_dsml_open_found)
+            # Check for any DSML open tag via regex (handles any pipe count)
+            _dsml_open_match = _DSML_OPEN_SEARCH_RE.search(text) if _use_dsml else None
+            if _dsml_open_match:
+                _dsml_open_found = _dsml_open_match.group(0)
+                before_dsml = text[:_dsml_open_match.start()]
+                after_dsml = text[_dsml_open_match.end():]
                 if before_dsml.strip():
                     yield {"type": "answer", "text": before_dsml}
 
                 # Buffer until we find the closing tag
                 full_block = _dsml_open_found + after_dsml
-                # Find matching close tag variant
-                _dsml_close_found = None
-                for _cv in _DSML_CLOSE_VARIANTS:
-                    if _cv in full_block:
-                        _dsml_close_found = _cv
-                        break
-                if _dsml_close_found:
-                    end_idx = full_block.find(_dsml_close_found) + len(_dsml_close_found)
+                # Find matching close tag via regex
+                _dsml_close_match = _DSML_CLOSE_SEARCH_RE.search(full_block)
+                if _dsml_close_match:
+                    end_idx = _dsml_close_match.end()
                     block = full_block[:end_idx]
                     remainder = full_block[end_idx:]
                     _, dsml_calls = _extract_dsml_from_text(block)
@@ -643,7 +660,7 @@ async def normalize_stream(
                         cleaned_r, more_calls = _extract_dsml_from_text(remainder)
                         for fc in more_calls:
                             yield fc
-                        cleaned_r = _ORPHAN_DSML_RE.sub("", cleaned_r)
+                        cleaned_r = _strip_orphan_dsml(cleaned_r)
                         if cleaned_r.strip():
                             yield {"type": "answer", "text": cleaned_r}
                 else:
@@ -665,8 +682,16 @@ async def normalize_stream(
 
             # Check if this chunk ends with a partial tag prefix
             if _use_dsml:
+                # Generate representative DSML tags for partial-suffix detection.
+                # Covers single-pipe and double-pipe variants (both ASCII and fullwidth).
                 partial = None
-                for _v in _DSML_OPEN_VARIANTS + _DSML_CLOSE_VARIANTS:
+                _dsml_partial_candidates = [
+                    "<|DSML|tool_calls>", "<｜DSML｜tool_calls>",
+                    "<｜｜DSML｜｜tool_calls>", "<||DSML||tool_calls>",
+                    "</|DSML|tool_calls>", "</｜DSML｜tool_calls>",
+                    "</｜｜DSML｜｜tool_calls>", "</||DSML||tool_calls>",
+                ]
+                for _v in _dsml_partial_candidates:
                     p = _partial_tag_suffix(cleaned, _v)
                     if p:
                         partial = p
@@ -690,7 +715,7 @@ async def normalize_stream(
             # leaked through chunk-boundary races or prefix reassembly.
             _pre_orphan = cleaned
             cleaned = _ORPHAN_TAG_RE.sub("", cleaned)
-            cleaned = _ORPHAN_DSML_RE.sub("", cleaned)
+            cleaned = _strip_orphan_dsml(cleaned)
             if cleaned != _pre_orphan:
                 _dlog(f"ORPHAN_STRIP | before={repr(_pre_orphan[-50:])} | after={repr(cleaned[-50:])}")
             if cleaned.strip():
@@ -706,12 +731,14 @@ async def normalize_stream(
                 logger.warning("Discarding incomplete %s buffer at stream end: %s", fmt, _action_buffer[:100])
                 _action_buffer = ""
                 _in_action = False
-            _debug_fh.close()
-            try:
-                _raw_fh.write(f"=== STREAM END | {_dt_raw.now().isoformat()} ===\n")
-                _raw_fh.close()
-            except Exception:
-                pass
+            if _debug_fh is not None:
+                _debug_fh.close()
+            if _raw_fh is not None:
+                try:
+                    _raw_fh.write(f"=== STREAM END | {_dt.now().isoformat()} ===\n")
+                    _raw_fh.close()
+                except Exception:
+                    pass
 
             for _idx in sorted(_tc_accum):
                 acc = _tc_accum[_idx]

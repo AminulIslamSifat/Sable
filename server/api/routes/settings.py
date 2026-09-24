@@ -294,6 +294,53 @@ async def refresh_mimo_token() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Refresh failed: {exc}")
 
 
+@router.post("/api/settings/mistral_web/refresh-token")
+async def refresh_mistral_web_token() -> dict[str, Any]:
+    """Force a live Mistral (Web) cookie read AND validate it against Mistral.
+
+    Auth is an Ory Kratos session (ory_session_* cookies). Pinned account wins;
+    otherwise the global active account is used. Probes Mistral with the cookie
+    before reporting success, so a stale session returns a real error.
+    """
+    try:
+        jar = await service.get_mistral_web_cookies()
+        browser = service._browser_for_provider("mistral_web")
+        account = Path(browser.user_data_dir).name
+        try:
+            from connectors.mistral_web.client import get_client as _mw
+            client = _mw()
+            client.invalidate_jar()
+        except Exception:
+            client = None
+
+        sess = next((k for k in jar if k.startswith("ory_session_")), "")
+        preview = (sess[:14] + "...") if sess else "***"
+
+        if client is not None:
+            try:
+                await client.validate_auth()
+            except Exception as exc:
+                logger.warning("Mistral (Web) token validation failed for %s: %s", account, exc)
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Mistral rejected session for {account} [{preview}]: {exc}",
+                )
+
+        return {
+            "status": "ok",
+            "message": f"Mistral (Web) session refreshed & verified for {account}",
+            "account": account,
+            "token_preview": preview,
+            "validated": True,
+            "active": True,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Mistral (Web) token refresh failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Refresh failed: {exc}")
+
+
 @router.post("/api/settings/kimi/refresh-token")
 async def refresh_kimi_token() -> dict[str, Any]:
     """Ensure a live Kimi ghost session that holds a login token.
@@ -352,7 +399,7 @@ async def refresh_waf_token() -> dict[str, Any]:
         # Grab EVERY provider's tokens in one pass. Each provider's browser is
         # launched once and left running (no close), so refreshing all of them
         # is one warm Chromium per account instead of an open→close→open cycle.
-        ds_ok = zai_ok = gem_ok = mimo_ok = False
+        ds_ok = zai_ok = gem_ok = mimo_ok = mistral_web_ok = False
         previews: dict[str, str] = {}
 
         def _pv(v: str, n: int = 20) -> str:
@@ -403,6 +450,17 @@ async def refresh_waf_token() -> dict[str, Any]:
         except Exception as exc:
             logger.warning("MiMo token refresh during WAF refresh failed: %s", exc)
             previews["mimo"] = "failed"
+        try:
+            mw_jar = await service.get_mistral_web_cookies()
+            if mw_jar:
+                from connectors.mistral_web.client import get_client as _mw
+                _mw().invalidate_jar()
+                mistral_web_ok = True
+                _sess = next((k for k in mw_jar if k.startswith("ory_session_")), "")
+                previews["mistral_web"] = _pv(_sess, 14)
+        except Exception as exc:
+            logger.warning("Mistral (Web) token refresh during WAF refresh failed: %s", exc)
+            previews["mistral_web"] = "failed"
 
         # Compact token summary for the toast popup.
         parts = []
@@ -416,6 +474,8 @@ async def refresh_waf_token() -> dict[str, Any]:
             parts.append(f"gem={previews.get('gemini_web','***')}")
         if mimo_ok:
             parts.append(f"mimo={previews.get('mimo','***')}")
+        if mistral_web_ok:
+            parts.append(f"mweb={previews.get('mistral_web','***')}")
         summary = " ".join(parts) if parts else "none"
 
         return {
@@ -427,6 +487,7 @@ async def refresh_waf_token() -> dict[str, Any]:
             "zai": zai_ok,
             "gemini_web": gem_ok,
             "mimo": mimo_ok,
+            "mistral_web": mistral_web_ok,
             "token_previews": previews,
         }
     except Exception as exc:
@@ -1503,6 +1564,17 @@ async def list_accounts_by_provider() -> dict[str, Any]:
     except Exception:
         pass
 
+    # Mistral (Web) auth snapshots — per-account {cookie_name: value}
+    mistral_web_auth: dict = {}
+    try:
+        for _mw in _SYSTEM_DIR.glob("browser-data-*/.mistral_web_auth.json"):
+            try:
+                mistral_web_auth[_mw.parent.name] = json.loads(_mw.read_text())
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     from engine.config import get_all_exhaustion_status, get_all_captcha_block_status
     exhaustion = get_all_exhaustion_status()
     captcha_blocks = get_all_captcha_block_status()
@@ -1519,22 +1591,80 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                 return kw.capitalize() if kw != "msedge" else "Edge"
         return Path(path).stem
 
-    def _profile_has_kimi(entry: Path) -> bool:
-        """True if this browser profile holds a kimi.ai login.
+    def _profile_has_mistral_web(entry: Path) -> bool:
+        """True if this profile holds a *logged-in* chat.mistral.ai session.
 
-        Two signals: the ghost marker (written when the Kimi connector ran
-        here) or a kimi.ai cookie in the profile's Cookies DB.
+        Mistral auth is an Ory Kratos ``ory_session_*`` cookie. Checks:
+        1. ``.mistral_web_auth.json`` snapshot (written by service.py on refresh)
+        2. Live SQLite query for ``ory_session_`` cookies (not raw binary grep,
+           which matches stale deleted rows)
         """
+        # Primary: disk snapshot from last refresh
         try:
-            if (entry / ".kimi_ghost.json").is_file():
-                return True
+            if (entry / ".mistral_web_auth.json").is_file():
+                import json as _json
+                jar = _json.loads((entry / ".mistral_web_auth.json").read_text())
+                if any(k.startswith("ory_session_") and v for k, v in jar.items()):
+                    return True
         except Exception:
             pass
+
+        # Fallback: live SQLite query (avoids stale byte matches)
         try:
+            import sqlite3
             ck = entry / "Default" / "Cookies"
             if ck.is_file():
-                with open(ck, "rb") as fh:
-                    return b"kimi.ai" in fh.read()
+                conn = sqlite3.connect(f"file:{ck}?mode=ro", uri=True)
+                try:
+                    cur = conn.execute(
+                        "SELECT name FROM cookies WHERE host_key LIKE '%mistral%' "
+                        "AND name LIKE 'ory_session_%'"
+                    )
+                    if cur.fetchone() is not None:
+                        return True
+                finally:
+                    conn.close()
+        except Exception:
+            pass
+        return False
+
+    def _profile_has_kimi(entry: Path) -> bool:
+        """True if this profile holds a kimi.ai login.
+
+        Checks two sources:
+        1. ``.kimi_tokens.json`` — the persisted token store written by the
+           ghost session whenever it finds a live JWT. This is the primary
+           and most reliable signal.
+        2. Chromium Cookies DB — fallback that queries actual live cookie
+           rows (not raw binary grep, which matches stale deleted data).
+        """
+        # Primary: check the persisted token store
+        try:
+            from connectors.kimi.ghost import TOKEN_STORE_PATH, _load_token_store
+            if TOKEN_STORE_PATH.exists():
+                store = _load_token_store()
+                # Match by account name (e.g. "browser-data-acc1")
+                acct_name = entry.name
+                if acct_name in store and store[acct_name]:
+                    return True
+        except Exception:
+            pass
+
+        # Fallback: query the actual SQLite cookies table for live kimi cookies
+        try:
+            import sqlite3
+            ck = entry / "Default" / "Cookies"
+            if ck.is_file():
+                conn = sqlite3.connect(f"file:{ck}?mode=ro", uri=True)
+                try:
+                    cur = conn.execute(
+                        "SELECT name FROM cookies WHERE host_key LIKE '%kimi%' "
+                        "AND (name='access_token' OR name='refresh_token' OR name='kimi_session')"
+                    )
+                    if cur.fetchone() is not None:
+                        return True
+                finally:
+                    conn.close()
         except Exception:
             pass
         return False
@@ -1564,6 +1694,7 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                     and _mimo_jar.get("xiaomichatbot_serviceToken")
                 )
                 _has_kimi = _profile_has_kimi(entry)
+                _has_mistral_web = _profile_has_mistral_web(entry)
                 accounts.append({
                     "name": entry.name,
                     "num": int(m.group(1)),
@@ -1575,6 +1706,7 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                     "has_gemini": _has_gemini,
                     "has_mimo": _has_mimo,
                     "has_kimi": _has_kimi,
+                    "has_mistral_web": _has_mistral_web,
                     "exhausted": exhaustion.get(entry.name, False),
                     "captcha_blocked": captcha_blocks.get(entry.name, False),
                     "browser_path": browser_path,
@@ -1629,6 +1761,7 @@ async def list_accounts_by_provider() -> dict[str, Any]:
                 "has_gemini": False,
                 "has_mimo": False,
                 "has_kimi": _profile_has_kimi(entry),
+                "has_mistral_web": _profile_has_mistral_web(entry),
                 "exhausted": False,
                 "captcha_blocked": False,
                 "browser_path": browser_path,
@@ -1696,6 +1829,12 @@ async def list_accounts_by_provider() -> dict[str, Any]:
     kimi_accounts = [a for a in browser_accounts if a.get("has_kimi")]
     kimi_accounts += [a for a in unregistered_browser_data if a.get("has_kimi")]
     providers["kimi"] = _browser_provider("kimi", "Kimi", kimi_accounts)
+
+    # Mistral (Web): browser-based. Lists every profile holding a chat.mistral.ai
+    # session — both standard acc* profiles AND dedicated non-acc dirs.
+    mistral_web_accounts = [a for a in browser_accounts if a.get("has_mistral_web")]
+    mistral_web_accounts += [a for a in unregistered_browser_data if a.get("has_mistral_web")]
+    providers["mistral_web"] = _browser_provider("mistral_web", "Mistral (Web)", mistral_web_accounts)
 
     # DeepSeek: present as api_key type — tokens are JWTs, no browser swap needed
     try:
@@ -1859,7 +1998,7 @@ async def switch_api_key(provider: str, payload: dict[str, Any]) -> dict[str, An
 # Providers whose account selection is per-provider (pinned) rather than global.
 # Qwen is deliberately excluded: it IS the global active account, so its switch
 # stays on /accounts/switch and every unpinned provider follows it.
-_PER_PROVIDER_SWITCH = ("zai", "gemini_web", "gemini", "mimo", "kimi")
+_PER_PROVIDER_SWITCH = ("zai", "gemini_web", "gemini", "mimo", "kimi", "mistral_web")
 
 
 @router.post("/api/settings/accounts/switch-provider")
@@ -1907,6 +2046,29 @@ async def switch_provider_account(payload: dict[str, Any]) -> dict[str, Any]:
             await service.close_scoped(old_dir)
     except Exception as exc:
         logger.warning("switch-provider teardown failed for %s: %s", provider, exc)
+
+    # Drop the connector's in-memory cookie/token cache. Browser-auth clients
+    # (mistral_web, gemini_web, mimo) cache their jar for minutes; without this
+    # a fresh pin keeps serving the PREVIOUS account's session until the TTL
+    # expires, so the switch appears to do nothing on the backend.
+    try:
+        if provider in ("gemini_web", "gemini"):
+            from connectors.gemini_web.client import get_client as _gw_inv
+            _gw_inv().invalidate_jar()
+        elif provider == "mimo":
+            from connectors.mimo.client import get_client as _mimo_inv
+            _mimo_inv().invalidate_jar()
+        elif provider == "mistral_web":
+            from connectors.mistral_web.client import get_client as _mw_inv
+            _mw_inv().invalidate_jar()
+        elif provider == "zai":
+            try:
+                from connectors.zai.client import get_client as _zai_inv
+                _zai_inv().invalidate_jar()
+            except AttributeError:
+                pass
+    except Exception as exc:
+        logger.warning("switch-provider cache invalidate failed for %s: %s", provider, exc)
 
     new_dir = str(await asyncio.to_thread(get_provider_browser_dir, provider))
     new_account = Path(new_dir).name
@@ -2047,6 +2209,7 @@ async def create_account(payload: dict[str, Any] | None = None) -> dict[str, Any
         "gemini": "https://gemini.google.com/app",
         "deepseek": "https://chat.deepseek.com",
         "mimo": "https://aistudio.xiaomimimo.com",
+        "mistral_web": "https://chat.mistral.ai/chat",
     }
 
     # Resolve the list of login sites to open (default: qwen).
@@ -2364,13 +2527,6 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
                 "user_data_dir": str(target_path),
                 "headless": False,
                 "timeout": 0,
-                "args": [
-                    "--no-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disk-cache-size=2097152",
-                    "--disable-gpu-shader-cache",
-                    "--disable-component-update",
-                ] + extra_browser_args(resolved_browser),
             }
             if resolved_browser:
                 launch_kwargs["executable_path"] = resolved_browser

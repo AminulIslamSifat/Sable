@@ -134,6 +134,8 @@ class GeminiWebClient:
     """Browser-auth Gemini client. Cookies come from an injected provider."""
 
     def __init__(self) -> None:
+        from connectors.common.error_ctx import ErrorContext
+        self.ctx = ErrorContext("gemini_web")
         self._cookie_provider: Callable[[], Awaitable[dict[str, str]]] | None = None
         self._token_provider: Callable[[], Awaitable[Any]] | None = None
         self._bl: str | None = None    # live frontend build id (WIZ cfb2h)
@@ -461,7 +463,7 @@ class GeminiWebClient:
                     resp = await http.post(url, headers=headers, data=body,
                                            cookies=jar, stream=True)
             except Exception as exc:
-                yield {"type": "error", "message": f"Gemini web request failed: {exc}"}
+                yield self.ctx.error(f"request failed: {exc}")
                 return
 
             # Expose the live response so cancel() can abort it (stop button).
@@ -469,7 +471,7 @@ class GeminiWebClient:
 
             if resp.status_code != 200:
                 self._active_resp = None
-                yield {"type": "error", "message": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+                yield self.ctx.error(f"HTTP {resp.status_code}: {resp.text[:200]}", status_code=resp.status_code)
                 return
 
             # Stream raw bytes and slice frames ourselves. curl_cffi's
@@ -526,11 +528,11 @@ class GeminiWebClient:
                     seen = len(frames)
             except Exception as exc:
                 if not got_frame:
-                    yield {"type": "error", "message": f"Stream read failed: {exc}"}
+                    yield self.ctx.error(f"stream read failed: {exc}")
                     return
 
             if not got_frame:
-                yield {"type": "error", "message": "No parseable frames in response"}
+                yield self.ctx.error("no parseable frames in response")
                 return
 
             self._active_resp = None

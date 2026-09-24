@@ -1,6 +1,7 @@
 """Qwen Session & Authentication Manager — handles headers, WAF tokens, and server session creation."""
 
 import asyncio
+import logging
 import os
 import time
 import uuid
@@ -12,6 +13,8 @@ from typing import Any
 
 
 from engine.config import COOKIES, BX_UA, BX_UMIDTOKEN, NEW_CHAT_URL, get_model_config
+
+logger = logging.getLogger("sable.session")
 
 
 def _get_user_name() -> str:
@@ -104,7 +107,7 @@ def _ensure_virtual_display() -> str | None:
         if _display_available(f":{num}"):
             _XVFB_PROC = proc
             _XVFB_DISPLAY = f":{num}"
-            print(f"[DEBUG] Started Xvfb on DISPLAY=:{num} for headed browser")
+            logger.debug(f"Started Xvfb on DISPLAY=:{num} for headed browser")
             return _XVFB_DISPLAY
         try:
             proc.terminate()
@@ -314,14 +317,14 @@ class BrowserManager:
                 stale = True
 
         if stale:
-            print("[DEBUG] Removing stale SingletonLock...")
+            logger.debug("Removing stale SingletonLock...")
             try:
                 lock_file.unlink()
             except OSError as e:
-                print(f"[ERROR] Could not remove lock: {e}")
+                logger.error(f"Could not remove lock: {e}")
                 return False
         else:
-            print("[WARN] Profile locked by active Chromium process")
+            logger.warning("Profile locked by active Chromium process")
             return False
         return True
 
@@ -339,7 +342,7 @@ class BrowserManager:
         if not holders:
             return False
         if any(_pid_is_headless(p) is True for p in holders):
-            print('[DEBUG] live browser on profile is headless - not usable for z.ai')
+            logger.debug('live browser on profile is headless - not usable for z.ai')
             return False
 
         ports = _ph._cmdline_cdp_ports(holders)
@@ -350,7 +353,7 @@ class BrowserManager:
             if lp not in ports:
                 ports.append(lp)
         if not ports:
-            print('[DEBUG] live headed browser exposes no CDP port - cannot adopt')
+            logger.debug('live headed browser exposes no CDP port - cannot adopt')
             return False
 
         from playwright.async_api import async_playwright
@@ -366,10 +369,10 @@ class BrowserManager:
                 self.page = ctxs[0].pages[0] if ctxs[0].pages else await ctxs[0].new_page()
                 self._adopted = True
                 self.headless = False
-                print('[DEBUG] adopted live headed browser over CDP (port %d)' % port)
+                logger.debug("adopted live headed browser over CDP (port %d)", port)
                 return True
             except Exception as exc:
-                print('[DEBUG] CDP adopt failed on port %d: %s' % (port, exc))
+                logger.debug("CDP adopt failed on port %d: %s", port, exc)
                 try:
                     if self.playwright is not None:
                         await self.playwright.stop()
@@ -402,7 +405,7 @@ class BrowserManager:
                     pass
         await asyncio.sleep(0.2)
         _ph._clear_singleton(profile)
-        print('[DEBUG] reclaimed %d process(es) on profile' % len(victims))
+        logger.debug("reclaimed %d process(es) on profile", len(victims))
 
     _start_failed: bool = False
 
@@ -430,7 +433,7 @@ class BrowserManager:
         else:
             _holders = _ph._profile_holder_pids(_profile)
             if any(_pid_is_headless(p) is True for p in _holders):
-                print('[DEBUG] headless browser holds the profile - reclaiming for headed z.ai')
+                logger.debug('headless browser holds the profile - reclaiming for headed z.ai')
                 await self._reclaim_profile()
             else:
                 raise RuntimeError(
@@ -439,9 +442,9 @@ class BrowserManager:
                 )
         import traceback as _tb
         launch_num = _increment_playwright_counter()
-        print(f"[DEBUG] Launching persistent browser context #{launch_num} (headless={self.headless})...")
+        logger.debug(f"Launching persistent browser context #{launch_num} (headless={self.headless})...")
         _caller = _tb.extract_stack()[-2]
-        print(f"[CALLER] start() #{launch_num} from {_caller.filename}:{_caller.lineno} in {_caller.name}")
+        logger.debug(f"start() #{launch_num} from {_caller.filename}:{_caller.lineno} in {_caller.name}")
         from playwright.async_api import async_playwright
         from engine.platform_paths import resolve_browser_for_profile, extra_browser_args
         try:
@@ -465,7 +468,7 @@ class BrowserManager:
                 if _env:
                     launch_kwargs["env"] = _env
                 else:
-                    print("[WARN] No DISPLAY available for headed launch")
+                    logger.warning("No DISPLAY available for headed launch")
             if exe_path:
                 launch_kwargs["executable_path"] = exe_path
             self.context = await self.playwright.chromium.launch_persistent_context(**launch_kwargs)
@@ -481,17 +484,17 @@ class BrowserManager:
                 await self.page.wait_for_timeout(500)
 
             if not has_token:
-                print("[WARN] ⚠️  No JWT token in localStorage after 6s!")
-                print(f"[WARN] Profile may be stale/corrupted. Try: rm -rf {self.user_data_dir} && re-login via browser_opener.py")
+                logger.warning("⚠️  No JWT token in localStorage after 6s!")
+                logger.warning(f"Profile may be stale/corrupted. Try: rm -rf {self.user_data_dir} && re-login via browser_opener.py")
             else:
-                print("[DEBUG] ✅ Auth token hydrated successfully.")
+                logger.debug("✅ Auth token hydrated successfully.")
 
             # Await the SDK load directly — the old fixed 1s sleep added dead
             # time to every cold launch with no guarantee it had loaded.
             try:
                 await self.page.add_script_tag(url="https://gosspublic.alicdn.com/aliyun-oss-sdk-6.18.1.min.js")
             except Exception as exc:
-                print(f"[WARN] Aliyun OSS SDK load failed (non-fatal): {exc}")
+                logger.warning(f"Aliyun OSS SDK load failed (non-fatal): {exc}")
         except Exception:
             # Mark as permanently failed so callers can't loop on this profile.
             # One failure = done. Re-login or delete the profile to recover.
@@ -517,7 +520,7 @@ class BrowserManager:
         """
         if not self.headless:
             return
-        print("[DEBUG] z.ai requires a headed browser — restarting headed on a virtual display...")
+        logger.debug("z.ai requires a headed browser — restarting headed on a virtual display...")
         await self.restart(headless=False)
 
     async def get_fresh_headers(self) -> dict[str, str]:
@@ -568,11 +571,11 @@ class BrowserManager:
             _check_cookies = await self.context.cookies()
             _cookie_names = {c["name"] for c in _check_cookies}
             if "acw_tc" in _cookie_names and "isg" in _cookie_names:
-                print("[DEBUG] WAF cookies (acw_tc, isg) baked successfully")
+                logger.debug("WAF cookies (acw_tc, isg) baked successfully")
                 break
             await self.page.wait_for_timeout(500)
         else:
-            print("[WARN] WAF cookies (acw_tc/isg) not detected after 6s — captcha likely")
+            logger.warning("WAF cookies (acw_tc/isg) not detected after 6s — captcha likely")
 
         all_cookies = await self.context.cookies()
         # Only include cookies that a real browser would send to chat.qwen.ai.
@@ -588,15 +591,14 @@ class BrowserManager:
         missing = [key for key in ("bx-ua", "bx-umidtoken") if not captured.get(key)]
         if missing:
             status_info = str(status)[:500]
-            print(
-                "[WARN] Header capture incomplete: missing " + ", ".join(missing) +
-                "; cookies=" + ("yes" if cookie_str else "no") +
-                "; status=" + status_info +
-                "; falling back to configured session tokens"
+            logger.warning(
+                "header capture incomplete: missing %s; cookies=%s; status=%s; "
+                "falling back to configured session tokens",
+                ", ".join(missing), "yes" if cookie_str else "no", status_info,
             )
 
         fresh = "fresh" if not missing else "fallback"
-        print(f"[DEBUG] Using {fresh} WAF headers (bx-ua={'yes' if captured.get('bx-ua') else 'no'}, bx-umidtoken={'yes' if captured.get('bx-umidtoken') else 'no'})")
+        logger.debug(f"Using {fresh} WAF headers (bx-ua={'yes' if captured.get('bx-ua') else 'no'}, bx-umidtoken={'yes' if captured.get('bx-umidtoken') else 'no'})")
 
         # Use the live page URL as Referer when we're on a chat page, so the
         # request carries the same https://chat.qwen.ai/c/<id> referer the real
@@ -630,7 +632,7 @@ class BrowserManager:
         # If the browser isn't up yet, fall back to get_fresh_headers().
         if not self.page or not self.context:
             if not self.playwright:
-                print("[DEBUG] Browser not running, doing full fresh header setup...")
+                logger.debug("Browser not running, doing full fresh header setup...")
                 return await self.get_fresh_headers()
             raise RuntimeError("Browser session is not available")
 
@@ -790,7 +792,7 @@ class BrowserManager:
         server-side — while images use the `vision` class. No Playwright JS needed.
         """
         if not os.path.exists(file_path):
-            print(f"[ERROR] File not found: {file_path}")
+            logger.error(f"File not found: {file_path}")
             return None
 
         filesize = os.path.getsize(file_path)
@@ -824,14 +826,14 @@ class BrowserManager:
                 bx_ua = bx_ua or _hdr("bx-ua")
                 bx_umidtoken = bx_umidtoken or _hdr("bx-umidtoken")
             except Exception as e:
-                print(f"[WARN] upload_file live-header harvest failed ({e}) — trying disk tokens")
+                logger.warning(f"upload_file live-header harvest failed ({e}) — trying disk tokens")
 
         # Fallback to config constants as last resort
         cookies = cookies or COOKIES
         bx_ua = bx_ua or BX_UA
         bx_umidtoken = bx_umidtoken or BX_UMIDTOKEN
 
-        print(f"[DEBUG] Uploading '{filename}' ({filesize} bytes) via direct HTTP...")
+        logger.debug(f"Uploading '{filename}' ({filesize} bytes) via direct HTTP...")
 
         # Fingerprint derived from the browser that created the active account.
         _ua, _sec_ch_ua = _current_account_ua()
@@ -866,15 +868,15 @@ class BrowserManager:
                     json=sts_payload,
                 )
             if sts_resp.status_code != 200:
-                print(f"[ERROR] STS token request failed: HTTP {sts_resp.status_code} — {sts_resp.content.decode(errors='replace')[:300]}")
+                logger.error(f"STS token request failed: HTTP {sts_resp.status_code} — {sts_resp.content.decode(errors='replace')[:300]}")
                 return None
             sts_data = json.loads(sts_resp.content)
             if not sts_data.get("success"):
-                print(f"[ERROR] STS token rejected: {json.dumps(sts_data)[:300]}")
+                logger.error(f"STS token rejected: {json.dumps(sts_data)[:300]}")
                 return None
             sts = sts_data["data"]
         except Exception as e:
-            print(f"[ERROR] STS token request exception: {e}")
+            logger.error(f"STS token request exception: {e}")
             return None
 
         # Step 2: Upload to Aliyun OSS
@@ -887,10 +889,10 @@ class BrowserManager:
                 put_result = bucket.put_object(sts["file_path"], f)
 
             if put_result.status not in (200, 204):
-                print(f"[ERROR] OSS PUT failed with status {put_result.status}")
+                logger.error(f"OSS PUT failed with status {put_result.status}")
                 return None
         except Exception as e:
-            print(f"[ERROR] OSS upload failed: {e}")
+            logger.error(f"OSS upload failed: {e}")
             return None
 
         # Step 3: Build file object
@@ -935,7 +937,7 @@ class BrowserManager:
             "file_class": file_class,
             "uploadTaskId": str(uuid.uuid4()),
         }
-        print(f"[DEBUG] File uploaded successfully! ({file_class}) File ID: {file_id}")
+        logger.debug(f"File uploaded successfully! ({file_class}) File ID: {file_id}")
         return file_obj
 
     # Backward-compatible alias — existing callers pass images.
@@ -962,7 +964,7 @@ class BrowserManager:
                     bx_ua=cached.get("bx_ua"),
                     bx_umidtoken=cached.get("bx_umidtoken"),
                 )
-                print("[DEBUG] sync_context: using disk-cached tokens")
+                logger.debug("sync_context: using disk-cached tokens")
             else:
                 await self.start()
 
@@ -1017,11 +1019,11 @@ class BrowserManager:
                 r1 = await s1.post(SETTINGS_URL, json=tools_payload, headers=headers)
                 d1 = json.loads(r1.content)
                 if r1.status_code == 401 or d1.get("data", {}).get("code") == "Unauthorized":
-                    print(f"[WARN] sync_context: {r1.status_code} Unauthorized — response: {str(d1)[:300]}")
+                    logger.warning(f"sync_context: {r1.status_code} Unauthorized — response: {str(d1)[:300]}")
                     return False
                 if not d1.get("success"):
                     raise Exception(f"Disable tools failed: {d1}")
-                print("[DEBUG] Qwen default tools disabled")
+                logger.debug("Qwen default tools disabled")
 
             # Step 2: Update personalization instruction (separate session)
             instr_payload = {
@@ -1038,15 +1040,10 @@ class BrowserManager:
                 d2 = json.loads(r2.content)
                 if not d2.get("success"):
                     raise Exception(f"Update instruction failed: {d2}")
-                try:
-                    with open("test/ins.md", "w") as file:
-                        file.write(instructions)
-                except:
-                    print("writing to ins.md failed")
-                print(f"[DEBUG] Context synced successfully! ({len(instructions)} chars)")
+                logger.debug("sync_context: instruction synced (%d chars)", len(instructions))
                 return True
         except Exception as e:
-            print(f"[ERROR] sync_context failed: {e}")
+            logger.error("sync_context failed: %s", e, exc_info=True)
             return False
 
     async def close(self):
@@ -1111,16 +1108,16 @@ async def create_new_chat(headers: dict[str, str], model: str | None = None) -> 
             raw = res.content.decode(errors="replace")
             # Guard against WAF returning HTML captcha page with HTTP 200
             if raw.lstrip().startswith("<"):
-                print("[ERROR] WAF captcha challenge on chats/new — tokens likely stale")
+                logger.error("WAF captcha challenge on chats/new — tokens likely stale")
                 return None
             data = _json.loads(raw)
             if data.get("success"):
                 chat_id = data.get("data", {}).get("id")
-                print(f"[DEBUG] Server created chat session ID: {chat_id}")
+                logger.debug(f"Server created chat session ID: {chat_id}")
                 return chat_id
-            print(f"[ERROR] Server refused chat creation: {data}")
+            logger.error(f"Server refused chat creation: {data}")
         else:
-            print(f"[ERROR] HTTP {res.status_code} on chats/new: {res.content.decode(errors='replace')[:300]}")
+            logger.error(f"HTTP {res.status_code} on chats/new: {res.content.decode(errors='replace')[:300]}")
     except Exception as e:
-        print(f"[ERROR] create_new_chat failed: {e}")
+        logger.error(f"create_new_chat failed: {e}")
     return None

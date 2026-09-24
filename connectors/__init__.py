@@ -105,6 +105,9 @@ def get_connector(backend: str, model_id: str | None = None) -> Any:
     elif backend == "mistral":
         from connectors.mistral.client import get_client
         _registry[backend] = get_client()
+    elif backend == "mistral_web":
+        from connectors.mistral_web.client import get_client
+        _registry[backend] = get_client()
     elif backend == "openai":
         from connectors.openai.client import get_client
         _registry[backend] = get_client()

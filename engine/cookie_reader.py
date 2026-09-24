@@ -214,3 +214,23 @@ def read_mimo_cookies(user_data_dir: str) -> dict[str, str]:
         names=("xiaomichatbot_serviceToken", "userId", "xiaomichatbot_ph"),
         host_contains="xiaomimimo.com",
     )
+
+
+def read_mistral_web_cookies(user_data_dir: str) -> dict[str, str]:
+    """Convenience: Mistral (chat.mistral.ai) auth cookies, lock-free.
+
+    Auth is an Ory Kratos session. The session cookie name is dynamic
+    (``ory_session_<suffix>``), so we read every mistral.ai cookie and keep the
+    ones the API needs: the ory session + continuity + csrf token, plus the
+    anonymous-user id. A request is authenticated iff an ``ory_session_*``
+    cookie is present.
+    """
+    jar = read_cookies(user_data_dir, host_contains="mistral.ai")
+    out: dict[str, str] = {}
+    for name, val in jar.items():
+        if (name.startswith("ory_session_")
+                or name.startswith("ory_kratos_")
+                or name.startswith("csrf_token_")
+                or name in ("anonymousUser", "last-product-surface")):
+            out[name] = val
+    return out

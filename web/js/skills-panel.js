@@ -1610,6 +1610,9 @@
             setDsStatus("✅ Token refreshed: " + preview, "var(--success, #3daa5c)");
             showToast("DeepSeek token: " + preview, "success");
             await loadModels();
+            // Refresh promotes the new token to the pinned selection; re-render
+            // the key list so it shows as active without a manual reload.
+            if (window.loadAccountProfiles) await window.loadAccountProfiles();
           } else {
             const msg = data.detail || data.error || "DeepSeek token refresh failed";
             setDsStatus("✕ " + msg, "var(--danger, #cf3b52)");

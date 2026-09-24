@@ -477,7 +477,14 @@
         const emptyResponse = (!gotAnswer && !gotError && !gotDone && !gotTitle)
           || (gotDone && !gotAnswer && !gotError && !gotTitle);
         if (emptyResponse) {
-          const msg = gotDone ? "Response finished with no content" : "Stream ended without a response";
+          // Don't fabricate a vague message — the backend now emits a real
+          // `error` event for empty/rate-limited responses (gotError would be
+          // true and we'd never reach here). This branch only fires when the
+          // stream truly ended with nothing AND no error was sent, so be honest
+          // about which case it is.
+          const msg = gotDone
+            ? "The model returned an empty response. Check the provider status or retry."
+            : "The stream ended before any response arrived. Check your connection or retry.";
           showToast(msg, "error");
           ui.appendAnswer(`\n[error] ${msg}`);
         }

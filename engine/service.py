@@ -30,27 +30,41 @@ from engine.session import BrowserManager, create_new_chat, sanitize_fetch_heade
 
 logger = logging.getLogger("sable")
 
-# --- Raw response logger (Qwen only, server path) ---
+# --- Raw response logger (Qwen only, server path) -----------------------
+# Disk-write on every SSE chunk. Diagnostic only → OFF unless SABLE_RAW_LOG=1.
 _QWEN_LOG_DIR = Path(__file__).resolve().parent.parent / "output" / "qwen_raw"
-_QWEN_LOG_DIR.mkdir(parents=True, exist_ok=True)
-_QWEN_CHUNK_DIR = _QWEN_LOG_DIR.parent / "qwen_chunks"
-_QWEN_CHUNK_DIR.mkdir(parents=True, exist_ok=True)
+_qwen_raw_log = logging.getLogger("sable.qwen.raw")
+
+
+def _qwen_raw_logging_enabled() -> bool:
+    return os.environ.get("SABLE_RAW_LOG", "0") == "1"
 
 
 def _log_qwen_raw_line(line: str) -> None:
-    """Append a single raw SSE line to today's log file."""
-    logfile = _QWEN_LOG_DIR / f"{datetime.now():%Y-%m-%d}.txt"
-    with open(logfile, "a", encoding="utf-8") as f:
-        f.write(f"[{datetime.now():%H:%M:%S.%f}] {line}\n")
+    """Append a single raw SSE line to today's log file (opt-in only)."""
+    if not _qwen_raw_logging_enabled():
+        return
+    try:
+        _QWEN_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        logfile = _QWEN_LOG_DIR / f"{datetime.now():%Y-%m-%d}.txt"
+        with open(logfile, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now():%H:%M:%S.%f}] {line}\n")
+    except OSError as exc:
+        _qwen_raw_log.debug("raw line log write failed: %s", exc)
 
 
 def _log_qwen_stream_chunk(phase: str, content: str) -> None:
-    """Log a single parsed streaming content delta."""
-    if not content:
+    """Log a single parsed streaming delta (opt-in only)."""
+    if not content or not _qwen_raw_logging_enabled():
         return
-    logfile = _QWEN_CHUNK_DIR / f"{datetime.now():%Y-%m-%d}.txt"
-    with open(logfile, "a", encoding="utf-8") as f:
-        f.write(f"[{datetime.now():%H:%M:%S.%f}] [{phase}] {content!r}\n")
+    try:
+        chunk_dir = _QWEN_LOG_DIR.parent / "qwen_chunks"
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+        logfile = chunk_dir / f"{datetime.now():%Y-%m-%d}.txt"
+        with open(logfile, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now():%H:%M:%S.%f}] [{phase}] {content!r}\n")
+    except OSError as exc:
+        _qwen_raw_log.debug("raw chunk log write failed: %s", exc)
 
 
 
@@ -800,6 +814,81 @@ class ChatService:
 
         raise RuntimeError("No MiMo auth: account has none and no disk snapshot")
 
+    async def get_mistral_web_cookies(self) -> dict[str, str]:
+        """Return Mistral (chat.mistral.ai) auth cookies for the provider account.
+
+        Mistral auth is an Ory Kratos session cookie jar (ory_session_*,
+        ory_kratos_continuity, csrf_token_*). Read lock-free from the provider's
+        account profile, snapshot to disk per account as fallback — same shape
+        as get_mimo_cookies.
+        """
+        import json as _json
+        from pathlib import Path as _Path
+
+        def _has_auth(jar: dict[str, str]) -> bool:
+            return any(k.startswith("ory_session_") and jar[k] for k in jar)
+
+        def _snap_path(d: str) -> _Path:
+            return _Path(d) / ".mistral_web_auth.json"
+
+        browser = self._browser_for_provider("mistral_web")
+        active_dir = browser.user_data_dir
+
+        # 0) Lock-free disk read — preferred.
+        try:
+            from engine.cookie_reader import read_mistral_web_cookies as _read_mw
+            jar = _read_mw(str(active_dir))
+            if _has_auth(jar):
+                try:
+                    _snap_path(active_dir).write_text(_json.dumps(jar), encoding="utf-8")
+                except Exception:
+                    pass
+                logger.info("Mistral (Web) auth read lock-free from %s", _Path(active_dir).name)
+                return jar
+            logger.info("account %s has no Mistral (Web) auth on disk; trying browser",
+                        _Path(active_dir).name)
+        except Exception as exc:
+            logger.warning("lock-free Mistral (Web) read failed (%s); trying browser", exc)
+
+        # 1) live browser read from the provider's account (fallback)
+        try:
+            async with self._lock:
+                await browser.start()
+                ctx = browser.context
+                if ctx is not None:
+                    raw = await ctx.cookies("https://chat.mistral.ai")
+                    jar = {c["name"]: c["value"] for c in raw}
+                    if _has_auth(jar):
+                        try:
+                            _snap_path(active_dir).write_text(_json.dumps(jar), encoding="utf-8")
+                        except Exception:
+                            pass
+                        return jar
+                    logger.info("account %s has no Mistral (Web) auth; trying disk",
+                                _Path(active_dir).name)
+        except Exception as exc:
+            logger.warning("live Mistral (Web) cookie read failed (%s); trying disk", exc)
+
+        # 2) disk snapshot fallback — ONLY this account's own snapshot.
+        # Never glob across accounts: doing so returns another profile's
+        # session and validates the wrong user (the refresh would report
+        # success for an account that is actually logged out).
+        snap = _snap_path(str(active_dir))
+        if snap.is_file():
+            try:
+                jar = _json.loads(snap.read_text(encoding="utf-8"))
+                if _has_auth(jar):
+                    logger.warning(
+                        "Mistral (Web): falling back to %s's own disk snapshot (mtime=%s) — may be stale",
+                        _Path(active_dir).name, snap.stat().st_mtime)
+                    return jar
+            except Exception:
+                pass
+
+        raise RuntimeError(
+            "No Mistral (Web) auth for account %s: no ory_session cookie and no snapshot"
+            % _Path(active_dir).name)
+
     async def create_chat(self, model: str | None = None, bdd: str | None = None) -> str | None:
         headers = await self._ensure_headers(bdd)
         chat_id = await create_new_chat(headers, model=model)
@@ -890,7 +979,7 @@ class ChatService:
         thinking_mode: str | None = None,
         bdd: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        print(f"[STREAM] ▶ stream_events START chat_id={chat_id} msg_len={len(message)} bdd={bdd}")
+        logger.debug(f"▶ stream_events START chat_id={chat_id} msg_len={len(message)} bdd={bdd}")
 
         # --- Ghost tab primary path (2026-09-21) ----------------------------
         # In-page fetch on a parked ghost tab: Baxia signs at send-time, live
@@ -916,10 +1005,12 @@ class ChatService:
                         return
                 return
             except GhostError as _ge:
-                print(f"[STREAM] ghost failed ({_ge}) — falling back to raw API path")
+                logger.debug(f"ghost failed ({_ge}) — falling back to raw API path")
             except Exception as _gerr:
-                print(f"[STREAM] ghost unexpected failure "
-                      f"({type(_gerr).__name__}: {_gerr}) — raw API path")
+                logger.warning(
+                    "ghost unexpected failure (%s: %s) — raw API path",
+                    type(_gerr).__name__, _gerr,
+                )
 
         # Legacy raw API path — curl_cffi with browser-impersonated TLS. Reached
         # when ghost is disabled, files are pre-attached, an account is pinned,
@@ -927,29 +1018,29 @@ class ChatService:
         yield {"type": "status", "message": "qwen_transport_curl"}
 
         try:
-            print(f"[STREAM]   ↳ _ensure_headers(bdd={bdd})...")
+            logger.debug(f"  ↳ _ensure_headers(bdd={bdd})...")
             headers = await self._ensure_headers(bdd)
-            print(f"[STREAM]   ✓ headers ready (keys={list(headers.keys())[:3]}...)")
+            logger.debug(f"  ✓ headers ready (keys={list(headers.keys())[:3]}...)")
             active_chat_id = chat_id
 
             if not active_chat_id:
-                print(f"[STREAM]   ↳ create_new_chat() (no chat_id provided)...")
+                logger.debug(f"  ↳ create_new_chat() (no chat_id provided)...")
                 active_chat_id = await create_new_chat(headers, model=model)
                 if not active_chat_id:
-                    print(f"[STREAM]   ↳ create_new_chat() failed, refreshing headers...")
+                    logger.debug(f"  ↳ create_new_chat() failed, refreshing headers...")
                     headers = await self._refresh_headers(bdd)
                     active_chat_id = await create_new_chat(headers, model=model)
 
             if not active_chat_id:
-                print(f"[STREAM] ✗ Could not create chat session")
+                logger.debug(f"✗ Could not create chat session")
                 yield {"type": "error", "message": "Could not create chat session"}
                 return
         except Exception as exc:
-            print(f"[STREAM] ✗ Session startup failed: {type(exc).__name__}: {exc}")
+            logger.debug(f"✗ Session startup failed: {type(exc).__name__}: {exc}")
             yield {"type": "error", "message": f"Session startup failed: {type(exc).__name__}: {exc}"}
             return
 
-        print(f"[STREAM] ✓ active_chat_id={active_chat_id}, building body...")
+        logger.debug(f"✓ active_chat_id={active_chat_id}, building body...")
 
         yield {"type": "meta", "chat_id": active_chat_id, "parent_id": parent_id}
         yield {"type": "status", "message": "calling_upstream"}
@@ -965,13 +1056,13 @@ class ChatService:
                 _fb_instr = build_instructions(provider="qwen")
                 if _fb_instr:
                     message = f"[SYSTEM INSTRUCTION]\n{_fb_instr}\n\n[USER MESSAGE]\n{message}"
-                    print(f"[STREAM] Injected fallback instructions ({len(_fb_instr)} chars) for sync-failed account")
+                    logger.debug(f"Injected fallback instructions ({len(_fb_instr)} chars) for sync-failed account")
             except Exception as _fb_exc:
-                print(f"[STREAM] Failed to build fallback instructions: {_fb_exc}")
+                logger.debug(f"Failed to build fallback instructions: {_fb_exc}")
 
         body = build_body(message, active_chat_id, parent_id, files=files, model=model, thinking_mode=thinking_mode)
         params = {"chat_id": active_chat_id}
-        print(f"[STREAM] ↳ entering _stream_request() attempt loop...")
+        logger.debug(f"↳ entering _stream_request() attempt loop...")
 
         # Anti-burst jitter: randomized gap before sending to prevent WAF throttling.
         # Uses the same shared config as the scraper path (connectors.common.jitter).
@@ -982,7 +1073,7 @@ class ChatService:
                 yield {"type": "status", "message": f"qwen_delay_{_jdelay:.1f}s"}
                 await _sleep_jitter(_jdelay)
         except Exception as _jexc:
-            print(f"[STREAM] Qwen jitter skipped: {_jexc}")
+            logger.debug(f"Qwen jitter skipped: {_jexc}")
 
         # Sentinel: all setup complete, HTTP request is about to be sent.
         # Consumers can use this to start first-chunk timeouts accurately.
@@ -1029,16 +1120,16 @@ class ChatService:
         All probes are silent — errors here NEVER reach the user.
         """
         # Immediately call stop before first wait — don't waste 3s doing nothing
-        print(f"[STREAM]     🔨 Calling stop API immediately for chat {chat_id}")
+        logger.debug(f"    🔨 Calling stop API immediately for chat {chat_id}")
         stop_ok = await self._stop_upstream_generation(chat_id, response_id)
         if stop_ok:
-            print(f"[STREAM]     ✓ Stop API acknowledged on first call")
+            logger.debug(f"    ✓ Stop API acknowledged on first call")
             await asyncio.sleep(2)
             return True
 
         for i in range(10):
             await asyncio.sleep(3)
-            print(f"[STREAM]     ↳ CHAT_IN_PROGRESS check {i+1}/10 for chat {chat_id}")
+            logger.debug(f"    ↳ CHAT_IN_PROGRESS check {i+1}/10 for chat {chat_id}")
 
             # Re-call stop each iteration — upstream may ignore earlier calls
             try:
@@ -1047,7 +1138,7 @@ class ChatService:
                 stop_ok = False
 
             if stop_ok:
-                print(f"[STREAM]     ✓ Stop acknowledged on check {i+1}, waiting 2s...")
+                logger.debug(f"    ✓ Stop acknowledged on check {i+1}, waiting 2s...")
                 await asyncio.sleep(2)
                 return True
 
@@ -1071,10 +1162,10 @@ class ChatService:
                 continue
 
             if not still_busy:
-                print(f"[STREAM]     ✓ CHAT_IN_PROGRESS cleared after {(i+1)*3}s")
+                logger.debug(f"    ✓ CHAT_IN_PROGRESS cleared after {(i+1)*3}s")
                 return True
 
-        print(f"[STREAM]     ✗ CHAT_IN_PROGRESS still present after 30s")
+        logger.debug(f"    ✗ CHAT_IN_PROGRESS still present after 30s")
         return False
 
     def _is_chat_in_progress_error(self, raw: str, status_code: int) -> bool:
@@ -1109,7 +1200,7 @@ class ChatService:
         _CHUNK_TIMEOUT = 30.0  # seconds for first chunk and between chunks
 
         for attempt in range(1, max_attempts + 1):
-            print(f"[STREAM]   ↳ _stream_request attempt {attempt}/{max_attempts}")
+            logger.debug(f"  ↳ _stream_request attempt {attempt}/{max_attempts}")
             new_parent_id = parent_id
             chosen_response_id: str | None = None
             got_content = False
@@ -1126,15 +1217,15 @@ class ChatService:
             try:
                 browser = self._get_browser(bdd)
                 if browser.is_running and browser.page and browser.context:
-                    print("[STREAM]     🟢 browser is UP — grabbing live headers...")
+                    logger.debug("    🟢 browser is UP — grabbing live headers...")
                     _live = await browser.get_live_headers()
                     if _live and _live.get("Cookie"):
                         headers.update(_live)
-                        print(f"[STREAM]     ✓ live headers refreshed (bx-ua={'yes' if _live.get('bx-ua') else 'no'})")
+                        logger.debug(f"    ✓ live headers refreshed (bx-ua={'yes' if _live.get('bx-ua') else 'no'})")
                 else:
-                    print("[STREAM]     ⏭️  browser not running — skipped live header refresh, using cached")
+                    logger.debug("    ⏭️  browser not running — skipped live header refresh, using cached")
             except Exception as _hdr_exc:
-                print(f"[STREAM]     ⚠ live header refresh skipped: {_hdr_exc}")
+                logger.debug(f"    ⚠ live header refresh skipped: {_hdr_exc}")
             # ─────────────────────────────────────────────────────────────────
 
             try:
@@ -1143,10 +1234,10 @@ class ChatService:
                 # detects instantly despite correct headers.
                 _clean_headers = sanitize_fetch_headers(headers)
                 async with CffiSession(impersonate="chrome", timeout=30) as client:
-                    print(f"[STREAM]     ↳ HTTP POST {URL[:60]}...")
+                    logger.debug(f"    ↳ HTTP POST {URL[:60]}...")
                     async with client.stream("POST", URL, headers=_clean_headers, json=body, params=params) as res:
                         status_code = res.status_code
-                        print(f"[STREAM]     ✓ HTTP {res.status_code} (attempt {attempt}/{max_attempts})")
+                        logger.debug(f"    ✓ HTTP {res.status_code} (attempt {attempt}/{max_attempts})")
                         logger.debug("Upstream HTTP %s (attempt %d/%d)", res.status_code, attempt, max_attempts)
                         yield {"type": "debug", "message": f"HTTP {res.status_code} (attempt {attempt}/{max_attempts})"}
 
@@ -1168,7 +1259,7 @@ class ChatService:
                                 if not _early_code:
                                     _early_code = err_data.get("code", "")
                                 if _early_code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
-                                    print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS detected early (attempt {attempt}, status={res.status_code})")
+                                    logger.debug(f"    ⏳ CHAT_IN_PROGRESS detected early (attempt {attempt}, status={res.status_code})")
                                     logger.info("CHAT_IN_PROGRESS early-detect: status=%s body=%s", res.status_code, raw[:300])
                                     yield {"type": "status", "message": "chat_in_progress_waiting"}
                                     cleared = await self._wait_for_chat_in_progress_clear(
@@ -1212,7 +1303,7 @@ class ChatService:
                                         return
                                     # CHAT_IN_PROGRESS: hammer stop API for 30s, then retry
                                     if code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
-                                        print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS detected (attempt {attempt})")
+                                        logger.debug(f"    ⏳ CHAT_IN_PROGRESS detected (attempt {attempt})")
                                         yield {"type": "status", "message": "chat_in_progress_waiting"}
                                         cleared = await self._wait_for_chat_in_progress_clear(
                                             headers, body, params, chat_id, chosen_response_id,
@@ -1235,7 +1326,7 @@ class ChatService:
                                 pass
                             # Also check raw text for chat-in-progress patterns
                             if self._is_chat_in_progress_error(raw, res.status_code):
-                                print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS detected in raw response (attempt {attempt})")
+                                logger.debug(f"    ⏳ CHAT_IN_PROGRESS detected in raw response (attempt {attempt})")
                                 yield {"type": "status", "message": "chat_in_progress_waiting"}
                                 cleared = await self._wait_for_chat_in_progress_clear(
                                     headers, body, params, chat_id, chosen_response_id,
@@ -1278,7 +1369,7 @@ class ChatService:
                                     # Chunk timeout — send stop request, then close backend connection
                                     _chunk_timeout_triggered = True
                                     _phase = "first chunk" if _chunk_count == 0 else f"inter-chunk (after {_chunk_count} chunks)"
-                                    print(f"[STREAM]     ⏰ Chunk timeout ({_phase}) after {_CHUNK_TIMEOUT}s — sending stop & closing backend")
+                                    logger.debug(f"    ⏰ Chunk timeout ({_phase}) after {_CHUNK_TIMEOUT}s — sending stop & closing backend")
                                     logger.warning(
                                         "Chunk timeout (%s) on chat_id=%s attempt=%d — sending stop request",
                                         _phase, chat_id, attempt,
@@ -1320,7 +1411,7 @@ class ChatService:
                                                 if not _early_code_sse:
                                                     _early_code_sse = err_data.get("code", "")
                                                 if _early_code_sse in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
-                                                    print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS detected early in SSE body (attempt {attempt})")
+                                                    logger.debug(f"    ⏳ CHAT_IN_PROGRESS detected early in SSE body (attempt {attempt})")
                                                     logger.info("CHAT_IN_PROGRESS early-detect SSE: body=%s", line[:300])
                                                     yield {"type": "status", "message": "chat_in_progress_waiting"}
                                                     cleared = await self._wait_for_chat_in_progress_clear(
@@ -1364,7 +1455,7 @@ class ChatService:
                                                         return
                                                     # CHAT_IN_PROGRESS in SSE stream body
                                                     if code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
-                                                        print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS in SSE stream (attempt {attempt})")
+                                                        logger.debug(f"    ⏳ CHAT_IN_PROGRESS in SSE stream (attempt {attempt})")
                                                         yield {"type": "status", "message": "chat_in_progress_waiting"}
                                                         cleared = await self._wait_for_chat_in_progress_clear(
                                                             headers, body, params, chat_id, chosen_response_id,
@@ -1404,7 +1495,7 @@ class ChatService:
                                     if not _sse_code:
                                         _sse_code = data.get("code", "")
                                     if _sse_code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
-                                        print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS in data: line (attempt {attempt})")
+                                        logger.debug(f"    ⏳ CHAT_IN_PROGRESS in data: line (attempt {attempt})")
                                         logger.info("CHAT_IN_PROGRESS in data: SSE: %s", line[:300])
                                         yield {"type": "status", "message": "chat_in_progress_waiting"}
                                         cleared = await self._wait_for_chat_in_progress_clear(
@@ -1429,7 +1520,7 @@ class ChatService:
                                             _err_msg = _sse_error.get("message", "") or _sse_error.get("details", "")
                                             # CHAT_IN_PROGRESS via error object
                                             if _err_code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
-                                                print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS in data.error (attempt {attempt})")
+                                                logger.debug(f"    ⏳ CHAT_IN_PROGRESS in data.error (attempt {attempt})")
                                                 yield {"type": "status", "message": "chat_in_progress_waiting"}
                                                 cleared = await self._wait_for_chat_in_progress_clear(
                                                     headers, body, params, chat_id, chosen_response_id,
@@ -1447,7 +1538,7 @@ class ChatService:
                                         else:
                                             err_text = f"Upstream error: {str(_sse_error)[:300]}"
                                         logger.warning("SSE data.error on attempt %d: %s", attempt, err_text)
-                                        print(f"[STREAM]     ✗ SSE error object: {err_text}")
+                                        logger.debug(f"    ✗ SSE error object: {err_text}")
                                         last_error_msg = err_text
                                         break  # exit chunk loop → retry logic
 
@@ -1573,7 +1664,7 @@ class ChatService:
 
             # If chunk timeout triggered, treat as a retryable failure
             if _chunk_timeout_triggered and not got_content:
-                print(f"[STREAM]     ⏰ Chunk timeout on attempt {attempt}/{max_attempts} — will retry")
+                logger.debug(f"    ⏰ Chunk timeout on attempt {attempt}/{max_attempts} — will retry")
                 if attempt < max_attempts:
                     yield {"type": "status", "message": f"retrying_attempt_{attempt + 1}"}
                     yield {"type": "debug", "message": f"Chunk timeout on attempt {attempt}. Retrying."}
@@ -1582,7 +1673,7 @@ class ChatService:
                     continue
                 else:
                     # All 3 attempts timed out
-                    print(f"[STREAM]   ✗ All {max_attempts} attempts timed out")
+                    logger.debug(f"  ✗ All {max_attempts} attempts timed out")
                     yield {"type": "error", "message": "No response from upstream"}
                     return
 
@@ -1613,7 +1704,7 @@ class ChatService:
                                 _lo_code = _leftover_err.get("code", "")
                                 _lo_msg = _leftover_err.get("message", "") or _leftover_err.get("details", "")
                                 if _lo_code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY"):
-                                    print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS in leftover buffer")
+                                    logger.debug(f"    ⏳ CHAT_IN_PROGRESS in leftover buffer")
                                     yield {"type": "status", "message": "chat_in_progress_waiting"}
                                     cleared = await self._wait_for_chat_in_progress_clear(
                                         headers, body, params, chat_id, chosen_response_id,
@@ -1636,7 +1727,7 @@ class ChatService:
                         if not _lo_early_code:
                             _lo_early_code = err_data.get("code", "")
                         if _lo_early_code in ("CHAT_IN_PROGRESS", "GENERATING", "BUSY") and not last_error_msg:
-                            print(f"[STREAM]     ⏳ CHAT_IN_PROGRESS in leftover (early detect)")
+                            logger.debug(f"    ⏳ CHAT_IN_PROGRESS in leftover (early detect)")
                             yield {"type": "status", "message": "chat_in_progress_waiting"}
                             cleared = await self._wait_for_chat_in_progress_clear(
                                 headers, body, params, chat_id, chosen_response_id,
@@ -1684,9 +1775,9 @@ class ChatService:
 
             # Fast-fail: don't waste retries on rate-limit/captcha — escalate immediately
             _fail_lower = (last_error_msg or "").lower()
-            print(f"[STREAM]     ↳ post-attempt check: last_error={last_error_msg[:100] if last_error_msg else 'None'}")
+            logger.debug(f"    ↳ post-attempt check: last_error={last_error_msg[:100] if last_error_msg else 'None'}")
             if any(kw in _fail_lower for kw in ("ratelimit", "rate_limit", "rate limit", "quota", "daily usage", "exceeded", "429")):
-                print(f"[STREAM]     ⚡ FAST-FAIL rate_limit on attempt {attempt} — skipping retries")
+                logger.debug(f"    ⚡ FAST-FAIL rate_limit on attempt {attempt} — skipping retries")
                 mark_account_exhausted(self._resolve_account(bdd))
                 logger.warning("Rate-limit detected on attempt %d — skipping remaining retries", attempt)
                 yield {"type": "rate_limited", "message": last_error_msg, "hours": "?"}
@@ -1700,17 +1791,17 @@ class ChatService:
                 continue
 
         # Defense-in-depth: detect rate-limit/captcha patterns in generic failure messages
-        print(f"[STREAM]   ↳ all {max_attempts} attempts exhausted, defense-in-depth check...")
+        logger.debug(f"  ↳ all {max_attempts} attempts exhausted, defense-in-depth check...")
         _fail_lower = (last_error_msg or "").lower()
         if any(kw in _fail_lower for kw in ("ratelimit", "rate_limit", "rate limit", "quota", "daily usage", "exceeded", "429")):
-            print(f"[STREAM]   ⚡ DEFENSE-IN-DEPTH rate_limit detected")
+            logger.debug(f"  ⚡ DEFENSE-IN-DEPTH rate_limit detected")
             mark_account_exhausted(self._resolve_account(bdd))
             yield {"type": "rate_limited", "message": last_error_msg, "hours": "?"}
         elif any(kw in _fail_lower for kw in ("captcha", "waf", "validate", "rgv587", "blocked", "forbidden")):
-            print(f"[STREAM]   ⚡ DEFENSE-IN-DEPTH captcha/waf detected")
+            logger.debug(f"  ⚡ DEFENSE-IN-DEPTH captcha/waf detected")
             yield {"type": "waf_blocked", "message": last_error_msg}
         else:
-            print(f"[STREAM]   ✗ generic error after {max_attempts} attempts: {last_error_msg[:100] if last_error_msg else 'unknown'}")
+            logger.debug(f"  ✗ generic error after {max_attempts} attempts: {last_error_msg[:100] if last_error_msg else 'unknown'}")
             # If all failures were timeouts, give a cleaner message
             _err_lower = (last_error_msg or "").lower()
             if "timeout" in _err_lower or "timed out" in _err_lower:

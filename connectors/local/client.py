@@ -25,6 +25,8 @@ class LocalConnector:
     """Connector for locally-served models via OpenAI-compatible API."""
 
     def __init__(self, endpoint: str = "http://127.0.0.1:8080/v1", api_key: str = "sable-local"):
+        from connectors.common.error_ctx import ErrorContext
+        self.ctx = ErrorContext("local")
         self._endpoint = endpoint.rstrip("/")
         self._api_key = api_key
         self._available = True
@@ -149,7 +151,7 @@ class LocalConnector:
                     ) as response:
                         if response.status_code != 200:
                             body = await response.aread()
-                            yield {"type": "error", "message": f"Local model error ({response.status_code}): {body.decode()[:200]}"}
+                            yield self.ctx.error(f"HTTP {response.status_code}: {body.decode()[:200]}", status_code=response.status_code)
                             return
 
                         # Accumulate streaming tool call deltas
@@ -309,13 +311,13 @@ class LocalConnector:
                         return
 
             except httpx.ConnectError:
-                yield {"type": "error", "message": f"Cannot connect to local model at {self._endpoint}. Is the server running?"}
+                yield self.ctx.error(f"cannot connect to {self._endpoint}. Is the server running?")
                 return
             except httpx.TimeoutException:
-                yield {"type": "error", "message": "Local model timed out. The model may be too large for available RAM."}
+                yield self.ctx.error("timed out. The model may be too large for available RAM.")
                 return
             except Exception as exc:
-                yield {"type": "error", "message": f"Local model error: {exc}"}
+                yield self.ctx.error(f"error: {exc}")
                 return
 
     async def chat(

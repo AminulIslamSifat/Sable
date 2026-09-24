@@ -11,6 +11,7 @@ a portable Chromium for Windows from Playwright's CDN.
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import sys
@@ -18,6 +19,8 @@ import time
 import zipfile
 from pathlib import Path
 from typing import NamedTuple
+
+logger = logging.getLogger("sable.wsl_browser")
 
 _BS = chr(92)  # backslash, avoids escape issues in string literals
 
@@ -104,7 +107,7 @@ def _ensure_windows_chromium() -> Path | None:
 
     info = _get_playwright_chromium_info()
     if not info:
-        print("[wsl_browser] Could not determine Playwright Chromium version", file=sys.stderr)
+        logger.warning("could not determine Playwright Chromium version")
         return None
 
     version, revision = info
@@ -113,8 +116,8 @@ def _ensure_windows_chromium() -> Path | None:
 
     _BUNDLED_DIR.mkdir(parents=True, exist_ok=True)
 
-    print(f"[wsl_browser] No Windows Chrome found. Downloading Chromium {version} for Windows...", file=sys.stderr)
-    print(f"[wsl_browser] URL: {url}", file=sys.stderr)
+    logger.info("no Windows Chrome found — downloading Chromium %s for Windows", version)
+    logger.debug("download URL: %s", url)
 
     # Download with curl (available on all WSL installs)
     dl = subprocess.run(
@@ -122,24 +125,24 @@ def _ensure_windows_chromium() -> Path | None:
         timeout=300,
     )
     if dl.returncode != 0:
-        print(f"[wsl_browser] Download failed (exit {dl.returncode})", file=sys.stderr)
+        logger.error("Chromium download failed (curl exit %d)", dl.returncode)
         return None
 
-    print(f"[wsl_browser] Extracting...", file=sys.stderr)
+    logger.info("extracting Chromium…")
     try:
         with zipfile.ZipFile(dest_zip, "r") as zf:
             zf.extractall(_BUNDLED_DIR)
     except Exception as exc:
-        print(f"[wsl_browser] Extraction failed: {exc}", file=sys.stderr)
+        logger.error("Chromium extraction failed: %s", exc, exc_info=True)
         return None
     finally:
         dest_zip.unlink(missing_ok=True)
 
     if _BUNDLED_EXE.exists():
-        print(f"[wsl_browser] Chromium ready at {_BUNDLED_EXE}", file=sys.stderr)
+        logger.info("Chromium ready at %s", _BUNDLED_EXE)
         return _BUNDLED_EXE
 
-    print("[wsl_browser] chrome.exe not found after extraction", file=sys.stderr)
+    logger.error("chrome.exe not found after extraction")
     return None
 
 
@@ -235,7 +238,7 @@ def launch_windows_chrome(
 
     chrome_exe = _find_windows_chrome()
     if not chrome_exe:
-        print("[wsl_browser] No Windows Chrome/Edge/bundled Chromium available", file=sys.stderr)
+        logger.warning("no Windows Chrome/Edge/bundled Chromium available")
         return None
 
     # Reuse if CDP already alive on this port (same profile assumed)

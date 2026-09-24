@@ -48,6 +48,22 @@ AGENT_OUTPUT_DIR = OUTPUT_ROOT / "agent"
 ASSETS_DIR = OUTPUT_ROOT / "assets"
 LOGS_DIR = OUTPUT_ROOT / "logs"
 
+# Study-mode library — uploaded PDFs + their extracted text / progress / highlights.
+# PDFs live on disk; all connected data lands in meta/<doc-id>.json.
+LIBRARY_DIR = OUTPUT_ROOT / "library"
+LIBRARY_PDF_DIR = LIBRARY_DIR / "pdfs"
+LIBRARY_META_DIR = LIBRARY_DIR / "meta"
+# Per-page extracted text lives in its own file (library/text/<doc-id>.json) so
+# the meta record stays small and highlight/progress writes stay cheap.
+LIBRARY_TEXT_DIR = LIBRARY_DIR / "text"
+# Original uploads (non-PDF formats kept verbatim alongside the converted PDF).
+LIBRARY_ORIG_DIR = LIBRARY_DIR / "originals"
+# Academic grouping tree — semesters → subjects → topics (JSON, doc-agnostic).
+LIBRARY_ACADEMICS_PATH = LIBRARY_DIR / "academics.json"
+# Cached first-page previews (one small JPEG per doc) so the library grid
+# doesn't have to re-render a PDF to draw a card.
+LIBRARY_THUMB_DIR = LIBRARY_DIR / "thumbs"
+
 # Display name for the user (used in session personalization)
 USER_NAME = os.getenv("SABLE_USER_NAME", "User")
 
@@ -478,9 +494,22 @@ MODELS = [
             {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Thinking"},
         ],
     },
+    # ── Mistral (Web) — chat.mistral.ai / Vibe, browser-auth, cookie SSE ──
+    {
+        "id": "mistral-web",
+        "label": "Mistral (Web)",
+        "api_backend": "mistral_web",
+        "api_model_type": "mistral-web",
+        "max_session_chars": 4_000_000,
+        "capabilities": {"image": True, "video": False, "document": True, "audio": False},
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+            {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Thinking"},
+        ],
+    },
     # ── Kimi (kimi.ai, browser-auth ghost tab, no API key) ──
-    # thinking_mode values MUST stay lowercase (low/medium/high) — the kimi
-    # client maps them via _EFFORT; anything else silently falls back to LOW.
+    # thinking_mode values MUST stay lowercase (none/low/medium/high) — the
+    # kimi client maps them via _EFFORT; anything else silently falls back to LOW.
     {
         "id": "kimi-k2.6",
         "label": "Kimi K2.6",
@@ -489,7 +518,7 @@ MODELS = [
         "max_session_chars": 2_000_000,
         "capabilities": {"image": True, "video": False, "document": True, "audio": False},
         "thinking_modes": [
-            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "low"},
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "none"},
             {"id": "low", "label": "Thinking (Low)", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "low"},
             {"id": "medium", "label": "Thinking (Medium)", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "medium"},
             {"id": "high", "label": "Thinking (High)", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "high"},

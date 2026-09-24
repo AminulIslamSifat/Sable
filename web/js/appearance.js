@@ -102,7 +102,7 @@ window.safeCopy = async function(text) {
 
     // Providers whose account selection is per-provider (pinned), not global.
     // Mirrors _PER_PROVIDER_SWITCH in settings.py — keep in sync.
-    const _PER_PROVIDER_SWITCH = ["zai", "gemini_web", "gemini", "mimo", "kimi"];
+    const _PER_PROVIDER_SWITCH = ["zai", "gemini_web", "gemini", "mimo", "kimi", "mistral_web"];
 
     // Render browser account card (for Qwen/z.ai/Gemini Web)
     function _renderBrowserCard(acc, active, providerId) {
@@ -128,6 +128,7 @@ window.safeCopy = async function(text) {
             ${acc.has_gemini ? _badge('gemini') : ''}
             ${acc.has_mimo ? _badge('mimo') : ''}
             ${acc.has_kimi ? _badge('kimi') : ''}
+            ${acc.has_mistral_web ? _badge('mistral') : ''}
             ${acc.has_ds ? _badge('ds') : ''}
             ${acc.exhausted ? _badge('exhausted', true) : ''}
             ${acc.captcha_blocked ? _badge('captcha', true) : ''}
@@ -350,7 +351,7 @@ window.safeCopy = async function(text) {
         const unregisteredData = data.unregistered_browser_data || [];
 
         // Provider order
-        const provOrder = ["qwen", "zai", "gemini_web", "mimo", "kimi", "deepseek", "gemini", "groq", "mistral", "openai", "puter", "cloudflare"];
+        const provOrder = ["qwen", "zai", "gemini_web", "mimo", "kimi", "mistral_web", "deepseek", "gemini", "groq", "mistral", "openai", "puter", "cloudflare"];
         const provIds = provOrder.filter(p => providers[p]);
 
         // Validate saved filter
@@ -1349,6 +1350,7 @@ window.safeCopy = async function(text) {
     'refresh-gemini-web': { label: 'Gemini (Web)', url: '/api/settings/gemini_web/refresh-token' },
     'refresh-mimo':       { label: 'MiMo',         url: '/api/settings/mimo/refresh-token' },
     'refresh-kimi':       { label: 'Kimi',         url: '/api/settings/kimi/refresh-token' },
+    'refresh-mistral-web':{ label: 'Mistral (Web)', url: '/api/settings/mistral_web/refresh-token' },
   };
 
   async function refreshProviderTokens(action) {
@@ -1361,6 +1363,9 @@ window.safeCopy = async function(text) {
       const okMsg = d.message || `${cfg.label} token refreshed`;
       const errMsg = d.detail || d.error || `${cfg.label} refresh failed`;
       showToast(res.ok ? okMsg : errMsg, res.ok ? 'success' : 'error');
+      // Re-render the Account panel so the freshly pinned key shows as
+      // selected immediately (the refresh promotes it server-side).
+      if (res.ok && typeof loadAccountProfiles === 'function') await loadAccountProfiles();
     } catch { showToast(`${cfg.label} refresh failed`, 'error'); }
   }
 

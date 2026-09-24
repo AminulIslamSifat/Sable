@@ -148,6 +148,8 @@ class GeminiClient:
     """Async Gemini API client with multi-key rotation and session history."""
 
     def __init__(self) -> None:
+        from connectors.common.error_ctx import ErrorContext
+        self.ctx = ErrorContext("gemini_api")
         self._keys: list[str] = _load_keys()
         self._key_index: int = 0
         # Session history: chat_id → list of {"role": ..., "parts": [...]}
@@ -362,7 +364,7 @@ class GeminiClient:
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat completion, yielding Sable-standard events."""
         if not self._keys:
-            yield {"type": "error", "message": "No Gemini API keys configured. Add one in Settings → Providers."}
+            yield self.ctx.error("no Gemini API keys configured. Add one in Settings → Providers.")
             return
 
         model_id = model or "gemini-2.5-flash"
@@ -460,7 +462,7 @@ class GeminiClient:
                             error_msg = error_data.get("error", {}).get("message", str(error_body))
                         except (json.JSONDecodeError, AttributeError):
                             error_msg = f"HTTP {response.status_code}: {error_body.decode()[:500]}"
-                        yield {"type": "error", "message": error_msg}
+                        yield self.ctx.error(error_msg)
                         history.pop()
                         return
 
@@ -480,7 +482,7 @@ class GeminiClient:
                         if not candidates:
                             prompt_feedback = chunk.get("promptFeedback", {})
                             if prompt_feedback.get("blockReason"):
-                                yield {"type": "error", "message": f"Blocked: {prompt_feedback['blockReason']}"}
+                                yield self.ctx.error(f"blocked: {prompt_feedback['blockReason']}")
                                 history.pop()
                                 return
                             continue
@@ -488,7 +490,7 @@ class GeminiClient:
                         candidate = candidates[0]
                         finish_reason = candidate.get("finishReason", "")
                         if finish_reason in ("SAFETY", "RECITATION", "PROHIBITED_CONTENT"):
-                            yield {"type": "error", "message": f"Response blocked: {finish_reason}"}
+                            yield self.ctx.error(f"response blocked: {finish_reason}")
                             history.pop()
                             return
 
@@ -626,12 +628,12 @@ class GeminiClient:
                 continue
             except Exception as e:
                 logger.exception("Gemini stream_chat unexpected error")
-                yield {"type": "error", "message": f"Gemini error: {e}"}
+                yield self.ctx.error(f"error: {e}")
                 history.pop()
                 return
 
         # All keys exhausted
-        yield {"type": "error", "message": "All Gemini API keys failed (rate limited or invalid)."}
+        yield self.ctx.error("all Gemini API keys failed (rate limited or invalid).")
         history.pop()
 
     async def chat(

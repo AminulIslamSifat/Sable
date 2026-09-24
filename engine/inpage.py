@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import socket
 import sys
@@ -34,6 +35,8 @@ from typing import AsyncIterator
 
 from engine.config import NEW_CHAT_URL, URL, get_browser_data_dir, get_model_config
 from engine.payloads import build_body
+
+logger = logging.getLogger("sable.inpage")
 
 GHOST_HOME = "https://chat.qwen.ai"
 STS_URL = "https://chat.qwen.ai/api/v2/files/getstsToken"
@@ -226,7 +229,7 @@ class GhostEngine:
             if chat_bm.is_running and chat_bm.context:
                 self._context = chat_bm.context
                 self._shared_bm = chat_bm
-                print("[GHOST] adopting in-process BrowserManager context")
+                logger.debug("adopting in-process BrowserManager context")
                 await self._spawn_ghost()
                 return self._ghost
         except Exception:
@@ -271,7 +274,7 @@ class GhostEngine:
         if exe:
             kwargs["executable_path"] = exe
 
-        print(f"[GHOST] launching headless Chromium on {profile} (cdp={port})...")
+        logger.debug(f"launching headless Chromium on {profile} (cdp={port})...")
         self._context = await self._pw.chromium.launch_persistent_context(**kwargs)
 
         await asyncio.sleep(0.5)
@@ -303,10 +306,10 @@ class GhostEngine:
             if not ctxs:
                 raise RuntimeError("no contexts over CDP")
             self._context = ctxs[0]
-            print(f"[GHOST] adopted running browser over CDP (port {port})")
+            logger.debug(f"adopted running browser over CDP (port {port})")
             return True
         except Exception as e:
-            print(f"[GHOST] CDP connect failed ({e}) — killing + relaunching")
+            logger.debug(f"CDP connect failed ({e}) — killing + relaunching")
             await self._hard_cleanup()
             return False
 
@@ -325,7 +328,7 @@ class GhostEngine:
             raise GhostError(
                 "profile locked by the running Sable server's browser — "
                 "ghost can't take it over; use the raw API path")
-        print(f"[GHOST] profile locked by orphan chromium (pid {pid}) — killing")
+        logger.debug(f"profile locked by orphan chromium (pid {pid}) — killing")
 
     async def _hard_cleanup(self) -> None:
         pid = _lock_pid(self.user_data_dir)
@@ -381,7 +384,7 @@ class GhostEngine:
             await page.expose_function("__ghostEvent", self._on_event)
             self._exposed_pages.add(page)
         self._ghost = page
-        print("[GHOST] ghost tab ready (token + WAF cookies baked)")
+        logger.debug("ghost tab ready (token + WAF cookies baked)")
 
     def _on_event(self, ev: dict) -> None:
         # Drop events from a connection we've already abandoned (rid mismatch).
@@ -505,7 +508,7 @@ class GhostEngine:
                         f"stream stall >{idle_secs:.0f}s "
                         f"(attempt {attempt + 1}/{max_attempts}, "
                         f"chunk_seen={yielded_chunk})")
-                print(f"[GHOST] stream stall — reconnecting (attempt {attempt + 2}/{max_attempts})")
+                logger.debug(f"stream stall — reconnecting (attempt {attempt + 2}/{max_attempts})")
                 # Surface the reconnect to the caller's status stream.
                 yield {"t": "reconnect", "attempt": attempt + 2, "max": max_attempts}
 
@@ -603,7 +606,7 @@ async def ghost_stream_chat(
     send_text = message
     if len(message) > RAW_TEXT_LIMIT:
         dump = _dump_payload(message)
-        print(f"[GHOST] {len(message)} chars > {RAW_TEXT_LIMIT} — file route ({dump.name})")
+        logger.debug(f"{len(message)} chars > {RAW_TEXT_LIMIT} — file route ({dump.name})")
         fobj = await eng.upload_file_inpage(str(dump))
         files = [fobj]
         send_text = (message[:300]
@@ -616,7 +619,7 @@ async def ghost_stream_chat(
                       thinking_mode=thinking_mode)
     url = f"{URL}?chat_id={chat_id}"  # bare URL = 200 + empty stream forever
 
-    print(f"[GHOST] in-page completions chat={chat_id[:8]}… model={model_id} chars={len(send_text)}")
+    logger.debug(f"in-page completions chat={chat_id[:8]}… model={model_id} chars={len(send_text)}")
 
     buf = ""
     answer: list[str] = []
@@ -704,7 +707,6 @@ async def ghost_stream_chat(
     if not answer and not thinking:
         raise GhostError("empty stream (silent reject / tarpit)")
 
-    print("\n")
     return chat_id, new_parent
 
 
@@ -782,12 +784,17 @@ async def ghost_stream_events(
     """
     eng = GhostEngine.instance()
     model_id = get_model_config(model)["id"]
+    from connectors.common.error_ctx import ErrorContext
+    _ctx = ErrorContext("qwen")
+    _ctx.model = model_id
+    import os as _os
+    _ctx.account = _os.path.basename(eng.user_data_dir.rstrip("/")) or None
 
     files = None
     send_text = message
     if len(message) > RAW_TEXT_LIMIT:
         dump = _dump_payload(message)
-        print(f"[GHOST] {len(message)} chars > {RAW_TEXT_LIMIT} — file route ({dump.name})")
+        logger.debug(f"{len(message)} chars > {RAW_TEXT_LIMIT} — file route ({dump.name})")
         fobj = await eng.upload_file_inpage(str(dump))
         files = [fobj]
         send_text = (message[:300]
@@ -799,7 +806,7 @@ async def ghost_stream_events(
     body = build_body(send_text, chat_id, parent_id, files=files, model=model_id,
                       thinking_mode=thinking_mode)
     url = f"{URL}?chat_id={chat_id}"
-    print(f"[GHOST] in-page completions chat={chat_id[:8]}… model={model_id} chars={len(send_text)}")
+    logger.debug(f"in-page completions chat={chat_id[:8]}… model={model_id} chars={len(send_text)}")
 
     state: dict = {"chosen": None, "new_parent": parent_id, "saw_content": False}
     emitted = False
@@ -820,7 +827,7 @@ async def ghost_stream_events(
             data = sev.get("data", "")
             if "RGV587" in data:
                 if emitted:
-                    yield {"type": "error", "message": "ghost: captcha punish (RGV587)"}
+                    yield _ctx.error("ghost: captcha punish (RGV587)")
                     return
                 raise GhostError("captcha punish (RGV587) — WAF flagged the payload")
             buf += data
@@ -851,7 +858,7 @@ async def ghost_stream_events(
                         yield ev
         elif t == "error":
             if emitted:
-                yield {"type": "error", "message": f"ghost: {sev.get('err')}"}
+                yield _ctx.error(f"ghost: {sev.get('err')}")
                 return
             raise GhostError(f"in-page fetch error: {sev.get('err')}")
         # t == "status" / "done": stream-level bookkeeping, nothing to emit

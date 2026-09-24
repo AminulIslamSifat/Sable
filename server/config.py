@@ -32,6 +32,10 @@ AUTH_EXEMPT_PREFIXES = (
     # Account front door — these must work before a session exists.
     "/api/account/config", "/api/account/register",
     "/api/account/login", "/api/account/google",
+    # Google redirects here with no Authorization header. Safe to exempt
+    # because the `state` param is a server-only single-use nonce: an attacker
+    # can only reach it with a bogus state and get "session expired".
+    "/api/drive/oauth/callback",
 )
 
 MAX_RETRIES = 3

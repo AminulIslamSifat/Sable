@@ -120,8 +120,9 @@ def _log_conversation(chat_id: str, model: str, role: str, content: str) -> None
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(f"[{ts}] [{model}] [{role}]\n{content}\n{'='*60}\n\n")
-    except Exception:
-        pass  # Never let logging break the stream
+    except OSError as exc:
+        # Never let conversation logging break the stream — but do surface it.
+        logger.debug("conversation log write failed for %s: %s", chat_id, exc)
 
 router = APIRouter()
 
@@ -181,6 +182,17 @@ async def stop_generation(request: Request):
             return {"success": bool(_ok)}
         except Exception as exc:
             logger.warning("gemini_web stop failed: %s", exc)
+            return {"success": False, "error": str(exc)}
+    # Mistral (Web): real upstream stop endpoint (tRPC chat.cancelGeneration)
+    # plus a local abort of the in-flight SSE stream.
+    if _prov == "mistral_web":
+        try:
+            from connectors.mistral_web.client import get_client as _mw_get
+            _ok = await _mw_get().cancel(chat_id)
+            logger.info("mistral_web stop: chat=%s aborted=%s", chat_id, _ok)
+            return {"success": bool(_ok)}
+        except Exception as exc:
+            logger.warning("mistral_web stop failed: %s", exc)
             return {"success": False, "error": str(exc)}
     # MiMo Studio: same — SPA aborts an AbortSignal, no stop endpoint.
     if _prov == "mimo":
@@ -1102,6 +1114,18 @@ async def chat(request: ChatRequest):
                     except Exception as exc:
                         logger.warning("mimo upload failed for %s: %s", f["path"], exc)
                 continue
+            # Mistral (Web): 3-step Azure Blob upload (uploadFile -> PUT ->
+            # confirmUpload), returns the {type,url,name} object the chat
+            # body's messageFiles array expects.
+            if _backend == "mistral_web":
+                if "path" in f:
+                    try:
+                        from connectors.mistral_web.client import get_client as _mw_get
+                        meta = await _mw_get().upload_file(f["path"])
+                        resolved_files.append(meta)
+                    except Exception as exc:
+                        logger.warning("mistral_web upload failed for %s: %s", f["path"], exc)
+                continue
             # Kimi (kimi.ai): ghost-session multipart upload, returns `file_id`
             # which rides on the Chat message's file blocks via ref_file_ids.
             if _backend == "kimi":
@@ -1150,6 +1174,9 @@ async def chat(request: ChatRequest):
         if _backend == "mimo":
             # MiMo media objects use `url` (parse id) + `fileUrl`; keep them verbatim.
             _ref_files_full = [rf for rf in resolved_files if rf.get("fileUrl")] or None
+        if _backend == "mistral_web":
+            # Mistral messageFiles use `url` + `name`; keep them verbatim.
+            _ref_files_full = [rf for rf in resolved_files if rf.get("url")] or None
     if not request.stream and scraper_enabled:
         result = await scraper_service.chat(
             message=api_message,
@@ -1643,6 +1670,25 @@ async def chat(request: ChatRequest):
                 _cmd_history_start = len(_guard._command_history)
                 _round_prompt_tokens = 0  # initialized before branching; set in each path
                 _qwen_chat_id = active_chat_id  # default; overridden in Qwen branch below
+
+                # Structured request trace — one line per round so the log
+                # always shows which model/provider/config handled this turn.
+                _round_backend = (
+                    _resolve_api_backend(request.model) if _is_api_model(request.model)
+                    else ("qwen-scraper" if scraper_enabled else "qwen-service")
+                )
+                _round_cfg = get_model_config(request.model)
+                logger.info(
+                    "request chat=%s round=%d model=%s api_model=%s backend=%s "
+                    "profile=%s thinking=%s tools=%s files=%d msg_len=%d",
+                    str(active_chat_id)[:8] if active_chat_id else "new",
+                    round_index, request.model,
+                    _round_cfg.get("api_model_type", _round_cfg.get("id", "?")),
+                    _round_backend or "qwen", bdd or "default",
+                    request.thinking_mode or "default",
+                    "yes" if _round_cfg.get("supports_tools") else "no",
+                    len(resolved_files or []), len(current_message or ""),
+                )
                 # Log user message to file
                 if round_index == 0:
                     _log_conversation(active_chat_id, request.model, "user", current_message)
@@ -1853,6 +1899,10 @@ async def chat(request: ChatRequest):
                 # Must exceed service.py's total retry budget (3 × 30s = 90s)
                 # to avoid racing with internal retries and orphaning generators.
                 _MAIN_STALL_TIMEOUT = 120.0
+                # API backends already retry once inside the connector; stacking the
+                # backend's 3x empty-response retry on top multiplies a single locked
+                # endpoint into ~8 calls and deepens the rate-limit lockout.
+                # API backends get 0 backend-level empty retries; the connector owns that.
                 _EMPTY_RESPONSE_MAX_RETRIES = 3
                 _empty_response_retries = 0
                 _main_got_first = False
@@ -2031,8 +2081,14 @@ async def chat(request: ChatRequest):
                                     print(f"[MAIN-STREAM]   ✗ ALL {_EMPTY_RESPONSE_MAX_RETRIES} EMPTY-RESPONSE RETRIES EXHAUSTED — no auto-switch")
                                     logger.warning("[main-stream] All %d empty-response retries exhausted for chat %s, auto-switch disabled",
                                                    _EMPTY_RESPONSE_MAX_RETRIES, active_chat_id)
-                                    error_message = f"Empty response after {_EMPTY_RESPONSE_MAX_RETRIES} retries."
+                                    # Yield the REAL error instead of letting the frontend
+                                    # fabricate "Response finished with no content".
+                                    error_message = (
+                                        f"Upstream '{request.model}' returned an empty response "
+                                        f"(no content). Likely rate limit / expired auth — check the provider."
+                                    )
                                     stream_error = True
+                                    yield sse({"type": "error", "message": error_message})
                         if _should_break:
                             break
 
@@ -2266,6 +2322,21 @@ async def chat(request: ChatRequest):
                         async for _sse_line in _drain_sync_gen(emit_flush()):
                             yield _sse_line
                         error_message = str(event.get("message", "Unknown error"))
+                        # API backends: a hard upstream error (rate limit, quota, auth)
+                        # MUST stop immediately. The Qwen retry machinery below
+                        # (first-chunk / stall / empty-response, 3x each) would otherwise
+                        # re-hit the same locked endpoint up to ~8x and deepen the
+                        # lockout. Surface the REAL error to the frontend and break —
+                        # no retries, no masking.
+                        if _is_api_model(request.model) and any(kw in error_message.lower() for kw in (
+                            "rate limit", "ratelimit", "rate_limit", "too many requests",
+                            "quota", "usage limit", "daily usage", "429",
+                            "unauthorized", "forbidden", "401", "403",
+                        )):
+                            logger.warning("[main-stream] API backend hard error — aborting with real error (no retries): %s", error_message[:200])
+                            yield sse({"type": "error", "message": error_message})
+                            stream_error = True
+                            break
                         # --- "Chat in progress" retry: 30s total, 3s delay between attempts ---
                         _cip_lower = error_message.lower()
                         _is_chat_in_progress = any(kw in _cip_lower for kw in (

@@ -158,6 +158,21 @@ body[data-mode="study"] .rail-btn[data-rail="calendar"] + .rail-sep {
   height: 100%;
   object-fit: cover;
 }
+/* Source-format badge for converted (non-PDF) uploads */
+.study-doc-src {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  pointer-events: none;
+}
 .study-doc-progress {
   position: absolute;
   bottom: 0;
@@ -404,8 +419,11 @@ body[data-mode="study"] .rail-btn[data-rail="calendar"] + .rail-sep {
 }
 .study-sidebar-content[hidden] { display: none !important; }
 
-/* Hide the chat composer + compact panel while in study mode */
-body[data-mode="study"] #inputArea,
+/* Hide the composer only while the study STAGE is actually on screen.
+   Inside study mode the rail can yield to other views (Chat, Search, …);
+   those views set #studyView.hidden and MUST get the composer back.
+   Keying off data-mode alone kept the composer hidden everywhere. */
+body[data-mode="study"]:has(#studyView:not(.hidden)) #inputArea,
 body[data-mode="study"] #chatCompact {
   display: none !important;
 }
@@ -487,6 +505,324 @@ body[data-mode="study"] #chatCompact {
   color: var(--muted-2);
 }
 
+/* --- Document group tags (chips on cards) --- */
+.study-doc-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 2px 0 6px;
+}
+.study-doc-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Grouped library view --- */
+.study-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.study-group {
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--bg) 40%, transparent);
+}
+.study-group-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 14px;
+  border: none;
+  background: color-mix(in srgb, var(--panel-2) 60%, transparent);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+.study-group-head:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.study-group-caret {
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+  transition: transform 0.18s;
+  flex-shrink: 0;
+}
+.study-group.collapsed .study-group-caret {
+  transform: rotate(-90deg);
+}
+.study-group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.study-group-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--panel);
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+.study-group-body {
+  padding: 16px 14px;
+}
+.study-group.collapsed .study-group-body {
+  display: none;
+}
+
+/* --- Generic study modal (doc grouping) --- */
+.study-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  animation: studyFade 0.15s ease;
+}
+@keyframes studyFade { from { opacity: 0; } to { opacity: 1; } }
+.study-modal {
+  width: min(420px, calc(100vw - 32px));
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+}
+.study-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.study-modal-head h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+}
+.study-modal-x {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.study-modal-x:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.study-modal-doc {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.study-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 12px;
+}
+.study-field > span {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted-2);
+}
+.study-field select {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.study-field select:focus {
+  border-color: var(--accent);
+}
+.study-field select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.study-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+.study-modal-actions .study-room-action {
+  margin-top: 0;
+  padding: 9px 20px;
+}
+
+/* --- Academics manager --- */
+.study-academics-manager {
+  max-width: 900px;
+}
+.study-acad-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.study-acad-head h3 {
+  margin: 0 0 4px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+.study-acad-head p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.study-acad-head .study-room-action {
+  margin-top: 0;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.study-acad-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.study-acad-semester {
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.study-acad-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+}
+.study-acad-row.top {
+  background: color-mix(in srgb, var(--panel-2) 60%, transparent);
+  font-size: 14px;
+  font-weight: 700;
+}
+.study-acad-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.study-acad-name .icon-lucide { width: 15px; height: 15px; color: var(--accent); flex-shrink: 0; }
+.study-acad-count {
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--panel);
+  padding: 2px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.study-acad-mini {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  border: 1px solid var(--border-soft);
+  background: var(--panel);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.study-acad-mini .icon-lucide { width: 14px; height: 14px; }
+.study-acad-mini:hover { color: var(--accent); border-color: var(--accent); }
+.study-acad-del {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted-2);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.study-acad-del:hover { background: rgba(255, 70, 70, 0.15); color: #ff5555; }
+.study-acad-subjects {
+  padding: 4px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.study-acad-subject {
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--panel) 45%, transparent);
+}
+.study-acad-subject .study-acad-row { font-size: 13px; }
+.study-acad-topics {
+  padding: 0 10px 8px 34px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.study-acad-topic {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+}
+.study-acad-topic .study-acad-name { color: var(--text-dim); font-size: 12px; }
+.study-acad-empty {
+  font-size: 12px;
+  color: var(--muted-2);
+  padding: 6px 12px;
+  font-style: italic;
+}
+
 /* Responsive: rooms stack on narrow screens */
 @media (max-width: 600px) {
   .study-rooms {
@@ -496,4 +832,5 @@ body[data-mode="study"] #chatCompact {
     margin: 0;
     border-radius: 14px 14px 0 0;
   }
+  .study-acad-head { flex-direction: column; }
 }

@@ -176,6 +176,9 @@ class OpenAICompatClient:
         self.BASE_URL = self.BASE_URL.rstrip("/")
         self.logger = logging.getLogger(f"sable.{self.NAME.lower().replace(' ', '_')}_api")
 
+        from connectors.common.error_ctx import ErrorContext
+        self.ctx = ErrorContext(self.NAME.lower().replace(' ', '_'))
+
         self._single_key = bool(api_key)
         if api_key:
             self._keys: list[str] = [api_key]
@@ -448,10 +451,11 @@ class OpenAICompatClient:
         kwargs.pop("ref_file_ids", None)
 
         if not self._keys:
-            yield {"type": "error", "message": f"No {self.NAME} API keys configured. Add one in Settings → Providers."}
+            yield self.ctx.error(f"no API keys configured. Add one in Settings → Providers.")
             return
 
         model_id = model or self.DEFAULT_MODEL
+        self.ctx.model = model_id
         url = f"{self.BASE_URL}/chat/completions"
 
         system_instruction = kwargs.pop("system_instruction", None)
@@ -619,7 +623,8 @@ class OpenAICompatClient:
                             continue
                         if response.status_code != 200:
                             body = await response.aread()
-                            yield {"type": "error", "message": f"{self.NAME} API error {response.status_code}: {body.decode()[:200]}"}
+                            self.ctx.model = model_id
+                            yield self.ctx.error(f"API error {response.status_code}: {body.decode()[:200]}", status_code=response.status_code)
                             return
 
                         in_thinking = False
@@ -784,14 +789,14 @@ class OpenAICompatClient:
                         return
 
                 except httpx.TimeoutException:
-                    yield {"type": "error", "message": f"{self.NAME} request timed out. Try again."}
+                    yield self.ctx.error("request timed out. Try again.")
                     return
                 except Exception as exc:
                     self.logger.warning("%s stream error (attempt %d): %s", self.NAME, attempt + 1, exc)
                     self._rotate_key()
                     continue
 
-        yield {"type": "error", "message": f"All {self.NAME} API keys exhausted or failed."}
+        yield self.ctx.error("all API keys exhausted or failed.")
 
     async def chat(
         self,
