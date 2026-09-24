@@ -188,6 +188,11 @@ body.rdr-open { overflow: hidden; }
   transition: all 0.12s;
 }
 .rdr-outline-item:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--text); }
+.rdr-outline-item.active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+}
 
 /* --- Highlights list --- */
 .rdr-hl-list { display: flex; flex-direction: column; gap: 8px; }

@@ -1022,6 +1022,8 @@
           <select data-field="topic"${p.disabledTopic ? ' disabled' : ''}>${p.topics}</select>
         </label>
         <div class="study-modal-actions">
+          <button class="study-room-action danger" data-modal-remove>Remove</button>
+          <span class="study-modal-spacer"></span>
           <button class="study-room-action secondary" data-modal-cancel>Cancel</button>
           <button class="study-room-action primary" data-modal-save>Save</button>
         </div>
@@ -1046,6 +1048,29 @@
     });
 
     $('[data-modal-save]').onclick = () => saveGroup(overlay, doc, close);
+    $('[data-modal-remove]').onclick = () => removeDoc(doc, close);
+  }
+
+  /**
+   * Permanently delete a document (PDF + meta + page text + highlights/notes).
+   * The server owns the cleanup; the client only drops the card and re-renders.
+   */
+  async function removeDoc(doc, close) {
+    const label = doc && doc.title ? `"${doc.title}"` : 'this document';
+    if (!confirm(`Remove ${label}? Its highlights, notes and progress are deleted too.`)) return;
+    try {
+      await apiSend(`/api/study/doc/${doc.id}`, 'DELETE');
+      if (typeof close === 'function') close();
+      LIBRARY_DOCS = LIBRARY_DOCS.filter((d) => d.id !== doc.id);
+      if (activeTab === 'library') {
+        content.innerHTML = renderLibrary();
+        if (window.lucide) window.lucide.createIcons();
+      }
+      refreshSidebarCounts();
+      notify('Document removed');
+    } catch (err) {
+      notify(err.message || 'Could not remove document');
+    }
   }
 
   /** Re-render the modal's selects against a partial group selection. */

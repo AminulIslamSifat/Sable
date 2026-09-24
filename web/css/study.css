@@ -882,6 +882,19 @@ body[data-mode="study"] #chatCompact {
   margin-top: 0;
   padding: 9px 20px;
 }
+/* Push Cancel/Save to the right, leave Remove on the far left. */
+.study-modal-spacer {
+  flex: 1 1 auto;
+}
+.study-room-action.danger {
+  background: transparent;
+  color: var(--danger, #e5484d);
+  border: 1px solid var(--danger, #e5484d);
+}
+.study-room-action.danger:hover {
+  background: var(--danger, #e5484d);
+  color: #fff;
+}
 
 /* --- Academics manager --- */
 .study-academics-manager {

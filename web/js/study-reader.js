@@ -31,6 +31,11 @@ let pdfDoc = null;
 let meta = null;        // backend meta record
 let scale = 1.2;
 let currentPage = 1;
+// Scroll-driven page sync. While a programmatic scroll (thumb / prev / next /
+// page jump) is animating, ignore scroll-derived updates so the smooth-scroll
+// intermediate positions don't yank the sidebar to a page we're passing over.
+let scrollSyncSuppressUntil = 0;
+let pageSyncRaf = 0;
 let pageEls = [];       // index 0 = page 1
 let pageObserver = null;
 let thumbObserver = null;
@@ -612,13 +617,14 @@ async function renderAllPages() {
     if (gen !== renderGen) return;  // stale observer from an older layout
     for (const entry of entries) {
       const n = parseInt(entry.target.dataset.page, 10);
-      if (entry.isIntersecting) {
-        renderPage(n);
-        if (n !== currentPage) setCurrentPage(n);
-      }
+      // Rasterise only. Active-page tracking is scroll-driven (see
+      // schedulePageSync) — a 600px rootMargin makes several off-screen pages
+      // report as intersecting, so the observer can't pick the current one.
+      if (entry.isIntersecting) renderPage(n);
     }
   }, { root: main, rootMargin: '600px 0px', threshold: 0.01 });
   pageEls.forEach((p) => pageObserver.observe(p.el));
+  schedulePageSync();
 }
 
 async function renderPage(n) {
@@ -715,6 +721,9 @@ function scrollToPage(n, smooth = true) {
   if (!rec) return;
   const main = overlay.querySelector('#rdrMain');
   const top = rec.el.offsetTop - 16;
+  // Hold off scroll-derived sync until the animation settles, then the probe
+  // confirms the target. Instant jumps need no suppression window.
+  scrollSyncSuppressUntil = smooth ? performance.now() + 700 : 0;
   main.scrollTo({ top, behavior: smooth ? 'smooth' : 'auto' });
   setCurrentPage(target);
 }
@@ -724,11 +733,57 @@ function setCurrentPage(n) {
   currentPage = n;
   overlay.querySelector('#rdrPageInput').value = n;
   renderThumbActive();
+  renderOutlineActive();
   scheduleProgress();
+}
+
+/**
+ * Which page currently owns the top of the viewport.
+ *
+ * Probes ~28% down the scroll container rather than at its very edge, so a
+ * page counts as current once it owns the upper third of the view — matching
+ * what the reader actually sees, and avoiding a flick back to a page whose
+ * last sliver is still on screen.
+ */
+function pageAtViewportTop() {
+  const main = overlay.querySelector('#rdrMain');
+  if (!main || !pageEls.length) return currentPage;
+  const probe = main.scrollTop + main.clientHeight * 0.28;
+  let best = pageEls[0].n;
+  for (const p of pageEls) {
+    if (p.el.offsetTop <= probe) best = p.n;
+    else break;  // pages are in document order — first one past the probe ends it
+  }
+  return best;
+}
+
+/** rAF-throttled scroll handler: one page computation per frame, max. */
+function schedulePageSync() {
+  if (pageSyncRaf) return;
+  pageSyncRaf = requestAnimationFrame(() => {
+    pageSyncRaf = 0;
+    if (performance.now() < scrollSyncSuppressUntil) return;
+    setCurrentPage(pageAtViewportTop());
+  });
+}
+
+/** Highlight the outline entry that owns the current page. */
+function renderOutlineActive() {
+  const items = overlay.querySelectorAll('.rdr-outline-item');
+  if (!items.length) return;
+  // The active entry is the LAST one starting at or before the current page —
+  // a section stays active until the next heading is actually reached.
+  let activeBtn = null;
+  items.forEach((b) => {
+    if (parseInt(b.dataset.page, 10) <= currentPage) activeBtn = b;
+  });
+  items.forEach((b) => b.classList.toggle('active', b === activeBtn));
+  if (activeBtn && activeBtn.scrollIntoView) activeBtn.scrollIntoView({ block: 'nearest' });
 }
 
 function onMainScroll() {
   hideHlBar();
+  schedulePageSync();
 }
 
 function scheduleProgress() {
@@ -880,6 +935,7 @@ function renderOutline(host) {
     </button>`).join('')}</div>`;
   host.querySelectorAll('.rdr-outline-item').forEach((b) =>
     b.addEventListener('click', () => scrollToPage(parseInt(b.dataset.page, 10))));
+  renderOutlineActive();
 }
 
 function renderHighlights(host) {

@@ -2250,7 +2250,7 @@ async def create_account(payload: dict[str, Any] | None = None) -> dict[str, Any
         raise HTTPException(status_code=500, detail="No browser found. Set one in settings.")
 
     # Fire-and-forget: raw subprocess, no Playwright
-    cmd: list[str] = [resolved_browser, f"--user-data-dir={profile_path}"]
+    cmd: list[str] = [resolved_browser, "--password-store=basic", "--use-mock-keychain", f"--user-data-dir={profile_path}"]
     cmd.extend(_LOGIN_URLS[p] for p in _providers)
     try:
         import subprocess
@@ -2503,7 +2503,7 @@ async def open_account_browser(payload: dict[str, str]) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="No browser found. Set one in settings.")
 
     # Fire-and-forget: raw subprocess, no Playwright
-    cmd: list[str] = [resolved_browser, f"--user-data-dir={target_path}", url]
+    cmd: list[str] = [resolved_browser, "--password-store=basic", "--use-mock-keychain", f"--user-data-dir={target_path}", url]
     try:
         import subprocess
         subprocess.Popen(cmd, start_new_session=True)

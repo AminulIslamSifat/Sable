@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
 import shutil
 import tempfile
@@ -35,6 +36,7 @@ from ..dependencies import service, sse
 from .study import _clean_rects, _load_page_text, _read_meta, _update_meta
 
 router = APIRouter()
+logger = logging.getLogger("sable.study.ai")
 
 _ROOT = Path(__file__).resolve().parent.parent.parent.parent
 _CONFIG_PATH = _ROOT / "system" / "study_ai_config.json"
@@ -44,6 +46,11 @@ _MAX_CTX_CHARS = 24_000      # context budget for selection / page scope
 _MAX_DOC_CTX = 60_000        # context budget for whole-document scope
 _MAX_SELECTION_CHARS = 4_000
 _MAX_PERSONA_CHARS = 2_500
+
+# Backends whose connectors read a local path and base64-inline the bytes
+# themselves (see server/api/routes/chat.py). Everything else needs a real
+# provider-side upload before the model can see the file.
+_DIRECT_READ_BACKENDS = frozenset({"gemini", "groq", "mistral", "openai"})
 
 _DEFAULT_CONFIG: dict[str, str] = {
     "model": "",
@@ -268,9 +275,17 @@ async def _stream(
     prompt: str,
     model: str,
     thinking_mode: str,
+    *,
     files: list[str] | None = None,
+    ref_file_ids: list[str] | None = None,
+    ref_files: list[dict[str, Any]] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Yield normalized events ({type: answer|thinking|error}) for any model.
+
+    Attachment kwargs come from :func:`_resolve_attachments` — never a raw
+    local path on its own. ``files`` carries paths only for direct-read
+    connectors (they inline the bytes); ``ref_file_ids`` / ``ref_files`` carry
+    the provider-side upload result for every other backend.
 
     Instruction handling is deliberate: study answers get the study directive
     instead of Sable's instruction registry, so the ``chat_title`` tool schema
@@ -287,6 +302,10 @@ async def _stream(
         }
         if files:
             kwargs["files"] = files
+        if ref_file_ids:
+            kwargs["ref_file_ids"] = ref_file_ids
+        if ref_files:
+            kwargs["ref_files"] = ref_files
         try:
             agen = conn.stream_chat(prompt, **kwargs)
         except TypeError:
@@ -302,7 +321,9 @@ async def _stream(
     # of time, so the study directive is prefixed to the message instead.
     # Any chat_title tag the model emits anyway is stripped downstream.
     qwen_message = f"[STUDY MODE INSTRUCTIONS]\n{system}\n\n{prompt}"
-    qwen_files = [{"path": p} for p in files] if files else None
+    # Qwen's payload builder expects already-uploaded file objects here, not
+    # local paths — an un-uploaded path is silently useless to the model.
+    qwen_files = ref_files or None
     async for ev in service.stream_events(
         qwen_message,
         model=model or None,
@@ -431,6 +452,96 @@ def _serialize_conversation(messages: list[dict[str, Any]]) -> str:
     return "\n\n".join(lines)
 
 
+async def _upload_attachment(backend: str, path: str) -> dict[str, Any] | None:
+    """Upload one local file to the provider, returning its file object.
+
+    Mirrors the per-backend routing in ``server/api/routes/chat.py`` so Study
+    AI attaches files exactly the way the main chat does instead of handing a
+    local temp path to a provider that can't read it.
+    """
+    try:
+        if backend == "deepseek":
+            return await service.upload_deepseek_file(path)
+        if backend == "zai":
+            from connectors.zai.client import get_client
+            return await get_client().upload_file(path)
+        if backend == "gemini_web":
+            from connectors.gemini_web.client import get_client
+            return await get_client().upload_file(path)
+        if backend == "mimo":
+            from connectors.mimo.client import get_client
+            return await get_client().upload_file(path)
+        if backend == "mistral_web":
+            from connectors.mistral_web.client import get_client
+            return await get_client().upload_file(path)
+        if backend == "kimi":
+            from connectors.kimi.client import get_client
+            return await get_client().upload_file(path)
+    except Exception as exc:
+        logger.warning("study attach upload failed (%s): %s", backend, exc)
+        return None
+    # Qwen / scraper models (no api_backend) go through the Qwen OSS uploader.
+    try:
+        return await service.upload_file(path)
+    except Exception as exc:
+        logger.warning("study attach Qwen upload failed: %s", exc)
+        return None
+
+
+async def _resolve_attachments(model: str, file_paths: list[str]) -> dict[str, Any]:
+    """Route attachments the same way the main chat route does.
+
+    Returns keyword arguments for :func:`_stream`: ``files`` for direct-read
+    connectors (they inline the bytes themselves), plus ``ref_file_ids`` and
+    ``ref_files`` for every backend that needs a real provider-side upload.
+    """
+    if not file_paths:
+        return {}
+
+    backend = _resolve_api_backend(model) if _is_api_model(model) else None
+
+    # Direct-read connectors take local paths and base64-inline the bytes.
+    if backend in _DIRECT_READ_BACKENDS:
+        return {"files": list(file_paths)}
+
+    resolved: list[dict[str, Any]] = []
+    for path in file_paths:
+        meta = await _upload_attachment(backend or "", path)
+        if meta:
+            resolved.append(meta)
+        else:
+            logger.warning("study attach: could not upload %s", path)
+    if not resolved:
+        return {}
+
+    out: dict[str, Any] = {}
+    ref_ids = [
+        str(m.get("file_id") or m.get("id"))
+        for m in resolved
+        if m.get("file_id") or m.get("id")
+    ]
+    if ref_ids:
+        out["ref_file_ids"] = ref_ids
+
+    # Some backends need the FULL uploaded object, not just an id: z.ai and
+    # Gemini Web put it in their completion body, MiMo/Mistral key off `url`.
+    # DeepSeek/Kimi consume the id alone, so they get nothing extra here.
+    if backend in ("zai", "gemini_web"):
+        full = [m for m in resolved if m.get("id") or m.get("blob")]
+    elif backend == "mimo":
+        full = [m for m in resolved if m.get("fileUrl")]
+    elif backend == "mistral_web":
+        full = [m for m in resolved if m.get("url")]
+    elif backend is None:
+        # Qwen rides the whole object on the payload's `files` array.
+        full = resolved
+    else:
+        full = []
+    if full:
+        out["ref_files"] = full
+    return out
+
+
 @router.post("/api/study/doc/{doc_id}/chat")
 async def study_ai_chat(doc_id: str, payload: dict[str, Any]) -> StreamingResponse:
     """Stream a multi-turn study answer.
@@ -523,10 +634,14 @@ async def study_ai_chat(doc_id: str, payload: dict[str, Any]) -> StreamingRespon
     async def gen() -> AsyncGenerator[str, None]:
         workdir = Path(tempfile.mkdtemp(prefix="sable-study-att-"))
         file_paths = _persist_attachments(sendable, workdir)
+        # Upload to the provider (or keep paths for direct-read connectors) the
+        # same way the main chat route does, so a vision model actually receives
+        # the page image instead of an unreadable local temp path.
+        attach_kwargs = await _resolve_attachments(model, file_paths)
         parts: list[str] = []
         yield sse({"type": "start", "model": model, "attachments": len(file_paths)})
         try:
-            async for ev in _stream(system, prompt, model, thinking_mode, files=file_paths or None):
+            async for ev in _stream(system, prompt, model, thinking_mode, **attach_kwargs):
                 etype = ev.get("type")
                 if etype == "answer":
                     text = _strip_title_tags(str(ev.get("text", "")))
