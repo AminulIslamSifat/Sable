@@ -40,6 +40,7 @@ from .routes.agents import router as agents_router
 from .routes.library import router as library_router
 from .routes.study import router as study_router
 from .routes.study_ai import router as study_ai_router
+from .routes.study_notes import router as study_notes_router
 from .routes.drive import router as drive_router
 from .routes.email import router as email_router
 from .routes.filesystem import router as filesystem_router
@@ -356,6 +357,7 @@ app.include_router(agents_router)
 app.include_router(library_router)
 app.include_router(study_router)
 app.include_router(study_ai_router)
+app.include_router(study_notes_router)
 app.include_router(drive_router)
 app.include_router(email_router)
 app.include_router(filesystem_router)

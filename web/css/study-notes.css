@@ -1,0 +1,510 @@
+/* ========== Study Notes (handwritten markdown notes) ========== */
+
+/* ── Study-mode tab: header ─────────────────────────────────────────────── */
+/* The tab is already labelled in the study header, so the pane carries no
+   repeated title of its own — just the grid. It also stretches to fill the
+   content area so a mounted editor can claim the full height. */
+.sn-tab {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  padding: 2px 0 32px;
+}
+
+.sn-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+}
+/* Cards sit on .study-content, which is --panel. Using --panel here too made
+   them invisible until hovered — so they get --panel-2, a real border and a
+   shadow to lift them off the surface. */
+.sn-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .22);
+  transition: border-color .15s, transform .15s, background .15s, box-shadow .15s;
+}
+.sn-card:hover {
+  border-color: var(--accent);
+  background: var(--panel);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .34);
+}
+.sn-card.pinned { border-color: var(--accent-dim); }
+.sn-card > .sn-pin {
+  position: absolute; top: 10px; right: 10px;
+  width: 13px; height: 13px; color: var(--accent-text);
+}
+/* Content leads; the title is a quiet label on the footer line. */
+.sn-card-snippet {
+  margin: 0; font-size: 13px; line-height: 1.6; color: var(--text-dim);
+  display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical;
+  overflow: hidden; word-break: break-word;
+}
+.sn-card-snippet em { opacity: .6; }
+.sn-card-foot {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: auto; padding-top: 8px;
+  border-top: 1px solid var(--border-soft);
+}
+.sn-card-title {
+  margin: 0; flex: 1; min-width: 0;
+  font-size: 11.5px; font-weight: 500; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sn-card-title.is-untitled { color: var(--muted-2); font-style: italic; }
+.sn-card-time { font-size: 10.5px; color: var(--muted-2); white-space: nowrap; }
+.sn-card-del {
+  background: none; border: none; cursor: pointer; padding: 2px;
+  color: var(--muted-2); opacity: 0; transition: opacity .15s, color .15s;
+}
+.sn-card:hover .sn-card-del { opacity: 1; }
+.sn-card-del:hover { color: var(--danger); }
+.sn-card-del .icon-lucide { width: 13px; height: 13px; }
+
+/* Reference chips (shared by cards + reader pane) */
+.sn-ref-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.sn-ref-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 7px; border-radius: 6px;
+  background: var(--accent-dim); color: var(--accent-text);
+  font-size: 10.5px; max-width: 100%;
+}
+.sn-ref-chip .icon-lucide { width: 10px; height: 10px; flex-shrink: 0; }
+.sn-ref-more { font-size: 10.5px; color: var(--muted-2); align-self: center; }
+
+/* ── Editor overlay ─────────────────────────────────────────────────────── */
+.sn-overlay {
+  position: fixed; inset: 0; z-index: 1200;
+  background: rgba(0, 0, 0, .55);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; backdrop-filter: blur(3px);
+}
+/* Mounted inside a host pane (study content / reader notes) instead of as a
+   modal. `inset: 0` is load-bearing: without it an absolutely positioned box
+   shrink-wraps to its content and lands at its static position — which is why
+   the editor rendered as a half-width box floating mid-pane. */
+.sn-overlay.sn-embedded {
+  position: absolute; inset: 0; z-index: 5;
+  /* Explicit flex axis: stretch the single child across BOTH axes instead of
+     relying on the child's own width/height resolving to 100%. */
+  display: flex; align-items: stretch; justify-content: flex-start;
+  padding: 0; background: var(--bg);
+  backdrop-filter: none;
+  border-radius: inherit; overflow: hidden;
+}
+.sn-overlay.sn-picker-overlay { z-index: 1300; }
+
+.sn-editor {
+  position: relative;
+  display: flex; flex-direction: column;
+  width: min(1400px, 96vw); height: min(92vh, 1100px);
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 14px; overflow: hidden;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .45);
+}
+/* `flex: 1` + `width/height: auto` fills the flex parent on both axes. The
+   previous `width/height: 100%` depended on the parent's height being resolved,
+   which silently collapsed to content height. min-* :0 defeats the flex-item
+   default of min-width/min-height:auto so it can actually shrink to fit. */
+.sn-embedded .sn-editor {
+  flex: 1 1 auto;
+  width: auto; min-width: 0;
+  height: auto; min-height: 0;
+  max-width: none; max-height: none;
+  border: none; border-radius: 0; box-shadow: none;
+}
+
+/* Top bar */
+.sn-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px; border-bottom: 1px solid var(--border-soft);
+  background: var(--panel-2); flex-shrink: 0;
+}
+.sn-bar-spacer { flex: 1; }
+.sn-bar-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 8px;
+  background: none; border: 1px solid transparent;
+  color: var(--muted); cursor: pointer; transition: all .15s;
+}
+.sn-bar-btn:hover { background: var(--panel); color: var(--text); border-color: var(--border-soft); }
+.sn-bar-btn.active { color: var(--accent-text); border-color: var(--accent-dim); }
+.sn-bar-btn.sn-danger:hover { color: var(--danger); border-color: var(--danger-bg); }
+.sn-bar-btn .icon-lucide { width: 15px; height: 15px; }
+
+.sn-title-input {
+  flex: 1; min-width: 0; background: none; border: none; outline: none;
+  font-size: 15px; font-weight: 600; color: var(--text); padding: 4px 6px;
+}
+.sn-title-input::placeholder { color: var(--muted-2); font-weight: 400; }
+
+.sn-save-pill {
+  font-size: 11px; padding: 2px 8px; border-radius: 20px;
+  color: var(--muted-2); white-space: nowrap; transition: all .2s;
+}
+.sn-save-pill.dirty { color: var(--muted); }
+.sn-save-pill.busy { color: var(--accent-text); }
+.sn-save-pill.ok { color: var(--ok); }
+.sn-save-pill.err { color: var(--danger); }
+
+.sn-save { padding: 7px 16px; font-size: 12.5px; }
+
+/* Reference bar */
+.sn-refbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 14px; border-bottom: 1px solid var(--border-soft);
+  background: var(--panel); flex-shrink: 0;
+}
+.sn-refbar-label {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted-2); font-weight: 600;
+}
+.sn-refbar-label .icon-lucide { width: 12px; height: 12px; }
+.sn-refbar-chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; min-width: 0; }
+.sn-ref-empty { font-size: 12px; color: var(--muted-2); font-style: italic; }
+
+.sn-ref-chip.sn-ref-chip {
+  padding: 3px 6px 3px 8px; font-size: 11.5px; gap: 6px;
+}
+.sn-ref-chip-label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sn-ref-chip.sn-ref-selection { background: rgba(121, 192, 255, .13); color: #79c0ff; }
+.sn-ref-chip.sn-ref-page { background: rgba(154, 125, 74, .16); color: var(--accent-text); }
+.sn-ref-jump, .sn-ref-x {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: none; cursor: pointer; padding: 0;
+  color: inherit; opacity: .65; transition: opacity .15s;
+}
+.sn-ref-jump:hover, .sn-ref-x:hover { opacity: 1; }
+.sn-ref-jump .icon-lucide, .sn-ref-x .icon-lucide { width: 11px; height: 11px; }
+
+.sn-refbar-add {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 10px; border-radius: 7px; font-size: 11.5px;
+  background: none; border: 1px dashed var(--border);
+  color: var(--muted); cursor: pointer; transition: all .15s;
+}
+.sn-refbar-add:hover { border-color: var(--accent); color: var(--accent-text); }
+.sn-refbar-add .icon-lucide { width: 12px; height: 12px; }
+
+/* Toolbar */
+.sn-tools {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 7px 14px; border-bottom: 1px solid var(--border-soft);
+  background: var(--panel); flex-shrink: 0;
+}
+.sn-modes { display: flex; gap: 2px; background: var(--bg); padding: 2px; border-radius: 8px; }
+.sn-mode {
+  padding: 4px 12px; border-radius: 6px; font-size: 12px;
+  background: none; border: none; color: var(--muted); cursor: pointer; transition: all .15s;
+}
+.sn-mode:hover { color: var(--text); }
+.sn-mode.active { background: var(--panel-2); color: var(--accent-text); box-shadow: 0 1px 3px rgba(0,0,0,.2); }
+
+.sn-format { display: flex; align-items: center; gap: 1px; flex-wrap: wrap; }
+.sn-format button {
+  min-width: 28px; height: 28px; padding: 0 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: 1px solid transparent; border-radius: 6px;
+  color: var(--muted); font-size: 12px; cursor: pointer; transition: all .12s;
+}
+.sn-format button:hover { background: var(--panel-2); color: var(--text); border-color: var(--border-soft); }
+.sn-format .icon-lucide { width: 14px; height: 14px; }
+.sn-fmt-sep { width: 1px; height: 18px; background: var(--border-soft); margin: 0 4px; }
+
+.sn-ai-wrap { position: relative; }
+.sn-ai-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 12px; border-radius: 8px; font-size: 12.5px;
+  background: var(--accent-dim); border: 1px solid transparent;
+  color: var(--accent-text); cursor: pointer; transition: all .15s;
+}
+.sn-ai-btn:hover { border-color: var(--accent); }
+.sn-ai-btn .icon-lucide { width: 13px; height: 13px; }
+
+.sn-ai-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 20;
+  width: 236px; max-height: 60vh; overflow-y: auto;
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 5px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, .4);
+}
+.sn-ai-menu.hidden { display: none; }
+.sn-ai-menu button {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 7px 10px; border-radius: 7px; text-align: left;
+  background: none; border: none; color: var(--text-dim);
+  font-size: 12.5px; cursor: pointer; transition: background .12s;
+}
+.sn-ai-menu button:hover { background: var(--accent-dim); color: var(--accent-text); }
+.sn-ai-menu button .icon-lucide { width: 14px; height: 14px; opacity: .8; }
+.sn-ai-menu-sep { height: 1px; background: var(--border-soft); margin: 4px 2px; }
+.sn-ai-ground {
+  display: flex; align-items: center; gap: 7px;
+  padding: 7px 10px; font-size: 11.5px; color: var(--muted); cursor: pointer;
+}
+.sn-ai-ground input { accent-color: var(--accent); }
+
+/* AI result card */
+.sn-ai-card {
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel-2); flex-shrink: 0; max-height: 40vh;
+  display: flex; flex-direction: column;
+}
+.sn-ai-card.hidden { display: none; }
+.sn-ai-card-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px; border-bottom: 1px solid var(--border-soft);
+  font-size: 12.5px; color: var(--accent-text); font-weight: 600;
+}
+.sn-ai-card-head .icon-lucide { width: 13px; height: 13px; }
+.sn-ai-card-body { padding: 12px 14px; overflow-y: auto; font-size: 13px; line-height: 1.65; }
+.sn-ai-out > :first-child { margin-top: 0; }
+.sn-ai-out > :last-child { margin-bottom: 0; }
+.sn-ai-thinking { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; }
+.sn-ai-thinking .icon-lucide { width: 14px; height: 14px; animation: sn-spin 1s linear infinite; }
+@keyframes sn-spin { to { transform: rotate(360deg); } }
+.sn-ai-think { margin-bottom: 10px; font-size: 12px; }
+.sn-ai-think summary { cursor: pointer; color: var(--muted-2); }
+.sn-ai-think-body { padding: 6px 0 0 10px; color: var(--muted); white-space: pre-wrap; }
+.sn-ai-err { color: var(--danger); font-size: 12.5px; }
+.sn-ai-card-foot {
+  display: flex; gap: 8px; padding: 8px 14px;
+  border-top: 1px solid var(--border-soft);
+}
+.sn-ai-card-foot[hidden] { display: none; }
+.sn-ai-input {
+  flex: 1; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 7px 11px; font-size: 12.5px;
+  color: var(--text); outline: none;
+}
+.sn-ai-input:focus { border-color: var(--accent); }
+
+/* Body: edit / preview / split.
+   The children are ABSOLUTELY positioned against a flex-grown parent. A
+   <textarea> has an intrinsic auto height and won't stretch to fill a flex or
+   grid track — anchoring it to `inset: 0` sidesteps sizing entirely and is the
+   same trick that makes the outer overlay fill. */
+.sn-editor > * { flex-shrink: 0; }
+.sn-body-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.sn-body,
+.sn-preview { position: absolute; inset: 0; }
+
+.sn-body-wrap.mode-edit .sn-preview { display: none; }
+.sn-body-wrap.mode-preview .sn-body { display: none; }
+/* Split: two columns via right/left halves instead of a second track. */
+.sn-body-wrap.mode-split .sn-body { right: 50%; }
+.sn-body-wrap.mode-split .sn-preview { left: 50%; }
+
+.sn-body {
+  resize: none; overflow-y: auto;
+  /* panels.css has a GLOBAL `textarea { max-height: 200px }` — it clamped the
+     editor to 200px no matter what height was set. Must be overridden. */
+  max-height: none; min-height: 0;
+  background: var(--panel); border: none; outline: none;
+  padding: 20px 24px; font-size: 14px; line-height: 1.75;
+  color: var(--text); font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+  tab-size: 2;
+}
+.sn-body::placeholder { color: var(--muted-2); }
+
+.sn-preview {
+  overflow-y: auto; padding: 20px 24px;
+  font-size: 14px; line-height: 1.75; color: var(--text-dim);
+}
+.sn-preview-empty { color: var(--muted-2); font-style: italic; }
+.sn-preview > :first-child { margin-top: 0; }
+.sn-preview h1, .sn-preview h2, .sn-preview h3, .sn-preview h4 { color: var(--text); }
+
+/* ── Markdown tables ────────────────────────────────────────────────────────
+   window.renderMarkdown emits a bare `.table-wrap > table` with no styling of
+   its own. The chat surface styles tables only under `.md-content`, so every
+   other renderer (note preview, Study AI bubbles, the reader's AI card) drew
+   unstyled tables. This covers all of them, and lets wide tables scroll
+   instead of blowing out the pane. */
+.sn-preview .table-wrap,
+.sa-ai .sa-bubble .table-wrap,
+.rdr-ai-card-body .table-wrap,
+.sn-ai-out .table-wrap {
+  margin: 12px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.sn-preview .table-wrap table,
+.sa-ai .sa-bubble .table-wrap table,
+.rdr-ai-card-body .table-wrap table,
+.sn-ai-out .table-wrap table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: max-content;
+  font-size: 13px;
+}
+.sn-preview .table-wrap th,
+.sn-preview .table-wrap td,
+.sa-ai .sa-bubble .table-wrap th,
+.sa-ai .sa-bubble .table-wrap td,
+.rdr-ai-card-body .table-wrap th,
+.rdr-ai-card-body .table-wrap td,
+.sn-ai-out .table-wrap th,
+.sn-ai-out .table-wrap td {
+  border: 1px solid var(--border);
+  padding: 7px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+.sn-preview .table-wrap th,
+.sa-ai .sa-bubble .table-wrap th,
+.rdr-ai-card-body .table-wrap th,
+.sn-ai-out .table-wrap th {
+  background: var(--panel-2);
+  color: var(--accent-text);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Inline code + fenced blocks in the preview should match the rest of Sable. */
+.sn-preview pre {
+  background: var(--bg); border: 1px solid var(--border-soft);
+  border-radius: 8px; padding: 12px 14px; overflow-x: auto; font-size: 12.5px;
+}
+.sn-preview code {
+  background: var(--bg); border-radius: 4px; padding: 1px 5px; font-size: 12.5px;
+}
+.sn-preview pre code { background: none; padding: 0; }
+
+/* ── Document picker ────────────────────────────────────────────────────── */
+.sn-picker {
+  width: min(560px, 100%); max-height: 76vh;
+  display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 14px; overflow: hidden;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .45);
+}
+.sn-picker-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid var(--border-soft);
+}
+.sn-picker-head h3 { margin: 0; font-size: 15px; color: var(--text); }
+.sn-picker-search {
+  margin: 12px 18px; padding: 9px 12px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 9px; color: var(--text); font-size: 13px; outline: none;
+}
+.sn-picker-search:focus { border-color: var(--accent); }
+.sn-picker-list { flex: 1; overflow-y: auto; padding: 0 12px 12px; }
+.sn-pick-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-radius: 9px; cursor: pointer; transition: background .12s;
+}
+.sn-pick-row:hover { background: var(--panel-2); }
+.sn-pick-row.sel { background: var(--accent-dim); }
+.sn-pick-row input { accent-color: var(--accent); }
+.sn-pick-title { flex: 1; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sn-pick-meta { font-size: 11px; color: var(--muted-2); }
+.sn-picker-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 18px; border-top: 1px solid var(--border-soft);
+}
+.sn-picker-count { font-size: 12px; color: var(--muted); }
+
+/* ── Reader: Notes pane ─────────────────────────────────────────────────── */
+.rdr-notespane { position: relative; flex: 1; min-width: 0; overflow-y: auto; background: var(--bg); }
+.rdr-notespane.hidden { display: none; }
+/* The pane is a flex parent so an editor opened here fills it. */
+.sn-reader-pane {
+  padding: 24px 28px 40px;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.sn-reader-list { flex: 1; }
+.sn-reader-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; margin-bottom: 18px;
+}
+.sn-reader-head h3 { margin: 0 0 3px; font-size: 17px; color: var(--text); }
+.sn-reader-sub { margin: 0; font-size: 12.5px; color: var(--muted); }
+.sn-reader-sub strong { color: var(--text-dim); }
+.sn-reader-loading { padding: 40px; text-align: center; color: var(--muted); font-size: 13px; }
+.sn-reader-list {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px;
+}
+.sn-reader-note {
+  padding: 13px 15px; background: var(--panel);
+  border: 1px solid var(--border-soft); border-radius: 11px;
+  cursor: pointer; transition: all .15s;
+}
+.sn-reader-note:hover { border-color: var(--accent); background: var(--panel-2); }
+.sn-reader-note header { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.sn-reader-note h4 {
+  margin: 0; font-size: 13.5px; font-weight: 600; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sn-reader-note p {
+  margin: 6px 0; font-size: 12px; line-height: 1.55; color: var(--muted);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.sn-reader-note-anchor { margin: 4px 0; }
+.sn-reader-empty { margin-top: 40px; }
+
+/* ── Reader: quick-note popup ───────────────────────────────────────────── */
+.rdr-note-pop {
+  position: absolute; top: 58px; right: 16px; z-index: 30;
+  width: 340px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; overflow: hidden;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, .5);
+}
+.sn-cap { display: flex; flex-direction: column; }
+.sn-cap-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 13px; border-bottom: 1px solid var(--border-soft);
+  background: var(--panel-2); font-size: 12.5px; font-weight: 600; color: var(--text);
+}
+.sn-cap-head .icon-lucide { width: 14px; height: 14px; color: var(--accent-text); }
+.sn-cap-anchor {
+  padding: 8px 13px; font-size: 11px; color: var(--muted);
+  background: var(--bg); border-bottom: 1px solid var(--border-soft);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sn-cap-body {
+  min-height: 110px; resize: vertical;
+  background: var(--panel); border: none; outline: none;
+  padding: 12px 13px; font-size: 13px; line-height: 1.6;
+  color: var(--text); font-family: inherit;
+}
+.sn-cap-body::placeholder { color: var(--muted-2); }
+.sn-cap-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 13px; border-top: 1px solid var(--border-soft);
+}
+.sn-cap-link {
+  background: none; border: none; cursor: pointer;
+  font-size: 11.5px; color: var(--muted); text-decoration: underline;
+}
+.sn-cap-link:hover { color: var(--accent-text); }
+
+/* Narrow screens: stack split mode, shrink overlays */
+@media (max-width: 860px) {
+  .sn-body-wrap.mode-split { flex-direction: column; }
+  .sn-body-wrap.mode-split .sn-body { border-right: none; border-bottom: 1px solid var(--border-soft); }
+  .sn-overlay { padding: 0; }
+  .sn-editor { width: 100%; height: 100%; border-radius: 0; }
+  .rdr-note-pop { right: 8px; left: 8px; width: auto; }
+  .sn-format { display: none; }
+}

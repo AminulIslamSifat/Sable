@@ -59,7 +59,8 @@
   <link rel="stylesheet" href="/static/css/dashboard.css?v=100">
   <link rel="stylesheet" href="/static/css/calendar.css?v=100">
   <link rel="stylesheet" href="/static/css/knowledge.css?v=100">
-  <link rel="stylesheet" href="/static/css/study.css?v=8">
+  <link rel="stylesheet" href="/static/css/study.css?v=10">
+  <link rel="stylesheet" href="/static/css/study-notes.css?v=7">
   <link rel="stylesheet" href="/static/css/drive.css?v=1">
   <link rel="stylesheet" href="/static/css/study-reader.css?v=7">
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v=2">
@@ -644,6 +645,7 @@
           <button class="study-tab" data-study-tab="rooms"><i data-lucide="users" class="icon-lucide"></i> Rooms</button>
           <button class="study-tab" data-study-tab="drive"><i data-lucide="hard-drive-download" class="icon-lucide"></i> Drive</button>
           <button class="study-tab" data-study-tab="academics"><i data-lucide="graduation-cap" class="icon-lucide"></i> Academics</button>
+          <button class="study-tab" data-study-tab="notes"><i data-lucide="notebook-pen" class="icon-lucide"></i> Notes</button>
         </div>
         <div class="study-header-actions">
           <div id="studyTimerHost"></div>
@@ -2349,12 +2351,13 @@
   <script src="/static/js/agents.js?v=34"></script>
   <script src="/static/js/filesystem.js?v=32"></script>
   <script src="/static/js/study-timer.js?v=2"></script>
-  <script src="/static/js/study.js?v=13"></script>
+  <script src="/static/js/study-notes.js?v=7"></script>
+  <script src="/static/js/study.js?v=16"></script>
   <script src="/static/js/drive.js?v=1"></script>
   <!-- Shared Study AI surface (popup + full pane) — loaded before the reader -->
   <script src="/static/js/study-ai.js?v=3"></script>
   <!-- ES module: pdf.js 6.x ships .mjs only, so the reader can't be a classic script -->
-  <script type="module" src="/static/js/study-reader.js?v=5"></script>
+  <script type="module" src="/static/js/study-reader.js?v=7"></script>
   <script src="/static/js/mode.js?v=22"></script>
   <script src="/static/js/resize-panels.js?v=3"></script>
   <script src="/static/js/terminal.js?v=9"></script>

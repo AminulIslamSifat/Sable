@@ -189,6 +189,9 @@ function build() {
         <button class="rdr-docchat-btn" id="rdrTabChat" role="tab" aria-selected="false">
           <i data-lucide="message-square" class="icon-lucide"></i> Chat
         </button>
+        <button class="rdr-docchat-btn" id="rdrTabNotes" role="tab" aria-selected="false">
+          <i data-lucide="notebook-pen" class="icon-lucide"></i> Notes
+        </button>
       </div>
       <div class="rdr-spacer"></div>
       <div class="rdr-pager">
@@ -202,6 +205,7 @@ function build() {
         <button class="rdr-btn" id="rdrZoomIn" title="Zoom in"><i data-lucide="plus" class="icon-lucide"></i></button>
       </div>
       <div id="rdrTimerHost"></div>
+      <button class="rdr-btn" id="rdrNote" title="Quick note"><i data-lucide="notebook-pen" class="icon-lucide"></i></button>
       <button class="rdr-btn" id="rdrAi" title="AI settings"><i data-lucide="sparkles" class="icon-lucide"></i></button>
       <button class="rdr-btn" id="rdrBookmark" title="Bookmark"><i data-lucide="bookmark" class="icon-lucide"></i></button>
       <button class="rdr-btn" id="rdrDownload" title="Download"><i data-lucide="download" class="icon-lucide"></i></button>
@@ -222,6 +226,8 @@ function build() {
       </main>
       <!-- Study AI pane — swaps with the PDF area via the header Doc/Chat toggle -->
       <section class="rdr-chatpane hidden" id="rdrChatPane"></section>
+      <!-- Notes pane — swaps with the PDF area via the header Doc/Chat/Notes toggle -->
+      <section class="rdr-notespane hidden" id="rdrNotesPane"></section>
     </div>
     <div class="rdr-hl-bar hidden" id="rdrHlBar"></div>
     <!-- Floating Study AI launcher (bottom-right) -->
@@ -346,9 +352,15 @@ function wire() {
 
   bar.addEventListener('click', onHighlightBarClick);
 
-  // Doc/Chat toggle — swaps the PDF area for the Study AI pane.
+  // Doc/Chat/Notes toggle — swaps the PDF area for the AI or Notes pane.
   $("#rdrTabDoc").addEventListener('click', () => setReaderTab('doc'));
   $("#rdrTabChat").addEventListener('click', () => setReaderTab('chat'));
+  const tabNotes = $("#rdrTabNotes");
+  if (tabNotes) tabNotes.addEventListener('click', () => setReaderTab('notes'));
+
+  // Quick-note capture popup (header, beside the AI button).
+  const noteBtn = $("#rdrNote");
+  if (noteBtn) noteBtn.addEventListener('click', toggleNotePopup);
 
   // AI buttons
   $("#rdrAi").addEventListener('click', toggleAiConfig);
@@ -367,6 +379,11 @@ function wire() {
 
   document.addEventListener('keydown', onKeydown);
   window.addEventListener('resize', debounce(() => { if (isOpen()) relayout(); }, 200));
+
+  // A note created/edited/deleted anywhere refreshes the Notes pane live.
+  window.addEventListener('study-notes-changed', () => {
+    if (isOpen() && readerTab === 'notes') renderNotesPane();
+  });
 }
 
 function onKeydown(e) {
@@ -375,6 +392,7 @@ function onKeydown(e) {
   if (tag === 'input' || tag === 'textarea') return;
   if (e.key === 'Escape') {
     // Escape closes the AI card / config first, then the highlight bar, then the reader.
+    if (notePopup) { closeNotePopup(); return; }
     if (!overlay.querySelector('#rdrAiConfig').classList.contains('hidden')) {
       overlay.querySelector('#rdrAiConfig').classList.add('hidden');
       return;
@@ -474,8 +492,12 @@ async function open(docId, opts) {
     const el = overlay.querySelector(sel);
     if (el) el.style.display = isRemote ? 'none' : '';
   }
-  overlay.querySelector('#rdrTitle').textContent = meta.title || 'Document';
-  overlay.querySelector('#rdrTitle').title = meta.title || '';
+  // Cap the header title so a long filename can't push the pager / zoom / AI
+  // buttons out of the bar. The full name stays available on hover.
+  const fullTitle = meta.title || 'Document';
+  overlay.querySelector('#rdrTitle').textContent =
+    fullTitle.length > 25 ? fullTitle.slice(0, 25).trimEnd() + '…' : fullTitle;
+  overlay.querySelector('#rdrTitle').title = fullTitle;
   // Fresh AI surfaces for this doc (the context resolves meta lazily).
   aiPane = null;
   aiFloat = null;
@@ -528,6 +550,8 @@ function close() {
 }
 
 function teardown() {
+  closeNotePopup();
+  if (window.studyNotes) { try { window.studyNotes.close(); } catch {} }
   if (pageObserver) { pageObserver.disconnect(); pageObserver = null; }
   if (thumbObserver) { thumbObserver.disconnect(); thumbObserver = null; }
   if (pdfDoc) { try { pdfDoc.destroy(); } catch {} pdfDoc = null; }
@@ -1092,8 +1116,13 @@ async function onHighlightBarClick(e) {
   const isNote = btn.dataset.rdrColor === 'note';
   let note = '';
   if (isNote) {
-    note = window.prompt('Note for this highlight:') || '';
-    if (!note.trim()) return hideHlBar();
+    // Sticky-note button → open the quick-note popup with this selection
+    // pre-anchored. hideHlBar() clears pendingSelection, so stash a copy of
+    // the anchor first and let the popup read from noteAnchor instead.
+    noteAnchor = pendingSelection;
+    hideHlBar();
+    toggleNotePopup();
+    return;
   }
 
   const payload = {
@@ -1509,29 +1538,86 @@ function viewSavedNote(id) {
 
 // ── Doc / Chat toggle + Study AI pane ────────────────────────────────────────
 
-let readerTab = 'doc';        // 'doc' | 'chat'
+let readerTab = 'doc';        // 'doc' | 'chat' | 'notes'
 let aiPane = null;            // { el, view } from studyAI.createPane
 let aiFloat = null;           // { open, close } from studyAI.mountFloating
+let notePopup = null;         // quick-note capture popup element
+let noteAnchor = null;        // selection stashed by the highlight bar's note button
 
 function setReaderTab(tab) {
-  readerTab = tab === 'chat' ? 'chat' : 'doc';
+  readerTab = ['chat', 'notes'].includes(tab) ? tab : 'doc';
+  const isDoc = readerTab === 'doc';
   const isChat = readerTab === 'chat';
+  const isNotes = readerTab === 'notes';
+
   const main = overlay.querySelector('#rdrMain');
-  const pane = overlay.querySelector('#rdrChatPane');
-  if (main) main.classList.toggle('hidden', isChat);
-  if (pane) pane.classList.toggle('hidden', !isChat);
-  overlay.querySelector('#rdrTabDoc').classList.toggle('active', !isChat);
-  overlay.querySelector('#rdrTabChat').classList.toggle('active', isChat);
-  overlay.querySelector('#rdrTabDoc').setAttribute('aria-selected', String(!isChat));
-  overlay.querySelector('#rdrTabChat').setAttribute('aria-selected', String(isChat));
+  const chatPane = overlay.querySelector('#rdrChatPane');
+  const notesPane = overlay.querySelector('#rdrNotesPane');
+  if (main) main.classList.toggle('hidden', !isDoc);
+  if (chatPane) chatPane.classList.toggle('hidden', !isChat);
+  if (notesPane) notesPane.classList.toggle('hidden', !isNotes);
+
+  const tabs = { doc: '#rdrTabDoc', chat: '#rdrTabChat', notes: '#rdrTabNotes' };
+  for (const [key, sel] of Object.entries(tabs)) {
+    const el = overlay.querySelector(sel);
+    if (!el) continue;
+    const on = readerTab === key;
+    el.classList.toggle('active', on);
+    el.setAttribute('aria-selected', String(on));
+  }
+
   // The floating launcher is redundant while the full chat pane is showing.
   const launch = overlay.querySelector('#rdrAiLaunch');
   if (launch) launch.style.display = isChat ? 'none' : '';
   if (window.lucide) window.lucide.createIcons();
+
   if (isChat) {
     const p = ensureAiPane();
     if (p) p.view.render();
+  } else if (isNotes) {
+    renderNotesPane();
   }
+}
+
+/** Host element the notes editor mounts into when opened from the reader. */
+function notesPaneHost() {
+  return overlay.querySelector('#rdrNotesPane');
+}
+
+/** Draw the reader's Notes pane: notes connected to this document first. */
+function renderNotesPane() {
+  const host = notesPaneHost();
+  if (!host || !window.studyNotes) return;
+  window.studyNotes.renderReaderPane(host, {
+    getDocId: () => (meta && meta.id) || '',
+    getTitle: () => (meta && meta.title) || 'Document',
+    getPaneHost: notesPaneHost,
+  });
+}
+
+/** Popup lifecycle for the quick-note capture (header button). */
+function toggleNotePopup() {
+  if (notePopup) { closeNotePopup(); return; }
+  if (!window.studyNotes) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'rdr-note-pop';
+  overlay.appendChild(wrap);
+  notePopup = wrap;
+  window.studyNotes.renderQuickCapture(wrap, {
+    getDocId: () => (meta && meta.id) || '',
+    getTitle: () => (meta && meta.title) || 'Document',
+    getCurrentPage: () => currentPage || 1,
+    // The highlight bar stashes its selection in noteAnchor before hiding
+    // (hideHlBar clears pendingSelection), so prefer it when present.
+    getPendingSelection: () => noteAnchor || pendingSelection,
+    getPaneHost: notesPaneHost,
+    closePopup: closeNotePopup,
+  });
+}
+
+function closeNotePopup() {
+  if (notePopup) { notePopup.remove(); notePopup = null; }
+  noteAnchor = null;
 }
 
 /** Render one page to a PNG data URL (vision models get the real image). */
@@ -1632,5 +1718,6 @@ window.studyReader = {
   open,
   close,
   isOpen,
+  getDocMeta: () => (meta ? { id: meta.id, title: meta.title, pages: meta.pages } : null),
   openRemote: (fileId, title) => open(fileId, { remote: true, title }),
 };

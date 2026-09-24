@@ -34,6 +34,7 @@ from server.utils import _is_api_model, _resolve_api_backend
 
 from ..dependencies import service, sse
 from .study import _clean_rects, _load_page_text, _read_meta, _update_meta
+from .study_notes import _find as _find_note, _read_body as _read_note_body, _read_index as _read_notes_index
 
 router = APIRouter()
 logger = logging.getLogger("sable.study.ai")
@@ -46,6 +47,7 @@ _MAX_CTX_CHARS = 24_000      # context budget for selection / page scope
 _MAX_DOC_CTX = 60_000        # context budget for whole-document scope
 _MAX_SELECTION_CHARS = 4_000
 _MAX_PERSONA_CHARS = 2_500
+_MAX_BODY_NOTE = 200_000  # note body budget sent to the model for a rewrite
 
 # Backends whose connectors read a local path and base64-inline the bytes
 # themselves (see server/api/routes/chat.py). Everything else needs a real
@@ -96,6 +98,70 @@ _ACTION_PROMPTS: dict[str, str] = {
         "with a concise model answer."
     ),
     "glossary": "Build a glossary of the important terms in this document (term — definition).",
+}
+
+# Task instructions for the note editor's AI menu. Unlike the document actions
+# above, these REWRITE the user's note body and must return markdown only —
+# no preamble, no explanation, no code fence around the whole note.
+_NOTE_SYSTEM = (
+    "You are a writing assistant embedded in a markdown note editor. "
+    "The user's note is written in Obsidian-flavoured markdown, which supports "
+    "headings, **bold**, *italic*, ==highlight==, ~~strike~~, `code`, tables, "
+    "task lists, blockquote callouts ([!note] / [!tip] / [!warning] / "
+    "[!important] / [!example]), LaTeX math ($inline$ and $$block$$), and "
+    "```mermaid fenced diagrams. "
+    "Return ONLY the rewritten note as markdown. Never wrap the whole note in a "
+    "code fence. Never add commentary, apologies, or a preamble — the response "
+    "is inserted straight into the editor. "
+    "Preserve the author's original meaning, facts, and any [[links]] or "
+    "#tags unless the task explicitly says otherwise."
+)
+
+_NOTE_ACTIONS: dict[str, str] = {
+    "ask": "Answer the user's question about this note, then return the note unchanged.",
+    "refactor": (
+        "Refactor this note for clarity and flow: tighten sentences, fix logical "
+        "ordering, remove duplication, and improve headings. Keep every fact."
+    ),
+    "redesign": (
+        "Redesign the visual structure of this note: introduce clear headings, "
+        "callouts, tables, and bullet lists where they help. Keep the content."
+    ),
+    "organize": (
+        "Reorganize this note into a logical outline: group related points, add "
+        "headings, and move stray items under the right section."
+    ),
+    "enhance": (
+        "Enhance this note: expand terse points into complete thoughts, add "
+        "concrete examples, and sharpen the wording — without inventing facts."
+    ),
+    "summarize": (
+        "Condense this note into its essential points as a short summary with a "
+        "few key bullets. Keep it faithful and compact."
+    ),
+    "expand": (
+        "Expand this note with more depth and detail: elaborate each point, add "
+        "context, and include examples where useful."
+    ),
+    "clarify": (
+        "Rewrite this note so it is easier to understand: simpler sentences, "
+        "defined jargon, and explicit transitions."
+    ),
+    "fix-grammar": (
+        "Correct spelling, grammar, and punctuation. Do not change wording or "
+        "structure beyond what correctness requires."
+    ),
+    "add-examples": (
+        "Keep the note as-is but add concrete examples under each major point."
+    ),
+    "flashcards": (
+        "Convert this note into study flashcards. Use one '### Question' heading "
+        "followed by the answer, repeated for each card."
+    ),
+    "questions": (
+        "Generate likely exam or review questions from this note. Follow each "
+        "question with a concise model answer."
+    ),
 }
 
 
@@ -738,3 +804,149 @@ def study_delete_note(doc_id: str, note_id: str) -> dict[str, Any]:
         return {"deleted": True, "id": note_id}
 
     return _update_meta(doc_id, mutate)
+
+
+# ── Note-editor AI (handwritten notes) ───────────────────────────────────────
+
+
+def _build_note_context(refs: list[dict[str, Any]], budget: int = _MAX_DOC_CTX) -> str:
+    """Ground a note rewrite in the documents it references.
+
+    Walks the note's refs, pulling the anchored page (or the first pages of the
+    whole document) from each referenced library doc. Silent about missing
+    docs — a reference can outlive the file it pointed at.
+    """
+    parts: list[str] = []
+    total = 0
+    for ref in refs or []:
+        doc_id = str(ref.get("doc_id") or "")
+        if not doc_id:
+            continue
+        meta = _read_meta(doc_id)
+        if not meta:
+            continue
+        title = meta.get("title") or doc_id
+        try:
+            page = int(ref.get("page") or 0)
+        except (TypeError, ValueError):
+            page = 0
+
+        page_text = _load_page_text(meta)
+        chunk = ""
+        if page and 1 <= page <= len(page_text):
+            chunk = f"[{title} — page {page}]\n{(page_text[page - 1] or '').strip()[:_MAX_CTX_CHARS]}"
+        else:
+            collected: list[str] = []
+            for i, text in enumerate(page_text, 1):
+                text = (text or "").strip()
+                if not text:
+                    continue
+                collected.append(f"[page {i}]\n{text}")
+                if sum(len(c) for c in collected) > _MAX_CTX_CHARS:
+                    break
+            chunk = f"[{title}]\n" + "\n".join(collected)
+
+        if not chunk.strip():
+            continue
+        if total + len(chunk) > budget:
+            chunk = chunk[: max(0, budget - total)]
+        parts.append(chunk)
+        total += len(chunk)
+        if total >= budget:
+            break
+    return "\n\n".join(parts)
+
+
+@router.post("/api/study/notes/{note_id}/ai")
+async def study_note_ai(note_id: str, payload: dict[str, Any]) -> StreamingResponse:
+    """Stream an AI rewrite of a handwritten note.
+
+    body: {
+      action: ask|refactor|redesign|organize|enhance|summarize|expand|clarify|
+              fix-grammar|add-examples|flashcards|questions,
+      question?,            # required for action=ask
+      content?,             # live editor body (falls back to the saved file)
+      ground?,              # ground the rewrite in referenced documents
+      model?, thinking_mode?, persona?, custom_prompt?
+    }
+
+    SSE events mirror the document endpoints: {type:start} →
+{type:thinking|answer}… → {type:done,text}.
+    """
+    index = _read_notes_index()
+    note = _find_note(index, note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="note not found")
+
+    cfg = _load_config()
+    model = str(payload.get("model") or cfg.get("model") or "")
+    thinking_mode = str(payload.get("thinking_mode") or cfg.get("thinking_mode") or "")
+    persona = str(payload.get("persona") if "persona" in payload else cfg.get("persona") or "")
+    custom_prompt = str(
+        payload.get("custom_prompt") if "custom_prompt" in payload else cfg.get("custom_prompt") or ""
+    )
+    action = str(payload.get("action") or "enhance")
+    question = str(payload.get("question") or "")
+    content = payload.get("content")
+    if not isinstance(content, str) or not content.strip():
+        content = _read_note_body(note_id)
+    ground = bool(payload.get("ground"))
+
+    action_instr = _NOTE_ACTIONS.get(action, _NOTE_ACTIONS["enhance"])
+    system = _NOTE_SYSTEM
+    if custom_prompt.strip():
+        system += "\n\nAdditional instructions from the user:\n" + custom_prompt.strip()
+    persona_text = _read_persona(persona)
+    if persona_text:
+        system += "\n\nAdopt the following persona and tone:\n" + persona_text
+
+    blocks = [f'Note title: "{note.get("title") or "Untitled note"}"']
+    if ground and note.get("refs"):
+        ctx = _build_note_context(note.get("refs") or [])
+        if ctx:
+            blocks.append("Referenced document context:\n---\n" + ctx + "\n---")
+    blocks.append("Current note:\n---\n" + content[:_MAX_BODY_NOTE] + "\n---")
+    blocks.append("Task: " + action_instr)
+    if action == "ask" and question.strip():
+        blocks.append("Question: " + question.strip())
+    prompt = "\n\n".join(blocks)
+
+    async def gen() -> AsyncGenerator[str, None]:
+        parts: list[str] = []
+        yield sse({"type": "start", "action": action, "model": model})
+        try:
+            async for ev in _stream(system, prompt, model, thinking_mode):
+                etype = ev.get("type")
+                if etype == "answer":
+                    text = _strip_title_tags(str(ev.get("text", "")))
+                    parts.append(text)
+                    yield sse({"type": "answer", "text": text})
+                elif etype == "thinking":
+                    yield sse({"type": "thinking", "text": ev.get("text", "")})
+                elif etype == "error":
+                    yield sse({"type": "error", "message": ev.get("message", "error")})
+                    return
+        except Exception as exc:
+            yield sse({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
+            return
+        yield sse({"type": "done", "text": _strip_note_fence(_strip_title_tags("".join(parts)))})
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _strip_note_fence(text: str) -> str:
+    """Unwrap a whole-note ```markdown fence the model added despite instructions."""
+    t = (text or "").strip()
+    if not t.startswith("```"):
+        return t
+    first_nl = t.find("\n")
+    if first_nl == -1:
+        return t
+    if not t.endswith("```"):
+        return t
+    return t[first_nl + 1 : -3].strip()
+

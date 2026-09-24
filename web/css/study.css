@@ -112,6 +112,7 @@ body[data-mode="study"] .rail-btn[data-rail="calendar"] + .rail-sep {
 
 /* --- Study content area --- */
 .study-content {
+  position: relative; /* containing block for in-place editors (e.g. notes) */
   flex: 1;
   min-height: 0;
   overflow-y: auto;

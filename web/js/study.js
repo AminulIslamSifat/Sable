@@ -44,7 +44,7 @@
   const ROOMS = [];
 
   // ─── Tab meta ───
-  const TABS = ['library', 'rooms', 'drive', 'academics'];
+  const TABS = ['library', 'rooms', 'drive', 'academics', 'notes'];
 
   // ─── Rendering ───
 
@@ -555,6 +555,7 @@
     rooms: renderRooms,
     drive: () => (window.driveMode ? window.driveMode.render() : ''),
     academics: renderAcademics,
+    notes: () => (window.studyNotes ? window.studyNotes.renderTab() : ''),
   };
 
   function setTab(tab) {
@@ -572,6 +573,27 @@
 
     // Contextual sidebar
     renderSidebar(tab);
+
+    // Notes loads its own data the first time the tab is opened.
+    if (tab === 'notes' && window.studyNotes && !window.studyNotes.isLoaded()) {
+      window.studyNotes.reload().then(() => {
+        if (activeTab === 'notes') {
+          content.innerHTML = window.studyNotes.renderTab();
+          renderSidebar('notes');
+          if (window.lucide) window.lucide.createIcons();
+        }
+      });
+    }
+  }
+
+  /** Repaint the active tab + its sidebar without changing tabs. */
+  function refreshTab() {
+    // An editor mounted in the content pane owns it right now — repainting
+    // would destroy it (and the sidebar search would lose focus mid-typing).
+    if (content.querySelector('#snEditorOverlay')) return;
+    content.innerHTML = (RENDERERS[activeTab] || (() => ''))();
+    if (window.lucide) window.lucide.createIcons();
+    renderSidebar(activeTab);
   }
 
   // ─── Contextual sidebar ───
@@ -651,6 +673,8 @@
         </div>`;
     } else if (tab === 'drive') {
       html = window.driveMode ? window.driveMode.renderSidebar() : '';
+    } else if (tab === 'notes') {
+      html = window.studyNotes ? window.studyNotes.renderSidebar() : '';
     } else {
       const sems = ACADEMICS.semesters || [];
       const nSubj = sems.reduce((n, s) => n + (s.subjects || []).length, 0);
@@ -672,6 +696,10 @@
 
     panel.innerHTML = html;
     if (window.lucide) window.lucide.createIcons();
+
+    if (tab === 'notes' && window.studyNotes) {
+      window.studyNotes.bindSidebarSearch(panel);
+    }
 
     // Wire the library search box (rebuilt on every render, so re-bind each time).
     const searchInput = panel.querySelector('#studyLibSearch');
@@ -853,6 +881,41 @@
       collapsedGroups[key] = !collapsedGroups[key];
       const wrap = toggleEl.closest('.study-group');
       if (wrap) wrap.classList.toggle('collapsed', !!collapsedGroups[key]);
+      return;
+    }
+
+    // Notes tab — sidebar filters (which share the study-sidebar-item class)
+    // and content-pane actions all route through studyNotes.
+    const snFilterEl = e.target.closest('[data-sn-filter]');
+    if (snFilterEl && window.studyNotes) {
+      window.studyNotes.sidebarAction(snFilterEl.dataset.snFilter);
+      return;
+    }
+
+    // The Notes tab edits IN PLACE — same as the reader's Notes pane — rather
+    // than throwing up a modal. `mount` renders the editor into the study
+    // content area and swaps back to the grid when it closes.
+    const snMount = { mount: content };
+
+    const snEl = e.target.closest('[data-sn]');
+    if (snEl && window.studyNotes) {
+      const act = snEl.dataset.sn;
+      if (act === 'new') { window.studyNotes.openEditor(null, snMount); return; }
+      if (window.studyNotes.sidebarAction(act)) return;
+    }
+
+    // Delete must be tested BEFORE the card, since the button lives inside
+    // the card and would otherwise match [data-sn-open] first.
+    const snDelEl = e.target.closest('[data-sn-del]');
+    if (snDelEl && window.studyNotes) {
+      e.stopPropagation();
+      window.studyNotes.deleteById(snDelEl.dataset.snDel);
+      return;
+    }
+
+    const snOpenEl = e.target.closest('[data-sn-open]');
+    if (snOpenEl && window.studyNotes) {
+      window.studyNotes.openEditor(snOpenEl.dataset.snOpen, snMount);
       return;
     }
 
@@ -1320,6 +1383,7 @@
     window.studyMode = {
       setTab,
       getTab: () => activeTab,
+      refreshTab,
       // Lets the Drive module re-draw the sidebar once its async status
       // arrives, instead of leaving it stuck on "Checking…".
       refreshSidebar: () => renderSidebar(activeTab),
