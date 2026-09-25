@@ -433,28 +433,30 @@
           </div>
         </div>
 
-        <div class="sn-ai-card hidden" id="snAiCard">
-          <div class="sn-ai-card-head">
-            <i data-lucide="sparkles" class="icon-lucide"></i>
-            <span id="snAiCardTitle">AI</span>
-            <div class="sn-bar-spacer"></div>
-            <button class="sn-bar-btn" data-sn="ai-revert" title="Revert"><i data-lucide="undo-2" class="icon-lucide"></i></button>
-            <button class="sn-bar-btn" data-sn="ai-apply" title="Replace note"><i data-lucide="check" class="icon-lucide"></i></button>
-            <button class="sn-bar-btn" data-sn="ai-insert" title="Insert below"><i data-lucide="plus" class="icon-lucide"></i></button>
-            <button class="sn-bar-btn" data-sn="ai-close"><i data-lucide="x" class="icon-lucide"></i></button>
-          </div>
-          <div class="sn-ai-card-body" id="snAiBody"></div>
-          <div class="sn-ai-card-foot" id="snAiFoot" hidden>
-            <input class="sn-ai-input" id="snAiAsk" placeholder="Ask about this note…">
-            <button class="sn-bar-btn" data-sn="ai-ask-send"><i data-lucide="send" class="icon-lucide"></i></button>
-          </div>
-        </div>
-
         <div class="sn-body-wrap" id="snBodyWrap">
           <textarea class="sn-body" id="snBody" placeholder="Start writing… markdown, math, mermaid diagrams and callouts all work.">${esc(ed.content)}</textarea>
           <div class="sn-preview" id="snPreview"></div>
         </div>
-      </div>`;
+      </div>
+      <!-- Note AI runs in its own floating popup, detached from the editor
+           layout so it never reflows or covers the text being written. -->
+      <div class="sn-ai-pop hidden" id="snAiCard">
+        <div class="sn-ai-card-head">
+          <span class="sn-ai-pop-icon"><i data-lucide="sparkles" class="icon-lucide"></i></span>
+          <span id="snAiCardTitle">AI</span>
+          <div class="sn-bar-spacer"></div>
+          <button class="sn-bar-btn" data-sn="ai-revert" title="Revert"><i data-lucide="undo-2" class="icon-lucide"></i></button>
+          <button class="sn-bar-btn" data-sn="ai-apply" title="Replace note"><i data-lucide="check" class="icon-lucide"></i></button>
+          <button class="sn-bar-btn" data-sn="ai-insert" title="Insert below"><i data-lucide="plus" class="icon-lucide"></i></button>
+          <button class="sn-bar-btn" data-sn="ai-close"><i data-lucide="x" class="icon-lucide"></i></button>
+        </div>
+        <div class="sn-ai-card-body" id="snAiBody"></div>
+        <div class="sn-ai-card-foot" id="snAiFoot">
+          <input class="sn-ai-input" id="snAiAsk" placeholder="Ask about this note…">
+          <button class="sn-bar-btn" data-sn="ai-ask-send" title="Send"><i data-lucide="send" class="icon-lucide"></i></button>
+        </div>
+      </div>
+      `;
   }
 
   function wireEditor(host) {
@@ -532,7 +534,7 @@
       case 'ai-apply': applyAi('replace'); break;
       case 'ai-insert': applyAi('insert'); break;
       case 'ai-revert': revertAi(); break;
-      case 'ai-close': ed.host.querySelector('#snAiCard').classList.add('hidden'); break;
+      case 'ai-close': closeAiPopup(); break;
       case 'ai-ask-send': sendAiAsk(); break;
     }
   }
@@ -841,6 +843,26 @@
     menu.classList.toggle('hidden');
   }
 
+  /**
+   * Show the note-AI popup.
+   *
+   * It is a fixed panel pinned to the bottom-right (like the document Study AI
+   * launcher) so it floats above the editor without reflowing the text or the
+   * toolbar. Opening it once remembers its position for the session.
+   */
+  function openAiPopup(card) {
+    card.classList.remove('hidden');
+    // Only auto-position on first open; afterwards the user may have moved it.
+    if (!card.dataset.positioned) {
+      card.dataset.positioned = '1';
+    }
+  }
+
+  function closeAiPopup() {
+    const card = ed && ed.host && ed.host.querySelector('#snAiCard');
+    if (card) card.classList.add('hidden');
+  }
+
   async function runAi(action) {
     ed.host.querySelector('#snAiMenu').classList.add('hidden');
     const card = ed.host.querySelector('#snAiCard');
@@ -849,14 +871,22 @@
     const foot = card.querySelector('#snAiFoot');
     const label = (AI_ACTIONS.find((a) => a[0] === action) || [action, action])[1];
 
-    card.classList.remove('hidden');
+    openAiPopup(card);
     title.textContent = label;
+    // A previous tool edit may have hidden apply/insert — restore them for
+    // this new action so the buttons reflect the current turn's state.
+    card.querySelectorAll('[data-sn="ai-apply"], [data-sn="ai-insert"]')
+      .forEach((b) => { b.style.display = ''; });
     body.innerHTML = '<div class="sn-ai-thinking"><i data-lucide="loader-circle" class="icon-lucide"></i> Thinking…</div>';
     if (window.lucide) window.lucide.createIcons();
     foot.hidden = action !== 'ask';
+    if (action === 'ask') setTimeout(() => {
+      const ask = card.querySelector('#snAiAsk');
+      if (ask) ask.focus();
+    }, 40);
 
     const ground = ed.host.querySelector('#snAiGround').checked;
-    // Snapshot for revert before any rewrite lands.
+    // Snapshot for revert before any edit lands.
     ed.stack.push({ title: ed.title, content: ed.content });
 
     const payload = { action, content: ed.content, ground, question: '' };
@@ -876,6 +906,35 @@
     await streamAi({ action: 'ask', content: ed.content, question: q, ground: false }, body, 'ask');
   }
 
+  /**
+   * Re-read the note body after the model edited it with the study_note tool.
+   * The model no longer returns the note as chat text — it edits the file, and
+   * the editor must pick up the new content so the user sees the live result.
+   */
+  async function refreshNoteBody() {
+    if (!ed || !ed.id) return;
+    try {
+      const note = await apiGet(`${API}/${encodeURIComponent(ed.id)}`);
+      ed.title = note.title || ed.title;
+      ed.content = note.content || '';
+      const ti = ed.host.querySelector('#snTitle');
+      const ta = ed.host.querySelector('#snBody');
+      if (ti) ti.value = ed.title;
+      if (ta) ta.value = ed.content;
+      if (ed.mode !== 'edit') renderPreview();
+      // The edit already landed in the file — the "replace/insert" buttons
+      // would apply it a second time, so hide them and keep only Revert.
+      const card = ed.host.querySelector('#snAiCard');
+      if (card) {
+        card.querySelectorAll('[data-sn="ai-apply"], [data-sn="ai-insert"]')
+          .forEach((b) => { b.style.display = 'none'; });
+      }
+      notify('Note updated');
+    } catch (err) {
+      notify('Could not reload note: ' + err.message);
+    }
+  }
+
   async function streamAi(payload, bodyEl, action) {
     if (ed.aiAbort) { try { ed.aiAbort.abort(); } catch {} }
     const ctrl = new AbortController();
@@ -883,6 +942,26 @@
     ed.aiBusy = true;
     let acc = '';
     let thinking = '';
+    let edited = false;
+    const toolsAcc = [];
+
+    const paintTools = () => {
+      let html = '';
+      for (const t of toolsAcc) {
+        const cls = t.status === 'error' ? 'err' : (t.status === 'ok' ? 'ok' : 'run');
+        html += '<div class="sn-ai-tool ' + cls + '"><span class="sn-ai-tool-dot"></span>'
+          + esc((t.name || 'tool').replace(/_/g, ' '))
+          + (t.error ? '<span class="sn-ai-tool-err">' + esc(t.error) + '</span>' : '')
+          + '</div>';
+      }
+      let host = bodyEl.querySelector('.sn-ai-tools');
+      if (!host) {
+        host = document.createElement('div');
+        host.className = 'sn-ai-tools';
+        bodyEl.appendChild(host);
+      }
+      host.innerHTML = html;
+    };
 
     const paint = () => {
       let html = '';
@@ -894,6 +973,7 @@
         + (window.renderMarkdown ? window.renderMarkdown(acc) : esc(acc))
         + '</div>';
       bodyEl.innerHTML = html;
+      paintTools();
       if (window.postRenderContent) window.postRenderContent(bodyEl.querySelector('.sn-ai-out'));
     };
 
@@ -926,11 +1006,23 @@
           try { ev = JSON.parse(line.slice(6)); } catch { continue; }
           if (ev.type === 'answer') { acc += ev.text || ''; paint(); }
           else if (ev.type === 'thinking') { thinking += ev.text || ''; paint(); }
+          else if (ev.type === 'skill_start') { toolsAcc.push({ name: ev.name, status: 'running' }); paintTools(); }
+          else if (ev.type === 'skill_end') {
+            const t = toolsAcc[toolsAcc.length - 1];
+            if (t) { t.status = ev.ok ? 'ok' : 'error'; t.error = ev.error || ''; paintTools(); }
+          }
           else if (ev.type === 'error') { throw new Error(ev.message || 'AI error'); }
-          else if (ev.type === 'done') { acc = ev.text || acc; paint(); }
+          else if (ev.type === 'done') {
+            acc = ev.text || acc;
+            if (ev.edited) edited = true;
+            paint();
+          }
         }
       }
       ed.aiResult = acc;
+      // A tool edit already changed the note on disk — reload it so the editor
+      // shows the live result instead of an "apply" prompt for stale text.
+      if (edited) await refreshNoteBody();
     } catch (err) {
       if (err.name === 'AbortError') return;
       bodyEl.innerHTML = '<div class="sn-ai-err">' + esc(err.message) + '</div>';

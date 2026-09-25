@@ -557,6 +557,37 @@ class BaseBrowserEngine:
             self._log("resume_chat_failed", url=url, error=str(exc))
             return False
 
+    def session_id_from_url(self, url: str) -> str | None:
+        """Extract the upstream session id from a chat URL.
+
+        Providers override this. Returning None means "this URL carries no
+        comparable session id", so ensure_chat_url() falls back to an exact
+        URL comparison.
+        """
+        return None
+
+    async def ensure_chat_url(self, url: str) -> bool:
+        """Guarantee the page is on `url` (or the same session) before a send.
+
+        Compares by upstream session id when the provider exposes one, else by
+        exact URL. On mismatch it navigates via resume_chat() — which also sets
+        system_injected=True so instructions are NOT re-injected on a resumed
+        upstream conversation. Returns True when the page is (now) on target.
+        """
+        if not url:
+            return False
+        try:
+            current = getattr(self.page, "url", "") or ""
+        except Exception:
+            current = ""
+        if current == url:
+            return True
+        cur_sid = self.session_id_from_url(current)
+        want_sid = self.session_id_from_url(url)
+        if cur_sid and want_sid and cur_sid == want_sid:
+            return True
+        return await self.resume_chat(url)
+
     async def stop_generation(self) -> bool:
         sel = self.spec.sel("stop")
         if not sel:

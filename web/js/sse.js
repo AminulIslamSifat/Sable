@@ -2081,84 +2081,176 @@
       const controller = startStream(critiqueChatId);
       if (box) box._critiqueController = controller;
 
-      // Helper: extract only the structured report from the full answer text
-      function _extractReport(text) {
-        const idx = text.indexOf("**Mark:**");
-        if (idx !== -1) return text.slice(idx);
-        const idx2 = text.search(/^Mark:/m);
-        if (idx2 !== -1) return text.slice(idx2);
-        return text;
+      // Maximum times we re-ask the critic to fix a malformed report before
+      // giving up. A malformed report is NEVER forwarded to the main chat —
+      // forwarding junk would poison the main model's context.
+      const MAX_FORMAT_RETRIES = 2;
+
+      // Required report sections. Models decorate headers inconsistently
+      // (`**Mark:**`, `### Mark:`, `- Mark - 8/10`), so match loosely but
+      // require all three to be present before accepting a report.
+      const _MARK_RE = /^\s*(?:[>#*\-•]+\s*)*\**\s*Mark\s*\**\s*[:\-—–.]/im;
+      const _WHY_RE  = /^\s*(?:[>#*\-•]+\s*)*\**\s*Why\s*\**\s*[:\-—–.]/im;
+      const _SUG_RE  = /^\s*(?:[>#*\-•]+\s*)*\**\s*Suggestions?\s*\**\s*[:\-—–.]/im;
+
+      function _validateReport(text) {
+        const t = (text || "").trim();
+        if (!t) return { ok: false, reason: "the response was empty" };
+        const missing = [];
+        if (!_MARK_RE.test(t)) missing.push("Mark");
+        if (!_WHY_RE.test(t)) missing.push("Why");
+        if (!_SUG_RE.test(t)) missing.push("Suggestions");
+        if (missing.length) return { ok: false, reason: "missing section(s): " + missing.join(", ") };
+        return { ok: true };
       }
 
-      // Use the critique log as the rendering pane, but pass activeChatId
-      // so the typewriter animation doesn't bail (user is viewing this chat).
-      const ui = addBotStreaming(logEl, activeChatId);
-      let fullAnswer = "";
+      // Slice the report from the Mark header onward, dropping lead-in chatter.
+      function _extractReport(text) {
+        const t = (text || "").trim();
+        const mark = t.match(_MARK_RE);
+        if (mark && mark.index != null) return t.slice(mark.index).trim();
+        return t;
+      }
 
-      // Intercept appendAnswer to also accumulate raw text for report extraction
-      const _origAppend = ui.appendAnswer.bind(ui);
-      ui.appendAnswer = function(text) {
-        if (text) fullAnswer += text;
-        _origAppend(text);
-      };
+      // Sent back INTO the critique session when the report is malformed, so the
+      // critic reformats its OWN output. Fixed template — only the reason varies,
+      // and it is built from a closed set of section names (injection-safe).
+      function _formatReminder(reason) {
+        return (
+          "[FORMAT ERROR] Your previous response was not an acceptable critique report. " +
+          reason + ".\n\n" +
+          "Respond with EXACTLY these three sections and nothing else — no preamble, " +
+          "no tool calls, no closing remarks:\n\n" +
+          "**Mark:** [X/10]\n" +
+          "**Why:** (detailed explanation)\n" +
+          "**Suggestions:** (numbered, actionable list)\n\n" +
+          "Rewrite the complete report now, in that exact format."
+        );
+      }
 
-      // Update status when skills fire
-      const _origSkillStart = ui.addSkillStart.bind(ui);
-      let toolCount = 0;
-      ui.addSkillStart = function(evt) {
-        toolCount++;
-        if (statusEl) statusEl.innerHTML = `<span class="critique-spinner"></span> Inspecting... (${toolCount} tools)`;
-        _origSkillStart(evt);
-      };
+      // Inline note in the critique log (textContent only — no HTML injection).
+      function _appendLogNote(text) {
+        if (!logEl) return;
+        const note = document.createElement("div");
+        note.className = "critique-format-note";
+        note.textContent = text;
+        logEl.appendChild(note);
+      }
+
+      let finalReport = null;
+      let aborted = false;
+      let errored = false;
+      let exhausted = false;
+      let currentMessage = message;
+      let lastUi = null;
 
       try {
-        const body = {
-          message,
-          chat_id: critiqueChatId,
-          parent_id: undefined,
-          model: selectedModel,
-          thinking_mode: selectedThinkingMode,
-          stream: true,
-        };
-        if (browserDataDir) body.browser_data_dir = browserDataDir;
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        });
+        // Attempt 0 = initial run. Each retry re-prompts the SAME critique session
+        // with a format reminder until the report validates or we run out of tries.
+        for (let attempt = 0; attempt <= MAX_FORMAT_RETRIES; attempt++) {
+          if (controller.signal.aborted) { aborted = true; break; }
 
-        if (!res.ok) {
-          if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Failed</span>';
-          ui.appendAnswer(`\n[error] HTTP ${res.status}`);
+          // Fresh turn per attempt so retries are visually distinct and each
+          // attempt accumulates only its own answer text.
+          const ui = addBotStreaming(logEl, activeChatId);
+          lastUi = ui;
+          let fullAnswer = "";
+
+          const _origAppend = ui.appendAnswer.bind(ui);
+          ui.appendAnswer = function(text) {
+            if (text) fullAnswer += text;
+            _origAppend(text);
+          };
+
+          const _origSkillStart = ui.addSkillStart.bind(ui);
+          let toolCount = 0;
+          ui.addSkillStart = function(evt) {
+            toolCount++;
+            if (statusEl) statusEl.innerHTML = `<span class="critique-spinner"></span> Inspecting... (${toolCount} tools)`;
+            _origSkillStart(evt);
+          };
+
+          const body = {
+            message: currentMessage,
+            chat_id: critiqueChatId,
+            parent_id: undefined,
+            model: selectedModel,
+            thinking_mode: selectedThinkingMode,
+            stream: true,
+          };
+          if (browserDataDir) body.browser_data_dir = browserDataDir;
+
+          let res;
+          try {
+            res = await fetch("/api/chat", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+              signal: controller.signal,
+            });
+          } catch (fetchErr) {
+            if (fetchErr.name === "AbortError") { aborted = true; ui.finalize(); break; }
+            throw fetchErr;
+          }
+
+          if (!res.ok) {
+            ui.appendAnswer(`\n[error] HTTP ${res.status}`);
+            ui.finalize();
+            errored = true;
+            break;
+          }
+
+          // Live-stream through the standard pipeline — thinking, skills, answer all render
+          const { gotError } = await consumeChatStream(res, ui, null, critiqueChatId, logEl);
           ui.finalize();
-          return;
+
+          if (controller.signal.aborted) { aborted = true; break; }
+          if (gotError) { errored = true; break; }
+
+          // Only a fully-formed report is ever accepted downstream.
+          const check = _validateReport(fullAnswer);
+          if (check.ok) {
+            finalReport = _extractReport(fullAnswer);
+            break;
+          }
+
+          if (attempt < MAX_FORMAT_RETRIES) {
+            if (statusEl) statusEl.innerHTML = `<span class="critique-spinner"></span> Reformatting... (${attempt + 1}/${MAX_FORMAT_RETRIES})`;
+            _appendLogNote(`⚠ Report format invalid (${check.reason}). Asking the critic to reformat — not forwarded to the main chat.`);
+            currentMessage = _formatReminder(check.reason);
+            await new Promise((r) => setTimeout(r, 300));
+          } else {
+            exhausted = true;
+            _appendLogNote(`✗ Report still malformed after ${MAX_FORMAT_RETRIES} retries (${check.reason}). Discarded — not forwarded to the main chat.`);
+          }
         }
 
-        // Live-stream through the standard pipeline — thinking, skills, answer all render
-        const { gotError } = await consumeChatStream(res, ui, null, critiqueChatId, logEl);
-        ui.finalize();
-
-        if (controller.signal.aborted) {
+        // ── Final status + delivery ──────────────────────────────────────
+        if (aborted) {
           if (statusEl) statusEl.innerHTML = '<span style="color:var(--warn)">Stopped</span>';
           if (box) box.classList.add('critique-done');
-        } else if (!gotError) {
+        } else if (finalReport) {
           if (statusEl) statusEl.innerHTML = '<span style="color:var(--ok)">Complete</span>';
           if (box) {
             box.classList.add('critique-done');
             const sb = box.querySelector('.critique-stop-btn');
             if (sb) sb.style.display = 'none';
           }
-          // Send the final report to the main chat as a normal user message.
-          if (fullAnswer && typeof sendAutoTurnMessage === "function") {
-            const hasStructuredReport = fullAnswer.includes("**Mark:**") || /^Mark:/m.test(fullAnswer);
-            if (hasStructuredReport) {
-              const report = _extractReport(fullAnswer);
-              setTimeout(() => sendAutoTurnMessage(`[Critique Report]\n${report}`), 300);
-            }
+          // Valid report → hand it to the main chat so the model can act on it.
+          if (typeof sendAutoTurnMessage === "function") {
+            setTimeout(() => sendAutoTurnMessage(`[Critique Report]\n${finalReport}`), 300);
+          } else {
+            console.warn("[critique] sendAutoTurnMessage unavailable — report not delivered");
           }
-        } else {
+        } else if (errored) {
           if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Error</span>';
+          if (box) {
+            box.classList.add('critique-done');
+            const sb = box.querySelector('.critique-stop-btn');
+            if (sb) sb.style.display = 'none';
+          }
+        } else if (exhausted) {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--warn)">Incomplete</span>';
           if (box) {
             box.classList.add('critique-done');
             const sb = box.querySelector('.critique-stop-btn');
@@ -2171,11 +2263,10 @@
           if (box) box.classList.add('critique-done');
           const sb = box?.querySelector('.critique-stop-btn');
           if (sb) sb.style.display = 'none';
-          ui.finalize();
+          if (lastUi) lastUi.finalize();
         } else {
           if (statusEl) statusEl.innerHTML = '<span style="color:var(--error)">Error</span>';
-          ui.appendAnswer(`\n[client error] ${err.message}`);
-          ui.finalize();
+          if (lastUi) { lastUi.appendAnswer(`\n[client error] ${err.message}`); lastUi.finalize(); }
         }
       } finally {
         if (typeof endStream === "function") endStream(critiqueChatId);

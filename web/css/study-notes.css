@@ -254,20 +254,44 @@
 }
 .sn-ai-ground input { accent-color: var(--accent); }
 
-/* AI result card */
-.sn-ai-card {
-  border-bottom: 1px solid var(--border-soft);
-  background: var(--panel-2); flex-shrink: 0; max-height: 40vh;
-  display: flex; flex-direction: column;
+/* AI result popup — floats above the editor instead of sitting in its layout. */
+.sn-ai-card,
+.sn-ai-pop {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 1200;
+  width: min(460px, calc(100vw - 32px));
+  max-height: min(70vh, 640px);
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  box-shadow: 0 20px 55px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: sn-ai-pop-in 0.16s ease-out;
 }
-.sn-ai-card.hidden { display: none; }
+.sn-ai-card.hidden,
+.sn-ai-pop.hidden { display: none; }
+@keyframes sn-ai-pop-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
 .sn-ai-card-head {
   display: flex; align-items: center; gap: 8px;
-  padding: 8px 14px; border-bottom: 1px solid var(--border-soft);
-  font-size: 12.5px; color: var(--accent-text); font-weight: 600;
+  padding: 11px 14px; border-bottom: 1px solid var(--border-soft);
+  font-size: 13px; color: var(--accent-text); font-weight: 600;
+  background: color-mix(in srgb, var(--panel-2) 60%, transparent);
+}
+.sn-ai-pop-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: 7px;
+  background: var(--accent-dim); color: var(--accent);
 }
 .sn-ai-card-head .icon-lucide { width: 13px; height: 13px; }
-.sn-ai-card-body { padding: 12px 14px; overflow-y: auto; font-size: 13px; line-height: 1.65; }
+.sn-ai-pop-icon .icon-lucide { width: 13px; height: 13px; }
+.sn-ai-card-body { padding: 14px 16px; overflow-y: auto; font-size: 13px; line-height: 1.65; flex: 1; min-height: 80px; }
 .sn-ai-out > :first-child { margin-top: 0; }
 .sn-ai-out > :last-child { margin-bottom: 0; }
 .sn-ai-thinking { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; }
@@ -277,6 +301,22 @@
 .sn-ai-think summary { cursor: pointer; color: var(--muted-2); }
 .sn-ai-think-body { padding: 6px 0 0 10px; color: var(--muted); white-space: pre-wrap; }
 .sn-ai-err { color: var(--danger); font-size: 12.5px; }
+
+/* Tool activity inside the note AI card */
+.sn-ai-tools { display: flex; flex-direction: column; gap: 3px; margin: 8px 0 4px; }
+.sn-ai-tool {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  padding: 4px 8px; border-radius: 7px;
+  background: color-mix(in srgb, var(--panel-2) 70%, transparent);
+  border: 1px solid var(--border-soft);
+  font-size: 11.5px; color: var(--muted); text-transform: capitalize;
+}
+.sn-ai-tool-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted-2); flex-shrink: 0; }
+.sn-ai-tool.run .sn-ai-tool-dot { background: var(--accent); animation: sn-pulse 1s infinite ease-in-out; }
+.sn-ai-tool.ok .sn-ai-tool-dot { background: #7ee787; }
+.sn-ai-tool.err .sn-ai-tool-dot { background: var(--danger); }
+.sn-ai-tool-err { color: var(--danger); font-size: 11px; text-transform: none; }
+@keyframes sn-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .sn-ai-card-foot {
   display: flex; gap: 8px; padding: 8px 14px;
   border-top: 1px solid var(--border-soft);

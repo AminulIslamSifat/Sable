@@ -51,6 +51,10 @@ class ToolMeta:
     functions: list[dict] = field(default_factory=list)
     dir_path: Path = field(default_factory=Path)
     tier: str = "core"  # "core" or "outer"
+    # Layout modes that may see this tool. Empty = every mode. A tool that
+    # declares ["study"] is offered only in study mode; tools with no modes key
+    # stay available everywhere.
+    modes: tuple[str, ...] = ()
 
 
 # ─── Manifest parsing ────────────────────────────────────────────────────────
@@ -74,6 +78,28 @@ def _read_tier(tool_dir: Path) -> str:
         logger.warning("Unknown tier '%s' in %s, defaulting to '%s'", tier, manifest, _DEFAULT_TIER)
         return _DEFAULT_TIER
     return tier
+
+
+def _read_modes(tool_dir: Path) -> tuple[str, ...]:
+    """Read the optional ``modes`` list from manifest.json.
+
+    Absent / invalid -> empty tuple, which means "every mode". This is the
+    permissive default so an ordinary shared tool needs no manifest change;
+    only a tool that must be hidden from other modes opts in by listing them.
+    """
+    manifest = tool_dir / "manifest.json"
+    if not manifest.exists():
+        return ()
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return ()
+    if not isinstance(data, dict):
+        return ()
+    modes = data.get("modes")
+    if not isinstance(modes, list):
+        return ()
+    return tuple(str(m).strip().lower() for m in modes if str(m).strip())
 
 
 def _validate_function(fn: Any, manifest_path: Path) -> dict | None:
@@ -143,6 +169,7 @@ def _discover_cached(tools_dir_str: str) -> tuple[ToolMeta, ...]:
             functions=functions,
             dir_path=manifest_path.parent,
             tier=tier,
+            modes=_read_modes(manifest_path.parent),
         ))
 
     total_fns = sum(len(t.functions) for t in tools)
@@ -185,10 +212,25 @@ def browse_tools() -> list[dict]:
     ]
 
 
+def _mode_allows(t: ToolMeta, mode: str | None) -> bool:
+    """Does a tool group belong in the requested layout mode?
+
+    No declared modes -> shared, visible everywhere. Declared modes -> only
+    when the current mode is listed. A mode-gated tool is therefore invisible
+    to every other caller without any explicit block list.
+    """
+    if not t.modes:
+        return True
+    if mode is None:
+        return False
+    return mode in t.modes
+
+
 def get_all_tool_schemas(
     disabled: list[str] | None = None,
     allowed: list[str] | None = None,
     tier: str | None = None,
+    mode: str | None = None,
 ) -> list[dict]:
     """Return flat list of tool function schemas (OpenAI-compatible).
 
@@ -196,6 +238,8 @@ def get_all_tool_schemas(
         disabled: Tool keys to exclude.
         allowed: If set, only include these tool keys.
         tier: "core" = only core, "outer" = only outer, None = all.
+        mode: Layout mode ("study", "agent", ...). Tools that declare a
+              ``modes`` list are only included when the mode matches.
     """
     disabled = disabled or []
     schemas: list[dict] = []
@@ -205,6 +249,8 @@ def get_all_tool_schemas(
         if allowed and t.key not in allowed:
             continue
         if tier and t.tier != tier:
+            continue
+        if not _mode_allows(t, mode):
             continue
         for fn in t.functions:
             schemas.append({
@@ -239,6 +285,30 @@ def get_outer_tool_stubs(disabled: list[str] | None = None) -> list[dict]:
                 },
             })
     return stubs
+
+
+# The tools study mode offers alongside its own four. Kept here (not in the
+# route) so the schema gate and the study prompt can never disagree.
+STUDY_SHARED_TOOLS: tuple[str, ...] = (
+    "online_search",
+    "simulacra",
+    "image_generator",
+    "code_editor",
+    "file_uploader",
+    "grep_search",
+)
+
+
+def get_study_tool_schemas(disabled: list[str] | None = None) -> list[dict]:
+    """Full schemas for study mode: the four study tools + shared tools.
+
+    Returns every study-gated tool (``modes`` contains "study") plus the
+    allow-listed shared tools. Nothing else — no chat_title, no agent tooling.
+    """
+    disabled = disabled or []
+    study_keys = {t.key for t in discover_tools() if "study" in t.modes}
+    allowed = study_keys | set(STUDY_SHARED_TOOLS)
+    return get_all_tool_schemas(disabled=disabled, allowed=list(allowed), mode="study")
 
 
 def load_single_tool(tool_name: str) -> list[dict] | None:

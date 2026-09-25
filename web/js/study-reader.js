@@ -250,6 +250,49 @@ function build() {
       <section class="rdr-notespane hidden" id="rdrNotesPane"></section>
     </div>
     <div class="rdr-hl-bar hidden" id="rdrHlBar"></div>
+    <!-- Right-click menu for the document pane -->
+    <div class="rdr-ctx hidden" id="rdrCtxMenu" role="menu">
+      <div class="rdr-ctx-label">Copy</div>
+      <button class="rdr-ctx-item" data-rdr-ctx="copy" role="menuitem">
+        <i data-lucide="clipboard-copy" class="icon-lucide"></i> Copy
+        <span class="rdr-ctx-hint">text</span>
+      </button>
+      <button class="rdr-ctx-item" data-rdr-ctx="copy-selection-image" role="menuitem">
+        <i data-lucide="scan-text" class="icon-lucide"></i> Copy selection
+        <span class="rdr-ctx-hint">image</span>
+      </button>
+      <button class="rdr-ctx-item" data-rdr-ctx="copy-page" role="menuitem">
+        <i data-lucide="image" class="icon-lucide"></i> Copy page image
+      </button>
+      <button class="rdr-ctx-item" data-rdr-ctx="copy-page-text" role="menuitem">
+        <i data-lucide="text" class="icon-lucide"></i> Copy page text
+      </button>
+      <div class="rdr-ctx-sep"></div>
+      <div class="rdr-ctx-label"><i data-lucide="sparkles" class="icon-lucide"></i> Study AI</div>
+      <button class="rdr-ctx-item" data-rdr-ctx="ask-page" role="menuitem">
+        <i data-lucide="message-circle-question" class="icon-lucide"></i> Ask about this page
+      </button>
+      <button class="rdr-ctx-item" data-rdr-ctx="ask-pdf" role="menuitem">
+        <i data-lucide="file-search" class="icon-lucide"></i> Ask about this PDF
+        <span class="rdr-ctx-hint">page + doc</span>
+      </button>
+      <button class="rdr-ctx-item" data-rdr-ctx="explain-page" role="menuitem">
+        <i data-lucide="lightbulb" class="icon-lucide"></i> Explain this page
+      </button>
+      <button class="rdr-ctx-item" data-rdr-ctx="summarize-page" role="menuitem">
+        <i data-lucide="list" class="icon-lucide"></i> Summarize this page
+      </button>
+      <button class="rdr-ctx-item" data-rdr-ctx="explain-selection" role="menuitem">
+        <i data-lucide="wand-2" class="icon-lucide"></i> Explain selection
+      </button>
+      <div class="rdr-ctx-sep"></div>
+      <button class="rdr-ctx-item" data-rdr-ctx="highlight" role="menuitem">
+        <i data-lucide="highlighter" class="icon-lucide"></i> Highlight selection
+      </button>
+      <button class="rdr-ctx-item" data-rdr-ctx="save-note" role="menuitem">
+        <i data-lucide="notebook-pen" class="icon-lucide"></i> Save selection as note
+      </button>
+    </div>
     <!-- Floating Study AI launcher (bottom-right) -->
     <div class="rdr-ai-launch" id="rdrAiLaunch"></div>
 
@@ -362,10 +405,50 @@ function wire() {
     });
   });
 
+  // Study tools run by the model can mutate this document (highlights, notes,
+  // progress). When one does, the route emits doc_changed — refresh the panes
+  // so the change appears without the user reloading.
+  window.addEventListener('study-doc-changed', (e) => {
+    const detail = (e && e.detail) || {};
+    if (!meta) return;
+    if (detail.doc_id && detail.doc_id !== meta.id) return;
+    if (detail.kind === 'highlights' || detail.kind === 'bookmark') {
+      api(`/api/study/doc/${meta.id}`).then((fresh) => {
+        if (!fresh || !meta) return;
+        meta.highlights = fresh.highlights || [];
+        meta.bookmarked = fresh.bookmarked;
+        layoutHighlights();
+        if (activeSideTab === 'notes') renderSidePanel();
+      }).catch(() => {});
+    } else if (detail.kind === 'progress') {
+      api(`/api/study/doc/${meta.id}`).then((fresh) => {
+        if (fresh && meta) meta.progress = fresh.progress || meta.progress;
+      }).catch(() => {});
+    } else if (detail.kind === 'notes') {
+      // The Notes pane may be showing a doc's notes — let it redraw.
+      window.dispatchEvent(new CustomEvent('study-notes-changed'));
+    }
+  });
+
   // Selection → highlight bar
   const main = $("#rdrMain");
   main.addEventListener('mouseup', onSelection);
   main.addEventListener('scroll', onMainScroll, { passive: true });
+
+  // Right-click context menu on the document pane.
+  main.addEventListener('contextmenu', onDocContextMenu);
+  const ctxMenu = $("#rdrCtxMenu");
+  ctxMenu.addEventListener('click', onCtxMenuClick);
+  ctxMenu.addEventListener('contextmenu', (e) => e.preventDefault());
+  // Dismiss on outside click / Escape / scroll / resize.
+  document.addEventListener('mousedown', (e) => {
+    if (!ctxMenu.classList.contains('hidden') && !ctxMenu.contains(e.target)) hideCtxMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') hideCtxMenu();
+  });
+  main.addEventListener('scroll', hideCtxMenu, { passive: true });
+  window.addEventListener('resize', hideCtxMenu);
   document.addEventListener('mousedown', (e) => {
     if (!overlay.classList.contains('hidden') && !bar.contains(e.target)) hideHlBar();
   });
@@ -1256,6 +1339,292 @@ function hideHlBar() {
   pendingSelection = null;
 }
 
+// ── Document right-click menu ────────────────────────────────────────────────
+
+let ctxPage = 0;        // page the menu was opened on
+let ctxSelection = '';  // text selected when the menu opened (may be empty)
+
+function hideCtxMenu() {
+  if (!overlay) return;
+  const menu = overlay.querySelector('#rdrCtxMenu');
+  if (menu) menu.classList.add('hidden');
+}
+
+function onDocContextMenu(e) {
+  if (!meta) return;
+  const pageEl = e.target.closest && e.target.closest('.rdr-page');
+  // Only act inside a rendered page — the sidebar and margins keep the
+  // browser's own menu so text selection there behaves normally.
+  if (!pageEl) return;
+  e.preventDefault();
+  // Stop Sable's global context menu (appearance.js) from also firing on
+  // document — otherwise it draws its own menu over this one.
+  e.stopPropagation();
+
+  ctxPage = parseInt(pageEl.dataset.page, 10) || currentPage;
+  const sel = window.getSelection();
+  ctxSelection = sel && !sel.isCollapsed ? sel.toString().trim() : '';
+
+  const menu = overlay.querySelector('#rdrCtxMenu');
+  // Selection-dependent items hide themselves when nothing is selected, so
+  // the menu always shows only actions that can actually run.
+  const selOnly = ['copy', 'copy-selection-image', 'explain-selection', 'highlight', 'save-note'];
+  for (const a of selOnly) {
+    const el = menu.querySelector('[data-rdr-ctx="' + a + '"]');
+    if (el) el.style.display = ctxSelection ? '' : 'none';
+  }
+
+  menu.classList.remove('hidden');
+  if (window.lucide) window.lucide.createIcons({ nodes: menu.querySelectorAll('[data-lucide]') });
+
+  // Measure after unhiding so the menu never lands off-screen.
+  const mw = menu.offsetWidth || 210;
+  const mh = menu.offsetHeight || 180;
+  const x = Math.max(8, Math.min(e.clientX, window.innerWidth - mw - 8));
+  const y = Math.max(8, Math.min(e.clientY, window.innerHeight - mh - 8));
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+}
+
+async function onCtxMenuClick(e) {
+  const btn = e.target.closest('[data-rdr-ctx]');
+  if (!btn) return;
+  const action = btn.dataset.rdrCtx;
+  const page = ctxPage || currentPage;
+  const selection = ctxSelection;
+  hideCtxMenu();
+
+  try {
+    if (action === 'copy') {
+      await navigator.clipboard.writeText(selection);
+      toast('Copied selection', 'success');
+      return;
+    }
+
+    if (action === 'copy-page-text') {
+      const text = await pageToText(page);
+      if (!text) return toast('No text on this page', 'error');
+      await navigator.clipboard.writeText(text);
+      toast(`Page ${page} text copied`, 'success');
+      return;
+    }
+
+    if (action === 'copy-page') {
+      const dataUrl = await pageToImage(page);
+      if (!dataUrl) return toast('Could not render this page', 'error');
+      // Clipboard images need a PNG blob; fall back to a download when the
+      // async clipboard API is unavailable (older browsers / no permission).
+      try {
+        const blob = await (await fetch(dataUrl)).blob();
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        toast(`Page ${page} copied as image`, 'success');
+      } catch (_) {
+        const a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = `${(meta && (meta.slug || meta.title)) || 'page'}-p${page}.png`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        toast('Clipboard blocked — image downloaded instead', 'error');
+      }
+      return;
+    }
+
+    if (action === 'ask-page' || action === 'ask-pdf' || action === 'explain-page'
+        || action === 'summarize-page' || action === 'explain-selection') {
+      await runContextAi(action, page, selection);
+      return;
+    }
+
+    if (action === 'highlight') {
+      if (!selection) return toast('Select some text first', 'error');
+      const rects = await textToRects(page, selection);
+      if (!rects.length) return toast('Could not locate that text', 'error');
+      await api(`/api/study/doc/${meta.id}/highlights`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ page, rects, color: '#ffd400', text: selection, note: '' }),
+      });
+      const fresh = await api(`/api/study/doc/${meta.id}`).catch(() => null);
+      if (fresh) meta.highlights = fresh.highlights || [];
+      layoutHighlights();
+      toast('Highlighted', 'success');
+      return;
+    }
+
+    if (action === 'save-note') {
+      if (!selection) return toast('Select some text first', 'error');
+      await saveSelectionNote(page, selection);
+      return;
+    }
+  } catch (err) {
+    toast('Action failed: ' + err.message, 'error');
+  }
+}
+
+/**
+ * Run one of the AI context actions from the right-click menu.
+ *
+ * Stages the page (image for vision models, extracted text otherwise) into the
+ * Study AI composer. "ask about this PDF" additionally stages the whole
+ * document as text. explain/summarize pre-fill and send; ask just focuses.
+ */
+async function runContextAi(action, page, selection) {
+  setReaderTab('chat');
+  const pane = ensureAiPane();
+  const view = pane && pane.view;
+  if (!view) return toast('AI pane unavailable', 'error');
+
+  const caps = (window.studyAI && window.studyAI.currentCaps) ? window.studyAI.currentCaps() : {};
+  const staged = [];
+
+  if (action === 'explain-selection' && selection) {
+    staged.push({ kind: 'text', name: 'Selection', data: selection, label: 'Selection' });
+  } else {
+    const label = `Page ${page}`;
+    if (caps.image) {
+      const img = await pageToImage(page);
+      if (img) staged.push({ kind: 'image', name: `${label}.png`, data: img, label });
+    }
+    if (!staged.length) {
+      const txt = await pageToText(page);
+      if (txt) staged.push({ kind: 'text', name: label, data: txt, label });
+    }
+  }
+
+  // "Ask about this PDF" carries the whole document as text so the model can
+  // answer questions that span pages, not just the one under the cursor.
+  if (action === 'ask-pdf') {
+    const full = await pdfToText();
+    if (full) staged.push({ kind: 'text', name: meta.title || 'Document', data: full, label: 'Full text' });
+  }
+
+  view.pending.push(...staged);
+  view.renderAttachments();
+
+  const preset = {
+    'explain-page': 'Explain this page in clear, simple terms.',
+    'summarize-page': 'Summarize this page into key points.',
+    'explain-selection': 'Explain the selected text.',
+  }[action];
+
+  if (preset && view.input) {
+    view.input.value = preset;
+    // Defer one tick so the attachment chips render before the send fires.
+    setTimeout(() => {
+      if (view && view.input) view.input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    }, 60);
+  } else if (view.input) {
+    view.input.focus();
+  }
+
+  const msg = action === 'ask-pdf' ? 'Page + document attached — ask away'
+    : action === 'ask-page' ? `Page ${page} attached — ask away`
+    : 'Sent to Study AI';
+  toast(msg, 'success');
+}
+
+/** Save the current selection as a new note anchored to this page. */
+async function saveSelectionNote(page, selection) {
+  try {
+    await api('/api/study/notes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: (selection.slice(0, 60) || `Page ${page} note`),
+        content: selection,
+        refs: [{ doc_id: meta.id, title: meta.title, kind: 'selection', page, text: selection }],
+      }),
+    });
+    window.dispatchEvent(new CustomEvent('study-notes-changed'));
+    toast('Saved as note', 'success');
+  } catch (err) {
+    toast('Could not save note: ' + err.message, 'error');
+  }
+}
+
+/**
+ * Rasterise just the selected region of a page into a PNG data URL.
+ * Uses the same rects as a highlight, so the cropped image matches the text
+ * the user picked. Returns null when the selection can't be located.
+ */
+async function selectionToImage(page, text) {
+  try {
+    const rects = await textToRects(page, text);
+    if (!rects.length) return null;
+    const p = await getPage(page);
+    const vp = p.getViewport({ scale: 1.6 });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.floor(vp.width);
+    canvas.height = Math.floor(vp.height);
+    const ctx2d = canvas.getContext('2d', { alpha: false });
+    ctx2d.fillStyle = '#fff';
+    ctx2d.fillRect(0, 0, canvas.width, canvas.height);
+    await p.render({ canvasContext: ctx2d, viewport: vp }).promise;
+
+    // Union of the normalized rects → a pixel crop with a small margin.
+    const pad = 4;
+    let minX = 1, minY = 1, maxX = 0, maxY = 0;
+    for (const r of rects) {
+      minX = Math.min(minX, r.x);
+      minY = Math.min(minY, r.y);
+      maxX = Math.max(maxX, r.x + r.w);
+      maxY = Math.max(maxY, r.y + r.h);
+    }
+    const sx = Math.max(0, minX * canvas.width - pad);
+    const sy = Math.max(0, minY * canvas.height - pad);
+    const sw = Math.min(canvas.width - sx, (maxX - minX) * canvas.width + pad * 2);
+    const sh = Math.min(canvas.height - sy, (maxY - minY) * canvas.height + pad * 2);
+    if (sw < 2 || sh < 2) return null;
+
+    const crop = document.createElement('canvas');
+    crop.width = Math.floor(sw);
+    crop.height = Math.floor(sh);
+    crop.getContext('2d').drawImage(canvas, sx, sy, sw, sh, 0, 0, crop.width, crop.height);
+    return crop.toDataURL('image/png');
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Turn a text selection into normalised page rects without a live DOM range.
+ * Re-renders the page's text layer and matches by substring, so a highlight
+ * requested from the menu lands exactly like a drag-selected one.
+ */
+async function textToRects(page, text) {
+  try {
+    const p = await getPage(page);
+    const vp = p.getViewport({ scale });
+    const tc = await p.getTextContent();
+    const needle = text.trim();
+    if (!needle) return [];
+    // Build a char-offset index over the page's text items, then find the
+    // needle and map the covered items to their transform rects.
+    const items = tc.items || [];
+    const rects = [];
+    for (const it of items) {
+      const str = it.str || '';
+      if (!str) continue;
+      if (needle.includes(str) || str.includes(needle.split('\n')[0])) {
+        const tx = pdfjsLib.Util.transform(vp.transform, it.transform);
+        const h = Math.hypot(tx[2], tx[3]);
+        const w = it.width * scale;
+        rects.push({
+          x: tx[4] / vp.width,
+          y: (tx[5] - h) / vp.height,
+          w: w / vp.width,
+          h: (h * 1.15) / vp.height,
+        });
+      }
+      if (rects.length >= 40) break;
+    }
+    return rects.filter((r) => r.w > 0 && r.h > 0 && r.y > -0.02 && r.y < 1.02);
+  } catch (_) {
+    return [];
+  }
+}
+
 async function onHighlightBarClick(e) {
   if (e.target.closest('#rdrHlCancel')) {
     hideHlBar();
@@ -1756,8 +2125,10 @@ function setReaderTab(tab) {
   }
 
   // The floating launcher is redundant while the full chat pane is showing.
+  // It is also hidden in the Notes tab, which has its own AI menu on the
+  // editor — two AI entry points at once would just be confusing.
   const launch = overlay.querySelector('#rdrAiLaunch');
-  if (launch) launch.style.display = isChat ? 'none' : '';
+  if (launch) launch.style.display = (isChat || isNotes) ? 'none' : '';
   if (window.lucide) window.lucide.createIcons();
 
   if (isChat) {

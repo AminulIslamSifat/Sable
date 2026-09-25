@@ -44,6 +44,12 @@ from engine.skills.handlers.load_tool import handle_load_tool
 from engine.mcp.handler import handle_mcp_call
 from engine.skills.handlers.mcp_list import handle_mcp_list
 from engine.skills.handlers.critique import handle_critique
+from engine.skills.handlers.study import (
+    handle_study_diagnostics,
+    handle_study_document,
+    handle_study_note,
+    handle_study_pdf,
+)
 
 HANDLER_MAP: dict[str, object] = {
     "critique": handle_critique,
@@ -82,6 +88,11 @@ HANDLER_MAP: dict[str, object] = {
     "load_tool": handle_load_tool,
     "mcp_call": handle_mcp_call,
     "mcp_list": handle_mcp_list,
+    # Study-mode tools — only their schemas are offered in study mode.
+    "study_document": handle_study_document,
+    "study_note": handle_study_note,
+    "study_pdf": handle_study_pdf,
+    "study_diagnostics": handle_study_diagnostics,
 }
 
 __all__ = [

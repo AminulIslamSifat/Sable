@@ -1409,7 +1409,9 @@ window.safeCopy = async function(text) {
   document.addEventListener('contextmenu', (e) => {
     // Only on main area / sidebar, not on inputs or textareas.
     // .chat-row has its own pin/delete menu (sidebar.js) — don't open the generic one too.
-    if (e.target.closest('textarea, input, select, .ctx-menu, #fsOverlay, .chat-row')) return;
+    // #studyReader owns its own right-click menu (study-reader.js) — the
+    // generic one would otherwise draw over it inside the PDF reader.
+    if (e.target.closest('textarea, input, select, .ctx-menu, #fsOverlay, .chat-row, #studyReader, .rdr-ctx')) return;
     e.preventDefault();
     closeSubmenu();
 

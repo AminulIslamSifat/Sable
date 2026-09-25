@@ -1,0 +1,21 @@
+[
+  {
+    "name": "study_diagnostics",
+    "description": "Inspect the state of study mode: how many documents and pages, highlights, notes, spaced-repetition decks, total study time, and per-document progress. Use this to answer questions about the user's study activity or to orient before helping.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["overview", "library", "notes", "sessions", "document"],
+          "description": "overview = whole-mode snapshot; library = all documents; notes = all notes; sessions = time-on-doc totals; document = one document's detail (needs doc_id)."
+        },
+        "doc_id": {
+          "type": "string",
+          "description": "For action=document: the document to inspect. Omit to use the open document."
+        }
+      },
+      "required": ["action"]
+    }
+  }
+]

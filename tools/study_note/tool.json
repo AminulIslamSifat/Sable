@@ -1,0 +1,64 @@
+[
+  {
+    "name": "study_note",
+    "description": "Create and edit study notes with precise, surgical edits. Prefer update/append/replace_section over rewriting the whole note so the user's formatting and structure survive. Use replace_section to rewrite one heading's body, append to add to the end, and update only for full rewrites.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["list", "get", "create", "update", "append", "replace_section", "set_refs", "set_title", "delete"],
+          "description": "Operation to perform."
+        },
+        "note_id": {
+          "type": "string",
+          "description": "Target note id (32-char hex). Required for get/update/append/replace_section/set_refs/set_title/delete."
+        },
+        "title": {
+          "type": "string",
+          "description": "Note title for create/set_title."
+        },
+        "content": {
+          "type": "string",
+          "description": "Full markdown body for create/update."
+        },
+        "heading": {
+          "type": "string",
+          "description": "For replace_section/append: the '## Heading' text to target (without the leading #). Created if it does not exist."
+        },
+        "body": {
+          "type": "string",
+          "description": "Markdown text to insert — used by append and replace_section."
+        },
+        "refs": {
+          "type": "array",
+          "items": {"type": "object"},
+          "description": "Document references [{doc_id, title, kind, page, text}] to attach."
+        },
+        "refs_mode": {
+          "type": "string",
+          "enum": ["replace", "add"],
+          "description": "For set_refs: replace the ref list or append to it. Default replace."
+        },
+        "doc_id": {
+          "type": "string",
+          "description": "Filter list results to notes referencing this document."
+        },
+        "query": {
+          "type": "string",
+          "description": "Substring filter for list."
+        },
+        "tags": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Tags for create/set_title."
+        },
+        "pinned": {
+          "type": "boolean",
+          "description": "Pin state for create."
+        }
+      },
+      "required": ["action"]
+    }
+  }
+]

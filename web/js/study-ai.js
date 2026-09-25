@@ -152,6 +152,11 @@
     view.controller = controller;
 
     let raw = '';
+    // Tool + image activity for this turn, rendered as a live activity strip
+    // under the streaming bubble. Reset per send so each turn shows its own.
+    const toolsAcc = [];
+    const imagesAcc = [];
+    patchTools(docId, toolsAcc, imagesAcc);
     try {
       const res = await fetch('/api/study/doc/' + encodeURIComponent(docId) + '/chat', {
         method: 'POST',
@@ -188,6 +193,29 @@
             // Live-update only the streaming bubble — a full re-render per
             // chunk flickers and fights the user's scroll.
             streamText(docId, raw);
+          } else if (ev.type === 'skill_start') {
+            toolsAcc.push({ id: ev.id, name: ev.name, status: 'running', output: '' });
+            patchTools(docId, toolsAcc);
+          } else if (ev.type === 'skill_output') {
+            const t = toolsAcc.find((x) => x.id === ev.id) || toolsAcc[toolsAcc.length - 1];
+            if (t) { t.output += ev.text || ''; patchTools(docId, toolsAcc); }
+          } else if (ev.type === 'skill_end') {
+            const t = toolsAcc.find((x) => x.id === ev.id) || toolsAcc[toolsAcc.length - 1];
+            if (t) {
+              t.status = ev.ok ? 'ok' : 'error';
+              t.error = ev.error || '';
+              t.duration = ev.duration_ms || 0;
+              patchTools(docId, toolsAcc);
+            }
+          } else if (ev.type === 'doc_changed') {
+            // A tool mutated study state — let the reader refresh its panes.
+            window.dispatchEvent(new CustomEvent('study-doc-changed', { detail: ev }));
+          } else if (ev.type === 'study_attachment') {
+            // Page image the model pulled in — show it in the thread.
+            if (ev.data) {
+              imagesAcc.push({ name: ev.name, page: ev.page, data: ev.data });
+              patchTools(docId, toolsAcc, imagesAcc);
+            }
           } else if (ev.type === 'done') {
             if (ev.text) { raw = ev.text; streamText(docId, raw); }
           } else if (ev.type === 'error') {
@@ -293,6 +321,97 @@
     } catch (err) {
       ctx.toast && ctx.toast('Attach failed: ' + err.message);
     }
+  }
+
+  // -- Live tool activity -----------------------------------------------------
+  // Each send accumulates the tools it runs (highlight, note edit, PDF read…)
+  // and any page images it pulled in. They render as a strip under the thread
+  // so the user watches the model work instead of staring at a frozen bubble.
+  const liveByDoc = {};
+
+  // Human labels + icons per tool, so the card reads as an action, not a symbol.
+  const TOOL_META = {
+    study_document: { label: 'Document', icon: 'file-text' },
+    study_note: { label: 'Note', icon: 'notebook-pen' },
+    study_pdf: { label: 'PDF', icon: 'file-search' },
+    study_diagnostics: { label: 'Diagnostics', icon: 'activity' },
+    web_search: { label: 'Web search', icon: 'globe' },
+    web_fetch: { label: 'Web fetch', icon: 'globe' },
+    generate_image: { label: 'Image', icon: 'image-plus' },
+    run_simulacra: { label: 'Simulation', icon: 'play' },
+    grep: { label: 'Search files', icon: 'search' },
+    glob: { label: 'Find files', icon: 'folder-search' },
+    list_dir: { label: 'List folder', icon: 'folder' },
+    view_file: { label: 'Read file', icon: 'file' },
+    edit_file: { label: 'Edit file', icon: 'file-pen' },
+    create_file: { label: 'Create file', icon: 'file-plus' },
+    insert_file: { label: 'Insert lines', icon: 'file-plus' },
+    get_file: { label: 'Attach file', icon: 'paperclip' },
+  };
+
+  function toolMeta(name) {
+    return TOOL_META[name] || { label: (name || 'tool').replace(/_/g, ' '), icon: 'wrench' };
+  }
+
+  function renderLiveHtml(tools, images) {
+    if ((!tools || !tools.length) && (!images || !images.length)) return '';
+    let h = '<div class="sa-live">';
+    (tools || []).forEach((t) => {
+      const meta = toolMeta(t.name);
+      const running = t.status !== 'ok' && t.status !== 'error';
+      const cls = t.status === 'error' ? 'err' : (t.status === 'ok' ? 'ok' : 'run');
+      const state = t.status === 'error' ? 'Failed' : (t.status === 'ok' ? 'Done' : 'Running');
+      // Collapsible body: open only on failure (so errors are visible); the
+      // successful output stays tucked away until the user asks for it.
+      const open = t.status === 'error' ? ' open' : '';
+      h += '<details class="sa-live-tool ' + cls + '"' + open + '>'
+        + '<summary class="sa-live-head">'
+        +   '<span class="sa-live-dot"></span>'
+        +   '<i data-lucide="' + meta.icon + '" class="icon-lucide sa-live-icon"></i>'
+        +   '<span class="sa-live-name">' + esc(meta.label) + '</span>'
+        +   '<span class="sa-live-state">' + state
+        +     (running ? '<span class="sa-live-dots"><i></i><i></i><i></i></span>' : '')
+        +     (!running && t.duration ? ' · ' + t.duration + 'ms' : '') + '</span>'
+        +   '<i data-lucide="chevron-down" class="icon-lucide sa-live-chev"></i>'
+        + '</summary>'
+        + '<div class="sa-live-body">'
+        +   (t.error ? '<div class="sa-live-err">' + esc(t.error) + '</div>' : '')
+        +   (t.output
+              ? '<pre class="sa-live-pre">' + esc(String(t.output).slice(0, 6000)) + '</pre>'
+              : '<div class="sa-live-empty">' + (running ? 'Working…' : 'No output') + '</div>')
+        + '</div>'
+        + '</details>';
+    });
+    if (images && images.length) {
+      h += '<div class="sa-live-imgs">';
+      images.forEach((img) => {
+        h += '<button class="sa-live-img" data-sa-img="' + esc(img.data).slice(0, 60) + '">'
+          + '<img src="' + img.data + '" alt="' + esc(img.name || '') + '">'
+          + '<span>' + esc(img.name || 'page') + '</span></button>';
+      });
+      h += '</div>';
+    }
+    return h + '</div>';
+  }
+
+  function patchTools(docId, tools, images) {
+    liveByDoc[docId] = { tools: tools || [], images: images || [] };
+    const html = renderLiveHtml(liveByDoc[docId].tools, liveByDoc[docId].images);
+    document.querySelectorAll('.sa-thread').forEach((threadEl) => {
+      let host = threadEl.querySelector('.sa-live-host');
+      if (!host) {
+        if (!html) return;
+        host = document.createElement('div');
+        host.className = 'sa-live-host';
+        threadEl.appendChild(host);
+      }
+      host.innerHTML = html;
+      threadEl.scrollTop = threadEl.scrollHeight;
+    });
+  }
+
+  function clearLive(docId) {
+    liveByDoc[docId] = { tools: [], images: [] };
   }
 
   // -- View -------------------------------------------------------------------
@@ -477,5 +596,7 @@
     resetThread: resetThread,
     getThread: getThread,
     loadModels: loadModels,
+    // Exposed so the reader's context menu can decide image vs text staging.
+    currentCaps: currentCaps,
   };
 })();

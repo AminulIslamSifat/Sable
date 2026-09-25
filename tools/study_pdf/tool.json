@@ -1,0 +1,33 @@
+[
+  {
+    "name": "study_pdf",
+    "description": "Read the contents of a library PDF on demand. Fetch page text or page images for a range of pages, or search the document for a phrase. Use this to look at specific pages instead of assuming the whole document is in context. Images: max 10 pages per call. Text: max 30 pages per call. For a long PDF, call this repeatedly to walk through it.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["page_text", "page_image", "search", "info"],
+          "description": "page_text returns extracted text; page_image attaches rendered page images; search finds a phrase and returns its page + rects; info returns page count and outline."
+        },
+        "doc_id": {
+          "type": "string",
+          "description": "Document id. Omit to use the open document."
+        },
+        "pages": {
+          "type": "string",
+          "description": "Page range like '3' or '3-12' or '1,4,9'. Defaults to the reader's current page for page_text/page_image."
+        },
+        "query": {
+          "type": "string",
+          "description": "Phrase to locate for action=search."
+        },
+        "max_pages": {
+          "type": "integer",
+          "description": "Safety cap on pages returned per call. Default 10 for images, 30 for text."
+        }
+      },
+      "required": ["action"]
+    }
+  }
+]

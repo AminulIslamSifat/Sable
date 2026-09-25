@@ -45,6 +45,9 @@ class BaseScraperConnector:
         self._engines: dict[str, BaseBrowserEngine] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._response_lock = asyncio.Lock()
+        # account:chat_id -> last known upstream chat URL, so every round can
+        # re-verify the session (chat_url is only passed on round 0).
+        self._chat_urls: dict[str, str] = {}
 
     def _build_engine(self, account: str) -> BaseBrowserEngine:
         raise NotImplementedError
@@ -59,6 +62,9 @@ class BaseScraperConnector:
             lock = asyncio.Lock()
             self._locks[account] = lock
         return lock
+
+    def _url_key(self, account: str, chat_id: str | None) -> str:
+        return account + ":" + (chat_id or "")
 
     async def _get_engine(self, account: str) -> BaseBrowserEngine:
         engine = self._engines.get(account)
@@ -138,6 +144,21 @@ class BaseScraperConnector:
                                 logger.warning("[%s] new_chat failed: %s", self.backend_name, exc)
                     setattr(engine, "active_chat_id", chat_id)
 
+                # Per-message session guard — runs on EVERY message (user turns
+                # AND tool-loop rounds). chat_url is only passed on round 0, so
+                # later rounds fall back to the URL remembered from the prior
+                # round's done event. On any session mismatch the engine
+                # navigates back to the expected chat BEFORE the send.
+                if chat_id:
+                    expected_url = chat_url or self._chat_urls.get(self._url_key(account, chat_id))
+                    if expected_url:
+                        ensure = getattr(engine, "ensure_chat_url", None)
+                        if ensure is not None:
+                            try:
+                                await ensure(expected_url)
+                            except Exception as exc:
+                                logger.warning("[%s] ensure_chat_url failed: %s", self.backend_name, exc)
+
                 if thinking_mode in ("deepthink", "thinking", "fast"):
                     setter = getattr(engine, "set_thinking_mode", None)
                     if setter is not None:
@@ -176,11 +197,14 @@ class BaseScraperConnector:
                 async for event in self._capture(engine):
                     yield event
 
+            _done_url = _chat_url_of(engine)
+            if _done_url and chat_id:
+                self._chat_urls[self._url_key(account, chat_id)] = _done_url
             yield {
                 "type": "done",
                 "chat_id": chat_id,
                 "parent_id": "scraper-" + uuid.uuid4().hex,
-                "chat_url": _chat_url_of(engine),
+                "chat_url": _done_url,
             }
         except asyncio.CancelledError:
             eng = self._engines.get(account)

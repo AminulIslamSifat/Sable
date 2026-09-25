@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 
 from connectors.common.browser_scraper import BaseBrowserEngine, ScraperSpec
@@ -53,6 +54,9 @@ SPEC = ScraperSpec(
 
 # Values that mean "thinking on" for set_thinking_mode().
 _THINKING_ON = ("deepthink", "thinking", "on", "true")
+
+# DeepSeek chat URLs look like https://chat.deepseek.com/a/chat/s/<session_id>
+_SESSION_ID_RE = re.compile(r"/a/chat/s/([^/?#]+)")
 
 
 class DeepSeekScraperEngine(BaseBrowserEngine):
@@ -171,6 +175,13 @@ class DeepSeekScraperEngine(BaseBrowserEngine):
                 reasoning_parts.append(r)
 
         return "".join(content_parts), "".join(reasoning_parts)
+
+    # -- session URL -----------------------------------------------------
+
+    def session_id_from_url(self, url: str) -> str | None:
+        """Extract the DeepSeek chat session id from a chat.deepseek.com URL."""
+        m = _SESSION_ID_RE.search(url or "")
+        return m.group(1) if m else None
 
     # -- toggle helpers --------------------------------------------------
 

@@ -711,10 +711,10 @@ class GhostChat:
                     if instructions:
                         message = f"[SYSTEM INSTRUCTION]\n{instructions}\n\n{reminder}{message}"
                     else:
-                        message = f"{reminder}{message}"
+                        message = f"{message}"
                     self.system_injected = True
                 else:
-                    message = f"{reminder}{message}"
+                    message = f"{message}"
 
                 # Try clipboard paste first for all messages to bypass automation detection and keep Angular in sync!
                 filled = await self._paste_large_message(field, message)

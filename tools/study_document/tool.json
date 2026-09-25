@@ -1,0 +1,58 @@
+[
+  {
+    "name": "study_document",
+    "description": "Read or modify the document open in the study reader: add highlights, attach notes to a highlight, bookmark, set reading progress, or list existing highlights. Highlight actions need page numbers and, for text, the exact phrase to locate.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["highlight", "highlight_text", "add_note", "bookmark", "set_progress", "list_highlights", "delete_highlight", "get_outline", "info"],
+          "description": "Operation to perform on the open document."
+        },
+        "doc_id": {
+          "type": "string",
+          "description": "Target document id. Omit to use the document currently open in the reader."
+        },
+        "page": {
+          "type": "integer",
+          "description": "Page number (1-based) for highlight / note anchors."
+        },
+        "text": {
+          "type": "string",
+          "description": "For highlight_text: the exact phrase to find on the page. For add_note: the note body."
+        },
+        "rects": {
+          "type": "array",
+          "items": {"type": "object"},
+          "description": "Explicit highlight rectangles [{x,y,w,h}] in normalized 0-1 page space. Use instead of text when you already know the geometry."
+        },
+        "color": {
+          "type": "string",
+          "description": "Highlight colour hex, e.g. #ffd400 (yellow), #7ee787 (green), #79c0ff (blue), #ff9ec7 (pink), #ffab70 (orange)."
+        },
+        "note": {
+          "type": "string",
+          "description": "Optional note attached to a highlight."
+        },
+        "highlight_id": {
+          "type": "string",
+          "description": "Highlight id for delete_highlight / add_note."
+        },
+        "current_page": {
+          "type": "integer",
+          "description": "For set_progress: the page the reader should jump to."
+        },
+        "percent": {
+          "type": "integer",
+          "description": "For set_progress: explicit completion percentage 0-100."
+        },
+        "bookmarked": {
+          "type": "boolean",
+          "description": "For bookmark: force the state instead of toggling."
+        }
+      },
+      "required": ["action"]
+    }
+  }
+]

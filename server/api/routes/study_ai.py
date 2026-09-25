@@ -29,13 +29,20 @@ from fastapi.responses import StreamingResponse
 
 from engine import library_rag as _rag
 from engine.config import get_all_models, get_model_config
+from engine.tools_loader import get_study_tool_schemas
+from engine.study.context import StudyContext, reset_study_context, set_study_context
 
 from connectors import get_connector
 from server.utils import _is_api_model, _resolve_api_backend
 
 from ..dependencies import service, sse
 from .study import _clean_rects, _load_page_text, _read_meta, _update_meta
-from .study_notes import _find as _find_note, _read_body as _read_note_body, _read_index as _read_notes_index
+from .study_notes import (
+    _find as _find_note,
+    _read_body as _read_note_body,
+    _read_index as _read_notes_index,
+    _write_body as _write_note_body,
+)
 
 router = APIRouter()
 logger = logging.getLogger("sable.study.ai")
@@ -67,15 +74,40 @@ _DEFAULT_CONFIG: dict[str, str] = {
 # schemas — including chat_title) for study answers. Study questions must not
 # drag in the chat harness, so we hand the model a self-contained directive.
 _STUDY_SYSTEM = (
-    "You are an expert study assistant embedded in a PDF reader. "
-    "Answer the user's request directly using the document context provided. "
-    "Never call tools, never emit tool tags, and never output a chat_title "
-    "block. Just answer in clear, well-structured markdown."
+    "You are an expert study assistant embedded in a Sable study workspace. "
+    "You are in STUDY MODE and you CONTROL study mode through your tools: "
+    "you can highlight passages, take notes, edit notes, read any page of any "
+    "library PDF, and inspect the user's study activity.\n"
+    "Use the tools when the user asks you to change something or look something "
+    "up — do not just describe what you would do. Prefer precise, surgical "
+    "tools (append / replace_section) over rewriting a whole note.\n"
+    "Answer in clear, well-structured markdown. Never output a chat_title "
+    "block — that tool does not exist here."
 )
 
 # Safety net: strip any chat_title / stray tool tags the model emits anyway.
 _TITLE_TAG_RE = re.compile(r"<chat_title>.*?</chat_title>", re.S | re.I)
 _TOOL_TAG_RE = re.compile(r"</?(?:action|tool_call|chat_title)\b[^>]*>", re.I)
+
+# System directive for the note-editing tools. Unlike the ask path (which talks
+# to the user), an edit must go through study_note so the change lands in the
+# live file the editor is showing — never as a chat message to approve.
+_NOTE_EDIT_SYSTEM = (
+    "You are a writing assistant editing a markdown note in a Sable study "
+    "editor. The note lives in the study store; you change it ONLY through the "
+    "study_note tool.\n"
+    "Rules:\n"
+    "- Apply the requested task with the study_note tool. Never paste the whole "
+    "note back as chat text.\n"
+    "- Prefer surgical actions: 'append' to add at the end, 'replace_section' "
+    "to rewrite one heading, 'update' only when the entire body must change.\n"
+    "- The note id is {note_id}. Pass it as note_id.\n"
+    "- After editing, reply with one short sentence describing what you changed "
+    "(or answer the user, for a question). Never output a chat_title block.\n"
+    "- The note is Obsidian-flavoured markdown: headings, **bold**, "
+    "==highlight==, tables, callouts ([!note]/[!tip]/[!warning]), $math$, and "
+    "```mermaid fences."
+)
 
 _ACTION_PROMPTS: dict[str, str] = {
     "explain": (
@@ -115,7 +147,9 @@ _NOTE_SYSTEM = (
     "code fence. Never add commentary, apologies, or a preamble — the response "
     "is inserted straight into the editor. "
     "Preserve the author's original meaning, facts, and any [[links]] or "
-    "#tags unless the task explicitly says otherwise."
+    "#tags unless the task explicitly says otherwise. "
+    "Never call tools, never emit tool tags, and never output a chat_title "
+    "block."
 )
 
 _NOTE_ACTIONS: dict[str, str] = {
@@ -441,6 +475,250 @@ async def _stream(
         yield ev
 
 
+# ── Study tool loop ──────────────────────────────────────────────────────────
+
+# Cap on tool-call rounds for the scraper path (API connectors cap their own
+# loop internally). A model that keeps calling tools without ever answering is
+# almost always stuck, so we stop feeding it and let the last text stand.
+_MAX_TOOL_ROUNDS = 12
+
+
+def _study_tool_schemas() -> list[dict]:
+    """Schemas for the tools study mode exposes, minus anything disabled."""
+    try:
+        return get_study_tool_schemas()
+    except Exception:
+        logger.warning("study tool schema load failed", exc_info=True)
+        return []
+
+
+def _tool_primer() -> str:
+    """The <action> JSON format instruction for the scraper path."""
+    try:
+        from connectors.common.instruction_builder import get_tool_format
+        return get_tool_format("qwen") or ""
+    except Exception:
+        return ""
+
+
+async def _scraper_tool_loop(
+    system: str,
+    prompt: str,
+    model: str,
+    thinking_mode: str,
+    tools: list[dict],
+    ctx: StudyContext,
+    *,
+    chat_id: str = "",
+    ref_files: list[dict[str, Any]] | None = None,
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Tool loop for the Qwen/scraper path.
+
+    The browser scraper has no native function-calling API — tools are invoked
+    by emitting an ``<action>`` JSON block the model has been primed to use.
+    Each round: stream text, parse tool tags out of it, run them through the
+    shared skill engine, then send the tool output back as the next turn. The
+    loop ends when a round produces no tool calls or the round cap is hit.
+
+    Session continuity is essential: ``chat_id`` pins one upstream conversation
+    for every round, and the ``parent_id`` from each ``done`` event is fed back
+    into the next round. Without them the service cannot resume the same
+    conversation, so the model would receive the tool output with no memory of
+    the question that triggered it.
+    """
+    import asyncio as _asyncio
+
+    from engine.skills.parser import SkillParser
+    from engine.skills.events import build_tool_feedback
+    from engine.skills import get_skill_engine
+
+    engine = get_skill_engine()
+    primer = _tool_primer()
+    schemas_block = "\n".join(json.dumps(s, ensure_ascii=False) for s in tools)
+    base_system = (
+        system
+        + "\n\n" + primer
+        + "\n\n<tools>\n" + schemas_block + "\n</tools>"
+    )
+
+    # Round 0 carries the full directive + tool schemas. Later rounds send ONLY
+    # the tool results — the browser session already holds the system context,
+    # so re-sending it each round would drown the model in repeated prose.
+    message = f"[STUDY MODE INSTRUCTIONS]\n{base_system}\n\n{prompt}"
+    qwen_files = ref_files or None
+
+    # Session continuity: one stable upstream conversation for every round.
+    # Round 0 passes NO id so the service creates a real upstream chat and
+    # reports it via a `meta` event — we adopt that id for every later round.
+    # (Fabricating an id would point at a conversation that does not exist.)
+    loop_chat_id = chat_id or None
+    loop_parent: str | None = None
+
+    for _round in range(_MAX_TOOL_ROUNDS):
+        parser = SkillParser(known_tags=tuple(
+            set(engine.get_known_tags())
+            | {"study_document", "study_note", "study_pdf", "study_diagnostics"}
+        ))
+        round_events: list[dict[str, Any]] = []
+        round_text: list[str] = []
+
+        # Files ride only the opening turn — the session holds them afterwards,
+        # and re-uploading the same attachment every round is pure waste (and
+        # on Qwen it stacks duplicate copies into the conversation).
+        files_for_round = qwen_files if _round == 0 else None
+
+        async for ev in service.stream_events(
+            message,
+            chat_id=loop_chat_id,
+            parent_id=loop_parent,
+            model=model or None,
+            thinking_mode=thinking_mode or None,
+            files=files_for_round,
+        ):
+            etype = ev.get("type")
+            if etype == "answer":
+                text = _strip_title_tags(str(ev.get("text", "")))
+                # Emit text as it arrives, but hold back anything that might be
+                # the start of a tool tag so raw JSON never flashes on screen.
+                for parsed in parser.feed(text):
+                    if parsed.get("type") == "text":
+                        chunk = str(parsed.get("text", ""))
+                        if chunk:
+                            round_text.append(chunk)
+                            yield {"type": "answer", "text": chunk}
+                    else:
+                        round_events.append(parsed)
+            elif etype == "thinking":
+                yield {"type": "thinking", "text": ev.get("text", "")}
+            elif etype == "meta":
+                # The service reports the REAL upstream chat id. Adopt it for
+                # subsequent rounds — our fabricated placeholder would otherwise
+                # point at a conversation that does not exist upstream.
+                loop_chat_id = ev.get("chat_id") or loop_chat_id
+                loop_parent = ev.get("parent_id") or loop_parent
+            elif etype == "done":
+                # Carry the session anchor into the next round so the service
+                # resumes THIS conversation instead of starting a new one.
+                loop_parent = ev.get("parent_id") or loop_parent
+            elif etype == "error":
+                yield {"type": "error", "message": ev.get("message", "error")}
+                return
+
+        # Flush the parser — it may be holding a trailing text tail.
+        for parsed in parser.flush():
+            if parsed.get("type") == "text":
+                chunk = str(parsed.get("text", ""))
+                if chunk:
+                    round_text.append(chunk)
+                    yield {"type": "answer", "text": chunk}
+            else:
+                round_events.append(parsed)
+
+        tool_calls = [e for e in round_events if e.get("type") == "tag_found"]
+        if not tool_calls:
+            return  # no tools → this was the final answer
+
+        skill_events: list[dict[str, Any]] = []
+        attachments: list[dict[str, Any]] = []
+        for call in tool_calls:
+            cname = call.get("name", "")
+            cid = str(uuid.uuid4())[:12]
+            yield {"type": "skill_start", "id": cid, "name": cname}
+            skill_events.append({"type": "skill_start", "id": cid, "name": cname})
+            try:
+                events = await _asyncio.to_thread(
+                    lambda: list(engine.process_tag(
+                        cname, call.get("attrs", {}), call.get("content", ""),
+                        namespace="study",
+                    ))
+                )
+            except Exception as exc:
+                events = [{"type": "skill_end", "id": cid, "name": cname,
+                           "ok": False, "error": str(exc)}]
+            for sev in events:
+                sev.setdefault("id", cid)
+                if sev.get("type") == "study_attachment":
+                    attachments.append(sev)
+                if sev.get("type") in ("skill_start", "skill_output", "skill_end"):
+                    skill_events.append(sev)
+                yield sev
+
+        # Surface any side-channel events handlers queued (doc_changed).
+        for ev in ctx.events:
+            yield ev
+        ctx.events.clear()
+
+        feedback = build_tool_feedback(skill_events)
+        if not feedback:
+            return
+        message = (
+            "[TOOL RESULTS]\n" + feedback
+            + "\n\nContinue: use the results to finish answering the user, "
+            "or call another tool if you still need to."
+        )
+        # Rendered page images ride the next turn as attachments.
+        for att in attachments:
+            yield att
+
+    logger.info("study scraper tool loop hit the %d-round cap", _MAX_TOOL_ROUNDS)
+
+
+async def _stream_with_tools(
+    system: str,
+    prompt: str,
+    model: str,
+    thinking_mode: str,
+    tools: list[dict],
+    ctx: StudyContext,
+    *,
+    chat_id: str = "",
+    files: list[str] | None = None,
+    ref_file_ids: list[str] | None = None,
+    ref_files: list[dict[str, Any]] | None = None,
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Stream a study answer, running tools for whichever backend is in use.
+
+    API connectors already own a native tool loop, so they receive the schemas
+    and hand back fully-executed turns. The scraper path needs the tag loop we
+    implement here. Both yield the same normalized event shapes.
+    """
+    if model and _is_api_model(model):
+        backend = _resolve_api_backend(model)
+        conn = get_connector(backend, model_id=model)
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "thinking_mode": thinking_mode or None,
+            "inject_instructions": False,
+            "system_instruction": system,
+        }
+        if files:
+            kwargs["files"] = files
+        if ref_file_ids:
+            kwargs["ref_file_ids"] = ref_file_ids
+        if ref_files:
+            kwargs["ref_files"] = ref_files
+        if tools:
+            kwargs["tools"] = tools
+        try:
+            agen = conn.stream_chat(prompt, **kwargs)
+        except TypeError:
+            kwargs.pop("system_instruction", None)
+            try:
+                agen = conn.stream_chat(prompt, **kwargs)
+            except TypeError:
+                kwargs.pop("tools", None)
+                agen = conn.stream_chat(prompt, **kwargs)
+        async for ev in agen:
+            yield ev
+        return
+
+    async for ev in _scraper_tool_loop(
+        system, prompt, model, thinking_mode, tools, ctx,
+        chat_id=chat_id, ref_files=ref_files,
+    ):
+        yield ev
+
+
 @router.post("/api/study/doc/{doc_id}/ai")
 async def study_ai_answer(doc_id: str, payload: dict[str, Any]) -> StreamingResponse:
     """Stream an answer grounded in the document. SSE events:
@@ -471,24 +749,25 @@ async def study_ai_answer(doc_id: str, payload: dict[str, Any]) -> StreamingResp
         meta, action, question, selection, scope, page, custom_prompt, _read_persona(persona)
     )
 
+    tools = _study_tool_schemas()
+
     async def gen() -> AsyncGenerator[str, None]:
         parts: list[str] = []
+        study_ctx = StudyContext(doc_id=doc_id, page=page)
+        token = set_study_context(study_ctx)
         yield sse({"type": "start", "action": action, "model": model})
         try:
-            async for ev in _stream(system, prompt, model, thinking_mode):
-                etype = ev.get("type")
-                if etype == "answer":
-                    text = _strip_title_tags(str(ev.get("text", "")))
-                    parts.append(text)
-                    yield sse({"type": "answer", "text": text})
-                elif etype == "thinking":
-                    yield sse({"type": "thinking", "text": ev.get("text", "")})
-                elif etype == "error":
-                    yield sse({"type": "error", "message": ev.get("message", "error")})
-                    return
+            async for ev in _stream_with_tools(
+                system, prompt, model, thinking_mode, tools, study_ctx,
+            ):
+                forwarded = _forward_study_event(ev, parts)
+                if forwarded is not None:
+                    yield forwarded
         except Exception as exc:  # surface any transport failure to the card
             yield sse({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
             return
+        finally:
+            reset_study_context(token)
         yield sse({"type": "done", "text": _strip_title_tags("".join(parts)).strip()})
 
     return StreamingResponse(
@@ -496,6 +775,53 @@ async def study_ai_answer(doc_id: str, payload: dict[str, Any]) -> StreamingResp
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _forward_study_event(ev: dict[str, Any], parts: list[str]) -> str | None:
+    """Map a normalized stream event to an SSE frame for the study frontend.
+
+    Returns the frame string, or None for events that carry no client payload
+    (already-consumed text, internal markers). ``parts`` accumulates the answer
+    so the caller can emit the final ``done`` text.
+    """
+    etype = ev.get("type")
+    if etype == "answer":
+        text = _strip_title_tags(str(ev.get("text", "")))
+        if not text:
+            return None
+        parts.append(text)
+        return sse({"type": "answer", "text": text})
+    if etype == "thinking":
+        return sse({"type": "thinking", "text": ev.get("text", "")})
+    if etype == "error":
+        return sse({"type": "error", "message": ev.get("message", "error")})
+    if etype in ("skill_start", "skill_output", "skill_end"):
+        frame: dict[str, Any] = {
+            "type": etype,
+            "id": ev.get("id"),
+            "name": ev.get("name"),
+        }
+        if etype == "skill_output":
+            frame["text"] = ev.get("text", "")
+            frame["stream"] = ev.get("stream", "stdout")
+        if etype == "skill_end":
+            frame["ok"] = ev.get("ok", False)
+            frame["duration_ms"] = ev.get("duration_ms", 0)
+            if ev.get("error"):
+                frame["error"] = ev.get("error")
+        return sse(frame)
+    if etype == "doc_changed":
+        return sse({k: v for k, v in ev.items() if v is not None})
+    if etype == "study_attachment":
+        # Page images the model pulled in — surfaced so the UI can show them.
+        return sse({
+            "type": "study_attachment",
+            "kind": ev.get("kind", "image"),
+            "name": ev.get("name", ""),
+            "page": ev.get("page", 0),
+            "data": ev.get("data", ""),
+        })
+    return None
 
 
 def _strip_title_tags(text: str) -> str:
@@ -745,6 +1071,8 @@ async def study_ai_chat(doc_id: str, payload: dict[str, Any]) -> StreamingRespon
         or (can_read_docs and a.get("kind") == "document")
     ]
 
+    tools = _study_tool_schemas()
+
     async def gen() -> AsyncGenerator[str, None]:
         workdir = Path(tempfile.mkdtemp(prefix="sable-study-att-"))
         file_paths = _persist_attachments(sendable, workdir)
@@ -753,23 +1081,21 @@ async def study_ai_chat(doc_id: str, payload: dict[str, Any]) -> StreamingRespon
         # the page image instead of an unreadable local temp path.
         attach_kwargs = await _resolve_attachments(model, file_paths)
         parts: list[str] = []
+        study_ctx = StudyContext(doc_id=doc_id, page=page)
+        token = set_study_context(study_ctx)
         yield sse({"type": "start", "model": model, "attachments": len(file_paths)})
         try:
-            async for ev in _stream(system, prompt, model, thinking_mode, **attach_kwargs):
-                etype = ev.get("type")
-                if etype == "answer":
-                    text = _strip_title_tags(str(ev.get("text", "")))
-                    parts.append(text)
-                    yield sse({"type": "answer", "text": text})
-                elif etype == "thinking":
-                    yield sse({"type": "thinking", "text": ev.get("text", "")})
-                elif etype == "error":
-                    yield sse({"type": "error", "message": ev.get("message", "error")})
-                    return
+            async for ev in _stream_with_tools(
+                system, prompt, model, thinking_mode, tools, study_ctx, **attach_kwargs,
+            ):
+                forwarded = _forward_study_event(ev, parts)
+                if forwarded is not None:
+                    yield forwarded
         except Exception as exc:  # surface any transport failure to the card
             yield sse({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
             return
         finally:
+            reset_study_context(token)
             shutil.rmtree(workdir, ignore_errors=True)
         yield sse({"type": "done", "text": _strip_title_tags("".join(parts)).strip()})
 
@@ -941,43 +1267,81 @@ async def study_note_ai(note_id: str, payload: dict[str, Any]) -> StreamingRespo
     ground = bool(payload.get("ground"))
 
     action_instr = _NOTE_ACTIONS.get(action, _NOTE_ACTIONS["enhance"])
-    system = _NOTE_SYSTEM
-    if custom_prompt.strip():
-        system += "\n\nAdditional instructions from the user:\n" + custom_prompt.strip()
-    persona_text = _read_persona(persona)
-    if persona_text:
-        system += "\n\nAdopt the following persona and tone:\n" + persona_text
 
-    blocks = [f'Note title: "{note.get("title") or "Untitled note"}"']
-    if ground and note.get("refs"):
-        ctx = _build_note_context(note.get("refs") or [])
-        if ctx:
-            blocks.append("Referenced document context:\n---\n" + ctx + "\n---")
-    blocks.append("Current note:\n---\n" + content[:_MAX_BODY_NOTE] + "\n---")
-    blocks.append("Task: " + action_instr)
-    if action == "ask" and question.strip():
-        blocks.append("Question: " + question.strip())
-    prompt = "\n\n".join(blocks)
+    # The editor may hold newer text than the file. Bring the file up to date so
+    # a tool edit applies to exactly what the user sees, never a stale body.
+    if content.strip():
+        try:
+            if _read_note_body(note_id) != content:
+                _write_note_body(note_id, content[:_MAX_BODY_NOTE])
+        except Exception:
+            logger.debug("note pre-sync failed for %s", note_id, exc_info=True)
+
+    is_ask = action == "ask"
+    if is_ask:
+        # A question is answered in prose; no edit, no tool.
+        system = _NOTE_SYSTEM
+        if custom_prompt.strip():
+            system += "\n\nAdditional instructions from the user:\n" + custom_prompt.strip()
+        persona_text = _read_persona(persona)
+        if persona_text:
+            system += "\n\nAdopt the following persona and tone:\n" + persona_text
+        blocks = [f'Note title: "{note.get("title") or "Untitled note"}"']
+        if ground and note.get("refs"):
+            ctx = _build_note_context(note.get("refs") or [])
+            if ctx:
+                blocks.append("Referenced document context:\n---\n" + ctx + "\n---")
+        blocks.append("Current note:\n---\n" + content[:_MAX_BODY_NOTE] + "\n---")
+        blocks.append("Task: Answer the user's question about this note. Do not rewrite the note.")
+        if question.strip():
+            blocks.append("Question: " + question.strip())
+        prompt = "\n\n".join(blocks)
+    else:
+        system = _NOTE_EDIT_SYSTEM.format(note_id=note_id)
+        if custom_prompt.strip():
+            system += "\n\nAdditional instructions from the user:\n" + custom_prompt.strip()
+        persona_text = _read_persona(persona)
+        if persona_text:
+            system += "\n\nAdopt the following persona and tone:\n" + persona_text
+        blocks = [f'Note id: {note_id}', f'Note title: "{note.get("title") or "Untitled note"}"']
+        if ground and note.get("refs"):
+            ctx = _build_note_context(note.get("refs") or [])
+            if ctx:
+                blocks.append("Referenced document context:\n---\n" + ctx + "\n---")
+        blocks.append("Current note:\n---\n" + content[:_MAX_BODY_NOTE] + "\n---")
+        blocks.append("Task: " + action_instr)
+        blocks.append(
+            "Apply this task to the note with the study_note tool. Do not return "
+            "the note body as chat text — the user sees the live note update."
+        )
+        prompt = "\n\n".join(blocks)
+
+    tools = [] if is_ask else [
+        s for s in _study_tool_schemas()
+        if s.get("function", {}).get("name") == "study_note"
+    ]
 
     async def gen() -> AsyncGenerator[str, None]:
         parts: list[str] = []
-        yield sse({"type": "start", "action": action, "model": model})
+        study_ctx = StudyContext(doc_id="", page=0)
+        token = set_study_context(study_ctx)
+        yield sse({"type": "start", "action": action, "model": model, "note_id": note_id})
         try:
-            async for ev in _stream(system, prompt, model, thinking_mode):
-                etype = ev.get("type")
-                if etype == "answer":
-                    text = _strip_title_tags(str(ev.get("text", "")))
-                    parts.append(text)
-                    yield sse({"type": "answer", "text": text})
-                elif etype == "thinking":
-                    yield sse({"type": "thinking", "text": ev.get("text", "")})
-                elif etype == "error":
-                    yield sse({"type": "error", "message": ev.get("message", "error")})
-                    return
+            async for ev in _stream_with_tools(
+                system, prompt, model, thinking_mode, tools, study_ctx,
+            ):
+                forwarded = _forward_study_event(ev, parts)
+                if forwarded is not None:
+                    yield forwarded
         except Exception as exc:
             yield sse({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
             return
-        yield sse({"type": "done", "text": _strip_note_fence(_strip_title_tags("".join(parts)))})
+        finally:
+            reset_study_context(token)
+        # For ask, the answer text is the deliverable. For edits, the note is
+        # already changed — ``done`` just closes the stream.
+        final = _strip_title_tags("".join(parts))
+        yield sse({"type": "done", "text": final if is_ask else "", "edited": not is_ask, "note_id": note_id})
 
     return StreamingResponse(
         gen(),

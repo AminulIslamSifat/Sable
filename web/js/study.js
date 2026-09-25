@@ -830,6 +830,22 @@
     view.querySelectorAll('.study-tab').forEach((btn) => {
       btn.addEventListener('click', () => setTab(btn.dataset.studyTab));
     });
+
+    // The tab strip scrolls horizontally when the 8 tabs don't fit, but a
+    // desktop mouse wheel only emits deltaY — so map vertical wheel to
+    // horizontal scroll. Only hijack the event when the strip actually
+    // overflows, otherwise a normal page scroll would feel broken.
+    const tabs = view.querySelector('#studyTabs');
+    if (!tabs) return;
+    tabs.addEventListener('wheel', (e) => {
+      if (tabs.scrollWidth <= tabs.clientWidth) return;
+      const delta = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+      const before = tabs.scrollLeft;
+      tabs.scrollLeft += delta;
+      // Only preventDefault when we actually consumed the scroll — at either
+      // end let the event bubble so the page can still scroll.
+      if (tabs.scrollLeft !== before) e.preventDefault();
+    }, { passive: false });
   }
 
   function handleContentClick(e) {
