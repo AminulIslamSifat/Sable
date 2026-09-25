@@ -591,7 +591,11 @@
 
   async function deleteNote() {
     if (!ed.id) { close(); return; }
-    if (!window.confirm('Delete this note? This cannot be undone.')) return;
+    if (!(await sableDialog.confirm({
+      title: 'Delete this note?',
+      message: 'This cannot be undone.',
+      okText: 'Delete', danger: true,
+    }))) return;
     try {
       await apiSend(`${API}/${encodeURIComponent(ed.id)}`, 'DELETE');
       notify('Note deleted');
@@ -1150,7 +1154,11 @@
   /** Delete a note from a card button, without opening the editor first. */
   async function deleteById(noteId) {
     if (!noteId) return;
-    if (!window.confirm('Delete this note? This cannot be undone.')) return;
+    if (!(await sableDialog.confirm({
+      title: 'Delete this note?',
+      message: 'This cannot be undone.',
+      okText: 'Delete', danger: true,
+    }))) return;
     try {
       await apiSend(`${API}/${encodeURIComponent(noteId)}`, 'DELETE');
       notify('Note deleted');

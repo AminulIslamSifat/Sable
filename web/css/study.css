@@ -82,7 +82,14 @@ body[data-mode="study"] .rail-btn[data-rail="calendar"] + .rail-sep {
   box-shadow: inset 0 0 0 1px var(--border-soft);
   flex: 0 1 auto;
   min-width: 0;
+  /* Scroll the tab strip instead of letting it collide with the header
+     actions when the viewport is too narrow for all 8 tabs. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;          /* Firefox */
 }
+.study-tabs::-webkit-scrollbar { display: none; }
 .study-tab {
   display: flex;
   align-items: center;
@@ -108,6 +115,18 @@ body[data-mode="study"] .rail-btn[data-rail="calendar"] + .rail-sep {
 .study-tab.active {
   color: var(--accent);
   background: var(--accent-dim);
+}
+
+/* Narrow screens: collapse the title first so the tabs get the row, and
+   shrink tab padding so more fit before scrolling kicks in. */
+@media (max-width: 900px) {
+  .study-title { display: none; }
+  .study-header { gap: 10px; }
+}
+@media (max-width: 600px) {
+  .study-header { padding: 12px 12px 8px; gap: 8px; }
+  .study-tab { padding: 7px 10px; font-size: 12px; }
+  .study-tab .icon-lucide { width: 14px; height: 14px; }
 }
 
 /* --- Study content area --- */

@@ -45,7 +45,10 @@
 
 
     /* ---------- Sable Dialog — themed replacement for confirm/prompt/alert ---------- */
-    function sableDialog({ title, message, type = 'confirm', defaultValue = '', danger = false }) {
+    // NOTE: named chatDialog, NOT sableDialog — dialog.js owns window.sableDialog
+    // (an object with prompt/confirm/alert/pick/form). A top-level function named
+    // `sableDialog` here would overwrite that object and break sableDialog.prompt().
+    function chatDialog({ title, message, type = 'confirm', defaultValue = '', danger = false }) {
       return new Promise(resolve => {
         const overlay = document.createElement('div');
         overlay.className = 'sable-dialog-overlay';
@@ -132,9 +135,9 @@
     }
 
     // Drop-in async replacements for native dialogs
-    window.sableConfirm = (msg, opts = {}) => sableDialog({ message: msg, type: 'confirm', ...opts });
-    window.sablePrompt = (msg, def = '') => sableDialog({ message: msg, type: 'prompt', defaultValue: def });
-    window.sableAlert = (msg, opts = {}) => sableDialog({ message: msg, type: 'alert', ...opts });
+    window.sableConfirm = (msg, opts = {}) => chatDialog({ message: msg, type: 'confirm', ...opts });
+    window.sablePrompt = (msg, def = '') => chatDialog({ message: msg, type: 'prompt', defaultValue: def });
+    window.sableAlert = (msg, opts = {}) => chatDialog({ message: msg, type: 'alert', ...opts });
 
 
     // mobile browsers throttle setTimeout in background tabs —

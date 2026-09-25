@@ -57,6 +57,13 @@ let aiConfigLoaded = false;
 let isRemote = false;   // true when reading a Drive doc not yet in the library
 let lastRemoteSaved = false;  // did the server auto-ingest this remote download?
 
+// Session analytics — when this reader opened, and which pages were visited.
+// Reported to /api/study/doc/<id>/session on close so the dashboard can show
+// real study time instead of a per-device localStorage counter.
+let sessionStart = 0;
+let sessionPages = new Set();
+let speaking = false;   // is read-aloud currently playing?
+
 const AI_ACTION_LABELS = {
   explain: 'Explain', meaning: 'Meaning', summarize: 'Summarize',
   define: 'Define', ask: 'Ask', summary: 'Summary',
@@ -205,10 +212,23 @@ function build() {
         <button class="rdr-btn" id="rdrZoomIn" title="Zoom in"><i data-lucide="plus" class="icon-lucide"></i></button>
       </div>
       <div id="rdrTimerHost"></div>
-      <button class="rdr-btn" id="rdrNote" title="Quick note"><i data-lucide="notebook-pen" class="icon-lucide"></i></button>
       <button class="rdr-btn" id="rdrAi" title="AI settings"><i data-lucide="sparkles" class="icon-lucide"></i></button>
       <button class="rdr-btn" id="rdrBookmark" title="Bookmark"><i data-lucide="bookmark" class="icon-lucide"></i></button>
-      <button class="rdr-btn" id="rdrDownload" title="Download"><i data-lucide="download" class="icon-lucide"></i></button>
+      <!-- Secondary actions live in one menu. Seven trailing icon buttons
+           crowded the timer pill and zoom controls off narrow headers. -->
+      <div class="rdr-more" id="rdrMoreWrap">
+        <button class="rdr-btn" id="rdrMore" title="More actions"
+                aria-haspopup="true" aria-expanded="false">
+          <i data-lucide="more-horizontal" class="icon-lucide"></i>
+        </button>
+        <div class="rdr-menu hidden" id="rdrMoreMenu" role="menu">
+          <button class="rdr-menu-item" id="rdrFind" role="menuitem"><i data-lucide="search" class="icon-lucide"></i> Search in document</button>
+          <button class="rdr-menu-item" id="rdrSpeak" role="menuitem"><i data-lucide="volume-2" class="icon-lucide"></i> Read page aloud</button>
+          <button class="rdr-menu-item" id="rdrExport" role="menuitem"><i data-lucide="file-down" class="icon-lucide"></i> Export as Markdown</button>
+          <button class="rdr-menu-item" id="rdrNote" role="menuitem"><i data-lucide="notebook-pen" class="icon-lucide"></i> Quick note</button>
+          <button class="rdr-menu-item" id="rdrDownload" role="menuitem"><i data-lucide="download" class="icon-lucide"></i> Download PDF</button>
+        </div>
+      </div>
     </div>
     <div class="rdr-body">
       <aside class="rdr-side">
@@ -362,6 +382,53 @@ function wire() {
   const noteBtn = $("#rdrNote");
   if (noteBtn) noteBtn.addEventListener('click', toggleNotePopup);
 
+  // More-actions menu. Keeps the header to three trailing buttons instead of
+  // seven so the timer pill and zoom controls always have room.
+  const moreBtn = $("#rdrMore");
+  const moreMenu = $("#rdrMoreMenu");
+  const moreWrap = $("#rdrMoreWrap");
+  if (moreBtn && moreMenu) {
+    const closeMenu = () => {
+      moreMenu.classList.add('hidden');
+      moreBtn.setAttribute('aria-expanded', 'false');
+    };
+    moreBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const nowHidden = moreMenu.classList.toggle('hidden');
+      moreBtn.setAttribute('aria-expanded', String(!nowHidden));
+    });
+    // Any item click runs its own handler first, then dismisses the menu.
+    moreMenu.addEventListener('click', () => closeMenu());
+    document.addEventListener('click', (e) => {
+      if (moreWrap && !moreWrap.contains(e.target)) closeMenu();
+    });
+  }
+
+  // Search inside this document — hands off to the library search tab with a
+  // doc scope so results stay anchored to the open file.
+  const findBtn = $("#rdrFind");
+  if (findBtn) findBtn.addEventListener('click', () => {
+    if (!meta || !window.studySearch) return;
+    window.studyReader.close();
+    window.studySearch.searchIn(meta.id, meta.title);
+  });
+
+  // Read the current page aloud (sentence-chunked streaming TTS).
+  const speakBtn = $("#rdrSpeak");
+  if (speakBtn) speakBtn.addEventListener('click', speakCurrentPage);
+
+  // Export highlights + notes + saved AI answers as a Markdown download.
+  const exportBtn = $("#rdrExport");
+  if (exportBtn) exportBtn.addEventListener('click', () => {
+    if (!meta) return;
+    const a = document.createElement('a');
+    a.href = `/api/study/doc/${meta.id}/export`;
+    a.download = `${meta.slug || meta.title || 'document'}.md`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+
   // AI buttons
   $("#rdrAi").addEventListener('click', toggleAiConfig);
   $("#rdrAiConfigClose").addEventListener('click', () => $("#rdrAiConfig").classList.add('hidden'));
@@ -386,12 +453,61 @@ function wire() {
   });
 }
 
+/**
+ * Toggle read-aloud for the current page.
+ *
+ * Reuses the global streaming TTS player (window.playAutoTTS), which chunks
+ * the text into sentences and prefetches ahead so playback has no gaps.
+ */
+async function speakCurrentPage() {
+  const btn = overlay.querySelector('#rdrSpeak');
+  if (!btn) return;
+
+  if (speaking) {
+    if (typeof window.stopGlobalTTS === 'function') {
+      try { window.stopGlobalTTS(); } catch { /* best effort */ }
+    }
+    speaking = false;
+    btn.classList.remove('active');
+    // Mirror the state onto the menu button — the item itself is hidden while
+    // the menu is closed, so otherwise nothing shows that TTS is running.
+    const more = overlay.querySelector('#rdrMore');
+    if (more) more.classList.remove('active');
+    return;
+  }
+
+  if (typeof window.playAutoTTS !== 'function') {
+    toast('Text-to-speech is unavailable', 'error');
+    return;
+  }
+
+  let text = '';
+  try { text = await pageToText(currentPage); } catch { text = ''; }
+  if (!text || !text.trim()) {
+    toast('No text on this page to read', 'error');
+    return;
+  }
+
+  speaking = true;
+  btn.classList.add('active');
+  const moreBtn = overlay.querySelector('#rdrMore');
+  if (moreBtn) moreBtn.classList.add('active');
+  window.playAutoTTS(text);
+}
+
 function onKeydown(e) {
   if (!isOpen()) return;
   const tag = (e.target.tagName || '').toLowerCase();
   if (tag === 'input' || tag === 'textarea') return;
   if (e.key === 'Escape') {
     // Escape closes the AI card / config first, then the highlight bar, then the reader.
+    const moreMenu = overlay.querySelector('#rdrMoreMenu');
+    if (moreMenu && !moreMenu.classList.contains('hidden')) {
+      moreMenu.classList.add('hidden');
+      const mb = overlay.querySelector('#rdrMore');
+      if (mb) mb.setAttribute('aria-expanded', 'false');
+      return;
+    }
     if (notePopup) { closeNotePopup(); return; }
     if (!overlay.querySelector('#rdrAiConfig').classList.contains('hidden')) {
       overlay.querySelector('#rdrAiConfig').classList.add('hidden');
@@ -420,6 +536,10 @@ function onKeydown(e) {
  * highlights, notes, AI) is skipped since there is no library record yet.
  */
 async function open(docId, opts) {
+  // studyMode.openDoc() deep-links with a page number as the second argument,
+  // while the Drive path passes an options object. Accept both shapes.
+  let startPage = 0;
+  if (typeof opts === 'number') { startPage = opts; opts = {}; }
   isRemote = !!(opts && opts.remote);
   build();
   overlay.classList.remove('hidden');
@@ -488,7 +608,7 @@ async function open(docId, opts) {
   // Remote docs are view-only — nothing to bookmark or persist yet. Study AI
   // grounds answers in the library record (progress/text), so it's unavailable
   // until the doc is imported.
-  for (const sel of ['#rdrBookmark', '#rdrAi', '#rdrDocChat', '#rdrAiLaunch']) {
+  for (const sel of ['#rdrBookmark', '#rdrAi', '#rdrDocChat', '#rdrAiLaunch', '#rdrExport', '#rdrFind', '#rdrSpeak']) {
     const el = overlay.querySelector(sel);
     if (el) el.style.display = isRemote ? 'none' : '';
   }
@@ -525,12 +645,47 @@ async function open(docId, opts) {
   await renderAllPages();
   renderSidePanel();
 
-  const start = (meta.progress && meta.progress.current_page) || 1;
+  // A deep-linked page wins over the stored reading position.
+  const start = startPage || (meta.progress && meta.progress.current_page) || 1;
+  sessionStart = Date.now();
+  sessionPages = new Set([start]);
+  speaking = false;
   requestAnimationFrame(() => scrollToPage(start, false));
+}
+
+/**
+ * Report this reading session to the analytics store.
+ *
+ * Called from close(), before isRemote is reset — remote Drive docs are
+ * view-only and have no library record to attach time to. `keepalive` lets the
+ * request outlive the page/tab teardown that follows.
+ */
+function recordSession() {
+  if (!meta || isRemote || !sessionStart) return;
+  const seconds = (Date.now() - sessionStart) / 1000;
+  sessionStart = 0;
+  if (seconds < 5) { sessionPages = new Set(); return; }
+  try {
+    fetch(`/api/study/doc/${meta.id}/session`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem('sable_token') || ''}`,
+      },
+      body: JSON.stringify({ seconds, pages: [...sessionPages] }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch { /* analytics must never break closing the reader */ }
+  sessionPages = new Set();
 }
 
 function close() {
   if (!overlay) return;
+  recordSession();
+  if (speaking && typeof window.stopGlobalTTS === 'function') {
+    try { window.stopGlobalTTS(); } catch { /* best effort */ }
+  }
+  speaking = false;
   overlay.classList.add('hidden');
   document.body.classList.remove('rdr-open');
   hideHlBar();
@@ -755,6 +910,7 @@ function scrollToPage(n, smooth = true) {
 function setCurrentPage(n) {
   if (n === currentPage) return;
   currentPage = n;
+  sessionPages.add(n);
   overlay.querySelector('#rdrPageInput').value = n;
   renderThumbActive();
   renderOutlineActive();
@@ -824,7 +980,22 @@ function scheduleProgress() {
         body: JSON.stringify({ current_page: currentPage, percent }),
       });
     } catch { /* progress is best-effort */ }
+    // Share the reading position with the room. Debounced by the same 700ms
+    // timer, so scrolling does not spam the op-log.
+    pushToRoom('progress', { doc_id: meta.id, page: currentPage, percent });
   }, 700);
+}
+
+/**
+ * Push a change into the open study room, if there is one.
+ *
+ * Guarded so every reader action can call it unconditionally: when the user is
+ * not in a room this is a cheap no-op, and study-rooms.js is loaded before the
+ * reader.
+ */
+function pushToRoom(kind, payload) {
+  if (!window.studyRooms || !window.studyRooms.isInRoom()) return;
+  try { window.studyRooms.pushOp(kind, payload); } catch { /* never break reading */ }
 }
 
 async function toggleBookmark() {
@@ -1144,6 +1315,16 @@ async function onHighlightBarClick(e) {
     layoutHighlights();
     if (activeSideTab === 'notes') renderSidePanel();
     toast('Highlight saved', 'success');
+    // Mirror into the open room so everyone sees it live. No-op when the user
+    // is not in a room, so this costs one truthiness check otherwise.
+    pushToRoom('highlight', {
+      hl_id: saved.id,
+      doc_id: meta.id,
+      doc_title: meta.title,
+      page: saved.page,
+      text: saved.text || '',
+      color: saved.color || '',
+    });
   } catch (err) {
     toast('Highlight failed: ' + err.message, 'error');
   }
@@ -1305,10 +1486,18 @@ function toggleAiConfig() {
 
 // ── AI: running an answer ────────────────────────────────────────────────────
 
-function runAi({ action, scope, page = 0, selection = '', rects = null, question = '' }) {
+// Async because the ask action opens a dialog. Callers are event handlers that
+// ignore the return value, so awaiting here is safe.
+async function runAi({ action, scope, page = 0, selection = '', rects = null, question = '' }) {
   if (!meta) return;
   if (action === 'ask' && !question) {
-    question = window.prompt('Ask about this document:') || '';
+    question = (await sableDialog.prompt({
+      title: 'Ask about this document',
+      label: 'Your question',
+      placeholder: 'e.g. explain the proof on page 12',
+      okText: 'Ask',
+      width: 480,
+    })) || '';
     if (!question.trim()) return;
   }
 

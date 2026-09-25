@@ -220,6 +220,18 @@ async def stop_generation(request: Request):
             logger.warning("deepseek stop failed: %s", exc)
             return {"success": True, "aborted": False, "error": str(exc)}
 
+    # DeepSeek (scraper): headed-browser transport. Click the SPA's stop button
+    # via the per-account engine.
+    if _prov == "deepseek_scraper":
+        try:
+            from connectors.deepseek_scraper.client import cancel_active_streams as _dss_cancel
+            _ok = await _dss_cancel()
+            logger.info("deepseek_scraper stop: chat=%s aborted=%s", chat_id, _ok)
+            return {"success": True, "aborted": bool(_ok)}
+        except Exception as exc:
+            logger.warning("deepseek_scraper stop failed: %s", exc)
+            return {"success": True, "aborted": False, "error": str(exc)}
+
     # Frontend may not have the response_id yet (Stop pressed before the first
     # chunk landed). Fall back to the id captured server-side when the
     # response_id event fired. Qwen's stop endpoint REQUIRES response_id.
@@ -1070,6 +1082,11 @@ async def chat(request: ChatRequest):
                 if "path" in f:
                     resolved_files.append({"path": f["path"]})
                 continue
+            # Experimental scraper: engine uploads via Playwright internally
+            if _backend == "deepseek_scraper":
+                if "path" in f:
+                    resolved_files.append({"path": f["path"]})
+                continue
             # Provider-specific upload: DeepSeek has its own endpoint
             if _backend == "deepseek":
                 if "path" in f:
@@ -1703,6 +1720,9 @@ async def chat(request: ChatRequest):
                     _inline_files = None
                     if _api_backend in _DIRECT_READ_BACKENDS and round_index == 0 and resolved_files:
                         _inline_files = [f.get('path') for f in resolved_files if f.get('path')]
+                    # Experimental scraper: engine uploads these via Playwright
+                    elif _api_backend == "deepseek_scraper" and round_index == 0 and resolved_files:
+                        _inline_files = [f.get('path') for f in resolved_files if f.get('path')]
                     # Inject skill-produced images (from get_file) if model supports vision
                     _extra_ref_ids: list[str] = []
                     if _pending_skill_images:
@@ -1770,6 +1790,16 @@ async def chat(request: ChatRequest):
                         _stream_kwargs["max_session_chars"] = _max_session_chars_stream
                     if _inline_files:
                         _stream_kwargs['files'] = _inline_files
+                    # Scraper transports: resume the stored upstream chat URL on
+                    # the first round so a reopened chat continues its browser
+                    # conversation instead of starting a fresh one.
+                    if _api_backend == "deepseek_scraper" and round_index == 0 and active_chat_id:
+                        try:
+                            _stored_url = get_chat_url(active_chat_id)
+                            if _stored_url:
+                                _stream_kwargs["chat_url"] = _stored_url
+                        except Exception:
+                            pass
                     # Native tool calling: core/outer tier system
                     try:
                         from engine.tools_loader import (
@@ -2141,6 +2171,14 @@ async def chat(request: ChatRequest):
                             yield _sse_line
                         final_parent = event.get("parent_id") or final_parent
                         current_parent = final_parent
+                        # Persist the upstream chat URL (scraper transports) so a
+                        # reopened chat can resume the same upstream conversation.
+                        _done_url = event.get("chat_url")
+                        if _done_url:
+                            try:
+                                save_chat_url(active_chat_id, _done_url)
+                            except Exception as _url_exc:
+                                logger.debug("save_chat_url failed: %s", _url_exc)
                     elif event_type == "chat_not_found":
                         # Upstream Qwen session expired — create new one, inject full history, retry
                         from engine.session import create_new_chat as _create_qwen_chat

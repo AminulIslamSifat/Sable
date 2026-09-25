@@ -28,10 +28,11 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from engine.config import (
     LIBRARY_ACADEMICS_PATH,
+    LIBRARY_EMBED_DIR,
     LIBRARY_META_DIR,
     LIBRARY_ORIG_DIR,
     LIBRARY_PDF_DIR,
@@ -44,6 +45,9 @@ from engine.library_ingest import (
     convert_to_pdf as _shared_convert_to_pdf,
     extract_pdf as _shared_extract_pdf,
 )
+from engine import library_rag as _rag
+from engine import library_search as _search
+from engine import library_sessions as _sessions
 
 router = APIRouter()
 logger = logging.getLogger("sable.study")
@@ -462,6 +466,17 @@ async def study_upload(
     _write_page_text(doc_id, extracted["page_text"])
     _write_meta(doc_id, meta)
 
+    # Derived indexes: full-text search + RAG chunks. Both are rebuildable, so
+    # a failure here must never fail the upload itself.
+    try:
+        _search.index_document(doc_id, title, extracted["page_text"])
+    except Exception:
+        logger.warning("search index failed for %s", doc_id, exc_info=True)
+    try:
+        _rag.build(doc_id, extracted["page_text"])
+    except Exception:
+        logger.warning("rag index failed for %s", doc_id, exc_info=True)
+
     return {"uploaded": True, **_summarize(meta)}
 
 
@@ -722,7 +737,293 @@ def study_delete_doc(doc_id: str) -> dict[str, Any]:
             p.unlink(missing_ok=True)
         except Exception:
             pass
+    # Drop every derived index so a deleted doc leaves nothing searchable.
+    for cleanup in (_search.remove_document, _rag.remove):
+        try:
+            cleanup(doc_id)
+        except Exception:
+            logger.warning("index cleanup failed for %s", doc_id, exc_info=True)
     return {"deleted": True, "id": doc_id}
+
+
+# ── Full-text search ─────────────────────────────────────────────────────────
+
+
+@router.get("/api/study/search")
+def study_search(q: str = "", limit: int = 40, doc_id: str = "") -> dict[str, Any]:
+    """Search extracted page text across the library (or one document).
+
+    Returns per-page hits with highlighted snippets plus a per-document rollup
+    the sidebar groups by. Titles are attached from the meta store so a hit is
+    readable even when the index was built without a title.
+    """
+    query = (q or "").strip()
+    if not query:
+        return {"query": "", "engine": "none", "total": 0, "hits": [], "docs": []}
+    if doc_id and not _valid_id(doc_id):
+        raise HTTPException(status_code=400, detail="invalid doc id")
+
+    result = _search.search(query, limit=limit, doc_id=doc_id)
+
+    titles: dict[str, str] = {}
+    for hit in result.get("hits", []):
+        did = hit.get("doc_id") or ""
+        if did in titles:
+            continue
+        meta = _read_meta(did)
+        titles[did] = str((meta or {}).get("title") or hit.get("title") or "Untitled")
+    for hit in result.get("hits", []):
+        hit["title"] = titles.get(hit.get("doc_id") or "", hit.get("title") or "")
+    for doc in result.get("docs", []):
+        doc["title"] = titles.get(doc.get("doc_id") or "", doc.get("title") or "")
+
+    return result
+
+
+@router.post("/api/study/search/reindex")
+def study_reindex(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Rebuild derived indexes from stored page text.
+
+    body: {search?: bool, rag?: bool, doc_id?: str}
+
+    Called on first run (existing libraries predate the index), after an
+    extractor upgrade, or from the settings UI. Without ``doc_id`` the whole
+    library is walked; that is slow on a big library, so it stays explicit.
+    """
+    payload = payload or {}
+    want_search = bool(payload.get("search", True))
+    want_rag = bool(payload.get("rag", False))
+    target = str(payload.get("doc_id") or "")
+
+    if target and not _valid_id(target):
+        raise HTTPException(status_code=400, detail="invalid doc id")
+
+    out: dict[str, Any] = {"search": None, "rag": None}
+
+    if target:
+        meta = _read_meta(target)
+        if not meta:
+            raise HTTPException(status_code=404, detail="document not found")
+        pages = _load_page_text(meta)
+        if want_search:
+            count = _search.index_document(target, str(meta.get("title") or ""), pages)
+            out["search"] = {"doc_id": target, "pages": count}
+        if want_rag:
+            out["rag"] = _rag.build(target, pages)
+        return out
+
+    if want_search:
+        out["search"] = _search.rebuild_all()
+    if want_rag:
+        _ensure_dirs()
+        built = 0
+        for path in sorted(LIBRARY_TEXT_DIR.glob("*.json")):
+            try:
+                pages = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(pages, list):
+                _rag.build(path.stem, pages)
+                built += 1
+        out["rag"] = {"indexed": built}
+    return out
+
+
+@router.get("/api/study/search/stats")
+def study_search_stats() -> dict[str, Any]:
+    """Index health — how many docs are searchable vs. on disk."""
+    _ensure_dirs()
+    docs = 0
+    for f in LIBRARY_META_DIR.glob("*.json"):
+        try:
+            meta = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if meta.get("id"):
+            docs += 1
+    indexed = 0
+    try:
+        indexed = _search.indexed_doc_count()
+    except Exception:
+        indexed = 0
+    rag_indexed = 0
+    try:
+        rag_indexed = sum(1 for _ in LIBRARY_EMBED_DIR.glob("*.json")) if LIBRARY_EMBED_DIR.exists() else 0
+    except Exception:
+        rag_indexed = 0
+    return {"docs": docs, "search_indexed": indexed, "rag_indexed": rag_indexed}
+
+
+# ── Study sessions / analytics ───────────────────────────────────────────────
+
+
+@router.post("/api/study/doc/{doc_id}/session")
+def study_record_session(doc_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Record one reading session. Body: {seconds, pages?, started?, ended?}."""
+    meta = _read_meta(doc_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="document not found")
+
+    try:
+        seconds = float(payload.get("seconds") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="seconds must be a number")
+
+    raw_pages = payload.get("pages")
+    pages: list[int] = []
+    if isinstance(raw_pages, list):
+        for item in raw_pages[:400]:
+            try:
+                pages.append(int(item))
+            except (TypeError, ValueError):
+                continue
+
+    entry = _sessions.record(
+        doc_id,
+        seconds,
+        started=payload.get("started"),
+        ended=payload.get("ended"),
+        pages=pages,
+    )
+    if entry is None:
+        return {"recorded": False, "reason": "session too short"}
+
+    # Mirror the total onto the doc meta so a card can show time-studied
+    # without reading the whole session store.
+    def mutate(m: dict[str, Any]) -> dict[str, Any]:
+        m["study_seconds"] = round(float(m.get("study_seconds") or 0) + entry["seconds"], 1)
+        m["last_studied"] = entry["ended"]
+        return {"study_seconds": m["study_seconds"], "last_studied": m["last_studied"]}
+
+    totals = _update_meta(doc_id, mutate)
+    return {"recorded": True, "session": entry, **totals}
+
+
+@router.get("/api/study/stats")
+def study_stats(days: int = 30) -> dict[str, Any]:
+    """Study-time analytics over a rolling window, with document titles."""
+    data = _sessions.stats(days)
+    for doc in data.get("top_docs", []):
+        meta = _read_meta(doc.get("doc_id") or "")
+        doc["title"] = str((meta or {}).get("title") or "Deleted document")
+    return data
+
+
+@router.get("/api/study/doc/{doc_id}/stats")
+def study_doc_stats(doc_id: str) -> dict[str, Any]:
+    meta = _read_meta(doc_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="document not found")
+    data = _sessions.doc_stats(doc_id)
+    data["title"] = meta.get("title") or ""
+    data["pages"] = meta.get("pages") or 0
+    return data
+
+
+@router.delete("/api/study/stats")
+def study_clear_stats(doc_id: str = "") -> dict[str, Any]:
+    """Clear analytics. Pass doc_id to clear one document, omit to clear all."""
+    if doc_id and not _valid_id(doc_id):
+        raise HTTPException(status_code=400, detail="invalid doc id")
+    removed = _sessions.clear(doc_id)
+    return {"cleared": removed, "doc_id": doc_id}
+
+
+# ── Markdown export ──────────────────────────────────────────────────────────
+
+
+def _export_markdown(meta: dict[str, Any]) -> str:
+    """Render a document's highlights, notes, and AI answers as markdown."""
+    from engine.library_sessions import doc_stats as _doc_stats
+
+    title = str(meta.get("title") or "Untitled document")
+    lines: list[str] = [f"# {title}", ""]
+
+    progress = meta.get("progress") or {}
+    stats = _doc_stats(str(meta.get("id") or ""))
+    lines += [
+        f"- **Pages:** {meta.get('pages') or 0}",
+        f"- **Progress:** {progress.get('percent') or 0}% (page {progress.get('current_page') or 1})",
+        f"- **Highlights:** {len(meta.get('highlights') or [])}",
+        f"- **Time studied:** {stats.get('minutes') or 0} min across {stats.get('sessions') or 0} sessions",
+    ]
+    group = _read_group(meta)
+    tags = [f"{k}: {v}" for k, v in group.items() if v]
+    if tags:
+        lines.append("- **Filed under:** " + " / ".join(tags))
+    lines.append("")
+
+    highlights = meta.get("highlights") or []
+    if highlights:
+        lines += ["## Highlights", ""]
+        for hl in sorted(highlights, key=lambda h: (int(h.get("page") or 0), float(h.get("added") or 0))):
+            text = str(hl.get("text") or "").strip()
+            note = str(hl.get("note") or "").strip()
+            if not text and not note:
+                continue
+            lines.append(f"### Page {hl.get('page') or '?'}")
+            if text:
+                lines.append(f"> {text}")
+            if note:
+                lines += ["", note]
+            lines.append("")
+
+    answers = meta.get("ai_notes") or []
+    if answers:
+        lines += ["## AI Answers", ""]
+        for item in answers:
+            question = str(item.get("question") or item.get("action") or "Question").strip()
+            body = str(item.get("answer") or item.get("content") or "").strip()
+            if not body:
+                continue
+            page = item.get("page")
+            heading = f"### {question}" + (f" (page {page})" if page else "")
+            lines += [heading, "", body, ""]
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+@router.get("/api/study/doc/{doc_id}/export")
+def study_export_doc(doc_id: str) -> Response:
+    """Download a document's highlights, notes, and AI answers as markdown."""
+    meta = _read_meta(doc_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="document not found")
+    markdown = _export_markdown(meta)
+    stem = str(meta.get("slug") or meta.get("id") or "document")
+    return Response(
+        content=markdown,
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{stem}.md"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.get("/api/study/export")
+def study_export_all() -> Response:
+    """Export the whole library's highlights and AI answers as one markdown file."""
+    _ensure_dirs()
+    chunks: list[str] = ["# Sable study library export", ""]
+    count = 0
+    for f in sorted(LIBRARY_META_DIR.glob("*.json")):
+        meta = _read_meta(f.stem)
+        if not meta:
+            continue
+        if not (meta.get("highlights") or meta.get("ai_notes")):
+            continue
+        chunks += [_export_markdown(meta), "", "***", ""]
+        count += 1
+    stamp = time.strftime("%Y-%m-%d")
+    return Response(
+        content="\n".join(chunks).rstrip() + "\n",
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="sable-library-{stamp}.md"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 # ── Academics: semesters → subjects → topics ─────────────────────────────────

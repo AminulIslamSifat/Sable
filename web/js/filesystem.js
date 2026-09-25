@@ -1471,7 +1471,10 @@
 
       const cmd = commands[ext];
       if (!cmd) {
-        alert(`No run command configured for .${ext} files.\nAdd it to the run map in filesystem.js or use the terminal directly.`);
+        sableDialog.alert({
+          title: `No run command for .${ext}`,
+          message: 'Add one to the run map in filesystem.js, or run it from the terminal.',
+        });
         return;
       }
 

@@ -520,7 +520,8 @@ class ChatService:
         # --- DeepSeek (browser localStorage bearer) ---
         try:
             from connectors.deepseek.client import (
-                get_deepseek_client, get_own_token_for_account as _ds_own,
+                get_client as get_deepseek_client,
+                get_own_token_for_account as _ds_own,
             )
             ds_client = get_deepseek_client()
             own = _ds_own(account) if account else None

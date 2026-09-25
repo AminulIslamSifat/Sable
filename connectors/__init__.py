@@ -84,6 +84,10 @@ def get_connector(backend: str, model_id: str | None = None) -> Any:
     if backend == "deepseek":
         from connectors.deepseek.client import get_client
         _registry[backend] = get_client()
+    elif backend == "deepseek_scraper":
+        # Experimental per-model transport: headed browser + DOM/SSE scrape.
+        from connectors.deepseek_scraper.client import get_client
+        _registry[backend] = get_client()
     elif backend == "kimi":
         from connectors.kimi.client import get_client
         _registry[backend] = get_client()

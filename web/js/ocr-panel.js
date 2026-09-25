@@ -953,10 +953,10 @@
               renderDetails();
             } else {
               const data = await res.json();
-              alert(data.detail || 'Uninstall failed');
+              sableDialog.alert({ title: 'Uninstall failed', message: data.detail || 'Unknown error' });
             }
           } catch (e) {
-            alert('Uninstall error: ' + e.message);
+            sableDialog.alert({ title: 'Uninstall error', message: e.message });
           }
           if (window.lucide) lucide.createIcons({ nodes: details.querySelectorAll('[data-lucide]') });
         });

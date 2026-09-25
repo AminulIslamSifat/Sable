@@ -1,0 +1,244 @@
+/* =========================================================================
+   dialog.css — Sable's own dialogs (replaces native prompt/confirm/alert).
+
+   Matches the dashboard modal language: var(--panel) surface, --border-soft
+   hairline, --accent for the primary action, --muted for secondary text.
+   ========================================================================= */
+
+.sdlg-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;              /* above reader (9000) and toasts */
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: sdlg-fade 0.12s ease-out;
+}
+
+@keyframes sdlg-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sdlg-rise {
+  from { opacity: 0; transform: translateY(6px) scale(0.99); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.sdlg {
+  width: 100%;
+  max-width: 440px;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel, #191714);
+  border: 1px solid var(--border-soft, #211e19);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  animation: sdlg-rise 0.14s ease-out;
+  overflow: hidden;
+}
+
+/* ── header ─────────────────────────────────────────────────── */
+
+.sdlg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-soft, #211e19);
+  flex-shrink: 0;
+}
+
+.sdlg-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text, #eaeaea);
+  line-height: 1.3;
+}
+
+.sdlg-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted, #85858c);
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.14s, color 0.14s;
+}
+.sdlg-close:hover {
+  background: var(--panel-2, rgba(255, 255, 255, 0.07));
+  color: var(--text, #eaeaea);
+}
+
+/* ── body ───────────────────────────────────────────────────── */
+
+.sdlg-body {
+  padding: 16px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.sdlg-message {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted, #85858c);
+  white-space: pre-wrap;
+}
+
+/* ── fields ─────────────────────────────────────────────────── */
+
+.sdlg-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.sdlg-field:last-child { margin-bottom: 0; }
+
+.sdlg-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted, #85858c);
+}
+
+.sdlg-input {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft, #211e19);
+  background: var(--panel-2, rgba(255, 255, 255, 0.04));
+  color: var(--text, #eaeaea);
+  font-size: 13.5px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.14s, background 0.14s;
+}
+.sdlg-input:focus {
+  border-color: var(--accent, #9a7d4a);
+  background: var(--panel, #191714);
+}
+.sdlg-input::placeholder { color: var(--muted, #85858c); opacity: 0.7; }
+textarea.sdlg-input { resize: vertical; min-height: 64px; line-height: 1.5; }
+
+/* ── option list ────────────────────────────────────────────── */
+
+.sdlg-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 46vh;
+  overflow-y: auto;
+  margin: -4px;
+  padding: 4px;
+}
+
+.sdlg-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: var(--panel-2, rgba(255, 255, 255, 0.035));
+  color: var(--text, #eaeaea);
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s, border-color 0.12s;
+}
+.sdlg-option:hover,
+.sdlg-option.selected {
+  background: var(--panel-2, rgba(255, 255, 255, 0.07));
+  border-color: var(--accent, #9a7d4a);
+}
+
+.sdlg-option-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.sdlg-option-label {
+  font-size: 13.5px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sdlg-option-sub {
+  font-size: 11.5px;
+  color: var(--muted, #85858c);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sdlg-option-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 20px;
+  background: var(--accent, #9a7d4a);
+  color: #fff;
+  flex-shrink: 0;
+}
+
+/* ── footer ─────────────────────────────────────────────────── */
+
+.sdlg-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-soft, #211e19);
+  flex-shrink: 0;
+}
+
+.sdlg-btn {
+  padding: 7px 15px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft, #211e19);
+  background: var(--panel-2, rgba(255, 255, 255, 0.05));
+  color: var(--text, #eaeaea);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.14s, border-color 0.14s, filter 0.14s;
+}
+.sdlg-btn:hover { background: var(--panel-2, rgba(255, 255, 255, 0.09)); }
+.sdlg-btn:focus-visible {
+  outline: 2px solid var(--accent, #9a7d4a);
+  outline-offset: 2px;
+}
+
+.sdlg-btn.primary {
+  background: var(--accent, #9a7d4a);
+  border-color: transparent;
+  color: #fff;
+}
+.sdlg-btn.primary:hover { filter: brightness(1.12); }
+
+.sdlg-btn.primary.danger {
+  background: #c0392b;
+}
+.sdlg-btn.primary.danger:hover { filter: brightness(1.15); }
+
+/* An alert has no cancel action — hide the empty button. */
+.sdlg-foot .sdlg-btn:empty { display: none; }

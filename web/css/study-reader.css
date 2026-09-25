@@ -53,6 +53,47 @@ body.rdr-open { overflow: hidden; }
 .rdr-btn .icon-lucide { width: 17px; height: 17px; }
 .rdr-btn:disabled { opacity: 0.4; cursor: default; }
 
+/* --- Header "more actions" menu --- */
+.rdr-more { position: relative; display: inline-flex; flex-shrink: 0; }
+
+.rdr-menu {
+  position: absolute;
+  top: 42px;
+  right: 0;
+  z-index: 1200;
+  min-width: 208px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 11px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+}
+.rdr-menu.hidden { display: none !important; }
+
+.rdr-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  color: var(--text);
+  font-size: 12.5px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.rdr-menu-item:hover { background: var(--panel-2); color: var(--accent); }
+.rdr-menu-item .icon-lucide { width: 15px; height: 15px; color: var(--muted); flex-shrink: 0; }
+.rdr-menu-item:hover .icon-lucide { color: var(--accent); }
+.rdr-menu-item.active { color: var(--accent); }
+
 .rdr-pager, .rdr-zoom {
   display: flex;
   align-items: center;
@@ -499,6 +540,12 @@ body.rdr-open { overflow: hidden; }
 .study-doc-icon { width: 34px; height: 34px; opacity: 0.45; }
 
 /* --- Narrow screens --- */
+@media (max-width: 1020px) {
+  /* Doc / Chat / Notes labels are the widest non-essential text in the header.
+     Collapse them to icons before anything else has to give. */
+  .rdr-docchat-btn { font-size: 0; gap: 0; padding: 0 9px; }
+  .rdr-docchat-btn .icon-lucide { width: 16px; height: 16px; }
+}
 @media (max-width: 820px) {
   .rdr-side { width: 190px; }
   .rdr-thumb-canvas { max-width: 100px; }
@@ -1181,8 +1228,10 @@ body.rdr-open { overflow: hidden; }
 @keyframes st-flash { 50% { background: color-mix(in srgb, #ff6b6b 30%, transparent); } }
 .st-pill-text { font-variant-numeric: tabular-nums; }
 
-/* Dropdown panel */
-.st-panel {
+/* Dropdown panel — scoped to the timer widget. `study-features.css` also defines
+   a bare `.st-panel` for the stats cards; without this scope the stats cards
+   inherit position:absolute and stack on top of each other. */
+.st-panel[data-st="panel"] {
   position: absolute;
   top: 38px;
   right: 0;
@@ -1194,7 +1243,7 @@ body.rdr-open { overflow: hidden; }
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
   overflow: hidden;
 }
-.st-panel.hidden { display: none !important; }
+.st-panel[data-st="panel"].hidden { display: none !important; }
 .st-panel-head {
   display: flex;
   align-items: center;

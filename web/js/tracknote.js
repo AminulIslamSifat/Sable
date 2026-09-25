@@ -239,7 +239,7 @@
       if (typeof window.importPdfToLibrary === "function") {
         window.importPdfToLibrary("notes", () => loadNotesOnly());
       } else {
-        alert("Import helper unavailable");
+        sableDialog.alert({ title: 'Import unavailable', message: 'The import helper could not be reached.' });
       }
     });
     setupAddToggle("tnAddToggle", "tnAddForm");

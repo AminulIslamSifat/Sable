@@ -41,10 +41,10 @@
   // Accepted upload formats, fetched from the backend. Falls back to a sane
   // default so the picker works even before /formats responds.
   let FORMATS = { accept: ['.pdf'], converter: true };
-  const ROOMS = [];
+
 
   // ─── Tab meta ───
-  const TABS = ['library', 'rooms', 'drive', 'academics', 'notes'];
+  const TABS = ['library', 'rooms', 'drive', 'academics', 'notes', 'decks', 'search', 'stats'];
 
   // ─── Rendering ───
 
@@ -208,16 +208,17 @@
     const srcBadge = d.converted
       ? `<span class="study-doc-src" title="Converted from .${escapeHtml(ext)} to PDF">${escapeHtml(ext)}</span>`
       : '';
-    // Page-1 preview when we have one (cached JPEG); icon as the fallback.
+    // Always attempt to load the page-1 preview. If no cached thumbnail exists,
+    // the /thumb endpoint generates it on-the-fly and caches it for next time.
     // A plain <img> can't send an Authorization header, so the thumb request
     // authenticates via ?token= (the endpoint accepts it, see application.py).
     const tok = localStorage.getItem('sable_token') || '';
-    const thumb = d.has_thumb
-      ? `<img class="study-doc-preview" src="/api/study/doc/${d.id}/thumb${tok ? '?token=' + encodeURIComponent(tok) : ''}" alt=""
-              loading="lazy" decoding="async"
-              onerror="this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='')">
-         <i data-lucide="${icon}" class="icon-lucide study-doc-icon" style="display:none"></i>`
-      : `<i data-lucide="${icon}" class="icon-lucide study-doc-icon"></i>`;
+    const thumbSrc = `/api/study/doc/${d.id}/thumb${tok ? '?token=' + encodeURIComponent(tok) : ''}`;
+    const thumb = `
+      <img class="study-doc-preview" src="${thumbSrc}" alt=""
+           loading="lazy" decoding="async"
+           onerror="this.style.display='none';var sib=this.nextElementSibling;if(sib){sib.style.display=''}">
+      <i data-lucide="${icon}" class="icon-lucide study-doc-icon" style="display:none"></i>`;
     return `
       <div class="study-doc-card" data-doc-id="${d.id}" role="button" tabindex="0">
         <div class="study-doc-thumb">
@@ -292,9 +293,11 @@
     return ACADEMICS;
   }
 
-  function openDoc(id) {
+  function openDoc(id, page) {
     if (window.studyReader && typeof window.studyReader.open === 'function') {
-      window.studyReader.open(id);
+      // `page` is optional — search hits, SRS cards, and study-time entries all
+      // deep-link to the exact page they came from.
+      window.studyReader.open(id, page);
     } else {
       notify('Reader still loading…');
     }
@@ -305,11 +308,19 @@
   const TAG_FIELDS = ['semester', 'session', 'subject', 'topic'];
   const FILE_INPUT_ACCEPT = () => (FORMATS.accept || ['.pdf']).join(',');
 
+  // Mirrors _MAX_PDF_BYTES in server/api/routes/study.py. Enforced here too so a
+  // 200 MB file fails instantly instead of after a long upload that the server
+  // then rejects with a 413.
+  const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+
   /** Validate a file against the backend's accepted formats. Returns error or null. */
   function fileRejection(file) {
     const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
     if (!(FORMATS.accept || ['.pdf']).includes(ext)) return `unsupported type ${ext}`;
     if (ext !== '.pdf' && FORMATS.converter === false) return 'LibreOffice not installed — PDF only';
+    if (file.size > MAX_UPLOAD_BYTES) {
+      return `too large (${(file.size / 1048576).toFixed(0)} MB, max 100 MB)`;
+    }
     return null;
   }
 
@@ -471,7 +482,7 @@
       for (const f of TAG_FIELDS) {
         let v = tagVal(f);
         if (v === '__new__') {
-          v = (window.prompt(`New ${f} name:`) || '').trim();
+          v = ((await sableDialog.prompt({ title: `New ${f} name` })) || '').trim();
           if (!v) return; // cancelled — keep the dialog open
         }
         tags[f] = v;
@@ -531,23 +542,10 @@
     } catch { /* keep defaults */ }
   }
 
+  // Rooms are owned by study-rooms.js (they live on the Sable bridge). This
+  // thin delegate keeps the RENDERERS table stable if the module fails to load.
   function renderRooms() {
-    return `
-      <div class="study-rooms">
-        <div class="study-room-card">
-          <div class="study-room-icon"><i data-lucide="plus" class="icon-lucide"></i></div>
-          <h3>Create a room</h3>
-          <p>Start a live study session. Share the code with friends and study together in real time.</p>
-          <button class="study-room-action primary" data-study-action="create-room">Create room</button>
-        </div>
-        <div class="study-room-card">
-          <div class="study-room-icon"><i data-lucide="log-in" class="icon-lucide"></i></div>
-          <h3>Join a room</h3>
-          <p>Got a code from a friend? Enter it below to hop into their session.</p>
-          <input class="study-room-code-input" id="studyRoomCode" maxlength="8" placeholder="Enter code" autocomplete="off">
-          <button class="study-room-action secondary" data-study-action="join-room">Join room</button>
-        </div>
-      </div>`;
+    return window.studyRooms ? window.studyRooms.renderTab() : '';
   }
 
   const RENDERERS = {
@@ -556,6 +554,9 @@
     drive: () => (window.driveMode ? window.driveMode.render() : ''),
     academics: renderAcademics,
     notes: () => (window.studyNotes ? window.studyNotes.renderTab() : ''),
+    decks: () => (window.studySRS ? window.studySRS.renderTab() : ''),
+    search: () => (window.studySearch ? window.studySearch.renderTab() : ''),
+    stats: () => (window.studyStats ? window.studyStats.render() : ''),
   };
 
   function setTab(tab) {
@@ -583,6 +584,13 @@
           if (window.lucide) window.lucide.createIcons();
         }
       });
+    }
+
+    // Same lazy-load pattern for decks: fetch once, then repaint both panes.
+    if (tab === 'decks' && window.studySRS && !window.studySRS.isLoaded()) {
+      window.studySRS.reload().then(() => {
+        if (activeTab === 'decks') refreshTab();
+      }).catch(() => {});
     }
   }
 
@@ -659,22 +667,21 @@
           <button class="study-sidebar-item" data-study-action="refresh-library"><i data-lucide="refresh-cw" class="icon-lucide"></i> Refresh</button>
         </div>`;
     } else if (tab === 'rooms') {
-      html = `
-        <div class="study-sidebar-section">
-          <div class="study-sidebar-label">Your rooms</div>
-          <button class="study-sidebar-item active"><i data-lucide="users" class="icon-lucide"></i> Active now <span class="sidebar-count">0</span></button>
-          <button class="study-sidebar-item"><i data-lucide="history" class="icon-lucide"></i> Recent <span class="sidebar-count">0</span></button>
-          <button class="study-sidebar-item"><i data-lucide="star" class="icon-lucide"></i> Favorites <span class="sidebar-count">0</span></button>
-        </div>
-        <div class="study-sidebar-section">
-          <div class="study-sidebar-label">Quick actions</div>
-          <button class="study-sidebar-item" data-study-action="create-room"><i data-lucide="plus-circle" class="icon-lucide"></i> New room</button>
-          <button class="study-sidebar-item" data-study-action="join-room"><i data-lucide="log-in" class="icon-lucide"></i> Join by code</button>
-        </div>`;
+      html = window.studyRooms ? window.studyRooms.renderSidebar() : '';
     } else if (tab === 'drive') {
       html = window.driveMode ? window.driveMode.renderSidebar() : '';
     } else if (tab === 'notes') {
       html = window.studyNotes ? window.studyNotes.renderSidebar() : '';
+    } else if (tab === 'decks') {
+      html = window.studySRS ? window.studySRS.renderSidebar() : '';
+    } else if (tab === 'search') {
+      html = window.studySearch ? window.studySearch.renderSidebar() : '';
+    } else if (tab === 'stats') {
+      html = `
+        <div class="study-sidebar-section">
+          <div class="study-sidebar-label">Analytics</div>
+          <button class="study-sidebar-item active"><i data-lucide="bar-chart-3" class="icon-lucide"></i> Study time</button>
+        </div>`;
     } else {
       const sems = ACADEMICS.semesters || [];
       const nSubj = sems.reduce((n, s) => n + (s.subjects || []).length, 0);
@@ -826,6 +833,13 @@
   }
 
   function handleContentClick(e) {
+    // Feature tabs own their own actions. Each handler returns true when it
+    // consumed the click, so delegation order matters but stays declarative.
+    if (window.studyRooms && window.studyRooms.handleClick(e)) return;
+    if (window.studySRS && window.studySRS.handleClick(e)) return;
+    if (window.studySearch && window.studySearch.handleClick(e)) return;
+    if (window.studyStats && window.studyStats.handleClick(e)) return;
+
     // A Drive folder card in the library opens that source in the Drive tab.
     const folderEl = e.target.closest('[data-drive-folder]');
     if (folderEl) {
@@ -933,8 +947,6 @@
         pickAndUpload();
       } else if (action === 'refresh-library') {
         loadDocs().then(() => notify('Library refreshed'));
-      } else if (action === 'create-room' || action === 'join-room') {
-        notify('Rooms are a demo for now 🚧');
       } else if (action === 'new-folder') {
         notify('Folders coming soon');
       }
@@ -974,39 +986,65 @@
   async function handleAcadAction(action, id) {
     try {
       if (action === 'add-semester') {
-        const name = (window.prompt('Semester / class name (e.g. "5th Semester"):') || '').trim();
+        const name = ((await sableDialog.prompt({
+          title: 'New semester', label: 'Semester / class name',
+          placeholder: 'e.g. 5th Semester', okText: 'Create',
+        })) || '').trim();
         if (!name) return;
         await apiSend('/api/study/academics/semesters', 'POST', { name });
 
       } else if (action === 'add-session') {
-        const name = (window.prompt('Session name (e.g. "2019-2020"):') || '').trim();
+        const name = ((await sableDialog.prompt({
+          title: 'New session', label: 'Session name',
+          placeholder: 'e.g. 2019-2020', okText: 'Create',
+        })) || '').trim();
         if (!name) return;
         await apiSend('/api/study/academics/sessions', 'POST', { name });
 
       } else if (action === 'del-session') {
-        if (!confirm('Delete this session? Documents in it will become ungrouped.')) return;
+        if (!(await sableDialog.confirm({
+          title: 'Delete this session?',
+          message: 'Documents in it will become ungrouped.',
+          okText: 'Delete', danger: true,
+        }))) return;
         await apiSend(`/api/study/academics/sessions/${id}`, 'DELETE');
 
       } else if (action === 'del-semester') {
-        if (!confirm('Delete this semester? Documents in it will become ungrouped.')) return;
+        if (!(await sableDialog.confirm({
+          title: 'Delete this semester?',
+          message: 'Documents in it will become ungrouped.',
+          okText: 'Delete', danger: true,
+        }))) return;
         await apiSend(`/api/study/academics/semesters/${id}`, 'DELETE');
 
       } else if (action === 'add-subject') {
-        const name = (window.prompt('Subject name (e.g. "Data Structures"):') || '').trim();
+        const name = ((await sableDialog.prompt({
+          title: 'New subject', label: 'Subject name',
+          placeholder: 'e.g. Data Structures', okText: 'Create',
+        })) || '').trim();
         if (!name) return;
         await apiSend(`/api/study/academics/semesters/${id}/subjects`, 'POST', { name });
 
       } else if (action === 'del-subject') {
-        if (!confirm('Delete this subject? Its topics go too, and docs become ungrouped.')) return;
+        if (!(await sableDialog.confirm({
+          title: 'Delete this subject?',
+          message: 'Its topics go too, and documents become ungrouped.',
+          okText: 'Delete', danger: true,
+        }))) return;
         await apiSend(`/api/study/academics/subjects/${id}`, 'DELETE');
 
       } else if (action === 'add-topic') {
-        const name = (window.prompt('Topic name (e.g. "Trees & Graphs"):') || '').trim();
+        const name = ((await sableDialog.prompt({
+          title: 'New topic', label: 'Topic name',
+          placeholder: 'e.g. Trees & Graphs', okText: 'Create',
+        })) || '').trim();
         if (!name) return;
         await apiSend(`/api/study/academics/subjects/${id}/topics`, 'POST', { name });
 
       } else if (action === 'del-topic') {
-        if (!confirm('Delete this topic?')) return;
+        if (!(await sableDialog.confirm({
+          title: 'Delete this topic?', okText: 'Delete', danger: true,
+        }))) return;
         await apiSend(`/api/study/academics/topics/${id}`, 'DELETE');
 
       } else {
@@ -1120,7 +1158,11 @@
    */
   async function removeDoc(doc, close) {
     const label = doc && doc.title ? `"${doc.title}"` : 'this document';
-    if (!confirm(`Remove ${label}? Its highlights, notes and progress are deleted too.`)) return;
+    if (!(await sableDialog.confirm({
+      title: `Remove ${label}?`,
+      message: 'Its highlights, notes and progress are deleted too. This cannot be undone.',
+      okText: 'Delete', danger: true,
+    }))) return;
     try {
       await apiSend(`/api/study/doc/${doc.id}`, 'DELETE');
       if (typeof close === 'function') close();
@@ -1151,19 +1193,19 @@
   }
 
   async function saveGroup(overlay, doc, close) {
-    const val = (f) => {
+    const val = async (f) => {
       const el = overlay.querySelector(`[data-field="${f}"]`);
       if (!el || el.disabled) return '';
       let v = el.value;
       if (v === '__new__') {
-        v = (window.prompt(`New ${f} name:`) || '').trim();
+        v = ((await sableDialog.prompt({ title: `New ${f} name` })) || '').trim();
         if (!v) return '';
       }
       return v;
     };
     const group = {
-      semester: val('semester'), session: val('session'),
-      subject: val('subject'), topic: val('topic'),
+      semester: await val('semester'), session: await val('session'),
+      subject: await val('subject'), topic: await val('topic'),
     };
 
     try {
@@ -1387,6 +1429,11 @@
       // Lets the Drive module re-draw the sidebar once its async status
       // arrives, instead of leaving it stuck on "Checking…".
       refreshSidebar: () => renderSidebar(activeTab),
+      // Shared entry points the SRS / search / stats modules depend on, so they
+      // never have to reach into this closure's internals.
+      openDoc,
+      toast: notify,
+      reloadDocs: loadDocs,
     };
   }
 

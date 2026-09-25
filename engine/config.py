@@ -64,6 +64,14 @@ LIBRARY_NOTES_DIR = LIBRARY_DIR / "notes"
 # Cached first-page previews (one small JPEG per doc) so the library grid
 # doesn't have to re-render a PDF to draw a card.
 LIBRARY_THUMB_DIR = LIBRARY_DIR / "thumbs"
+# Spaced-repetition decks/cards + review scheduling (SRS).
+LIBRARY_SRS_DIR = LIBRARY_DIR / "srs"
+# SQLite FTS5 index over library/text/.json for full-text search.
+LIBRARY_SEARCH_DB = LIBRARY_DIR / "search.db"
+# Study session log (time-on-doc analytics).
+LIBRARY_SESSIONS_PATH = LIBRARY_DIR / "sessions.json"
+# Cached per-doc chunk embeddings for retrieval-augmented doc Q&A.
+LIBRARY_EMBED_DIR = LIBRARY_DIR / "embeddings"
 
 # Display name for the user (used in session personalization)
 USER_NAME = os.getenv("SABLE_USER_NAME", "User")
@@ -501,6 +509,23 @@ MODELS = [
         "label": "Mistral (Web)",
         "api_backend": "mistral_web",
         "api_model_type": "mistral-web",
+        "max_session_chars": 4_000_000,
+        "capabilities": {"image": True, "video": False, "document": True, "audio": False},
+        "thinking_modes": [
+            {"id": "fast", "label": "Fast", "thinking_enabled": False, "auto_thinking": False, "thinking_mode": "Fast"},
+            {"id": "thinking", "label": "Thinking", "thinking_enabled": True, "auto_thinking": False, "thinking_mode": "Thinking"},
+        ],
+    },
+    # ── DeepSeek (scraper) — EXPERIMENTAL per-model headed-browser transport ──
+    # Uses the same account profile as the API DeepSeek ghost, but scrapes the
+    # real SPA DOM + in-page SSE instead of calling the API. Selectable as its
+    # own model; NOT tied to the global scraper-mode toggle.
+    {
+        "id": "deepseek-scraper",
+        "label": "DeepSeek (scraper)",
+        "api_backend": "deepseek_scraper",
+        "api_model_type": None,
+        "experimental": True,
         "max_session_chars": 4_000_000,
         "capabilities": {"image": True, "video": False, "document": True, "audio": False},
         "thinking_modes": [

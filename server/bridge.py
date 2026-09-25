@@ -139,3 +139,101 @@ async def provision(token: str) -> dict[str, Any]:
 async def health() -> dict[str, Any]:
     """Bridge liveness + store status."""
     return await _request("GET", "/health")
+
+
+# ── rooms ───────────────────────────────────────────────────────
+# Rooms live on the bridge (persistent, account-owned, chain-ID sync). These
+# are the only calls Sable makes; the browser talks to the bridge's WebSocket
+# directly for live fan-out, so REST goes through here and live goes direct.
+
+async def rooms_list(token: str) -> dict[str, Any]:
+    """Rooms this account belongs to, with pending-op counts."""
+    return await _request("GET", "/v1/rooms", token=token)
+
+
+async def rooms_public(token: str) -> dict[str, Any]:
+    """LAN-discoverable rooms (the local same-network join path)."""
+    return await _request("GET", "/v1/rooms/public", token=token)
+
+
+async def room_create(token: str, name: str, description: str = "",
+                      visibility: str = "private") -> dict[str, Any]:
+    return await _request(
+        "POST", "/v1/rooms", token=token,
+        json_body={"name": name, "description": description, "visibility": visibility},
+    )
+
+
+async def room_get(token: str, room_id: str) -> dict[str, Any]:
+    return await _request("GET", f"/v1/rooms/{room_id}", token=token)
+
+
+async def room_join(token: str, room_id: str) -> dict[str, Any]:
+    return await _request("POST", f"/v1/rooms/{room_id}/join", token=token, json_body={})
+
+
+async def room_leave(token: str, room_id: str) -> dict[str, Any]:
+    return await _request("POST", f"/v1/rooms/{room_id}/leave", token=token, json_body={})
+
+
+async def room_delete(token: str, room_id: str) -> dict[str, Any]:
+    return await _request("DELETE", f"/v1/rooms/{room_id}", token=token)
+
+
+async def room_sync(token: str, room_id: str, since: int = 0,
+                    limit: int = 500) -> dict[str, Any]:
+    """Delta fetch — only ops appended after ``since``."""
+    return await _request(
+        "GET", f"/v1/rooms/{room_id}/sync?since={int(since)}&limit={int(limit)}",
+        token=token,
+    )
+
+
+async def room_ack(token: str, room_id: str, seq: int, chain: str = "") -> dict[str, Any]:
+    """Record how far this member has consumed."""
+    return await _request(
+        "POST", f"/v1/rooms/{room_id}/ack?seq={int(seq)}&chain={chain}",
+        token=token, json_body={},
+    )
+
+
+async def room_contents(token: str, room_id: str) -> dict[str, Any]:
+    """Full room state (replayed op-log) — for a first-time join."""
+    return await _request("GET", f"/v1/rooms/{room_id}/contents", token=token)
+
+
+async def room_op(token: str, room_id: str, kind: str,
+                  payload: dict[str, Any]) -> dict[str, Any]:
+    """Append one op (REST path; the WS path is preferred for live edits)."""
+    return await _request(
+        "POST", f"/v1/rooms/{room_id}/op", token=token,
+        json_body={"kind": kind, "payload": payload},
+    )
+
+
+async def room_chat_history(token: str, room_id: str, limit: int = 200) -> dict[str, Any]:
+    return await _request(
+        "GET", f"/v1/rooms/{room_id}/chat?limit={int(limit)}", token=token,
+    )
+
+
+async def room_chat_send(token: str, room_id: str, text: str) -> dict[str, Any]:
+    return await _request(
+        "POST", f"/v1/rooms/{room_id}/chat", token=token,
+        json_body={"text": text},
+    )
+
+
+def room_ws_url(room_id: str) -> str:
+    """WebSocket URL for a room, derived from the bridge HTTP URL.
+
+    The browser connects straight to the bridge for live fan-out — proxying a
+    WebSocket through Sable would add a hop and a second auth surface for no
+    benefit. http->ws and https->wss so it follows the bridge's scheme.
+    """
+    base = bridge_url()
+    if base.startswith("https://"):
+        base = "wss://" + base[len("https://"):]
+    elif base.startswith("http://"):
+        base = "ws://" + base[len("http://"):]
+    return f"{base}/ws/room/{room_id}"

@@ -115,6 +115,8 @@ def _get_available_backends() -> set[str]:
         from connectors.deepseek.client import get_token_for_account
         if get_token_for_account():
             available.add("deepseek")
+            # Experimental scraper transport reuses the same account profile.
+            available.add("deepseek_scraper")
     except Exception as exc:
         logger.debug("Backend deepseek unavailable: %s", exc)
 

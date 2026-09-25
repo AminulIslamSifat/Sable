@@ -27,6 +27,7 @@ from typing import Any, AsyncGenerator
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from engine import library_rag as _rag
 from engine.config import get_all_models, get_model_config
 
 from connectors import get_connector
@@ -242,8 +243,21 @@ async def study_ai_set_config(payload: dict[str, Any]) -> dict[str, str]:
 # ── Prompt building ──────────────────────────────────────────────────────────
 
 
-def _build_context(meta: dict[str, Any], scope: str, page: int, selection: str) -> str:
-    """Slice the document text to fit the requested scope within the budget."""
+def _build_context(
+    meta: dict[str, Any],
+    scope: str,
+    page: int,
+    selection: str,
+    query: str = "",
+) -> str:
+    """Slice the document text to fit the requested scope within the budget.
+
+    For whole-document scope we prefer retrieval over truncation: a long
+    textbook does not fit in ``_MAX_DOC_CTX``, and silently dropping its tail
+    hides exactly the passage the student is asking about. When a RAG index
+    exists and we have a query, we pack the top-ranked passages instead and
+    fall back to the old head-first packing only when retrieval finds nothing.
+    """
     page_text = _load_page_text(meta)
 
     if scope == "selection":
@@ -264,7 +278,32 @@ def _build_context(meta: dict[str, Any], scope: str, page: int, selection: str) 
             return f"[Page {page}]\n{(page_text[page - 1] or '').strip()[:_MAX_CTX_CHARS]}"
         return ""
 
-    # Whole document — pack pages until the budget runs out.
+    # Whole document. If the doc fits the budget outright, send it whole —
+    # retrieval can only lose context when nothing needs to be dropped.
+    full_size = sum(len((t or "")) for t in page_text)
+    if full_size <= _MAX_DOC_CTX:
+        return _pack_pages(page_text, _MAX_DOC_CTX)
+
+    doc_id = str(meta.get("id") or "")
+    if query.strip() and doc_id:
+        try:
+            retrieved, pages = _rag.context_for(doc_id, query, max_chars=_MAX_DOC_CTX)
+        except Exception:
+            logger.warning("rag retrieval failed for %s", doc_id, exc_info=True)
+            retrieved, pages = "", []
+        if retrieved:
+            header = (
+                f"Retrieved passages ({len(pages)} of {len(page_text)} pages) "
+                "most relevant to the request:"
+            )
+            return header + "\n---\n" + retrieved
+
+    # Fallback: no index or no query — pack from the front as before.
+    return _pack_pages(page_text, _MAX_DOC_CTX)
+
+
+def _pack_pages(page_text: list[str], budget: int) -> str:
+    """Concatenate page blocks head-first until the character budget is spent."""
     parts: list[str] = []
     total = 0
     for i, text in enumerate(page_text, 1):
@@ -272,7 +311,7 @@ def _build_context(meta: dict[str, Any], scope: str, page: int, selection: str) 
         if not text:
             continue
         chunk = f"[Page {i}]\n{text}\n"
-        if total + len(chunk) > _MAX_DOC_CTX:
+        if total + len(chunk) > budget:
             parts.append(f"… ({len(page_text) - i + 1} more pages truncated)")
             break
         parts.append(chunk)
@@ -319,7 +358,10 @@ def _build_prompt(
     global and can't be overridden per request).
     """
     action_instr = _ACTION_PROMPTS.get(action, _ACTION_PROMPTS["ask"])
-    context = _build_context(meta, scope, page, selection)
+    # The user's question doubles as the retrieval query; for non-ask actions
+    # fall back to the action text so retrieval still has something to rank on.
+    retrieval_query = question.strip() or (selection.strip() if scope == "selection" else "") or action_instr
+    context = _build_context(meta, scope, page, selection, query=retrieval_query)
     system = _build_system(custom_prompt, persona_text)
 
     blocks = [f'Document: "{meta.get("title", "")}"']
@@ -646,7 +688,13 @@ async def study_ai_chat(doc_id: str, payload: dict[str, Any]) -> StreamingRespon
     messages = [m for m in messages if isinstance(m, dict)][-40:]
 
     system = _build_system(custom_prompt, _read_persona(persona))
-    context = _build_context(meta, scope, page, selection)
+    # Rank document passages against the user's latest turn, so a long chat
+    # keeps grounding on whatever the current question is actually about.
+    last_user = next(
+        (str(m.get("content") or "") for m in reversed(messages) if m.get("role") == "user"),
+        "",
+    )
+    context = _build_context(meta, scope, page, selection, query=last_user)
 
     blocks = [f'Document: "{meta.get("title", "")}"']
     if context:

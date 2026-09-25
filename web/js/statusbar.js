@@ -188,7 +188,7 @@
     /* ---------- Model dropdown (status-dropdown style) ---------- */
 
     // Browser-scraped models (no API key) vs API-key / custom-endpoint models
-    const BROWSER_BACKENDS = ["qwen", "zai", "gemini_web", "deepseek"];
+    const BROWSER_BACKENDS = ["qwen", "zai", "gemini_web", "deepseek", "deepseek_scraper"];
     const isBrowserBackend = (b) => !b || BROWSER_BACKENDS.includes(b);
 
     function _backendBadgeIcon(backend) {

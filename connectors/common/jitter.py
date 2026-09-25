@@ -44,8 +44,11 @@ DEFAULT_MIN = 3.0
 DEFAULT_MAX = 12.0
 
 # Default providers with jitter enabled.
+# `deepseek_scraper` is the experimental headed-browser transport — tracked
+# separately so it can be throttled independently of the API connector.
 _DEFAULT_PROVIDERS: dict[str, bool] = {
     "deepseek": True,
+    "deepseek_scraper": True,
     "qwen": True,
     "zai": False,
     "gemini": False,
