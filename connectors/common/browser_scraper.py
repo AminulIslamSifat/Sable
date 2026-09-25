@@ -76,13 +76,13 @@ _GHOST_CSS = """
 """
 
 _TOOL_REMINDER = (
-    "[reminder]\n"
-    "tool calling format — every tool call MUST be a single JSON array "
-    "wrapped in an <action> block:\n"
-    '<action>[{"name": "<function-name>", "arguments": { ... }}]</action>\n'
-    "Multiple calls go in the SAME array. Never emit DSML. Keep prose before "
-    "it to one short sentence. Place it at the END of the response.\n"
-    "[user message]\n"
+    # "[reminder]\n"
+    # "tool calling format — every tool call MUST be a single JSON array "
+    # "wrapped in an <action> block:\n"
+    # '<action>[{"name": "<function-name>", "arguments": { ... }}]</action>\n'
+    # "Multiple calls go in the SAME array. Never emit DSML. Keep prose before "
+    # "it to one short sentence. Place it at the END of the response.\n"
+    # "[user message]\n"
 )
 
 
