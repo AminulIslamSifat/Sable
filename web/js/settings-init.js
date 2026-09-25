@@ -411,6 +411,34 @@
 
       const streamChatId = activeChatId;
       const streamPane = activePane;
+
+      // Study chats are grounded document chats. When opened from the sidebar
+      // their turns must go through the study bridge (which sends layout_mode +
+      // study_context), NOT the plain agent path — otherwise the model loses the
+      // document grounding and the chat/agent harness leaks in. Route the typed
+      // message through studyChat and stop here.
+      const _studyTarget = window.studyChat && window.studyChat.docForThread
+        ? window.studyChat.docForThread(streamChatId) : '';
+      if (_studyTarget) {
+        inputEl.value = "";
+        autoResize();
+        // A `note:<id>` target is a note AI thread — ground it in the note body
+        // (study_context.note_id), not a document. Otherwise it is a document
+        // study chat and grounds on the current document scope.
+        const _isNote = _studyTarget.startsWith('note:');
+        const _ctx = _isNote
+          ? { doc_id: '', note_id: _studyTarget.slice(5), action: 'ask', question: message, scope: 'doc' }
+          : { doc_id: _studyTarget, action: 'ask', scope: 'doc' };
+        window.studyChat.send({
+          docId: _studyTarget,
+          threadId: streamChatId,
+          text: message,
+          context: _ctx,
+          pane: streamPane,
+        });
+        return;
+      }
+
       const controller = startStream(streamChatId);
       inputEl.value = "";
       autoResize();

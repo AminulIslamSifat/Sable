@@ -375,38 +375,123 @@ def _build_system(custom_prompt: str, persona_text: str) -> str:
     return system
 
 
-def _build_prompt(
-    meta: dict[str, Any],
-    action: str,
-    question: str,
-    selection: str,
-    scope: str,
-    page: int,
-    custom_prompt: str,
-    persona_text: str,
+def build_study_turn(
+    study_context: dict[str, Any] | None,
+    user_message: str,
 ) -> tuple[str, str]:
-    """Return ``(system_instruction, user_prompt)`` for a study answer.
+    """Build ``(system_prompt, grounded_user_message)`` for a study chat turn.
 
-    Keeping them separate lets API connectors receive the directive as a real
-    system instruction while Qwen gets it inline (its session instructions are
-    global and can't be overridden per request).
+    Called by ``/api/chat`` when ``layout_mode == "study"`` so study chats run
+    through the SAME persistence + tool pipeline as normal chats (``messages``
+    + ``skill_events`` tables, sidebar history, inline tool cards) instead of
+    the old bespoke ``/api/study/ai`` endpoint.
+
+    The system directive replaces Sable's chat/agent harness (no chat_title,
+    no Maria persona) and the grounding block is prepended to the user message
+    so every turn carries the current page / selection / document context.
     """
-    action_instr = _ACTION_PROMPTS.get(action, _ACTION_PROMPTS["ask"])
-    # The user's question doubles as the retrieval query; for non-ask actions
-    # fall back to the action text so retrieval still has something to rank on.
-    retrieval_query = question.strip() or (selection.strip() if scope == "selection" else "") or action_instr
-    context = _build_context(meta, scope, page, selection, query=retrieval_query)
-    system = _build_system(custom_prompt, persona_text)
+    ctx = study_context or {}
+    # A note turn is grounded in the note body, not a document.
+    _note_id = str(ctx.get("note_id") or "")
+    if _note_id:
+        return _build_note_turn(_note_id, ctx, user_message)
+    doc_id = str(ctx.get("doc_id") or "")
+    meta = _read_meta(doc_id) if doc_id else None
+    scope = str(ctx.get("scope") or ("selection" if ctx.get("selection") else "doc"))
+    selection = str(ctx.get("selection") or "")
+    action = str(ctx.get("action") or "")
+    try:
+        page = int(ctx.get("page") or 1)
+    except (TypeError, ValueError):
+        page = 1
 
+    cfg = _load_config()
+    persona = str(ctx.get("persona") if "persona" in ctx else cfg.get("persona") or "")
+    custom_prompt = str(
+        ctx.get("custom_prompt") if "custom_prompt" in ctx else cfg.get("custom_prompt") or ""
+    )
+    system = _build_system(custom_prompt, _read_persona(persona))
+
+    # No document (e.g. a free-form study chat) — just the directive + message.
+    if not meta:
+        return system, user_message
+
+    context = _build_context(meta, scope, page, selection, query=user_message)
     blocks = [f'Document: "{meta.get("title", "")}"']
     if context:
         blocks.append("Document context:\n---\n" + context + "\n---")
     if selection:
         blocks.append("Selected text:\n---\n" + selection[:_MAX_SELECTION_CHARS] + "\n---")
-    blocks.append("Task: " + action_instr)
-    if action == "ask" and question.strip():
-        blocks.append("Question: " + question.strip())
-    return system, "\n\n".join(blocks)
+    if action and action in _ACTION_PROMPTS:
+        blocks.append("Task: " + _ACTION_PROMPTS[action])
+    blocks.append("User message:\n" + user_message)
+    grounded = "\n\n".join(blocks)
+    return system, grounded
+
+
+def _build_note_turn(note_id: str, ctx: dict[str, Any], user_message: str) -> tuple[str, str]:
+    """Build (system, grounded_message) for a note-AI turn.
+
+    Mirrors the old /api/study/notes/{id}/ai endpoint but runs through the
+    shared /api/chat pipeline, so note AI gets the same persistence + inline
+    tool cards as the document AI. Edit actions drive the study_note tool;
+    ask answers in prose.
+    """
+    index = _read_notes_index()
+    note = _find_note(index, note_id)
+    cfg = _load_config()
+    persona = str(ctx.get('persona') if 'persona' in ctx else cfg.get('persona') or '')
+    custom_prompt = str(ctx.get('custom_prompt') if 'custom_prompt' in ctx else cfg.get('custom_prompt') or '')
+    persona_text = _read_persona(persona)
+    if not note:
+        return _build_system(custom_prompt, persona_text), user_message
+    action = str(ctx.get('action') or 'ask')
+    question = str(ctx.get('question') or '')
+    content = ctx.get('note_content')
+    if not isinstance(content, str) or not content.strip():
+        content = _read_note_body(note_id)
+    ground = bool(ctx.get('ground'))
+    # Keep the file in step with the live editor body so a tool edit lands on
+    # exactly what the user sees.
+    try:
+        if content.strip() and _read_note_body(note_id) != content:
+            _write_note_body(note_id, content[:_MAX_BODY_NOTE])
+    except Exception:
+        logger.debug('note pre-sync failed for %s', note_id, exc_info=True)
+    title = note.get('title') or 'Untitled note'
+    if action == 'ask':
+        system = _NOTE_SYSTEM
+        if custom_prompt.strip():
+            system += '\n\nAdditional instructions from the user:\n' + custom_prompt.strip()
+        if persona_text:
+            system += '\n\nAdopt the following persona and tone:\n' + persona_text
+        blocks = ['Note title: ' + str(title)]
+        if ground and note.get('refs'):
+            nctx = _build_note_context(note.get('refs') or [])
+            if nctx:
+                blocks.append('Referenced document context:\n---\n' + nctx + '\n---')
+        blocks.append('Current note:\n---\n' + content[:_MAX_BODY_NOTE] + '\n---')
+        blocks.append('Task: Answer the user question about this note. Do not rewrite the note.')
+        if question.strip():
+            blocks.append('Question: ' + question.strip())
+        else:
+            blocks.append('User message: ' + user_message)
+        return system, '\n\n'.join(blocks)
+    instr = _NOTE_ACTIONS.get(action, _NOTE_ACTIONS['enhance'])
+    system = _NOTE_EDIT_SYSTEM.format(note_id=note_id)
+    if custom_prompt.strip():
+        system += '\n\nAdditional instructions from the user:\n' + custom_prompt.strip()
+    if persona_text:
+        system += '\n\nAdopt the following persona and tone:\n' + persona_text
+    blocks = ['Note id: ' + str(note_id), 'Note title: ' + str(title)]
+    if ground and note.get('refs'):
+        nctx = _build_note_context(note.get('refs') or [])
+        if nctx:
+            blocks.append('Referenced document context:\n---\n' + nctx + '\n---')
+    blocks.append('Current note:\n---\n' + content[:_MAX_BODY_NOTE] + '\n---')
+    blocks.append('Task: ' + instr)
+    blocks.append('Apply this task to the note with the study_note tool. Do not return the note body as chat text - the user sees the live note update.')
+    return system, '\n\n'.join(blocks)
 
 
 # ── Model streaming (Qwen scraper path OR API connector path) ────────────────
@@ -719,64 +804,6 @@ async def _stream_with_tools(
         yield ev
 
 
-@router.post("/api/study/doc/{doc_id}/ai")
-async def study_ai_answer(doc_id: str, payload: dict[str, Any]) -> StreamingResponse:
-    """Stream an answer grounded in the document. SSE events:
-
-    ``{type:start}`` → ``{type:thinking|answer}``… → ``{type:done,text}``
-    """
-    meta = _read_meta(doc_id)
-    if not meta:
-        raise HTTPException(status_code=404, detail="document not found")
-
-    cfg = _load_config()
-    model = str(payload.get("model") or cfg.get("model") or "")
-    thinking_mode = str(payload.get("thinking_mode") or cfg.get("thinking_mode") or "")
-    persona = str(payload.get("persona") if "persona" in payload else cfg.get("persona") or "")
-    custom_prompt = str(
-        payload.get("custom_prompt") if "custom_prompt" in payload else cfg.get("custom_prompt") or ""
-    )
-    action = str(payload.get("action") or "ask")
-    question = str(payload.get("question") or "")
-    selection = str(payload.get("selection") or "")
-    scope = str(payload.get("scope") or ("selection" if selection else "page"))
-    try:
-        page = int(payload.get("page") or 1)
-    except (TypeError, ValueError):
-        page = 1
-
-    system, prompt = _build_prompt(
-        meta, action, question, selection, scope, page, custom_prompt, _read_persona(persona)
-    )
-
-    tools = _study_tool_schemas()
-
-    async def gen() -> AsyncGenerator[str, None]:
-        parts: list[str] = []
-        study_ctx = StudyContext(doc_id=doc_id, page=page)
-        token = set_study_context(study_ctx)
-        yield sse({"type": "start", "action": action, "model": model})
-        try:
-            async for ev in _stream_with_tools(
-                system, prompt, model, thinking_mode, tools, study_ctx,
-            ):
-                forwarded = _forward_study_event(ev, parts)
-                if forwarded is not None:
-                    yield forwarded
-        except Exception as exc:  # surface any transport failure to the card
-            yield sse({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
-            return
-        finally:
-            reset_study_context(token)
-        yield sse({"type": "done", "text": _strip_title_tags("".join(parts)).strip()})
-
-    return StreamingResponse(
-        gen(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
 def _forward_study_event(ev: dict[str, Any], parts: list[str]) -> str | None:
     """Map a normalized stream event to an SSE frame for the study frontend.
 
@@ -1003,6 +1030,7 @@ async def study_ai_chat(doc_id: str, payload: dict[str, Any]) -> StreamingRespon
     )
     scope = str(payload.get("scope") or "doc")
     selection = str(payload.get("selection") or "")
+    action = str(payload.get("action") or "")
     try:
         page = int(payload.get("page") or 1)
     except (TypeError, ValueError):
@@ -1025,11 +1053,18 @@ async def study_ai_chat(doc_id: str, payload: dict[str, Any]) -> StreamingRespon
     blocks = [f'Document: "{meta.get("title", "")}"']
     if context:
         blocks.append("Document context:\n---\n" + context + "\n---")
+    if selection:
+        blocks.append("Selected text:\n---\n" + selection[:_MAX_SELECTION_CHARS] + "\n---")
     blocks.append("Conversation:\n" + _serialize_conversation(messages))
-    blocks.append(
-        "Task: Answer the user's latest message, using the document context and "
-        "the conversation so far. Keep continuity with your earlier answers."
-    )
+    if action and action in _ACTION_PROMPTS:
+        # An explicit action (explain / summarize / define / …) carries its own
+        # instruction; the conversation above still supplies continuity.
+        blocks.append("Task: " + _ACTION_PROMPTS[action])
+    else:
+        blocks.append(
+            "Task: Answer the user's latest message, using the document context and "
+            "the conversation so far. Keep continuity with your earlier answers."
+        )
     prompt = "\n\n".join(blocks)
 
     atts = payload.get("attachments") or []
@@ -1070,6 +1105,12 @@ async def study_ai_chat(doc_id: str, payload: dict[str, Any]) -> StreamingRespon
         if (can_see_images and a.get("kind") != "document")
         or (can_read_docs and a.get("kind") == "document")
     ]
+    # Attachments the model cannot accept, so the UI can say so instead of
+    # silently sending a prompt with the page/PDF missing.
+    dropped = [
+        str(a.get("name") or a.get("kind") or "attachment")
+        for a in image_atts if a not in sendable
+    ]
 
     tools = _study_tool_schemas()
 
@@ -1084,6 +1125,8 @@ async def study_ai_chat(doc_id: str, payload: dict[str, Any]) -> StreamingRespon
         study_ctx = StudyContext(doc_id=doc_id, page=page)
         token = set_study_context(study_ctx)
         yield sse({"type": "start", "model": model, "attachments": len(file_paths)})
+        if dropped:
+            yield sse({"type": "attachment_dropped", "names": dropped})
         try:
             async for ev in _stream_with_tools(
                 system, prompt, model, thinking_mode, tools, study_ctx, **attach_kwargs,

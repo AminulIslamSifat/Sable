@@ -1,6 +1,7 @@
 
-    function addHistoryMessage(message) {
-      clearEmptyState();
+    function addHistoryMessage(message, pane) {
+      pane = pane || activePane;
+      clearPaneEmptyState(pane);
 
       // --- 1. Render message content FIRST (fixes ordering: msg before skill_events) ---
       let displayContent = message.content || "";
@@ -27,7 +28,7 @@
             <summary><i data-lucide="chevron-right" class="thinking-chevron"></i>Thinking</summary>
             <div class="thinking-body">${escHtml(message.thinking)}</div>
           </details>`;
-        activePane.appendChild(wrap);
+        pane.appendChild(wrap);
         // ponytail: Skip per-element icon scan during bulk history render
         if (!window._historyLoading) activateLucideIcons(wrap);
       }
@@ -36,7 +37,7 @@
       // _renderSkillEvents will replay text + skills in streaming order via round_text.
       // This prevents the "all text first, then all commands" mesh.
       const skipMainContent = message.role !== "user" && hasRoundText;
-      const msgDiv = skipMainContent ? null : addMessage(message.role === "user" ? "user" : "bot", displayContent);
+      const msgDiv = skipMainContent ? null : addMessage(message.role === "user" ? "user" : "bot", displayContent, undefined, pane);
       if (message.role === "user" && msgDiv) {
         // Enable fork button for history-loaded messages (addMessage creates it disabled)
         if (message.id) {
@@ -203,10 +204,10 @@
 
       // --- 2. Render skill_events (embedded or lazy-loaded) ---
       if (events.length > 0) {
-        _renderSkillEvents(events);
+        _renderSkillEvents(events, pane);
       } else if (message.has_skill_events && message.id) {
         // Lazy-load skill_events from the API
-        _lazyLoadSkillEvents(message.id, message.chat_id || activeChatId);
+        _lazyLoadSkillEvents(message.id, message.chat_id || activeChatId, pane);
       }
     }
 
@@ -283,7 +284,8 @@
     // Live streaming uses the backend batch+cap; this guards old DB records.
     const HISTORY_MAX_OUTPUT_EVENTS_PER_CARD = 50;
 
-    function _renderSkillEvents(events) {
+    function _renderSkillEvents(events, pane) {
+      pane = pane || activePane;
       const cards = {};
       const cardOutputCounts = {};
       let group = null;
@@ -305,7 +307,7 @@
               <summary><i data-lucide="chevron-right" class="thinking-chevron"></i>Thinking</summary>
               <div class="thinking-body">${escHtml(evt.text || "")}</div>
             </details>`;
-          activePane.appendChild(wrap);
+          pane.appendChild(wrap);
           _actIcons(wrap);
         } else if (evt.type === "round_text") {
           if (evt.text && evt.text.trim()) {
@@ -322,7 +324,7 @@
             }
             _actIcons(content);
             textDiv.appendChild(content);
-            activePane.appendChild(textDiv);
+            pane.appendChild(textDiv);
             _attachBotToolbar(textDiv);
           }
         } else if (evt.type === "skill_start") {
@@ -331,7 +333,7 @@
             group = document.createElement("div");
             group.className = "skill-stack";
             group.style.display = "flex";
-            activePane.appendChild(group);
+            pane.appendChild(group);
           }
           const card = createSkillCard(evt);
           group.appendChild(card);
@@ -345,7 +347,7 @@
         } else if (evt.type === "skill_output") {
           if (evt.name === "ask_user") {
             try {
-              const card = renderAskUserCard(JSON.parse(evt.text), activePane);
+              const card = renderAskUserCard(JSON.parse(evt.text), pane);
               card.classList.add("answered");
               card.querySelectorAll("button").forEach(b => b.disabled = true);
             } catch(e) { /* skip malformed */ }
@@ -384,18 +386,18 @@
           const note = document.createElement('div');
           note.className = 'approval-pending-note';
           note.textContent = '🔒 Permission was requested: ' + (evt.data?.command || evt.name || '').slice(0, 60);
-          if (activePane) {
-            const turn = activePane.querySelector('.turn:last-child');
-            (turn || activePane).appendChild(note);
+          if (pane) {
+            const turn = pane.querySelector('.turn:last-child');
+            (turn || pane).appendChild(note);
           }
         } else if (evt.type === "cwd_warning") {
           // History replay: decision already made — show static note
           const note = document.createElement('div');
           note.className = 'cwd-warning-pending-note';
           note.textContent = '⚠️ CWD warning: ' + (evt.data?.path || '').slice(0, 80);
-          if (activePane) {
-            const turn = activePane.querySelector('.turn:last-child');
-            (turn || activePane).appendChild(note);
+          if (pane) {
+            const turn = pane.querySelector('.turn:last-child');
+            (turn || pane).appendChild(note);
           }
         } else if (evt.type === "critique_start") {
           // History replay: render completed critique box
@@ -426,7 +428,7 @@
             </details>
             <div class="critique-log"></div>
           `;
-          activePane.appendChild(box);
+          pane.appendChild(box);
           _actIcons(box);
           cards[evt.id] = box;  // reuse cards map for critique_tool/done lookup
         } else if (evt.type === "critique_tool") {
@@ -473,26 +475,26 @@
           if (Array.isArray(evt.memories) && evt.memories.length) {
             const chip = createMemoryChip(evt.memories);
             chip.classList.add("memory-chip-tool");
-            const allCards = activePane.querySelectorAll(".skill-card");
+            const allCards = pane.querySelectorAll(".skill-card");
             const target = allCards.length ? allCards[allCards.length - 1] : null;
             if (target) {
               const right = target.querySelector(".skill-header-right");
               if (right) right.insertBefore(chip, right.firstChild);
               else target.querySelector(".skill-header")?.appendChild(chip);
             } else {
-              activePane.appendChild(chip);
+              pane.appendChild(chip);
             }
           }
         }
       }
     }
 
-    async function _lazyLoadSkillEvents(messageId, chatId) {
+    async function _lazyLoadSkillEvents(messageId, chatId, pane) {
       try {
         const data = await fetch(`/api/chats/${chatId}/messages/${messageId}/events`).then(r => r.json());
         const events = data.skill_events || [];
         if (events.length > 0) {
-          _renderSkillEvents(events);
+          _renderSkillEvents(events, pane);
         }
       } catch (err) {
         console.error("Failed to lazy-load skill events:", err);
@@ -2604,6 +2606,14 @@
           } else if (evt.type === "skill_end") {
             if (evt.name === "ask_user") continue;
             ui.finishSkill(evt);
+
+          } else if (evt.type === "doc_changed") {
+            // A study tool mutated a document (highlights / notes / progress /
+            // bookmark). The study route forwards this side-channel event on the
+            // live stream; rebroadcast it as a window event so the reader and
+            // notes editor refresh the panes that just changed underneath the
+            // user — same path the reload case uses.
+            window.dispatchEvent(new CustomEvent('study-doc-changed', { detail: evt }));
 
           } else if (evt.type === "permission_request") {
             if (!gotAnswer) { ui.closeThinking(); gotAnswer = true; }

@@ -732,8 +732,25 @@ async def _run_summarizer(
 async def chat(request: ChatRequest):
     scraper_enabled = get_scraper_settings().get("enabled")
     active_chat_id = request.chat_id
-    _layout_mode = request.layout_mode or "agent"  # "agent" or "chat"
+    _layout_mode = request.layout_mode or "agent"  # "agent" | "chat" | "study"
     bdd = request.browser_data_dir  # scoped browser profile for isolated streams
+
+    # ── Study mode ──────────────────────────────────────────────────────────
+    # Study chats are REAL chats (study-<doc>[-<thread>] ids) that run through
+    # this same pipeline, so messages + tool calls persist in `messages` /
+    # `skill_events` and replay with inline tool cards like any other chat.
+    # We only swap the system directive and prepend the document grounding;
+    # the chat harness (chat_title, persona, agents) is suppressed below.
+    _study_system: str | None = None
+    _study_grounding: str | None = None
+    if _layout_mode == "study":
+        try:
+            from .study_ai import build_study_turn
+            _study_system, _study_grounding = build_study_turn(
+                request.study_context, request.message,
+            )
+        except Exception:
+            logger.warning("study turn build failed", exc_info=True)
     _upstream_session_id: str | None = None
     if not active_chat_id and scraper_enabled:
         active_chat_id = f"browser-{uuid.uuid4().hex}"
@@ -1029,6 +1046,11 @@ async def chat(request: ChatRequest):
     # Relevant memory context (already searched above)
     if _memory_context:
         _context_parts.append(_memory_context)
+    # Study grounding rides in the API payload only — it must never be written
+    # to the stored user message (timestamped_message is what gets persisted),
+    # so reopening the chat shows the user's real question, not the doc dump.
+    if _study_grounding:
+        _context_parts.append(_study_grounding)
     # Assemble: context first, user message always last
     if _context_parts:
         api_message = "\n\n".join(_context_parts) + "\n\n" + timestamped_message
@@ -1227,7 +1249,11 @@ async def chat(request: ChatRequest):
     # Build system instruction for token counting (includes persona + tools schema)
     # Agent sub-chats override the system prompt entirely (no Maria persona)
     _system_instruction_for_tokens = ""
-    if request.system_prompt:
+    if _study_system:
+        # Study mode replaces the whole chat/agent harness (no chat_title, no
+        # persona) with the study directive built above.
+        _system_instruction_for_tokens = _study_system
+    elif request.system_prompt:
         _system_instruction_for_tokens = request.system_prompt
     else:
         try:
@@ -1340,6 +1366,22 @@ async def chat(request: ChatRequest):
 
     async def event_stream():
         nonlocal active_chat_id, _upstream_session_id
+        # Study tools (highlight / note / pdf read) read their document via a
+        # ContextVar. Async generators run in their own context, so setting it
+        # here is isolated to this turn and discarded when the generator ends.
+        _study_ctx = None
+        if _layout_mode == "study":
+            try:
+                from engine.study.context import StudyContext, set_study_context
+                _sc = request.study_context or {}
+                try:
+                    _sc_page = int(_sc.get("page") or 0)
+                except (TypeError, ValueError):
+                    _sc_page = 0
+                _study_ctx = StudyContext(doc_id=str(_sc.get("doc_id") or ""), page=_sc_page)
+                set_study_context(_study_ctx)
+            except Exception:
+                logger.warning("study context init failed", exc_info=True)
         answer_parts: list[str] = []
         _raw_answer_parts: list[str] = []  # pre-parser raw text for guard checks
         thinking_parts: list[str] = []
@@ -1781,8 +1823,11 @@ async def chat(request: ChatRequest):
                     )
                     if _ref_files_full and round_index == 0:
                         _stream_kwargs["ref_files"] = _ref_files_full
-                    # Agent sub-chats override system prompt (skip Maria persona)
-                    if request.system_prompt:
+                    # Study chats and agent sub-chats override the system prompt
+                    # (skip the Maria persona + chat harness).
+                    if _study_system:
+                        _stream_kwargs["system_instruction"] = _study_system
+                    elif request.system_prompt:
                         _stream_kwargs["system_instruction"] = request.system_prompt
                     if _api_backend == "local":
                         _stream_kwargs["model_id"] = request.model
@@ -1810,7 +1855,16 @@ async def chat(request: ChatRequest):
                         from server.api.routes.misc import get_disabled_tools as _get_dt
                         _disabled = _get_dt().get('disabled', [])
 
-                        if _layout_mode == "chat":
+                        if _layout_mode == "study":
+                            # Study mode: study tools + shared web/image tools, no
+                            # chat_title and no agent tooling. The schemas match
+                            # the study system directive exactly.
+                            try:
+                                from engine.tools_loader import get_study_tool_schemas
+                                _tool_schemas = get_study_tool_schemas(_disabled)
+                            except Exception:
+                                _tool_schemas = []
+                        elif _layout_mode == "chat":
                             # Chat mode: only web search + chat title, no tier filtering
                             _chat_allowed = ["online_search", "chat_title"]
                             _tool_schemas = get_all_tool_schemas(_disabled, allowed=_chat_allowed, tier=None)
@@ -1872,8 +1926,9 @@ async def chat(request: ChatRequest):
                     except Exception:
                         _round_prompt_tokens = 0
                     _scraper_msg = current_message
-                    if request.system_prompt and "-agent-" in str(active_chat_id):
-                        _scraper_msg = f"[SYSTEM INSTRUCTION]\n{request.system_prompt}\n\n[USER MESSAGE]\n{current_message}"
+                    _scraper_override = _study_system or request.system_prompt
+                    if _scraper_override and ("-agent-" in str(active_chat_id) or _layout_mode == "study"):
+                        _scraper_msg = f"[SYSTEM INSTRUCTION]\n{_scraper_override}\n\n[USER MESSAGE]\n{current_message}"
                     round_event_source = scraper_service.stream_events(
                         message=_scraper_msg,
                         chat_id=active_chat_id,
@@ -1907,11 +1962,13 @@ async def chat(request: ChatRequest):
                     # timeout-based reconnection. Triple-nesting caused 9-27 HTTP calls
                     # per user message.
                     _qwen_msg = current_message
-                    # Agent sub-chats override system prompt (skip Maria persona).
-                    # Qwen manages system prompts server-side via sync_context, so we
-                    # inject the agent's system prompt directly into the message payload.
-                    if request.system_prompt and "-agent-" in str(active_chat_id):
-                        _qwen_msg = f"[SYSTEM INSTRUCTION]\n{request.system_prompt}\n\n[USER MESSAGE]\n{current_message}"
+                    # Agent sub-chats and study chats override the system prompt
+                    # (skip the Maria persona). Qwen manages system prompts
+                    # server-side via sync_context, so we inject directly into
+                    # the message payload.
+                    _qwen_override = _study_system or request.system_prompt
+                    if _qwen_override and ("-agent-" in str(active_chat_id) or _layout_mode == "study"):
+                        _qwen_msg = f"[SYSTEM INSTRUCTION]\n{_qwen_override}\n\n[USER MESSAGE]\n{current_message}"
                     round_event_source = service.stream_events(
                         message=_qwen_msg,
                         chat_id=_qwen_chat_id,
@@ -2738,6 +2795,15 @@ async def chat(request: ChatRequest):
                     skill_events.append({"type": "round_text", "text": round_text})
                 if round_skill_events:
                     skill_events.extend(round_skill_events)
+                # Study tools queue side-channel events (doc_changed for
+                # highlights/notes/progress). Forward them so the reader/editor
+                # can refresh the panes that just changed under the user.
+                if _study_ctx is not None and _study_ctx.events:
+                    for _sc_ev in list(_study_ctx.events):
+                        round_skill_events.append(_sc_ev)
+                        skill_events.append(_sc_ev)
+                        yield sse(_sc_ev)
+                    _study_ctx.events.clear()
                 # --- Guardrails: track failures + no-progress + stubbing ---
                 _new_round_errors: dict[str, str] = {}
                 # Collect skill_output text per tool for record_result()

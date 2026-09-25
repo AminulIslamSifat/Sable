@@ -50,8 +50,7 @@ let built = false;
 let aiConfig = null;              // {model, thinking_mode, persona, custom_prompt}
 let aiModels = [];                // [{id,label,thinking_modes}]
 let aiPersonas = [];              // [name, ...]
-let aiController = null;          // AbortController for the active answer stream
-let aiCurrent = null;             // {action, question, scope, page, selection, rects, answer, model}
+let aiCurrent = null;             // card metadata: {action, scope, page, selection, rects, question, model}
 let aiNotes = [];                 // saved answers for this doc
 let aiConfigLoaded = false;
 let isRemote = false;   // true when reading a Drive doc not yet in the library
@@ -309,7 +308,8 @@ function build() {
       <div class="rdr-ai-card-body" id="rdrAiCardBody"></div>
       <div class="rdr-ai-card-foot">
         <input class="rdr-ai-followup" id="rdrAiFollowup" type="text" placeholder="Ask a follow-up…">
-        <button class="rdr-ai-card-btn" id="rdrAiFollowupSend" title="Send"><i data-lucide="send" class="icon-lucide"></i></button>
+        <button class="rdr-ai-card-btn rdr-ai-send" id="rdrAiFollowupSend" title="Send"><i data-lucide="send" class="icon-lucide"></i></button>
+        <button class="rdr-ai-card-btn rdr-ai-stop" id="rdrAiStop" title="Stop" style="display:none;"><i data-lucide="square" class="icon-lucide"></i></button>
       </div>
     </div>
 
@@ -519,6 +519,9 @@ function wire() {
   $("#rdrAiSave").addEventListener('click', saveAiNote);
   $("#rdrAiNew").addEventListener('click', newAiChat);
   $("#rdrAiFollowupSend").addEventListener('click', sendFollowup);
+  $("#rdrAiStop").addEventListener('click', () => {
+    if (meta && window.studyAI) window.studyAI.stopStream(meta.id);
+  });
   $("#rdrAiFollowup").addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); sendFollowup(); }
   });
@@ -793,7 +796,7 @@ function teardown() {
   if (pageObserver) { pageObserver.disconnect(); pageObserver = null; }
   if (thumbObserver) { thumbObserver.disconnect(); thumbObserver = null; }
   if (pdfDoc) { try { pdfDoc.destroy(); } catch {} pdfDoc = null; }
-  if (aiController) { try { aiController.abort(); } catch {} aiController = null; }
+  if (aiUnsub) { try { aiUnsub(); } catch { /* noop */ } aiUnsub = null; }
   pageCache.clear();
   pageEls = [];
   pendingSelection = null;
@@ -1470,57 +1473,65 @@ async function onCtxMenuClick(e) {
  * document as text. explain/summarize pre-fill and send; ask just focuses.
  */
 async function runContextAi(action, page, selection) {
-  setReaderTab('chat');
-  const pane = ensureAiPane();
-  const view = pane && pane.view;
-  if (!view) return toast('AI pane unavailable', 'error');
+  // Open the floating Study AI popup and STAGE the context — never hijack the
+  // reader into the full chat pane and never auto-send. The user composes the
+  // question and hits send themselves; the old synthetic-Enter send was
+  // fragile and fired a message the user never asked for.
+  const float = ensureAiFloat();
+  if (!float) return toast('Study AI unavailable', 'error');
+  float.open();
+  const view = float.getView && float.getView();
+  if (!view) return toast('Study AI unavailable', 'error');
 
-  const caps = (window.studyAI && window.studyAI.currentCaps) ? window.studyAI.currentCaps() : {};
-  const staged = [];
+  // Grounding (page / selection / whole doc) is resolved server-side from the
+  // study_context we send with the turn, so the surface only needs to record
+  // WHICH action and scope this composer will run. Nothing is sent until the
+  // user presses enter — no view hijack, no synthetic Enter.
+  const scope = action === 'explain-selection' ? 'selection'
+    : action === 'ask-pdf' ? 'doc'
+    : 'page';
+  const actionName = action === 'ask-page' || action === 'ask-pdf' ? 'ask'
+    : action === 'explain-selection' ? 'explain'
+    : action === 'explain-page' ? 'explain'
+    : action === 'summarize-page' ? 'summarize'
+    : 'ask';
 
-  if (action === 'explain-selection' && selection) {
-    staged.push({ kind: 'text', name: 'Selection', data: selection, label: 'Selection' });
-  } else {
-    const label = `Page ${page}`;
-    if (caps.image) {
-      const img = await pageToImage(page);
-      if (img) staged.push({ kind: 'image', name: `${label}.png`, data: img, label });
-    }
-    if (!staged.length) {
-      const txt = await pageToText(page);
-      if (txt) staged.push({ kind: 'text', name: label, data: txt, label });
-    }
+  if (view.setTurn) {
+    view.setTurn({ action: actionName, scope, page, selection: selection || '' });
   }
 
-  // "Ask about this PDF" carries the whole document as text so the model can
-  // answer questions that span pages, not just the one under the cursor.
-  if (action === 'ask-pdf') {
-    const full = await pdfToText();
-    if (full) staged.push({ kind: 'text', name: meta.title || 'Document', data: full, label: 'Full text' });
-  }
+  // Materialise the attachment so the model actually receives it: a rendered
+  // page image for vision models (uploaded), the whole-document text for
+  // "ask about this PDF", and nothing extra for a selection (the selection
+  // rides in study_context). The surface decides image vs text from caps.
+  try {
+    if (action === 'ask-pdf') {
+      if (view.stageDoc) view.stageDoc();
+    } else if (action !== 'explain-selection') {
+      if (view.stagePage) await view.stagePage(page);
+    }
+  } catch { /* staging is best-effort; scope still grounds the turn */ }
 
-  view.pending.push(...staged);
-  view.renderAttachments();
-
+  // Pre-fill a sensible prompt for the one-shot actions; leave "ask" blank so
+  // the user types their own question. Nothing is sent until they press enter.
   const preset = {
     'explain-page': 'Explain this page in clear, simple terms.',
     'summarize-page': 'Summarize this page into key points.',
     'explain-selection': 'Explain the selected text.',
+    'ask-pdf': '',
+    'ask-page': '',
   }[action];
 
-  if (preset && view.input) {
-    view.input.value = preset;
-    // Defer one tick so the attachment chips render before the send fires.
-    setTimeout(() => {
-      if (view && view.input) view.input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
-    }, 60);
-  } else if (view.input) {
+  if (view.input) {
+    if (preset) view.input.value = preset;
     view.input.focus();
+    // Caret to end so a typed follow-up appends rather than overwrites.
+    try { view.input.setSelectionRange(view.input.value.length, view.input.value.length); } catch { /* noop */ }
   }
 
-  const msg = action === 'ask-pdf' ? 'Page + document attached — ask away'
+  const msg = action === 'ask-pdf' ? 'Whole document attached — ask away'
     : action === 'ask-page' ? `Page ${page} attached — ask away`
-    : 'Sent to Study AI';
+    : 'Ready — press enter to send';
   toast(msg, 'success');
 }
 
@@ -1832,6 +1843,9 @@ async function persistAiConfig() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(aiConfig),
     });
+    // Push the new config into the shared Study AI module so the pane/popup
+    // send the chosen model and drop stale image/document capabilities.
+    if (window.studyAI && window.studyAI.setConfig) window.studyAI.setConfig(aiConfig);
   } catch (err) { toast('Could not save AI config: ' + err.message, 'error'); }
 }
 
@@ -1854,11 +1868,62 @@ function toggleAiConfig() {
 }
 
 // ── AI: running an answer ────────────────────────────────────────────────────
+// The card is a COMPACT VIEW of the document's shared Study AI thread — the
+// same store the Chat pane and floating popup use — so a question asked here
+// shows up there too, and vice-versa. Rendering, streaming and the SSE loop
+// all live in study-ai.js; this file only drives the card chrome.
+
+let aiUnsub = null;   // detaches the card's subscription to the shared thread
+let aiBusyUnsub = null; // detaches the card's busy-state mirror (Send ⇄ Stop)
+
+/** Context object study-ai.js needs from the reader. */
+function aiCtx() {
+  return {
+    getDocId: () => (meta && meta.id) || '',
+    getTitle: () => (meta && meta.title) || 'Document',
+    getCurrentPage: () => currentPage,
+    // Live selection so adapter-built turns ground on the selected text.
+    getSelection: () => (pendingSelection && pendingSelection.text) || (noteAnchor && noteAnchor.text) || '',
+    api: (path, opts) => api(path, opts),
+    toast: (m, t) => toast(m, t),
+  };
+}
+
+/** Show the card bound to the shared thread, replacing any prior binding. */
+function showAiCard(title, model) {
+  const card = overlay.querySelector('#rdrAiCard');
+  card.classList.remove('hidden');
+  overlay.querySelector('#rdrAiCardTitle').textContent = title || 'Study AI';
+  overlay.querySelector('#rdrAiCardModel').textContent = model || (aiConfig?.model || '');
+  overlay.querySelector('#rdrAiFollowup').value = '';
+  if (aiUnsub) { try { aiUnsub(); } catch { /* noop */ } aiUnsub = null; }
+  const body = overlay.querySelector('#rdrAiCardBody');
+  const docId = (meta && meta.id) || '';
+  if (window.studyAI) {
+    window.studyAI.renderThread(body, docId);
+    // Re-render on every store change; patch the last bubble during a stream.
+    const sub = () => window.studyAI.renderThread(body, docId);
+    sub.updateStream = (t) => window.studyAI.updateStream(body, t);
+    aiUnsub = window.studyAI.subscribe(docId, sub);
+    // Mirror the shared busy state onto this card's composer so a turn started
+    // anywhere (card, popup, pane) shows Stop here too.
+    if (window.studyAI.onBusy) {
+      if (aiBusyUnsub) { try { aiBusyUnsub(); } catch { /* noop */ } }
+      const send = overlay.querySelector('#rdrAiFollowupSend');
+      const stop = overlay.querySelector('#rdrAiStop');
+      aiBusyUnsub = window.studyAI.onBusy(docId, (busy) => {
+        if (send) send.style.display = busy ? 'none' : '';
+        if (stop) stop.style.display = busy ? '' : 'none';
+      });
+    }
+  }
+  if (window.lucide) window.lucide.createIcons();
+}
 
 // Async because the ask action opens a dialog. Callers are event handlers that
 // ignore the return value, so awaiting here is safe.
 async function runAi({ action, scope, page = 0, selection = '', rects = null, question = '' }) {
-  if (!meta) return;
+  if (!meta || !window.studyAI) return;
   if (action === 'ask' && !question) {
     question = (await sableDialog.prompt({
       title: 'Ask about this document',
@@ -1870,198 +1935,83 @@ async function runAi({ action, scope, page = 0, selection = '', rects = null, qu
     if (!question.trim()) return;
   }
 
-  // A new action starts a fresh thread; the selection/scope anchor every turn
-  // in it so follow-ups keep the same document grounding.
-  const userText = question || AI_ACTION_LABELS[action] || action;
+  // Metadata for saving this thread as a note; the turns live in the shared
+  // store, not here.
   aiCurrent = {
     action, scope, page, selection, rects, question,
     model: aiConfig?.model || '',
-    turns: [{ role: 'user', content: userText }],
-    answer: '',
   };
-
-  const card = overlay.querySelector('#rdrAiCard');
-  card.classList.remove('hidden');
-  overlay.querySelector('#rdrAiCardTitle').textContent = AI_ACTION_LABELS[action] || 'AI';
-  overlay.querySelector('#rdrAiCardModel').textContent = aiConfig?.model || '';
-  overlay.querySelector('#rdrAiFollowup').value = '';
-  renderAiThread();
-  if (window.lucide) window.lucide.createIcons();
-
-  streamAi();
-}
-
-/** Render every turn (user + assistant) plus the in-flight assistant answer. */
-function renderAiThread(streamingText) {
-  const body = overlay.querySelector('#rdrAiCardBody');
-  if (!aiCurrent) { body.innerHTML = ''; return; }
-  const turns = aiCurrent.turns || [];
-  const parts = turns.map((t) => {
-    if (t.role === 'user') {
-      return `<div class="rdr-ai-turn rdr-ai-turn-user"><div class="rdr-ai-bubble">${esc(t.content)}</div></div>`;
-    }
-    return `<div class="rdr-ai-turn rdr-ai-turn-ai"><div class="rdr-ai-bubble">${renderAiAnswerHtml(t.content || '')}</div></div>`;
+  showAiCard(AI_ACTION_LABELS[action] || 'AI', aiCurrent.model);
+  window.studyAI.askAction(aiCtx(), {
+    action: action,
+    label: AI_ACTION_LABELS[action] || action,
+    question: question,
+    scope: scope,
+    page: page,
+    selection: selection,
   });
-  if (streamingText != null) {
-    parts.push(`<div class="rdr-ai-turn rdr-ai-turn-ai"><div class="rdr-ai-bubble">${renderAiAnswerHtml(streamingText) || '<span class="rdr-ai-spinner"></span>'}</div></div>`);
-  }
-  body.innerHTML = parts.join('');
-  typesetAiBody(body);
-}
-
-function renderAiAnswerHtml(text) {
-  if (!text) return '';
-  if (typeof window.renderMarkdown === 'function') {
-    try { return window.renderMarkdown(text); } catch { /* fall through */ }
-  }
-  return `<div class="rdr-ai-plain">${esc(text)}</div>`;
-}
-
-function typesetAiBody(body) {
-  if (window.lucide) window.lucide.createIcons({ nodes: body.querySelectorAll('[data-lucide]') });
-  if (window.MathJax && MathJax.typesetPromise) {
-    MathJax.typesetPromise([body]).catch(() => {});
-  } else if (typeof window._lazyLoadMathJax === 'function') {
-    window._lazyLoadMathJax()
-      .then(() => { if (window.MathJax?.typesetPromise) MathJax.typesetPromise([body]).catch(() => {}); })
-      .catch(() => {});
-  }
-  if (window.mermaid && window.renderMermaidDiagrams) window.renderMermaidDiagrams(body);
-}
-
-async function streamAi() {
-  if (!aiCurrent || !meta) return;
-  if (aiController) aiController.abort();
-  aiController = new AbortController();
-
-  const body = overlay.querySelector('#rdrAiCardBody');
-  let raw = '';
-  let thinking = '';
-
-  // Show the thread with an empty streaming bubble while we wait.
-  renderAiThread('');
-
-  try {
-    const res = await fetch(`/api/study/doc/${meta.id}/ai`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: aiCurrent.action,
-        question: aiCurrent.question,
-        selection: aiCurrent.selection,
-        scope: aiCurrent.scope,
-        page: aiCurrent.page,
-      }),
-      signal: aiController.signal,
-    });
-    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
-
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-
-      let nl;
-      while ((nl = buf.indexOf('\n\n')) !== -1) {
-        const chunk = buf.slice(0, nl);
-        buf = buf.slice(nl + 2);
-        const line = chunk.split('\n').find((l) => l.startsWith('data:'));
-        if (!line) continue;
-        let ev;
-        try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
-
-        if (ev.type === 'thinking') {
-          thinking += ev.text || '';
-        } else if (ev.type === 'answer') {
-          raw += ev.text || '';
-          // innerHTML re-render resets scrollTop to 0; forcing it to the bottom
-          // on every chunk made manual scroll-up impossible. Only stick to the
-          // bottom when the user was already there; otherwise restore position.
-          const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 48;
-          const prevTop = body.scrollTop;
-          renderAiThread(raw);
-          body.scrollTop = atBottom ? body.scrollHeight : prevTop;
-        } else if (ev.type === 'done') {
-          if (ev.text) raw = ev.text;
-        } else if (ev.type === 'error') {
-          raw = `⚠️ ${ev.message || 'AI error'}`;
-        }
-      }
-    }
-
-    const answer = raw || thinking || '(empty response)';
-    aiCurrent.turns.push({ role: 'assistant', content: answer });
-    aiCurrent.answer = answer;
-    renderAiThread();
-  } catch (err) {
-    if (err.name === 'AbortError') return;
-    aiCurrent.turns.push({ role: 'assistant', content: `⚠️ ${err.message}` });
-    aiCurrent.answer = '';
-    renderAiThread();
-  } finally {
-    aiController = null;
-  }
 }
 
 function closeAiCard() {
-  if (aiController) { aiController.abort(); aiController = null; }
+  if (window.studyAI && meta) window.studyAI.stopStream(meta.id);
+  if (aiUnsub) { try { aiUnsub(); } catch { /* noop */ } aiUnsub = null; }
+  if (aiBusyUnsub) { try { aiBusyUnsub(); } catch { /* noop */ } aiBusyUnsub = null; }
   overlay.querySelector('#rdrAiCard').classList.add('hidden');
   aiCurrent = null;
 }
 
 /** Start a fresh thread in the card, keeping the current document anchors. */
 function newAiChat() {
-  if (!aiCurrent) return;
-  if (aiController) { aiController.abort(); aiController = null; }
-  aiCurrent.turns = [];
-  aiCurrent.answer = '';
-  aiCurrent.question = '';
+  if (!meta || !window.studyAI) return;
+  window.studyAI.stopStream(meta.id);
+  window.studyAI.resetThread(meta.id);
   overlay.querySelector('#rdrAiFollowup').value = '';
-  overlay.querySelector('#rdrAiCardBody').innerHTML =
-    '<div class="rdr-ai-empty">Ask a follow-up below to continue with a fresh thread.</div>';
+  aiCurrent = null;
 }
 
 function sendFollowup() {
   const input = overlay.querySelector('#rdrAiFollowup');
   const q = input.value.trim();
-  if (!q || !aiCurrent) return;
+  if (!q || !meta || !window.studyAI) return;
   input.value = '';
-  // Append the turn to the SAME thread — every prior turn stays in the card.
-  aiCurrent.turns.push({ role: 'user', content: q });
-  aiCurrent.question = q;
-  aiCurrent.action = 'ask';
+  if (!aiCurrent) {
+    aiCurrent = { action: 'ask', scope: 'doc', page: currentPage, selection: '', rects: null, question: q, model: aiConfig?.model || '' };
+  } else {
+    aiCurrent.question = q;
+    aiCurrent.action = 'ask';
+  }
   overlay.querySelector('#rdrAiCardTitle').textContent = 'Ask';
-  streamAi();
+  window.studyAI.askFollowup(aiCtx(), q, {
+    action: 'ask', scope: aiCurrent.scope, page: aiCurrent.page, selection: aiCurrent.selection,
+  });
 }
 
 // ── AI: saving / viewing notes ───────────────────────────────────────────────
 
 async function saveAiNote() {
-  if (!aiCurrent || !meta) return;
-  const turns = aiCurrent.turns || [];
+  if (!meta) return;
+  // The turns live in the shared thread now, not on aiCurrent.
+  const turns = (window.studyAI && window.studyAI.getThread(meta.id)) || [];
   if (!turns.some((t) => t.role === 'assistant' && t.content)) {
     return toast('Nothing to save yet', 'error');
   }
   const lastAnswer = [...turns].reverse().find((t) => t.role === 'assistant');
+  const anchor = aiCurrent || { action: 'ask', scope: 'doc', page: currentPage, selection: '', rects: null, question: '', model: aiConfig?.model || '' };
   try {
     const saved = await api(`/api/study/doc/${meta.id}/notes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        page: aiCurrent.page,
-        rects: aiCurrent.rects || [],
-        text: aiCurrent.selection,
-        action: aiCurrent.action,
-        question: aiCurrent.question,
+        page: anchor.page,
+        rects: anchor.rects || [],
+        text: anchor.selection,
+        action: anchor.action,
+        question: anchor.question,
         // Keep the legacy single-answer fields AND the full thread.
-        answer: (lastAnswer && lastAnswer.content) || aiCurrent.answer || '',
+        answer: (lastAnswer && lastAnswer.content) || '',
         messages: turns.map((t) => ({ role: t.role, content: t.content })),
-        model: aiCurrent.model,
-        scope: aiCurrent.scope,
+        model: anchor.model,
+        scope: anchor.scope,
       }),
     });
     aiNotes.push(saved);
@@ -2084,14 +2034,11 @@ function viewSavedNote(id) {
   aiCurrent = {
     action: note.action, scope: note.scope, page: note.page,
     selection: note.text, rects: note.rects, question: note.question,
-    answer: note.answer, model: note.model, turns,
+    model: note.model,
   };
-  const card = overlay.querySelector('#rdrAiCard');
-  card.classList.remove('hidden');
-  overlay.querySelector('#rdrAiCardTitle').textContent = AI_ACTION_LABELS[note.action] || note.action;
-  overlay.querySelector('#rdrAiCardModel').textContent = note.model || '';
-  renderAiThread();
-  if (window.lucide) window.lucide.createIcons();
+  // Load the saved thread into the shared store, then show it in the card.
+  if (window.studyAI && meta) window.studyAI.setThread(meta.id, turns);
+  showAiCard(AI_ACTION_LABELS[note.action] || note.action, note.model || '');
 }
 
 // ── Doc / Chat toggle + Study AI pane ────────────────────────────────────────
@@ -2252,6 +2199,9 @@ function aiContext(host) {
     getPageText: pageToText,
     getPdfBase64: pdfToBase64,
     getPdfText: pdfToText,
+    // Live text selection, so pane/popup requests ground on the selection
+    // instead of always falling back to the whole document.
+    getSelection: () => (pendingSelection && pendingSelection.text) || (noteAnchor && noteAnchor.text) || '',
   };
 }
 

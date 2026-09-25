@@ -448,6 +448,7 @@
           <button class="sn-bar-btn" data-sn="ai-revert" title="Revert"><i data-lucide="undo-2" class="icon-lucide"></i></button>
           <button class="sn-bar-btn" data-sn="ai-apply" title="Replace note"><i data-lucide="check" class="icon-lucide"></i></button>
           <button class="sn-bar-btn" data-sn="ai-insert" title="Insert below"><i data-lucide="plus" class="icon-lucide"></i></button>
+          <button class="sn-bar-btn sn-ai-stop" data-sn="ai-stop" title="Stop" style="display:none;"><i data-lucide="square" class="icon-lucide"></i></button>
           <button class="sn-bar-btn" data-sn="ai-close"><i data-lucide="x" class="icon-lucide"></i></button>
         </div>
         <div class="sn-ai-card-body" id="snAiBody"></div>
@@ -535,6 +536,7 @@
       case 'ai-insert': applyAi('insert'); break;
       case 'ai-revert': revertAi(); break;
       case 'ai-close': closeAiPopup(); break;
+      case 'ai-stop': stopAi(); break;
       case 'ai-ask-send': sendAiAsk(); break;
     }
   }
@@ -859,9 +861,27 @@
   }
 
   function closeAiPopup() {
+    stopAi();
     const card = ed && ed.host && ed.host.querySelector('#snAiCard');
     if (card) card.classList.add('hidden');
   }
+
+  /** Abort the in-flight note AI stream (Stop button). */
+  function stopAi() {
+    if (ed && ed.aiThread && window.studyChat) {
+      try { window.studyChat.stop(ed.aiThread); } catch { /* noop */ }
+    }
+  }
+
+  /** Show Stop while a note AI turn streams, hide it otherwise. */
+  function setAiStopVisible(on) {
+    if (!ed || !ed.host) return;
+    const btn = ed.host.querySelector('[data-sn="ai-stop"]');
+    if (btn) btn.style.display = on ? '' : 'none';
+  }
+
+  /** Thread id for this note's AI conversation (persisted per note). */
+  function noteThreadKey() { return 'note-' + (ed.id || 'new'); }
 
   async function runAi(action) {
     ed.host.querySelector('#snAiMenu').classList.add('hidden');
@@ -873,37 +893,48 @@
 
     openAiPopup(card);
     title.textContent = label;
-    // A previous tool edit may have hidden apply/insert — restore them for
-    // this new action so the buttons reflect the current turn's state.
+    // Edits now land in the file through the study_note tool, so the old
+    // "apply / insert" pair (which re-applied returned text) is meaningless —
+    // keep only Revert. "ask" answers in prose and touches nothing.
     card.querySelectorAll('[data-sn="ai-apply"], [data-sn="ai-insert"]')
-      .forEach((b) => { b.style.display = ''; });
-    body.innerHTML = '<div class="sn-ai-thinking"><i data-lucide="loader-circle" class="icon-lucide"></i> Thinking…</div>';
-    if (window.lucide) window.lucide.createIcons();
-    foot.hidden = action !== 'ask';
-    if (action === 'ask') setTimeout(() => {
-      const ask = card.querySelector('#snAiAsk');
-      if (ask) ask.focus();
-    }, 40);
+      .forEach((b) => { b.style.display = 'none'; });
+    foot.hidden = false;
 
-    const ground = ed.host.querySelector('#snAiGround').checked;
+    // Render this note's persisted thread so reopening the popup shows history.
+    renderNoteThread(body);
+
+    if (action === 'ask') {
+      setTimeout(() => { const ask = card.querySelector('#snAiAsk'); if (ask) ask.focus(); }, 40);
+      return;
+    }
+
     // Snapshot for revert before any edit lands.
     ed.stack.push({ title: ed.title, content: ed.content });
-
-    const payload = { action, content: ed.content, ground, question: '' };
-    if (action === 'ask') payload.question = '';
-
-    await streamAi(payload, body, action);
+    const ground = !!(ed.host.querySelector('#snAiGround') || {}).checked;
+    await streamAi({ action, content: ed.content, ground }, body, action);
   }
 
   async function sendAiAsk() {
     const input = ed.host.querySelector('#snAiAsk');
     const q = input.value.trim();
     if (!q) return;
-    const body = ed.host.querySelector('#snAiBody');
-    body.innerHTML = '<div class="sn-ai-thinking"><i data-lucide="loader-circle" class="icon-lucide"></i> Thinking…</div>';
-    if (window.lucide) window.lucide.createIcons();
+    input.value = '';
     ed.stack.push({ title: ed.title, content: ed.content });
-    await streamAi({ action: 'ask', content: ed.content, question: q, ground: false }, body, 'ask');
+    // Honour the "Ground in referenced documents" checkbox — it was previously
+    // hardcoded to false, so ticking it did nothing on a real question.
+    const ground = !!(ed.host.querySelector('#snAiGround') || {}).checked;
+    await streamAi({ action: 'ask', question: q, content: ed.content, ground }, ed.host.querySelector('#snAiBody'), 'ask');
+  }
+
+  /** Draw this note's shared AI thread into the popup body (real chat DOM). */
+  async function renderNoteThread(bodyEl) {
+    if (!bodyEl || !window.studyChat) return;
+    bodyEl.classList.add('sa-thread');
+    const key = noteThreadKey();
+    const tid = window.studyChat.activeThread(key);
+    if (!tid) { bodyEl.innerHTML = '<div class="sn-ai-thinking">Ask anything about this note…</div>'; return; }
+    const msgs = await window.studyChat.loadMessages(tid);
+    window.studyChat.renderMessages(bodyEl, msgs);
   }
 
   /**
@@ -935,101 +966,50 @@
     }
   }
 
+  /**
+   * Run one note-AI turn through the SHARED chat pipeline (window.studyChat),
+   * exactly like the document AI. The note is addressed by a `note-<id>` thread
+   * and a `study_context.note_id`, so the backend grounds the turn in the note
+   * body and the model edits it with the study_note tool. Messages, thinking
+   * and tool calls all persist in the same tables and render as real chat DOM.
+   */
   async function streamAi(payload, bodyEl, action) {
-    if (ed.aiAbort) { try { ed.aiAbort.abort(); } catch {} }
-    const ctrl = new AbortController();
-    ed.aiAbort = ctrl;
+    if (!ed || !bodyEl || !window.studyChat) return;
+    const noteId = ed.id || 'new';
+    const docKey = 'note:' + noteId;
+    const threadId = 'study-note-' + noteId;
+    ed.aiThread = threadId;
     ed.aiBusy = true;
-    let acc = '';
-    let thinking = '';
-    let edited = false;
-    const toolsAcc = [];
-
-    const paintTools = () => {
-      let html = '';
-      for (const t of toolsAcc) {
-        const cls = t.status === 'error' ? 'err' : (t.status === 'ok' ? 'ok' : 'run');
-        html += '<div class="sn-ai-tool ' + cls + '"><span class="sn-ai-tool-dot"></span>'
-          + esc((t.name || 'tool').replace(/_/g, ' '))
-          + (t.error ? '<span class="sn-ai-tool-err">' + esc(t.error) + '</span>' : '')
-          + '</div>';
-      }
-      let host = bodyEl.querySelector('.sn-ai-tools');
-      if (!host) {
-        host = document.createElement('div');
-        host.className = 'sn-ai-tools';
-        bodyEl.appendChild(host);
-      }
-      host.innerHTML = html;
-    };
-
-    const paint = () => {
-      let html = '';
-      if (thinking) {
-        html += '<details class="sn-ai-think"><summary>Thinking</summary>'
-          + '<div class="sn-ai-think-body">' + esc(thinking) + '</div></details>';
-      }
-      html += '<div class="sn-ai-out">'
-        + (window.renderMarkdown ? window.renderMarkdown(acc) : esc(acc))
-        + '</div>';
-      bodyEl.innerHTML = html;
-      paintTools();
-      if (window.postRenderContent) window.postRenderContent(bodyEl.querySelector('.sn-ai-out'));
-    };
-
+    setAiStopVisible(true);
+    bodyEl.classList.add('sa-thread');
+    const label = (AI_ACTIONS.find((a) => a[0] === action) || [action, action])[1];
+    const text = action === 'ask' ? (payload.question || 'Ask about this note') : label;
     try {
-      const res = await fetch(`${API}/${encodeURIComponent(ed.id || 'new')}/ai`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal: ctrl.signal,
+      await window.studyChat.send({
+        docId: docKey,
+        threadId: threadId,
+        text: text,
+        context: Object.assign({
+          doc_id: '',
+          note_id: noteId,
+          action: action,
+          question: payload.question || '',
+          note_content: payload.content || ed.content || '',
+          ground: !!payload.ground,
+        }, (window.studyAI && window.studyAI.configPayload) ? window.studyAI.configPayload() : {}),
+        pane: bodyEl,
       });
-      if (!res.ok) {
-        let detail = res.statusText;
-        try { detail = (await res.json()).detail || detail; } catch {}
-        throw new Error(detail);
-      }
-
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let buf = '';
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const parts = buf.split('\n\n');
-        buf = parts.pop();
-        for (const chunk of parts) {
-          const line = chunk.split('\n').find((l) => l.startsWith('data: '));
-          if (!line) continue;
-          let ev;
-          try { ev = JSON.parse(line.slice(6)); } catch { continue; }
-          if (ev.type === 'answer') { acc += ev.text || ''; paint(); }
-          else if (ev.type === 'thinking') { thinking += ev.text || ''; paint(); }
-          else if (ev.type === 'skill_start') { toolsAcc.push({ name: ev.name, status: 'running' }); paintTools(); }
-          else if (ev.type === 'skill_end') {
-            const t = toolsAcc[toolsAcc.length - 1];
-            if (t) { t.status = ev.ok ? 'ok' : 'error'; t.error = ev.error || ''; paintTools(); }
-          }
-          else if (ev.type === 'error') { throw new Error(ev.message || 'AI error'); }
-          else if (ev.type === 'done') {
-            acc = ev.text || acc;
-            if (ev.edited) edited = true;
-            paint();
-          }
-        }
-      }
-      ed.aiResult = acc;
-      // A tool edit already changed the note on disk — reload it so the editor
-      // shows the live result instead of an "apply" prompt for stale text.
-      if (edited) await refreshNoteBody();
-    } catch (err) {
-      if (err.name === 'AbortError') return;
-      bodyEl.innerHTML = '<div class="sn-ai-err">' + esc(err.message) + '</div>';
     } finally {
       ed.aiBusy = false;
-      ed.aiAbort = null;
+      ed.aiThread = null;
+      setAiStopVisible(false);
     }
+    // An edit action changed the note on disk through study_note — pull the
+    // live body so the editor reflects the tool's change (no apply step).
+    if (action !== 'ask') { try { await refreshNoteBody(); } catch { /* best effort */ } }
+    // Re-render the canonical persisted thread (tool cards in order).
+    renderNoteThread(bodyEl);
+    if (typeof window._sableLoadChats === 'function') window._sableLoadChats();
   }
 
   function applyAi(mode) {
@@ -1209,7 +1189,7 @@
     document.removeEventListener('keydown', editorKeydown);
     clearTimeout(saveTimer);
     clearTimeout(previewTimer);
-    if (ed && ed.aiAbort) { try { ed.aiAbort.abort(); } catch {} }
+    if (ed && ed.aiThread && window.studyChat) { try { window.studyChat.stop(ed.aiThread); } catch {} }
     const wasReaderKind = ed && ed.kind === 'reader';
     const mount = ed && ed.host ? ed.host.parentElement : null;
     if (ed && ed.host) {
@@ -1261,6 +1241,20 @@
       notify('Delete failed: ' + err.message);
     }
   }
+
+  // A study tool (study_note) edited a note on disk — possibly via the sidebar
+  // composer, not this editor's inline AI. Pull the live body into any open
+  // editor for that note, and refresh the note lists so the change is visible
+  // everywhere without a manual reload.
+  window.addEventListener('study-doc-changed', (e) => {
+    const detail = (e && e.detail) || {};
+    if (detail.kind !== 'notes') return;
+    const changedId = detail.note_id ? String(detail.note_id) : '';
+    if (ed && ed.id && (!changedId || changedId === ed.id)) {
+      refreshNoteBody();
+    }
+    loadNotes().then(() => refreshViews()).catch(() => {});
+  });
 
   window.studyNotes = {
     openEditor,

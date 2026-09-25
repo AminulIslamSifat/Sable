@@ -109,17 +109,59 @@ def sanitize_filename(name: str, fallback: str = "document") -> str:
 
 
 def pdf_tool() -> str | None:
-    return shutil.which("soffice") or shutil.which("libreoffice")
+    """Locate the LibreOffice CLI, cross-platform.
+
+    PATH first (Linux/macOS usually); then the well-known install locations
+    Windows and macOS use, since neither reliably adds soffice to PATH.
+    """
+    for name in ("soffice", "libreoffice"):
+        found = shutil.which(name)
+        if found:
+            return found
+    if os.name == "nt":
+        for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
+            if base:
+                cand = Path(base) / "LibreOffice" / "program" / "soffice.exe"
+                if cand.exists():
+                    return str(cand)
+    else:
+        for cand in (
+            "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+            "/usr/bin/soffice",
+            "/usr/local/bin/soffice",
+            "/snap/bin/libreoffice",
+        ):
+            if Path(cand).exists():
+                return cand
+    return None
 
 
 def _kill_process_group(proc: subprocess.Popen) -> None:
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
+    """Kill the converter and every child it spawned, on any OS.
+
+    POSIX: kill the whole process group (LibreOffice forks). Windows: taskkill
+    /T walks the child tree, because os.killpg doesn't exist there.
+    """
+    if os.name == "nt":
         try:
-            proc.kill()
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
         except Exception:
-            pass
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
     try:
         proc.wait(timeout=5)
     except Exception:
@@ -141,18 +183,22 @@ def convert_to_pdf(raw: bytes, ext: str) -> bytes:
         outdir = work / "out"
         outdir.mkdir()
         profile = work / "profile"
+        # as_uri() gives the file:///C:/... form LibreOffice expects on Windows
+        # (file://C:\... is malformed and silently ignored).
         cmd = [
             tool,
             "--headless", "--norestore", "--invisible",
-            f"-env:UserInstallation=file://{profile}",
+            f"-env:UserInstallation={profile.as_uri()}",
             "--convert-to", "pdf",
             "--outdir", str(outdir),
             str(src),
         ]
         try:
+            # start_new_session isolates the process group on POSIX (so we can
+            # kill forks); it's a no-op on Windows, where taskkill /T handles it.
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                start_new_session=True,
+                start_new_session=(os.name != "nt"),
             )
         except OSError as e:
             raise ValueError(f"could not launch the converter: {e}")

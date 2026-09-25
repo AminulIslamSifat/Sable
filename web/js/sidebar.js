@@ -93,7 +93,13 @@
         row.dataset.chatId = chat.id;
         const btn = document.createElement("button");
         btn.className = "chat-item" + (chat.id === activeChatId ? " active" : "");
-        if (isScraper) {
+        if (chat.id.startsWith('study-')) {
+          // Study chat — open-book icon, same slot as scraper/agent chats.
+          const icon = document.createElement("i");
+          icon.setAttribute("data-lucide", "book-open");
+          icon.className = "icon-lucide chat-item-icon";
+          btn.appendChild(icon);
+        } else if (isScraper) {
           const icon = document.createElement("i");
           icon.setAttribute("data-lucide", "globe");
           icon.className = "icon-lucide chat-item-icon";

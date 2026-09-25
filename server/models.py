@@ -29,9 +29,12 @@ class ChatRequest(BaseModel):
     cwd: str | None = None
     open_file: str | None = None
     skip_user_save: bool = False
-    layout_mode: str | None = None  # "agent" or "chat"
+    layout_mode: str | None = None  # "agent" | "chat" | "study"
     browser_data_dir: str | None = None  # scoped browser profile for isolated streams (e.g. critique)
-    system_prompt: str | None = None  # override system prompt for agent sub-chats
+    system_prompt: str | None = None  # override system prompt for agent sub-chats / study
+    # Study mode grounding context. When layout_mode == "study" the server
+    # builds the study system directive from this instead of the chat harness.
+    study_context: dict[str, Any] | None = None
 
 class NewChatRequest(BaseModel):
     model: str | None = None

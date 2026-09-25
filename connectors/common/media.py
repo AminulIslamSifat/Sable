@@ -270,10 +270,12 @@ def _convert_pptx_to_images(
     render slides natively).
     """
     import subprocess
-    import shutil
     import tempfile
 
-    if not shutil.which("libreoffice") and not shutil.which("soffice"):
+    from engine.library_ingest import pdf_tool
+
+    lo_bin = pdf_tool()
+    if not lo_bin:
         logger.warning(
             "LibreOffice not found — cannot convert PPTX to images: %s", pptx_path,
         )
@@ -294,12 +296,17 @@ def _convert_pptx_to_images(
         pass  # Proceed anyway, LibreOffice will handle it
 
     out_dir = Path(tempfile.mkdtemp(prefix="sable_doc2img_"))
-    lo_bin = shutil.which("libreoffice") or shutil.which("soffice")
 
+    # Isolated profile so a running desktop LibreOffice can't lock the default
+    # one and make --headless fail. as_uri() is the correct form on Windows.
+    # Kept OUTSIDE out_dir so it can't be mistaken for a converted PNG.
+    profile = Path(tempfile.mkdtemp(prefix="sable_lo_profile_"))
     try:
         subprocess.run(
             [
-                lo_bin, "--headless", "--norestore", "--convert-to", "png",
+                lo_bin, "--headless", "--norestore",
+                f"-env:UserInstallation={profile.as_uri()}",
+                "--convert-to", "png",
                 "--outdir", str(out_dir), str(pptx_path),
             ],
             capture_output=True,

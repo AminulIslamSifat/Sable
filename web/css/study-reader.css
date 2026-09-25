@@ -1514,3 +1514,157 @@ body.rdr-open { overflow: hidden; }
   cursor: pointer;
 }
 .st-alarm-dismiss:hover { filter: brightness(1.1); }
+
+/* ==========================================================================
+   Unified Study AI surfaces — one design language
+   --------------------------------------------------------------------------
+   The popup (.sa-*), the full pane (.sa-*), the reader card (.rdr-ai-*), and
+   the note popup (.sn-ai-*) each grew their own header padding, radius and
+   shadow. This block aligns them onto the shared tokens so they read as one
+   product, and adds the selection/page chips that travel with a sent message.
+   ========================================================================== */
+
+:root {
+  --sa-radius: var(--radius-lg, 14px);
+  --sa-header-pad: 11px 14px;
+  --sa-foot-pad: 9px 12px;
+  --sa-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+}
+
+/* --- Headers: identical rhythm across all four surfaces --- */
+.rdr-ai-card-head,
+.sn-ai-card-head {
+  padding: var(--sa-header-pad);
+}
+.rdr-ai-card,
+.sn-ai-card,
+.sn-ai-pop {
+  border-radius: var(--sa-radius);
+  box-shadow: var(--sa-shadow);
+}
+.rdr-ai-card-foot {
+  padding: var(--sa-foot-pad);
+  align-items: center;
+}
+
+/* --- Message chips: selection / page / attachment grounding --- */
+.sa-msg-atts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.sa-msg-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  font-size: 10.5px;
+  line-height: 1.4;
+  padding: 2px 8px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+  color: var(--accent-text, var(--accent));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sa-msg-chip-selection {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  font-style: italic;
+}
+.sa-msg-chip-page { background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--text-dim); }
+.sa-msg-chip-document,
+.sa-msg-chip-image,
+.sa-msg-chip-text { background: color-mix(in srgb, var(--panel-2) 90%, transparent); color: var(--text-dim); }
+
+/* --- Stop button: same affordance on the reader card --- */
+.rdr-ai-stop {
+  color: #ff8080;
+  border: 1px solid color-mix(in srgb, #ff6b6b 40%, transparent);
+  background: color-mix(in srgb, #ff6b6b 14%, transparent);
+}
+.rdr-ai-stop:hover { background: color-mix(in srgb, #ff6b6b 26%, transparent); }
+.sn-ai-stop {
+  color: #ff8080;
+  border: 1px solid color-mix(in srgb, #ff6b6b 40%, transparent);
+  background: color-mix(in srgb, #ff6b6b 14%, transparent);
+}
+.sn-ai-stop:hover { background: color-mix(in srgb, #ff6b6b 26%, transparent); }
+
+/* --- Note AI: give it the same composer treatment as doc AI --- */
+.sn-ai-card-foot { align-items: center; }
+
+/* ==========================================================================
+   Study surfaces render REAL chat DOM (.msg / .turn / .skill-card).
+   Those rules size themselves off --chat-width, which is declared on #chat —
+   a scope the reader overlay never sees. Redeclare it here, and give the
+   surface bodies the same flex-column rhythm as .tab-pane so message
+   alignment (align-self) and turn stacking behave identically.
+   ========================================================================== */
+.sa-thread,
+.rdr-ai-card-body {
+  --chat-width: min(94%, 760px);
+  align-items: center;
+}
+.sa-thread > .msg,
+.sa-thread > .turn,
+.rdr-ai-card-body > .msg,
+.rdr-ai-card-body > .turn {
+  width: var(--chat-width);
+  max-width: var(--chat-width);
+}
+.sa-thread .turn,
+.rdr-ai-card-body .turn {
+  align-self: center;
+  width: var(--chat-width);
+  max-width: var(--chat-width);
+}
+.sa-thread .msg.bot,
+.sa-thread .turn .msg.bot,
+.rdr-ai-card-body .msg.bot,
+.rdr-ai-card-body .turn .msg.bot {
+  width: 100%;
+  max-width: 100%;
+  align-self: stretch;
+}
+.sa-thread .empty,
+.rdr-ai-card-body .empty {
+  margin: auto;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Attach chips inside the study composer (page / whole document). */
+.sa-chip-page,
+.sa-chip-document {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  padding: 3px 6px 3px 8px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  color: var(--text);
+}
+.sa-chip-page .icon-lucide,
+.sa-chip-document .icon-lucide { width: 12px; height: 12px; color: var(--accent); }
+
+/* Thumbnail inside an attachment chip. Without an explicit size the <img>
+   renders at the page's full pixel resolution and covers the surface. */
+.sa-chip-thumb {
+  width: 22px;
+  height: 22px;
+  object-fit: cover;
+  border-radius: 5px;
+  border: 1px solid var(--border-soft);
+  flex-shrink: 0;
+  display: block;
+}
+.sa-chip-image { max-width: 100%; }
+.sa-chip-spin {
+  width: 12px; height: 12px;
+  color: var(--muted);
+  animation: sa-chip-spin 1s linear infinite;
+}
+@keyframes sa-chip-spin { to { transform: rotate(360deg); } }
+/* Never let a staged thumbnail push the chip row taller than one line. */
+.sa-attachments { max-height: 44px; overflow: hidden; }

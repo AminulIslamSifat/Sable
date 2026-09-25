@@ -15,12 +15,7 @@ import fcntl
 import json
 import logging
 import math
-import os
 import re
-import shutil
-import signal
-import subprocess
-import tempfile
 import time
 import uuid
 from contextlib import contextmanager
@@ -44,6 +39,7 @@ from engine.library_ingest import make_thumbnail, thumb_path
 from engine.library_ingest import (
     convert_to_pdf as _shared_convert_to_pdf,
     extract_pdf as _shared_extract_pdf,
+    pdf_tool,
 )
 from engine import library_rag as _rag
 from engine import library_search as _search
@@ -84,22 +80,7 @@ def _ext_of(filename: str) -> str:
 
 def _pdf_tool() -> str | None:
     """Locate the LibreOffice CLI. Returns None when unavailable."""
-    return shutil.which("soffice") or shutil.which("libreoffice")
-
-
-def _kill_process_group(proc: subprocess.Popen) -> None:
-    """Kill a converter and every child it spawned (LibreOffice forks)."""
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        try:
-            proc.kill()
-        except Exception:
-            pass
-    try:
-        proc.wait(timeout=5)
-    except Exception:
-        pass
+    return pdf_tool()
 
 
 def _convert_to_pdf(raw: bytes, ext: str) -> bytes:
