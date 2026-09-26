@@ -38,6 +38,7 @@ let scrollSyncSuppressUntil = 0;
 let pageSyncRaf = 0;
 let pageEls = [];       // index 0 = page 1
 let pageObserver = null;
+let evictObserver = null;
 let thumbObserver = null;
 let rendering = false;
 let renderGen = 0;      // bumps on every renderAllPages rebuild — stale renders bail
@@ -806,9 +807,12 @@ function teardown() {
   closeNotePopup();
   if (window.studyNotes) { try { window.studyNotes.close(); } catch {} }
   if (pageObserver) { pageObserver.disconnect(); pageObserver = null; }
+  if (evictObserver) { evictObserver.disconnect(); evictObserver = null; }
   if (thumbObserver) { thumbObserver.disconnect(); thumbObserver = null; }
+  for (const rec of pageEls) releaseCanvas(rec);
   if (pdfDoc) { try { pdfDoc.destroy(); } catch {} pdfDoc = null; }
   if (aiUnsub) { try { aiUnsub(); } catch { /* noop */ } aiUnsub = null; }
+  for (const pg of pageCache.values()) { try { pg.cleanup(); } catch { /* noop */ } }
   pageCache.clear();
   pageEls = [];
   pendingSelection = null;
@@ -831,17 +835,63 @@ function isOpen() {
 
 // ── Page rendering ───────────────────────────────────────────────────────────
 
-// pdf.js hands back a fresh PDFPageProxy per getPage() call, but they're cheap
-// to hold and re-fetching churns the worker. Cache per document load.
+// A cached PDFPageProxy pins the page's parsed operator list AND its decoded
+// embedded images. These slide decks carry ~2 full-bleed PNGs per page, which
+// expand to ~14 MB of RGBA each — so an unbounded cache over 74 pages is a
+// gigabyte the reader never gives back. Small LRU instead; pdf.js re-parses
+// on demand.
+const PAGE_CACHE_MAX = 10;
 const pageCache = new Map();
 
 async function getPage(n) {
-  let p = pageCache.get(n);
-  if (!p) {
-    p = await pdfDoc.getPage(n);
-    pageCache.set(n, p);
+  const hit = pageCache.get(n);
+  if (hit) {
+    pageCache.delete(n);          // LRU touch
+    pageCache.set(n, hit);
+    return hit;
+  }
+  const p = await pdfDoc.getPage(n);
+  pageCache.set(n, p);
+  while (pageCache.size > PAGE_CACHE_MAX) {
+    const [oldest, pg] = pageCache.entries().next().value;
+    pageCache.delete(oldest);
+    if (pg) { try { pg.cleanup(); } catch { /* already gone */ } }
   }
   return p;
+}
+
+/**
+ * Release a page's canvas backing store.
+ *
+ * `canvas.width = 0` is what actually drops the GPU texture. Detaching the
+ * element only marks it collectable, and the browser is in no hurry.
+ */
+function releaseCanvas(rec) {
+  if (!rec || !rec.el) return;
+  const canvas = rec.el.querySelector('.rdr-canvas');
+  if (canvas) { canvas.width = 0; canvas.height = 0; }
+}
+
+/**
+ * Demote a page that scrolled out of range back to an empty placeholder.
+ *
+ * Without this the reader is a roach motel: pages check in and never leave, so
+ * memory grows with scroll distance and a zoom rebuild multiplies every
+ * retained canvas by the new scale factor.
+ */
+function unrenderPage(n) {
+  const rec = pageEls[n - 1];
+  if (!rec || !rec.rendered) return;
+  if (rec.textLayer) { try { rec.textLayer.cancel(); } catch {} rec.textLayer = null; }
+  const tl = rec.el.querySelector('.rdr-text-layer');
+  if (tl) tl.innerHTML = '';
+  releaseCanvas(rec);
+  rec.rendered = false;
+  const pg = pageCache.get(n);
+  if (pg) {
+    pageCache.delete(n);
+    try { pg.cleanup(); } catch { /* best effort */ }
+  }
 }
 
 async function renderAllPages() {
@@ -852,8 +902,16 @@ async function renderAllPages() {
     pageObserver.disconnect();
     pageObserver = null;
   }
+  if (evictObserver) {
+    evictObserver.disconnect();
+    evictObserver = null;
+  }
 
   const host = overlay.querySelector('#rdrPages');
+  // Zero every canvas before detaching. innerHTML = '' drops the nodes, but a
+  // canvas backing store is a GPU texture that only goes away on the next GC
+  // pass — and one zoom gesture can queue dozens of them.
+  for (const rec of pageEls) releaseCanvas(rec);
   host.innerHTML = '';
   pageEls = [];
 
@@ -890,17 +948,32 @@ async function renderAllPages() {
 
   // Render only what's near the viewport.
   const main = overlay.querySelector('#rdrMain');
+  // Two observers, one job each. The render band stays tight so scrolling is
+  // responsive; the eviction band is wide so a slow scroll doesn't thrash
+  // rasterise → drop → rasterise on the same page.
   pageObserver = new IntersectionObserver((entries) => {
     if (gen !== renderGen) return;  // stale observer from an older layout
     for (const entry of entries) {
-      const n = parseInt(entry.target.dataset.page, 10);
-      // Rasterise only. Active-page tracking is scroll-driven (see
-      // schedulePageSync) — a 600px rootMargin makes several off-screen pages
-      // report as intersecting, so the observer can't pick the current one.
-      if (entry.isIntersecting) renderPage(n);
+      if (!entry.isIntersecting) continue;
+      // Active-page tracking is scroll-driven (see schedulePageSync) — a wide
+      // rootMargin makes several off-screen pages report as intersecting, so
+      // the observer can't pick the current one.
+      renderPage(parseInt(entry.target.dataset.page, 10));
     }
   }, { root: main, rootMargin: '600px 0px', threshold: 0.01 });
-  pageEls.forEach((p) => pageObserver.observe(p.el));
+
+  evictObserver = new IntersectionObserver((entries) => {
+    if (gen !== renderGen) return;
+    for (const entry of entries) {
+      if (entry.isIntersecting) continue;   // still inside the render band
+      unrenderPage(parseInt(entry.target.dataset.page, 10));
+    }
+  }, { root: main, rootMargin: '1500px 0px', threshold: 0 });
+
+  pageEls.forEach((p) => {
+    pageObserver.observe(p.el);
+    evictObserver.observe(p.el);
+  });
   schedulePageSync();
 }
 
@@ -912,9 +985,13 @@ async function renderPage(n) {
 
   const page = await getPage(n);
   if (gen !== renderGen) return;  // layout changed while we were fetching
+  if (!rec.rendered) return;      // evicted while the page was loading
   const canvas = rec.el.querySelector('.rdr-canvas');
   const ctx = canvas.getContext('2d', { alpha: false });
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  // Canvas area grows with the square of scale. At 3x zoom on a HiDPI panel a
+  // single page is 4320x3240 = 14 Mpx = 56 MB. Retina sharpness is worth
+  // paying for at 1x, not at 3x.
+  const dpr = Math.min(window.devicePixelRatio || 1, scale >= 2 ? 1 : 2);
   const viewport = page.getViewport({ scale });
 
   // Correct the placeholder size now that the true viewport is known.
