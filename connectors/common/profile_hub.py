@@ -347,6 +347,8 @@ class ProfileHub:
         # False when we adopted someone else's browser: teardown must drop the
         # CDP link, never close a browser we don't own.
         self._owns_browser = False
+        # browser_governor.Slot held while this hub owns a browser.
+        self._slot = None
 
     # -- state ---------------------------------------------------------
 
@@ -549,14 +551,35 @@ class ProfileHub:
             # can't adopt this browser — worth knowing about.
             logger.warning("[hub:%s] could not write adopt marker: %s",
                            self.profile_dir.name, exc)
+        # Fleet-wide admission control, shared with every other Sable browser
+        # path. Playwright starts the process for us here, so the pid is
+        # resolved afterwards from the profile dir rather than from Popen.
+        from engine import browser_governor
+        slot = await browser_governor.acquire(f"hub:{self.profile_dir.name}")
+
         self._pw = await async_playwright().start()
-        self._context = await self._pw.chromium.launch_persistent_context(
-            executable_path=self.helium_bin,
-            user_data_dir=str(self.profile_dir),
-            headless=self.headless,
-            args=_LAUNCH_ARGS + [f"--remote-debugging-port={port}"],
-        )
+        try:
+            self._context = await self._pw.chromium.launch_persistent_context(
+                executable_path=self.helium_bin,
+                user_data_dir=str(self.profile_dir),
+                headless=self.headless,
+                args=_LAUNCH_ARGS + [f"--remote-debugging-port={port}"],
+            )
+        except BaseException:
+            slot.release()
+            raise
+
         self._owns_browser = True
+
+        # Bind whichever root process owns this profile, then confine it.
+        roots = browser_governor.find_browser_pids(str(self.profile_dir))
+        if roots:
+            slot.attach(roots[0], user_data_dir=str(self.profile_dir))
+        else:
+            logger.warning("[hub:%s] launched but no browser pid found to confine",
+                           self.profile_dir.name)
+        self._slot = slot
+
         logger.info("[hub:%s] launched shared browser (port %d)",
                     self.profile_dir.name, port)
 
@@ -633,3 +656,11 @@ class ProfileHub:
         self._context = None
         self._pw = None
         self._cdp_browser = None
+        # Hand the fleet slot back so another browser can start, and drop the
+        # per-browser cgroup. No-op when no slot was ever claimed.
+        if self._slot is not None:
+            try:
+                self._slot.release(kill=False)
+            except Exception:
+                pass
+            self._slot = None

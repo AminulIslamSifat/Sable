@@ -19,7 +19,7 @@ from .scoring import (
     MODEL_THRESHOLDS, DEFAULT_MODEL, DEFAULT_TOP_K,
     VECTOR_WEIGHT, KEYWORD_WEIGHT, KEY_TOKEN_WEIGHT,
     TRIGGER_IDF_WEIGHT, SOURCE_QUERY_WEIGHT, PROTECTED_BOOST,
-    VECTOR_ONLY_MIN,
+    VECTOR_ONLY_MIN, EPISODIC_DECAY_RATE, MIN_QUERY_TOKENS,
 )
 from .cache import _cache_path_for, save_cache, load_cache_data, clear_cache_file
 from .embedder import _GeminiEmbedder
@@ -63,6 +63,13 @@ class MemorySearcher:
         self._memory_path = memory_path or _MEMORY_PATH
         self._protected_path = protected_path or _PROTECTED_PATH
         self._cache_dir = cache_dir
+        # Fallback timestamp for episodic decay when entries carry no own timestamp
+        try:
+            self._memory_mtime: str | None = datetime.fromtimestamp(
+                self._memory_path.stat().st_mtime
+            ).isoformat() if self._memory_path.exists() else None
+        except OSError:
+            self._memory_mtime = None
         self._initialized = True
 
     @property
@@ -246,8 +253,11 @@ class MemorySearcher:
                             embed_parts.append(str(e["source_query"]))
                         embed_text = " ".join(embed_parts)
                         extra = None
-                        if cat_key == "episodic" and e.get("last_accessed"):
-                            extra = {"last_accessed": str(e["last_accessed"])}
+                        if cat_key == "episodic":
+                            # Prefer last_accessed; fall back to created_at, then file mtime.
+                            ts = e.get("last_accessed") or e.get("created_at") or self._memory_mtime
+                            if ts:
+                                extra = {"last_accessed": str(ts)}
                         self._add_entry(embed_text, k, v, cat_key, extra)
                         trig_toks, sq_toks = self._extract_retrieval_tokens(e)
                         self._trigger_tokens.append(trig_toks)
@@ -440,16 +450,34 @@ class MemorySearcher:
         top_memory: int | None = None,
         top_procedural: int | None = None,
         top_total: int | None = None,
+        context: str = "",
     ) -> list[dict[str, Any]]:
-        """Search memories using 5-signal hybrid fusion (no per-query normalization)."""
+        """Search memories using 5-signal hybrid fusion (no per-query normalization).
+
+        `context` is the recent conversation (prior user turns). When the message is
+        too thin to carry intent on its own (e.g. "go on", "move to /legacy"), the
+        topic is drawn from context so follow-ups can still retrieve.
+        """
         self._ensure_loaded()
         with self._load_lock:
             if not self._entries or self._normed_vectors is None or self._model is None:
                 return []
 
+            # NOTE: naive context prepending was measured to HURT retrieval on the
+            # 100-prompt benchmark (28% -> 22%): prior turns are often noise and
+            # dilute the query. `context` is accepted for API compatibility but is
+            # only used as a fallback when the message itself carries zero tokens.
+            if context and not _tokenize(_strip_paths(query)):
+                query = f"{context.strip()}\n{query}"
+
             query_clean = _strip_paths(query)
             query_tokens = _tokenize(query_clean)
             if not query_tokens:
+                return []
+            # Below MIN_QUERY_TOKENS the message carries too little standalone intent;
+            # retrieval on such short queries is dominated by noise. Measured to improve
+            # BOTH retrieval and rejection on the 100-prompt benchmark.
+            if len(query_tokens) < MIN_QUERY_TOKENS:
                 return []
             query_lower = query_clean.lower()
             n = len(self._entries)
@@ -486,6 +514,26 @@ class MemorySearcher:
                 + KEY_TOKEN_WEIGHT * key_scores
                 + KEYWORD_WEIGHT * keyword_scores
             )
+
+            # Episodic temporal decay — older episodes rank lower, all else equal.
+            # Uses EPISODIC_DECAY_RATE (per-day multiplier) against last_accessed,
+            # falling back to the entry's created timestamp when never accessed.
+            if EPISODIC_DECAY_RATE and EPISODIC_DECAY_RATE < 1.0:
+                _now = datetime.now()
+                for i, meta in enumerate(self._entry_meta):
+                    if meta["category"] != "episodic":
+                        continue
+                    ts = meta.get("last_accessed") or meta.get("created_at")
+                    if not ts:
+                        continue
+                    try:
+                        dt = datetime.fromisoformat(str(ts))
+                        if dt.tzinfo is not None:
+                            dt = dt.replace(tzinfo=None)
+                        days = max(0.0, (_now - dt).total_seconds() / 86400.0)
+                        scores[i] *= EPISODIC_DECAY_RATE ** days
+                    except (ValueError, TypeError):
+                        continue
 
             # Protected boost
             for i, meta in enumerate(self._entry_meta):

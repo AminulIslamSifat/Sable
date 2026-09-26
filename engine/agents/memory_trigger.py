@@ -78,19 +78,24 @@ _AGENT_CONSOLIDATION_PROMPT = (
     "  Only if the exact sequence matters for future recall.\n"
     "- procedural: HOW to do it. Workflows, behavioral rules, patterns that change future behavior.\n"
     "  NOT procedural: facts about how something works (that's semantic).\n"
-    "  Requires 'trigger' and 'keywords' fields.\n\n"
+    "  MUST include 'trigger' (when this procedure activates) and 'keywords' (2-5 terms).\n"
+    "  Write it as a reusable, actionable skill — not a narrative of what happened.\n\n"
     "DEDUP: Check CURRENT MEMORY STORE keys before adding. If a similar key exists,\n"
     "do NOT add a duplicate. Either skip or delete the old key and add an updated version.\n\n"
     'OUTPUT: Raw JSON only. No markdown fences.\n'
     'Format:\n'
     '{\n'
     '  "add": {\n'
-    '    "semantic": [{"key": "short_label", "value": "dense specific fact"}],\n'
-    '    "episodic": [{"key": "short_label", "value": "context-rich event record"}],\n'
-    '    "procedural": [{"key": "short_label", "value": "workflow or pattern description"}]\n'
+    '    "semantic": [{"key": "short_label", "value": "dense specific fact", "tags": ["t1", "t2"], "triggers": ["alt query phrasing"]}],\n'
+    '    "episodic": [{"key": "short_label", "value": "context-rich event record", "tags": ["t1"], "triggers": ["alt query phrasing"]}],\n'
+    '    "procedural": [{"key": "short_label", "value": "reusable workflow (actionable)", "trigger": "when X happens", "keywords": ["kw1", "kw2"], "tags": ["t1"], "triggers": ["alt query phrasing"]}]\n'
     '  },\n'
     '  "delete": ["exact_existing_key_to_remove"]\n'
     '}\n'
+    'Rules:\n'
+    '- procedural entries MUST have both "trigger" (string) and "keywords" (array).\n'
+    '- "triggers" = 2-4 diverse phrasings a future session might type to find this.\n'
+    '- "tags" = 3-6 lowercase domain terms.\n'
     'If nothing qualifies: {"add":{"semantic":[],"episodic":[],"procedural":[]},"delete":[]}\n'
 )
 
@@ -114,9 +119,6 @@ def _format_agent_conversation(agent, max_chars: int = _MAX_AGENT_CONV_CHARS) ->
         content = msg.get("content", "")
         if not content or role == "system":
             continue
-        # Skip the initial system prompt message
-        if role == "user" and msg is agent.messages[1] if len(agent.messages) > 1 else False:
-            pass  # Include the task message
         label = {"user": "User", "assistant": "Assistant", "tool": "Tool"}.get(role, role.capitalize())
         line = f"[{label}]: {content[:3000]}"  # Cap individual messages
         if total + len(line) > max_chars:
@@ -428,6 +430,50 @@ async def _resolve_candidates_against_memory(
     return resolved_parsed
 
 
+def _normalize_entry(entry: dict[str, Any], is_procedural: bool = False) -> dict[str, Any]:
+    """Build a full memory entry, preserving every retrieval field the LLM produced.
+
+    Without this, additions were silently reduced to {key, value}, discarding
+    source_query/tags/triggers (the entire retrieval signal) and, for procedural
+    entries, the trigger/keywords that the searcher relies on.
+    """
+    out: dict[str, Any] = {
+        "key": str(entry.get("key", "")).strip(),
+        "value": str(entry.get("value", "")).strip(),
+    }
+    # Retrieval fields (any category)
+    sq = entry.get("source_query")
+    if isinstance(sq, str) and sq.strip():
+        out["source_query"] = sq.strip()
+    tags = entry.get("tags")
+    if isinstance(tags, list):
+        clean = [str(t).lower().strip() for t in tags if str(t).strip()]
+        if clean:
+            out["tags"] = clean
+    triggers = entry.get("triggers")
+    if isinstance(triggers, list):
+        clean = [str(t).strip() for t in triggers if str(t).strip()]
+        if clean:
+            out["triggers"] = clean
+    # Ephemeral expiry
+    if entry.get("expires_at"):
+        out["expires_at"] = str(entry["expires_at"])
+    # Procedural-specific required fields
+    if is_procedural:
+        trig = str(entry.get("trigger", "")).strip()
+        kws = entry.get("keywords")
+        kws_clean = [str(k).strip() for k in kws if str(k).strip()] if isinstance(kws, list) else []
+        # Fallback: if the model omitted trigger/keywords, derive from key so the
+        # procedural entry is at least retrievable rather than dead weight.
+        if not trig:
+            trig = out["key"].replace("_", " ").strip()
+        if not kws_clean:
+            kws_clean = [w for w in out["key"].split("_") if len(w) > 2][:5]
+        out["trigger"] = trig
+        out["keywords"] = kws_clean
+    return out
+
+
 def _apply_memory_changes(result: dict[str, Any]) -> dict[str, int]:
     """Apply consolidation results to Memory.json. Returns counts."""
     adds = result.get("add", {})
@@ -496,7 +542,7 @@ def _apply_memory_changes(result: dict[str, Any]) -> dict[str, int]:
 
     # Apply additions (skip duplicates by key)
     added_count = 0
-    # Non-procedural categories go to Memory.json
+    # Non-procedural categories go to Memory.json — preserve FULL retrieval payload
     for cat in ("semantic", "episodic"):
         existing_list = existing.get(cat, [])
         new_list = adds.get(cat, [])
@@ -505,7 +551,7 @@ def _apply_memory_changes(result: dict[str, Any]) -> dict[str, int]:
         existing_keys = {e.get("key", "") for e in existing_list if isinstance(e, dict)}
         for entry in new_list:
             if isinstance(entry, dict) and entry.get("key") and entry["key"] not in existing_keys:
-                existing_list.append({"key": entry["key"], "value": entry.get("value", "")})
+                existing_list.append(_normalize_entry(entry))
                 existing_keys.add(entry["key"])
                 added_count += 1
         existing[cat] = existing_list
@@ -523,12 +569,7 @@ def _apply_memory_changes(result: dict[str, Any]) -> dict[str, int]:
         proc_keys = {e.get("key", "") for e in proc_existing if isinstance(e, dict)}
         for entry in proc_new:
             if isinstance(entry, dict) and entry.get("key") and entry["key"] not in proc_keys:
-                new_entry: dict[str, Any] = {"key": entry["key"], "value": entry.get("value", "")}
-                if entry.get("trigger"):
-                    new_entry["trigger"] = str(entry["trigger"])
-                if entry.get("keywords") and isinstance(entry["keywords"], list):
-                    new_entry["keywords"] = [str(kw) for kw in entry["keywords"]]
-                proc_existing.append(new_entry)
+                proc_existing.append(_normalize_entry(entry, is_procedural=True))
                 proc_keys.add(entry["key"])
                 added_count += 1
         _PROCEDURAL_PATH.parent.mkdir(parents=True, exist_ok=True)

@@ -829,6 +829,25 @@ async def chat(request: ChatRequest):
             pass
         _max_chars = _ms_cfg.get("max_prompt_chars", _DEFAULT_MAX_PROMPT_CHARS)
         if _ms_cfg.get("enabled", True) and _local_use_memory and len(request.message) <= _max_chars:
+            # Build a short context window from recent user turns so thin follow-ups
+            # ("go on", "move to /legacy") can still retrieve the right memory.
+            _mem_context = ""
+            try:
+                # get_messages returns newest-first (ORDER BY id DESC).
+                _ctx_msgs = get_messages(active_chat_id, limit=8)
+                _ctx_users = [
+                    (m.get("content") or "").strip()
+                    for m in _ctx_msgs
+                    if m.get("role") == "user" and (m.get("content") or "").strip()
+                ]
+                # Newest user message first; drop it if it's the one being sent now.
+                if _ctx_users and _ctx_users[0] == request.message.strip():
+                    _ctx_users = _ctx_users[1:]
+                # Keep the 2 most recent prior turns, oldest-first for readability.
+                _mem_context = " ".join(reversed(_ctx_users[:2]))[:600]
+            except Exception as _ctx_err:
+                logger.debug("[memory] context build failed: %s", _ctx_err)
+
             _mem_results = _searcher.search(
                 request.message,
                 top_k=_ms_cfg.get("top_k", 10),
@@ -836,6 +855,7 @@ async def chat(request: ChatRequest):
                 top_memory=_ms_cfg.get("top_memory"),
                 top_procedural=_ms_cfg.get("top_procedural"),
                 top_total=_ms_cfg.get("top_total"),
+                context=_mem_context,
             )
             _new_results = [r for r in _mem_results if r.get("key") and r["key"] not in _injected_memory_keys]
             if _new_results:

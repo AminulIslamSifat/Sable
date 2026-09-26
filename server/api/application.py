@@ -141,6 +141,14 @@ async def lifespan(app: FastAPI) -> Generator[None, None, None]:
     except Exception as exc:
         logger.warning("Qwen history scheduler failed to start: %s: %s", type(exc).__name__, exc)
 
+    # Sweep orphaned browsers left behind by crashed/restarted Sable processes.
+    # The governor caps live browsers; this collects the ones nobody owns.
+    try:
+        from server.browser_reaper import start_browser_reaper
+        start_browser_reaper()
+    except Exception as exc:
+        logger.warning("Browser reaper failed to start: %s: %s", type(exc).__name__, exc)
+
     # ── Auto-start Telegram Bot if token is configured ──
     _tg_bot_task = None
     try:

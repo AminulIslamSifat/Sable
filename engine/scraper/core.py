@@ -115,6 +115,7 @@ class BaseScraperEngine(ABC):
         self.show_thoughts = show_thoughts
         self.user_data_dir = os.path.expanduser("~/.local/share/ghostchat/chrome-data")
         self.chrome_process: subprocess.Popen | None = None
+        self._slot: Any = None   # browser_governor.Slot, when admitted
         self.pw: Any = None
         self.browser: Any = None
         self.context: Any = None
@@ -310,11 +311,32 @@ class BaseScraperEngine(ABC):
         )
         log_file = open(browser_log, "a", encoding="utf-8")
         from engine.process_utils import popen_kwargs
-        self.chrome_process = subprocess.Popen(
-            cmd, stdout=log_file, stderr=subprocess.STDOUT, **popen_kwargs()
+        from engine import browser_governor
+
+        # Fleet-wide admission control: at most MAX_BROWSERS live browsers
+        # across every Sable process, each capped to MAX_BYTES of memory.
+        slot = await browser_governor.acquire(
+            f"{getattr(self, 'profile_name', None) or Path(self.user_data_dir).name}"
         )
+
+        try:
+            self.chrome_process = subprocess.Popen(
+                cmd, stdout=log_file, stderr=subprocess.STDOUT, **popen_kwargs()
+            )
+        except BaseException:
+            slot.release()
+            raise
+
+        slot.attach(self.chrome_process.pid, user_data_dir=self.user_data_dir)
+        self._slot = slot
+
         self.chrome_log_file = browser_log
-        await self._wait_for_cdp_ready()
+        try:
+            await self._wait_for_cdp_ready()
+        except BaseException:
+            slot.release(kill=True)
+            self._slot = None
+            raise
 
     def _build_chrome_cmd(self, chrome_path: str) -> list[str]:
         """Build Chrome command line. Override to add provider-specific flags."""
@@ -937,6 +959,14 @@ class BaseScraperEngine(ABC):
                     self.chrome_process.kill()
         except Exception:
             pass
+        # Hand the fleet slot back so a waiting engine can start, and drop the
+        # per-browser cgroup. No-op when no slot was ever claimed.
+        if self._slot is not None:
+            try:
+                self._slot.release(kill=False)
+            except Exception:
+                pass
+            self._slot = None
         self.pw = None
         self.browser = None
         self.context = None

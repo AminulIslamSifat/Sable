@@ -208,6 +208,7 @@ class BaseBrowserEngine:
 
         self.chrome_process: subprocess.Popen | None = None
         self.chrome_log_file: str | None = None
+        self._slot: Any = None   # browser_governor.Slot, when admitted
         self.pw: Any = None
         self.browser: Any = None
         self.context: Any = None
@@ -315,13 +316,35 @@ class BaseBrowserEngine:
             cmd += ["--headless=new", "--window-size=1920,1080"]
 
         from engine.process_utils import popen_kwargs
+        from engine import browser_governor
+
+        # Reserve a fleet-wide slot BEFORE spawning. At most MAX_BROWSERS exist
+        # across every Sable process; if all are busy this waits instead of
+        # piling on another Chromium.
+        slot = await browser_governor.acquire(f"{self.spec.provider}:{self.profile_name}")
+
         self.chrome_log_file = os.path.join(self.user_data_dir, "browser.log")
         log_file = open(self.chrome_log_file, "a", encoding="utf-8")
-        self.chrome_process = subprocess.Popen(
-            cmd, stdout=log_file, stderr=subprocess.STDOUT, **popen_kwargs()
-        )
-        await self._wait_for_cdp_ready()
-        await self.connect()
+        try:
+            self.chrome_process = subprocess.Popen(
+                cmd, stdout=log_file, stderr=subprocess.STDOUT, **popen_kwargs()
+            )
+        except BaseException:
+            slot.release()
+            raise
+
+        # Bind the pid to the slot and move it into a hard memory cgroup.
+        slot.attach(self.chrome_process.pid, user_data_dir=self.user_data_dir)
+        self._slot = slot
+
+        try:
+            await self._wait_for_cdp_ready()
+            await self.connect()
+        except BaseException:
+            # Never leave a slot held by a browser that failed to come up.
+            slot.release(kill=True)
+            self._slot = None
+            raise
 
     async def _wait_for_cdp_ready(self, timeout: float = 30.0) -> None:
         deadline = time.time() + timeout
@@ -916,6 +939,14 @@ class BaseBrowserEngine:
                 kill_process_tree(self.chrome_process.pid)
             except Exception:
                 pass
+        # Return the fleet slot so another browser can start, and drop the
+        # per-browser cgroup. No-op when no slot was ever claimed.
+        if self._slot is not None:
+            try:
+                self._slot.release(kill=False)
+            except Exception:
+                pass
+            self._slot = None
 
 
 _FETCH_PATCH_JS = r"""

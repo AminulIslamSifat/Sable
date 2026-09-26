@@ -1,0 +1,53 @@
+{
+  "protected": [
+    {
+      "key": "Z.ai Aliyun captcha credentials",
+      "value": "Aliyun captcha API credentials for chat.z.ai: AccessKeyId=LTAI5tSEBwYMwVKAQGpxmvTd, SecretKey=YSKfst7GaVkXwZYvVihJsKF9r89koz, SceneId=didk33e0, prefix=no8xfe, region=sgp. API version 2023-03-05, SignatureMethod HMAC-SHA1. Z.ai signature salt: key-@@@@)))()((9))-xxxx&&&%%%%%. Z.ai JWT (acc ais.wos.002@gmail.com): eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjhiZWI4ZWMxLWNkNzMtNDE3MC1iOGMxLTQ2OWRjYTQyMGIxNSIsImVtYWlsIjoiYWlzLndvcy4wMDAyQGdtYWlsLmNvbSJ9.EX_5XMdzU3Wb5vupgAtc4UKNWdgiAAqOwFKWC-Qb-ZXIgBn1so5qKSVhK2. User ID: 8beb8ec1-cd73-4170-b8c1-469dca420b15.",
+      "source_query": "check out test/test_data folder\n\nread teh files, now check the memory and tell if the ground truth is really accurate or not.\n\nmemory are at Brain/Memory.json",
+      "tags": [
+        "aliyun",
+        "captcha",
+        "credentials",
+        "api_key",
+        "jwt"
+      ],
+      "triggers": [
+        "Z.ai Aliyun captcha credentials",
+        "aliyun captcha api credentials",
+        "chat.z.ai credentials"
+      ]
+    },
+    {
+      "key": "github_pat_sable_mcp",
+      "value": "GitHub PAT used by Sable github MCP server: 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",
+      "source_query": "check out test/test_data folder\n\nread teh files, now check the memory and tell if the ground truth is really accurate or not.\n\nmemory are at Brain/Memory.json",
+      "tags": [
+        "github",
+        "pat",
+        "mcp",
+        "token"
+      ],
+      "triggers": [
+        "github_pat_sable_mcp",
+        "sable mcp github token",
+        "github personal access token"
+      ]
+    },
+    {
+      "key": "aliyun_captcha_creds",
+      "value": "AccessKeyId, SecretKey, SceneId=didk33e0, prefix=no8xfe"
+    },
+    {
+      "key": "z_ai_aliyun_captcha_credentials",
+      "value": "Aliyun captcha API credentials for chat.z.ai: AccessKeyId=LTAI5tSEBwYMwVKAQGpxmvTd, SecretKey=YSKfst7GaVkXwZYvVihJsKF9r89koz, SceneId=didk33e0, prefix=no8xfe, region=sgp. API version 2023-03-05, SignatureMethod HMAC-SHA1. Z.ai signature salt: key-@@@@)))()((9))-xxxx&&&%%%%%. Z.ai JWT (acc ais.wos.002@gmail.com): eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjhiZWI4ZWMxLWNkNzMtNDE3MC1iOGMxLTQ2OWRjYTQyMGIxNSIsImVtYWlsIjoiYWlzLndvcy4wMDAyQGdtYWlsLmNvbSJ9.EX_5XMdzU3Wb5vupgAtc4UKNWdgiAAqOwFKWC-Qb-ZXIgBn1so5qKSVhK2. User ID: 8beb8ec1-cd73-4170-b8c1-469dca420b15."
+    },
+    {
+      "key": "chatgpt_account_email",
+      "value": "ChatGPT account email observed during network capture: ais.wos.001@gmail.com (free plan, Google OAuth authenticated)"
+    },
+    {
+      "key": "deepseek_chat_bearer_token_2026_09_12",
+      "value": "DeepSeek chat session Bearer token observed 2026-09-12: authorization: Bearer QJYMtpUd4rnTfk9wxhnaWmFxmooU9TwWxF9lp7wOpy8BXsTQPxzL1AnF0U8mGW77. Also associated session artifacts from the same curl: chat_session_id 5f888c99-134a-4d47-a4d2-0f325c19f06a, ds_session_id 77bd72db27634486b97649d06a38ebd3, cf_clearance cookie, aws-waf-token 22886959-d610-440f-93bc-6109ab25fb93, x-ds-pow-response base64 blob targeting /api/v0/chat/completion. This token authenticates Sifat's DeepSeek account — treat as login credential; do not expose publicly. User was warned to rotate it. NEVER delete this entry even if superseded."
+    }
+  ]
+}
