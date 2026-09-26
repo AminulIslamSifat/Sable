@@ -79,6 +79,42 @@ def _cmdline(pid: int) -> str:
         return ""
 
 
+def _is_sable_confined(pid: int) -> bool:
+    """True iff *pid* lives in Sable's own browser cgroup.
+
+    This is the definitive "Sable spawned this" marker: ``_confine()`` moves
+    every browser Sable launches into
+    ``<delegated>/sable-browsers/browser-<pid>``. A process in any other
+    cgroup — a user session scope, a manually-started automation daemon, an
+    outside Chromium — was NOT spawned by Sable and must never be reaped, no
+    matter what its command line happens to contain.
+    """
+    try:
+        return "/sable-browsers/" in Path(f"/proc/{pid}/cgroup").read_text()
+    except Exception:
+        return False
+
+
+def _proc_age(pid: int) -> float:
+    """Seconds since *pid* started, or -1.0 if it can't be determined."""
+    try:
+        btime = None
+        with open("/proc/stat") as f:
+            for line in f:
+                if line.startswith("btime "):
+                    btime = float(line.split()[1])
+                    break
+        if btime is None:
+            return -1.0
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        fields = stat[stat.rfind(")") + 2:].split()
+        start_ticks = float(fields[19])  # field 22 = starttime
+        hz = os.sysconf("SC_CLK_TCK")
+        return time.time() - (btime + start_ticks / hz)
+    except Exception:
+        return -1.0
+
+
 def find_browser_pids(user_data_dir: str, *, roots_only: bool = True) -> list[int]:
     """Every live browser process bound to *user_data_dir*.
 
@@ -561,22 +597,35 @@ def reap_orphans() -> int:
     now = time.time()
 
     killed = 0
-    # A Sable browser is any chromium process whose profile lives under a
-    # Sable system dir — matched by path so we never touch the user's Zen.
+    # A Sable browser is one Sable actually spawned: its cgroup is under
+    # ``sable-browsers/``. We NEVER identify browsers by command-line string —
+    # that matched unrelated processes (a dev daemon whose path merely
+    # contained "sable", an outside Chromium on a similar profile path) and
+    # reaped them. Cgroup membership is the only trustworthy ownership signal.
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit():
             continue
         pid = int(entry.name)
+        if not _is_sable_confined(pid):
+            continue  # not Sable's child — leave it alone, full stop
         cmd = _cmdline(pid)
-        if not cmd or "--user-data-dir=" not in cmd:
+        if not cmd:
             continue
-        if "browser-data-acc" not in cmd and "sable" not in cmd.lower():
+        # Belt-and-suspenders: it must also be an actual browser process.
+        if not any(b in cmd.lower() for b in ("helium", "chrome", "chromium")):
             continue
         if "--type=" in cmd:
             continue  # helpers die with their group leader
         if pid in tracked and _pid_alive(pid):
             continue
-        # Orphan: no live slot owns it.
+        # Never reap a browser younger than the grace window — a sweep landing
+        # mid-startup would otherwise kill a healthy process. (``grace``/``now``
+        # were declared but never checked before, so even brand-new browsers
+        # were fair game.)
+        age = _proc_age(pid)
+        if 0.0 <= age < grace:
+            continue
+        # Orphan: confined to Sable but no live slot owns it.
         ppid = 0
         try:
             for line in Path(f"/proc/{pid}/status").read_text().splitlines():
