@@ -502,9 +502,31 @@
 .sn-reader-note-anchor { margin: 4px 0; }
 .sn-reader-empty { margin-top: 40px; }
 
-/* ── Reader: quick-note popup ───────────────────────────────────────────── */
+/* ── Reader: quick-note launcher + popup ────────────────────────────────── */
+/* Floating button beside the Study AI launcher (bottom-right of the reader). */
+.rdr-quicknote {
+  position: absolute;
+  right: 62px;
+  bottom: 22px;
+  z-index: 60;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--accent-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  transition: transform 0.15s, border-color 0.15s, color 0.15s;
+}
+.rdr-quicknote:hover { transform: translateY(-1px); border-color: var(--accent); color: var(--accent); }
+.rdr-quicknote .icon-lucide { width: 13px; height: 13px; }
+/* Opens up-and-left from the floating launcher. */
 .rdr-note-pop {
-  position: absolute; top: 58px; right: 16px; z-index: 30;
+  position: absolute; right: 22px; bottom: 58px; z-index: 61;
   width: 340px;
   background: var(--panel); border: 1px solid var(--border);
   border-radius: 12px; overflow: hidden;

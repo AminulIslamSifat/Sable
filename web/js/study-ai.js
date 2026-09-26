@@ -49,7 +49,13 @@
   }
 
   const docBusy = {};        // docId → true while a turn streams (adapter-level)
-  function threadIdFor(docId) { return window.studyChat.activeThread(docId); }
+  function threadIdFor(docId) {
+    // A surface may pin its thread (a note has exactly one, and the id can
+    // change when an unsaved note is first saved) — resolve it live.
+    const ctx = surfaceCtx[docId];
+    if (ctx && typeof ctx.threadId === 'function') return ctx.threadId();
+    return window.studyChat.activeThread(docId);
+  }
   function isBusy(docId) {
     // Adapter-level flag OR the bridge's own busy map — either means a turn is
     // live for this doc, so an async history paint must not wipe it.
@@ -108,7 +114,22 @@
   }
 
   // -- Sending ----------------------------------------------------------------
+  /** Reshape a turn through the surface adapter (note AI overrides grounding). */
+  function adaptTurn(ctx, args) {
+    if (typeof ctx.buildContext !== 'function') return args;
+    const out = ctx.buildContext(args);
+    if (!out || typeof out !== 'object') return args;
+    return {
+      text: out.text != null ? out.text : args.text,
+      context: out.context || args.context,
+    };
+  }
+
   function buildTurn(ctx, opts) {
+    // Adapter hook — a non-document surface (note AI) supplies its own visible
+    // text + study_context. The turn shape is otherwise identical, which is the
+    // whole point: one surface, different grounding payload.
+    if (typeof ctx.buildTurn === 'function') return ctx.buildTurn(ctx, opts || {});
     const docId = ctx.getDocId();
     const sctx = surfaceCtx[docId] || {};
     const selection = (opts.selection != null ? opts.selection : (sctx.getSelection && sctx.getSelection())) || '';
@@ -121,7 +142,7 @@
     if (scope === 'selection' && selection) {
       text += '\n\n> ' + selection.replace(/\n/g, '\n> ').slice(0, 400);
     }
-    return {
+    return adaptTurn(ctx, {
       text,
       context: {
         doc_id: docId,
@@ -131,7 +152,8 @@
         selection,
         ...configPayload(),
       },
-    };
+      page, selection, scope, ground: false,
+    });
   }
 
   async function runTurn(ctx, opts) {
@@ -144,7 +166,7 @@
     emitBusy(docId, true);
     await window.studyChat.send({
       docId,
-      threadId: window.studyChat.ensureThread(docId),
+      threadId: threadIdFor(docId) || window.studyChat.ensureThread(docId),
       text,
       context,
       pane: host,
@@ -169,22 +191,47 @@
     surfaceCtx[docId] = ctx;
     const compact = !!(opts && opts.compact);
 
+    // Context drives every visible difference between the document surface and
+    // the note surface. The interaction — thread, composer, attachments, tools —
+    // is identical; only the grounding payload and these labels change.
+    const caps = Object.assign(
+      { page: true, pdf: true, selection: true, paste: true, newChat: true },
+      ctx.caps || {},
+    );
+    const title = (ctx.getTitle && ctx.getTitle()) || 'Study AI';
+    const icon = ctx.icon || 'book-open';
+    const placeholder = (ctx.getPlaceholder && ctx.getPlaceholder()) || 'Ask about this document…';
+    const actions = Array.isArray(ctx.actions) && ctx.actions.length ? ctx.actions : null;
+
     const el = document.createElement('div');
     el.className = 'sa-view' + (compact ? ' sa-compact' : ' sa-full');
     el.innerHTML =
       '<div class="sa-head">' +
-        '<span class="sa-head-icon"><i data-lucide="book-open" class="icon-lucide"></i></span>' +
-        '<span class="sa-head-title">Study AI</span>' +
+        '<span class="sa-head-icon"><i data-lucide="' + escAttr(icon) + '" class="icon-lucide"></i></span>' +
+        '<span class="sa-head-title">' + escAttr(title) + '</span>' +
         '<div class="sa-head-spacer"></div>' +
-        '<button class="sa-icon-btn" data-sa="new" title="New chat"><i data-lucide="plus" class="icon-lucide"></i></button>' +
+        (actions
+          ? '<div class="sa-actions-wrap">' +
+              '<button class="sa-icon-btn" data-sa="actions" title="AI actions"><i data-lucide="sparkles" class="icon-lucide"></i></button>' +
+              '<div class="sa-actions-menu hidden" data-sa-menu>' +
+                actions.map((a) =>
+                  '<button data-sa-act="' + escAttr(a[0]) + '"><i data-lucide="' + escAttr(a[2]) + '" class="icon-lucide"></i>' + escAttr(a[1]) + '</button>').join('') +
+                (ctx.groundOption
+                  ? '<div class="sa-actions-sep"></div>' +
+                    '<label class="sa-actions-ground"><input type="checkbox" data-sa-ground> Ground in referenced documents</label>'
+                  : '') +
+              '</div>' +
+            '</div>'
+          : '') +
+        (caps.newChat ? '<button class="sa-icon-btn" data-sa="new" title="New chat"><i data-lucide="plus" class="icon-lucide"></i></button>' : '') +
         (compact ? '<button class="sa-icon-btn" data-sa="close" title="Close"><i data-lucide="x" class="icon-lucide"></i></button>' : '') +
       '</div>' +
       '<div class="sa-thread" data-sa-thread></div>' +
       '<div class="sa-attachments empty" data-sa-atts></div>' +
       '<div class="sa-composer">' +
-        '<button class="sa-attach-btn" data-sa="page" title="Attach current page"><i data-lucide="file-image" class="icon-lucide"></i></button>' +
-        '<button class="sa-attach-btn" data-sa="pdf" title="Attach whole document"><i data-lucide="file-text" class="icon-lucide"></i></button>' +
-        '<input class="sa-input" data-sa-input type="text" placeholder="Ask about this document…">' +
+        (caps.page ? '<button class="sa-attach-btn" data-sa="page" title="Attach current page"><i data-lucide="file-image" class="icon-lucide"></i></button>' : '') +
+        (caps.pdf ? '<button class="sa-attach-btn" data-sa="pdf" title="Attach whole document"><i data-lucide="file-text" class="icon-lucide"></i></button>' : '') +
+        '<input class="sa-input" data-sa-input type="text" placeholder="' + escAttr(placeholder) + '">' +
         '<button class="sa-send" data-sa="send" title="Send"><i data-lucide="send" class="icon-lucide"></i></button>' +
         '<button class="sa-stop" data-sa="stop" title="Stop" style="display:none;"><i data-lucide="square" class="icon-lucide"></i></button>' +
       '</div>';
@@ -333,6 +380,9 @@
       const page = (pending && pending.page) || (stagedPage && stagedPage.page)
         || (sctx.getCurrentPage ? sctx.getCurrentPage() : 1);
       const scope = (pending && pending.scope) || (stagedPdf ? 'doc' : (stagedPage ? 'page' : (selection ? 'selection' : 'doc')));
+      // Ground checkbox (note surface only) — read live before clearing chips.
+      const groundEl = el.querySelector('[data-sa-ground]');
+      const ground = !!(groundEl && groundEl.checked);
       view.pending = [];
       view.renderAttachments();
       // Prefix the visible message with what it is grounded on, so the sent
@@ -341,20 +391,31 @@
       if (stagedPdf) visible = '[Whole document]\n' + text;
       else if (stagedPage) visible = `[Page ${page}]\n` + text;
       else if (scope === 'selection' && selection) visible = '> ' + selection.replace(/\n/g, '\n> ').slice(0, 400) + '\n\n' + text;
+      // Adapter hook: let a non-document surface (note) reshape the visible
+      // text and study_context. Everything else (thread, stream, tool cards)
+      // is shared, which is why the two AIs look and behave identically.
+      let context = {
+        doc_id: docId,
+        action: (pending && pending.action) || 'ask',
+        scope, page, selection,
+        ...configPayload(),
+      };
+      if (typeof ctx.buildContext === 'function') {
+        const out = ctx.buildContext({ text: visible, context, page, selection, scope, ground });
+        if (out && typeof out === 'object') {
+          if (out.text != null) visible = out.text;
+          if (out.context) context = out.context;
+        }
+      }
       // Toggle this surface's Send ⇄ Stop for the duration of the turn (the
       // send path here bypasses runTurn, which is what emits for the card).
       emitBusy(docId, true);
       try {
         await window.studyChat.send({
           docId,
-          threadId: window.studyChat.ensureThread(docId),
+          threadId: threadIdFor(docId) || window.studyChat.ensureThread(docId),
           text: visible,
-          context: {
-            doc_id: docId,
-            action: (pending && pending.action) || 'ask',
-            scope, page, selection,
-            ...configPayload(),
-          },
+          context,
           files: files.length ? files : undefined,
           images: previews.length ? previews : undefined,
           pane: body,
@@ -371,6 +432,21 @@
     el.addEventListener('click', (e) => {
       const chip = e.target.closest('[data-sa-chip]');
       if (chip) { view.pending.splice(parseInt(chip.dataset.saChip, 10), 1); view.renderAttachments(); return; }
+      // An AI action from the menu — same flow as typing, but with a preset
+      // action + label. Used by the note surface (Enhance / Summarize / …).
+      const actBtn = e.target.closest('[data-sa-act]');
+      if (actBtn) {
+        const menu = el.querySelector('[data-sa-menu]');
+        if (menu) menu.classList.add('hidden');
+        const code = actBtn.dataset.saAct;
+        const spec = (actions || []).find((a) => a[0] === code) || [code, code];
+        view.setTurn({ action: code, label: spec[1], question: code === 'ask' ? '' : spec[1] });
+        if (code === 'ask') { input.focus(); return; }
+        // Preset actions send immediately — identical to the document quick
+        // actions, so both surfaces behave the same way.
+        runTurn(surfaceCtx[docId], { action: code, question: spec[1] });
+        return;
+      }
       const btn = e.target.closest('[data-sa]');
       if (!btn) return;
       const act = btn.dataset.sa;
@@ -378,8 +454,19 @@
       else if (act === 'stop') stopStream(docId);
       else if (act === 'page') view.stagePage();
       else if (act === 'pdf') view.stageDoc();
+      else if (act === 'actions') {
+        const menu = el.querySelector('[data-sa-menu]');
+        if (menu) menu.classList.toggle('hidden');
+      }
       else if (act === 'new') { resetThread(docId); }
       else if (act === 'close' && opts && opts.onClose) opts.onClose();
+    });
+    // Click outside the actions menu closes it.
+    el.addEventListener('mousedown', (e) => {
+      const menu = el.querySelector('[data-sa-menu]');
+      if (menu && !menu.classList.contains('hidden') && !e.target.closest('.sa-actions-wrap')) {
+        menu.classList.add('hidden');
+      }
     });
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendCurrent(); }
@@ -419,6 +506,79 @@
   function createPane(ctx) {
     const { el, view } = buildSurface(ctx, { compact: false });
     return { el, view };
+  }
+
+  /**
+   * Mount the shared surface into an ARBITRARY container as a floating panel.
+   * The note editor uses this to host the exact same UI the document reader
+   * shows — same thread, composer, attachments, tool cards — instead of the
+   * one-off `.sn-ai-*` popup it used to carry. Only the context adapter differs.
+   *
+   * Returns { el, view, open, close, destroy }.
+   */
+  function mountSurface(ctx, container, opts) {
+    if (!container) return null;
+    opts = opts || {};
+    // `launcher: false` mounts ONLY the popup — the caller drives it with its
+    // own trigger button (the note editor's header "AI" button).
+    const showLauncher = opts.launcher !== false;
+    const wrap = document.createElement('div');
+    wrap.className = 'sa-float sa-float-inline' + (showLauncher ? '' : ' sa-float-headless');
+    wrap.innerHTML =
+      (showLauncher
+        ? '<button class="sa-float-btn" data-sa-launch title="' + (opts.launchTitle || 'Study AI') + '">' +
+            '<i data-lucide="' + (ctx.icon || 'book-open') + '" class="icon-lucide"></i>' +
+          '</button>'
+        : '') +
+      '<div class="sa-popup hidden" data-sa-popup></div>';
+    container.appendChild(wrap);
+    if (window.lucide) window.lucide.createIcons({ nodes: wrap.querySelectorAll('[data-lucide]') });
+
+    const popup = wrap.querySelector('[data-sa-popup]');
+    const btn = wrap.querySelector('[data-sa-launch]');
+    let built = null;
+
+    function open() {
+      loadModels(ctx);
+      if (!built) {
+        built = buildSurface(ctx, Object.assign({ compact: true, onClose: close }, opts || {}));
+        popup.appendChild(built.el);
+      }
+      popup.classList.remove('hidden');
+      // Headless mounts have no launcher button — guard it so open() never
+      // throws partway (which used to leave the popup half-built and abort
+      // any action triggered right after opening).
+      if (btn) btn.classList.add('active');
+      renderThread(popup.querySelector('[data-sa-thread]'), ctx.getDocId(), { force: true });
+      if (window.lucide) window.lucide.createIcons({ nodes: popup.querySelectorAll('[data-lucide]') });
+      if (built && built.view && built.view.input) built.view.input.focus();
+      document.addEventListener('mousedown', onDocDown, true);
+      document.addEventListener('keydown', onDocKey, true);
+    }
+    function close() {
+      popup.classList.add('hidden');
+      if (btn) btn.classList.remove('active');
+      document.removeEventListener('mousedown', onDocDown, true);
+      document.removeEventListener('keydown', onDocKey, true);
+    }
+    function onDocDown(e) { if (!wrap.contains(e.target)) close(); }
+    function onDocKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(); } }
+    function destroy() { try { close(); } catch {} try { wrap.remove(); } catch {} built = null; }
+    if (btn) btn.addEventListener('click', () => (popup.classList.contains('hidden') ? open() : close()));
+
+    // Let an external trigger (header button) run a preset action through the
+    // SAME flow the in-popup actions menu uses.
+    function runAction(code) {
+      try { open(); } catch { /* still attempt the turn */ }
+      const spec = (ctx.actions || []).find((a) => a[0] === code) || [code, code];
+      if (code === 'ask') { try { built.view.input.focus(); } catch { /* noop */ } return; }
+      // Resolve the surface context from THIS mount (not a docId lookup), so a
+      // note whose id changed after first save still routes correctly.
+      const surfaceCtxRef = surfaceCtx[ctx.getDocId()] || ctx;
+      runTurn(surfaceCtxRef, { action: code, question: spec[1] });
+    }
+
+    return { el: wrap, open, close, destroy, runAction, getView: () => (built && built.view) || null };
   }
 
   function mountFloating(ctx) {
@@ -465,8 +625,8 @@
   }
 
   window.studyAI = {
-    mountFloating, createPane, resetThread, setThread, getThread, subscribe,
-    renderThread, updateStream, loadModels, setConfig, configPayload,
+    mountFloating, mountSurface, createPane, resetThread, setThread, getThread,
+    subscribe, renderThread, updateStream, loadModels, setConfig, configPayload,
     askAction, askFollowup, stopStream, isBusy, onBusy, currentCaps,
   };
 })();

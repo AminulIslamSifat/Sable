@@ -255,7 +255,7 @@
     return {
       id: '', title: '', content: '', refs: [], tags: [], pinned: false,
       created: 0, dirty: false, saving: false, mode: 'edit', stack: [],
-      aiAbort: null, aiBusy: false, kind: 'editor', host: null,
+      kind: 'editor', host: null,
     };
   }
 
@@ -358,6 +358,9 @@
     wireEditor(host);
     wireRefBarDelegation();
     renderAll();
+    // Mount the SHARED Study AI surface into this editor — same UI the document
+    // reader shows, grounded on the note instead of a document.
+    mountNoteAi();
     if (window.lucide) window.lucide.createIcons();
     const ta = host.querySelector('#snBody');
     if (ta) ta.focus();
@@ -385,6 +388,17 @@
           <button class="sn-bar-btn" data-sn="export" title="Export .md"><i data-lucide="download" class="icon-lucide"></i></button>
           <button class="sn-bar-btn sn-danger" data-sn="delete" title="Delete"><i data-lucide="trash-2" class="icon-lucide"></i></button>
           <button class="study-room-action primary sn-save" data-sn="save">${isNew ? 'Create' : 'Save'}</button>
+          <div class="sn-ai-wrap">
+            <button class="sn-ai-btn" data-sn="ai-menu"><i data-lucide="sparkles" class="icon-lucide"></i> AI</button>
+            <div class="sn-ai-menu hidden" id="snAiMenu">
+              ${AI_ACTIONS.map(([a, label, icon]) =>
+                `<button data-sn-ai="${a}"><i data-lucide="${icon}" class="icon-lucide"></i>${label}</button>`).join('')}
+              <div class="sn-ai-menu-sep"></div>
+              <label class="sn-ai-ground">
+                <input type="checkbox" id="snAiGround"> Ground in referenced documents
+              </label>
+            </div>
+          </div>
         </div>
 
         <div class="sn-refbar" id="snRefBar">
@@ -419,43 +433,16 @@
             <button data-sn-fmt="mermaid" title="Mermaid diagram"><i data-lucide="git-branch" class="icon-lucide"></i></button>
             <button data-sn-fmt="table" title="Table"><i data-lucide="table" class="icon-lucide"></i></button>
           </div>
-          <div class="sn-bar-spacer"></div>
-          <div class="sn-ai-wrap">
-            <button class="sn-ai-btn" data-sn="ai-menu"><i data-lucide="sparkles" class="icon-lucide"></i> AI</button>
-            <div class="sn-ai-menu hidden" id="snAiMenu">
-              ${AI_ACTIONS.map(([a, label, icon]) =>
-                `<button data-sn-ai="${a}"><i data-lucide="${icon}" class="icon-lucide"></i>${label}</button>`).join('')}
-              <div class="sn-ai-menu-sep"></div>
-              <label class="sn-ai-ground">
-                <input type="checkbox" id="snAiGround"> Ground in referenced documents
-              </label>
-            </div>
-          </div>
         </div>
 
         <div class="sn-body-wrap" id="snBodyWrap">
           <textarea class="sn-body" id="snBody" placeholder="Start writing… markdown, math, mermaid diagrams and callouts all work.">${esc(ed.content)}</textarea>
           <div class="sn-preview" id="snPreview"></div>
         </div>
-      </div>
-      <!-- Note AI runs in its own floating popup, detached from the editor
-           layout so it never reflows or covers the text being written. -->
-      <div class="sn-ai-pop hidden" id="snAiCard">
-        <div class="sn-ai-card-head">
-          <span class="sn-ai-pop-icon"><i data-lucide="sparkles" class="icon-lucide"></i></span>
-          <span id="snAiCardTitle">AI</span>
-          <div class="sn-bar-spacer"></div>
-          <button class="sn-bar-btn" data-sn="ai-revert" title="Revert"><i data-lucide="undo-2" class="icon-lucide"></i></button>
-          <button class="sn-bar-btn" data-sn="ai-apply" title="Replace note"><i data-lucide="check" class="icon-lucide"></i></button>
-          <button class="sn-bar-btn" data-sn="ai-insert" title="Insert below"><i data-lucide="plus" class="icon-lucide"></i></button>
-          <button class="sn-bar-btn sn-ai-stop" data-sn="ai-stop" title="Stop" style="display:none;"><i data-lucide="square" class="icon-lucide"></i></button>
-          <button class="sn-bar-btn" data-sn="ai-close"><i data-lucide="x" class="icon-lucide"></i></button>
-        </div>
-        <div class="sn-ai-card-body" id="snAiBody"></div>
-        <div class="sn-ai-card-foot" id="snAiFoot">
-          <input class="sn-ai-input" id="snAiAsk" placeholder="Ask about this note…">
-          <button class="sn-bar-btn" data-sn="ai-ask-send" title="Send"><i data-lucide="send" class="icon-lucide"></i></button>
-        </div>
+        <!-- The note AI is the SAME Study AI surface the document reader uses.
+             It floats at the bottom-right of the editor, exactly like the
+             document AI launcher, so the two behave identically. -->
+        <div class="sn-ai-slot" id="snAiSlot"></div>
       </div>
       `;
   }
@@ -493,11 +480,8 @@
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); saveNote(); return; }
     if (e.key === 'Escape') {
-      const card = ed.host.querySelector('#snAiCard');
-      if (card && !card.classList.contains('hidden')) {
-        card.classList.add('hidden');
-        return;
-      }
+      // The shared surface owns its own Escape handling when open; if it is
+      // closed, Escape closes the editor as before.
       close();
     }
   }
@@ -509,16 +493,16 @@
     const fmtEl = e.target.closest('[data-sn-fmt]');
     if (fmtEl) { applyFormat(fmtEl.dataset.snFmt); return; }
 
+    // A preset AI action from the header menu (Enhance / Summarize / …).
     const aiEl = e.target.closest('[data-sn-ai]');
     if (aiEl) { runAi(aiEl.dataset.snAi); return; }
 
     const el = e.target.closest('[data-sn]');
     if (el) { handleEditorAction(el.dataset.sn); return; }
 
-    // Click outside the AI menu closes it.
-    const menu = ed.host.querySelector('#snAiMenu');
-    if (menu && !menu.classList.contains('hidden')
-        && !e.target.closest('.sn-ai-wrap')) {
+    // Click outside the header AI menu closes it.
+    const menu = ed && ed.host && ed.host.querySelector('#snAiMenu');
+    if (menu && !menu.classList.contains('hidden') && !e.target.closest('.sn-ai-wrap')) {
       menu.classList.add('hidden');
     }
   }
@@ -531,13 +515,10 @@
       case 'delete': deleteNote(); break;
       case 'export': exportNote(); break;
       case 'add-ref': openPicker({ onPick: addRefs }); break;
-      case 'ai-menu': toggleAiMenu(); break;
-      case 'ai-apply': applyAi('replace'); break;
-      case 'ai-insert': applyAi('insert'); break;
-      case 'ai-revert': revertAi(); break;
-      case 'ai-close': closeAiPopup(); break;
-      case 'ai-stop': stopAi(); break;
-      case 'ai-ask-send': sendAiAsk(); break;
+ // Header AI button: shows the action menu. Picking any action opens the
+ // shared popup (same one the document AI uses) and runs it there.
+ case 'ai-menu': toggleAiMenu(); break;
+ case 'ai-revert': revertAi(); break;
     }
   }
 
@@ -840,102 +821,106 @@
 
   // ── AI ─────────────────────────────────────────────────────────────────────
 
-  function toggleAiMenu() {
-    const menu = ed.host.querySelector('#snAiMenu');
-    menu.classList.toggle('hidden');
+  // The note AI is the SAME Study AI surface the document reader uses. There is
+  // no separate note UI: window.studyAI.mountSurface renders the shared thread,
+  // composer, attachments and tool cards, and this adapter only tells it how to
+  // ground a turn (note_id instead of a document scope). That is why the two AIs
+  // look and behave identically — because they are the same thing.
+
+  let aiSurface = null;      // the mounted shared surface (one per open editor)
+  let aiSnapshot = null;     // {title, content} captured before an edit turn
+
+  /**
+   * Thread id for this note's AI conversation. Delegates to the bridge's own
+   * thread management so "New chat" creates a fresh persisted thread per note
+   * (exactly like a document) instead of a single hardcoded id.
+   */
+  function noteDocKey() { return 'note:' + (ed.id || 'new'); }
+  function noteThreadKey() {
+    if (!ed || !window.studyChat) return 'study-note-new';
+    return window.studyChat.ensureThread(noteDocKey());
+  }
+
+  /** Context adapter the shared surface calls for this note. */
+  function noteAiCtx() {
+    return {
+      getDocId: noteDocKey,
+      getTitle: () => ed.title || 'Untitled note',
+      icon: 'notebook-pen',
+      getPlaceholder: () => 'Ask about this note…',
+      actions: AI_ACTIONS,
+      groundOption: true,
+      threadId: noteThreadKey,
+      // loadModels() fetches /api/study/ai/models + config through ctx.api.
+      api: (path, o) => apiGet(path, o),
+      // A note has no pages/PDF of its own — the composer is the only input.
+      // New chat is enabled: the bridge creates a fresh thread per note.
+      caps: { page: false, pdf: false, selection: false, paste: false, newChat: true },
+      buildContext: ({ text, context, ground }) => {
+        const action = (context && context.action) || 'ask';
+        // Snapshot before the first edit of a turn so Revert can restore it.
+        if (action !== 'ask' && !aiSnapshot) {
+          aiSnapshot = { title: ed.title, content: ed.content };
+        }
+        return {
+          text,
+          context: Object.assign({}, context, {
+            doc_id: '',
+            note_id: ed.id || 'new',
+            action,
+            question: action === 'ask' ? text : '',
+            note_content: ed.content || '',
+            ground: !!ground,
+          }),
+        };
+      },
+    };
   }
 
   /**
-   * Show the note-AI popup.
-   *
-   * It is a fixed panel pinned to the bottom-right (like the document Study AI
-   * launcher) so it floats above the editor without reflowing the text or the
-   * toolbar. Opening it once remembers its position for the session.
+   * Mount (once) the shared surface into the editor. Headless — no launcher of
+   * its own; the header "AI" button opens it, exactly like the document AI
+   * popup. Same markup, same actions menu (including New chat), same design.
    */
-  function openAiPopup(card) {
-    card.classList.remove('hidden');
-    // Only auto-position on first open; afterwards the user may have moved it.
-    if (!card.dataset.positioned) {
-      card.dataset.positioned = '1';
-    }
+  function mountNoteAi() {
+    if (!ed || !ed.host || aiSurface) return;
+    const slot = ed.host.querySelector('#snAiSlot');
+    if (!slot || !window.studyAI || !window.studyAI.mountSurface) return;
+    aiSurface = window.studyAI.mountSurface(noteAiCtx(), slot, { launcher: false });
   }
 
-  function closeAiPopup() {
-    stopAi();
-    const card = ed && ed.host && ed.host.querySelector('#snAiCard');
-    if (card) card.classList.add('hidden');
+  function teardownNoteAi() {
+    if (aiSurface && aiSurface.destroy) { try { aiSurface.destroy(); } catch { /* noop */ } }
+    aiSurface = null;
   }
 
-  /** Abort the in-flight note AI stream (Stop button). */
+  /** Open the shared popup (header AI button or an action from the menu). */
+  function toggleAiMenu() {
+    const menu = ed && ed.host && ed.host.querySelector('#snAiMenu');
+    if (menu) menu.classList.toggle('hidden');
+  }
+  function openAiPopup() { if (aiSurface) aiSurface.open(); }
+  function closeAiPopup() { if (aiSurface) aiSurface.close(); }
   function stopAi() {
-    if (ed && ed.aiThread && window.studyChat) {
-      try { window.studyChat.stop(ed.aiThread); } catch { /* noop */ }
-    }
+    if (ed && window.studyChat) { try { window.studyChat.stop(noteThreadKey()); } catch { /* noop */ } }
   }
-
-  /** Show Stop while a note AI turn streams, hide it otherwise. */
-  function setAiStopVisible(on) {
-    if (!ed || !ed.host) return;
-    const btn = ed.host.querySelector('[data-sn="ai-stop"]');
-    if (btn) btn.style.display = on ? '' : 'none';
-  }
-
-  /** Thread id for this note's AI conversation (persisted per note). */
-  function noteThreadKey() { return 'note-' + (ed.id || 'new'); }
-
-  async function runAi(action) {
-    ed.host.querySelector('#snAiMenu').classList.add('hidden');
-    const card = ed.host.querySelector('#snAiCard');
-    const title = card.querySelector('#snAiCardTitle');
-    const body = card.querySelector('#snAiBody');
-    const foot = card.querySelector('#snAiFoot');
-    const label = (AI_ACTIONS.find((a) => a[0] === action) || [action, action])[1];
-
-    openAiPopup(card);
-    title.textContent = label;
-    // Edits now land in the file through the study_note tool, so the old
-    // "apply / insert" pair (which re-applied returned text) is meaningless —
-    // keep only Revert. "ask" answers in prose and touches nothing.
-    card.querySelectorAll('[data-sn="ai-apply"], [data-sn="ai-insert"]')
-      .forEach((b) => { b.style.display = 'none'; });
-    foot.hidden = false;
-
-    // Render this note's persisted thread so reopening the popup shows history.
-    renderNoteThread(body);
-
-    if (action === 'ask') {
-      setTimeout(() => { const ask = card.querySelector('#snAiAsk'); if (ask) ask.focus(); }, 40);
+  /** Run a preset AI action from the header menu — opens the popup and sends. */
+  function runAi(action) {
+    const menu = ed && ed.host && ed.host.querySelector('#snAiMenu');
+    if (menu) menu.classList.add('hidden');
+    if (!aiSurface) {
+      console.warn('[note-ai] aiSurface is null — mountNoteAi may have failed', { ed: !!ed, host: !!(ed && ed.host), studyAI: !!window.studyAI });
+      notify('AI is not ready yet');
       return;
     }
-
-    // Snapshot for revert before any edit lands.
-    ed.stack.push({ title: ed.title, content: ed.content });
-    const ground = !!(ed.host.querySelector('#snAiGround') || {}).checked;
-    await streamAi({ action, content: ed.content, ground }, body, action);
+    console.log('[note-ai] runAi:', action, 'surface:', !!aiSurface);
+    try { aiSurface.open(); } catch (e) { console.error('[note-ai] open() threw:', e); }
+    if (action && action !== 'ask') {
+      try { aiSurface.runAction(action); } catch (e) { console.error('[note-ai] runAction() threw:', e); }
+    }
   }
-
-  async function sendAiAsk() {
-    const input = ed.host.querySelector('#snAiAsk');
-    const q = input.value.trim();
-    if (!q) return;
-    input.value = '';
-    ed.stack.push({ title: ed.title, content: ed.content });
-    // Honour the "Ground in referenced documents" checkbox — it was previously
-    // hardcoded to false, so ticking it did nothing on a real question.
-    const ground = !!(ed.host.querySelector('#snAiGround') || {}).checked;
-    await streamAi({ action: 'ask', question: q, content: ed.content, ground }, ed.host.querySelector('#snAiBody'), 'ask');
-  }
-
-  /** Draw this note's shared AI thread into the popup body (real chat DOM). */
-  async function renderNoteThread(bodyEl) {
-    if (!bodyEl || !window.studyChat) return;
-    bodyEl.classList.add('sa-thread');
-    const key = noteThreadKey();
-    const tid = window.studyChat.activeThread(key);
-    if (!tid) { bodyEl.innerHTML = '<div class="sn-ai-thinking">Ask anything about this note…</div>'; return; }
-    const msgs = await window.studyChat.loadMessages(tid);
-    window.studyChat.renderMessages(bodyEl, msgs);
-  }
+  function sendAiAsk() { /* handled inside the shared surface */ }
+  function applyAi() { notify('Edits are applied by the model'); }
 
   /**
    * Re-read the note body after the model edited it with the study_note tool.
@@ -953,84 +938,17 @@
       if (ti) ti.value = ed.title;
       if (ta) ta.value = ed.content;
       if (ed.mode !== 'edit') renderPreview();
-      // The edit already landed in the file — the "replace/insert" buttons
-      // would apply it a second time, so hide them and keep only Revert.
-      const card = ed.host.querySelector('#snAiCard');
-      if (card) {
-        card.querySelectorAll('[data-sn="ai-apply"], [data-sn="ai-insert"]')
-          .forEach((b) => { b.style.display = 'none'; });
-      }
       notify('Note updated');
     } catch (err) {
       notify('Could not reload note: ' + err.message);
     }
   }
 
-  /**
-   * Run one note-AI turn through the SHARED chat pipeline (window.studyChat),
-   * exactly like the document AI. The note is addressed by a `note-<id>` thread
-   * and a `study_context.note_id`, so the backend grounds the turn in the note
-   * body and the model edits it with the study_note tool. Messages, thinking
-   * and tool calls all persist in the same tables and render as real chat DOM.
-   */
-  async function streamAi(payload, bodyEl, action) {
-    if (!ed || !bodyEl || !window.studyChat) return;
-    const noteId = ed.id || 'new';
-    const docKey = 'note:' + noteId;
-    const threadId = 'study-note-' + noteId;
-    ed.aiThread = threadId;
-    ed.aiBusy = true;
-    setAiStopVisible(true);
-    bodyEl.classList.add('sa-thread');
-    const label = (AI_ACTIONS.find((a) => a[0] === action) || [action, action])[1];
-    const text = action === 'ask' ? (payload.question || 'Ask about this note') : label;
-    try {
-      await window.studyChat.send({
-        docId: docKey,
-        threadId: threadId,
-        text: text,
-        context: Object.assign({
-          doc_id: '',
-          note_id: noteId,
-          action: action,
-          question: payload.question || '',
-          note_content: payload.content || ed.content || '',
-          ground: !!payload.ground,
-        }, (window.studyAI && window.studyAI.configPayload) ? window.studyAI.configPayload() : {}),
-        pane: bodyEl,
-      });
-    } finally {
-      ed.aiBusy = false;
-      ed.aiThread = null;
-      setAiStopVisible(false);
-    }
-    // An edit action changed the note on disk through study_note — pull the
-    // live body so the editor reflects the tool's change (no apply step).
-    if (action !== 'ask') { try { await refreshNoteBody(); } catch { /* best effort */ } }
-    // Re-render the canonical persisted thread (tool cards in order).
-    renderNoteThread(bodyEl);
-    if (typeof window._sableLoadChats === 'function') window._sableLoadChats();
-  }
-
-  function applyAi(mode) {
-    if (!ed.aiResult) { notify('Nothing to apply'); return; }
-    if (mode === 'replace') {
-      ed.content = ed.aiResult;
-    } else {
-      ed.content = (ed.content || '').replace(/\s*$/, '') + '\n\n' + ed.aiResult;
-    }
-    const ta = ed.host.querySelector('#snBody');
-    if (ta) ta.value = ed.content;
-    ed.host.querySelector('#snAiCard').classList.add('hidden');
-    ed.aiResult = null;
-    markDirty();
-    if (ed.mode !== 'edit') renderPreview();
-    notify(mode === 'replace' ? 'Note replaced' : 'Inserted below');
-  }
-
+  /** Restore the note to the snapshot taken before the last AI edit turn. */
   function revertAi() {
-    const snap = ed.stack.pop();
+    const snap = aiSnapshot;
     if (!snap) { notify('Nothing to revert'); return; }
+    aiSnapshot = null;
     ed.title = snap.title;
     ed.content = snap.content;
     const ti = ed.host.querySelector('#snTitle');
@@ -1189,7 +1107,9 @@
     document.removeEventListener('keydown', editorKeydown);
     clearTimeout(saveTimer);
     clearTimeout(previewTimer);
-    if (ed && ed.aiThread && window.studyChat) { try { window.studyChat.stop(ed.aiThread); } catch {} }
+    if (ed && window.studyChat) { try { window.studyChat.stop(noteThreadKey()); } catch {} }
+    teardownNoteAi();
+    aiSnapshot = null;
     const wasReaderKind = ed && ed.kind === 'reader';
     const mount = ed && ed.host ? ed.host.parentElement : null;
     if (ed && ed.host) {

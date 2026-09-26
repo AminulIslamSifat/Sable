@@ -294,6 +294,11 @@ function build() {
     </div>
     <!-- Floating Study AI launcher (bottom-right) -->
     <div class="rdr-ai-launch" id="rdrAiLaunch"></div>
+    <!-- Floating quick-note launcher — sits beside Study AI. Pressing it opens
+         the quick-note taker (selection/page → note). -->
+    <button class="rdr-quicknote" id="rdrQuickNote" title="Quick note" aria-label="Quick note">
+      <i data-lucide="notebook-pen" class="icon-lucide"></i>
+    </button>
 
     <!-- AI answer card — full thread, minimal controls (new chat + send) -->
     <div class="rdr-ai-card hidden" id="rdrAiCard">
@@ -461,9 +466,11 @@ function wire() {
   const tabNotes = $("#rdrTabNotes");
   if (tabNotes) tabNotes.addEventListener('click', () => setReaderTab('notes'));
 
-  // Quick-note capture popup (header, beside the AI button).
+  // Quick-note capture popup (header menu item + floating launcher).
   const noteBtn = $("#rdrNote");
   if (noteBtn) noteBtn.addEventListener('click', toggleNotePopup);
+  const quickNoteBtn = $("#rdrQuickNote");
+  if (quickNoteBtn) quickNoteBtn.addEventListener('click', toggleNotePopup);
 
   // More-actions menu. Keeps the header to three trailing buttons instead of
   // seven so the timer pill and zoom controls always have room.
@@ -2076,6 +2083,9 @@ function setReaderTab(tab) {
   // editor — two AI entry points at once would just be confusing.
   const launch = overlay.querySelector('#rdrAiLaunch');
   if (launch) launch.style.display = (isChat || isNotes) ? 'none' : '';
+  // The quick-note launcher rides beside Study AI — hide it in the same tabs.
+  const quickNote = overlay.querySelector('#rdrQuickNote');
+  if (quickNote) quickNote.style.display = (isChat || isNotes) ? 'none' : '';
   if (window.lucide) window.lucide.createIcons();
 
   if (isChat) {
