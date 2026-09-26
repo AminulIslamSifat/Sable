@@ -855,7 +855,7 @@
       api: (path, o) => apiGet(path, o),
       // A note has no pages/PDF of its own — the composer is the only input.
       // New chat is enabled: the bridge creates a fresh thread per note.
-      caps: { page: false, pdf: false, selection: false, paste: false, newChat: true },
+      caps: { page: false, pdf: false, selection: false, paste: false, newChat: true, newChatPerAction: true },
       buildContext: ({ text, context, ground }) => {
         const action = (context && context.action) || 'ask';
         // Snapshot before the first edit of a turn so Revert can restore it.

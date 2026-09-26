@@ -328,7 +328,7 @@
     return `
       <div class="drive-row${isSel ? ' selected' : ''}"
            data-drive-action="${isFolder ? 'open-folder' : 'toggle-select'}"
-           data-id="${it.id}" data-name="${esc(it.name)}">
+           data-id="${it.id}" data-name="${esc(it.name)}" data-mime="${esc(it.mimeType || '')}">
         ${isFolder
           ? '<span class="drive-check folder"><i data-lucide="chevron-right" class="icon-lucide"></i></span>'
           : `<span class="drive-check${isSel ? ' on' : ''}">${isSel ? '✓' : ''}</span>`}
@@ -434,7 +434,7 @@
       // Single-file source — open it directly in the viewer.
       activeSource = null;
       rerender();
-      return viewFile({ id: src.drive_id, name: src.name });
+      return viewFile({ id: src.drive_id, name: src.name, mimeType: src.mimeType || '' });
     }
     await loadPath();
   }
@@ -492,11 +492,59 @@
    * Drive, so nothing is downloaded to disk first.
    */
   function viewFile(it) {
+    // An image is not a document — pdf.js chokes on it. Route it to the
+    // lightbox instead of forcing it through the PDF reader.
+    if (isImage(it.mimeType, it.name)) return viewDriveImage(it);
     if (!window.studyReader) return notify('Viewer still loading…');
     if (window.studyReader.openRemote) {
       window.studyReader.openRemote(it.id, it.name);
     } else {
       window.studyReader.open(it.id, { remote: true, title: it.name });
+    }
+  }
+
+  const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif|svg|ico|tiff?)$/i;
+
+  /**
+   * Is this Drive entry an image?
+   *
+   * Trusts the mime when Drive supplies one, and falls back to the extension
+   * when it doesn't — the keyless folder listing historically reported no mime
+   * at all, which is what sent every image to the PDF viewer.
+   */
+  function isImage(mime, name) {
+    if (mime && String(mime).startsWith('image/')) return true;
+    return !mime && IMAGE_EXT.test(String(name || ''));
+  }
+
+  function authHeaders() {
+    const token = localStorage.getItem('sable_token') || '';
+    return token ? { Authorization: 'Bearer ' + token } : {};
+  }
+
+  /**
+   * Fetch a Drive image and show it in Sable's lightbox.
+   *
+   * Bytes come from /raw, not /pdf, so they keep their real content type and
+   * are never ingested into the library as a bogus PDF.
+   */
+  async function viewDriveImage(it) {
+    const t = encodeURIComponent(it.name || 'image');
+    const url = `/api/drive/file/${encodeURIComponent(it.id)}/raw?title=${t}`;
+    try {
+      const res = await fetch(url, { headers: authHeaders() });
+      if (!res.ok) {
+        let detail = res.statusText;
+        try { detail = (await res.json()).detail || detail; } catch {}
+        throw new Error(detail);
+      }
+      const buf = await res.arrayBuffer();
+      const type = res.headers.get('Content-Type') || it.mimeType || 'application/octet-stream';
+      const objUrl = URL.createObjectURL(new Blob([buf], { type }));
+      if (window.openLightbox) window.openLightbox(objUrl);
+      else window.open(objUrl, '_blank');
+    } catch (e) {
+      notify(e.message || 'Could not open that image');
     }
   }
 
@@ -642,7 +690,7 @@
       case 'open-folder': return openFolder(el.dataset.id, el.dataset.name);
       case 'view-file':
         if (el && el.stopPropagation) el.stopPropagation();
-        return viewFile({ id: el.dataset.id, name: el.dataset.name });
+        return viewFile({ id: el.dataset.id, name: el.dataset.name, mimeType: el.dataset.mime });
       case 'toggle-select': {
         const id = el.dataset.id;
         if (selected.has(id)) selected.delete(id); else selected.add(id);

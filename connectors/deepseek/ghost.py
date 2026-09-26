@@ -54,11 +54,13 @@ IDENTITY_STORE = _SYSTEM_DIR / ".deepseek_identity.json"
 DEFAULT_HELIUM = "/opt/helium-browser-bin/helium"
 IDENTITY_TTL_SEC = 24 * 3600
 
+# No "--ozone-platform=headless" here: this file's ghost browser runs HEADED
+# (see GhostSession.start -> ProfileHub.acquire(force_headed=True)). The
+# headless path is gone by request; _LAUNCH_ARGS must not re-impose it.
 _LAUNCH_ARGS = [
     "--no-sandbox",
     "--disable-blink-features=AutomationControlled",
     "--disable-gpu",
-    "--ozone-platform=headless",
 ]
 
 # Headers we do NOT inject: set by browser automatically, or by us per-request.
@@ -376,9 +378,14 @@ class GhostSession:
         # Shared per-profile browser (ProfileHub): adopt the ONE browser that
         # owns the profile dir and open our own DeepSeek origin tab on it, so
         # co-located connectors don't kill-war over SingletonLock.
+        # DeepSeek runs its ghost browser HEADED (visible window). In-page
+        # fetch under a real windowed browser keeps a genuine device identity
+        # and lets you eyeball the session; a headless holder is killed and
+        # replaced by _ensure via force_headed.
         from connectors.common.profile_hub import ProfileHub
         self._hub = await ProfileHub.acquire(
-            self.profile_dir, self.helium_bin, headless=True)
+            self.profile_dir, self.helium_bin, headless=False,
+            force_headed=True)
         self._ctx = self._hub.context
         self._page = await self._hub.new_tab("https://chat.deepseek.com/")
         await self._after_browser_ready()

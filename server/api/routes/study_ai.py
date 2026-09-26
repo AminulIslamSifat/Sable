@@ -365,6 +365,48 @@ def _read_persona(name: str) -> str:
         return ""
 
 
+def _study_tool_sections() -> str:
+    """Tool-call primer + schemas for a study turn.
+
+    Reuses the SAME machinery the main chat uses to hand Qwen its tools:
+    ``get_tool_format`` for the ``<action>`` primer and
+    ``get_tools_prompt_section`` for the core-tool ``<tools>`` block. Study
+    tools are then appended on top of that core set, and the shared
+    ``output_format.md`` is included last. Purely additive — study's own
+    directive is left untouched.
+    """
+    parts: list[str] = []
+    try:
+        from connectors.common.instruction_builder import get_tool_format
+        primer = get_tool_format("qwen")
+        if primer:
+            parts.append(primer)
+    except Exception:
+        logger.debug("study tool primer failed", exc_info=True)
+    try:
+        from engine.tools_loader import get_tools_prompt_section, get_study_tool_schemas
+        core = get_tools_prompt_section()
+        if core:
+            parts.append(core)
+        study_tools = get_study_tool_schemas()
+        if study_tools:
+            lines = ["<tools>"]
+            lines.extend(json.dumps(s, ensure_ascii=False) for s in study_tools)
+            lines.append("</tools>")
+            parts.append("\n".join(lines))
+    except Exception:
+        logger.debug("study tool schemas failed", exc_info=True)
+    of_path = _INSTRUCTION_DIR / "output_format.md"
+    if of_path.exists():
+        try:
+            text = of_path.read_text(encoding="utf-8").strip()
+            if text:
+                parts.append(text)
+        except Exception:
+            pass
+    return "\n\n".join(p for p in parts if p)
+
+
 def _build_system(custom_prompt: str, persona_text: str) -> str:
     """System directive for study answers — replaces Sable's instruction registry."""
     system = _STUDY_SYSTEM
@@ -372,6 +414,7 @@ def _build_system(custom_prompt: str, persona_text: str) -> str:
         system += "\n\nAdditional instructions from the reader:\n" + custom_prompt.strip()
     if persona_text:
         system += "\n\nAdopt the following persona and tone:\n" + persona_text
+    system += "\n\n" + _study_tool_sections()
     return system
 
 
@@ -491,6 +534,7 @@ def _build_note_turn(note_id: str, ctx: dict[str, Any], user_message: str) -> tu
     blocks.append('Current note:\n---\n' + content[:_MAX_BODY_NOTE] + '\n---')
     blocks.append('Task: ' + instr)
     blocks.append('Apply this task to the note with the study_note tool. Do not return the note body as chat text - the user sees the live note update.')
+    system += '\n\n' + _study_tool_sections()
     return system, '\n\n'.join(blocks)
 
 

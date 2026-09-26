@@ -696,11 +696,16 @@ async function open(docId, opts) {
   }
 
   meta.pages = pdfDoc.numPages;
+  // A remote open streams through /api/drive/file/<id>/pdf, which ingests the
+  // bytes on the way past. By now the library may already hold a record for this
+  // file — adopt it BEFORE the toolbar is wired, because leaving remote mode is
+  // what unlocks Study AI, notes, progress and bookmarks on a Drive document
+  // without the user ever pressing Import.
+  if (isRemote) await adoptRemoteDoc();
   aiNotes = meta.ai_notes || [];
   if (!isRemote) loadAiConfig();
-  // Remote docs are view-only — nothing to bookmark or persist yet. Study AI
-  // grounds answers in the library record (progress/text), so it's unavailable
-  // until the doc is imported.
+  // Anything still remote at this point genuinely has no library record to hang
+  // state off, so it stays view-only.
   for (const sel of ['#rdrBookmark', '#rdrAi', '#rdrDocChat', '#rdrAiLaunch', '#rdrExport', '#rdrFind', '#rdrSpeak']) {
     const el = overlay.querySelector(sel);
     if (el) el.style.display = isRemote ? 'none' : '';
@@ -2193,6 +2198,37 @@ async function pdfToText() {
     const r = await api(`/api/study/doc/${meta.id}/text`);
     return ((r && r.page_text) || []).join('\n\n').slice(0, 60000);
   } catch { return ''; }
+}
+
+/**
+ * Claim the library record the Drive stream just created for this file.
+ *
+ * Remote opens download through /api/drive/file/<id>/pdf, which auto-ingests the
+ * bytes as they stream. Once that lands the file exists in the library under a
+ * uuid — this swaps meta.id over to it and drops remote mode, so Study AI,
+ * notes, bookmarks and progress all start working mid-session.
+ *
+ * Returns true when a record was adopted.
+ */
+async function adoptRemoteDoc() {
+  if (!isRemote || !meta || !meta.id) return false;
+  try {
+    // Not under /api/study/doc/, so the remote-swallowing api() lets it through.
+    const r = await api(`/api/drive/file/${encodeURIComponent(meta.id)}/doc`);
+    if (!r || !r.doc_id) return false;
+    const pages = meta.pages;
+    meta.id = r.doc_id;
+    isRemote = false;
+    lastRemoteSaved = true;
+    // Pull the real record so highlights/outline/progress are not the synthetic
+    // empties this function's caller stubbed in. Must run AFTER the flip, or
+    // api() would swallow the read as an unwritable remote call.
+    try {
+      const fresh = await api(`/api/study/doc/${meta.id}`);
+      if (fresh) meta = Object.assign({}, fresh, { pages: pages || fresh.pages });
+    } catch { /* keep the synthetic record; the id is what matters */ }
+    return true;
+  } catch { return false; }
 }
 
 /** Build the ctx object study-ai.js needs to read the open document. */

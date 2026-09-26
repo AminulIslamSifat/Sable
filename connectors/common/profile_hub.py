@@ -263,6 +263,25 @@ def _listening_ports(pids: list[int]) -> set[int]:
     return ports
 
 
+def _pid_is_headless(pid: int) -> bool | None:
+    """True = headless, False = headed, None = cmdline unreadable."""
+    toks = _cmdline_tokens(pid)
+    if not toks:
+        return None
+    for tok in toks:
+        if tok == "--headless" or tok.startswith("--headless="):
+            return True
+        if tok.startswith("--ozone-platform=headless"):
+            return True
+    return False
+
+
+def _profile_is_headless(profile_dir: Path) -> bool:
+    """True if any live holder of ``profile_dir`` is a headless browser."""
+    return any(_pid_is_headless(p) is True
+               for p in _profile_holder_pids(profile_dir))
+
+
 def _clear_singleton(profile: Path) -> None:
     for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
         try:
@@ -285,26 +304,41 @@ class ProfileHub:
 
     @classmethod
     async def acquire(cls, profile_dir: Path, helium_bin: str,
-                      headless: bool = True) -> "ProfileHub":
-        """Return the live hub for ``profile_dir``, launching it if needed."""
+                      headless: bool = True,
+                      force_headed: bool = False) -> "ProfileHub":
+        """Return the live hub for ``profile_dir``, launching it if needed.
+
+        ``force_headed=True`` requests a *visible* browser: any headless
+        browser currently holding the profile is killed first, and the
+        replacement is launched with ``headless=False``.
+        """
         if cls._registry_lock is None:
             cls._registry_lock = asyncio.Lock()
         key = str(Path(profile_dir).resolve())
         async with cls._registry_lock:
             hub = cls._hubs.get(key)
             if hub is not None and hub.is_alive:
-                return hub
-            if hub is not None:
+                # A cached headless hub cannot satisfy a headed request —
+                # tear it down and build a fresh headed one.
+                if not (force_headed and hub.headless):
+                    return hub
                 await hub._teardown()
-            hub = cls(Path(profile_dir), helium_bin, headless)
+            elif hub is not None:
+                await hub._teardown()
+            hub = cls(Path(profile_dir), helium_bin, headless,
+                      force_headed=force_headed)
             await hub._ensure()
             cls._hubs[key] = hub
             return hub
 
-    def __init__(self, profile_dir: Path, helium_bin: str, headless: bool):
+    def __init__(self, profile_dir: Path, helium_bin: str, headless: bool,
+                 force_headed: bool = False):
         self.profile_dir = profile_dir
         self.helium_bin = helium_bin
-        self.headless = headless
+        # force_headed wins over the caller's headless flag: it means "I need
+        # a visible window", so the effective launch mode is headed.
+        self.force_headed = force_headed
+        self.headless = False if force_headed else headless
         self._pw = None
         self._context = None
         self._cdp_browser = None
@@ -329,6 +363,20 @@ class ProfileHub:
     async def _ensure(self) -> None:
         if not self.profile_dir.exists():
             raise RuntimeError(f"profile dir missing: {self.profile_dir}")
+        # force_headed: kill EVERY browser currently on this profile — any
+        # binary, headed or headless — then launch a fresh HEADED one. No
+        # adoption: the caller wants the old browsers gone, not reused.
+        if self.force_headed:
+            killed = await self._kill_all_holders()
+            logger.info("[hub:%s] force-headed: killed %d holder(s) — launching "
+                        "a fresh headed browser", self.profile_dir.name, killed)
+            try:
+                await self._launch()
+            except Exception:
+                if await self._adopt():
+                    return
+                raise
+            return
         if await self._adopt():
             return
         await self._free_profile()
@@ -396,6 +444,9 @@ class ProfileHub:
                     raise RuntimeError("no contexts over CDP")
                 self._context = ctxs[0]
                 self._owns_browser = False
+                # Sync the mode flag with reality so a later force_headed
+                # acquire can spot an adopted headless browser via hub.headless.
+                self.headless = _profile_is_headless(self.profile_dir)
                 logger.info("[hub:%s] adopted live browser over CDP (port %d)",
                             self.profile_dir.name, port)
                 return True
@@ -431,6 +482,34 @@ class ProfileHub:
         # lock is junk, not a live browser. Clear it and move on.
         _clear_singleton(self.profile_dir)
         self._marker.unlink(missing_ok=True)
+
+    async def _kill_all_holders(self) -> int:
+        """Kill every process bound to this profile dir — any binary, headed
+        or headless — then clear the lock/marker so a fresh launch owns it.
+
+        Used by ``force_headed``, where the caller explicitly wants every
+        browser already on the profile terminated before we open ours.
+        """
+        victims = _profile_holder_pids(self.profile_dir)
+        for vp in victims:
+            try:
+                os.kill(vp, signal.SIGTERM)
+            except OSError:
+                pass
+        for _ in range(50):
+            if not any(_pid_alive(vp) for vp in victims):
+                break
+            await asyncio.sleep(0.1)
+        for vp in victims:
+            if _pid_alive(vp):
+                try:
+                    os.kill(vp, signal.SIGKILL)
+                except OSError:
+                    pass
+        await asyncio.sleep(0.2)
+        _clear_singleton(self.profile_dir)
+        self._marker.unlink(missing_ok=True)
+        return len(victims)
 
     async def _reclaim(self) -> None:
         victims = _profile_helium_pids(self.profile_dir, self.helium_bin)

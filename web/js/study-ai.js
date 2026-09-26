@@ -30,6 +30,10 @@
   const busySubs = {};      // docId → Set(fn)
   const viewSubs = {};      // docId → Set(fn)
   const renderGen = {};     // docId → monotonically increasing render token
+  // docId → { tid, host } for a thread whose LIVE DOM is already authoritative.
+  // renderThread skips a DB repaint for this exact host+thread, so a finished
+  // turn is never torn down and replayed from the DB (the "reloaded" flash).
+  const liveDirty = {};
 
   function emitView(docId) {
     (viewSubs[docId] || new Set()).forEach((fn) => { try { fn(); } catch {} });
@@ -78,6 +82,11 @@
     // `force` bypasses this (used once a turn has fully finalized, to swap the
     // live DOM for the canonical DB render).
     if (!force && isBusy(docId)) return;
+    // The live stream already painted this exact thread into this exact host.
+    // Repainting from the DB would wipe it and replay the same rows — the
+    // "messages load from db instead of streaming live" symptom. Skip it.
+    const _live = liveDirty[docId];
+    if (!force && _live && _live.host === host && _live.tid === threadIdFor(docId)) return;
     // Stamp this render. A paint may only land if it is still the newest render
     // AND no turn has started in the meantime. Without this, an async load that
     // resolves after the user already hit send would wipe the live user bubble
@@ -100,6 +109,7 @@
     return (cache[docId] || override[docId] || []).map((m) => ({ role: m.role, content: m.content }));
   }
   function setThread(docId, turns) {
+    delete liveDirty[docId];
     override[docId] = (turns || []).map((t) => ({ role: t.role, content: t.content }));
     cache[docId] = override[docId].slice();
     if (activeHost[docId]) paint(activeHost[docId], override[docId]);
@@ -107,6 +117,7 @@
   }
   function resetThread(docId) {
     override[docId] = null;
+    delete liveDirty[docId];
     window.studyChat.newThread(docId);
     cache[docId] = [];
     if (activeHost[docId]) paint(activeHost[docId], []);
@@ -172,9 +183,11 @@
       pane: host,
     });
     emitBusy(docId, false);
-    // Turn is fully done — swap the live DOM for the canonical DB render
-    // (which now includes the persisted skill_events / tool cards in order).
-    if (host) renderThread(host, docId, { force: true });
+    // The live DOM already holds this turn — user bubble, streamed answer and
+    // any tool cards. Mark it authoritative so the emitView below (and the
+    // reader's subscription it drives) do NOT repaint from the DB, which is
+    // what made every finished turn flash back in as a reloaded dump.
+    if (host) liveDirty[docId] = { tid: threadIdFor(docId), host };
     emitView(docId);
   }
 
@@ -184,6 +197,15 @@
   }
 
   function stopStream(docId) { window.studyChat.stop(threadIdFor(docId)); }
+
+  /** Run a preset action, optionally on a FRESH thread.
+   *  A surface that sets caps.newChatPerAction (the note editor) gets a new
+   *  chat for every Enhance / Organize / Summarize press, so each action lands
+   *  in its own conversation instead of piling onto the previous one. */
+  function runPreset(ctx, code, spec) {
+    if (ctx && ctx.caps && ctx.caps.newChatPerAction) resetThread(ctx.getDocId());
+    runTurn(ctx, { action: code, question: spec[1] });
+  }
 
   // -- Surfaces (popup + full pane) -------------------------------------------
   function buildSurface(ctx, opts) {
@@ -423,9 +445,9 @@
       } finally {
         emitBusy(docId, false);
       }
-      // Turn fully done — swap live DOM for the canonical DB render so tool
-      // cards appear in their persisted, ordered form.
-      renderThread(body, docId, { force: true });
+      // Keep the live DOM as-is (see runTurn): repainting from the DB here is
+      // what made finished turns look reloaded rather than streamed.
+      liveDirty[docId] = { tid: threadIdFor(docId), host: body };
       if (typeof window._sableLoadChats === 'function') window._sableLoadChats();
     }
 
@@ -444,7 +466,7 @@
         if (code === 'ask') { input.focus(); return; }
         // Preset actions send immediately — identical to the document quick
         // actions, so both surfaces behave the same way.
-        runTurn(surfaceCtx[docId], { action: code, question: spec[1] });
+        runPreset(surfaceCtx[docId], code, spec);
         return;
       }
       const btn = e.target.closest('[data-sa]');
@@ -549,7 +571,13 @@
       // throws partway (which used to leave the popup half-built and abort
       // any action triggered right after opening).
       if (btn) btn.classList.add('active');
-      renderThread(popup.querySelector('[data-sa-thread]'), ctx.getDocId(), { force: true });
+      // Deliberately NOT forced. When a preset action opens this popup and
+      // sends in the same tick (the note Enhance/Organize buttons), the forced
+      // async history load resolves AFTER the stream has started and repaints
+      // the pane from the DB — detaching the live user bubble and streaming
+      // answer, so nothing appears until the turn finishes (or is stopped).
+      // Without force, renderThread bails while a turn is in flight.
+      renderThread(popup.querySelector('[data-sa-thread]'), ctx.getDocId());
       if (window.lucide) window.lucide.createIcons({ nodes: popup.querySelectorAll('[data-lucide]') });
       if (built && built.view && built.view.input) built.view.input.focus();
       document.addEventListener('mousedown', onDocDown, true);
@@ -575,7 +603,7 @@
       // Resolve the surface context from THIS mount (not a docId lookup), so a
       // note whose id changed after first save still routes correctly.
       const surfaceCtxRef = surfaceCtx[ctx.getDocId()] || ctx;
-      runTurn(surfaceCtxRef, { action: code, question: spec[1] });
+      runPreset(surfaceCtxRef, code, spec);
     }
 
     return { el: wrap, open, close, destroy, runAction, getView: () => (built && built.view) || null };

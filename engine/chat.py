@@ -69,24 +69,10 @@ async def stream_chat(
     is_retry: bool = False,
 ) -> tuple[str | None, str | None]:
     """Send a message and stream the response token by token, returning updated (chat_id, parent_id)."""
-    # --- Ghost tab primary path --------------------------------------------
-    # In-page fetch on a parked ghost tab: Baxia signs at send-time (token age
-    # zero, genuine TLS, live cookies). Any ghost failure raises GhostError,
-    # we tear down, and fall through to the raw curl_cffi API path below.
-    if not is_retry and not files and os.environ.get("SABLE_GHOST", "1") == "1":
-        try:
-            from engine.inpage import GhostError, ghost_stream_chat
-            return await ghost_stream_chat(message, chat_id=chat_id, parent_id=parent_id,
-                                           model=model, thinking_mode=thinking_mode)
-        except GhostError as e:
-            try:
-                from engine.inpage import GhostEngine
-                await GhostEngine.instance().shutdown()
-            except Exception:
-                pass
-            print(f"[GHOST] → falling back to raw API path: {e}")
-        except Exception as e:
-            print(f"[GHOST] unexpected failure ({type(e).__name__}: {e}) → raw API path")
+    # --- curl-only path ----------------------------------------------------
+    # Qwen ALWAYS goes through the raw curl_cffi API path below. The former
+    # ghost-tab primary path (engine.inpage) has been removed by request —
+    # no ghost tab is opened, parked, or adopted for Qwen anymore.
     # Always grab live headers before every request — cookies and bx-ua rotate
     # continuously in the browser. This reads them instantly from the live context.
     try:

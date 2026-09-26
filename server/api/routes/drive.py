@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import mimetypes
 import re
 import secrets
 import time
@@ -376,7 +377,9 @@ async def drive_stream_pdf(
                 except Exception as exc:
                     logger.warning("Auto-save failed for %s: %s", fid, exc)
 
-    media = "application/pdf" if (hint or "").lower().endswith(".pdf") else "application/octet-stream"
+    # Report the real type instead of a pdf/octet-stream coin flip, so a caller
+    # that trusts Content-Type can't be told a PNG is a PDF.
+    media = _guess_mime(hint, None) or "application/pdf"
     headers = {
         "Content-Disposition": f'inline; filename="{hint or fid + ".pdf"}"',
         "X-Drive-Save": "1" if save else "0",
@@ -384,7 +387,79 @@ async def drive_stream_pdf(
     return StreamingResponse(chunks(), media_type=media, headers=headers)
 
 
+@router.get("/api/drive/file/{file_id}/raw")
+async def drive_stream_raw(
+    file_id: str, request: Request, title: str = "", mime: str = "",
+) -> StreamingResponse:
+    """Stream a Drive file's bytes with its real content type. Never ingests.
+
+    The viewer uses this for anything that isn't a PDF (images especially).
+    /pdf is the wrong door for those: it mislabels the bytes *and* silently
+    imports them into the library as a fake PDF on the way through.
+    """
+    fid = file_id
+    client = get_drive_client()
+    hint = (title or "").strip()
+    media = _guess_mime(hint, mime) or "application/octet-stream"
+
+    async def chunks():
+        yield b""  # flush headers before the first real chunk
+        try:
+            hc, resp, _rname, _length = await drive_public.open_stream(fid)
+            try:
+                async for chunk in resp.aiter_bytes(1024 * 256):
+                    yield chunk
+            finally:
+                with contextlib.suppress(Exception):
+                    await resp.aclose()
+                with contextlib.suppress(Exception):
+                    await hc.aclose()
+        except drive_public.PublicDriveError:
+            if not client.connected:
+                raise
+            dmeta = await client.get_file(fid)
+            raw, _rname = await client.download(dmeta)
+            yield raw
+
+    headers = {"Content-Disposition": f'inline; filename="{hint or fid}"'}
+    return StreamingResponse(chunks(), media_type=media, headers=headers)
+
+
+@router.get("/api/drive/file/{file_id}/doc")
+async def drive_file_doc(file_id: str) -> dict[str, str]:
+    """Library doc id for an already-imported Drive file ("" when not imported).
+
+    The reader asks for this right after a remote download. That stream
+    auto-ingests the file, so the doc quietly gains a library record mid-view —
+    this is how Study AI attaches to a Drive document without the user ever
+    pressing Import.
+    """
+    doc_id = _existing_doc(file_id)
+    if not doc_id:
+        return {"doc_id": "", "title": ""}
+    from engine.config import LIBRARY_META_DIR
+    title = ""
+    with contextlib.suppress(Exception):
+        rec = json.loads((LIBRARY_META_DIR / f"{doc_id}.json").read_text(encoding="utf-8"))
+        title = str(rec.get("title") or "")
+    return {"doc_id": doc_id, "title": title}
+
+
 # ── Source layer: keyless first, authed fallback ─────────────────────────────
+
+
+def _guess_mime(name: str | None, mime: str | None = None) -> str:
+    """Best-effort content type for a Drive entry.
+
+    The keyless browse path reports no mimeType at all, which used to make every
+    non-folder entry look identical to the UI. That is why images were handed to
+    the PDF viewer and died on parse: nothing downstream could tell them apart.
+    Fall back to the filename whenever Drive gives us nothing usable.
+    """
+    if mime and mime != "application/octet-stream":
+        return mime
+    guessed, _ = mimetypes.guess_type(str(name or ""))
+    return guessed or mime or ""
 
 
 def _public_summary(meta: dict[str, Any]) -> dict[str, Any]:
@@ -392,6 +467,7 @@ def _public_summary(meta: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": meta.get("id"),
         "name": meta.get("name") or meta.get("id"),
+        "mimeType": _guess_mime(meta.get("name"), meta.get("mimeType")),
         "kind": "folder" if meta.get("is_folder") else "file",
         "is_folder": bool(meta.get("is_folder")),
         "is_google_doc": bool(meta.get("is_google_doc")),
@@ -437,7 +513,11 @@ async def _browse_any(folder_id: str) -> dict[str, Any]:
                 {
                     "id": e["id"],
                     "name": e["name"],
-                    "mimeType": "application/vnd.google-apps.folder" if e["is_folder"] else "",
+                    "mimeType": (
+                        "application/vnd.google-apps.folder"
+                        if e["is_folder"]
+                        else _guess_mime(e.get("name"), e.get("mimeType"))
+                    ),
                     "is_folder": e["is_folder"],
                     "is_google_doc": False,
                     "size": 0,
